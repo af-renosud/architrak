@@ -1,9 +1,10 @@
 import { db } from "./db";
-import { eq, desc, and, inArray, isNotNull } from "drizzle-orm";
+import { eq, desc, and, inArray, isNotNull, lte, like } from "drizzle-orm";
 import {
   projects, contractors, lots, marches, devis, devisLineItems,
   avenants, invoices, situations, situationLines, certificats, fees, feeEntries,
   archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog,
+  emailDocuments, projectDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
   type Project, type InsertProject,
   type Contractor, type InsertContractor,
   type Lot, type InsertLot,
@@ -18,6 +19,11 @@ import {
   type Fee, type InsertFee,
   type FeeEntry, type InsertFeeEntry,
   type ArchidocProject, type ArchidocContractor, type ArchidocTrade, type ArchidocProposalFee, type ArchidocSyncLogEntry,
+  type EmailDocument, type InsertEmailDocument,
+  type ProjectDocument, type InsertProjectDocument,
+  type ProjectCommunication, type InsertProjectCommunication,
+  type PaymentReminder, type InsertPaymentReminder,
+  type ClientPaymentEvidence, type InsertClientPaymentEvidence,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -111,6 +117,33 @@ export interface IStorage {
   createSyncLogEntry(data: { syncType: string; status: string; errorMessage?: string }): Promise<ArchidocSyncLogEntry>;
   updateSyncLogEntry(id: number, data: Partial<{ status: string; completedAt: Date; recordsUpdated: number; errorMessage: string }>): Promise<ArchidocSyncLogEntry | undefined>;
   getRecentSyncLogs(limit: number): Promise<ArchidocSyncLogEntry[]>;
+
+  getEmailDocuments(filters?: { projectId?: number; status?: string; documentType?: string }): Promise<EmailDocument[]>;
+  getEmailDocument(id: number): Promise<EmailDocument | undefined>;
+  getEmailDocumentByMessageId(messageId: string): Promise<EmailDocument | undefined>;
+  createEmailDocument(data: InsertEmailDocument): Promise<EmailDocument>;
+  updateEmailDocument(id: number, data: Partial<InsertEmailDocument>): Promise<EmailDocument | undefined>;
+  updateEmailDocumentLabelStatus(messageId: string): Promise<void>;
+  getPendingEmailDocuments(): Promise<EmailDocument[]>;
+
+  getProjectDocuments(projectId: number): Promise<ProjectDocument[]>;
+  getProjectDocument(id: number): Promise<ProjectDocument | undefined>;
+  createProjectDocument(data: InsertProjectDocument): Promise<ProjectDocument>;
+
+  getProjectCommunications(projectId: number): Promise<ProjectCommunication[]>;
+  getAllCommunications(): Promise<ProjectCommunication[]>;
+  getProjectCommunication(id: number): Promise<ProjectCommunication | undefined>;
+  createProjectCommunication(data: InsertProjectCommunication): Promise<ProjectCommunication>;
+  updateProjectCommunication(id: number, data: Partial<InsertProjectCommunication>): Promise<ProjectCommunication | undefined>;
+
+  getPaymentReminders(projectId: number): Promise<PaymentReminder[]>;
+  getPaymentReminder(id: number): Promise<PaymentReminder | undefined>;
+  createPaymentReminder(data: InsertPaymentReminder): Promise<PaymentReminder>;
+  updatePaymentReminder(id: number, data: Partial<InsertPaymentReminder>): Promise<PaymentReminder | undefined>;
+  getDuePaymentReminders(dateStr: string): Promise<PaymentReminder[]>;
+
+  getClientPaymentEvidence(projectId: number): Promise<ClientPaymentEvidence[]>;
+  createClientPaymentEvidence(data: InsertClientPaymentEvidence): Promise<ClientPaymentEvidence>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -495,6 +528,124 @@ export class DatabaseStorage implements IStorage {
 
   async getRecentSyncLogs(limit: number): Promise<ArchidocSyncLogEntry[]> {
     return db.select().from(archidocSyncLog).orderBy(desc(archidocSyncLog.startedAt)).limit(limit);
+  }
+
+  async getEmailDocuments(filters?: { projectId?: number; status?: string; documentType?: string }): Promise<EmailDocument[]> {
+    let query = db.select().from(emailDocuments).orderBy(desc(emailDocuments.createdAt));
+    if (filters?.projectId) {
+      return db.select().from(emailDocuments).where(eq(emailDocuments.projectId, filters.projectId)).orderBy(desc(emailDocuments.createdAt));
+    }
+    if (filters?.status) {
+      return db.select().from(emailDocuments).where(eq(emailDocuments.extractionStatus, filters.status)).orderBy(desc(emailDocuments.createdAt));
+    }
+    if (filters?.documentType) {
+      return db.select().from(emailDocuments).where(eq(emailDocuments.documentType, filters.documentType)).orderBy(desc(emailDocuments.createdAt));
+    }
+    return db.select().from(emailDocuments).orderBy(desc(emailDocuments.createdAt));
+  }
+
+  async getEmailDocument(id: number): Promise<EmailDocument | undefined> {
+    const [doc] = await db.select().from(emailDocuments).where(eq(emailDocuments.id, id));
+    return doc;
+  }
+
+  async getEmailDocumentByMessageId(messageId: string): Promise<EmailDocument | undefined> {
+    const [doc] = await db.select().from(emailDocuments).where(eq(emailDocuments.emailMessageId, messageId));
+    return doc;
+  }
+
+  async createEmailDocument(data: InsertEmailDocument): Promise<EmailDocument> {
+    const [doc] = await db.insert(emailDocuments).values(data).returning();
+    return doc;
+  }
+
+  async updateEmailDocument(id: number, data: Partial<InsertEmailDocument>): Promise<EmailDocument | undefined> {
+    const [doc] = await db.update(emailDocuments).set({ ...data, updatedAt: new Date() }).where(eq(emailDocuments.id, id)).returning();
+    return doc;
+  }
+
+  async updateEmailDocumentLabelStatus(messageId: string): Promise<void> {
+    await db.update(emailDocuments)
+      .set({ gmailLabelApplied: true })
+      .where(like(emailDocuments.emailMessageId, `${messageId}%`));
+  }
+
+  async getPendingEmailDocuments(): Promise<EmailDocument[]> {
+    return db.select().from(emailDocuments).where(eq(emailDocuments.extractionStatus, "pending")).orderBy(emailDocuments.createdAt);
+  }
+
+  async getProjectDocuments(projectId: number): Promise<ProjectDocument[]> {
+    return db.select().from(projectDocuments).where(eq(projectDocuments.projectId, projectId)).orderBy(desc(projectDocuments.createdAt));
+  }
+
+  async getProjectDocument(id: number): Promise<ProjectDocument | undefined> {
+    const [doc] = await db.select().from(projectDocuments).where(eq(projectDocuments.id, id));
+    return doc;
+  }
+
+  async createProjectDocument(data: InsertProjectDocument): Promise<ProjectDocument> {
+    const [doc] = await db.insert(projectDocuments).values(data).returning();
+    return doc;
+  }
+
+  async getProjectCommunications(projectId: number): Promise<ProjectCommunication[]> {
+    return db.select().from(projectCommunications).where(eq(projectCommunications.projectId, projectId)).orderBy(desc(projectCommunications.createdAt));
+  }
+
+  async getAllCommunications(): Promise<ProjectCommunication[]> {
+    return db.select().from(projectCommunications).orderBy(desc(projectCommunications.createdAt));
+  }
+
+  async getProjectCommunication(id: number): Promise<ProjectCommunication | undefined> {
+    const [comm] = await db.select().from(projectCommunications).where(eq(projectCommunications.id, id));
+    return comm;
+  }
+
+  async createProjectCommunication(data: InsertProjectCommunication): Promise<ProjectCommunication> {
+    const [comm] = await db.insert(projectCommunications).values(data).returning();
+    return comm;
+  }
+
+  async updateProjectCommunication(id: number, data: Partial<InsertProjectCommunication>): Promise<ProjectCommunication | undefined> {
+    const [comm] = await db.update(projectCommunications).set(data).where(eq(projectCommunications.id, id)).returning();
+    return comm;
+  }
+
+  async getPaymentReminders(projectId: number): Promise<PaymentReminder[]> {
+    return db.select().from(paymentReminders).where(eq(paymentReminders.projectId, projectId)).orderBy(paymentReminders.scheduledDate);
+  }
+
+  async getPaymentReminder(id: number): Promise<PaymentReminder | undefined> {
+    const [reminder] = await db.select().from(paymentReminders).where(eq(paymentReminders.id, id));
+    return reminder;
+  }
+
+  async createPaymentReminder(data: InsertPaymentReminder): Promise<PaymentReminder> {
+    const [reminder] = await db.insert(paymentReminders).values(data).returning();
+    return reminder;
+  }
+
+  async updatePaymentReminder(id: number, data: Partial<InsertPaymentReminder>): Promise<PaymentReminder | undefined> {
+    const [reminder] = await db.update(paymentReminders).set(data).where(eq(paymentReminders.id, id)).returning();
+    return reminder;
+  }
+
+  async getDuePaymentReminders(dateStr: string): Promise<PaymentReminder[]> {
+    return db.select().from(paymentReminders)
+      .where(and(
+        eq(paymentReminders.status, "scheduled"),
+        lte(paymentReminders.scheduledDate, dateStr)
+      ))
+      .orderBy(paymentReminders.scheduledDate);
+  }
+
+  async getClientPaymentEvidence(projectId: number): Promise<ClientPaymentEvidence[]> {
+    return db.select().from(clientPaymentEvidence).where(eq(clientPaymentEvidence.projectId, projectId)).orderBy(desc(clientPaymentEvidence.uploadedAt));
+  }
+
+  async createClientPaymentEvidence(data: InsertClientPaymentEvidence): Promise<ClientPaymentEvidence> {
+    const [evidence] = await db.insert(clientPaymentEvidence).values(data).returning();
+    return evidence;
   }
 }
 

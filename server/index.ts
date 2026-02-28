@@ -2,6 +2,9 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
+import { startPolling } from "./gmail/monitor";
+import { startScheduler } from "./communications/payment-scheduler";
 
 const app = express();
 const httpServer = createServer(app);
@@ -60,7 +63,11 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  registerObjectStorageRoutes(app);
   await registerRoutes(httpServer, app);
+
+  startPolling(15 * 60 * 1000);
+  startScheduler(60 * 60 * 1000);
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;

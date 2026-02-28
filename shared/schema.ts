@@ -302,6 +302,91 @@ export const archidocSyncLog = pgTable("archidoc_sync_log", {
   errorMessage: text("error_message"),
 });
 
+export const emailDocuments = pgTable("email_documents", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").references(() => projects.id),
+  emailMessageId: text("email_message_id").notNull().unique(),
+  emailThreadId: text("email_thread_id"),
+  emailFrom: text("email_from"),
+  emailSubject: text("email_subject"),
+  emailReceivedAt: timestamp("email_received_at"),
+  emailLink: text("email_link"),
+  attachmentFileName: text("attachment_file_name"),
+  storageKey: text("storage_key"),
+  documentType: text("document_type").notNull().default("unknown"),
+  extractionStatus: text("extraction_status").notNull().default("pending"),
+  extractedData: jsonb("extracted_data"),
+  matchConfidence: numeric("match_confidence", { precision: 5, scale: 2 }),
+  matchedFields: jsonb("matched_fields"),
+  gmailLabelApplied: boolean("gmail_label_applied").notNull().default(false),
+  contractorId: integer("contractor_id").references(() => contractors.id),
+  devisId: integer("devis_id").references(() => devis.id),
+  invoiceId: integer("invoice_id").references(() => invoices.id),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export const projectDocuments = pgTable("project_documents", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  fileName: text("file_name").notNull(),
+  storageKey: text("storage_key").notNull(),
+  documentType: text("document_type").notNull().default("other"),
+  uploadedBy: text("uploaded_by"),
+  description: text("description"),
+  sourceEmailDocumentId: integer("source_email_document_id").references(() => emailDocuments.id),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export const projectCommunications = pgTable("project_communications", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  type: text("type").notNull().default("general"),
+  recipientType: text("recipient_type").notNull(),
+  recipientEmail: text("recipient_email"),
+  recipientName: text("recipient_name"),
+  subject: text("subject").notNull(),
+  body: text("body"),
+  attachmentStorageKeys: jsonb("attachment_storage_keys"),
+  status: text("status").notNull().default("draft"),
+  sentAt: timestamp("sent_at"),
+  emailMessageId: text("email_message_id"),
+  emailThreadId: text("email_thread_id"),
+  relatedCertificatId: integer("related_certificat_id").references(() => certificats.id),
+  relatedInvoiceId: integer("related_invoice_id").references(() => invoices.id),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export const paymentReminders = pgTable("payment_reminders", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  invoiceId: integer("invoice_id").references(() => invoices.id),
+  certificatId: integer("certificat_id").references(() => certificats.id),
+  contractorId: integer("contractor_id").references(() => contractors.id),
+  recipientType: text("recipient_type").notNull(),
+  recipientEmail: text("recipient_email"),
+  reminderType: text("reminder_type").notNull(),
+  scheduledDate: date("scheduled_date").notNull(),
+  status: text("status").notNull().default("scheduled"),
+  sentAt: timestamp("sent_at"),
+  responseReceivedAt: timestamp("response_received_at"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export const clientPaymentEvidence = pgTable("client_payment_evidence", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  invoiceId: integer("invoice_id").references(() => invoices.id),
+  certificatId: integer("certificat_id").references(() => certificats.id),
+  uploadedByEmail: text("uploaded_by_email"),
+  storageKey: text("storage_key").notNull(),
+  fileName: text("file_name").notNull(),
+  notes: text("notes"),
+  uploadedAt: timestamp("uploaded_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
 export { conversations, messages } from "./models/chat";
 
 export const insertProjectSchema = createInsertSchema(projects).omit({
@@ -396,8 +481,45 @@ export type InsertFee = z.infer<typeof insertFeeSchema>;
 export type FeeEntry = typeof feeEntries.$inferSelect;
 export type InsertFeeEntry = z.infer<typeof insertFeeEntrySchema>;
 
+export const insertEmailDocumentSchema = createInsertSchema(emailDocuments).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertProjectDocumentSchema = createInsertSchema(projectDocuments).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertProjectCommunicationSchema = createInsertSchema(projectCommunications).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertPaymentReminderSchema = createInsertSchema(paymentReminders).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertClientPaymentEvidenceSchema = createInsertSchema(clientPaymentEvidence).omit({
+  id: true,
+  uploadedAt: true,
+});
+
 export type ArchidocProject = typeof archidocProjects.$inferSelect;
 export type ArchidocContractor = typeof archidocContractors.$inferSelect;
 export type ArchidocTrade = typeof archidocTrades.$inferSelect;
 export type ArchidocProposalFee = typeof archidocProposalFees.$inferSelect;
 export type ArchidocSyncLogEntry = typeof archidocSyncLog.$inferSelect;
+
+export type EmailDocument = typeof emailDocuments.$inferSelect;
+export type InsertEmailDocument = z.infer<typeof insertEmailDocumentSchema>;
+export type ProjectDocument = typeof projectDocuments.$inferSelect;
+export type InsertProjectDocument = z.infer<typeof insertProjectDocumentSchema>;
+export type ProjectCommunication = typeof projectCommunications.$inferSelect;
+export type InsertProjectCommunication = z.infer<typeof insertProjectCommunicationSchema>;
+export type PaymentReminder = typeof paymentReminders.$inferSelect;
+export type InsertPaymentReminder = z.infer<typeof insertPaymentReminderSchema>;
+export type ClientPaymentEvidence = typeof clientPaymentEvidence.$inferSelect;
+export type InsertClientPaymentEvidence = z.infer<typeof insertClientPaymentEvidenceSchema>;

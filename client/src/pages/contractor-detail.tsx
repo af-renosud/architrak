@@ -3,11 +3,13 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { Building2, ArrowLeft, Mail, Phone, MapPin, FileText, Receipt } from "lucide-react";
+import { Building2, ArrowLeft, Mail, Phone, MapPin, FileText, Receipt, Shield, Globe, User, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link, useParams } from "wouter";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Contractor, Devis, Invoice, Project } from "@shared/schema";
 
 function formatCurrency(value: number): string {
@@ -17,6 +19,7 @@ function formatCurrency(value: number): string {
 export default function ContractorDetail() {
   const params = useParams<{ id: string }>();
   const contractorId = params.id;
+  const { toast } = useToast();
 
   const { data: contractor, isLoading } = useQuery<Contractor>({
     queryKey: ["/api/contractors", contractorId],
@@ -125,6 +128,42 @@ export default function ContractorDetail() {
                   <p className="text-[12px] text-foreground mt-1" data-testid="text-default-tva">{contractor.defaultTvaRate}%</p>
                 </div>
               )}
+              {(contractor as any).contactName && (
+                <div className="pt-3 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
+                  <TechnicalLabel>Contact</TechnicalLabel>
+                  <div className="flex items-center gap-2 mt-1">
+                    <User size={12} className="text-muted-foreground" />
+                    <span className="text-[12px] text-foreground" data-testid="text-contact-name">
+                      {(contractor as any).contactName}
+                      {(contractor as any).contactJobTitle && ` — ${(contractor as any).contactJobTitle}`}
+                    </span>
+                  </div>
+                  {(contractor as any).contactMobile && (
+                    <div className="flex items-center gap-2 mt-1">
+                      <Phone size={12} className="text-muted-foreground" />
+                      <span className="text-[12px] text-foreground">{(contractor as any).contactMobile}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+              {(contractor as any).town && (
+                <div className="pt-3 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
+                  <TechnicalLabel>Location</TechnicalLabel>
+                  <p className="text-[12px] text-foreground mt-1">
+                    {(contractor as any).town}{(contractor as any).postcode ? ` (${(contractor as any).postcode})` : ""}
+                  </p>
+                </div>
+              )}
+              {(contractor as any).website && (
+                <div className="pt-3 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
+                  <div className="flex items-center gap-2">
+                    <Globe size={12} className="text-muted-foreground" />
+                    <a href={(contractor as any).website} target="_blank" rel="noopener noreferrer" className="text-[12px] text-blue-600 hover:underline" data-testid="link-website">
+                      {(contractor as any).website}
+                    </a>
+                  </div>
+                </div>
+              )}
               {contractor.notes && (
                 <div className="pt-3 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                   <TechnicalLabel>Notes</TechnicalLabel>
@@ -133,6 +172,52 @@ export default function ContractorDetail() {
               )}
             </div>
           </LuxuryCard>
+
+          {((contractor as any).insuranceStatus || (contractor as any).decennaleInsurer || (contractor as any).rcProInsurer) && (
+            <LuxuryCard data-testid="card-insurance" className="md:col-span-1">
+              <div className="flex items-center gap-2 mb-4">
+                <Shield size={14} className="text-muted-foreground" />
+                <h3 className="text-[14px] font-black uppercase tracking-tight text-foreground">
+                  Insurance
+                </h3>
+                {(contractor as any).insuranceStatus && (
+                  <StatusBadge status={(contractor as any).insuranceStatus} size="sm" />
+                )}
+              </div>
+              <div className="space-y-4">
+                {(contractor as any).decennaleInsurer && (
+                  <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
+                    <TechnicalLabel>Décennale</TechnicalLabel>
+                    <p className="text-[12px] text-foreground mt-1">{(contractor as any).decennaleInsurer}</p>
+                    {(contractor as any).decennalePolicyNumber && (
+                      <p className="text-[10px] text-muted-foreground mt-0.5">Policy: {(contractor as any).decennalePolicyNumber}</p>
+                    )}
+                    {(contractor as any).decennaleEndDate && (
+                      <p className="text-[10px] text-muted-foreground">Expires: {(contractor as any).decennaleEndDate}</p>
+                    )}
+                  </div>
+                )}
+                {(contractor as any).rcProInsurer && (
+                  <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
+                    <TechnicalLabel>RC Pro</TechnicalLabel>
+                    <p className="text-[12px] text-foreground mt-1">{(contractor as any).rcProInsurer}</p>
+                    {(contractor as any).rcProPolicyNumber && (
+                      <p className="text-[10px] text-muted-foreground mt-0.5">Policy: {(contractor as any).rcProPolicyNumber}</p>
+                    )}
+                    {(contractor as any).rcProEndDate && (
+                      <p className="text-[10px] text-muted-foreground">Expires: {(contractor as any).rcProEndDate}</p>
+                    )}
+                  </div>
+                )}
+                {(contractor as any).specialConditions && (
+                  <div>
+                    <TechnicalLabel>Special Conditions</TechnicalLabel>
+                    <p className="text-[12px] text-muted-foreground mt-1">{(contractor as any).specialConditions}</p>
+                  </div>
+                )}
+              </div>
+            </LuxuryCard>
+          )}
 
           <div className="md:col-span-2 space-y-4">
             <div className="grid grid-cols-2 gap-4">

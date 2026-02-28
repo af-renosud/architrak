@@ -12,6 +12,8 @@ import {
   Receipt,
   Award,
   Clock,
+  Mail,
+  MessageSquare,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -66,10 +68,24 @@ interface DashboardData {
   urgentItems: UrgentItem[];
 }
 
+interface EmailDocSummary {
+  id: number;
+  extractionStatus: string;
+  documentType: string;
+  attachmentFileName: string | null;
+}
+
 export default function Dashboard() {
   const { data, isLoading } = useQuery<DashboardData>({
     queryKey: ["/api/dashboard/summary"],
   });
+
+  const { data: emailDocs } = useQuery<EmailDocSummary[]>({
+    queryKey: ["/api/email-documents"],
+  });
+
+  const pendingDocs = emailDocs?.filter(d => d.extractionStatus === "pending" || d.extractionStatus === "needs_review") ?? [];
+  const queuedCommsCount = 0;
 
   return (
     <AppLayout>
@@ -147,6 +163,26 @@ export default function Dashboard() {
             </>
           )}
         </div>
+
+        {pendingDocs.length > 0 && (
+          <Link href="/documents">
+            <LuxuryCard className="cursor-pointer hover-elevate transition-all" data-testid="card-pending-docs">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-xl bg-amber-50 dark:bg-amber-950/30">
+                  <Mail size={16} className="text-amber-600" />
+                </div>
+                <div>
+                  <p className="text-[12px] font-semibold text-foreground" data-testid="text-pending-docs-count">
+                    {pendingDocs.length} document{pendingDocs.length > 1 ? "s" : ""} pending review
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">
+                    Email documents extracted from Gmail need your attention
+                  </p>
+                </div>
+              </div>
+            </LuxuryCard>
+          </Link>
+        )}
 
         {data && data.urgentItems.length > 0 && (
           <>

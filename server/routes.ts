@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
+import multer from "multer";
 import { storage } from "./storage";
 import {
   insertProjectSchema,
@@ -15,10 +16,21 @@ import {
   insertCertificatSchema,
   insertFeeSchema,
   insertFeeEntrySchema,
+  insertProjectCommunicationSchema,
+  insertPaymentReminderSchema,
+  insertClientPaymentEvidenceSchema,
 } from "@shared/schema";
 import { isArchidocConfigured, checkConnection } from "./archidoc/sync-client";
 import { fullSync, incrementalSync, getLastSyncStatus } from "./archidoc/sync-service";
 import { trackProject, refreshProject } from "./archidoc/import-service";
+import { getGmailMonitorStatus, pollInbox } from "./gmail/monitor";
+import { processEmailDocument } from "./gmail/document-parser";
+import { uploadDocument } from "./storage/object-storage";
+import { getDocumentStream } from "./storage/object-storage";
+import { sendCertificat, sendCommunication, sendPaymentChase } from "./communications/email-sender";
+import { scheduleReminders } from "./communications/payment-scheduler";
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 export async function registerRoutes(
   httpServer: Server,
@@ -703,6 +715,223 @@ export async function registerRoutes(
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ message });
+    }
+  });
+
+  // ── Gmail Monitoring ──
+
+  app.get("/api/gmail/status", async (_req, res) => {
+    res.json(getGmailMonitorStatus());
+  });
+
+  app.post("/api/gmail/poll", async (_req, res) => {
+    try {
+      const result = await pollInbox();
+      res.json(result);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Poll failed: ${message}` });
+    }
+  });
+
+  // ── Email Documents ──
+
+  app.get("/api/email-documents", async (req, res) => {
+    const filters: any = {};
+    if (req.query.projectId) filters.projectId = Number(req.query.projectId);
+    if (req.query.status) filters.status = req.query.status as string;
+    if (req.query.documentType) filters.documentType = req.query.documentType as string;
+    const docs = await storage.getEmailDocuments(filters);
+    res.json(docs);
+  });
+
+  app.get("/api/email-documents/:id", async (req, res) => {
+    const doc = await storage.getEmailDocument(Number(req.params.id));
+    if (!doc) return res.status(404).json({ message: "Document not found" });
+    res.json(doc);
+  });
+
+  app.patch("/api/email-documents/:id", async (req, res) => {
+    const doc = await storage.updateEmailDocument(Number(req.params.id), req.body);
+    if (!doc) return res.status(404).json({ message: "Document not found" });
+    res.json(doc);
+  });
+
+  app.post("/api/email-documents/:id/process", async (req, res) => {
+    try {
+      await processEmailDocument(Number(req.params.id));
+      const updated = await storage.getEmailDocument(Number(req.params.id));
+      res.json(updated);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Processing failed: ${message}` });
+    }
+  });
+
+  // ── Project Documents ──
+
+  app.get("/api/projects/:projectId/documents", async (req, res) => {
+    const docs = await storage.getProjectDocuments(Number(req.params.projectId));
+    res.json(docs);
+  });
+
+  app.post("/api/projects/:projectId/documents/upload", upload.single("file"), async (req, res) => {
+    try {
+      const projectId = Number(req.params.projectId);
+      const file = req.file;
+      if (!file) return res.status(400).json({ message: "No file provided" });
+
+      const storageKey = await uploadDocument(projectId, file.originalname, file.buffer, file.mimetype);
+      const doc = await storage.createProjectDocument({
+        projectId,
+        fileName: file.originalname,
+        storageKey,
+        documentType: req.body.documentType || "other",
+        uploadedBy: req.body.uploadedBy || "manual",
+        description: req.body.description || null,
+      });
+      res.status(201).json(doc);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Upload failed: ${message}` });
+    }
+  });
+
+  app.get("/api/documents/:id/download", async (req, res) => {
+    try {
+      const doc = await storage.getProjectDocument(Number(req.params.id));
+      if (!doc) return res.status(404).json({ message: "Document not found" });
+
+      const { stream, contentType, size } = await getDocumentStream(doc.storageKey);
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Content-Disposition", `attachment; filename="${doc.fileName}"`);
+      if (size) res.setHeader("Content-Length", String(size));
+      stream.pipe(res);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Download failed: ${message}` });
+    }
+  });
+
+  app.get("/api/email-documents/:id/download", async (req, res) => {
+    try {
+      const doc = await storage.getEmailDocument(Number(req.params.id));
+      if (!doc || !doc.storageKey) return res.status(404).json({ message: "Document not found" });
+
+      const { stream, contentType, size } = await getDocumentStream(doc.storageKey);
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Content-Disposition", `attachment; filename="${doc.attachmentFileName || "document.pdf"}"`);
+      if (size) res.setHeader("Content-Length", String(size));
+      stream.pipe(res);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Download failed: ${message}` });
+    }
+  });
+
+  // ── Communications ──
+
+  app.get("/api/communications", async (_req, res) => {
+    const comms = await storage.getAllCommunications();
+    res.json(comms);
+  });
+
+  app.get("/api/projects/:projectId/communications", async (req, res) => {
+    const comms = await storage.getProjectCommunications(Number(req.params.projectId));
+    res.json(comms);
+  });
+
+  app.post("/api/projects/:projectId/communications", async (req, res) => {
+    const data = { ...req.body, projectId: Number(req.params.projectId) };
+    const parsed = insertProjectCommunicationSchema.safeParse(data);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid data", errors: parsed.error.flatten() });
+    const comm = await storage.createProjectCommunication(parsed.data);
+    res.status(201).json(comm);
+  });
+
+  app.post("/api/communications/:id/send", async (req, res) => {
+    try {
+      await sendCommunication(Number(req.params.id));
+      const updated = await storage.getProjectCommunication(Number(req.params.id));
+      res.json(updated);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Send failed: ${message}` });
+    }
+  });
+
+  app.post("/api/projects/:projectId/certificats/:certId/send", async (req, res) => {
+    try {
+      const commId = await sendCertificat(Number(req.params.certId));
+      const comm = await storage.getProjectCommunication(commId);
+      res.json(comm);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Failed to queue certificat: ${message}` });
+    }
+  });
+
+  // ── Payment Reminders ──
+
+  app.get("/api/projects/:projectId/reminders", async (req, res) => {
+    const reminders = await storage.getPaymentReminders(Number(req.params.projectId));
+    res.json(reminders);
+  });
+
+  app.post("/api/certificats/:certId/schedule-reminders", async (req, res) => {
+    try {
+      const { recipientEmail } = req.body;
+      await scheduleReminders(Number(req.params.certId), recipientEmail || "");
+      const certificat = await storage.getCertificat(Number(req.params.certId));
+      const reminders = certificat ? await storage.getPaymentReminders(certificat.projectId) : [];
+      res.json(reminders);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Scheduling failed: ${message}` });
+    }
+  });
+
+  app.post("/api/reminders/:id/cancel", async (req, res) => {
+    const reminder = await storage.updatePaymentReminder(Number(req.params.id), { status: "cancelled" });
+    if (!reminder) return res.status(404).json({ message: "Reminder not found" });
+    res.json(reminder);
+  });
+
+  app.patch("/api/reminders/:id", async (req, res) => {
+    const reminder = await storage.updatePaymentReminder(Number(req.params.id), req.body);
+    if (!reminder) return res.status(404).json({ message: "Reminder not found" });
+    res.json(reminder);
+  });
+
+  // ── Client Payment Evidence ──
+
+  app.get("/api/projects/:projectId/payment-evidence", async (req, res) => {
+    const evidence = await storage.getClientPaymentEvidence(Number(req.params.projectId));
+    res.json(evidence);
+  });
+
+  app.post("/api/client-evidence/upload", upload.single("file"), async (req, res) => {
+    try {
+      const file = req.file;
+      if (!file) return res.status(400).json({ message: "No file provided" });
+
+      const projectId = Number(req.body.projectId);
+      if (!projectId) return res.status(400).json({ message: "Project ID required" });
+
+      const storageKey = await uploadDocument(projectId, file.originalname, file.buffer, file.mimetype);
+      const evidence = await storage.createClientPaymentEvidence({
+        projectId,
+        storageKey,
+        fileName: file.originalname,
+        uploadedByEmail: req.body.uploadedByEmail || null,
+        invoiceId: req.body.invoiceId ? Number(req.body.invoiceId) : null,
+        certificatId: req.body.certificatId ? Number(req.body.certificatId) : null,
+        notes: req.body.notes || null,
+      });
+      res.status(201).json(evidence);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Upload failed: ${message}` });
     }
   });
 

@@ -12,6 +12,8 @@ import ContractorDetail from "@/pages/contractor-detail";
 import FinancialTracking from "@/pages/financial-tracking";
 import CertificatsPage from "@/pages/certificats";
 import Fees from "@/pages/fees";
+import EmailDocuments from "@/pages/email-documents";
+import Communications from "@/pages/communications";
 
 function Router() {
   return (
@@ -24,6 +26,8 @@ function Router() {
       <Route path="/suivi-financier" component={FinancialTracking} />
       <Route path="/certificats" component={CertificatsPage} />
       <Route path="/honoraires" component={Fees} />
+      <Route path="/documents" component={EmailDocuments} />
+      <Route path="/communications" component={Communications} />
       <Route component={NotFound} />
     </Switch>
   );

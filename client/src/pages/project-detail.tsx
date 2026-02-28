@@ -4,7 +4,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { FolderOpen, ArrowLeft, MapPin, User, FileText, Layers, ScrollText, Award, Coins, BarChart3, Plus, Eye, ChevronRight, Pencil } from "lucide-react";
+import { FolderOpen, ArrowLeft, MapPin, User, FileText, Layers, ScrollText, Award, Coins, BarChart3, Plus, Eye, ChevronRight, Pencil, Upload, Download, ExternalLink, MessageSquare, Send, Clock, RefreshCw, FileCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -20,7 +20,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { insertCertificatSchema, insertFeeSchema, insertFeeEntrySchema, insertLotSchema, insertMarcheSchema } from "@shared/schema";
-import type { Project, Devis, Lot, Marche, Certificat, Fee, FeeEntry, Contractor, Invoice } from "@shared/schema";
+import type { Project, Devis, Lot, Marche, Certificat, Fee, FeeEntry, Contractor, Invoice, ProjectDocument, ProjectCommunication, PaymentReminder } from "@shared/schema";
 import { DevisTab } from "@/components/devis/DevisTab";
 import { z } from "zod";
 
@@ -141,6 +141,21 @@ export default function ProjectDetail() {
 
   const { data: financialSummary } = useQuery<FinancialSummary>({
     queryKey: ["/api/projects", projectId, "financial-summary"],
+    enabled: !!project,
+  });
+
+  const { data: projectDocuments } = useQuery<ProjectDocument[]>({
+    queryKey: ["/api/projects", projectId, "documents"],
+    enabled: !!project,
+  });
+
+  const { data: projectComms } = useQuery<ProjectCommunication[]>({
+    queryKey: ["/api/projects", projectId, "communications"],
+    enabled: !!project,
+  });
+
+  const { data: reminders } = useQuery<PaymentReminder[]>({
+    queryKey: ["/api/projects", projectId, "reminders"],
     enabled: !!project,
   });
 
@@ -307,6 +322,89 @@ export default function ProjectDetail() {
     },
   });
 
+  const uploadDocMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch(`/api/projects/${projectId}/documents/upload`, { method: "POST", body: formData });
+      if (!res.ok) throw new Error("Upload failed");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "documents"] });
+      toast({ title: "Document uploaded" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Upload failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const sendCertMutation = useMutation({
+    mutationFn: async (certId: number) => {
+      const res = await apiRequest("POST", `/api/projects/${projectId}/certificats/${certId}/send`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "communications"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "certificats"] });
+      toast({ title: "Certificat queued for sending" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const sendCommMutation = useMutation({
+    mutationFn: async (commId: number) => {
+      const res = await apiRequest("POST", `/api/communications/${commId}/send`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "communications"] });
+      toast({ title: "Communication sent" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Send failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const cancelReminderMutation = useMutation({
+    mutationFn: async (reminderId: number) => {
+      const res = await apiRequest("POST", `/api/reminders/${reminderId}/cancel`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "reminders"] });
+      toast({ title: "Reminder cancelled" });
+    },
+  });
+
+  const refreshProjectMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/projects/${projectId}/refresh`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/contractors"] });
+      toast({ title: "Project refreshed from ArchiDoc" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Refresh failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const handleFileUpload = () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".pdf,.jpg,.jpeg,.png,.doc,.docx,.xls,.xlsx";
+    input.onchange = (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (file) uploadDocMutation.mutate(file);
+    };
+    input.click();
+  };
+
   const getContractorName = (id: number) => contractors?.find((c) => c.id === id)?.name ?? `#${id}`;
 
   const recalcCert = () => {
@@ -443,7 +541,34 @@ export default function ProjectDetail() {
                   </div>
                 </>
               )}
+              {(project as any).siteAddress && (project as any).siteAddress !== project.clientAddress && (
+                <>
+                  <span className="text-[11px] text-muted-foreground">—</span>
+                  <div className="flex items-center gap-1">
+                    <MapPin size={10} className="text-emerald-600" />
+                    <span className="text-[11px] text-emerald-600">Site: {(project as any).siteAddress}</span>
+                  </div>
+                </>
+              )}
             </div>
+            {(project as any).lastSyncedAt && (
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-[9px] text-muted-foreground">
+                  Last synced: {new Date((project as any).lastSyncedAt).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-5 px-2"
+                  onClick={() => refreshProjectMutation.mutate()}
+                  disabled={refreshProjectMutation.isPending}
+                  data-testid="button-refresh-project"
+                >
+                  <RefreshCw size={10} className={refreshProjectMutation.isPending ? "animate-spin" : ""} />
+                  <span className="text-[8px] font-bold uppercase tracking-widest">Refresh</span>
+                </Button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -501,6 +626,14 @@ export default function ProjectDetail() {
             <TabsTrigger value="honoraires" data-testid="tab-honoraires">
               <Coins size={12} className="mr-1" />
               Honoraires
+            </TabsTrigger>
+            <TabsTrigger value="documents" data-testid="tab-documents">
+              <FileText size={12} className="mr-1" />
+              Documents {projectDocuments && projectDocuments.length > 0 ? `(${projectDocuments.length})` : ""}
+            </TabsTrigger>
+            <TabsTrigger value="communications" data-testid="tab-communications">
+              <MessageSquare size={12} className="mr-1" />
+              Communications {projectComms && projectComms.length > 0 ? `(${projectComms.length})` : ""}
             </TabsTrigger>
           </TabsList>
 
@@ -1318,6 +1451,204 @@ export default function ProjectDetail() {
                 </Form>
               </DialogContent>
             </Dialog>
+          </TabsContent>
+
+          <TabsContent value="documents">
+            <div className="space-y-4">
+              <div className="flex items-center justify-end">
+                <Button onClick={handleFileUpload} disabled={uploadDocMutation.isPending} data-testid="button-upload-doc">
+                  <Upload size={14} />
+                  <span className="text-[9px] font-bold uppercase tracking-widest">
+                    {uploadDocMutation.isPending ? "Uploading..." : "Upload Document"}
+                  </span>
+                </Button>
+              </div>
+              {projectDocuments && projectDocuments.length > 0 ? (
+                <div className="space-y-2">
+                  {projectDocuments.map((doc) => (
+                    <LuxuryCard key={doc.id} className="p-4" data-testid={`card-project-doc-${doc.id}`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-9 h-9 rounded-xl bg-blue-50 dark:bg-blue-950/30 flex items-center justify-center flex-shrink-0">
+                            <FileText size={14} className="text-blue-600" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-[12px] font-semibold text-foreground truncate" data-testid={`text-doc-name-${doc.id}`}>
+                              {doc.fileName}
+                            </p>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              {doc.documentType && (
+                                <span className="text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                                  {doc.documentType}
+                                </span>
+                              )}
+                              <span className="text-[10px] text-muted-foreground">
+                                {doc.sourceEmailDocumentId ? "Auto-extracted" : "Manual upload"}
+                              </span>
+                              {doc.createdAt && (
+                                <span className="text-[10px] text-muted-foreground">
+                                  {new Date(doc.createdAt).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" })}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <a href={doc.sourceEmailDocumentId ? `/api/email-documents/${doc.sourceEmailDocumentId}/download` : `/api/documents/${doc.id}/download`} download>
+                          <Button variant="ghost" size="icon" className="h-8 w-8" data-testid={`button-download-doc-${doc.id}`}>
+                            <Download size={14} />
+                          </Button>
+                        </a>
+                      </div>
+                    </LuxuryCard>
+                  ))}
+                </div>
+              ) : (
+                <LuxuryCard data-testid="card-empty-docs">
+                  <div className="text-center py-8">
+                    <FileText size={28} className="mx-auto mb-3 text-muted-foreground" />
+                    <p className="text-[12px] text-muted-foreground">No documents for this project yet.</p>
+                    <p className="text-[10px] text-muted-foreground mt-1">Upload documents manually or they will appear here when extracted from Gmail.</p>
+                  </div>
+                </LuxuryCard>
+              )}
+            </div>
+          </TabsContent>
+
+          <TabsContent value="communications">
+            <div className="space-y-6">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-3">
+                  <div className="text-center">
+                    <TechnicalLabel>Sent</TechnicalLabel>
+                    <p className="text-[16px] font-semibold text-emerald-600 mt-1" data-testid="text-comms-sent">
+                      {projectComms?.filter(c => c.status === "sent").length ?? 0}
+                    </p>
+                  </div>
+                  <div className="text-center">
+                    <TechnicalLabel>Queued</TechnicalLabel>
+                    <p className="text-[16px] font-semibold text-amber-600 mt-1" data-testid="text-comms-queued">
+                      {projectComms?.filter(c => c.status === "queued").length ?? 0}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  {certificatsList && certificatsList.filter(c => c.status === "ready").length > 0 && (
+                    <div className="flex gap-1">
+                      {certificatsList.filter(c => c.status === "ready").map(cert => (
+                        <Button
+                          key={cert.id}
+                          variant="outline"
+                          size="sm"
+                          onClick={() => sendCertMutation.mutate(cert.id)}
+                          disabled={sendCertMutation.isPending}
+                          data-testid={`button-send-cert-${cert.id}`}
+                        >
+                          <Send size={12} />
+                          <span className="text-[8px] font-bold uppercase tracking-widest">Send {cert.certificateRef}</span>
+                        </Button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {projectComms && projectComms.length > 0 ? (
+                <div className="space-y-3">
+                  <h3 className="text-[14px] font-black uppercase tracking-tight text-foreground">
+                    Communication History
+                  </h3>
+                  {projectComms.map((comm) => {
+                    const typeIcon = comm.type === "certificat_sent" ? FileCheck :
+                      comm.type === "payment_chase" ? Clock : MessageSquare;
+                    const TypeIcon = typeIcon;
+                    return (
+                      <LuxuryCard key={comm.id} className="p-4" data-testid={`card-comm-${comm.id}`}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-start gap-3 min-w-0">
+                            <div className="w-9 h-9 rounded-xl bg-indigo-50 dark:bg-indigo-950/30 flex items-center justify-center flex-shrink-0">
+                              <TypeIcon size={14} className="text-indigo-600" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <p className="text-[12px] font-semibold text-foreground truncate">{comm.subject}</p>
+                                <StatusBadge status={comm.status} size="sm" />
+                              </div>
+                              <p className="text-[10px] text-muted-foreground mt-0.5">
+                                To: {comm.recipientName || comm.recipientEmail || "—"}
+                                <span className="mx-1">·</span>
+                                {comm.sentAt ? new Date(comm.sentAt).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "Not sent"}
+                              </p>
+                              <span className="text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-300 mt-1 inline-block">
+                                {comm.type.replace(/_/g, " ")}
+                              </span>
+                            </div>
+                          </div>
+                          {(comm.status === "draft" || comm.status === "queued") && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => sendCommMutation.mutate(comm.id)}
+                              disabled={sendCommMutation.isPending}
+                              data-testid={`button-send-comm-${comm.id}`}
+                            >
+                              <Send size={12} />
+                              <span className="text-[8px] font-bold uppercase tracking-widest">Send</span>
+                            </Button>
+                          )}
+                        </div>
+                      </LuxuryCard>
+                    );
+                  })}
+                </div>
+              ) : (
+                <LuxuryCard data-testid="card-empty-comms">
+                  <div className="text-center py-8">
+                    <MessageSquare size={28} className="mx-auto mb-3 text-muted-foreground" />
+                    <p className="text-[12px] text-muted-foreground">No communications yet.</p>
+                    <p className="text-[10px] text-muted-foreground mt-1">Send Certificats and chase payments from this tab.</p>
+                  </div>
+                </LuxuryCard>
+              )}
+
+              {reminders && reminders.length > 0 && (
+                <div className="space-y-3">
+                  <h3 className="text-[14px] font-black uppercase tracking-tight text-foreground">
+                    Payment Reminders
+                  </h3>
+                  {reminders.map((rem) => (
+                    <LuxuryCard key={rem.id} className="p-4" data-testid={`card-reminder-${rem.id}`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-9 h-9 rounded-xl bg-amber-50 dark:bg-amber-950/30 flex items-center justify-center flex-shrink-0">
+                            <Clock size={14} className="text-amber-600" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="text-[12px] font-semibold text-foreground capitalize">{rem.reminderType} reminder</p>
+                              <StatusBadge status={rem.status} size="sm" />
+                            </div>
+                            <p className="text-[10px] text-muted-foreground mt-0.5">
+                              Scheduled: {rem.scheduledDate}
+                              {rem.recipientEmail && <span className="ml-1">· To: {rem.recipientEmail}</span>}
+                            </p>
+                          </div>
+                        </div>
+                        {rem.status === "scheduled" && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => cancelReminderMutation.mutate(rem.id)}
+                            data-testid={`button-cancel-reminder-${rem.id}`}
+                          >
+                            <span className="text-[8px] font-bold uppercase tracking-widest text-rose-500">Cancel</span>
+                          </Button>
+                        )}
+                      </div>
+                    </LuxuryCard>
+                  ))}
+                </div>
+              )}
+            </div>
           </TabsContent>
         </Tabs>
       </div>

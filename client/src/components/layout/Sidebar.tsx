@@ -10,6 +10,8 @@ import {
   HelpCircle,
   Bell,
   Search,
+  Mail,
+  MessageSquare,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -22,6 +24,8 @@ const navItems = [
   { path: "/suivi-financier", label: "Financial Tracking", icon: TrendingUp },
   { path: "/certificats", label: "Certificats", icon: FileCheck },
   { path: "/honoraires", label: "Honoraires", icon: Coins },
+  { path: "/documents", label: "Documents", icon: Mail },
+  { path: "/communications", label: "Communications", icon: MessageSquare },
 ];
 
 const toolButtons = [

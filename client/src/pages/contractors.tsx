@@ -3,7 +3,7 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { Building2, Plus, Mail, Phone, Pencil } from "lucide-react";
+import { Building2, Plus, Mail, Phone, Pencil, Shield, MapPin } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -313,7 +313,23 @@ export default function Contractors() {
                         <span className="text-[11px] text-muted-foreground">{contractor.phone}</span>
                       </div>
                     )}
+                    {(contractor as any).town && (
+                      <div className="flex items-center gap-2">
+                        <MapPin size={12} className="text-muted-foreground" />
+                        <span className="text-[11px] text-muted-foreground">
+                          {(contractor as any).town}{(contractor as any).postcode ? ` (${(contractor as any).postcode})` : ""}
+                        </span>
+                      </div>
+                    )}
                   </div>
+                  {(contractor as any).insuranceStatus && (
+                    <div className="mt-2 flex items-center gap-1.5">
+                      <Shield size={10} className={(contractor as any).insuranceStatus === "valid" ? "text-emerald-500" : "text-amber-500"} />
+                      <span className={`text-[9px] font-bold uppercase tracking-widest ${(contractor as any).insuranceStatus === "valid" ? "text-emerald-600" : "text-amber-600"}`}>
+                        {(contractor as any).insuranceStatus}
+                      </span>
+                    </div>
+                  )}
                 </LuxuryCard>
               </Link>
             ))}
