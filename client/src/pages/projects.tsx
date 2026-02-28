@@ -4,7 +4,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { FolderOpen, Plus } from "lucide-react";
+import { FolderOpen, Plus, RefreshCw, Search, MapPin, Users, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,20 +16,22 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { insertProjectSchema } from "@shared/schema";
-import type { Project } from "@shared/schema";
-import { z } from "zod";
+import type { Project, ArchidocProject } from "@shared/schema";
 
-const projectFormSchema = insertProjectSchema.extend({
-  name: z.string().min(1, "Name is required"),
-  code: z.string().min(1, "Code is required"),
-  clientName: z.string().min(1, "Client name is required"),
-});
+interface ArchidocProjectEnriched extends ArchidocProject {
+  isTracked: boolean;
+  architrakProjectId: number | null;
+}
 
-type ProjectFormValues = z.infer<typeof projectFormSchema>;
+interface ArchidocStatus {
+  configured: boolean;
+  connected: boolean;
+  connectionError?: string;
+  lastSync: string | null;
+  mirroredProjects: number;
+  mirroredContractors: number;
+  trackedProjects: number;
+}
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
@@ -37,48 +39,98 @@ function formatCurrency(value: number): string {
 
 export default function Projects() {
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [selectedArchidocId, setSelectedArchidocId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [tvaRate, setTvaRate] = useState("20.00");
+  const [feeType, setFeeType] = useState("percentage");
+  const [feePercentage, setFeePercentage] = useState("");
+  const [conceptionFee, setConceptionFee] = useState("");
+  const [planningFee, setPlanningFee] = useState("");
+  const [hasMarche, setHasMarche] = useState(false);
   const { toast } = useToast();
 
   const { data: projects, isLoading } = useQuery<Project[]>({
     queryKey: ["/api/projects"],
   });
 
-  const form = useForm<ProjectFormValues>({
-    resolver: zodResolver(projectFormSchema),
-    defaultValues: {
-      name: "",
-      code: "",
-      clientName: "",
-      clientAddress: "",
-      status: "active",
-      tvaRate: "20.00",
-      feePercentage: null,
-      feeType: "percentage",
-      conceptionFee: null,
-      planningFee: null,
-      hasMarche: false,
-    },
+  const { data: archidocStatus } = useQuery<ArchidocStatus>({
+    queryKey: ["/api/archidoc/status"],
   });
 
-  const createMutation = useMutation({
-    mutationFn: async (data: ProjectFormValues) => {
-      const res = await apiRequest("POST", "/api/projects", data);
+  const { data: archidocProjects, isLoading: loadingArchidoc } = useQuery<ArchidocProjectEnriched[]>({
+    queryKey: ["/api/archidoc/projects"],
+    enabled: dialogOpen,
+  });
+
+  const syncMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/archidoc/sync");
       return res.json();
     },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/archidoc/projects"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/archidoc/status"] });
+      toast({ title: "Sync complete", description: "ArchiDoc data has been refreshed." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Sync failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const trackMutation = useMutation({
+    mutationFn: async (archidocId: string) => {
+      const res = await apiRequest("POST", `/api/archidoc/track/${archidocId}`, {
+        tvaRate,
+        feeType,
+        feePercentage: feePercentage || null,
+        conceptionFee: conceptionFee || null,
+        planningFee: planningFee || null,
+        hasMarche,
+      });
+      return res.json();
+    },
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/archidoc/projects"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/archidoc/status"] });
       setDialogOpen(false);
-      form.reset();
-      toast({ title: "Project created successfully" });
+      resetForm();
+      toast({
+        title: "Project tracked",
+        description: `Project created with ${data.contractorsCreated} contractor(s) and ${data.lotsCreated} lot(s).`,
+      });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
-  const onSubmit = (data: ProjectFormValues) => {
-    createMutation.mutate(data);
-  };
+  function resetForm() {
+    setSelectedArchidocId(null);
+    setSearchQuery("");
+    setTvaRate("20.00");
+    setFeeType("percentage");
+    setFeePercentage("");
+    setConceptionFee("");
+    setPlanningFee("");
+    setHasMarche(false);
+  }
+
+  const selectedProject = archidocProjects?.find(p => p.archidocId === selectedArchidocId);
+  const filteredProjects = archidocProjects?.filter(p => {
+    if (p.isTracked) return false;
+    if (!searchQuery) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      p.projectName.toLowerCase().includes(q) ||
+      (p.clientName && p.clientName.toLowerCase().includes(q)) ||
+      (p.code && p.code.toLowerCase().includes(q)) ||
+      (p.address && p.address.toLowerCase().includes(q))
+    );
+  });
+
+  const clients = selectedProject?.clients as Array<{ name: string; email?: string; phone?: string; address?: string }> | null;
+  const customLots = selectedProject?.customLots as Array<{ lotNumber: number; descriptionFr: string; descriptionUk?: string }> | null;
 
   return (
     <AppLayout>
@@ -87,243 +139,266 @@ export default function Projects() {
           <h1 className="text-[22px] font-light uppercase tracking-tight text-foreground" data-testid="text-page-title">
             Projects
           </h1>
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-            <DialogTrigger asChild>
-              <Button data-testid="button-new-project">
-                <Plus size={14} />
-                <span className="text-[9px] font-bold uppercase tracking-widest">New Project</span>
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
-              <DialogHeader>
-                <DialogTitle className="text-[16px] font-black uppercase tracking-tight">
-                  New Project
-                </DialogTitle>
-              </DialogHeader>
-              <Form {...form}>
-                <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-                  <FormField
-                    control={form.control}
-                    name="name"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>
-                          <TechnicalLabel>Project Name</TechnicalLabel>
-                        </FormLabel>
-                        <FormControl>
-                          <Input {...field} data-testid="input-project-name" />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
+          <div className="flex items-center gap-3">
+            {archidocStatus && (
+              <div className="flex items-center gap-1.5" data-testid="archidoc-status">
+                <div className={`w-2 h-2 rounded-full ${archidocStatus.connected ? "bg-emerald-500" : archidocStatus.configured ? "bg-amber-500" : "bg-slate-300"}`} />
+                <span className="text-[9px] font-medium uppercase tracking-wider text-muted-foreground">
+                  {archidocStatus.connected ? "ArchiDoc Connected" : archidocStatus.configured ? "ArchiDoc Offline" : "ArchiDoc Not Configured"}
+                </span>
+              </div>
+            )}
+            <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
+              <DialogTrigger asChild>
+                <Button data-testid="button-new-project">
+                  <Plus size={14} />
+                  <span className="text-[9px] font-bold uppercase tracking-widest">New Project</span>
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle className="text-[16px] font-black uppercase tracking-tight">
+                    New Project
+                  </DialogTitle>
+                </DialogHeader>
+
+                {!selectedArchidocId ? (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="relative flex-1">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                        <Input
+                          value={searchQuery}
+                          onChange={(e) => setSearchQuery(e.target.value)}
+                          placeholder="Search ArchiDoc projects..."
+                          className="pl-9 text-[12px]"
+                          data-testid="input-search-archidoc"
+                        />
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => syncMutation.mutate()}
+                        disabled={syncMutation.isPending}
+                        data-testid="button-sync-archidoc"
+                      >
+                        <RefreshCw size={12} className={syncMutation.isPending ? "animate-spin" : ""} />
+                        <span className="text-[9px] font-bold uppercase tracking-widest">
+                          {syncMutation.isPending ? "Syncing..." : "Sync"}
+                        </span>
+                      </Button>
+                    </div>
+
+                    {archidocStatus?.lastSync && (
+                      <p className="text-[10px] text-muted-foreground">
+                        Last synced: {new Date(archidocStatus.lastSync).toLocaleString()}
+                      </p>
                     )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="code"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>
-                          <TechnicalLabel>Code</TechnicalLabel>
-                        </FormLabel>
-                        <FormControl>
-                          <Input {...field} placeholder="e.g. 1231" data-testid="input-project-code" />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="clientName"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>
-                          <TechnicalLabel>Client Name</TechnicalLabel>
-                        </FormLabel>
-                        <FormControl>
-                          <Input {...field} data-testid="input-client-name" />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="clientAddress"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>
-                          <TechnicalLabel>Client Address</TechnicalLabel>
-                        </FormLabel>
-                        <FormControl>
-                          <Input {...field} value={field.value ?? ""} data-testid="input-client-address" />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <div className="grid grid-cols-2 gap-4">
-                    <FormField
-                      control={form.control}
-                      name="status"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>
-                            <TechnicalLabel>Status</TechnicalLabel>
-                          </FormLabel>
-                          <Select onValueChange={field.onChange} defaultValue={field.value}>
-                            <FormControl>
-                              <SelectTrigger data-testid="select-status">
-                                <SelectValue />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              <SelectItem value="active">Active</SelectItem>
-                              <SelectItem value="completed">Completed</SelectItem>
-                              <SelectItem value="archived">Archived</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
-                      name="tvaRate"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>
-                            <TechnicalLabel>TVA Rate (%)</TechnicalLabel>
-                          </FormLabel>
-                          <FormControl>
-                            <Input {...field} type="number" step="0.01" data-testid="input-tva-rate" />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
+
+                    {loadingArchidoc ? (
+                      <div className="space-y-2">
+                        {Array.from({ length: 3 }).map((_, i) => (
+                          <div key={i} className="p-3 rounded-xl border border-border">
+                            <Skeleton className="h-4 w-40 mb-1" />
+                            <Skeleton className="h-3 w-32" />
+                          </div>
+                        ))}
+                      </div>
+                    ) : filteredProjects && filteredProjects.length > 0 ? (
+                      <div className="space-y-2 max-h-[400px] overflow-y-auto">
+                        {filteredProjects.map((ap) => (
+                          <button
+                            key={ap.archidocId}
+                            onClick={() => setSelectedArchidocId(ap.archidocId)}
+                            className="w-full text-left p-3 rounded-xl border border-border hover:border-[#0B2545] hover:bg-slate-50 transition-colors"
+                            data-testid={`button-select-project-${ap.archidocId}`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  {ap.code && (
+                                    <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">{ap.code}</span>
+                                  )}
+                                  <h4 className="text-[13px] font-semibold text-foreground truncate">{ap.projectName}</h4>
+                                </div>
+                                {ap.clientName && (
+                                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                                    <Users className="inline w-3 h-3 mr-1" />
+                                    {ap.clientName}
+                                  </p>
+                                )}
+                                {ap.address && (
+                                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                                    <MapPin className="inline w-3 h-3 mr-1" />
+                                    {ap.address}
+                                  </p>
+                                )}
+                              </div>
+                              {ap.status && (
+                                <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground whitespace-nowrap">
+                                  {ap.status}
+                                </span>
+                              )}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    ) : !loadingArchidoc && archidocProjects ? (
+                      <div className="text-center py-8">
+                        {archidocProjects.length === 0 ? (
+                          <div className="space-y-2">
+                            <AlertCircle className="w-8 h-8 text-muted-foreground mx-auto" />
+                            <p className="text-[12px] text-muted-foreground">
+                              No ArchiDoc projects found. Click "Sync" to fetch from ArchiDoc.
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="text-[12px] text-muted-foreground">
+                            {searchQuery ? "No matching projects found." : "All ArchiDoc projects are already tracked."}
+                          </p>
+                        )}
+                      </div>
+                    ) : null}
                   </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <FormField
-                      control={form.control}
-                      name="feeType"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>
-                            <TechnicalLabel>Honoraires Type</TechnicalLabel>
-                          </FormLabel>
-                          <Select onValueChange={field.onChange} defaultValue={field.value}>
-                            <FormControl>
-                              <SelectTrigger data-testid="select-fee-type">
-                                <SelectValue />
-                              </SelectTrigger>
-                            </FormControl>
+                ) : selectedProject ? (
+                  <div className="space-y-5">
+                    <button
+                      onClick={() => setSelectedArchidocId(null)}
+                      className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors"
+                      data-testid="button-back-to-list"
+                    >
+                      &larr; Back to project list
+                    </button>
+
+                    <div className="p-4 rounded-xl bg-slate-50 border border-border space-y-2">
+                      <div className="flex items-center gap-2">
+                        {selectedProject.code && (
+                          <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">{selectedProject.code}</span>
+                        )}
+                        <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                      </div>
+                      <h3 className="text-[15px] font-bold text-foreground">{selectedProject.projectName}</h3>
+                      {clients && clients.length > 0 && (
+                        <p className="text-[11px] text-muted-foreground">
+                          <Users className="inline w-3 h-3 mr-1" />
+                          {clients.map(c => c.name).join(", ")}
+                        </p>
+                      )}
+                      {selectedProject.address && (
+                        <p className="text-[11px] text-muted-foreground">
+                          <MapPin className="inline w-3 h-3 mr-1" />
+                          {selectedProject.address}
+                        </p>
+                      )}
+                      {customLots && customLots.length > 0 && (
+                        <div className="mt-2 pt-2 border-t border-border">
+                          <TechnicalLabel>Lots ({customLots.length})</TechnicalLabel>
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {customLots.map((lot, i) => (
+                              <span key={i} className="text-[9px] bg-white border border-border rounded px-1.5 py-0.5">
+                                Lot {lot.lotNumber}: {lot.descriptionFr}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-4">
+                      <TechnicalLabel>ArchiTrak Configuration</TechnicalLabel>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">TVA Rate (%)</Label>
+                          <Input
+                            value={tvaRate}
+                            onChange={(e) => setTvaRate(e.target.value)}
+                            type="number"
+                            step="0.01"
+                            className="mt-1"
+                            data-testid="input-tva-rate"
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">Honoraires Type</Label>
+                          <Select value={feeType} onValueChange={setFeeType}>
+                            <SelectTrigger className="mt-1" data-testid="select-fee-type">
+                              <SelectValue />
+                            </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="percentage">Percentage</SelectItem>
                               <SelectItem value="fixed">Fixed</SelectItem>
                             </SelectContent>
                           </Select>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
-                      name="feePercentage"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>
-                            <TechnicalLabel>Honoraires %</TechnicalLabel>
-                          </FormLabel>
-                          <FormControl>
-                            <Input
-                              {...field}
-                              value={field.value ?? ""}
-                              onChange={(e) => field.onChange(e.target.value || null)}
-                              type="number"
-                              step="0.01"
-                              data-testid="input-fee-percentage"
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <FormField
-                      control={form.control}
-                      name="conceptionFee"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>
-                            <TechnicalLabel>Conception Fee</TechnicalLabel>
-                          </FormLabel>
-                          <FormControl>
-                            <Input
-                              {...field}
-                              value={field.value ?? ""}
-                              onChange={(e) => field.onChange(e.target.value || null)}
-                              type="number"
-                              step="0.01"
-                              data-testid="input-conception-fee"
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
-                      name="planningFee"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>
-                            <TechnicalLabel>Planning Fee</TechnicalLabel>
-                          </FormLabel>
-                          <FormControl>
-                            <Input
-                              {...field}
-                              value={field.value ?? ""}
-                              onChange={(e) => field.onChange(e.target.value || null)}
-                              type="number"
-                              step="0.01"
-                              data-testid="input-planning-fee"
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-                  <FormField
-                    control={form.control}
-                    name="hasMarche"
-                    render={({ field }) => (
-                      <FormItem className="flex items-center gap-3">
-                        <FormControl>
-                          <Switch
-                            checked={field.value}
-                            onCheckedChange={field.onChange}
-                            data-testid="switch-has-marche"
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">Honoraires %</Label>
+                          <Input
+                            value={feePercentage}
+                            onChange={(e) => setFeePercentage(e.target.value)}
+                            type="number"
+                            step="0.01"
+                            className="mt-1"
+                            data-testid="input-fee-percentage"
                           />
-                        </FormControl>
-                        <FormLabel className="!mt-0">
-                          <TechnicalLabel>Marché de travaux</TechnicalLabel>
-                        </FormLabel>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <Button type="submit" className="w-full" disabled={createMutation.isPending} data-testid="button-submit-project">
-                    <span className="text-[9px] font-bold uppercase tracking-widest">
-                      {createMutation.isPending ? "Creating..." : "Create Project"}
-                    </span>
-                  </Button>
-                </form>
-              </Form>
-            </DialogContent>
-          </Dialog>
+                        </div>
+                        <div />
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">Conception Fee</Label>
+                          <Input
+                            value={conceptionFee}
+                            onChange={(e) => setConceptionFee(e.target.value)}
+                            type="number"
+                            step="0.01"
+                            className="mt-1"
+                            data-testid="input-conception-fee"
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">Planning Fee</Label>
+                          <Input
+                            value={planningFee}
+                            onChange={(e) => setPlanningFee(e.target.value)}
+                            type="number"
+                            step="0.01"
+                            className="mt-1"
+                            data-testid="input-planning-fee"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <Switch
+                          checked={hasMarche}
+                          onCheckedChange={setHasMarche}
+                          data-testid="switch-has-marche"
+                        />
+                        <Label className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">
+                          Marché de travaux
+                        </Label>
+                      </div>
+                    </div>
+
+                    <Button
+                      onClick={() => trackMutation.mutate(selectedArchidocId!)}
+                      className="w-full"
+                      disabled={trackMutation.isPending}
+                      data-testid="button-submit-project"
+                    >
+                      {trackMutation.isPending ? (
+                        <Loader2 size={14} className="animate-spin mr-2" />
+                      ) : null}
+                      <span className="text-[9px] font-bold uppercase tracking-widest">
+                        {trackMutation.isPending ? "Creating..." : "Create Project"}
+                      </span>
+                    </Button>
+                  </div>
+                ) : null}
+              </DialogContent>
+            </Dialog>
+          </div>
         </div>
 
         <SectionHeader
@@ -351,7 +426,7 @@ export default function Projects() {
         ) : (
           <LuxuryCard data-testid="card-empty-projects">
             <p className="text-[12px] text-muted-foreground text-center py-8">
-              No projects yet. Create your first project to get started.
+              No projects yet. Click "New Project" to import from ArchiDoc.
             </p>
           </LuxuryCard>
         )}
@@ -389,11 +464,24 @@ function ProjectCard({ project }: { project: Project }) {
               {project.name}
             </h3>
           </div>
-          <StatusBadge status={project.status} />
+          <div className="flex items-center gap-1.5">
+            {project.archidocId && (
+              <span className="text-[8px] font-bold uppercase tracking-wider text-emerald-600 bg-emerald-50 rounded px-1.5 py-0.5">
+                ArchiDoc
+              </span>
+            )}
+            <StatusBadge status={project.status} />
+          </div>
         </div>
-        <p className="text-[11px] text-muted-foreground mb-4" data-testid={`text-project-client-${project.id}`}>
+        <p className="text-[11px] text-muted-foreground mb-1" data-testid={`text-project-client-${project.id}`}>
           {project.clientName}
         </p>
+        {project.siteAddress && (
+          <p className="text-[10px] text-muted-foreground mb-4 flex items-center gap-1">
+            <MapPin className="w-3 h-3" />
+            {project.siteAddress}
+          </p>
+        )}
 
         {summary && contracted > 0 && (
           <div className="space-y-2 pt-3 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">

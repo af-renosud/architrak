@@ -1,8 +1,9 @@
 import { db } from "./db";
-import { eq, desc, and } from "drizzle-orm";
+import { eq, desc, and, inArray, isNotNull } from "drizzle-orm";
 import {
   projects, contractors, lots, marches, devis, devisLineItems,
   avenants, invoices, situations, situationLines, certificats, fees, feeEntries,
+  archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog,
   type Project, type InsertProject,
   type Contractor, type InsertContractor,
   type Lot, type InsertLot,
@@ -16,6 +17,7 @@ import {
   type Certificat, type InsertCertificat,
   type Fee, type InsertFee,
   type FeeEntry, type InsertFeeEntry,
+  type ArchidocProject, type ArchidocContractor, type ArchidocTrade, type ArchidocProposalFee, type ArchidocSyncLogEntry,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -87,6 +89,28 @@ export interface IStorage {
   getFeeEntriesByProject(projectId: number): Promise<FeeEntry[]>;
   createFeeEntry(data: InsertFeeEntry): Promise<FeeEntry>;
   updateFeeEntry(id: number, data: Partial<InsertFeeEntry>): Promise<FeeEntry | undefined>;
+
+  getProjectByArchidocId(archidocId: string): Promise<Project | undefined>;
+  getContractorByArchidocId(archidocId: string): Promise<Contractor | undefined>;
+  getTrackedArchidocProjectIds(): Promise<string[]>;
+
+  getArchidocProjects(): Promise<ArchidocProject[]>;
+  getArchidocProject(archidocId: string): Promise<ArchidocProject | undefined>;
+  upsertArchidocProject(data: Omit<ArchidocProject, "syncedAt">): Promise<ArchidocProject>;
+
+  getArchidocContractors(): Promise<ArchidocContractor[]>;
+  getArchidocContractor(archidocId: string): Promise<ArchidocContractor | undefined>;
+  upsertArchidocContractor(data: Omit<ArchidocContractor, "syncedAt">): Promise<ArchidocContractor>;
+
+  getArchidocTrades(): Promise<ArchidocTrade[]>;
+  upsertArchidocTrade(data: Omit<ArchidocTrade, "syncedAt">): Promise<ArchidocTrade>;
+
+  getArchidocProposalFees(archidocProjectId: string): Promise<ArchidocProposalFee[]>;
+  upsertArchidocProposalFee(data: Omit<ArchidocProposalFee, "id" | "syncedAt">): Promise<ArchidocProposalFee>;
+
+  createSyncLogEntry(data: { syncType: string; status: string; errorMessage?: string }): Promise<ArchidocSyncLogEntry>;
+  updateSyncLogEntry(id: number, data: Partial<{ status: string; completedAt: Date; recordsUpdated: number; errorMessage: string }>): Promise<ArchidocSyncLogEntry | undefined>;
+  getRecentSyncLogs(limit: number): Promise<ArchidocSyncLogEntry[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -347,6 +371,130 @@ export class DatabaseStorage implements IStorage {
   async updateFeeEntry(id: number, data: Partial<InsertFeeEntry>): Promise<FeeEntry | undefined> {
     const [entry] = await db.update(feeEntries).set(data).where(eq(feeEntries.id, id)).returning();
     return entry;
+  }
+
+  async getProjectByArchidocId(archidocId: string): Promise<Project | undefined> {
+    const [project] = await db.select().from(projects).where(eq(projects.archidocId, archidocId));
+    return project;
+  }
+
+  async getContractorByArchidocId(archidocId: string): Promise<Contractor | undefined> {
+    const [contractor] = await db.select().from(contractors).where(eq(contractors.archidocId, archidocId));
+    return contractor;
+  }
+
+  async getTrackedArchidocProjectIds(): Promise<string[]> {
+    const tracked = await db
+      .select({ archidocId: projects.archidocId })
+      .from(projects)
+      .where(isNotNull(projects.archidocId));
+    return tracked
+      .map(p => p.archidocId)
+      .filter((id): id is string => id !== null && id !== undefined);
+  }
+
+  async getArchidocProjects(): Promise<ArchidocProject[]> {
+    return db.select().from(archidocProjects).orderBy(archidocProjects.projectName);
+  }
+
+  async getArchidocProject(archidocId: string): Promise<ArchidocProject | undefined> {
+    const [project] = await db.select().from(archidocProjects).where(eq(archidocProjects.archidocId, archidocId));
+    return project;
+  }
+
+  async upsertArchidocProject(data: Omit<ArchidocProject, "syncedAt">): Promise<ArchidocProject> {
+    const [result] = await db
+      .insert(archidocProjects)
+      .values({ ...data, syncedAt: new Date() })
+      .onConflictDoUpdate({
+        target: archidocProjects.archidocId,
+        set: { ...data, syncedAt: new Date() },
+      })
+      .returning();
+    return result;
+  }
+
+  async getArchidocContractors(): Promise<ArchidocContractor[]> {
+    return db.select().from(archidocContractors).orderBy(archidocContractors.name);
+  }
+
+  async getArchidocContractor(archidocId: string): Promise<ArchidocContractor | undefined> {
+    const [contractor] = await db.select().from(archidocContractors).where(eq(archidocContractors.archidocId, archidocId));
+    return contractor;
+  }
+
+  async upsertArchidocContractor(data: Omit<ArchidocContractor, "syncedAt">): Promise<ArchidocContractor> {
+    const [result] = await db
+      .insert(archidocContractors)
+      .values({ ...data, syncedAt: new Date() })
+      .onConflictDoUpdate({
+        target: archidocContractors.archidocId,
+        set: { ...data, syncedAt: new Date() },
+      })
+      .returning();
+    return result;
+  }
+
+  async getArchidocTrades(): Promise<ArchidocTrade[]> {
+    return db.select().from(archidocTrades).orderBy(archidocTrades.sortOrder);
+  }
+
+  async upsertArchidocTrade(data: Omit<ArchidocTrade, "syncedAt">): Promise<ArchidocTrade> {
+    const [result] = await db
+      .insert(archidocTrades)
+      .values({ ...data, syncedAt: new Date() })
+      .onConflictDoUpdate({
+        target: archidocTrades.archidocId,
+        set: { ...data, syncedAt: new Date() },
+      })
+      .returning();
+    return result;
+  }
+
+  async getArchidocProposalFees(archidocProjectId: string): Promise<ArchidocProposalFee[]> {
+    return db.select().from(archidocProposalFees).where(eq(archidocProposalFees.archidocProjectId, archidocProjectId));
+  }
+
+  async upsertArchidocProposalFee(data: Omit<ArchidocProposalFee, "id" | "syncedAt">): Promise<ArchidocProposalFee> {
+    const existing = await db.select().from(archidocProposalFees).where(eq(archidocProposalFees.archidocProjectId, data.archidocProjectId));
+    if (existing.length > 0) {
+      const [result] = await db
+        .update(archidocProposalFees)
+        .set({ ...data, syncedAt: new Date() })
+        .where(eq(archidocProposalFees.archidocProjectId, data.archidocProjectId))
+        .returning();
+      return result;
+    }
+    const [result] = await db
+      .insert(archidocProposalFees)
+      .values({ ...data, syncedAt: new Date() })
+      .returning();
+    return result;
+  }
+
+  async createSyncLogEntry(data: { syncType: string; status: string; errorMessage?: string }): Promise<ArchidocSyncLogEntry> {
+    const [entry] = await db
+      .insert(archidocSyncLog)
+      .values({
+        syncType: data.syncType,
+        status: data.status,
+        errorMessage: data.errorMessage,
+      })
+      .returning();
+    return entry;
+  }
+
+  async updateSyncLogEntry(id: number, data: Partial<{ status: string; completedAt: Date; recordsUpdated: number; errorMessage: string }>): Promise<ArchidocSyncLogEntry | undefined> {
+    const [entry] = await db
+      .update(archidocSyncLog)
+      .set(data)
+      .where(eq(archidocSyncLog.id, id))
+      .returning();
+    return entry;
+  }
+
+  async getRecentSyncLogs(limit: number): Promise<ArchidocSyncLogEntry[]> {
+    return db.select().from(archidocSyncLog).orderBy(desc(archidocSyncLog.startedAt)).limit(limit);
   }
 }
 

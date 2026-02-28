@@ -20,6 +20,7 @@ export const projects = pgTable("projects", {
   code: text("code").notNull(),
   clientName: text("client_name").notNull(),
   clientAddress: text("client_address"),
+  siteAddress: text("site_address"),
   status: text("status").notNull().default("active"),
   tvaRate: numeric("tva_rate", { precision: 5, scale: 2 }).notNull().default("20.00"),
   feePercentage: numeric("fee_percentage", { precision: 5, scale: 2 }),
@@ -27,6 +28,9 @@ export const projects = pgTable("projects", {
   conceptionFee: numeric("conception_fee", { precision: 12, scale: 2 }),
   planningFee: numeric("planning_fee", { precision: 12, scale: 2 }),
   hasMarche: boolean("has_marche").notNull().default(false),
+  archidocId: varchar("archidoc_id", { length: 255 }),
+  archidocClients: jsonb("archidoc_clients"),
+  lastSyncedAt: timestamp("last_synced_at"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
@@ -40,6 +44,21 @@ export const contractors = pgTable("contractors", {
   phone: text("phone"),
   defaultTvaRate: numeric("default_tva_rate", { precision: 5, scale: 2 }).default("20.00"),
   notes: text("notes"),
+  archidocId: varchar("archidoc_id", { length: 255 }),
+  contactName: text("contact_name"),
+  contactJobTitle: text("contact_job_title"),
+  contactMobile: text("contact_mobile"),
+  town: text("town"),
+  postcode: text("postcode"),
+  website: text("website"),
+  insuranceStatus: text("insurance_status"),
+  decennaleInsurer: text("decennale_insurer"),
+  decennalePolicyNumber: text("decennale_policy_number"),
+  decennaleEndDate: date("decennale_end_date"),
+  rcProInsurer: text("rc_pro_insurer"),
+  rcProPolicyNumber: text("rc_pro_policy_number"),
+  rcProEndDate: date("rc_pro_end_date"),
+  specialConditions: text("special_conditions"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
@@ -210,6 +229,79 @@ export const feeEntries = pgTable("fee_entries", {
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
+export const archidocProjects = pgTable("archidoc_projects", {
+  archidocId: varchar("archidoc_id", { length: 255 }).primaryKey(),
+  projectName: text("project_name").notNull(),
+  code: text("code"),
+  clientName: text("client_name"),
+  address: text("address"),
+  status: text("status"),
+  clients: jsonb("clients"),
+  lotContractors: jsonb("lot_contractors"),
+  customLots: jsonb("custom_lots"),
+  actors: jsonb("actors"),
+  isDeleted: boolean("is_deleted").default(false),
+  archidocUpdatedAt: timestamp("archidoc_updated_at"),
+  syncedAt: timestamp("synced_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export const archidocContractors = pgTable("archidoc_contractors", {
+  archidocId: varchar("archidoc_id", { length: 255 }).primaryKey(),
+  name: text("name").notNull(),
+  siret: text("siret"),
+  address1: text("address1"),
+  address2: text("address2"),
+  town: text("town"),
+  postcode: text("postcode"),
+  officePhone: text("office_phone"),
+  website: text("website"),
+  tradeIds: jsonb("trade_ids"),
+  insuranceStatus: text("insurance_status"),
+  decennaleInsurer: text("decennale_insurer"),
+  decennalePolicyNumber: text("decennale_policy_number"),
+  decennaleEndDate: text("decennale_end_date"),
+  rcProInsurer: text("rc_pro_insurer"),
+  rcProPolicyNumber: text("rc_pro_policy_number"),
+  rcProEndDate: text("rc_pro_end_date"),
+  specialConditions: text("special_conditions"),
+  contacts: jsonb("contacts"),
+  archidocUpdatedAt: timestamp("archidoc_updated_at"),
+  syncedAt: timestamp("synced_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export const archidocTrades = pgTable("archidoc_trades", {
+  archidocId: varchar("archidoc_id", { length: 255 }).primaryKey(),
+  label: text("label").notNull(),
+  description: text("description"),
+  category: text("category"),
+  sortOrder: integer("sort_order"),
+  syncedAt: timestamp("synced_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export const archidocProposalFees = pgTable("archidoc_proposal_fees", {
+  id: serial("id").primaryKey(),
+  archidocProjectId: varchar("archidoc_project_id", { length: 255 }).notNull(),
+  proServiceHt: numeric("pro_service_ht", { precision: 12, scale: 2 }),
+  proServiceTva: numeric("pro_service_tva", { precision: 12, scale: 2 }),
+  proServiceTtc: numeric("pro_service_ttc", { precision: 12, scale: 2 }),
+  planningHt: numeric("planning_ht", { precision: 12, scale: 2 }),
+  planningTva: numeric("planning_tva", { precision: 12, scale: 2 }),
+  planningTtc: numeric("planning_ttc", { precision: 12, scale: 2 }),
+  pmPercentage: numeric("pm_percentage", { precision: 5, scale: 2 }),
+  pmNote: text("pm_note"),
+  syncedAt: timestamp("synced_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export const archidocSyncLog = pgTable("archidoc_sync_log", {
+  id: serial("id").primaryKey(),
+  syncType: text("sync_type").notNull(),
+  status: text("status").notNull(),
+  startedAt: timestamp("started_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  completedAt: timestamp("completed_at"),
+  recordsUpdated: integer("records_updated").default(0),
+  errorMessage: text("error_message"),
+});
+
 export { conversations, messages } from "./models/chat";
 
 export const insertProjectSchema = createInsertSchema(projects).omit({
@@ -303,3 +395,9 @@ export type Fee = typeof fees.$inferSelect;
 export type InsertFee = z.infer<typeof insertFeeSchema>;
 export type FeeEntry = typeof feeEntries.$inferSelect;
 export type InsertFeeEntry = z.infer<typeof insertFeeEntrySchema>;
+
+export type ArchidocProject = typeof archidocProjects.$inferSelect;
+export type ArchidocContractor = typeof archidocContractors.$inferSelect;
+export type ArchidocTrade = typeof archidocTrades.$inferSelect;
+export type ArchidocProposalFee = typeof archidocProposalFees.$inferSelect;
+export type ArchidocSyncLogEntry = typeof archidocSyncLog.$inferSelect;
