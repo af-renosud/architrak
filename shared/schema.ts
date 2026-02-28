@@ -102,6 +102,8 @@ export const devis = pgTable("devis", {
   amountTtc: numeric("amount_ttc", { precision: 12, scale: 2 }).notNull(),
   invoicingMode: text("invoicing_mode").notNull().default("mode_a"),
   status: text("status").notNull().default("pending"),
+  signOffStage: text("sign_off_stage").notNull().default("received"),
+  voidReason: text("void_reason"),
   dateSent: date("date_sent"),
   dateSigned: date("date_signed"),
   pvmvRef: text("pvmv_ref"),

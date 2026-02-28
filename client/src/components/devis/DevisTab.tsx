@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Receipt, Upload, FileUp, Loader2, ExternalLink, Check } from "lucide-react";
+import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Receipt, Upload, FileUp, Loader2, ExternalLink, Check, Ban } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -163,7 +163,7 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
             <div key={d.id}>
               <LuxuryCard data-testid={`card-devis-${d.id}`}>
                 <div
-                  className="flex items-center justify-between gap-3 flex-wrap cursor-pointer"
+                  className={`flex items-center justify-between gap-3 flex-wrap cursor-pointer ${d.status === "void" ? "opacity-50" : ""}`}
                   onClick={() => setExpandedDevis(expandedDevis === d.id ? null : d.id)}
                   data-testid={`row-devis-toggle-${d.id}`}
                 >
@@ -450,6 +450,20 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
     },
   });
 
+  const updateDevisMutation = useMutation({
+    mutationFn: async (data: Record<string, string | null>) => {
+      const res = await apiRequest("PATCH", `/api/devis/${devis.id}`, data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
+    },
+  });
+
+  const [voidDialogOpen, setVoidDialogOpen] = useState(false);
+  const [voidReason, setVoidReason] = useState("");
+
   const recalcInvoiceTtc = () => {
     const ht = parseFloat(invoiceForm.watch("amountHt") || "0");
     const tva = ht * parseFloat(devis.tvaRate) / 100;
@@ -468,8 +482,88 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
     lineItemForm.setValue("totalHt", (qty * price).toFixed(2));
   };
 
+  const isVoid = devis.status === "void";
+  const SIGN_OFF_STAGES = [
+    { key: "received", label: "Received" },
+    { key: "checked_internal", label: "Checked Internally" },
+    { key: "approved_for_signing", label: "Approved for Signing" },
+    { key: "sent_to_client", label: "Sent to Client" },
+    { key: "client_signed_off", label: "Client Signed Off" },
+  ];
+  const currentStageIndex = SIGN_OFF_STAGES.findIndex(s => s.key === devis.signOffStage);
+
   return (
-    <div className="ml-4 mt-1 mb-3 border-l-2 border-[rgba(0,0,0,0.08)] pl-4 space-y-4" data-testid={`detail-devis-${devis.id}`}>
+    <div className={`ml-4 mt-1 mb-3 border-l-2 border-[rgba(0,0,0,0.08)] pl-4 space-y-4 ${isVoid ? "opacity-50" : ""}`} data-testid={`detail-devis-${devis.id}`}>
+      {isVoid && (
+        <div className="flex items-center gap-3 p-3 rounded-xl bg-red-50 border border-red-200">
+          <Ban size={16} className="text-red-500 shrink-0" />
+          <div>
+            <p className="text-[12px] font-bold text-red-700">This quotation is void</p>
+            {devis.voidReason && <p className="text-[10px] text-red-600 mt-0.5">{devis.voidReason}</p>}
+            <p className="text-[9px] text-red-500 mt-0.5">Excluded from all financial calculations</p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto h-7 text-[9px] font-bold uppercase tracking-widest border-red-300 text-red-600 hover:bg-red-100"
+            onClick={() => {
+              updateDevisMutation.mutate({ status: "pending", voidReason: null });
+              toast({ title: "Quotation restored", description: "Devis is no longer void" });
+            }}
+            data-testid={`button-unvoid-${devis.id}`}
+          >
+            Restore
+          </Button>
+        </div>
+      )}
+
+      <div className="flex items-center gap-1.5 py-2" data-testid={`stepper-signoff-${devis.id}`}>
+        {SIGN_OFF_STAGES.map((stage, idx) => {
+          const isCompleted = idx <= currentStageIndex && !isVoid;
+          const isCurrent = idx === currentStageIndex && !isVoid;
+          return (
+            <div key={stage.key} className="flex items-center gap-1.5 flex-1">
+              <button
+                className={`flex-1 px-2 py-1.5 rounded-lg border text-[9px] font-bold uppercase tracking-wide text-center transition-all
+                  ${isVoid
+                    ? "border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed"
+                    : isCurrent
+                      ? "border-[#0B2545] bg-[#0B2545] text-white shadow-sm"
+                      : isCompleted
+                        ? "border-emerald-300 bg-emerald-50 text-emerald-700 cursor-pointer hover:bg-emerald-100"
+                        : "border-slate-200 bg-white text-slate-400 cursor-pointer hover:border-slate-300 hover:text-slate-600"
+                  }`}
+                onClick={() => {
+                  if (!isVoid) {
+                    updateDevisMutation.mutate({ signOffStage: stage.key });
+                    toast({ title: `Stage: ${stage.label}` });
+                  }
+                }}
+                disabled={isVoid}
+                data-testid={`button-stage-${stage.key}-${devis.id}`}
+              >
+                {stage.label}
+              </button>
+              {idx < SIGN_OFF_STAGES.length - 1 && (
+                <ChevronRight size={10} className={isCompleted && idx < currentStageIndex ? "text-emerald-400" : "text-slate-300"} />
+              )}
+            </div>
+          );
+        })}
+        {!isVoid && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-2 gap-1 ml-2 border-red-200 text-red-500 hover:bg-red-50 hover:text-red-700 shrink-0"
+            onClick={() => setVoidDialogOpen(true)}
+            data-testid={`button-void-${devis.id}`}
+          >
+            <Ban size={10} />
+            <span className="text-[8px] font-bold uppercase tracking-widest">Void</span>
+          </Button>
+        )}
+      </div>
+
       <div className="grid grid-cols-4 gap-3">
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
           <TechnicalLabel>Original Contracted</TechnicalLabel>
@@ -707,6 +801,45 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
               </Button>
             </form>
           </Form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={voidDialogOpen} onOpenChange={setVoidDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-[16px] font-black uppercase tracking-tight text-red-700">Mark Quotation as Void</DialogTitle>
+            <DialogDescription className="text-[11px]">
+              This quotation will be excluded from all financial calculations and tracking. You can restore it later.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <TechnicalLabel>Reason for voiding</TechnicalLabel>
+              <Textarea
+                className="mt-1 resize-none text-[11px]"
+                placeholder="e.g. Mistake, change of contractor, budget revision..."
+                value={voidReason}
+                onChange={(e) => setVoidReason(e.target.value)}
+                data-testid="input-void-reason"
+              />
+            </div>
+            <Button
+              className="w-full bg-red-600 hover:bg-red-700 text-white"
+              onClick={() => {
+                updateDevisMutation.mutate({ status: "void", voidReason: voidReason || null });
+                toast({ title: "Quotation voided", description: "Excluded from all calculations" });
+                setVoidDialogOpen(false);
+                setVoidReason("");
+              }}
+              disabled={updateDevisMutation.isPending}
+              data-testid="button-confirm-void"
+            >
+              <Ban size={14} />
+              <span className="text-[9px] font-bold uppercase tracking-widest">
+                {updateDevisMutation.isPending ? "Voiding..." : "Confirm Void"}
+              </span>
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
 

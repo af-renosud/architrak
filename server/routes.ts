@@ -547,6 +547,7 @@ export async function registerRoutes(
           descriptionFr: d.descriptionFr,
           descriptionUk: d.descriptionUk,
           status: d.status,
+          signOffStage: d.signOffStage,
           contractorId: d.contractorId,
           invoicingMode: d.invoicingMode,
           originalHt,
@@ -561,7 +562,8 @@ export async function registerRoutes(
       })
     );
 
-    const totals = devisSummaries.reduce(
+    const activeDevis = devisSummaries.filter(ds => ds.status !== "void");
+    const totals = activeDevis.reduce(
       (acc, ds) => ({
         totalContractedHt: acc.totalContractedHt + ds.adjustedHt,
         totalCertifiedHt: acc.totalCertifiedHt + ds.certifiedHt,
@@ -622,7 +624,8 @@ export async function registerRoutes(
         let projReste = 0;
         let anomalyCount = 0;
 
-        for (const d of projectDevis) {
+        const activeDevis = projectDevis.filter(d => d.status !== "void");
+        for (const d of activeDevis) {
           const avs = await storage.getAvenantsByDevis(d.id);
           const originalHt = parseFloat(d.amountHt);
           const approvedAvenants = avs.filter(a => a.status === "approved");
