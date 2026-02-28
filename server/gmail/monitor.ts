@@ -37,7 +37,12 @@ export function startPolling(intervalMs: number = 15 * 60 * 1000) {
   }
 
   console.log(`[Gmail Monitor] Starting polling every ${intervalMs / 1000}s`);
-  pollInterval = setInterval(() => pollInbox().catch(console.error), intervalMs);
+  pollInterval = setInterval(() => {
+    if (lastPollStatus === "insufficient_permissions") {
+      return;
+    }
+    pollInbox().catch(console.error);
+  }, intervalMs);
 
   setTimeout(() => pollInbox().catch(console.error), 5000);
 }
@@ -65,14 +70,26 @@ export async function pollInbox(): Promise<{ processed: number; errors: number }
   try {
     const gmail = await getUncachableGmailClient();
 
-    await ensureLabel(gmail);
+    let response;
+    try {
+      const query = `has:attachment filename:pdf -label:${LABEL_NAME}`;
+      response = await gmail.users.messages.list({
+        userId: "me",
+        q: query,
+        maxResults: 10,
+      });
+    } catch (listErr: any) {
+      if (listErr?.status === 403 || listErr?.code === 403) {
+        lastPollStatus = "insufficient_permissions";
+        lastPollError = "Gmail connector does not have read permissions (gmail.readonly scope). Re-authorize with full Gmail access to enable inbox monitoring.";
+        console.warn("[Gmail Monitor] " + lastPollError);
+        isPolling = false;
+        return { processed: 0, errors: 0 };
+      }
+      throw listErr;
+    }
 
-    const query = `has:attachment filename:pdf -label:${LABEL_NAME}`;
-    const response = await gmail.users.messages.list({
-      userId: "me",
-      q: query,
-      maxResults: 10,
-    });
+    await ensureLabel(gmail);
 
     const messages = response.data.messages || [];
     console.log(`[Gmail Monitor] Found ${messages.length} unprocessed emails with PDFs`);

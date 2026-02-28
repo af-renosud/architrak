@@ -188,12 +188,12 @@ export default function ProjectDetail() {
   });
 
   const lotFormSchema = insertLotSchema.extend({
-    lotNumber: z.coerce.number().min(1, "Required"),
+    lotNumber: z.string().min(1, "Required"),
     descriptionFr: z.string().min(1, "Description is required"),
   });
   const lotForm = useForm<z.infer<typeof lotFormSchema>>({
     resolver: zodResolver(lotFormSchema),
-    defaultValues: { projectId: parseInt(projectId!), lotNumber: 1, descriptionFr: "", descriptionUk: null },
+    defaultValues: { projectId: parseInt(projectId!), lotNumber: "", descriptionFr: "", descriptionUk: null },
   });
 
   const marcheFormSchema = insertMarcheSchema.extend({
@@ -760,7 +760,7 @@ export default function ProjectDetail() {
             <div className="space-y-4">
               <div className="flex items-center justify-end">
                 <Button onClick={() => {
-                  lotForm.reset({ projectId: parseInt(projectId!), lotNumber: (lotsList?.length ?? 0) + 1, descriptionFr: "", descriptionUk: null });
+                  lotForm.reset({ projectId: parseInt(projectId!), lotNumber: "", descriptionFr: "", descriptionUk: null });
                   setLotDialogOpen(true);
                 }} data-testid="button-new-lot">
                   <Plus size={14} />

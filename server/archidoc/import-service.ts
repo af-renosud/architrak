@@ -28,11 +28,14 @@ export async function trackProject(archidocId: string, options: TrackProjectOpti
     throw new Error(`ArchiDoc project ${archidocId} not found in mirror tables. Run sync first.`);
   }
 
+  const clients = (mirrorProject.clients as any[]) || [];
+  const clientAddress = clients[0]?.homeAddress || clients[0]?.address || null;
+
   const projectData: InsertProject = {
     name: mirrorProject.projectName,
     code: mirrorProject.code || `AD-${archidocId.slice(0, 8).toUpperCase()}`,
     clientName: mirrorProject.clientName || "Unknown Client",
-    clientAddress: mirrorProject.address,
+    clientAddress: clientAddress,
     siteAddress: mirrorProject.address,
     status: "active",
     tvaRate: options.tvaRate || "20.00",
@@ -77,24 +80,36 @@ export async function trackProject(archidocId: string, options: TrackProjectOpti
     }
   }
 
-  const lotsToCreate = customLots.length > 0 ? customLots : lotContractors;
-  const createdLotNumbers = new Set<number>();
+  const createdLotNumbers = new Set<string>();
 
-  for (let i = 0; i < lotsToCreate.length; i++) {
-    const lotData = lotsToCreate[i];
-    const lotNumber = lotData.lotNumber || lotData.sortOrder || (i + 1);
-
-    if (createdLotNumbers.has(lotNumber)) continue;
-    createdLotNumbers.add(lotNumber);
-
-    const lotInsert: InsertLot = {
-      projectId: project.id,
-      lotNumber: lotNumber,
-      descriptionFr: lotData.label || lotData.descriptionFr || lotData.trade || `Lot ${lotNumber}`,
-      descriptionUk: lotData.descriptionUk,
-    };
-    await storage.createLot(lotInsert);
-    lotsCreated++;
+  if (customLots.length > 0) {
+    for (const lotData of customLots) {
+      const lotNumber = String(lotData.lotNumber || lotData.sortOrder || `LOT${createdLotNumbers.size + 1}`);
+      if (createdLotNumbers.has(lotNumber)) continue;
+      createdLotNumbers.add(lotNumber);
+      await storage.createLot({
+        projectId: project.id,
+        lotNumber,
+        descriptionFr: lotData.label || lotData.descriptionFr || `Lot ${lotNumber}`,
+        descriptionUk: lotData.descriptionUk,
+      });
+      lotsCreated++;
+    }
+  } else {
+    for (const lc of lotContractors) {
+      const lotNumber = String(lc.lotNumber || `LOT${createdLotNumbers.size + 1}`);
+      if (createdLotNumbers.has(lotNumber)) continue;
+      createdLotNumbers.add(lotNumber);
+      const contractorName = contractorIdMap.has(String(lc.contractorId))
+        ? (await storage.getContractor(contractorIdMap.get(String(lc.contractorId))!))?.name
+        : null;
+      await storage.createLot({
+        projectId: project.id,
+        lotNumber,
+        descriptionFr: contractorName ? `${lotNumber} — ${contractorName}` : `Lot ${lotNumber}`,
+      });
+      lotsCreated++;
+    }
   }
 
   const proposalFees = await storage.getArchidocProposalFees(archidocId);

@@ -65,7 +65,7 @@ export const contractors = pgTable("contractors", {
 export const lots = pgTable("lots", {
   id: serial("id").primaryKey(),
   projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
-  lotNumber: integer("lot_number").notNull(),
+  lotNumber: text("lot_number").notNull(),
   descriptionFr: text("description_fr").notNull(),
   descriptionUk: text("description_uk"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),

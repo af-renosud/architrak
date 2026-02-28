@@ -130,7 +130,7 @@ export default function Projects() {
   });
 
   const clients = selectedProject?.clients as Array<{ name: string; email?: string; phone?: string; address?: string }> | null;
-  const customLots = selectedProject?.customLots as Array<{ lotNumber: number; descriptionFr: string; descriptionUk?: string }> | null;
+  const customLots = selectedProject?.customLots as Array<{ lotNumber: string; descriptionFr: string; descriptionUk?: string }> | null;
 
   return (
     <AppLayout>

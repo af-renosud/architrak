@@ -127,3 +127,9 @@ shared/
 - French domain terms kept (Devis, Avenant, Marché, Certificat, Honoraires, Lot, Situation, Retenue de Garantie, PV/MV, TVA, SIRET). All other UI in English
 - Bilingual data fields (description_fr + description_uk) for client communication
 - Projects ONLY created via ArchiDoc API — no manual project creation
+
+## Integration Status (tested 2026-02-28)
+- **ArchiDoc sync**: Working. 14 projects, 11 contractors, 29 trades synced successfully
+- **Project import**: Working. LIVERMORE/DANCE and BARTHALON tracked with lots, contractors, fees
+- **Lot numbers**: Use text/string codes (e.g. "FN", "GO", "VRD", "EL") — not integers
+- **Gmail monitoring**: Connector provides limited scope (send only, no read). Monitoring gracefully disabled until re-authorized with full access. Manual poll via POST /api/gmail/poll will retry.

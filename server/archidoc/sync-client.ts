@@ -45,8 +45,8 @@ export interface ArchidocProjectData {
   status?: string;
   siteAddress?: string;
   clients?: Array<{ name: string; email?: string; phone?: string; address?: string }>;
-  customLots?: Array<{ lotNumber: number; descriptionFr: string; descriptionUk?: string }>;
-  lotContractors?: Array<{ lotNumber: number; contractorId: string }>;
+  customLots?: Array<{ lotNumber: string; descriptionFr: string; descriptionUk?: string }>;
+  lotContractors?: Array<{ lotNumber: string; contractorId: string }>;
   actors?: Array<{ role: string; name: string; company?: string; siret?: string; address?: string }>;
   isDeleted?: boolean;
   updatedAt?: string;
