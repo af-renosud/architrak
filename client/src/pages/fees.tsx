@@ -1,0 +1,776 @@
+import { useState } from "react";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { SectionHeader } from "@/components/ui/section-header";
+import { LuxuryCard } from "@/components/ui/luxury-card";
+import { StatusBadge } from "@/components/ui/status-badge";
+import { TechnicalLabel } from "@/components/ui/technical-label";
+import { Coins, Plus, Pencil } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { insertFeeSchema, insertFeeEntrySchema } from "@shared/schema";
+import type { Project, Fee, FeeEntry } from "@shared/schema";
+import { z } from "zod";
+
+function formatCurrency(value: number): string {
+  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
+}
+
+const feeFormSchema = insertFeeSchema.extend({
+  feeAmountHt: z.string().min(1, "Le montant HT est requis"),
+  feeAmountTtc: z.string().min(1, "Le montant TTC est requis"),
+  remainingAmount: z.string().min(1, "Le montant restant est requis"),
+});
+
+type FeeFormValues = z.infer<typeof feeFormSchema>;
+
+const feeEntryFormSchema = insertFeeEntrySchema.extend({
+  baseHt: z.string().min(1, "Le montant base HT est requis"),
+  feeRate: z.string().min(1, "Le taux est requis"),
+  feeAmount: z.string().min(1, "Le montant est requis"),
+});
+
+type FeeEntryFormValues = z.infer<typeof feeEntryFormSchema>;
+
+function FeeTypeLabel({ type }: { type: string }) {
+  const labels: Record<string, string> = {
+    works_percentage: "% Travaux",
+    conception: "Conception",
+    planning: "Planning",
+  };
+  return <span>{labels[type] ?? type}</span>;
+}
+
+export default function Fees() {
+  const [selectedProjectId, setSelectedProjectId] = useState<string>("");
+  const [feeDialogOpen, setFeeDialogOpen] = useState(false);
+  const [entryDialogOpen, setEntryDialogOpen] = useState(false);
+  const [selectedFeeId, setSelectedFeeId] = useState<number | null>(null);
+  const [editingEntryId, setEditingEntryId] = useState<number | null>(null);
+  const { toast } = useToast();
+
+  const { data: projects, isLoading: loadingProjects } = useQuery<Project[]>({
+    queryKey: ["/api/projects"],
+  });
+
+  const { data: feesList, isLoading: loadingFees } = useQuery<Fee[]>({
+    queryKey: ["/api/projects", selectedProjectId, "fees"],
+    enabled: !!selectedProjectId,
+  });
+
+  const { data: feeEntries } = useQuery<FeeEntry[]>({
+    queryKey: ["/api/projects", selectedProjectId, "fee-entries"],
+    enabled: !!selectedProjectId,
+  });
+
+  const feeForm = useForm<FeeFormValues>({
+    resolver: zodResolver(feeFormSchema),
+    defaultValues: {
+      projectId: 0,
+      feeType: "works_percentage",
+      baseAmountHt: "0.00",
+      feeRate: null,
+      feeAmountHt: "0.00",
+      feeAmountTtc: "0.00",
+      invoicedAmount: "0.00",
+      remainingAmount: "0.00",
+      pennylaneRef: null,
+      status: "pending",
+    },
+  });
+
+  const entryForm = useForm<FeeEntryFormValues>({
+    resolver: zodResolver(feeEntryFormSchema),
+    defaultValues: {
+      feeId: 0,
+      invoiceId: null,
+      devisId: null,
+      baseHt: "0.00",
+      feeRate: "0.00",
+      feeAmount: "0.00",
+      pennylaneInvoiceRef: null,
+      dateInvoiced: null,
+      status: "pending",
+    },
+  });
+
+  const createFeeMutation = useMutation({
+    mutationFn: async (data: FeeFormValues) => {
+      const res = await apiRequest("POST", "/api/fees", data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "fees"] });
+      setFeeDialogOpen(false);
+      feeForm.reset();
+      toast({ title: "Honoraire créé avec succès" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const updateFeeMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: number; data: Partial<FeeFormValues> }) => {
+      const res = await apiRequest("PATCH", `/api/fees/${id}`, data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "fees"] });
+      toast({ title: "Honoraire mis à jour" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const createEntryMutation = useMutation({
+    mutationFn: async (data: FeeEntryFormValues) => {
+      const res = await apiRequest("POST", `/api/fees/${data.feeId}/entries`, data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "fee-entries"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "fees"] });
+      setEntryDialogOpen(false);
+      entryForm.reset();
+      toast({ title: "Entrée créée avec succès" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const updateEntryMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: number; data: Partial<FeeEntryFormValues> }) => {
+      const res = await apiRequest("PATCH", `/api/fee-entries/${id}`, data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "fee-entries"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "fees"] });
+      setEntryDialogOpen(false);
+      setEditingEntryId(null);
+      entryForm.reset();
+      toast({ title: "Entrée mise à jour" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const openCreateFee = () => {
+    if (!selectedProjectId) {
+      toast({ title: "Veuillez sélectionner un projet d'abord", variant: "destructive" });
+      return;
+    }
+    feeForm.reset({
+      projectId: parseInt(selectedProjectId),
+      feeType: "works_percentage",
+      baseAmountHt: "0.00",
+      feeRate: null,
+      feeAmountHt: "0.00",
+      feeAmountTtc: "0.00",
+      invoicedAmount: "0.00",
+      remainingAmount: "0.00",
+      pennylaneRef: null,
+      status: "pending",
+    });
+    setFeeDialogOpen(true);
+  };
+
+  const openCreateEntry = (feeId: number) => {
+    const fee = feesList?.find((f) => f.id === feeId);
+    setSelectedFeeId(feeId);
+    setEditingEntryId(null);
+    entryForm.reset({
+      feeId,
+      invoiceId: null,
+      devisId: null,
+      baseHt: "0.00",
+      feeRate: fee?.feeRate ?? "0.00",
+      feeAmount: "0.00",
+      pennylaneInvoiceRef: null,
+      dateInvoiced: null,
+      status: "pending",
+    });
+    setEntryDialogOpen(true);
+  };
+
+  const openEditEntry = (entry: FeeEntry) => {
+    setSelectedFeeId(entry.feeId);
+    setEditingEntryId(entry.id);
+    entryForm.reset({
+      feeId: entry.feeId,
+      invoiceId: entry.invoiceId,
+      devisId: entry.devisId,
+      baseHt: entry.baseHt,
+      feeRate: entry.feeRate,
+      feeAmount: entry.feeAmount,
+      pennylaneInvoiceRef: entry.pennylaneInvoiceRef,
+      dateInvoiced: entry.dateInvoiced,
+      status: entry.status,
+    });
+    setEntryDialogOpen(true);
+  };
+
+  const recalculateFee = () => {
+    const base = parseFloat(feeForm.watch("baseAmountHt") || "0");
+    const rate = parseFloat(feeForm.watch("feeRate") || "0");
+    const feeType = feeForm.watch("feeType");
+    let feeHt: number;
+    if (feeType === "works_percentage") {
+      feeHt = base * (rate / 100);
+    } else {
+      feeHt = parseFloat(feeForm.watch("feeAmountHt") || "0");
+    }
+    const feeTtc = feeHt * 1.2;
+    const invoiced = parseFloat(feeForm.watch("invoicedAmount") || "0");
+    feeForm.setValue("feeAmountHt", feeHt.toFixed(2));
+    feeForm.setValue("feeAmountTtc", feeTtc.toFixed(2));
+    feeForm.setValue("remainingAmount", (feeHt - invoiced).toFixed(2));
+  };
+
+  const recalculateEntry = () => {
+    const base = parseFloat(entryForm.watch("baseHt") || "0");
+    const rate = parseFloat(entryForm.watch("feeRate") || "0");
+    const amount = base * (rate / 100);
+    entryForm.setValue("feeAmount", amount.toFixed(2));
+  };
+
+  const onSubmitFee = (data: FeeFormValues) => {
+    createFeeMutation.mutate(data);
+  };
+
+  const onSubmitEntry = (data: FeeEntryFormValues) => {
+    if (editingEntryId) {
+      updateEntryMutation.mutate({ id: editingEntryId, data });
+    } else {
+      createEntryMutation.mutate(data);
+    }
+  };
+
+  const totalFeeEarned = (feesList ?? []).reduce((sum, f) => sum + parseFloat(f.feeAmountHt), 0);
+  const totalInvoiced = (feesList ?? []).reduce((sum, f) => sum + parseFloat(f.invoicedAmount ?? "0"), 0);
+  const totalRemaining = totalFeeEarned - totalInvoiced;
+
+  const isLoading = loadingProjects || loadingFees;
+
+  return (
+    <AppLayout>
+      <div className="space-y-8">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <h1 className="text-[22px] font-light uppercase tracking-tight text-foreground" data-testid="text-page-title">
+            Honoraires
+          </h1>
+          <Button onClick={openCreateFee} data-testid="button-new-fee">
+            <Plus size={14} />
+            <span className="text-[9px] font-bold uppercase tracking-widest">Nouvel Honoraire</span>
+          </Button>
+        </div>
+
+        <SectionHeader
+          icon={Coins}
+          title="Suivi des Honoraires"
+          subtitle="Pourcentage travaux, conception & planification"
+        />
+
+        <div className="max-w-xs">
+          <TechnicalLabel>Filtrer par projet</TechnicalLabel>
+          <Select value={selectedProjectId} onValueChange={setSelectedProjectId}>
+            <SelectTrigger className="mt-1" data-testid="select-fee-project-filter">
+              <SelectValue placeholder="Sélectionner un projet" />
+            </SelectTrigger>
+            <SelectContent>
+              {(projects ?? []).map((p) => (
+                <SelectItem key={p.id} value={String(p.id)}>
+                  {p.code} — {p.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {!selectedProjectId ? (
+          <LuxuryCard data-testid="card-no-project-selected">
+            <p className="text-[12px] text-muted-foreground text-center py-8">
+              Sélectionnez un projet pour voir le suivi des honoraires.
+            </p>
+          </LuxuryCard>
+        ) : isLoading ? (
+          <div className="space-y-3">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <LuxuryCard key={i}>
+                <Skeleton className="h-4 w-32 mb-2" />
+                <Skeleton className="h-3 w-48" />
+              </LuxuryCard>
+            ))}
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <LuxuryCard data-testid="card-total-fee-earned">
+                <TechnicalLabel>Total Honoraires</TechnicalLabel>
+                <p className="text-[20px] font-light text-foreground mt-2" data-testid="text-total-earned">
+                  {formatCurrency(totalFeeEarned)}
+                </p>
+              </LuxuryCard>
+              <LuxuryCard data-testid="card-total-invoiced">
+                <TechnicalLabel>Total Facturé (Penny Lane)</TechnicalLabel>
+                <p className="text-[20px] font-light text-emerald-600 dark:text-emerald-400 mt-2" data-testid="text-total-invoiced">
+                  {formatCurrency(totalInvoiced)}
+                </p>
+              </LuxuryCard>
+              <LuxuryCard data-testid="card-total-remaining">
+                <TechnicalLabel>Reste à Facturer</TechnicalLabel>
+                <p className="text-[20px] font-light text-amber-600 dark:text-amber-400 mt-2" data-testid="text-total-remaining">
+                  {formatCurrency(totalRemaining)}
+                </p>
+              </LuxuryCard>
+            </div>
+
+            {feesList && feesList.length > 0 ? (
+              <div className="space-y-4">
+                {feesList.map((fee) => {
+                  const entries = (feeEntries ?? []).filter((e) => e.feeId === fee.id);
+                  const feeHt = parseFloat(fee.feeAmountHt);
+                  const invoiced = parseFloat(fee.invoicedAmount ?? "0");
+                  const remaining = feeHt - invoiced;
+                  const progress = feeHt > 0 ? Math.min((invoiced / feeHt) * 100, 100) : 0;
+
+                  return (
+                    <LuxuryCard key={fee.id} data-testid={`card-fee-${fee.id}`}>
+                      <div className="flex items-start justify-between gap-3 mb-4 flex-wrap">
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h3 className="text-[14px] font-black uppercase tracking-tight text-foreground">
+                              <FeeTypeLabel type={fee.feeType} />
+                            </h3>
+                            <StatusBadge status={fee.status} />
+                          </div>
+                          {fee.feeRate && (
+                            <p className="text-[11px] text-muted-foreground mt-0.5">
+                              Taux: {fee.feeRate}%
+                            </p>
+                          )}
+                          {fee.pennylaneRef && (
+                            <p className="text-[10px] text-muted-foreground mt-0.5">
+                              Penny Lane: {fee.pennylaneRef}
+                            </p>
+                          )}
+                        </div>
+                        <Button
+                          variant="outline"
+                          onClick={() => openCreateEntry(fee.id)}
+                          data-testid={`button-add-entry-${fee.id}`}
+                        >
+                          <Plus size={12} />
+                          <span className="text-[8px] font-bold uppercase tracking-widest">Ajouter entrée</span>
+                        </Button>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-4 mb-3">
+                        <div>
+                          <TechnicalLabel>Montant HT</TechnicalLabel>
+                          <p className="text-[13px] font-semibold text-foreground mt-0.5" data-testid={`text-fee-amount-${fee.id}`}>
+                            {formatCurrency(feeHt)}
+                          </p>
+                        </div>
+                        <div>
+                          <TechnicalLabel>Facturé</TechnicalLabel>
+                          <p className="text-[13px] font-semibold text-emerald-600 dark:text-emerald-400 mt-0.5" data-testid={`text-fee-invoiced-${fee.id}`}>
+                            {formatCurrency(invoiced)}
+                          </p>
+                        </div>
+                        <div>
+                          <TechnicalLabel>Restant</TechnicalLabel>
+                          <p className="text-[13px] font-semibold text-amber-600 dark:text-amber-400 mt-0.5" data-testid={`text-fee-remaining-${fee.id}`}>
+                            {formatCurrency(remaining)}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800 mb-4">
+                        <div
+                          className="h-full rounded-full bg-emerald-500 transition-all"
+                          style={{ width: `${progress}%` }}
+                        />
+                      </div>
+
+                      {entries.length > 0 && (
+                        <div className="border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] pt-3">
+                          <TechnicalLabel>Entrées ({entries.length})</TechnicalLabel>
+                          <div className="mt-2 space-y-2">
+                            {entries.map((entry) => (
+                              <div
+                                key={entry.id}
+                                className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] flex items-center justify-between gap-3 flex-wrap"
+                                data-testid={`row-fee-entry-${entry.id}`}
+                              >
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-[11px] text-foreground">
+                                      Base: {formatCurrency(parseFloat(entry.baseHt))}
+                                    </span>
+                                    <span className="text-[10px] text-muted-foreground">
+                                      x {entry.feeRate}%
+                                    </span>
+                                  </div>
+                                  {entry.pennylaneInvoiceRef && (
+                                    <p className="text-[10px] text-muted-foreground mt-0.5" data-testid={`text-entry-pennylane-${entry.id}`}>
+                                      PL: {entry.pennylaneInvoiceRef}
+                                    </p>
+                                  )}
+                                  {entry.dateInvoiced && (
+                                    <p className="text-[10px] text-muted-foreground">{entry.dateInvoiced}</p>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-[12px] font-semibold text-foreground" data-testid={`text-entry-amount-${entry.id}`}>
+                                    {formatCurrency(parseFloat(entry.feeAmount))}
+                                  </span>
+                                  <StatusBadge status={entry.status} />
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => openEditEntry(entry)}
+                                    data-testid={`button-edit-entry-${entry.id}`}
+                                  >
+                                    <Pencil size={12} />
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </LuxuryCard>
+                  );
+                })}
+              </div>
+            ) : (
+              <LuxuryCard data-testid="card-empty-fees">
+                <p className="text-[12px] text-muted-foreground text-center py-8">
+                  Aucun honoraire défini pour ce projet.
+                </p>
+              </LuxuryCard>
+            )}
+          </>
+        )}
+
+        <Dialog open={feeDialogOpen} onOpenChange={setFeeDialogOpen}>
+          <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="text-[16px] font-black uppercase tracking-tight">
+                Nouvel Honoraire
+              </DialogTitle>
+            </DialogHeader>
+            <Form {...feeForm}>
+              <form onSubmit={feeForm.handleSubmit(onSubmitFee)} className="space-y-4">
+                <FormField
+                  control={feeForm.control}
+                  name="feeType"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        <TechnicalLabel>Type d'honoraire</TechnicalLabel>
+                      </FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value}>
+                        <FormControl>
+                          <SelectTrigger data-testid="select-fee-type">
+                            <SelectValue />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="works_percentage">% Travaux</SelectItem>
+                          <SelectItem value="conception">Conception</SelectItem>
+                          <SelectItem value="planning">Planning</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <div className="grid grid-cols-2 gap-4">
+                  <FormField
+                    control={feeForm.control}
+                    name="baseAmountHt"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>
+                          <TechnicalLabel>Montant base HT</TechnicalLabel>
+                        </FormLabel>
+                        <FormControl>
+                          <Input
+                            {...field}
+                            type="number"
+                            step="0.01"
+                            onBlur={() => recalculateFee()}
+                            data-testid="input-fee-base"
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={feeForm.control}
+                    name="feeRate"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>
+                          <TechnicalLabel>Taux (%)</TechnicalLabel>
+                        </FormLabel>
+                        <FormControl>
+                          <Input
+                            {...field}
+                            value={field.value ?? ""}
+                            onChange={(e) => field.onChange(e.target.value || null)}
+                            type="number"
+                            step="0.01"
+                            onBlur={() => recalculateFee()}
+                            data-testid="input-fee-rate"
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <FormField
+                    control={feeForm.control}
+                    name="feeAmountHt"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>
+                          <TechnicalLabel>Montant honoraire HT</TechnicalLabel>
+                        </FormLabel>
+                        <FormControl>
+                          <Input
+                            {...field}
+                            type="number"
+                            step="0.01"
+                            onBlur={() => recalculateFee()}
+                            data-testid="input-fee-amount-ht"
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={feeForm.control}
+                    name="feeAmountTtc"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>
+                          <TechnicalLabel>Montant TTC</TechnicalLabel>
+                        </FormLabel>
+                        <FormControl>
+                          <Input
+                            {...field}
+                            type="number"
+                            step="0.01"
+                            readOnly
+                            data-testid="input-fee-amount-ttc"
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+                <FormField
+                  control={feeForm.control}
+                  name="pennylaneRef"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        <TechnicalLabel>Référence Penny Lane</TechnicalLabel>
+                      </FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          value={field.value ?? ""}
+                          onChange={(e) => field.onChange(e.target.value || null)}
+                          data-testid="input-fee-pennylane"
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <Button type="submit" className="w-full" disabled={createFeeMutation.isPending} data-testid="button-submit-fee">
+                  <span className="text-[9px] font-bold uppercase tracking-widest">
+                    {createFeeMutation.isPending ? "Création..." : "Créer l'honoraire"}
+                  </span>
+                </Button>
+              </form>
+            </Form>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={entryDialogOpen} onOpenChange={setEntryDialogOpen}>
+          <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="text-[16px] font-black uppercase tracking-tight">
+                {editingEntryId ? "Modifier l'entrée" : "Nouvelle Entrée"}
+              </DialogTitle>
+            </DialogHeader>
+            <Form {...entryForm}>
+              <form onSubmit={entryForm.handleSubmit(onSubmitEntry)} className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <FormField
+                    control={entryForm.control}
+                    name="baseHt"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>
+                          <TechnicalLabel>Base HT</TechnicalLabel>
+                        </FormLabel>
+                        <FormControl>
+                          <Input
+                            {...field}
+                            type="number"
+                            step="0.01"
+                            onBlur={() => recalculateEntry()}
+                            data-testid="input-entry-base"
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={entryForm.control}
+                    name="feeRate"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>
+                          <TechnicalLabel>Taux (%)</TechnicalLabel>
+                        </FormLabel>
+                        <FormControl>
+                          <Input
+                            {...field}
+                            type="number"
+                            step="0.01"
+                            onBlur={() => recalculateEntry()}
+                            data-testid="input-entry-rate"
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+                <FormField
+                  control={entryForm.control}
+                  name="feeAmount"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        <TechnicalLabel>Montant honoraire</TechnicalLabel>
+                      </FormLabel>
+                      <FormControl>
+                        <Input {...field} type="number" step="0.01" readOnly data-testid="input-entry-amount" />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={entryForm.control}
+                  name="pennylaneInvoiceRef"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        <TechnicalLabel>Référence facture Penny Lane</TechnicalLabel>
+                      </FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          value={field.value ?? ""}
+                          onChange={(e) => field.onChange(e.target.value || null)}
+                          data-testid="input-entry-pennylane"
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={entryForm.control}
+                  name="dateInvoiced"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        <TechnicalLabel>Date de facturation</TechnicalLabel>
+                      </FormLabel>
+                      <FormControl>
+                        <Input
+                          type="date"
+                          {...field}
+                          value={field.value ?? ""}
+                          onChange={(e) => field.onChange(e.target.value || null)}
+                          data-testid="input-entry-date"
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={entryForm.control}
+                  name="status"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        <TechnicalLabel>Statut</TechnicalLabel>
+                      </FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value}>
+                        <FormControl>
+                          <SelectTrigger data-testid="select-entry-status">
+                            <SelectValue />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="pending">En attente</SelectItem>
+                          <SelectItem value="invoiced">Facturé</SelectItem>
+                          <SelectItem value="paid">Payé</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <Button
+                  type="submit"
+                  className="w-full"
+                  disabled={createEntryMutation.isPending || updateEntryMutation.isPending}
+                  data-testid="button-submit-entry"
+                >
+                  <span className="text-[9px] font-bold uppercase tracking-widest">
+                    {(createEntryMutation.isPending || updateEntryMutation.isPending)
+                      ? "Enregistrement..."
+                      : editingEntryId
+                      ? "Mettre à jour"
+                      : "Créer l'entrée"}
+                  </span>
+                </Button>
+              </form>
+            </Form>
+          </DialogContent>
+        </Dialog>
+      </div>
+    </AppLayout>
+  );
+}
