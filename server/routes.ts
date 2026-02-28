@@ -375,6 +375,89 @@ export async function registerRoutes(
     res.json(invs);
   });
 
+  app.post("/api/devis/:devisId/invoices/upload", upload.single("file"), async (req, res) => {
+    try {
+      const devisId = Number(req.params.devisId);
+      const file = req.file;
+      if (!file) return res.status(400).json({ message: "No file provided" });
+      if (!file.mimetype.includes("pdf")) return res.status(400).json({ message: "Only PDF files are accepted" });
+
+      const d = await storage.getDevis(devisId);
+      if (!d) return res.status(404).json({ message: "Devis not found" });
+
+      const storageKey = await uploadDocument(d.projectId, file.originalname, file.buffer, file.mimetype);
+
+      await storage.createProjectDocument({
+        projectId: d.projectId,
+        fileName: file.originalname,
+        storageKey,
+        documentType: "invoice",
+        uploadedBy: "manual",
+        description: `Invoice PDF upload against devis ${d.devisCode}: ${file.originalname}`,
+      });
+
+      const { parseDocument } = await import("./gmail/document-parser");
+      const parsed = await parseDocument(file.buffer, file.originalname);
+
+      const tvaRate = parseFloat(d.tvaRate) || 20;
+      const amountHt = parsed.amountHt != null ? String(parsed.amountHt) : "0.00";
+      const tvaAmount = parsed.amountHt != null
+        ? String((parsed.amountTtc != null ? parsed.amountTtc - parsed.amountHt : parsed.amountHt * tvaRate / 100).toFixed(2))
+        : "0.00";
+      const amountTtc = parsed.amountTtc != null ? String(parsed.amountTtc)
+        : parsed.amountHt != null ? String((parsed.amountHt * (1 + tvaRate / 100)).toFixed(2))
+        : "0.00";
+
+      const existingInvoices = await storage.getInvoicesByDevis(devisId);
+      const nextInvoiceNumber = existingInvoices.length > 0
+        ? Math.max(...existingInvoices.map(i => i.invoiceNumber)) + 1
+        : 1;
+
+      const invoiceData = {
+        devisId,
+        contractorId: d.contractorId,
+        projectId: d.projectId,
+        invoiceNumber: parsed.reference ? parseInt(parsed.reference.replace(/\D/g, "")) || nextInvoiceNumber : nextInvoiceNumber,
+        amountHt,
+        tvaAmount,
+        amountTtc,
+        dateIssued: parsed.date || null,
+        dateSent: null,
+        datePaid: null,
+        status: "pending",
+        pdfPath: storageKey,
+        notes: null,
+        certificateNumber: null,
+      };
+
+      const invoiceParsed = insertInvoiceSchema.safeParse(invoiceData);
+      if (!invoiceParsed.success) {
+        return res.status(400).json({ message: "Failed to create invoice from extracted data", errors: invoiceParsed.error.flatten() });
+      }
+
+      const invoice = await storage.createInvoice(invoiceParsed.data);
+
+      res.status(201).json({
+        invoice,
+        extraction: {
+          documentType: parsed.documentType,
+          contractorName: parsed.contractorName,
+          amountHt: parsed.amountHt,
+          amountTtc: parsed.amountTtc,
+          reference: parsed.reference,
+          date: parsed.date,
+          confidence: parsed.amountHt != null ? "high" : "low",
+        },
+        storageKey,
+        fileName: file.originalname,
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[Invoice Upload] Error:", message);
+      res.status(500).json({ message: `Invoice upload/parse failed: ${message}` });
+    }
+  });
+
   app.post("/api/devis/:devisId/invoices", async (req, res) => {
     const parsed = insertInvoiceSchema.safeParse({ ...req.body, devisId: Number(req.params.devisId) });
     if (!parsed.success) return res.status(400).json({ message: "Invalid invoice data", errors: parsed.error.flatten() });

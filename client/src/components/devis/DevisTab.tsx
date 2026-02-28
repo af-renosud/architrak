@@ -9,25 +9,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Receipt, Upload, FileUp, Loader2, ExternalLink, Check, Ban, AlertTriangle } from "lucide-react";
+import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, FileUp, Loader2, ExternalLink, Check, Ban, AlertTriangle } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { insertDevisLineItemSchema, insertAvenantSchema, insertInvoiceSchema, insertLotSchema } from "@shared/schema";
+import { insertDevisLineItemSchema, insertAvenantSchema, insertLotSchema } from "@shared/schema";
 import type { Devis, Contractor, Lot, DevisLineItem, Avenant, Invoice } from "@shared/schema";
 import { z } from "zod";
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
 }
-
-const invoiceFormSchema = insertInvoiceSchema.extend({
-  amountHt: z.string().min(1, "Required"),
-  amountTtc: z.string().min(1, "Required"),
-  tvaAmount: z.string().min(1, "Required"),
-});
 
 const avenantFormSchema = insertAvenantSchema.extend({
   descriptionFr: z.string().min(1, "Description is required"),
@@ -344,23 +338,36 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
   const remainingHt = adjustedHt - invoicedHt;
   const progress = adjustedHt > 0 ? Math.min((invoicedHt / adjustedHt) * 100, 100) : 0;
 
-  const invoiceForm = useForm<z.infer<typeof invoiceFormSchema>>({
-    resolver: zodResolver(invoiceFormSchema),
-    defaultValues: {
-      devisId: devis.id,
-      contractorId: devis.contractorId,
-      projectId: parseInt(projectId),
-      certificateNumber: "",
-      invoiceNumber: (invoices?.length ?? 0) + 1,
-      amountHt: "0.00",
-      tvaAmount: "0.00",
-      amountTtc: "0.00",
-      dateIssued: null,
-      dateSent: null,
-      datePaid: null,
-      status: "pending",
-      pdfPath: null,
-      notes: null,
+  const invoiceFileRef = useRef<HTMLInputElement>(null);
+
+  const uploadInvoiceMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch(`/api/devis/${devis.id}/invoices/upload`, {
+        method: "POST",
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ message: "Upload failed" }));
+        throw new Error(err.message || "Upload failed");
+      }
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id, "invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "invoices"] });
+      setInvoiceDialogOpen(false);
+      const ext = data.extraction;
+      if (ext.confidence === "low") {
+        toast({ title: "Invoice uploaded — review needed", description: `${data.fileName} — amounts could not be extracted automatically. Please check the invoice record.`, variant: "destructive" });
+      } else {
+        toast({ title: "Invoice uploaded successfully", description: `${data.fileName} — ${formatCurrency(ext.amountHt)} HT detected` });
+      }
+    },
+    onError: (error: Error) => {
+      toast({ title: "Upload failed", description: error.message, variant: "destructive" });
     },
   });
 
@@ -391,24 +398,6 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
       unitPriceHt: "0.00",
       totalHt: "0.00",
       percentComplete: "0",
-    },
-  });
-
-  const createInvoiceMutation = useMutation({
-    mutationFn: async (data: z.infer<typeof invoiceFormSchema>) => {
-      const res = await apiRequest("POST", `/api/devis/${devis.id}/invoices`, data);
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id, "invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "invoices"] });
-      setInvoiceDialogOpen(false);
-      invoiceForm.reset();
-      toast({ title: "Invoice created successfully" });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -486,13 +475,6 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
 
   const [voidDialogOpen, setVoidDialogOpen] = useState(false);
   const [voidReason, setVoidReason] = useState("");
-
-  const recalcInvoiceTtc = () => {
-    const ht = parseFloat(invoiceForm.watch("amountHt") || "0");
-    const tva = ht * parseFloat(devis.tvaRate) / 100;
-    invoiceForm.setValue("tvaAmount", tva.toFixed(2));
-    invoiceForm.setValue("amountTtc", (ht + tva).toFixed(2));
-  };
 
   const recalcAvenantTtc = () => {
     const ht = parseFloat(avenantForm.watch("amountHt") || "0");
@@ -809,17 +791,9 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
         <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
           Invoices ({invoices?.length ?? 0})
         </h4>
-        <Button variant="outline" size="sm" onClick={() => {
-          invoiceForm.reset({
-            devisId: devis.id, contractorId: devis.contractorId, projectId: parseInt(projectId),
-            certificateNumber: "", invoiceNumber: (invoices?.length ?? 0) + 1,
-            amountHt: "0.00", tvaAmount: "0.00", amountTtc: "0.00",
-            dateIssued: null, dateSent: null, datePaid: null, status: "pending", pdfPath: null, notes: null,
-          });
-          setInvoiceDialogOpen(true);
-        }} data-testid={`button-add-invoice-${devis.id}`}>
-          <Receipt size={12} />
-          <span className="text-[8px] font-bold uppercase tracking-widest">Invoice</span>
+        <Button variant="outline" size="sm" onClick={() => setInvoiceDialogOpen(true)} data-testid={`button-upload-invoice-${devis.id}`}>
+          <Upload size={12} />
+          <span className="text-[8px] font-bold uppercase tracking-widest">Upload Invoice</span>
         </Button>
       </div>
       {invoices && invoices.length > 0 ? (
@@ -842,51 +816,42 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
         <p className="text-[11px] text-muted-foreground text-center py-2">No invoices.</p>
       )}
 
-      <Dialog open={invoiceDialogOpen} onOpenChange={setInvoiceDialogOpen}>
+      <Dialog open={invoiceDialogOpen} onOpenChange={(open) => { if (!uploadInvoiceMutation.isPending) setInvoiceDialogOpen(open); }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle className="text-[16px] font-black uppercase tracking-tight">New Invoice</DialogTitle>
-            <DialogDescription className="text-[11px]">Record a contractor invoice against this devis</DialogDescription>
+            <DialogTitle className="text-[16px] font-black uppercase tracking-tight">Upload Invoice PDF</DialogTitle>
+            <DialogDescription className="text-[11px]">Upload the contractor's invoice document. The system will extract amounts and details automatically.</DialogDescription>
           </DialogHeader>
-          <Form {...invoiceForm}>
-            <form onSubmit={invoiceForm.handleSubmit((d) => createInvoiceMutation.mutate(d))} className="space-y-4">
-              <FormField control={invoiceForm.control} name="invoiceNumber" render={({ field }) => (
-                <FormItem>
-                  <FormLabel><TechnicalLabel>Invoice N°</TechnicalLabel></FormLabel>
-                  <FormControl><Input {...field} type="number" data-testid="input-invoice-number" /></FormControl>
-                  <FormMessage />
-                </FormItem>
-              )} />
-              <div className="grid grid-cols-3 gap-4">
-                <FormField control={invoiceForm.control} name="amountHt" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel><TechnicalLabel>HT</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcInvoiceTtc()} data-testid="input-invoice-ht" /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={invoiceForm.control} name="tvaAmount" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel><TechnicalLabel>TVA</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} type="number" step="0.01" readOnly data-testid="input-invoice-tva" /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={invoiceForm.control} name="amountTtc" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel><TechnicalLabel>TTC</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} type="number" step="0.01" readOnly data-testid="input-invoice-ttc" /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
+          {uploadInvoiceMutation.isPending ? (
+            <div className="flex flex-col items-center justify-center py-8 gap-3">
+              <Loader2 className="h-8 w-8 animate-spin text-[#0B2545]" />
+              <p className="text-[11px] text-muted-foreground text-center">Processing PDF... Extracting invoice details</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div
+                className="border-2 border-dashed border-[#c1a27b]/40 rounded-2xl p-8 text-center cursor-pointer hover:border-[#c1a27b] hover:bg-[#c1a27b]/5 transition-all"
+                onClick={() => invoiceFileRef.current?.click()}
+                data-testid={`dropzone-invoice-upload-${devis.id}`}
+              >
+                <FileUp className="h-8 w-8 mx-auto mb-2 text-[#c1a27b]" />
+                <p className="text-[12px] font-semibold text-foreground">Click to select invoice PDF</p>
+                <p className="text-[10px] text-muted-foreground mt-1">PDF files only — the AI will extract invoice number, amounts, and date</p>
               </div>
-              <Button type="submit" className="w-full" disabled={createInvoiceMutation.isPending} data-testid="button-submit-invoice">
-                <span className="text-[9px] font-bold uppercase tracking-widest">
-                  {createInvoiceMutation.isPending ? "Creating..." : "Create Invoice"}
-                </span>
-              </Button>
-            </form>
-          </Form>
+              <input
+                ref={invoiceFileRef}
+                type="file"
+                accept=".pdf"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) uploadInvoiceMutation.mutate(file);
+                  e.target.value = "";
+                }}
+                data-testid={`input-invoice-file-${devis.id}`}
+              />
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 

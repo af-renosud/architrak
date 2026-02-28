@@ -136,6 +136,7 @@ shared/
 - **Client address**: Extracted from ArchiDoc `clients[].homeAddress` (not site address). `refreshProject` also uses this logic
 - **Gmail monitoring**: Connector provides limited scope (send only, no read). Monitor detects 403 on first poll, pauses with clear message. Label operations conditionally skipped when permissions are insufficient
 - **Devis workflow**: PDF upload → AI converts PDF→PNG via `pdftoppm` → sends page images to selected AI model (Gemini/OpenAI) → auto-creates devis record + line items → toast summary. Route: `POST /api/projects/:id/devis/upload`
+- **Invoice workflow**: Architect does NOT create invoices — they receive and process contractor invoices. Invoices enter the system only via (1) AI extraction from Gmail or (2) manual PDF upload. Route: `POST /api/devis/:devisId/invoices/upload` — stores PDF, runs AI extraction, auto-creates invoice record with extracted amounts
 - **AI Model Settings**: Configurable per task type. Default: Gemini 2.0 Flash for document_parsing. Table: `ai_model_settings`. Settings page at `/settings`. Available models: Gemini 2.0 Flash/Lite, 2.5 Flash/Pro, GPT-4o
 - **Template Assets**: Logo upload system in Settings for certificate templates. `template_assets` table stores company_logo and architects_order_logo. Served via `/api/template-assets/:type/file`
 - **Certificate Numbering**: Auto-sequential per project (C1, C2, C3...). Server assigns next ref on creation via `getNextCertificateRef`. Unique constraint on `(projectId, certificateRef)`. No manual entry
