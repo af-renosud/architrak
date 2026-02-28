@@ -26,11 +26,11 @@ function formatCurrency(value: number): string {
 }
 
 const certificatFormSchema = insertCertificatSchema.extend({
-  certificateRef: z.string().min(1, "La référence est requise"),
-  totalWorksHt: z.string().min(1, "Le montant HT est requis"),
-  netToPayHt: z.string().min(1, "Le net à payer HT est requis"),
-  tvaAmount: z.string().min(1, "Le montant TVA est requis"),
-  netToPayTtc: z.string().min(1, "Le net à payer TTC est requis"),
+  certificateRef: z.string().min(1, "Reference is required"),
+  totalWorksHt: z.string().min(1, "Works HT amount is required"),
+  netToPayHt: z.string().min(1, "Net to pay HT is required"),
+  tvaAmount: z.string().min(1, "TVA amount is required"),
+  netToPayTtc: z.string().min(1, "Net to pay TTC is required"),
 });
 
 type CertificatFormValues = z.infer<typeof certificatFormSchema>;
@@ -56,7 +56,7 @@ function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Certifica
 
           {contractor && (
             <div>
-              <TechnicalLabel>Entreprise</TechnicalLabel>
+              <TechnicalLabel>Contractor</TechnicalLabel>
               <p className="text-[13px] font-semibold text-foreground mt-1" data-testid="text-cert-detail-contractor">
                 {contractor.name}
               </p>
@@ -65,19 +65,19 @@ function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Certifica
 
           <div className="space-y-3 p-4 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
             <div className="flex items-center justify-between gap-2">
-              <TechnicalLabel>Total Travaux HT</TechnicalLabel>
+              <TechnicalLabel>Total Works HT</TechnicalLabel>
               <span className="text-[13px] font-semibold text-foreground" data-testid="text-cert-detail-works">
                 {formatCurrency(parseFloat(cert.totalWorksHt))}
               </span>
             </div>
             <div className="flex items-center justify-between gap-2">
-              <TechnicalLabel>Ajustement PV/MV</TechnicalLabel>
+              <TechnicalLabel>PV/MV Adjustment</TechnicalLabel>
               <span className={`text-[13px] font-semibold ${parseFloat(cert.pvMvAdjustment ?? "0") >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`} data-testid="text-cert-detail-pvmv">
                 {formatCurrency(parseFloat(cert.pvMvAdjustment ?? "0"))}
               </span>
             </div>
             <div className="flex items-center justify-between gap-2">
-              <TechnicalLabel>Paiements Précédents</TechnicalLabel>
+              <TechnicalLabel>Previous Payments</TechnicalLabel>
               <span className="text-[13px] font-semibold text-foreground" data-testid="text-cert-detail-previous">
                 {formatCurrency(parseFloat(cert.previousPayments ?? "0"))}
               </span>
@@ -90,7 +90,7 @@ function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Certifica
             </div>
             <div className="border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] pt-3">
               <div className="flex items-center justify-between gap-2">
-                <TechnicalLabel>Net à Payer HT</TechnicalLabel>
+                <TechnicalLabel>Net to Pay HT</TechnicalLabel>
                 <span className="text-[13px] font-semibold text-foreground" data-testid="text-cert-detail-net-ht">
                   {formatCurrency(parseFloat(cert.netToPayHt))}
                 </span>
@@ -102,7 +102,7 @@ function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Certifica
                 </span>
               </div>
               <div className="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
-                <span className="text-[11px] font-black uppercase tracking-widest text-foreground">Net à Payer TTC</span>
+                <span className="text-[11px] font-black uppercase tracking-widest text-foreground">Net to Pay TTC</span>
                 <span className="text-[16px] font-bold text-foreground" data-testid="text-cert-detail-net-ttc">
                   {formatCurrency(parseFloat(cert.netToPayTtc))}
                 </span>
@@ -192,10 +192,10 @@ export default function Certificats() {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "certificats"] });
       setDialogOpen(false);
       form.reset();
-      toast({ title: "Certificat créé avec succès" });
+      toast({ title: "Certificat created successfully" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -206,10 +206,10 @@ export default function Certificats() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "certificats"] });
-      toast({ title: "Statut mis à jour" });
+      toast({ title: "Status updated" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -219,7 +219,7 @@ export default function Certificats() {
 
   const openCreate = () => {
     if (!selectedProjectId) {
-      toast({ title: "Veuillez sélectionner un projet d'abord", variant: "destructive" });
+      toast({ title: "Please select a project first", variant: "destructive" });
       return;
     }
     const totalInvoicesHt = (projectInvoices ?? []).reduce((sum, inv) => sum + parseFloat(inv.amountHt), 0);
@@ -251,7 +251,7 @@ export default function Certificats() {
   };
 
   const getNextStatusLabel = (current: string): string | null => {
-    const labels: Record<string, string> = { draft: "Marquer Prêt", ready: "Marquer Envoyé", sent: "Marquer Payé" };
+    const labels: Record<string, string> = { draft: "Mark Ready", ready: "Mark Sent", sent: "Mark Paid" };
     return labels[current] ?? null;
   };
 
@@ -266,21 +266,21 @@ export default function Certificats() {
           </h1>
           <Button onClick={openCreate} data-testid="button-new-certificat">
             <Plus size={14} />
-            <span className="text-[9px] font-bold uppercase tracking-widest">Nouveau Certificat</span>
+            <span className="text-[9px] font-bold uppercase tracking-widest">New Certificat</span>
           </Button>
         </div>
 
         <SectionHeader
           icon={FileCheck}
-          title="Tous les Certificats"
-          subtitle="Gestion des certificats de paiement"
+          title="All Certificats"
+          subtitle="Payment certificate management"
         />
 
         <div className="max-w-xs">
-          <TechnicalLabel>Filtrer par projet</TechnicalLabel>
+          <TechnicalLabel>Filter by project</TechnicalLabel>
           <Select value={selectedProjectId} onValueChange={setSelectedProjectId}>
             <SelectTrigger className="mt-1" data-testid="select-project-filter">
-              <SelectValue placeholder="Sélectionner un projet" />
+              <SelectValue placeholder="Select a project" />
             </SelectTrigger>
             <SelectContent>
               {(projects ?? []).map((p) => (
@@ -295,7 +295,7 @@ export default function Certificats() {
         {!selectedProjectId ? (
           <LuxuryCard data-testid="card-no-project-selected">
             <p className="text-[12px] text-muted-foreground text-center py-8">
-              Sélectionnez un projet pour voir ses certificats de paiement.
+              Select a project to view its Certificats de Paiement.
             </p>
           </LuxuryCard>
         ) : isLoading ? (
@@ -362,7 +362,7 @@ export default function Certificats() {
         ) : (
           <LuxuryCard data-testid="card-empty-certificats">
             <p className="text-[12px] text-muted-foreground text-center py-8">
-              Aucun certificat de paiement pour ce projet.
+              No Certificats de Paiement for this project.
             </p>
           </LuxuryCard>
         )}
@@ -379,7 +379,7 @@ export default function Certificats() {
           <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle className="text-[16px] font-black uppercase tracking-tight">
-                Nouveau Certificat
+                New Certificat
               </DialogTitle>
             </DialogHeader>
             <Form {...form}>
@@ -390,7 +390,7 @@ export default function Certificats() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>
-                        <TechnicalLabel>Entreprise</TechnicalLabel>
+                        <TechnicalLabel>Contractor</TechnicalLabel>
                       </FormLabel>
                       <Select
                         onValueChange={(val) => field.onChange(parseInt(val))}
@@ -398,7 +398,7 @@ export default function Certificats() {
                       >
                         <FormControl>
                           <SelectTrigger data-testid="select-cert-contractor">
-                            <SelectValue placeholder="Sélectionner" />
+                            <SelectValue placeholder="Select" />
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
@@ -419,10 +419,10 @@ export default function Certificats() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>
-                        <TechnicalLabel>Référence certificat</TechnicalLabel>
+                        <TechnicalLabel>Certificate Reference</TechnicalLabel>
                       </FormLabel>
                       <FormControl>
-                        <Input {...field} placeholder="ex: C43" data-testid="input-cert-ref" />
+                        <Input {...field} placeholder="e.g. C43" data-testid="input-cert-ref" />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -434,7 +434,7 @@ export default function Certificats() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>
-                        <TechnicalLabel>Date d'émission</TechnicalLabel>
+                        <TechnicalLabel>Issue Date</TechnicalLabel>
                       </FormLabel>
                       <FormControl>
                         <Input
@@ -456,7 +456,7 @@ export default function Certificats() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>
-                          <TechnicalLabel>Total Travaux HT</TechnicalLabel>
+                          <TechnicalLabel>Total Works HT</TechnicalLabel>
                         </FormLabel>
                         <FormControl>
                           <Input
@@ -477,7 +477,7 @@ export default function Certificats() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>
-                          <TechnicalLabel>Ajustement PV/MV</TechnicalLabel>
+                          <TechnicalLabel>PV/MV Adjustment</TechnicalLabel>
                         </FormLabel>
                         <FormControl>
                           <Input
@@ -501,7 +501,7 @@ export default function Certificats() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>
-                          <TechnicalLabel>Paiements précédents</TechnicalLabel>
+                          <TechnicalLabel>Previous Payments</TechnicalLabel>
                         </FormLabel>
                         <FormControl>
                           <Input
@@ -523,7 +523,7 @@ export default function Certificats() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>
-                          <TechnicalLabel>Retenue de garantie</TechnicalLabel>
+                          <TechnicalLabel>Retenue de Garantie</TechnicalLabel>
                         </FormLabel>
                         <FormControl>
                           <Input
@@ -542,9 +542,9 @@ export default function Certificats() {
                 </div>
 
                 <div className="p-4 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] space-y-2">
-                  <TechnicalLabel>Résumé calculé</TechnicalLabel>
+                  <TechnicalLabel>Calculated Summary</TechnicalLabel>
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-muted-foreground">Net à Payer HT</span>
+                    <span className="text-[11px] text-muted-foreground">Net to Pay HT</span>
                     <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-net-ht">
                       {formatCurrency(parseFloat(form.watch("netToPayHt") || "0"))}
                     </span>
@@ -556,7 +556,7 @@ export default function Certificats() {
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
-                    <span className="text-[11px] font-black uppercase tracking-widest text-foreground">Net à Payer TTC</span>
+                    <span className="text-[11px] font-black uppercase tracking-widest text-foreground">Net to Pay TTC</span>
                     <span className="text-[16px] font-bold text-foreground" data-testid="text-calc-net-ttc">
                       {formatCurrency(parseFloat(form.watch("netToPayTtc") || "0"))}
                     </span>
@@ -587,7 +587,7 @@ export default function Certificats() {
 
                 <Button type="submit" className="w-full" disabled={createMutation.isPending} data-testid="button-submit-certificat">
                   <span className="text-[9px] font-bold uppercase tracking-widest">
-                    {createMutation.isPending ? "Création..." : "Créer le certificat"}
+                    {createMutation.isPending ? "Creating..." : "Create Certificat"}
                   </span>
                 </Button>
               </form>

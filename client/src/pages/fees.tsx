@@ -25,24 +25,24 @@ function formatCurrency(value: number): string {
 }
 
 const feeFormSchema = insertFeeSchema.extend({
-  feeAmountHt: z.string().min(1, "Le montant HT est requis"),
-  feeAmountTtc: z.string().min(1, "Le montant TTC est requis"),
-  remainingAmount: z.string().min(1, "Le montant restant est requis"),
+  feeAmountHt: z.string().min(1, "HT amount is required"),
+  feeAmountTtc: z.string().min(1, "TTC amount is required"),
+  remainingAmount: z.string().min(1, "Remaining amount is required"),
 });
 
 type FeeFormValues = z.infer<typeof feeFormSchema>;
 
 const feeEntryFormSchema = insertFeeEntrySchema.extend({
-  baseHt: z.string().min(1, "Le montant base HT est requis"),
-  feeRate: z.string().min(1, "Le taux est requis"),
-  feeAmount: z.string().min(1, "Le montant est requis"),
+  baseHt: z.string().min(1, "Base HT is required"),
+  feeRate: z.string().min(1, "Rate is required"),
+  feeAmount: z.string().min(1, "Amount is required"),
 });
 
 type FeeEntryFormValues = z.infer<typeof feeEntryFormSchema>;
 
 function FeeTypeLabel({ type }: { type: string }) {
   const labels: Record<string, string> = {
-    works_percentage: "% Travaux",
+    works_percentage: "% Works",
     conception: "Conception",
     planning: "Planning",
   };
@@ -111,10 +111,10 @@ export default function Fees() {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "fees"] });
       setFeeDialogOpen(false);
       feeForm.reset();
-      toast({ title: "Honoraire créé avec succès" });
+      toast({ title: "Fee created successfully" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -125,10 +125,10 @@ export default function Fees() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "fees"] });
-      toast({ title: "Honoraire mis à jour" });
+      toast({ title: "Fee updated" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -142,10 +142,10 @@ export default function Fees() {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "fees"] });
       setEntryDialogOpen(false);
       entryForm.reset();
-      toast({ title: "Entrée créée avec succès" });
+      toast({ title: "Entry created successfully" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -160,16 +160,16 @@ export default function Fees() {
       setEntryDialogOpen(false);
       setEditingEntryId(null);
       entryForm.reset();
-      toast({ title: "Entrée mise à jour" });
+      toast({ title: "Entry updated" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
   const openCreateFee = () => {
     if (!selectedProjectId) {
-      toast({ title: "Veuillez sélectionner un projet d'abord", variant: "destructive" });
+      toast({ title: "Please select a project first", variant: "destructive" });
       return;
     }
     feeForm.reset({
@@ -273,21 +273,21 @@ export default function Fees() {
           </h1>
           <Button onClick={openCreateFee} data-testid="button-new-fee">
             <Plus size={14} />
-            <span className="text-[9px] font-bold uppercase tracking-widest">Nouvel Honoraire</span>
+            <span className="text-[9px] font-bold uppercase tracking-widest">New Fee</span>
           </Button>
         </div>
 
         <SectionHeader
           icon={Coins}
-          title="Suivi des Honoraires"
-          subtitle="Pourcentage travaux, conception & planification"
+          title="Honoraires Tracking"
+          subtitle="Works percentage, conception & planning"
         />
 
         <div className="max-w-xs">
-          <TechnicalLabel>Filtrer par projet</TechnicalLabel>
+          <TechnicalLabel>Filter by project</TechnicalLabel>
           <Select value={selectedProjectId} onValueChange={setSelectedProjectId}>
             <SelectTrigger className="mt-1" data-testid="select-fee-project-filter">
-              <SelectValue placeholder="Sélectionner un projet" />
+              <SelectValue placeholder="Select a project" />
             </SelectTrigger>
             <SelectContent>
               {(projects ?? []).map((p) => (
@@ -302,7 +302,7 @@ export default function Fees() {
         {!selectedProjectId ? (
           <LuxuryCard data-testid="card-no-project-selected">
             <p className="text-[12px] text-muted-foreground text-center py-8">
-              Sélectionnez un projet pour voir le suivi des honoraires.
+              Select a project to view Honoraires tracking.
             </p>
           </LuxuryCard>
         ) : isLoading ? (
@@ -324,13 +324,13 @@ export default function Fees() {
                 </p>
               </LuxuryCard>
               <LuxuryCard data-testid="card-total-invoiced">
-                <TechnicalLabel>Total Facturé (Penny Lane)</TechnicalLabel>
+                <TechnicalLabel>Total Invoiced (Penny Lane)</TechnicalLabel>
                 <p className="text-[20px] font-light text-emerald-600 dark:text-emerald-400 mt-2" data-testid="text-total-invoiced">
                   {formatCurrency(totalInvoiced)}
                 </p>
               </LuxuryCard>
               <LuxuryCard data-testid="card-total-remaining">
-                <TechnicalLabel>Reste à Facturer</TechnicalLabel>
+                <TechnicalLabel>Remaining to Invoice</TechnicalLabel>
                 <p className="text-[20px] font-light text-amber-600 dark:text-amber-400 mt-2" data-testid="text-total-remaining">
                   {formatCurrency(totalRemaining)}
                 </p>
@@ -358,7 +358,7 @@ export default function Fees() {
                           </div>
                           {fee.feeRate && (
                             <p className="text-[11px] text-muted-foreground mt-0.5">
-                              Taux: {fee.feeRate}%
+                              Rate: {fee.feeRate}%
                             </p>
                           )}
                           {fee.pennylaneRef && (
@@ -373,25 +373,25 @@ export default function Fees() {
                           data-testid={`button-add-entry-${fee.id}`}
                         >
                           <Plus size={12} />
-                          <span className="text-[8px] font-bold uppercase tracking-widest">Ajouter entrée</span>
+                          <span className="text-[8px] font-bold uppercase tracking-widest">Add Entry</span>
                         </Button>
                       </div>
 
                       <div className="grid grid-cols-3 gap-4 mb-3">
                         <div>
-                          <TechnicalLabel>Montant HT</TechnicalLabel>
+                          <TechnicalLabel>Amount HT</TechnicalLabel>
                           <p className="text-[13px] font-semibold text-foreground mt-0.5" data-testid={`text-fee-amount-${fee.id}`}>
                             {formatCurrency(feeHt)}
                           </p>
                         </div>
                         <div>
-                          <TechnicalLabel>Facturé</TechnicalLabel>
+                          <TechnicalLabel>Invoiced</TechnicalLabel>
                           <p className="text-[13px] font-semibold text-emerald-600 dark:text-emerald-400 mt-0.5" data-testid={`text-fee-invoiced-${fee.id}`}>
                             {formatCurrency(invoiced)}
                           </p>
                         </div>
                         <div>
-                          <TechnicalLabel>Restant</TechnicalLabel>
+                          <TechnicalLabel>Remaining</TechnicalLabel>
                           <p className="text-[13px] font-semibold text-amber-600 dark:text-amber-400 mt-0.5" data-testid={`text-fee-remaining-${fee.id}`}>
                             {formatCurrency(remaining)}
                           </p>
@@ -407,7 +407,7 @@ export default function Fees() {
 
                       {entries.length > 0 && (
                         <div className="border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] pt-3">
-                          <TechnicalLabel>Entrées ({entries.length})</TechnicalLabel>
+                          <TechnicalLabel>Entries ({entries.length})</TechnicalLabel>
                           <div className="mt-2 space-y-2">
                             {entries.map((entry) => (
                               <div
@@ -459,7 +459,7 @@ export default function Fees() {
             ) : (
               <LuxuryCard data-testid="card-empty-fees">
                 <p className="text-[12px] text-muted-foreground text-center py-8">
-                  Aucun honoraire défini pour ce projet.
+                  No Honoraires defined for this project.
                 </p>
               </LuxuryCard>
             )}
@@ -470,7 +470,7 @@ export default function Fees() {
           <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle className="text-[16px] font-black uppercase tracking-tight">
-                Nouvel Honoraire
+                New Fee
               </DialogTitle>
             </DialogHeader>
             <Form {...feeForm}>
@@ -481,7 +481,7 @@ export default function Fees() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>
-                        <TechnicalLabel>Type d'honoraire</TechnicalLabel>
+                        <TechnicalLabel>Fee Type</TechnicalLabel>
                       </FormLabel>
                       <Select onValueChange={field.onChange} value={field.value}>
                         <FormControl>
@@ -490,7 +490,7 @@ export default function Fees() {
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
-                          <SelectItem value="works_percentage">% Travaux</SelectItem>
+                          <SelectItem value="works_percentage">% Works</SelectItem>
                           <SelectItem value="conception">Conception</SelectItem>
                           <SelectItem value="planning">Planning</SelectItem>
                         </SelectContent>
@@ -506,7 +506,7 @@ export default function Fees() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>
-                          <TechnicalLabel>Montant base HT</TechnicalLabel>
+                          <TechnicalLabel>Base Amount HT</TechnicalLabel>
                         </FormLabel>
                         <FormControl>
                           <Input
@@ -527,7 +527,7 @@ export default function Fees() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>
-                          <TechnicalLabel>Taux (%)</TechnicalLabel>
+                          <TechnicalLabel>Rate (%)</TechnicalLabel>
                         </FormLabel>
                         <FormControl>
                           <Input
@@ -552,7 +552,7 @@ export default function Fees() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>
-                          <TechnicalLabel>Montant honoraire HT</TechnicalLabel>
+                          <TechnicalLabel>Fee Amount HT</TechnicalLabel>
                         </FormLabel>
                         <FormControl>
                           <Input
@@ -573,7 +573,7 @@ export default function Fees() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>
-                          <TechnicalLabel>Montant TTC</TechnicalLabel>
+                          <TechnicalLabel>Amount TTC</TechnicalLabel>
                         </FormLabel>
                         <FormControl>
                           <Input
@@ -595,7 +595,7 @@ export default function Fees() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>
-                        <TechnicalLabel>Référence Penny Lane</TechnicalLabel>
+                        <TechnicalLabel>Penny Lane Reference</TechnicalLabel>
                       </FormLabel>
                       <FormControl>
                         <Input
@@ -611,7 +611,7 @@ export default function Fees() {
                 />
                 <Button type="submit" className="w-full" disabled={createFeeMutation.isPending} data-testid="button-submit-fee">
                   <span className="text-[9px] font-bold uppercase tracking-widest">
-                    {createFeeMutation.isPending ? "Création..." : "Créer l'honoraire"}
+                    {createFeeMutation.isPending ? "Creating..." : "Create Fee"}
                   </span>
                 </Button>
               </form>
@@ -623,7 +623,7 @@ export default function Fees() {
           <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle className="text-[16px] font-black uppercase tracking-tight">
-                {editingEntryId ? "Modifier l'entrée" : "Nouvelle Entrée"}
+                {editingEntryId ? "Edit Entry" : "New Entry"}
               </DialogTitle>
             </DialogHeader>
             <Form {...entryForm}>
@@ -656,7 +656,7 @@ export default function Fees() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>
-                          <TechnicalLabel>Taux (%)</TechnicalLabel>
+                          <TechnicalLabel>Rate (%)</TechnicalLabel>
                         </FormLabel>
                         <FormControl>
                           <Input
@@ -678,7 +678,7 @@ export default function Fees() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>
-                        <TechnicalLabel>Montant honoraire</TechnicalLabel>
+                        <TechnicalLabel>Fee Amount</TechnicalLabel>
                       </FormLabel>
                       <FormControl>
                         <Input {...field} type="number" step="0.01" readOnly data-testid="input-entry-amount" />
@@ -693,7 +693,7 @@ export default function Fees() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>
-                        <TechnicalLabel>Référence facture Penny Lane</TechnicalLabel>
+                        <TechnicalLabel>Penny Lane Invoice Ref</TechnicalLabel>
                       </FormLabel>
                       <FormControl>
                         <Input
@@ -713,7 +713,7 @@ export default function Fees() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>
-                        <TechnicalLabel>Date de facturation</TechnicalLabel>
+                        <TechnicalLabel>Invoice Date</TechnicalLabel>
                       </FormLabel>
                       <FormControl>
                         <Input
@@ -734,7 +734,7 @@ export default function Fees() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>
-                        <TechnicalLabel>Statut</TechnicalLabel>
+                        <TechnicalLabel>Status</TechnicalLabel>
                       </FormLabel>
                       <Select onValueChange={field.onChange} value={field.value}>
                         <FormControl>
@@ -743,9 +743,9 @@ export default function Fees() {
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
-                          <SelectItem value="pending">En attente</SelectItem>
-                          <SelectItem value="invoiced">Facturé</SelectItem>
-                          <SelectItem value="paid">Payé</SelectItem>
+                          <SelectItem value="pending">Pending</SelectItem>
+                          <SelectItem value="invoiced">Invoiced</SelectItem>
+                          <SelectItem value="paid">Paid</SelectItem>
                         </SelectContent>
                       </Select>
                       <FormMessage />
@@ -760,10 +760,10 @@ export default function Fees() {
                 >
                   <span className="text-[9px] font-bold uppercase tracking-widest">
                     {(createEntryMutation.isPending || updateEntryMutation.isPending)
-                      ? "Enregistrement..."
+                      ? "Saving..."
                       : editingEntryId
-                      ? "Mettre à jour"
-                      : "Créer l'entrée"}
+                      ? "Update"
+                      : "Create Entry"}
                   </span>
                 </Button>
               </form>

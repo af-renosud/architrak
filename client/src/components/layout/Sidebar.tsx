@@ -13,21 +13,22 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import logoPath from "@assets/Generated_Image_February_28__2026_-_3_59PM.jpg-removebg-previe_1772291017667.png";
 
 const navItems = [
-  { path: "/", label: "Tableau de Bord", icon: LayoutDashboard },
-  { path: "/projets", label: "Projets", icon: FolderOpen },
-  { path: "/entreprises", label: "Entreprises", icon: Building2 },
-  { path: "/suivi-financier", label: "Suivi Financier", icon: TrendingUp },
+  { path: "/", label: "Dashboard", icon: LayoutDashboard },
+  { path: "/projets", label: "Projects", icon: FolderOpen },
+  { path: "/entreprises", label: "Contractors", icon: Building2 },
+  { path: "/suivi-financier", label: "Financial Tracking", icon: TrendingUp },
   { path: "/certificats", label: "Certificats", icon: FileCheck },
   { path: "/honoraires", label: "Honoraires", icon: Coins },
 ];
 
 const toolButtons = [
-  { icon: Search, label: "Rechercher", bg: "bg-rose-50 dark:bg-rose-950/30" },
+  { icon: Search, label: "Search", bg: "bg-rose-50 dark:bg-rose-950/30" },
   { icon: Bell, label: "Notifications", bg: "bg-amber-50 dark:bg-amber-950/30" },
-  { icon: Settings, label: "Paramètres", bg: "bg-purple-50 dark:bg-purple-950/30" },
-  { icon: HelpCircle, label: "Aide", bg: "bg-emerald-50 dark:bg-emerald-950/30" },
+  { icon: Settings, label: "Settings", bg: "bg-purple-50 dark:bg-purple-950/30" },
+  { icon: HelpCircle, label: "Help", bg: "bg-emerald-50 dark:bg-emerald-950/30" },
 ];
 
 export function Sidebar() {
@@ -45,15 +46,14 @@ export function Sidebar() {
       data-testid="sidebar"
     >
       <div className="px-6 pt-6 pb-4">
-        <h1
-          className="text-[20px] font-light uppercase tracking-tight"
-          style={{ color: "#0B2545" }}
-          data-testid="text-branding"
-        >
-          ArchiTrak
-        </h1>
+        <img
+          src={logoPath}
+          alt="ArchiTrak"
+          className="h-10 w-auto object-contain"
+          data-testid="img-logo"
+        />
         <p className="text-[8px] font-black uppercase tracking-widest mt-1" style={{ color: "#7E7F83" }}>
-          Gestion Financière
+          Financial Management
         </p>
       </div>
 

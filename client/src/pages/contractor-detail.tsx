@@ -52,11 +52,11 @@ export default function ContractorDetail() {
     return (
       <AppLayout>
         <div className="space-y-6">
-          <p className="text-muted-foreground">Entreprise non trouvée.</p>
+          <p className="text-muted-foreground">Contractor not found.</p>
           <Link href="/entreprises">
             <Button variant="outline" data-testid="button-back-contractors">
               <ArrowLeft size={14} />
-              <span className="text-[9px] font-bold uppercase tracking-widest">Retour aux entreprises</span>
+              <span className="text-[9px] font-bold uppercase tracking-widest">Back to Contractors</span>
             </Button>
           </Link>
         </div>
@@ -92,13 +92,13 @@ export default function ContractorDetail() {
         <SectionHeader
           icon={Building2}
           title={contractor.name}
-          subtitle="Fiche entreprise"
+          subtitle="Contractor details"
         />
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <LuxuryCard data-testid="card-contractor-info" className="md:col-span-1">
             <h3 className="text-[14px] font-black uppercase tracking-tight text-foreground mb-4">
-              Informations
+              Information
             </h3>
             <div className="space-y-3">
               {contractor.email && (
@@ -121,7 +121,7 @@ export default function ContractorDetail() {
               )}
               {contractor.defaultTvaRate && (
                 <div className="pt-3 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
-                  <TechnicalLabel>Taux TVA par défaut</TechnicalLabel>
+                  <TechnicalLabel>Default TVA Rate</TechnicalLabel>
                   <p className="text-[12px] text-foreground mt-1" data-testid="text-default-tva">{contractor.defaultTvaRate}%</p>
                 </div>
               )}
@@ -146,12 +146,12 @@ export default function ContractorDetail() {
                 </p>
               </LuxuryCard>
               <LuxuryCard data-testid="card-total-invoiced">
-                <TechnicalLabel>Total Facturé HT</TechnicalLabel>
+                <TechnicalLabel>Total Invoiced HT</TechnicalLabel>
                 <p className="text-[18px] font-light text-emerald-600 dark:text-emerald-400 mt-2" data-testid="text-total-invoiced">
                   {formatCurrency(totalInvoicedHt)}
                 </p>
                 <p className="text-[10px] text-muted-foreground mt-1">
-                  {contractorInvoices?.length ?? 0} factures
+                  {contractorInvoices?.length ?? 0} invoices
                 </p>
               </LuxuryCard>
             </div>
@@ -181,7 +181,7 @@ export default function ContractorDetail() {
                       {proj && (
                         <Link href={`/projets/${proj.id}`}>
                           <span className="text-[10px] text-muted-foreground hover:underline" data-testid={`link-project-${proj.id}`}>
-                            Projet: {proj.name} ({proj.code})
+                            Project: {proj.name} ({proj.code})
                           </span>
                         </Link>
                       )}
@@ -196,7 +196,7 @@ export default function ContractorDetail() {
             </div>
           ) : (
             <p className="text-[12px] text-muted-foreground text-center py-6">
-              Aucun devis associé à cette entreprise.
+              No Devis associated with this contractor.
             </p>
           )}
         </LuxuryCard>
@@ -205,7 +205,7 @@ export default function ContractorDetail() {
           <div className="flex items-center gap-2 mb-4">
             <Receipt size={14} className="text-muted-foreground" />
             <h3 className="text-[14px] font-black uppercase tracking-tight text-foreground">
-              Factures ({contractorInvoices?.length ?? 0})
+              Invoices ({contractorInvoices?.length ?? 0})
             </h3>
           </div>
           {contractorInvoices && contractorInvoices.length > 0 ? (
@@ -228,7 +228,7 @@ export default function ContractorDetail() {
                       {proj && (
                         <Link href={`/projets/${proj.id}`}>
                           <span className="text-[10px] text-muted-foreground hover:underline" data-testid={`link-invoice-project-${proj.id}`}>
-                            Projet: {proj.name} ({proj.code})
+                            Project: {proj.name} ({proj.code})
                           </span>
                         </Link>
                       )}
@@ -249,7 +249,7 @@ export default function ContractorDetail() {
             </div>
           ) : (
             <p className="text-[12px] text-muted-foreground text-center py-6">
-              Aucune facture associée à cette entreprise.
+              No invoices associated with this contractor.
             </p>
           )}
         </LuxuryCard>

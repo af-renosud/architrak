@@ -13,15 +13,15 @@ export default function NotFound() {
             404
           </h1>
           <p className="text-[14px] font-black uppercase tracking-tight text-foreground mb-2">
-            Page Introuvable
+            Page Not Found
           </p>
           <p className="text-[12px] text-muted-foreground mb-6">
-            La page que vous recherchez n'existe pas ou a été déplacée.
+            The page you are looking for does not exist or has been moved.
           </p>
           <Link href="/">
             <Button data-testid="button-back-home">
               <ArrowLeft size={14} />
-              <span className="text-[9px] font-bold uppercase tracking-widest">Retour au tableau de bord</span>
+              <span className="text-[9px] font-bold uppercase tracking-widest">Back to Dashboard</span>
             </Button>
           </Link>
         </LuxuryCard>

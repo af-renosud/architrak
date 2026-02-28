@@ -60,25 +60,25 @@ interface DevisSummary {
 }
 
 const certFormSchema = insertCertificatSchema.extend({
-  certificateRef: z.string().min(1, "La référence est requise"),
-  totalWorksHt: z.string().min(1, "Requis"),
-  netToPayHt: z.string().min(1, "Requis"),
-  tvaAmount: z.string().min(1, "Requis"),
-  netToPayTtc: z.string().min(1, "Requis"),
+  certificateRef: z.string().min(1, "Reference is required"),
+  totalWorksHt: z.string().min(1, "Required"),
+  netToPayHt: z.string().min(1, "Required"),
+  tvaAmount: z.string().min(1, "Required"),
+  netToPayTtc: z.string().min(1, "Required"),
 });
 type CertFormValues = z.infer<typeof certFormSchema>;
 
 const feeFormSchema = insertFeeSchema.extend({
-  feeAmountHt: z.string().min(1, "Requis"),
-  feeAmountTtc: z.string().min(1, "Requis"),
-  remainingAmount: z.string().min(1, "Requis"),
+  feeAmountHt: z.string().min(1, "Required"),
+  feeAmountTtc: z.string().min(1, "Required"),
+  remainingAmount: z.string().min(1, "Required"),
 });
 type FeeFormValues = z.infer<typeof feeFormSchema>;
 
 const entryFormSchema = insertFeeEntrySchema.extend({
-  baseHt: z.string().min(1, "Requis"),
-  feeRate: z.string().min(1, "Requis"),
-  feeAmount: z.string().min(1, "Requis"),
+  baseHt: z.string().min(1, "Required"),
+  feeRate: z.string().min(1, "Required"),
+  feeAmount: z.string().min(1, "Required"),
 });
 type EntryFormValues = z.infer<typeof entryFormSchema>;
 
@@ -173,8 +173,8 @@ export default function ProjectDetail() {
   });
 
   const lotFormSchema = insertLotSchema.extend({
-    lotNumber: z.coerce.number().min(1, "Requis"),
-    descriptionFr: z.string().min(1, "La description est requise"),
+    lotNumber: z.coerce.number().min(1, "Required"),
+    descriptionFr: z.string().min(1, "Description is required"),
   });
   const lotForm = useForm<z.infer<typeof lotFormSchema>>({
     resolver: zodResolver(lotFormSchema),
@@ -182,8 +182,8 @@ export default function ProjectDetail() {
   });
 
   const marcheFormSchema = insertMarcheSchema.extend({
-    totalHt: z.string().min(1, "Requis"),
-    totalTtc: z.string().min(1, "Requis"),
+    totalHt: z.string().min(1, "Required"),
+    totalTtc: z.string().min(1, "Required"),
   });
   const marcheForm = useForm<z.infer<typeof marcheFormSchema>>({
     resolver: zodResolver(marcheFormSchema),
@@ -203,10 +203,10 @@ export default function ProjectDetail() {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "lots"] });
       setLotDialogOpen(false);
       lotForm.reset();
-      toast({ title: "Lot créé avec succès" });
+      toast({ title: "Lot created successfully" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -219,10 +219,10 @@ export default function ProjectDetail() {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "marches"] });
       setMarcheDialogOpen(false);
       marcheForm.reset();
-      toast({ title: "Marché créé avec succès" });
+      toast({ title: "Marché created successfully" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -235,10 +235,10 @@ export default function ProjectDetail() {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "certificats"] });
       setCertDialogOpen(false);
       certForm.reset();
-      toast({ title: "Certificat créé avec succès" });
+      toast({ title: "Certificat created successfully" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -249,10 +249,10 @@ export default function ProjectDetail() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "certificats"] });
-      toast({ title: "Statut mis à jour" });
+      toast({ title: "Status updated" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -265,10 +265,10 @@ export default function ProjectDetail() {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "fees"] });
       setFeeDialogOpen(false);
       feeForm.reset();
-      toast({ title: "Honoraire créé avec succès" });
+      toast({ title: "Fee created successfully" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -282,10 +282,10 @@ export default function ProjectDetail() {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "fees"] });
       setEntryDialogOpen(false);
       entryForm.reset();
-      toast({ title: "Entrée créée" });
+      toast({ title: "Entry created" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -300,10 +300,10 @@ export default function ProjectDetail() {
       setEntryDialogOpen(false);
       setEditingEntryId(null);
       entryForm.reset();
-      toast({ title: "Entrée mise à jour" });
+      toast({ title: "Entry updated" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -382,7 +382,7 @@ export default function ProjectDetail() {
   };
 
   const getNextCertStatus = (s: string) => ({ draft: "ready", ready: "sent", sent: "paid" }[s] ?? null);
-  const getNextCertLabel = (s: string) => ({ draft: "Marquer Prêt", ready: "Marquer Envoyé", sent: "Marquer Payé" }[s] ?? null);
+  const getNextCertLabel = (s: string) => ({ draft: "Mark Ready", ready: "Mark Sent", sent: "Mark Paid" }[s] ?? null);
 
   if (isLoading) {
     return (
@@ -399,11 +399,11 @@ export default function ProjectDetail() {
     return (
       <AppLayout>
         <div className="space-y-6">
-          <p className="text-muted-foreground">Projet non trouvé.</p>
+          <p className="text-muted-foreground">Project not found.</p>
           <Link href="/projets">
             <Button variant="outline" data-testid="button-back-projects">
               <ArrowLeft size={14} />
-              <span className="text-[9px] font-bold uppercase tracking-widest">Retour aux projets</span>
+              <span className="text-[9px] font-bold uppercase tracking-widest">Back to Projects</span>
             </Button>
           </Link>
         </div>
@@ -450,25 +450,25 @@ export default function ProjectDetail() {
         <LuxuryCard data-testid="card-project-info">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div>
-              <TechnicalLabel>Taux TVA</TechnicalLabel>
+              <TechnicalLabel>TVA Rate</TechnicalLabel>
               <p className="text-[13px] font-semibold text-foreground mt-1" data-testid="text-tva-rate">{project.tvaRate}%</p>
             </div>
             <div>
-              <TechnicalLabel>Type honoraires</TechnicalLabel>
+              <TechnicalLabel>Honoraires Type</TechnicalLabel>
               <p className="text-[13px] font-semibold text-foreground mt-1" data-testid="text-fee-type">
-                {project.feeType === "percentage" ? "Pourcentage" : "Fixe"}
+                {project.feeType === "percentage" ? "Percentage" : "Fixed"}
               </p>
             </div>
             {project.feePercentage && (
               <div>
-                <TechnicalLabel>% Honoraires</TechnicalLabel>
+                <TechnicalLabel>Honoraires %</TechnicalLabel>
                 <p className="text-[13px] font-semibold text-foreground mt-1" data-testid="text-fee-pct">{project.feePercentage}%</p>
               </div>
             )}
             <div>
               <TechnicalLabel>Marché</TechnicalLabel>
               <p className="text-[13px] font-semibold text-foreground mt-1" data-testid="text-has-marche">
-                {project.hasMarche ? "Oui" : "Non"}
+                {project.hasMarche ? "Yes" : "No"}
               </p>
             </div>
           </div>
@@ -478,7 +478,7 @@ export default function ProjectDetail() {
           <TabsList className="flex-wrap">
             <TabsTrigger value="resume" data-testid="tab-resume">
               <BarChart3 size={12} className="mr-1" />
-              Résumé Financier
+              Financial Summary
             </TabsTrigger>
             <TabsTrigger value="devis" data-testid="tab-devis">
               <FileText size={12} className="mr-1" />
@@ -509,13 +509,13 @@ export default function ProjectDetail() {
               <div className="space-y-6">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <LuxuryCard data-testid="card-total-contracted">
-                    <TechnicalLabel>Total Contracté HT</TechnicalLabel>
+                    <TechnicalLabel>Total Contracted HT</TechnicalLabel>
                     <p className="text-[20px] font-light text-foreground mt-2" data-testid="text-total-contracted">
                       {formatCurrency(financialSummary.totalContractedHt)}
                     </p>
                   </LuxuryCard>
                   <LuxuryCard data-testid="card-total-certified">
-                    <TechnicalLabel>Total Certifié HT</TechnicalLabel>
+                    <TechnicalLabel>Total Certified HT</TechnicalLabel>
                     <p className="text-[20px] font-light text-emerald-600 dark:text-emerald-400 mt-2" data-testid="text-total-certified">
                       {formatCurrency(financialSummary.totalCertifiedHt)}
                     </p>
@@ -531,7 +531,7 @@ export default function ProjectDetail() {
                 {financialSummary.devis.length > 0 ? (
                   <LuxuryCard data-testid="card-devis-breakdown">
                     <h3 className="text-[14px] font-black uppercase tracking-tight text-foreground mb-4">
-                      Détail par Devis
+                      Breakdown by Devis
                     </h3>
                     <div className="space-y-4">
                       {financialSummary.devis.map((ds) => {
@@ -553,19 +553,19 @@ export default function ProjectDetail() {
                             </div>
                             <div className="grid grid-cols-3 gap-4">
                               <div>
-                                <TechnicalLabel>Contracté</TechnicalLabel>
+                                <TechnicalLabel>Contracted</TechnicalLabel>
                                 <p className="text-[12px] font-semibold text-foreground mt-0.5">
                                   {formatCurrency(ds.adjustedHt)}
                                 </p>
                               </div>
                               <div>
-                                <TechnicalLabel>Certifié</TechnicalLabel>
+                                <TechnicalLabel>Certified</TechnicalLabel>
                                 <p className="text-[12px] font-semibold text-emerald-600 dark:text-emerald-400 mt-0.5">
                                   {formatCurrency(ds.certifiedHt)}
                                 </p>
                               </div>
                               <div>
-                                <TechnicalLabel>Reste</TechnicalLabel>
+                                <TechnicalLabel>Remaining</TechnicalLabel>
                                 <p className="text-[12px] font-semibold text-amber-600 dark:text-amber-400 mt-0.5">
                                   {formatCurrency(ds.resteARealiser)}
                                 </p>
@@ -579,10 +579,10 @@ export default function ProjectDetail() {
                             </div>
                             <div className="flex items-center gap-4 flex-wrap">
                               <span className="text-[10px] text-muted-foreground">
-                                {ds.invoiceCount} facture{ds.invoiceCount !== 1 ? "s" : ""}
+                                {ds.invoiceCount} invoice{ds.invoiceCount !== 1 ? "s" : ""}
                               </span>
                               <span className="text-[10px] text-muted-foreground">
-                                {ds.avenantCount} avenant{ds.avenantCount !== 1 ? "s" : ""}
+                                {ds.avenantCount} avenant{ds.avenantCount !== 1 ? "s" : ""} 
                               </span>
                               {ds.pvTotal > 0 && (
                                 <span className="text-[10px] text-emerald-600 dark:text-emerald-400">
@@ -603,7 +603,7 @@ export default function ProjectDetail() {
                 ) : (
                   <LuxuryCard data-testid="card-no-devis-summary">
                     <p className="text-[12px] text-muted-foreground text-center py-8">
-                      Aucun devis pour ce projet.
+                      No Devis for this project.
                     </p>
                   </LuxuryCard>
                 )}
@@ -631,7 +631,7 @@ export default function ProjectDetail() {
                   setLotDialogOpen(true);
                 }} data-testid="button-new-lot">
                   <Plus size={14} />
-                  <span className="text-[9px] font-bold uppercase tracking-widest">Nouveau Lot</span>
+                  <span className="text-[9px] font-bold uppercase tracking-widest">New Lot</span>
                 </Button>
               </div>
               <LuxuryCard data-testid="card-lots-tab">
@@ -656,20 +656,20 @@ export default function ProjectDetail() {
                   </div>
                 ) : (
                   <p className="text-[12px] text-muted-foreground text-center py-8">
-                    Aucun lot défini pour ce projet.
+                    No Lots defined for this project.
                   </p>
                 )}
               </LuxuryCard>
               <Dialog open={lotDialogOpen} onOpenChange={setLotDialogOpen}>
                 <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
                   <DialogHeader>
-                    <DialogTitle className="text-[16px] font-black uppercase tracking-tight">Nouveau Lot</DialogTitle>
+                    <DialogTitle className="text-[16px] font-black uppercase tracking-tight">New Lot</DialogTitle>
                   </DialogHeader>
                   <Form {...lotForm}>
                     <form onSubmit={lotForm.handleSubmit((d) => createLotMutation.mutate(d))} className="space-y-4">
                       <FormField control={lotForm.control} name="lotNumber" render={({ field }) => (
                         <FormItem>
-                          <FormLabel><TechnicalLabel>Numéro de lot</TechnicalLabel></FormLabel>
+                          <FormLabel><TechnicalLabel>Lot Number</TechnicalLabel></FormLabel>
                           <FormControl><Input {...field} type="number" onChange={(e) => field.onChange(parseInt(e.target.value))} data-testid="input-lot-number" /></FormControl>
                           <FormMessage />
                         </FormItem>
@@ -690,7 +690,7 @@ export default function ProjectDetail() {
                       )} />
                       <Button type="submit" className="w-full" disabled={createLotMutation.isPending} data-testid="button-submit-lot">
                         <span className="text-[9px] font-bold uppercase tracking-widest">
-                          {createLotMutation.isPending ? "Création..." : "Créer le lot"}
+                          {createLotMutation.isPending ? "Creating..." : "Create Lot"}
                         </span>
                       </Button>
                     </form>
@@ -713,7 +713,7 @@ export default function ProjectDetail() {
                     setMarcheDialogOpen(true);
                   }} data-testid="button-new-marche">
                     <Plus size={14} />
-                    <span className="text-[9px] font-bold uppercase tracking-widest">Nouveau Marché</span>
+                    <span className="text-[9px] font-bold uppercase tracking-widest">New Marché</span>
                   </Button>
                 </div>
                 <LuxuryCard data-testid="card-marche-tab">
@@ -744,22 +744,22 @@ export default function ProjectDetail() {
                   </div>
                 ) : (
                   <p className="text-[12px] text-muted-foreground text-center py-8">
-                    Aucun marché pour ce projet.
+                    No Marché for this project.
                   </p>
                 )}
               </LuxuryCard>
               <Dialog open={marcheDialogOpen} onOpenChange={setMarcheDialogOpen}>
                 <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
                   <DialogHeader>
-                    <DialogTitle className="text-[16px] font-black uppercase tracking-tight">Nouveau Marché</DialogTitle>
+                    <DialogTitle className="text-[16px] font-black uppercase tracking-tight">New Marché</DialogTitle>
                   </DialogHeader>
                   <Form {...marcheForm}>
                     <form onSubmit={marcheForm.handleSubmit((d) => createMarcheMutation.mutate(d))} className="space-y-4">
                       <FormField control={marcheForm.control} name="contractorId" render={({ field }) => (
                         <FormItem>
-                          <FormLabel><TechnicalLabel>Entreprise</TechnicalLabel></FormLabel>
+                          <FormLabel><TechnicalLabel>Contractor</TechnicalLabel></FormLabel>
                           <Select onValueChange={(v) => field.onChange(parseInt(v))} value={field.value ? String(field.value) : ""}>
-                            <FormControl><SelectTrigger data-testid="select-marche-contractor"><SelectValue placeholder="Sélectionner" /></SelectTrigger></FormControl>
+                            <FormControl><SelectTrigger data-testid="select-marche-contractor"><SelectValue placeholder="Select" /></SelectTrigger></FormControl>
                             <SelectContent>
                               {(contractors ?? []).map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
                             </SelectContent>
@@ -769,14 +769,14 @@ export default function ProjectDetail() {
                       )} />
                       <FormField control={marcheForm.control} name="marcheNumber" render={({ field }) => (
                         <FormItem>
-                          <FormLabel><TechnicalLabel>Numéro de Marché</TechnicalLabel></FormLabel>
+                          <FormLabel><TechnicalLabel>Marché Number</TechnicalLabel></FormLabel>
                           <FormControl><Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} placeholder="ex: MTP-2024-001" data-testid="input-marche-number" /></FormControl>
                           <FormMessage />
                         </FormItem>
                       )} />
                       <FormField control={marcheForm.control} name="priceType" render={({ field }) => (
                         <FormItem>
-                          <FormLabel><TechnicalLabel>Type de Prix</TechnicalLabel></FormLabel>
+                          <FormLabel><TechnicalLabel>Price Type</TechnicalLabel></FormLabel>
                           <Select onValueChange={field.onChange} value={field.value}>
                             <FormControl><SelectTrigger data-testid="select-marche-price"><SelectValue /></SelectTrigger></FormControl>
                             <SelectContent>
@@ -812,7 +812,7 @@ export default function ProjectDetail() {
                       )} />
                       <Button type="submit" className="w-full" disabled={createMarcheMutation.isPending} data-testid="button-submit-marche">
                         <span className="text-[9px] font-bold uppercase tracking-widest">
-                          {createMarcheMutation.isPending ? "Création..." : "Créer le marché"}
+                          {createMarcheMutation.isPending ? "Creating..." : "Create Marché"}
                         </span>
                       </Button>
                     </form>
@@ -828,7 +828,7 @@ export default function ProjectDetail() {
               <div className="flex items-center justify-end">
                 <Button onClick={openCreateCert} data-testid="button-new-cert-tab">
                   <Plus size={14} />
-                  <span className="text-[9px] font-bold uppercase tracking-widest">Nouveau Certificat</span>
+                  <span className="text-[9px] font-bold uppercase tracking-widest">New Certificat</span>
                 </Button>
               </div>
               {certificatsList && certificatsList.length > 0 ? (
@@ -900,7 +900,7 @@ export default function ProjectDetail() {
               ) : (
                 <LuxuryCard data-testid="card-empty-certs-tab">
                   <p className="text-[12px] text-muted-foreground text-center py-8">
-                    Aucun certificat de paiement pour ce projet.
+                    No Certificat de Paiement for this project.
                   </p>
                 </LuxuryCard>
               )}
@@ -920,14 +920,14 @@ export default function ProjectDetail() {
                       {viewingCert.dateIssued && <span className="text-[11px] text-muted-foreground">{viewingCert.dateIssued}</span>}
                     </div>
                     <div>
-                      <TechnicalLabel>Entreprise</TechnicalLabel>
+                      <TechnicalLabel>Contractor</TechnicalLabel>
                       <p className="text-[13px] font-semibold text-foreground mt-1" data-testid="text-cert-view-contractor">
                         {getContractorName(viewingCert.contractorId)}
                       </p>
                     </div>
                     <div className="space-y-2 p-4 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                       <div className="flex items-center justify-between gap-2">
-                        <TechnicalLabel>Total Travaux HT</TechnicalLabel>
+                        <TechnicalLabel>Total Works HT</TechnicalLabel>
                         <span className="text-[13px] font-semibold text-foreground">{formatCurrency(parseFloat(viewingCert.totalWorksHt))}</span>
                       </div>
                       <div className="flex items-center justify-between gap-2">
@@ -935,7 +935,7 @@ export default function ProjectDetail() {
                         <span className="text-[13px] font-semibold text-foreground">{formatCurrency(parseFloat(viewingCert.pvMvAdjustment ?? "0"))}</span>
                       </div>
                       <div className="flex items-center justify-between gap-2">
-                        <TechnicalLabel>Paiements Précédents</TechnicalLabel>
+                        <TechnicalLabel>Previous Payments</TechnicalLabel>
                         <span className="text-[13px] font-semibold text-foreground">{formatCurrency(parseFloat(viewingCert.previousPayments ?? "0"))}</span>
                       </div>
                       <div className="flex items-center justify-between gap-2">
@@ -971,15 +971,15 @@ export default function ProjectDetail() {
             <Dialog open={certDialogOpen} onOpenChange={setCertDialogOpen}>
               <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
                 <DialogHeader>
-                  <DialogTitle className="text-[16px] font-black uppercase tracking-tight">Nouveau Certificat</DialogTitle>
+                  <DialogTitle className="text-[16px] font-black uppercase tracking-tight">New Certificat</DialogTitle>
                 </DialogHeader>
                 <Form {...certForm}>
                   <form onSubmit={certForm.handleSubmit((d) => createCertMutation.mutate(d))} className="space-y-4">
                     <FormField control={certForm.control} name="contractorId" render={({ field }) => (
                       <FormItem>
-                        <FormLabel><TechnicalLabel>Entreprise</TechnicalLabel></FormLabel>
+                        <FormLabel><TechnicalLabel>Contractor</TechnicalLabel></FormLabel>
                         <Select onValueChange={(v) => field.onChange(parseInt(v))} value={field.value ? String(field.value) : ""}>
-                          <FormControl><SelectTrigger data-testid="select-cert-contractor-tab"><SelectValue placeholder="Sélectionner" /></SelectTrigger></FormControl>
+                          <FormControl><SelectTrigger data-testid="select-cert-contractor-tab"><SelectValue placeholder="Select" /></SelectTrigger></FormControl>
                           <SelectContent>
                             {(contractors ?? []).map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
                           </SelectContent>
@@ -989,7 +989,7 @@ export default function ProjectDetail() {
                     )} />
                     <FormField control={certForm.control} name="certificateRef" render={({ field }) => (
                       <FormItem>
-                        <FormLabel><TechnicalLabel>Référence</TechnicalLabel></FormLabel>
+                        <FormLabel><TechnicalLabel>Reference</TechnicalLabel></FormLabel>
                         <FormControl><Input {...field} placeholder="ex: C43" data-testid="input-cert-ref-tab" /></FormControl>
                         <FormMessage />
                       </FormItem>
@@ -1004,7 +1004,7 @@ export default function ProjectDetail() {
                     <div className="grid grid-cols-2 gap-4">
                       <FormField control={certForm.control} name="totalWorksHt" render={({ field }) => (
                         <FormItem>
-                          <FormLabel><TechnicalLabel>Total Travaux HT</TechnicalLabel></FormLabel>
+                          <FormLabel><TechnicalLabel>Total Works HT</TechnicalLabel></FormLabel>
                           <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcCert()} data-testid="input-cert-works-tab" /></FormControl>
                           <FormMessage />
                         </FormItem>
@@ -1020,21 +1020,21 @@ export default function ProjectDetail() {
                     <div className="grid grid-cols-2 gap-4">
                       <FormField control={certForm.control} name="previousPayments" render={({ field }) => (
                         <FormItem>
-                          <FormLabel><TechnicalLabel>Paiements précédents</TechnicalLabel></FormLabel>
+                          <FormLabel><TechnicalLabel>Previous Payments</TechnicalLabel></FormLabel>
                           <FormControl><Input {...field} value={field.value ?? "0.00"} type="number" step="0.01" onBlur={() => recalcCert()} data-testid="input-cert-prev-tab" /></FormControl>
                           <FormMessage />
                         </FormItem>
                       )} />
                       <FormField control={certForm.control} name="retenueGarantie" render={({ field }) => (
                         <FormItem>
-                          <FormLabel><TechnicalLabel>Retenue de garantie</TechnicalLabel></FormLabel>
+                          <FormLabel><TechnicalLabel>Retenue de Garantie</TechnicalLabel></FormLabel>
                           <FormControl><Input {...field} value={field.value ?? "0.00"} type="number" step="0.01" onBlur={() => recalcCert()} data-testid="input-cert-retenue-tab" /></FormControl>
                           <FormMessage />
                         </FormItem>
                       )} />
                     </div>
                     <div className="p-4 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] space-y-2">
-                      <TechnicalLabel>Résumé</TechnicalLabel>
+                      <TechnicalLabel>Summary</TechnicalLabel>
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-[11px] text-muted-foreground">Net HT</span>
                         <span className="text-[13px] font-semibold text-foreground">{formatCurrency(parseFloat(certForm.watch("netToPayHt") || "0"))}</span>
@@ -1057,7 +1057,7 @@ export default function ProjectDetail() {
                     )} />
                     <Button type="submit" className="w-full" disabled={createCertMutation.isPending} data-testid="button-submit-cert-tab">
                       <span className="text-[9px] font-bold uppercase tracking-widest">
-                        {createCertMutation.isPending ? "Création..." : "Créer le certificat"}
+                        {createCertMutation.isPending ? "Creating..." : "Create Certificat"}
                       </span>
                     </Button>
                   </form>
@@ -1077,13 +1077,13 @@ export default function ProjectDetail() {
                     </p>
                   </div>
                   <div>
-                    <TechnicalLabel>Facturé</TechnicalLabel>
+                    <TechnicalLabel>Invoiced</TechnicalLabel>
                     <p className="text-[16px] font-light text-emerald-600 dark:text-emerald-400 mt-1" data-testid="text-tab-fee-invoiced">
                       {formatCurrency((feesList ?? []).reduce((s, f) => s + parseFloat(f.invoicedAmount ?? "0"), 0))}
                     </p>
                   </div>
                   <div>
-                    <TechnicalLabel>Restant</TechnicalLabel>
+                    <TechnicalLabel>Remaining</TechnicalLabel>
                     <p className="text-[16px] font-light text-amber-600 dark:text-amber-400 mt-1" data-testid="text-tab-fee-remaining">
                       {formatCurrency((feesList ?? []).reduce((s, f) => s + parseFloat(f.feeAmountHt) - parseFloat(f.invoicedAmount ?? "0"), 0))}
                     </p>
@@ -1091,14 +1091,14 @@ export default function ProjectDetail() {
                 </div>
                 <Button onClick={openCreateFee} data-testid="button-new-fee-tab">
                   <Plus size={14} />
-                  <span className="text-[9px] font-bold uppercase tracking-widest">Nouvel Honoraire</span>
+                  <span className="text-[9px] font-bold uppercase tracking-widest">New Fee</span>
                 </Button>
               </div>
 
               {feesList && feesList.length > 0 ? (
                 <div className="space-y-4">
                   {feesList.map((f) => {
-                    const feeTypeLabel = f.feeType === "works_percentage" ? "% Travaux" : f.feeType === "conception" ? "Conception" : "Planning";
+                    const feeTypeLabel = f.feeType === "works_percentage" ? "% Works" : f.feeType === "conception" ? "Conception" : "Planning";
                     const entries = (feeEntries ?? []).filter((e) => e.feeId === f.id);
                     const feeHt = parseFloat(f.feeAmountHt);
                     const invoiced = parseFloat(f.invoicedAmount ?? "0");
@@ -1112,26 +1112,26 @@ export default function ProjectDetail() {
                               <h3 className="text-[14px] font-black uppercase tracking-tight text-foreground">{feeTypeLabel}</h3>
                               <StatusBadge status={f.status} />
                             </div>
-                            {f.feeRate && <p className="text-[11px] text-muted-foreground mt-0.5">Taux: {f.feeRate}%</p>}
+                            {f.feeRate && <p className="text-[11px] text-muted-foreground mt-0.5">Rate: {f.feeRate}%</p>}
                             {f.pennylaneRef && <p className="text-[10px] text-muted-foreground">PL: {f.pennylaneRef}</p>}
                           </div>
                           <Button variant="outline" onClick={() => openCreateEntry(f.id)} data-testid={`button-add-entry-tab-${f.id}`}>
                             <Plus size={12} />
-                            <span className="text-[8px] font-bold uppercase tracking-widest">Entrée</span>
+                            <span className="text-[8px] font-bold uppercase tracking-widest">Entry</span>
                           </Button>
                         </div>
 
                         <div className="grid grid-cols-3 gap-4 mb-3">
                           <div>
-                            <TechnicalLabel>Montant HT</TechnicalLabel>
+                            <TechnicalLabel>Amount HT</TechnicalLabel>
                             <p className="text-[13px] font-semibold text-foreground mt-0.5" data-testid={`text-fee-ht-tab-${f.id}`}>{formatCurrency(feeHt)}</p>
                           </div>
                           <div>
-                            <TechnicalLabel>Facturé</TechnicalLabel>
+                            <TechnicalLabel>Invoiced</TechnicalLabel>
                             <p className="text-[13px] font-semibold text-emerald-600 dark:text-emerald-400 mt-0.5">{formatCurrency(invoiced)}</p>
                           </div>
                           <div>
-                            <TechnicalLabel>Restant</TechnicalLabel>
+                            <TechnicalLabel>Remaining</TechnicalLabel>
                             <p className="text-[13px] font-semibold text-amber-600 dark:text-amber-400 mt-0.5">{formatCurrency(feeHt - invoiced)}</p>
                           </div>
                         </div>
@@ -1141,7 +1141,7 @@ export default function ProjectDetail() {
 
                         {entries.length > 0 && (
                           <div className="border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] pt-3">
-                            <TechnicalLabel>Entrées ({entries.length})</TechnicalLabel>
+                            <TechnicalLabel>Entries ({entries.length})</TechnicalLabel>
                             <div className="mt-2 space-y-2">
                               {entries.map((entry) => (
                                 <div
@@ -1173,7 +1173,7 @@ export default function ProjectDetail() {
               ) : (
                 <LuxuryCard data-testid="card-empty-fees-tab">
                   <p className="text-[12px] text-muted-foreground text-center py-8">
-                    Aucun honoraire défini pour ce projet.
+                    No Honoraires defined for this project.
                   </p>
                 </LuxuryCard>
               )}
@@ -1182,7 +1182,7 @@ export default function ProjectDetail() {
             <Dialog open={feeDialogOpen} onOpenChange={setFeeDialogOpen}>
               <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
                 <DialogHeader>
-                  <DialogTitle className="text-[16px] font-black uppercase tracking-tight">Nouvel Honoraire</DialogTitle>
+                  <DialogTitle className="text-[16px] font-black uppercase tracking-tight">New Fee</DialogTitle>
                 </DialogHeader>
                 <Form {...feeForm}>
                   <form onSubmit={feeForm.handleSubmit((d) => createFeeMutation.mutate(d))} className="space-y-4">
@@ -1192,7 +1192,7 @@ export default function ProjectDetail() {
                         <Select onValueChange={field.onChange} value={field.value}>
                           <FormControl><SelectTrigger data-testid="select-fee-type-tab"><SelectValue /></SelectTrigger></FormControl>
                           <SelectContent>
-                            <SelectItem value="works_percentage">% Travaux</SelectItem>
+                            <SelectItem value="works_percentage">% Works</SelectItem>
                             <SelectItem value="conception">Conception</SelectItem>
                             <SelectItem value="planning">Planning</SelectItem>
                           </SelectContent>
@@ -1210,7 +1210,7 @@ export default function ProjectDetail() {
                       )} />
                       <FormField control={feeForm.control} name="feeRate" render={({ field }) => (
                         <FormItem>
-                          <FormLabel><TechnicalLabel>Taux (%)</TechnicalLabel></FormLabel>
+                          <FormLabel><TechnicalLabel>Rate (%)</TechnicalLabel></FormLabel>
                           <FormControl><Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} type="number" step="0.01" onBlur={() => recalcFee()} data-testid="input-fee-rate-tab" /></FormControl>
                           <FormMessage />
                         </FormItem>
@@ -1219,14 +1219,14 @@ export default function ProjectDetail() {
                     <div className="grid grid-cols-2 gap-4">
                       <FormField control={feeForm.control} name="feeAmountHt" render={({ field }) => (
                         <FormItem>
-                          <FormLabel><TechnicalLabel>Montant HT</TechnicalLabel></FormLabel>
+                          <FormLabel><TechnicalLabel>Fee Amount HT</TechnicalLabel></FormLabel>
                           <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcFee()} data-testid="input-fee-ht-tab" /></FormControl>
                           <FormMessage />
                         </FormItem>
                       )} />
                       <FormField control={feeForm.control} name="feeAmountTtc" render={({ field }) => (
                         <FormItem>
-                          <FormLabel><TechnicalLabel>Montant TTC</TechnicalLabel></FormLabel>
+                          <FormLabel><TechnicalLabel>Fee Amount TTC</TechnicalLabel></FormLabel>
                           <FormControl><Input {...field} type="number" step="0.01" readOnly data-testid="input-fee-ttc-tab" /></FormControl>
                           <FormMessage />
                         </FormItem>
@@ -1241,7 +1241,7 @@ export default function ProjectDetail() {
                     )} />
                     <Button type="submit" className="w-full" disabled={createFeeMutation.isPending} data-testid="button-submit-fee-tab">
                       <span className="text-[9px] font-bold uppercase tracking-widest">
-                        {createFeeMutation.isPending ? "Création..." : "Créer l'honoraire"}
+                        {createFeeMutation.isPending ? "Creating..." : "Create Fee"}
                       </span>
                     </Button>
                   </form>
@@ -1253,7 +1253,7 @@ export default function ProjectDetail() {
               <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
                 <DialogHeader>
                   <DialogTitle className="text-[16px] font-black uppercase tracking-tight">
-                    {editingEntryId ? "Modifier l'entrée" : "Nouvelle Entrée"}
+                    {editingEntryId ? "Edit Entry" : "New Entry"}
                   </DialogTitle>
                 </DialogHeader>
                 <Form {...entryForm}>
@@ -1268,7 +1268,7 @@ export default function ProjectDetail() {
                       )} />
                       <FormField control={entryForm.control} name="feeRate" render={({ field }) => (
                         <FormItem>
-                          <FormLabel><TechnicalLabel>Taux (%)</TechnicalLabel></FormLabel>
+                          <FormLabel><TechnicalLabel>Rate (%)</TechnicalLabel></FormLabel>
                           <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcEntry()} data-testid="input-entry-rate-tab" /></FormControl>
                           <FormMessage />
                         </FormItem>
@@ -1276,34 +1276,34 @@ export default function ProjectDetail() {
                     </div>
                     <FormField control={entryForm.control} name="feeAmount" render={({ field }) => (
                       <FormItem>
-                        <FormLabel><TechnicalLabel>Montant</TechnicalLabel></FormLabel>
+                        <FormLabel><TechnicalLabel>Amount</TechnicalLabel></FormLabel>
                         <FormControl><Input {...field} type="number" step="0.01" readOnly data-testid="input-entry-amount-tab" /></FormControl>
                         <FormMessage />
                       </FormItem>
                     )} />
                     <FormField control={entryForm.control} name="pennylaneInvoiceRef" render={({ field }) => (
                       <FormItem>
-                        <FormLabel><TechnicalLabel>Ref facture Penny Lane</TechnicalLabel></FormLabel>
+                        <FormLabel><TechnicalLabel>Penny Lane Invoice Ref</TechnicalLabel></FormLabel>
                         <FormControl><Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} data-testid="input-entry-pl-tab" /></FormControl>
                         <FormMessage />
                       </FormItem>
                     )} />
                     <FormField control={entryForm.control} name="dateInvoiced" render={({ field }) => (
                       <FormItem>
-                        <FormLabel><TechnicalLabel>Date facturation</TechnicalLabel></FormLabel>
+                        <FormLabel><TechnicalLabel>Invoice Date</TechnicalLabel></FormLabel>
                         <FormControl><Input type="date" {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} data-testid="input-entry-date-tab" /></FormControl>
                         <FormMessage />
                       </FormItem>
                     )} />
                     <FormField control={entryForm.control} name="status" render={({ field }) => (
                       <FormItem>
-                        <FormLabel><TechnicalLabel>Statut</TechnicalLabel></FormLabel>
+                        <FormLabel><TechnicalLabel>Status</TechnicalLabel></FormLabel>
                         <Select onValueChange={field.onChange} value={field.value}>
                           <FormControl><SelectTrigger data-testid="select-entry-status-tab"><SelectValue /></SelectTrigger></FormControl>
                           <SelectContent>
-                            <SelectItem value="pending">En attente</SelectItem>
-                            <SelectItem value="invoiced">Facturé</SelectItem>
-                            <SelectItem value="paid">Payé</SelectItem>
+                            <SelectItem value="pending">Pending</SelectItem>
+                            <SelectItem value="invoiced">Invoiced</SelectItem>
+                            <SelectItem value="paid">Paid</SelectItem>
                           </SelectContent>
                         </Select>
                         <FormMessage />
@@ -1311,7 +1311,7 @@ export default function ProjectDetail() {
                     )} />
                     <Button type="submit" className="w-full" disabled={createEntryMutation.isPending || updateEntryMutation.isPending} data-testid="button-submit-entry-tab">
                       <span className="text-[9px] font-bold uppercase tracking-widest">
-                        {(createEntryMutation.isPending || updateEntryMutation.isPending) ? "Enregistrement..." : editingEntryId ? "Mettre à jour" : "Créer l'entrée"}
+                        {(createEntryMutation.isPending || updateEntryMutation.isPending) ? "Saving..." : editingEntryId ? "Update" : "Create Entry"}
                       </span>
                     </Button>
                   </form>

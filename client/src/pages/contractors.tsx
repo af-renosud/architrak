@@ -21,7 +21,7 @@ import type { Contractor } from "@shared/schema";
 import { z } from "zod";
 
 const contractorFormSchema = insertContractorSchema.extend({
-  name: z.string().min(1, "Le nom est requis"),
+  name: z.string().min(1, "Name is required"),
 });
 
 type ContractorFormValues = z.infer<typeof contractorFormSchema>;
@@ -57,10 +57,10 @@ export default function Contractors() {
       queryClient.invalidateQueries({ queryKey: ["/api/contractors"] });
       setDialogOpen(false);
       form.reset();
-      toast({ title: "Entreprise créée avec succès" });
+      toast({ title: "Contractor created successfully" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -74,10 +74,10 @@ export default function Contractors() {
       setDialogOpen(false);
       setEditingContractor(null);
       form.reset();
-      toast({ title: "Entreprise mise à jour" });
+      toast({ title: "Contractor updated" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -126,25 +126,25 @@ export default function Contractors() {
       <div className="space-y-8">
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <h1 className="text-[22px] font-light uppercase tracking-tight text-foreground" data-testid="text-page-title">
-            Entreprises
+            Contractors
           </h1>
           <Button onClick={openCreate} data-testid="button-new-contractor">
             <Plus size={14} />
-            <span className="text-[9px] font-bold uppercase tracking-widest">Nouvelle Entreprise</span>
+            <span className="text-[9px] font-bold uppercase tracking-widest">New Contractor</span>
           </Button>
         </div>
 
         <SectionHeader
           icon={Building2}
-          title="Toutes les Entreprises"
-          subtitle="Répertoire des prestataires"
+          title="All Contractors"
+          subtitle="Contractor directory"
         />
 
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle className="text-[16px] font-black uppercase tracking-tight">
-                {editingContractor ? "Modifier l'entreprise" : "Nouvelle Entreprise"}
+                {editingContractor ? "Edit Contractor" : "New Contractor"}
               </DialogTitle>
             </DialogHeader>
             <Form {...form}>
@@ -155,7 +155,7 @@ export default function Contractors() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>
-                        <TechnicalLabel>Nom</TechnicalLabel>
+                        <TechnicalLabel>Name</TechnicalLabel>
                       </FormLabel>
                       <FormControl>
                         <Input {...field} data-testid="input-contractor-name" />
@@ -200,7 +200,7 @@ export default function Contractors() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>
-                        <TechnicalLabel>Téléphone</TechnicalLabel>
+                        <TechnicalLabel>Phone</TechnicalLabel>
                       </FormLabel>
                       <FormControl>
                         <Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} data-testid="input-contractor-phone" />
@@ -215,7 +215,7 @@ export default function Contractors() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>
-                        <TechnicalLabel>Adresse</TechnicalLabel>
+                        <TechnicalLabel>Address</TechnicalLabel>
                       </FormLabel>
                       <FormControl>
                         <Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} data-testid="input-contractor-address" />
@@ -230,7 +230,7 @@ export default function Contractors() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>
-                        <TechnicalLabel>Taux TVA par défaut (%)</TechnicalLabel>
+                        <TechnicalLabel>Default TVA Rate (%)</TechnicalLabel>
                       </FormLabel>
                       <FormControl>
                         <Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} type="number" step="0.01" data-testid="input-contractor-tva" />
@@ -256,7 +256,7 @@ export default function Contractors() {
                 />
                 <Button type="submit" className="w-full" disabled={isPending} data-testid="button-submit-contractor">
                   <span className="text-[9px] font-bold uppercase tracking-widest">
-                    {isPending ? "Enregistrement..." : editingContractor ? "Mettre à jour" : "Créer l'entreprise"}
+                    {isPending ? "Saving..." : editingContractor ? "Update" : "Create Contractor"}
                   </span>
                 </Button>
               </form>
@@ -321,7 +321,7 @@ export default function Contractors() {
         ) : (
           <LuxuryCard data-testid="card-empty-contractors">
             <p className="text-[12px] text-muted-foreground text-center py-8">
-              Aucune entreprise enregistrée. Ajoutez votre première entreprise.
+              No contractors registered. Add your first contractor.
             </p>
           </LuxuryCard>
         )}

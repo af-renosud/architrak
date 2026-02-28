@@ -24,9 +24,9 @@ import type { Project } from "@shared/schema";
 import { z } from "zod";
 
 const projectFormSchema = insertProjectSchema.extend({
-  name: z.string().min(1, "Le nom est requis"),
-  code: z.string().min(1, "Le code est requis"),
-  clientName: z.string().min(1, "Le nom du client est requis"),
+  name: z.string().min(1, "Name is required"),
+  code: z.string().min(1, "Code is required"),
+  clientName: z.string().min(1, "Client name is required"),
 });
 
 type ProjectFormValues = z.infer<typeof projectFormSchema>;
@@ -69,10 +69,10 @@ export default function Projects() {
       queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
       setDialogOpen(false);
       form.reset();
-      toast({ title: "Projet créé avec succès" });
+      toast({ title: "Project created successfully" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -85,19 +85,19 @@ export default function Projects() {
       <div className="space-y-8">
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <h1 className="text-[22px] font-light uppercase tracking-tight text-foreground" data-testid="text-page-title">
-            Projets
+            Projects
           </h1>
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <DialogTrigger asChild>
               <Button data-testid="button-new-project">
                 <Plus size={14} />
-                <span className="text-[9px] font-bold uppercase tracking-widest">Nouveau Projet</span>
+                <span className="text-[9px] font-bold uppercase tracking-widest">New Project</span>
               </Button>
             </DialogTrigger>
             <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle className="text-[16px] font-black uppercase tracking-tight">
-                  Nouveau Projet
+                  New Project
                 </DialogTitle>
               </DialogHeader>
               <Form {...form}>
@@ -108,7 +108,7 @@ export default function Projects() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>
-                          <TechnicalLabel>Nom du projet</TechnicalLabel>
+                          <TechnicalLabel>Project Name</TechnicalLabel>
                         </FormLabel>
                         <FormControl>
                           <Input {...field} data-testid="input-project-name" />
@@ -126,7 +126,7 @@ export default function Projects() {
                           <TechnicalLabel>Code</TechnicalLabel>
                         </FormLabel>
                         <FormControl>
-                          <Input {...field} placeholder="ex: 1231" data-testid="input-project-code" />
+                          <Input {...field} placeholder="e.g. 1231" data-testid="input-project-code" />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -138,7 +138,7 @@ export default function Projects() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>
-                          <TechnicalLabel>Nom du client</TechnicalLabel>
+                          <TechnicalLabel>Client Name</TechnicalLabel>
                         </FormLabel>
                         <FormControl>
                           <Input {...field} data-testid="input-client-name" />
@@ -153,7 +153,7 @@ export default function Projects() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>
-                          <TechnicalLabel>Adresse du client</TechnicalLabel>
+                          <TechnicalLabel>Client Address</TechnicalLabel>
                         </FormLabel>
                         <FormControl>
                           <Input {...field} value={field.value ?? ""} data-testid="input-client-address" />
@@ -169,7 +169,7 @@ export default function Projects() {
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>
-                            <TechnicalLabel>Statut</TechnicalLabel>
+                            <TechnicalLabel>Status</TechnicalLabel>
                           </FormLabel>
                           <Select onValueChange={field.onChange} defaultValue={field.value}>
                             <FormControl>
@@ -178,9 +178,9 @@ export default function Projects() {
                               </SelectTrigger>
                             </FormControl>
                             <SelectContent>
-                              <SelectItem value="active">En cours</SelectItem>
-                              <SelectItem value="completed">Terminé</SelectItem>
-                              <SelectItem value="archived">Archivé</SelectItem>
+                              <SelectItem value="active">Active</SelectItem>
+                              <SelectItem value="completed">Completed</SelectItem>
+                              <SelectItem value="archived">Archived</SelectItem>
                             </SelectContent>
                           </Select>
                           <FormMessage />
@@ -193,7 +193,7 @@ export default function Projects() {
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>
-                            <TechnicalLabel>Taux TVA (%)</TechnicalLabel>
+                            <TechnicalLabel>TVA Rate (%)</TechnicalLabel>
                           </FormLabel>
                           <FormControl>
                             <Input {...field} type="number" step="0.01" data-testid="input-tva-rate" />
@@ -210,7 +210,7 @@ export default function Projects() {
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>
-                            <TechnicalLabel>Type d'honoraires</TechnicalLabel>
+                            <TechnicalLabel>Honoraires Type</TechnicalLabel>
                           </FormLabel>
                           <Select onValueChange={field.onChange} defaultValue={field.value}>
                             <FormControl>
@@ -219,8 +219,8 @@ export default function Projects() {
                               </SelectTrigger>
                             </FormControl>
                             <SelectContent>
-                              <SelectItem value="percentage">Pourcentage</SelectItem>
-                              <SelectItem value="fixed">Fixe</SelectItem>
+                              <SelectItem value="percentage">Percentage</SelectItem>
+                              <SelectItem value="fixed">Fixed</SelectItem>
                             </SelectContent>
                           </Select>
                           <FormMessage />
@@ -233,7 +233,7 @@ export default function Projects() {
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>
-                            <TechnicalLabel>% Honoraires</TechnicalLabel>
+                            <TechnicalLabel>Honoraires %</TechnicalLabel>
                           </FormLabel>
                           <FormControl>
                             <Input
@@ -257,7 +257,7 @@ export default function Projects() {
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>
-                            <TechnicalLabel>Honoraires conception</TechnicalLabel>
+                            <TechnicalLabel>Conception Fee</TechnicalLabel>
                           </FormLabel>
                           <FormControl>
                             <Input
@@ -279,7 +279,7 @@ export default function Projects() {
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>
-                            <TechnicalLabel>Honoraires planning</TechnicalLabel>
+                            <TechnicalLabel>Planning Fee</TechnicalLabel>
                           </FormLabel>
                           <FormControl>
                             <Input
@@ -317,7 +317,7 @@ export default function Projects() {
                   />
                   <Button type="submit" className="w-full" disabled={createMutation.isPending} data-testid="button-submit-project">
                     <span className="text-[9px] font-bold uppercase tracking-widest">
-                      {createMutation.isPending ? "Création..." : "Créer le projet"}
+                      {createMutation.isPending ? "Creating..." : "Create Project"}
                     </span>
                   </Button>
                 </form>
@@ -328,8 +328,8 @@ export default function Projects() {
 
         <SectionHeader
           icon={FolderOpen}
-          title="Tous les Projets"
-          subtitle="Gestion des projets en cours"
+          title="All Projects"
+          subtitle="Manage active projects"
         />
 
         {isLoading ? (
@@ -351,7 +351,7 @@ export default function Projects() {
         ) : (
           <LuxuryCard data-testid="card-empty-projects">
             <p className="text-[12px] text-muted-foreground text-center py-8">
-              Aucun projet pour le moment. Créez votre premier projet pour commencer.
+              No projects yet. Create your first project to get started.
             </p>
           </LuxuryCard>
         )}
@@ -398,19 +398,19 @@ function ProjectCard({ project }: { project: Project }) {
         {summary && contracted > 0 && (
           <div className="space-y-2 pt-3 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
             <div className="flex items-center justify-between gap-2">
-              <TechnicalLabel>Contracté HT</TechnicalLabel>
+              <TechnicalLabel>Contracted HT</TechnicalLabel>
               <span className="text-[11px] font-semibold text-foreground" data-testid={`text-contracted-${project.id}`}>
                 {formatCurrency(contracted)}
               </span>
             </div>
             <div className="flex items-center justify-between gap-2">
-              <TechnicalLabel>Certifié HT</TechnicalLabel>
+              <TechnicalLabel>Certified HT</TechnicalLabel>
               <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400" data-testid={`text-certified-${project.id}`}>
                 {formatCurrency(certified)}
               </span>
             </div>
             <div className="flex items-center justify-between gap-2">
-              <TechnicalLabel>Reste à réaliser</TechnicalLabel>
+              <TechnicalLabel>Reste à Réaliser</TechnicalLabel>
               <span className="text-[11px] font-semibold text-amber-600 dark:text-amber-400" data-testid={`text-reste-${project.id}`}>
                 {formatCurrency(reste)}
               </span>

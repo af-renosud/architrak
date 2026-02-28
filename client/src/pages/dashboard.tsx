@@ -76,10 +76,10 @@ export default function Dashboard() {
       <div className="space-y-8">
         <div>
           <h1 className="text-[22px] font-light uppercase tracking-tight text-foreground" data-testid="text-page-title">
-            Tableau de Bord
+            Dashboard
           </h1>
           <p className="text-[11px] text-muted-foreground mt-1">
-            Vue d'ensemble de vos projets et activités financières
+            Overview of your projects and financial activity
           </p>
         </div>
 
@@ -96,39 +96,39 @@ export default function Dashboard() {
               <LuxuryCard data-testid="card-active-projects">
                 <div className="flex items-center gap-2 mb-3">
                   <FolderOpen size={14} strokeWidth={1.5} className="text-muted-foreground" />
-                  <TechnicalLabel>Projets Actifs</TechnicalLabel>
+                  <TechnicalLabel>Active Projects</TechnicalLabel>
                 </div>
                 <p className="text-[28px] font-light text-foreground" data-testid="text-active-projects-count">
                   {data?.overview.activeProjects ?? 0}
                 </p>
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  sur {data?.overview.totalProjects ?? 0} projets au total
+                  of {data?.overview.totalProjects ?? 0} total projects
                 </p>
               </LuxuryCard>
 
               <LuxuryCard data-testid="card-contracted">
                 <div className="flex items-center gap-2 mb-3">
                   <TrendingUp size={14} strokeWidth={1.5} className="text-muted-foreground" />
-                  <TechnicalLabel>Total Contracté HT</TechnicalLabel>
+                  <TechnicalLabel>Total Contracted HT</TechnicalLabel>
                 </div>
                 <p className="text-[28px] font-light text-foreground" data-testid="text-contracted-total">
                   {formatCurrency(data?.overview.totalContractedHt ?? 0)}
                 </p>
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  Valeur totale des devis
+                  Total Devis value
                 </p>
               </LuxuryCard>
 
               <LuxuryCard data-testid="card-certified">
                 <div className="flex items-center gap-2 mb-3">
                   <FileCheck size={14} strokeWidth={1.5} className="text-muted-foreground" />
-                  <TechnicalLabel>Total Certifié</TechnicalLabel>
+                  <TechnicalLabel>Total Certified</TechnicalLabel>
                 </div>
                 <p className="text-[28px] font-light text-emerald-600 dark:text-emerald-400" data-testid="text-certified-total">
                   {formatCurrency(data?.overview.totalCertifiedHt ?? 0)}
                 </p>
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  Montant certifié à ce jour
+                  Certified amount to date
                 </p>
               </LuxuryCard>
 
@@ -141,7 +141,7 @@ export default function Dashboard() {
                   {formatCurrency(data?.overview.totalResteARealiser ?? 0)}
                 </p>
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  Montant restant
+                  Remaining amount
                 </p>
               </LuxuryCard>
             </>
@@ -152,8 +152,8 @@ export default function Dashboard() {
           <>
             <SectionHeader
               icon={AlertTriangle}
-              title="Éléments Urgents"
-              subtitle="Actions requises"
+              title="Urgent Items"
+              subtitle="Actions required"
             />
             <div className="space-y-2">
               {data.urgentItems.map((item, idx) => (
@@ -200,8 +200,8 @@ export default function Dashboard() {
           <div className="xl:col-span-2 space-y-6">
             <SectionHeader
               icon={FolderOpen}
-              title="Résumé des Projets"
-              subtitle="Indicateurs financiers par projet"
+              title="Project Summary"
+              subtitle="Financial indicators by project"
             />
 
             {isLoading ? (
@@ -221,22 +221,22 @@ export default function Dashboard() {
                     <thead>
                       <tr className="border-b border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                         <th className="text-left py-3 pr-3">
-                          <TechnicalLabel>Projet</TechnicalLabel>
+                          <TechnicalLabel>Project</TechnicalLabel>
                         </th>
                         <th className="text-left py-3 px-3">
-                          <TechnicalLabel>Statut</TechnicalLabel>
+                          <TechnicalLabel>Status</TechnicalLabel>
                         </th>
                         <th className="text-right py-3 px-3">
-                          <TechnicalLabel>Contracté HT</TechnicalLabel>
+                          <TechnicalLabel>Contracted HT</TechnicalLabel>
                         </th>
                         <th className="text-right py-3 px-3">
-                          <TechnicalLabel>Certifié HT</TechnicalLabel>
+                          <TechnicalLabel>Certified HT</TechnicalLabel>
                         </th>
                         <th className="text-right py-3 px-3">
-                          <TechnicalLabel>Reste</TechnicalLabel>
+                          <TechnicalLabel>Remaining</TechnicalLabel>
                         </th>
                         <th className="text-left py-3 pl-3" style={{ minWidth: "100px" }}>
-                          <TechnicalLabel>Avancement</TechnicalLabel>
+                          <TechnicalLabel>Progress</TechnicalLabel>
                         </th>
                       </tr>
                     </thead>
@@ -284,7 +284,7 @@ export default function Dashboard() {
                               <div className="flex items-center gap-1 mt-1">
                                 <AlertTriangle size={10} className="text-amber-500" />
                                 <span className="text-[9px] text-amber-600 dark:text-amber-400">
-                                  {ps.anomalyCount} anomalie{ps.anomalyCount > 1 ? "s" : ""}
+                                  {ps.anomalyCount} anomal{ps.anomalyCount > 1 ? "ies" : "y"}
                                 </span>
                               </div>
                             )}
@@ -298,7 +298,7 @@ export default function Dashboard() {
             ) : (
               <LuxuryCard data-testid="card-empty-projects">
                 <p className="text-[12px] text-muted-foreground text-center py-8">
-                  Aucun projet pour le moment. Créez votre premier projet pour commencer.
+                  No projects yet. Create your first project to get started.
                 </p>
               </LuxuryCard>
             )}
@@ -307,8 +307,8 @@ export default function Dashboard() {
           <div className="space-y-6">
             <SectionHeader
               icon={Clock}
-              title="Activité Récente"
-              subtitle="Dernières mises à jour"
+              title="Recent Activity"
+              subtitle="Latest updates"
             />
 
             {isLoading ? (
@@ -369,7 +369,7 @@ export default function Dashboard() {
             ) : (
               <LuxuryCard data-testid="card-recent-activity">
                 <p className="text-[12px] text-muted-foreground text-center py-8">
-                  Les données d'activité récente seront disponibles une fois les projets créés.
+                  Recent activity data will be available once projects are created.
                 </p>
               </LuxuryCard>
             )}

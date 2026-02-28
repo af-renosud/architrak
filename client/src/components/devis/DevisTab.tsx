@@ -24,29 +24,29 @@ function formatCurrency(value: number): string {
 }
 
 const devisFormSchema = insertDevisSchema.extend({
-  devisCode: z.string().min(1, "Le code est requis"),
-  descriptionFr: z.string().min(1, "La description est requise"),
-  amountHt: z.string().min(1, "Le montant HT est requis"),
-  amountTtc: z.string().min(1, "Le montant TTC est requis"),
+  devisCode: z.string().min(1, "Code is required"),
+  descriptionFr: z.string().min(1, "Description is required"),
+  amountHt: z.string().min(1, "HT amount is required"),
+  amountTtc: z.string().min(1, "TTC amount is required"),
 });
 
 const invoiceFormSchema = insertInvoiceSchema.extend({
-  amountHt: z.string().min(1, "Requis"),
-  amountTtc: z.string().min(1, "Requis"),
-  tvaAmount: z.string().min(1, "Requis"),
+  amountHt: z.string().min(1, "Required"),
+  amountTtc: z.string().min(1, "Required"),
+  tvaAmount: z.string().min(1, "Required"),
 });
 
 const avenantFormSchema = insertAvenantSchema.extend({
-  descriptionFr: z.string().min(1, "La description est requise"),
-  amountHt: z.string().min(1, "Requis"),
-  amountTtc: z.string().min(1, "Requis"),
+  descriptionFr: z.string().min(1, "Description is required"),
+  amountHt: z.string().min(1, "Required"),
+  amountTtc: z.string().min(1, "Required"),
 });
 
 const lineItemFormSchema = insertDevisLineItemSchema.extend({
-  description: z.string().min(1, "Requis"),
-  quantity: z.string().min(1, "Requis"),
-  unitPriceHt: z.string().min(1, "Requis"),
-  totalHt: z.string().min(1, "Requis"),
+  description: z.string().min(1, "Required"),
+  quantity: z.string().min(1, "Required"),
+  unitPriceHt: z.string().min(1, "Required"),
+  totalHt: z.string().min(1, "Required"),
 });
 
 interface DevisTabProps {
@@ -96,10 +96,10 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
       setDevisDialogOpen(false);
       devisForm.reset();
-      toast({ title: "Devis créé avec succès" });
+      toast({ title: "Devis created successfully" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -118,7 +118,7 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
       <div className="flex items-center justify-end">
         <Button onClick={() => setDevisDialogOpen(true)} data-testid="button-new-devis">
           <Plus size={14} />
-          <span className="text-[9px] font-bold uppercase tracking-widest">Nouveau Devis</span>
+          <span className="text-[9px] font-bold uppercase tracking-widest">New Devis</span>
         </Button>
       </div>
 
@@ -171,7 +171,7 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
       ) : (
         <LuxuryCard data-testid="card-empty-devis">
           <p className="text-[12px] text-muted-foreground text-center py-8">
-            Aucun devis pour ce projet. Créez-en un pour commencer.
+            No Devis for this project. Create one to get started.
           </p>
         </LuxuryCard>
       )}
@@ -179,15 +179,15 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
       <Dialog open={devisDialogOpen} onOpenChange={setDevisDialogOpen}>
         <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle className="text-[16px] font-black uppercase tracking-tight">Nouveau Devis</DialogTitle>
+            <DialogTitle className="text-[16px] font-black uppercase tracking-tight">New Devis</DialogTitle>
           </DialogHeader>
           <Form {...devisForm}>
             <form onSubmit={devisForm.handleSubmit((d) => createDevisMutation.mutate(d))} className="space-y-4">
               <FormField control={devisForm.control} name="contractorId" render={({ field }) => (
                 <FormItem>
-                  <FormLabel><TechnicalLabel>Entreprise</TechnicalLabel></FormLabel>
+                  <FormLabel><TechnicalLabel>Contractor</TechnicalLabel></FormLabel>
                   <Select onValueChange={(v) => field.onChange(parseInt(v))} value={field.value ? String(field.value) : ""}>
-                    <FormControl><SelectTrigger data-testid="select-devis-contractor"><SelectValue placeholder="Sélectionner" /></SelectTrigger></FormControl>
+                    <FormControl><SelectTrigger data-testid="select-devis-contractor"><SelectValue placeholder="Select" /></SelectTrigger></FormControl>
                     <SelectContent>
                       {contractors.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
                     </SelectContent>
@@ -198,15 +198,15 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
               <div className="grid grid-cols-2 gap-4">
                 <FormField control={devisForm.control} name="devisCode" render={({ field }) => (
                   <FormItem>
-                    <FormLabel><TechnicalLabel>Code Devis</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} placeholder="ex: 1231.1.GROS OEUVRE" data-testid="input-devis-code" /></FormControl>
+                    <FormLabel><TechnicalLabel>Devis Code</TechnicalLabel></FormLabel>
+                    <FormControl><Input {...field} placeholder="e.g. 1231.1.GROS OEUVRE" data-testid="input-devis-code" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
                 <FormField control={devisForm.control} name="devisNumber" render={({ field }) => (
                   <FormItem>
-                    <FormLabel><TechnicalLabel>N° Devis (ref entreprise)</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} placeholder="ex: D-2024-001" data-testid="input-devis-number" /></FormControl>
+                    <FormLabel><TechnicalLabel>Devis N° (contractor ref)</TechnicalLabel></FormLabel>
+                    <FormControl><Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} placeholder="e.g. D-2024-001" data-testid="input-devis-number" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
@@ -214,7 +214,7 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
               <FormField control={devisForm.control} name="descriptionFr" render={({ field }) => (
                 <FormItem>
                   <FormLabel><TechnicalLabel>Description (FR)</TechnicalLabel></FormLabel>
-                  <FormControl><Textarea {...field} className="resize-none" placeholder="Description du devis" data-testid="input-devis-desc-fr" /></FormControl>
+                  <FormControl><Textarea {...field} className="resize-none" placeholder="Devis description" data-testid="input-devis-desc-fr" /></FormControl>
                   <FormMessage />
                 </FormItem>
               )} />
@@ -230,9 +230,9 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
                   <FormItem>
                     <FormLabel><TechnicalLabel>Lot</TechnicalLabel></FormLabel>
                     <Select onValueChange={(v) => field.onChange(v === "none" ? null : parseInt(v))} value={field.value ? String(field.value) : "none"}>
-                      <FormControl><SelectTrigger data-testid="select-devis-lot"><SelectValue placeholder="Aucun" /></SelectTrigger></FormControl>
+                      <FormControl><SelectTrigger data-testid="select-devis-lot"><SelectValue placeholder="None" /></SelectTrigger></FormControl>
                       <SelectContent>
-                        <SelectItem value="none">Aucun</SelectItem>
+                        <SelectItem value="none">None</SelectItem>
                         {lots.map((l) => <SelectItem key={l.id} value={String(l.id)}>Lot {l.lotNumber} — {l.descriptionFr}</SelectItem>)}
                       </SelectContent>
                     </Select>
@@ -243,7 +243,7 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
               <div className="grid grid-cols-3 gap-4">
                 <FormField control={devisForm.control} name="amountHt" render={({ field }) => (
                   <FormItem>
-                    <FormLabel><TechnicalLabel>Montant HT</TechnicalLabel></FormLabel>
+                    <FormLabel><TechnicalLabel>Amount HT</TechnicalLabel></FormLabel>
                     <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcDevisTtc()} data-testid="input-devis-ht" /></FormControl>
                     <FormMessage />
                   </FormItem>
@@ -257,7 +257,7 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
                 )} />
                 <FormField control={devisForm.control} name="amountTtc" render={({ field }) => (
                   <FormItem>
-                    <FormLabel><TechnicalLabel>Montant TTC</TechnicalLabel></FormLabel>
+                    <FormLabel><TechnicalLabel>Amount TTC</TechnicalLabel></FormLabel>
                     <FormControl><Input {...field} type="number" step="0.01" readOnly data-testid="input-devis-ttc" /></FormControl>
                     <FormMessage />
                   </FormItem>
@@ -266,12 +266,12 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
               <div className="grid grid-cols-2 gap-4">
                 <FormField control={devisForm.control} name="invoicingMode" render={({ field }) => (
                   <FormItem>
-                    <FormLabel><TechnicalLabel>Mode de Facturation</TechnicalLabel></FormLabel>
+                    <FormLabel><TechnicalLabel>Invoicing Mode</TechnicalLabel></FormLabel>
                     <Select onValueChange={field.onChange} value={field.value}>
                       <FormControl><SelectTrigger data-testid="select-devis-mode"><SelectValue /></SelectTrigger></FormControl>
                       <SelectContent>
-                        <SelectItem value="mode_a">Mode A — Facturation simple</SelectItem>
-                        <SelectItem value="mode_b">Mode B — Situation de travaux</SelectItem>
+                        <SelectItem value="mode_a">Mode A — Simple invoicing</SelectItem>
+                        <SelectItem value="mode_b">Mode B — Situation de Travaux</SelectItem>
                       </SelectContent>
                     </Select>
                     <FormMessage />
@@ -279,14 +279,14 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
                 )} />
                 <FormField control={devisForm.control} name="status" render={({ field }) => (
                   <FormItem>
-                    <FormLabel><TechnicalLabel>Statut</TechnicalLabel></FormLabel>
+                    <FormLabel><TechnicalLabel>Status</TechnicalLabel></FormLabel>
                     <Select onValueChange={field.onChange} value={field.value}>
                       <FormControl><SelectTrigger data-testid="select-devis-status"><SelectValue /></SelectTrigger></FormControl>
                       <SelectContent>
-                        <SelectItem value="pending">En attente</SelectItem>
-                        <SelectItem value="live">Actif</SelectItem>
-                        <SelectItem value="completed">Terminé</SelectItem>
-                        <SelectItem value="void">Annulé</SelectItem>
+                        <SelectItem value="pending">Pending</SelectItem>
+                        <SelectItem value="live">Live</SelectItem>
+                        <SelectItem value="completed">Completed</SelectItem>
+                        <SelectItem value="void">Void</SelectItem>
                       </SelectContent>
                     </Select>
                     <FormMessage />
@@ -295,7 +295,7 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
               </div>
               <Button type="submit" className="w-full" disabled={createDevisMutation.isPending} data-testid="button-submit-devis">
                 <span className="text-[9px] font-bold uppercase tracking-widest">
-                  {createDevisMutation.isPending ? "Création..." : "Créer le devis"}
+                  {createDevisMutation.isPending ? "Creating..." : "Create Devis"}
                 </span>
               </Button>
             </form>
@@ -393,10 +393,10 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "invoices"] });
       setInvoiceDialogOpen(false);
       invoiceForm.reset();
-      toast({ title: "Facture créée avec succès" });
+      toast({ title: "Invoice created successfully" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -410,10 +410,10 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
       setAvenantDialogOpen(false);
       avenantForm.reset();
-      toast({ title: "Avenant créé avec succès" });
+      toast({ title: "Avenant created successfully" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -426,10 +426,10 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id, "line-items"] });
       setLineItemDialogOpen(false);
       lineItemForm.reset();
-      toast({ title: "Ligne ajoutée" });
+      toast({ title: "Line item added" });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -440,7 +440,7 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id, "line-items"] });
-      toast({ title: "Avancement mis à jour" });
+      toast({ title: "Progress updated" });
     },
   });
 
@@ -466,15 +466,15 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
     <div className="ml-4 mt-1 mb-3 border-l-2 border-[rgba(0,0,0,0.08)] pl-4 space-y-4" data-testid={`detail-devis-${devis.id}`}>
       <div className="grid grid-cols-4 gap-3">
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-          <TechnicalLabel>Contracté Original</TechnicalLabel>
+          <TechnicalLabel>Original Contracted</TechnicalLabel>
           <p className="text-[13px] font-semibold text-foreground mt-1">{formatCurrency(originalHt)}</p>
         </div>
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-          <TechnicalLabel>Ajusté (+ PV/MV)</TechnicalLabel>
+          <TechnicalLabel>Adjusted (+ PV/MV)</TechnicalLabel>
           <p className="text-[13px] font-semibold text-foreground mt-1">{formatCurrency(adjustedHt)}</p>
         </div>
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-          <TechnicalLabel>Facturé</TechnicalLabel>
+          <TechnicalLabel>Invoiced</TechnicalLabel>
           <p className="text-[13px] font-semibold text-emerald-600 mt-1">{formatCurrency(invoicedHt)}</p>
         </div>
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
@@ -492,14 +492,14 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
         <div>
           <div className="flex items-center justify-between mb-2">
             <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
-              Lignes de Devis ({lineItems?.length ?? 0})
+              Devis Line Items ({lineItems?.length ?? 0})
             </h4>
             <Button variant="outline" size="sm" onClick={() => {
               lineItemForm.reset({ devisId: devis.id, lineNumber: (lineItems?.length ?? 0) + 1, description: "", quantity: "1", unit: "u", unitPriceHt: "0.00", totalHt: "0.00", percentComplete: "0" });
               setLineItemDialogOpen(true);
             }} data-testid={`button-add-line-${devis.id}`}>
               <Plus size={12} />
-              <span className="text-[8px] font-bold uppercase tracking-widest">Ligne</span>
+              <span className="text-[8px] font-bold uppercase tracking-widest">Line Item</span>
             </Button>
           </div>
           {lineItems && lineItems.length > 0 ? (
@@ -509,11 +509,11 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
                   <tr className="border-b border-[rgba(0,0,0,0.08)]">
                     <th className="text-left py-1 px-2 font-black uppercase tracking-widest text-[8px]">#</th>
                     <th className="text-left py-1 px-2 font-black uppercase tracking-widest text-[8px]">Description</th>
-                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Qté</th>
-                    <th className="text-left py-1 px-2 font-black uppercase tracking-widest text-[8px]">Unité</th>
-                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">PU HT</th>
+                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Qty</th>
+                    <th className="text-left py-1 px-2 font-black uppercase tracking-widest text-[8px]">Unit</th>
+                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Unit Price HT</th>
                     <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Total HT</th>
-                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">% Avance</th>
+                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">% Progress</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -551,7 +551,7 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
               </table>
             </div>
           ) : (
-            <p className="text-[11px] text-muted-foreground py-2">Aucune ligne. Ajoutez des postes pour le suivi Mode B.</p>
+            <p className="text-[11px] text-muted-foreground py-2">No line items. Add items for Mode B tracking.</p>
           )}
         </div>
       )}
@@ -561,7 +561,7 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
           <div className="flex items-center justify-between mb-2">
             <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
               <Receipt size={12} className="inline mr-1" />
-              Factures ({invoices?.length ?? 0})
+              Invoices ({invoices?.length ?? 0})
             </h4>
             <Button variant="outline" size="sm" onClick={() => {
               invoiceForm.reset({
@@ -573,7 +573,7 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
               setInvoiceDialogOpen(true);
             }} data-testid={`button-add-invoice-${devis.id}`}>
               <Plus size={12} />
-              <span className="text-[8px] font-bold uppercase tracking-widest">Facture</span>
+              <span className="text-[8px] font-bold uppercase tracking-widest">Invoice</span>
             </Button>
           </div>
           {invoices && invoices.length > 0 ? (
@@ -593,7 +593,7 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
               ))}
             </div>
           ) : (
-            <p className="text-[11px] text-muted-foreground py-2">Aucune facture.</p>
+            <p className="text-[11px] text-muted-foreground py-2">No invoices.</p>
           )}
         </div>
 
@@ -641,7 +641,7 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
               ))}
             </div>
           ) : (
-            <p className="text-[11px] text-muted-foreground py-2">Aucun avenant.</p>
+            <p className="text-[11px] text-muted-foreground py-2">No Avenants.</p>
           )}
         </div>
       </div>
@@ -649,29 +649,29 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
       <Dialog open={invoiceDialogOpen} onOpenChange={setInvoiceDialogOpen}>
         <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle className="text-[16px] font-black uppercase tracking-tight">Nouvelle Facture — {devis.devisCode}</DialogTitle>
+            <DialogTitle className="text-[16px] font-black uppercase tracking-tight">New Invoice — {devis.devisCode}</DialogTitle>
           </DialogHeader>
           <Form {...invoiceForm}>
             <form onSubmit={invoiceForm.handleSubmit((d) => createInvoiceMutation.mutate(d))} className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <FormField control={invoiceForm.control} name="invoiceNumber" render={({ field }) => (
                   <FormItem>
-                    <FormLabel><TechnicalLabel>N° Facture</TechnicalLabel></FormLabel>
+                    <FormLabel><TechnicalLabel>Invoice N°</TechnicalLabel></FormLabel>
                     <FormControl><Input {...field} type="number" onChange={(e) => field.onChange(parseInt(e.target.value))} data-testid="input-inv-number" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
                 <FormField control={invoiceForm.control} name="certificateNumber" render={({ field }) => (
                   <FormItem>
-                    <FormLabel><TechnicalLabel>Ref Certificat</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} placeholder="ex: C43" data-testid="input-inv-cert" /></FormControl>
+                    <FormLabel><TechnicalLabel>Certificat Ref</TechnicalLabel></FormLabel>
+                    <FormControl><Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} placeholder="e.g. C43" data-testid="input-inv-cert" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
               </div>
               <FormField control={invoiceForm.control} name="amountHt" render={({ field }) => (
                 <FormItem>
-                  <FormLabel><TechnicalLabel>Montant HT</TechnicalLabel></FormLabel>
+                  <FormLabel><TechnicalLabel>Amount HT</TechnicalLabel></FormLabel>
                   <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcInvoiceTtc()} data-testid="input-inv-ht" /></FormControl>
                   <FormMessage />
                 </FormItem>
@@ -686,7 +686,7 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
                 )} />
                 <FormField control={invoiceForm.control} name="amountTtc" render={({ field }) => (
                   <FormItem>
-                    <FormLabel><TechnicalLabel>Montant TTC</TechnicalLabel></FormLabel>
+                    <FormLabel><TechnicalLabel>Amount TTC</TechnicalLabel></FormLabel>
                     <FormControl><Input {...field} type="number" step="0.01" readOnly data-testid="input-inv-ttc" /></FormControl>
                     <FormMessage />
                   </FormItem>
@@ -694,21 +694,21 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
               </div>
               <FormField control={invoiceForm.control} name="dateIssued" render={({ field }) => (
                 <FormItem>
-                  <FormLabel><TechnicalLabel>Date d'émission</TechnicalLabel></FormLabel>
+                  <FormLabel><TechnicalLabel>Issue Date</TechnicalLabel></FormLabel>
                   <FormControl><Input type="date" {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} data-testid="input-inv-date" /></FormControl>
                   <FormMessage />
                 </FormItem>
               )} />
               <FormField control={invoiceForm.control} name="status" render={({ field }) => (
                 <FormItem>
-                  <FormLabel><TechnicalLabel>Statut</TechnicalLabel></FormLabel>
+                  <FormLabel><TechnicalLabel>Status</TechnicalLabel></FormLabel>
                   <Select onValueChange={field.onChange} value={field.value}>
                     <FormControl><SelectTrigger data-testid="select-inv-status"><SelectValue /></SelectTrigger></FormControl>
                     <SelectContent>
-                      <SelectItem value="pending">En attente</SelectItem>
-                      <SelectItem value="sent">Envoyée</SelectItem>
-                      <SelectItem value="paid">Payée</SelectItem>
-                      <SelectItem value="overdue">En retard</SelectItem>
+                      <SelectItem value="pending">Pending</SelectItem>
+                      <SelectItem value="sent">Sent</SelectItem>
+                      <SelectItem value="paid">Paid</SelectItem>
+                      <SelectItem value="overdue">Overdue</SelectItem>
                     </SelectContent>
                   </Select>
                   <FormMessage />
@@ -723,7 +723,7 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
               )} />
               <Button type="submit" className="w-full" disabled={createInvoiceMutation.isPending} data-testid="button-submit-invoice">
                 <span className="text-[9px] font-bold uppercase tracking-widest">
-                  {createInvoiceMutation.isPending ? "Création..." : "Créer la facture"}
+                  {createInvoiceMutation.isPending ? "Creating..." : "Create Invoice"}
                 </span>
               </Button>
             </form>
@@ -734,7 +734,7 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
       <Dialog open={avenantDialogOpen} onOpenChange={setAvenantDialogOpen}>
         <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle className="text-[16px] font-black uppercase tracking-tight">Nouvel Avenant — {devis.devisCode}</DialogTitle>
+            <DialogTitle className="text-[16px] font-black uppercase tracking-tight">New Avenant — {devis.devisCode}</DialogTitle>
           </DialogHeader>
           <Form {...avenantForm}>
             <form onSubmit={avenantForm.handleSubmit((d) => createAvenantMutation.mutate(d))} className="space-y-4">
@@ -754,7 +754,7 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
                 )} />
                 <FormField control={avenantForm.control} name="avenantNumber" render={({ field }) => (
                   <FormItem>
-                    <FormLabel><TechnicalLabel>N° Avenant</TechnicalLabel></FormLabel>
+                    <FormLabel><TechnicalLabel>Avenant N°</TechnicalLabel></FormLabel>
                     <FormControl><Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} placeholder="AV-01" data-testid="input-av-number" /></FormControl>
                     <FormMessage />
                   </FormItem>
@@ -770,14 +770,14 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
               <div className="grid grid-cols-2 gap-4">
                 <FormField control={avenantForm.control} name="amountHt" render={({ field }) => (
                   <FormItem>
-                    <FormLabel><TechnicalLabel>Montant HT</TechnicalLabel></FormLabel>
+                    <FormLabel><TechnicalLabel>Amount HT</TechnicalLabel></FormLabel>
                     <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcAvenantTtc()} data-testid="input-av-ht" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
                 <FormField control={avenantForm.control} name="amountTtc" render={({ field }) => (
                   <FormItem>
-                    <FormLabel><TechnicalLabel>Montant TTC</TechnicalLabel></FormLabel>
+                    <FormLabel><TechnicalLabel>Amount TTC</TechnicalLabel></FormLabel>
                     <FormControl><Input {...field} type="number" step="0.01" readOnly data-testid="input-av-ttc" /></FormControl>
                     <FormMessage />
                   </FormItem>
@@ -785,13 +785,13 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
               </div>
               <FormField control={avenantForm.control} name="status" render={({ field }) => (
                 <FormItem>
-                  <FormLabel><TechnicalLabel>Statut</TechnicalLabel></FormLabel>
+                  <FormLabel><TechnicalLabel>Status</TechnicalLabel></FormLabel>
                   <Select onValueChange={field.onChange} value={field.value}>
                     <FormControl><SelectTrigger data-testid="select-av-status"><SelectValue /></SelectTrigger></FormControl>
                     <SelectContent>
-                      <SelectItem value="draft">Brouillon</SelectItem>
-                      <SelectItem value="approved">Approuvé</SelectItem>
-                      <SelectItem value="rejected">Rejeté</SelectItem>
+                      <SelectItem value="draft">Draft</SelectItem>
+                      <SelectItem value="approved">Approved</SelectItem>
+                      <SelectItem value="rejected">Rejected</SelectItem>
                     </SelectContent>
                   </Select>
                   <FormMessage />
@@ -799,7 +799,7 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
               )} />
               <Button type="submit" className="w-full" disabled={createAvenantMutation.isPending} data-testid="button-submit-avenant">
                 <span className="text-[9px] font-bold uppercase tracking-widest">
-                  {createAvenantMutation.isPending ? "Création..." : "Créer l'avenant"}
+                  {createAvenantMutation.isPending ? "Creating..." : "Create Avenant"}
                 </span>
               </Button>
             </form>
@@ -811,7 +811,7 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
         <Dialog open={lineItemDialogOpen} onOpenChange={setLineItemDialogOpen}>
           <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle className="text-[16px] font-black uppercase tracking-tight">Nouvelle Ligne</DialogTitle>
+              <DialogTitle className="text-[16px] font-black uppercase tracking-tight">New Line Item</DialogTitle>
             </DialogHeader>
             <Form {...lineItemForm}>
               <form onSubmit={lineItemForm.handleSubmit((d) => createLineItemMutation.mutate(d))} className="space-y-4">
@@ -825,21 +825,21 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
                 <div className="grid grid-cols-3 gap-4">
                   <FormField control={lineItemForm.control} name="quantity" render={({ field }) => (
                     <FormItem>
-                      <FormLabel><TechnicalLabel>Quantité</TechnicalLabel></FormLabel>
+                      <FormLabel><TechnicalLabel>Quantity</TechnicalLabel></FormLabel>
                       <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcLineTotal()} data-testid="input-line-qty" /></FormControl>
                       <FormMessage />
                     </FormItem>
                   )} />
                   <FormField control={lineItemForm.control} name="unit" render={({ field }) => (
                     <FormItem>
-                      <FormLabel><TechnicalLabel>Unité</TechnicalLabel></FormLabel>
+                      <FormLabel><TechnicalLabel>Unit</TechnicalLabel></FormLabel>
                       <FormControl><Input {...field} placeholder="u, m², ml..." data-testid="input-line-unit" /></FormControl>
                       <FormMessage />
                     </FormItem>
                   )} />
                   <FormField control={lineItemForm.control} name="unitPriceHt" render={({ field }) => (
                     <FormItem>
-                      <FormLabel><TechnicalLabel>PU HT</TechnicalLabel></FormLabel>
+                      <FormLabel><TechnicalLabel>Unit Price HT</TechnicalLabel></FormLabel>
                       <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcLineTotal()} data-testid="input-line-pu" /></FormControl>
                       <FormMessage />
                     </FormItem>
@@ -854,7 +854,7 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
                 )} />
                 <Button type="submit" className="w-full" disabled={createLineItemMutation.isPending} data-testid="button-submit-line">
                   <span className="text-[9px] font-bold uppercase tracking-widest">
-                    {createLineItemMutation.isPending ? "Ajout..." : "Ajouter la ligne"}
+                    {createLineItemMutation.isPending ? "Adding..." : "Add Line Item"}
                   </span>
                 </Button>
               </form>

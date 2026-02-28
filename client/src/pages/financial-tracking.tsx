@@ -91,19 +91,19 @@ function ProjectFinancialCard({ project }: { project: Project }) {
 
       <div className="grid grid-cols-3 gap-3 mb-3">
         <div>
-          <TechnicalLabel>Contract\u00e9</TechnicalLabel>
+          <TechnicalLabel>Contracted</TechnicalLabel>
           <p className="text-[13px] font-semibold text-foreground mt-0.5" data-testid={`text-contracted-${project.id}`}>
             {formatCurrency(summary.totalContractedHt)}
           </p>
         </div>
         <div>
-          <TechnicalLabel>Certifi\u00e9</TechnicalLabel>
+          <TechnicalLabel>Certified</TechnicalLabel>
           <p className="text-[13px] font-semibold text-foreground mt-0.5" data-testid={`text-certified-${project.id}`}>
             {formatCurrency(summary.totalCertifiedHt)}
           </p>
         </div>
         <div>
-          <TechnicalLabel>Reste</TechnicalLabel>
+          <TechnicalLabel>Remaining</TechnicalLabel>
           <p className={`text-[13px] font-semibold mt-0.5 ${summary.totalResteARealiser < 0 ? "text-red-500" : "text-foreground"}`} data-testid={`text-remaining-${project.id}`}>
             {formatCurrency(summary.totalResteARealiser)}
           </p>
@@ -112,14 +112,14 @@ function ProjectFinancialCard({ project }: { project: Project }) {
 
       <div className="mb-2">
         <Progress value={Math.min(100, progress)} className="h-2" />
-        <p className="text-[9px] text-muted-foreground mt-1">{progress.toFixed(1)}% certifi\u00e9</p>
+        <p className="text-[9px] text-muted-foreground mt-1">{progress.toFixed(1)}% certified</p>
       </div>
 
       {anomalies.length > 0 && (
         <div className="flex items-center gap-1 mt-2">
           <AlertTriangle size={12} className="text-amber-500" />
           <span className="text-[9px] font-bold text-amber-600 uppercase tracking-widest">
-            {anomalies.length} anomalie{anomalies.length > 1 ? "s" : ""}
+            {anomalies.length} anomal{anomalies.length > 1 ? "ies" : "y"}
           </span>
         </div>
       )}
@@ -163,13 +163,13 @@ export default function FinancialTracking() {
     <AppLayout>
       <div className="space-y-8">
         <h1 className="text-[22px] font-light uppercase tracking-tight text-foreground" data-testid="text-page-title">
-          Suivi Financier
+          Financial Tracking
         </h1>
 
         <SectionHeader
           icon={TrendingUp}
-          title="Vue Financi\u00e8re Globale"
-          subtitle="Suivi par projet et par devis"
+          title="Global Financial View"
+          subtitle="Tracking by project and Devis"
         />
 
         {isLoading ? (
@@ -191,7 +191,7 @@ export default function FinancialTracking() {
         ) : (
           <LuxuryCard data-testid="card-empty-financial">
             <p className="text-[12px] text-muted-foreground text-center py-8">
-              Aucun projet. Cr\u00e9ez des projets et des devis pour voir le suivi financier.
+              No projects. Create projects and Devis to see financial tracking.
             </p>
           </LuxuryCard>
         )}
