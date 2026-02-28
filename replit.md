@@ -132,4 +132,7 @@ shared/
 - **ArchiDoc sync**: Working. 14 projects, 11 contractors, 29 trades synced successfully
 - **Project import**: Working. LIVERMORE/DANCE and BARTHALON tracked with lots, contractors, fees
 - **Lot numbers**: Use text/string codes (e.g. "FN", "GO", "VRD", "EL") — not integers
-- **Gmail monitoring**: Connector provides limited scope (send only, no read). Monitoring gracefully disabled until re-authorized with full access. Manual poll via POST /api/gmail/poll will retry.
+- **Duplicate detection**: trackProject checks by archidocId first, then by name+clientName match to link untracked projects
+- **Client address**: Extracted from ArchiDoc `clients[].homeAddress` (not site address). `refreshProject` also uses this logic
+- **Gmail monitoring**: Connector provides limited scope (send only, no read). Monitor detects 403 on first poll, pauses with clear message. Label operations conditionally skipped when permissions are insufficient
+- **Devis workflow**: PDF upload → AI extraction → review form → confirm. Route: `POST /api/projects/:id/devis/upload`

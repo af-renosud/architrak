@@ -81,7 +81,7 @@ export async function pollInbox(): Promise<{ processed: number; errors: number }
     } catch (listErr: any) {
       if (listErr?.status === 403 || listErr?.code === 403) {
         lastPollStatus = "insufficient_permissions";
-        lastPollError = "Gmail connector does not have read permissions (gmail.readonly scope). Re-authorize with full Gmail access to enable inbox monitoring.";
+        lastPollError = "Gmail connector only has send permissions. Re-authorize with gmail.readonly scope to enable inbox monitoring. Polling paused.";
         console.warn("[Gmail Monitor] " + lastPollError);
         isPolling = false;
         return { processed: 0, errors: 0 };
@@ -89,14 +89,14 @@ export async function pollInbox(): Promise<{ processed: number; errors: number }
       throw listErr;
     }
 
-    await ensureLabel(gmail);
+    const canModify = await ensureLabelSafe(gmail);
 
     const messages = response.data.messages || [];
     console.log(`[Gmail Monitor] Found ${messages.length} unprocessed emails with PDFs`);
 
     for (const msg of messages) {
       try {
-        await processMessage(gmail, msg.id!);
+        await processMessage(gmail, msg.id!, canModify);
         processed++;
       } catch (err) {
         errors++;
@@ -117,15 +117,15 @@ export async function pollInbox(): Promise<{ processed: number; errors: number }
   return { processed, errors };
 }
 
-async function ensureLabel(gmail: any): Promise<void> {
-  if (labelId) return;
+async function ensureLabelSafe(gmail: any): Promise<boolean> {
+  if (labelId) return true;
 
   try {
     const labelsRes = await gmail.users.labels.list({ userId: "me" });
     const existing = labelsRes.data.labels?.find((l: any) => l.name === LABEL_NAME);
     if (existing) {
       labelId = existing.id;
-      return;
+      return true;
     }
 
     const createRes = await gmail.users.labels.create({
@@ -138,8 +138,14 @@ async function ensureLabel(gmail: any): Promise<void> {
     });
     labelId = createRes.data.id;
     console.log(`[Gmail Monitor] Created label: ${LABEL_NAME}`);
-  } catch (err) {
+    return true;
+  } catch (err: any) {
+    if (err?.status === 403 || err?.code === 403) {
+      console.warn("[Gmail Monitor] Cannot create/manage labels — insufficient permissions. Skipping label operations.");
+      return false;
+    }
     console.error("[Gmail Monitor] Failed to create label:", err);
+    return false;
   }
 }
 
@@ -156,7 +162,7 @@ async function applyLabel(gmail: any, messageId: string): Promise<void> {
   }
 }
 
-async function processMessage(gmail: any, messageId: string): Promise<void> {
+async function processMessage(gmail: any, messageId: string, canModify: boolean = true): Promise<void> {
   const msgDetail = await gmail.users.messages.get({
     userId: "me",
     id: messageId,
@@ -182,7 +188,7 @@ async function processMessage(gmail: any, messageId: string): Promise<void> {
   );
 
   if (pdfParts.length === 0) {
-    await applyLabel(gmail, messageId);
+    if (canModify) await applyLabel(gmail, messageId);
     return;
   }
 
@@ -217,17 +223,18 @@ async function processMessage(gmail: any, messageId: string): Promise<void> {
       storageKey,
       documentType: "unknown",
       extractionStatus: "pending",
-      gmailLabelApplied: false,
+      gmailLabelApplied: canModify,
     };
 
     await storage.createEmailDocument(doc);
   }
 
-  await applyLabel(gmail, messageId);
-
-  try {
-    await storage.updateEmailDocumentLabelStatus(messageId);
-  } catch (_) {}
+  if (canModify) {
+    await applyLabel(gmail, messageId);
+    try {
+      await storage.updateEmailDocumentLabelStatus(messageId);
+    } catch (_) {}
+  }
 }
 
 function flattenParts(payload: any): any[] {

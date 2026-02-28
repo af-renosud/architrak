@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback, useRef } from "react";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
@@ -6,10 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Receipt } from "lucide-react";
+import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Receipt, Upload, FileUp, Loader2, Check, AlertCircle } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -49,6 +49,28 @@ const lineItemFormSchema = insertDevisLineItemSchema.extend({
   totalHt: z.string().min(1, "Required"),
 });
 
+interface ExtractedData {
+  documentType?: string;
+  contractorName?: string;
+  clientName?: string;
+  projectAddress?: string;
+  reference?: string;
+  date?: string;
+  amountHt?: number;
+  amountTtc?: number;
+  tvaAmount?: number;
+  tvaRate?: number;
+  description?: string;
+  lineItems?: Array<{ description: string; quantity?: number; unitPrice?: number; total?: number }>;
+}
+
+interface UploadResponse {
+  extracted: ExtractedData;
+  match: { projectId: number | null; contractorId: number | null; confidence: number; matchedFields: Record<string, string> };
+  storageKey: string;
+  fileName: string;
+}
+
 interface DevisTabProps {
   projectId: string;
   contractors: Contractor[];
@@ -59,6 +81,10 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
   const { toast } = useToast();
   const [devisDialogOpen, setDevisDialogOpen] = useState(false);
   const [expandedDevis, setExpandedDevis] = useState<number | null>(null);
+  const [uploadStep, setUploadStep] = useState<"upload" | "extracting" | "review">("upload");
+  const [extractedResult, setExtractedResult] = useState<UploadResponse | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: devisList, isLoading } = useQuery<Devis[]>({
     queryKey: ["/api/projects", projectId, "devis"],
@@ -86,17 +112,78 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
     },
   });
 
+  const uploadMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch(`/api/projects/${projectId}/devis/upload`, {
+        method: "POST",
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ message: "Upload failed" }));
+        throw new Error(err.message);
+      }
+      return res.json() as Promise<UploadResponse>;
+    },
+    onSuccess: (data) => {
+      setExtractedResult(data);
+      const e = data.extracted;
+      const matchedContractor = data.match.contractorId || 0;
+      devisForm.reset({
+        projectId: parseInt(projectId),
+        contractorId: matchedContractor,
+        lotId: null,
+        marcheId: null,
+        devisCode: e.reference || "",
+        devisNumber: e.reference || "",
+        ref2: null,
+        descriptionFr: e.description || e.contractorName || "",
+        descriptionUk: null,
+        amountHt: e.amountHt != null ? String(e.amountHt) : "0.00",
+        tvaRate: e.tvaRate != null ? String(e.tvaRate) : "20.00",
+        amountTtc: e.amountTtc != null ? String(e.amountTtc) : "0.00",
+        invoicingMode: (e.lineItems && e.lineItems.length > 0) ? "mode_b" : "mode_a",
+        status: "pending",
+        dateSent: e.date || null,
+        dateSigned: null,
+      });
+      setUploadStep("review");
+    },
+    onError: (error: Error) => {
+      toast({ title: "Extraction failed", description: error.message, variant: "destructive" });
+      setUploadStep("upload");
+    },
+  });
+
   const createDevisMutation = useMutation({
     mutationFn: async (data: z.infer<typeof devisFormSchema>) => {
       const res = await apiRequest("POST", `/api/projects/${projectId}/devis`, data);
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: async (devis) => {
+      const e = extractedResult?.extracted;
+      if (e?.lineItems && e.lineItems.length > 0 && devis.id) {
+        for (let i = 0; i < e.lineItems.length; i++) {
+          const li = e.lineItems[i];
+          try {
+            await apiRequest("POST", `/api/devis/${devis.id}/line-items`, {
+              devisId: devis.id,
+              lineNumber: i + 1,
+              description: li.description || `Line ${i + 1}`,
+              quantity: String(li.quantity ?? 1),
+              unit: "u",
+              unitPriceHt: String(li.unitPrice ?? 0),
+              totalHt: String(li.total ?? 0),
+              percentComplete: "0",
+            });
+          } catch {}
+        }
+      }
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis"] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
-      setDevisDialogOpen(false);
-      devisForm.reset();
-      toast({ title: "Devis created successfully" });
+      handleCloseDialog();
+      toast({ title: "Devis created from PDF" });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -109,6 +196,30 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
     devisForm.setValue("amountTtc", (ht * (1 + tva / 100)).toFixed(2));
   };
 
+  const handleCloseDialog = () => {
+    setDevisDialogOpen(false);
+    setUploadStep("upload");
+    setExtractedResult(null);
+    setDragOver(false);
+    devisForm.reset();
+  };
+
+  const handleFileSelect = useCallback((file: File) => {
+    if (!file.type.includes("pdf") && !file.name.toLowerCase().endsWith(".pdf")) {
+      toast({ title: "Invalid file", description: "Please upload a PDF file", variant: "destructive" });
+      return;
+    }
+    setUploadStep("extracting");
+    uploadMutation.mutate(file);
+  }, [uploadMutation, toast]);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (file) handleFileSelect(file);
+  }, [handleFileSelect]);
+
   if (isLoading) {
     return <LuxuryCard><Skeleton className="h-40 w-full" /></LuxuryCard>;
   }
@@ -116,9 +227,9 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-end">
-        <Button onClick={() => setDevisDialogOpen(true)} data-testid="button-new-devis">
-          <Plus size={14} />
-          <span className="text-[9px] font-bold uppercase tracking-widest">New Devis</span>
+        <Button onClick={() => { setUploadStep("upload"); setDevisDialogOpen(true); }} data-testid="button-new-devis">
+          <Upload size={14} />
+          <span className="text-[9px] font-bold uppercase tracking-widest">Upload Devis PDF</span>
         </Button>
       </div>
 
@@ -171,135 +282,230 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
       ) : (
         <LuxuryCard data-testid="card-empty-devis">
           <p className="text-[12px] text-muted-foreground text-center py-8">
-            No Devis for this project. Create one to get started.
+            No Devis for this project. Upload a quotation PDF to get started.
           </p>
         </LuxuryCard>
       )}
 
-      <Dialog open={devisDialogOpen} onOpenChange={setDevisDialogOpen}>
-        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+      <Dialog open={devisDialogOpen} onOpenChange={(open) => { if (!open) handleCloseDialog(); }}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle className="text-[16px] font-black uppercase tracking-tight">New Devis</DialogTitle>
+            <DialogTitle className="text-[16px] font-black uppercase tracking-tight">
+              {uploadStep === "upload" && "Upload Devis PDF"}
+              {uploadStep === "extracting" && "Extracting Data..."}
+              {uploadStep === "review" && "Review Extracted Data"}
+            </DialogTitle>
+            <DialogDescription className="text-[11px] text-muted-foreground">
+              {uploadStep === "upload" && "Upload a quotation PDF and we'll extract the data automatically"}
+              {uploadStep === "extracting" && "AI is reading the document and extracting financial data"}
+              {uploadStep === "review" && "Review and adjust the extracted data, then confirm to create the devis"}
+            </DialogDescription>
           </DialogHeader>
-          <Form {...devisForm}>
-            <form onSubmit={devisForm.handleSubmit((d) => createDevisMutation.mutate(d))} className="space-y-4">
-              <FormField control={devisForm.control} name="contractorId" render={({ field }) => (
-                <FormItem>
-                  <FormLabel><TechnicalLabel>Contractor</TechnicalLabel></FormLabel>
-                  <Select onValueChange={(v) => field.onChange(parseInt(v))} value={field.value ? String(field.value) : ""}>
-                    <FormControl><SelectTrigger data-testid="select-devis-contractor"><SelectValue placeholder="Select" /></SelectTrigger></FormControl>
-                    <SelectContent>
-                      {contractors.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                  <FormMessage />
-                </FormItem>
-              )} />
-              <div className="grid grid-cols-2 gap-4">
-                <FormField control={devisForm.control} name="devisCode" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel><TechnicalLabel>Devis Code</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} placeholder="e.g. 1231.1.GROS OEUVRE" data-testid="input-devis-code" /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={devisForm.control} name="devisNumber" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel><TechnicalLabel>Devis N° (contractor ref)</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} placeholder="e.g. D-2024-001" data-testid="input-devis-number" /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-              </div>
-              <FormField control={devisForm.control} name="descriptionFr" render={({ field }) => (
-                <FormItem>
-                  <FormLabel><TechnicalLabel>Description (FR)</TechnicalLabel></FormLabel>
-                  <FormControl><Textarea {...field} className="resize-none" placeholder="Devis description" data-testid="input-devis-desc-fr" /></FormControl>
-                  <FormMessage />
-                </FormItem>
-              )} />
-              <FormField control={devisForm.control} name="descriptionUk" render={({ field }) => (
-                <FormItem>
-                  <FormLabel><TechnicalLabel>Description (EN)</TechnicalLabel></FormLabel>
-                  <FormControl><Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} placeholder="Optional English description" data-testid="input-devis-desc-uk" /></FormControl>
-                  <FormMessage />
-                </FormItem>
-              )} />
-              {lots.length > 0 && (
-                <FormField control={devisForm.control} name="lotId" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel><TechnicalLabel>Lot</TechnicalLabel></FormLabel>
-                    <Select onValueChange={(v) => field.onChange(v === "none" ? null : parseInt(v))} value={field.value ? String(field.value) : "none"}>
-                      <FormControl><SelectTrigger data-testid="select-devis-lot"><SelectValue placeholder="None" /></SelectTrigger></FormControl>
-                      <SelectContent>
-                        <SelectItem value="none">None</SelectItem>
-                        {lots.map((l) => <SelectItem key={l.id} value={String(l.id)}>Lot {l.lotNumber} — {l.descriptionFr}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )} />
+
+          {uploadStep === "upload" && (
+            <div
+              className={`border-2 border-dashed rounded-2xl p-12 text-center transition-colors cursor-pointer ${dragOver ? "border-[#0B2545] bg-[#0B2545]/5" : "border-[rgba(0,0,0,0.15)] hover:border-[#0B2545]/50"}`}
+              onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={handleDrop}
+              onClick={() => fileInputRef.current?.click()}
+              data-testid="dropzone-devis-pdf"
+            >
+              <FileUp className="mx-auto mb-4 text-muted-foreground" size={48} strokeWidth={1} />
+              <p className="text-[13px] font-semibold text-foreground mb-1">
+                Drop a PDF here or click to browse
+              </p>
+              <p className="text-[11px] text-muted-foreground">
+                Supports quotations, devis, and similar documents
+              </p>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pdf,application/pdf"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleFileSelect(file);
+                }}
+                data-testid="input-devis-pdf"
+              />
+            </div>
+          )}
+
+          {uploadStep === "extracting" && (
+            <div className="py-16 text-center">
+              <Loader2 className="mx-auto mb-4 animate-spin text-[#0B2545]" size={48} />
+              <p className="text-[13px] font-semibold text-foreground mb-1">
+                Analysing document...
+              </p>
+              <p className="text-[11px] text-muted-foreground">
+                Extracting contractor, amounts, line items, and references
+              </p>
+            </div>
+          )}
+
+          {uploadStep === "review" && extractedResult && (
+            <div className="space-y-4">
+              {extractedResult.match.confidence > 0 && (
+                <div className={`flex items-start gap-2 p-3 rounded-xl text-[11px] ${extractedResult.match.confidence >= 70 ? "bg-emerald-50 text-emerald-800 border border-emerald-200" : "bg-amber-50 text-amber-800 border border-amber-200"}`}>
+                  {extractedResult.match.confidence >= 70 ? <Check size={14} className="mt-0.5 flex-shrink-0" /> : <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />}
+                  <div>
+                    <span className="font-semibold">Match confidence: {Math.round(extractedResult.match.confidence)}%</span>
+                    {Object.entries(extractedResult.match.matchedFields).map(([key, val]) => (
+                      <p key={key} className="text-[10px] mt-0.5 opacity-80">{key}: {val}</p>
+                    ))}
+                  </div>
+                </div>
               )}
-              <div className="grid grid-cols-3 gap-4">
-                <FormField control={devisForm.control} name="amountHt" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel><TechnicalLabel>Amount HT</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcDevisTtc()} data-testid="input-devis-ht" /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={devisForm.control} name="tvaRate" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel><TechnicalLabel>TVA %</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcDevisTtc()} data-testid="input-devis-tva" /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={devisForm.control} name="amountTtc" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel><TechnicalLabel>Amount TTC</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} type="number" step="0.01" readOnly data-testid="input-devis-ttc" /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <FormField control={devisForm.control} name="invoicingMode" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel><TechnicalLabel>Invoicing Mode</TechnicalLabel></FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value}>
-                      <FormControl><SelectTrigger data-testid="select-devis-mode"><SelectValue /></SelectTrigger></FormControl>
-                      <SelectContent>
-                        <SelectItem value="mode_a">Mode A — Simple invoicing</SelectItem>
-                        <SelectItem value="mode_b">Mode B — Situation de Travaux</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={devisForm.control} name="status" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel><TechnicalLabel>Status</TechnicalLabel></FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value}>
-                      <FormControl><SelectTrigger data-testid="select-devis-status"><SelectValue /></SelectTrigger></FormControl>
-                      <SelectContent>
-                        <SelectItem value="pending">Pending</SelectItem>
-                        <SelectItem value="live">Live</SelectItem>
-                        <SelectItem value="completed">Completed</SelectItem>
-                        <SelectItem value="void">Void</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-              </div>
-              <Button type="submit" className="w-full" disabled={createDevisMutation.isPending} data-testid="button-submit-devis">
-                <span className="text-[9px] font-bold uppercase tracking-widest">
-                  {createDevisMutation.isPending ? "Creating..." : "Create Devis"}
-                </span>
-              </Button>
-            </form>
-          </Form>
+
+              {extractedResult.extracted.lineItems && extractedResult.extracted.lineItems.length > 0 && (
+                <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.08)] bg-white/50">
+                  <TechnicalLabel>Extracted Line Items ({extractedResult.extracted.lineItems.length})</TechnicalLabel>
+                  <div className="mt-2 max-h-40 overflow-y-auto">
+                    <table className="w-full text-[10px]">
+                      <thead>
+                        <tr className="border-b border-[rgba(0,0,0,0.08)]">
+                          <th className="text-left py-1 font-black uppercase tracking-widest text-[8px]">Description</th>
+                          <th className="text-right py-1 font-black uppercase tracking-widest text-[8px]">Qty</th>
+                          <th className="text-right py-1 font-black uppercase tracking-widest text-[8px]">Unit Price</th>
+                          <th className="text-right py-1 font-black uppercase tracking-widest text-[8px]">Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {extractedResult.extracted.lineItems.map((li, i) => (
+                          <tr key={i} className="border-b border-[rgba(0,0,0,0.04)]">
+                            <td className="py-1 pr-2 max-w-[200px] truncate">{li.description}</td>
+                            <td className="py-1 text-right">{li.quantity ?? "-"}</td>
+                            <td className="py-1 text-right">{li.unitPrice != null ? formatCurrency(li.unitPrice) : "-"}</td>
+                            <td className="py-1 text-right font-medium">{li.total != null ? formatCurrency(li.total) : "-"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              <Form {...devisForm}>
+                <form onSubmit={devisForm.handleSubmit((d) => createDevisMutation.mutate(d))} className="space-y-4">
+                  <FormField control={devisForm.control} name="contractorId" render={({ field }) => (
+                    <FormItem>
+                      <FormLabel><TechnicalLabel>Contractor</TechnicalLabel></FormLabel>
+                      <Select onValueChange={(v) => field.onChange(parseInt(v))} value={field.value ? String(field.value) : ""}>
+                        <FormControl><SelectTrigger data-testid="select-devis-contractor"><SelectValue placeholder="Select contractor" /></SelectTrigger></FormControl>
+                        <SelectContent>
+                          {contractors.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+                  <div className="grid grid-cols-2 gap-4">
+                    <FormField control={devisForm.control} name="devisCode" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel><TechnicalLabel>Devis Code</TechnicalLabel></FormLabel>
+                        <FormControl><Input {...field} placeholder="e.g. 1231.1.GROS OEUVRE" data-testid="input-devis-code" /></FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                    <FormField control={devisForm.control} name="devisNumber" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel><TechnicalLabel>Devis N° (contractor ref)</TechnicalLabel></FormLabel>
+                        <FormControl><Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} placeholder="e.g. D-2024-001" data-testid="input-devis-number" /></FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                  </div>
+                  <FormField control={devisForm.control} name="descriptionFr" render={({ field }) => (
+                    <FormItem>
+                      <FormLabel><TechnicalLabel>Description (FR)</TechnicalLabel></FormLabel>
+                      <FormControl><Textarea {...field} className="resize-none" placeholder="Devis description" data-testid="input-devis-desc-fr" /></FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+                  {lots.length > 0 && (
+                    <FormField control={devisForm.control} name="lotId" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel><TechnicalLabel>Lot</TechnicalLabel></FormLabel>
+                        <Select onValueChange={(v) => field.onChange(v === "none" ? null : parseInt(v))} value={field.value ? String(field.value) : "none"}>
+                          <FormControl><SelectTrigger data-testid="select-devis-lot"><SelectValue placeholder="None" /></SelectTrigger></FormControl>
+                          <SelectContent>
+                            <SelectItem value="none">None</SelectItem>
+                            {lots.map((l) => <SelectItem key={l.id} value={String(l.id)}>Lot {l.lotNumber} — {l.descriptionFr}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                  )}
+                  <div className="grid grid-cols-3 gap-4">
+                    <FormField control={devisForm.control} name="amountHt" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel><TechnicalLabel>Amount HT</TechnicalLabel></FormLabel>
+                        <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcDevisTtc()} data-testid="input-devis-ht" /></FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                    <FormField control={devisForm.control} name="tvaRate" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel><TechnicalLabel>TVA %</TechnicalLabel></FormLabel>
+                        <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcDevisTtc()} data-testid="input-devis-tva" /></FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                    <FormField control={devisForm.control} name="amountTtc" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel><TechnicalLabel>Amount TTC</TechnicalLabel></FormLabel>
+                        <FormControl><Input {...field} type="number" step="0.01" readOnly data-testid="input-devis-ttc" /></FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <FormField control={devisForm.control} name="invoicingMode" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel><TechnicalLabel>Invoicing Mode</TechnicalLabel></FormLabel>
+                        <Select onValueChange={field.onChange} value={field.value}>
+                          <FormControl><SelectTrigger data-testid="select-devis-mode"><SelectValue /></SelectTrigger></FormControl>
+                          <SelectContent>
+                            <SelectItem value="mode_a">Mode A — Simple invoicing</SelectItem>
+                            <SelectItem value="mode_b">Mode B — Situation de Travaux</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                    <FormField control={devisForm.control} name="status" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel><TechnicalLabel>Status</TechnicalLabel></FormLabel>
+                        <Select onValueChange={field.onChange} value={field.value}>
+                          <FormControl><SelectTrigger data-testid="select-devis-status"><SelectValue /></SelectTrigger></FormControl>
+                          <SelectContent>
+                            <SelectItem value="pending">Pending</SelectItem>
+                            <SelectItem value="live">Live</SelectItem>
+                            <SelectItem value="completed">Completed</SelectItem>
+                            <SelectItem value="void">Void</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                  </div>
+                  <div className="flex gap-3">
+                    <Button type="button" variant="outline" className="flex-1" onClick={() => { setUploadStep("upload"); setExtractedResult(null); }} data-testid="button-reupload">
+                      <Upload size={14} />
+                      <span className="text-[9px] font-bold uppercase tracking-widest">Upload Different PDF</span>
+                    </Button>
+                    <Button type="submit" className="flex-1" disabled={createDevisMutation.isPending} data-testid="button-submit-devis">
+                      <span className="text-[9px] font-bold uppercase tracking-widest">
+                        {createDevisMutation.isPending ? "Creating..." : "Confirm & Create Devis"}
+                      </span>
+                    </Button>
+                  </div>
+                </form>
+              </Form>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>
@@ -510,40 +716,30 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
                     <th className="text-left py-1 px-2 font-black uppercase tracking-widest text-[8px]">#</th>
                     <th className="text-left py-1 px-2 font-black uppercase tracking-widest text-[8px]">Description</th>
                     <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Qty</th>
-                    <th className="text-left py-1 px-2 font-black uppercase tracking-widest text-[8px]">Unit</th>
-                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Unit Price HT</th>
+                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Unit Price</th>
                     <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Total HT</th>
-                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">% Progress</th>
+                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Progress %</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {lineItems.map((item) => (
-                    <tr key={item.id} className="border-b border-[rgba(0,0,0,0.03)]" data-testid={`row-line-${item.id}`}>
-                      <td className="py-1.5 px-2 text-muted-foreground">{item.lineNumber}</td>
-                      <td className="py-1.5 px-2 text-foreground">{item.description}</td>
-                      <td className="py-1.5 px-2 text-right">{item.quantity}</td>
-                      <td className="py-1.5 px-2">{item.unit}</td>
-                      <td className="py-1.5 px-2 text-right">{formatCurrency(parseFloat(item.unitPriceHt))}</td>
-                      <td className="py-1.5 px-2 text-right font-semibold">{formatCurrency(parseFloat(item.totalHt))}</td>
-                      <td className="py-1.5 px-2">
-                        <div className="flex items-center gap-1 justify-end">
-                          <Input
-                            type="number"
-                            min="0"
-                            max="100"
-                            step="5"
-                            defaultValue={item.percentComplete ?? "0"}
-                            className="w-14 h-6 text-[10px] text-right"
-                            onBlur={(e) => {
-                              const val = e.target.value;
-                              if (val !== (item.percentComplete ?? "0")) {
-                                updateLineItemMutation.mutate({ id: item.id, percentComplete: val });
-                              }
-                            }}
-                            data-testid={`input-line-pct-${item.id}`}
-                          />
-                          <span className="text-[9px] text-muted-foreground">%</span>
-                        </div>
+                  {lineItems.map((li) => (
+                    <tr key={li.id} className="border-b border-[rgba(0,0,0,0.04)]">
+                      <td className="py-1 px-2">{li.lineNumber}</td>
+                      <td className="py-1 px-2">{li.description}</td>
+                      <td className="py-1 px-2 text-right">{li.quantity}</td>
+                      <td className="py-1 px-2 text-right">{li.unitPriceHt ? formatCurrency(parseFloat(li.unitPriceHt)) : "-"}</td>
+                      <td className="py-1 px-2 text-right font-medium">{formatCurrency(parseFloat(li.totalHt))}</td>
+                      <td className="py-1 px-2 text-right">
+                        <Input
+                          type="number"
+                          className="h-6 w-16 text-[10px] text-right inline-block"
+                          defaultValue={li.percentComplete ?? "0"}
+                          min={0}
+                          max={100}
+                          step={5}
+                          onBlur={(e) => updateLineItemMutation.mutate({ id: li.id, percentComplete: e.target.value })}
+                          data-testid={`input-line-progress-${li.id}`}
+                        />
                       </td>
                     </tr>
                   ))}
@@ -551,176 +747,119 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
               </table>
             </div>
           ) : (
-            <p className="text-[11px] text-muted-foreground py-2">No line items. Add items for Mode B tracking.</p>
+            <p className="text-[11px] text-muted-foreground text-center py-4">No line items yet.</p>
           )}
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
-              <Receipt size={12} className="inline mr-1" />
-              Invoices ({invoices?.length ?? 0})
-            </h4>
-            <Button variant="outline" size="sm" onClick={() => {
-              invoiceForm.reset({
-                devisId: devis.id, contractorId: devis.contractorId, projectId: parseInt(projectId),
-                certificateNumber: "", invoiceNumber: (invoices?.length ?? 0) + 1,
-                amountHt: "0.00", tvaAmount: "0.00", amountTtc: "0.00",
-                dateIssued: null, dateSent: null, datePaid: null, status: "pending", pdfPath: null, notes: null,
-              });
-              setInvoiceDialogOpen(true);
-            }} data-testid={`button-add-invoice-${devis.id}`}>
-              <Plus size={12} />
-              <span className="text-[8px] font-bold uppercase tracking-widest">Invoice</span>
-            </Button>
-          </div>
-          {invoices && invoices.length > 0 ? (
-            <div className="space-y-1.5">
-              {invoices.map((inv) => (
-                <div key={inv.id} className="p-2 rounded-lg border border-[rgba(0,0,0,0.05)] flex items-center justify-between gap-2 flex-wrap" data-testid={`row-invoice-${inv.id}`}>
-                  <div>
-                    <span className="text-[11px] font-semibold text-foreground">F{inv.invoiceNumber}</span>
-                    {inv.certificateNumber && <span className="text-[10px] text-muted-foreground ml-1">({inv.certificateNumber})</span>}
-                    {inv.dateIssued && <p className="text-[9px] text-muted-foreground">{inv.dateIssued}</p>}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[11px] font-semibold text-foreground">{formatCurrency(parseFloat(inv.amountHt))} HT</span>
-                    <StatusBadge status={inv.status} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-[11px] text-muted-foreground py-2">No invoices.</p>
-          )}
-        </div>
-
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
-              <FileText size={12} className="inline mr-1" />
-              Avenants ({avenants?.length ?? 0})
-            </h4>
-            <Button variant="outline" size="sm" onClick={() => {
-              avenantForm.reset({
-                devisId: devis.id, avenantNumber: "", type: "pv",
-                descriptionFr: "", descriptionUk: null,
-                amountHt: "0.00", amountTtc: "0.00",
-                dateSigned: null, status: "draft", pvmvRef: null,
-              });
-              setAvenantDialogOpen(true);
-            }} data-testid={`button-add-avenant-${devis.id}`}>
-              <Plus size={12} />
-              <span className="text-[8px] font-bold uppercase tracking-widest">Avenant</span>
-            </Button>
-          </div>
-          {avenants && avenants.length > 0 ? (
-            <div className="space-y-1.5">
-              {avenants.map((av) => (
-                <div key={av.id} className="p-2 rounded-lg border border-[rgba(0,0,0,0.05)] flex items-center justify-between gap-2 flex-wrap" data-testid={`row-avenant-${av.id}`}>
-                  <div className="flex items-center gap-1.5">
-                    {av.type === "pv" ? (
-                      <ArrowUpRight size={12} className="text-emerald-600" />
-                    ) : (
-                      <ArrowDownRight size={12} className="text-red-600" />
-                    )}
-                    <div>
-                      <span className="text-[11px] font-semibold text-foreground">{av.type.toUpperCase()}</span>
-                      <p className="text-[10px] text-muted-foreground truncate max-w-[120px]">{av.descriptionFr}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className={`text-[11px] font-semibold ${av.type === "pv" ? "text-emerald-600" : "text-red-600"}`}>
-                      {av.type === "pv" ? "+" : "-"}{formatCurrency(parseFloat(av.amountHt))}
-                    </span>
-                    <StatusBadge status={av.status} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-[11px] text-muted-foreground py-2">No Avenants.</p>
-          )}
-        </div>
+      <div className="flex items-center justify-between">
+        <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
+          Avenants ({avenants?.length ?? 0})
+        </h4>
+        <Button variant="outline" size="sm" onClick={() => {
+          avenantForm.reset({ devisId: devis.id, avenantNumber: "", type: "pv", descriptionFr: "", descriptionUk: null, amountHt: "0.00", amountTtc: "0.00", dateSigned: null, status: "draft", pvmvRef: null });
+          setAvenantDialogOpen(true);
+        }} data-testid={`button-add-avenant-${devis.id}`}>
+          <Plus size={12} />
+          <span className="text-[8px] font-bold uppercase tracking-widest">Avenant</span>
+        </Button>
       </div>
+      {avenants && avenants.length > 0 ? (
+        <div className="space-y-2">
+          {avenants.map((a) => (
+            <div key={a.id} className="flex items-center justify-between p-2 rounded-xl border border-[rgba(0,0,0,0.06)] bg-white/30" data-testid={`row-avenant-${a.id}`}>
+              <div className="flex items-center gap-2">
+                {a.type === "pv" ? <ArrowUpRight size={12} className="text-emerald-600" /> : <ArrowDownRight size={12} className="text-rose-500" />}
+                <span className="text-[11px]">{a.descriptionFr}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={`text-[12px] font-semibold ${a.type === "pv" ? "text-emerald-600" : "text-rose-500"}`}>
+                  {a.type === "pv" ? "+" : "-"}{formatCurrency(parseFloat(a.amountHt))}
+                </span>
+                <StatusBadge status={a.status} />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-[11px] text-muted-foreground text-center py-2">No avenants.</p>
+      )}
+
+      <div className="flex items-center justify-between">
+        <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
+          Invoices ({invoices?.length ?? 0})
+        </h4>
+        <Button variant="outline" size="sm" onClick={() => {
+          invoiceForm.reset({
+            devisId: devis.id, contractorId: devis.contractorId, projectId: parseInt(projectId),
+            certificateNumber: "", invoiceNumber: (invoices?.length ?? 0) + 1,
+            amountHt: "0.00", tvaAmount: "0.00", amountTtc: "0.00",
+            dateIssued: null, dateSent: null, datePaid: null, status: "pending", pdfPath: null, notes: null,
+          });
+          setInvoiceDialogOpen(true);
+        }} data-testid={`button-add-invoice-${devis.id}`}>
+          <Receipt size={12} />
+          <span className="text-[8px] font-bold uppercase tracking-widest">Invoice</span>
+        </Button>
+      </div>
+      {invoices && invoices.length > 0 ? (
+        <div className="space-y-2">
+          {invoices.map((inv) => (
+            <div key={inv.id} className="flex items-center justify-between p-2 rounded-xl border border-[rgba(0,0,0,0.06)] bg-white/30" data-testid={`row-invoice-${inv.id}`}>
+              <div className="flex items-center gap-2">
+                <FileText size={12} className="text-muted-foreground" />
+                <span className="text-[11px]">Invoice #{inv.invoiceNumber}</span>
+                {inv.certificateNumber && <TechnicalLabel>Cert: {inv.certificateNumber}</TechnicalLabel>}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[12px] font-semibold text-foreground">{formatCurrency(parseFloat(inv.amountHt))}</span>
+                <StatusBadge status={inv.status} />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-[11px] text-muted-foreground text-center py-2">No invoices.</p>
+      )}
 
       <Dialog open={invoiceDialogOpen} onOpenChange={setInvoiceDialogOpen}>
-        <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle className="text-[16px] font-black uppercase tracking-tight">New Invoice — {devis.devisCode}</DialogTitle>
+            <DialogTitle className="text-[16px] font-black uppercase tracking-tight">New Invoice</DialogTitle>
+            <DialogDescription className="text-[11px]">Record a contractor invoice against this devis</DialogDescription>
           </DialogHeader>
           <Form {...invoiceForm}>
             <form onSubmit={invoiceForm.handleSubmit((d) => createInvoiceMutation.mutate(d))} className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <FormField control={invoiceForm.control} name="invoiceNumber" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel><TechnicalLabel>Invoice N°</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} type="number" onChange={(e) => field.onChange(parseInt(e.target.value))} data-testid="input-inv-number" /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={invoiceForm.control} name="certificateNumber" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel><TechnicalLabel>Certificat Ref</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} placeholder="e.g. C43" data-testid="input-inv-cert" /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-              </div>
-              <FormField control={invoiceForm.control} name="amountHt" render={({ field }) => (
+              <FormField control={invoiceForm.control} name="invoiceNumber" render={({ field }) => (
                 <FormItem>
-                  <FormLabel><TechnicalLabel>Amount HT</TechnicalLabel></FormLabel>
-                  <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcInvoiceTtc()} data-testid="input-inv-ht" /></FormControl>
+                  <FormLabel><TechnicalLabel>Invoice N°</TechnicalLabel></FormLabel>
+                  <FormControl><Input {...field} type="number" data-testid="input-invoice-number" /></FormControl>
                   <FormMessage />
                 </FormItem>
               )} />
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-3 gap-4">
+                <FormField control={invoiceForm.control} name="amountHt" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel><TechnicalLabel>HT</TechnicalLabel></FormLabel>
+                    <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcInvoiceTtc()} data-testid="input-invoice-ht" /></FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )} />
                 <FormField control={invoiceForm.control} name="tvaAmount" render={({ field }) => (
                   <FormItem>
                     <FormLabel><TechnicalLabel>TVA</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} type="number" step="0.01" readOnly data-testid="input-inv-tva" /></FormControl>
+                    <FormControl><Input {...field} type="number" step="0.01" readOnly data-testid="input-invoice-tva" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
                 <FormField control={invoiceForm.control} name="amountTtc" render={({ field }) => (
                   <FormItem>
-                    <FormLabel><TechnicalLabel>Amount TTC</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} type="number" step="0.01" readOnly data-testid="input-inv-ttc" /></FormControl>
+                    <FormLabel><TechnicalLabel>TTC</TechnicalLabel></FormLabel>
+                    <FormControl><Input {...field} type="number" step="0.01" readOnly data-testid="input-invoice-ttc" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
               </div>
-              <FormField control={invoiceForm.control} name="dateIssued" render={({ field }) => (
-                <FormItem>
-                  <FormLabel><TechnicalLabel>Issue Date</TechnicalLabel></FormLabel>
-                  <FormControl><Input type="date" {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} data-testid="input-inv-date" /></FormControl>
-                  <FormMessage />
-                </FormItem>
-              )} />
-              <FormField control={invoiceForm.control} name="status" render={({ field }) => (
-                <FormItem>
-                  <FormLabel><TechnicalLabel>Status</TechnicalLabel></FormLabel>
-                  <Select onValueChange={field.onChange} value={field.value}>
-                    <FormControl><SelectTrigger data-testid="select-inv-status"><SelectValue /></SelectTrigger></FormControl>
-                    <SelectContent>
-                      <SelectItem value="pending">Pending</SelectItem>
-                      <SelectItem value="sent">Sent</SelectItem>
-                      <SelectItem value="paid">Paid</SelectItem>
-                      <SelectItem value="overdue">Overdue</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <FormMessage />
-                </FormItem>
-              )} />
-              <FormField control={invoiceForm.control} name="notes" render={({ field }) => (
-                <FormItem>
-                  <FormLabel><TechnicalLabel>Notes</TechnicalLabel></FormLabel>
-                  <FormControl><Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} data-testid="input-inv-notes" /></FormControl>
-                  <FormMessage />
-                </FormItem>
-              )} />
               <Button type="submit" className="w-full" disabled={createInvoiceMutation.isPending} data-testid="button-submit-invoice">
                 <span className="text-[9px] font-bold uppercase tracking-widest">
                   {createInvoiceMutation.isPending ? "Creating..." : "Create Invoice"}
@@ -732,38 +871,30 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
       </Dialog>
 
       <Dialog open={avenantDialogOpen} onOpenChange={setAvenantDialogOpen}>
-        <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle className="text-[16px] font-black uppercase tracking-tight">New Avenant — {devis.devisCode}</DialogTitle>
+            <DialogTitle className="text-[16px] font-black uppercase tracking-tight">New Avenant</DialogTitle>
+            <DialogDescription className="text-[11px]">Add a plus-value or moins-value variation</DialogDescription>
           </DialogHeader>
           <Form {...avenantForm}>
             <form onSubmit={avenantForm.handleSubmit((d) => createAvenantMutation.mutate(d))} className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <FormField control={avenantForm.control} name="type" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel><TechnicalLabel>Type</TechnicalLabel></FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value}>
-                      <FormControl><SelectTrigger data-testid="select-av-type"><SelectValue /></SelectTrigger></FormControl>
-                      <SelectContent>
-                        <SelectItem value="pv">PV (Plus-value)</SelectItem>
-                        <SelectItem value="mv">MV (Moins-value)</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={avenantForm.control} name="avenantNumber" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel><TechnicalLabel>Avenant N°</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} placeholder="AV-01" data-testid="input-av-number" /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-              </div>
+              <FormField control={avenantForm.control} name="type" render={({ field }) => (
+                <FormItem>
+                  <FormLabel><TechnicalLabel>Type</TechnicalLabel></FormLabel>
+                  <Select onValueChange={field.onChange} value={field.value}>
+                    <FormControl><SelectTrigger data-testid="select-avenant-type"><SelectValue /></SelectTrigger></FormControl>
+                    <SelectContent>
+                      <SelectItem value="pv">Plus-value (PV)</SelectItem>
+                      <SelectItem value="mv">Moins-value (MV)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )} />
               <FormField control={avenantForm.control} name="descriptionFr" render={({ field }) => (
                 <FormItem>
-                  <FormLabel><TechnicalLabel>Description (FR)</TechnicalLabel></FormLabel>
-                  <FormControl><Textarea {...field} className="resize-none" data-testid="input-av-desc-fr" /></FormControl>
+                  <FormLabel><TechnicalLabel>Description</TechnicalLabel></FormLabel>
+                  <FormControl><Textarea {...field} className="resize-none" data-testid="input-avenant-desc" /></FormControl>
                   <FormMessage />
                 </FormItem>
               )} />
@@ -771,32 +902,18 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
                 <FormField control={avenantForm.control} name="amountHt" render={({ field }) => (
                   <FormItem>
                     <FormLabel><TechnicalLabel>Amount HT</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcAvenantTtc()} data-testid="input-av-ht" /></FormControl>
+                    <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcAvenantTtc()} data-testid="input-avenant-ht" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
                 <FormField control={avenantForm.control} name="amountTtc" render={({ field }) => (
                   <FormItem>
                     <FormLabel><TechnicalLabel>Amount TTC</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} type="number" step="0.01" readOnly data-testid="input-av-ttc" /></FormControl>
+                    <FormControl><Input {...field} type="number" step="0.01" readOnly data-testid="input-avenant-ttc" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
               </div>
-              <FormField control={avenantForm.control} name="status" render={({ field }) => (
-                <FormItem>
-                  <FormLabel><TechnicalLabel>Status</TechnicalLabel></FormLabel>
-                  <Select onValueChange={field.onChange} value={field.value}>
-                    <FormControl><SelectTrigger data-testid="select-av-status"><SelectValue /></SelectTrigger></FormControl>
-                    <SelectContent>
-                      <SelectItem value="draft">Draft</SelectItem>
-                      <SelectItem value="approved">Approved</SelectItem>
-                      <SelectItem value="rejected">Rejected</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <FormMessage />
-                </FormItem>
-              )} />
               <Button type="submit" className="w-full" disabled={createAvenantMutation.isPending} data-testid="button-submit-avenant">
                 <span className="text-[9px] font-bold uppercase tracking-widest">
                   {createAvenantMutation.isPending ? "Creating..." : "Create Avenant"}
@@ -807,44 +924,36 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
         </DialogContent>
       </Dialog>
 
-      {devis.invoicingMode === "mode_b" && (
-        <Dialog open={lineItemDialogOpen} onOpenChange={setLineItemDialogOpen}>
-          <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle className="text-[16px] font-black uppercase tracking-tight">New Line Item</DialogTitle>
-            </DialogHeader>
-            <Form {...lineItemForm}>
-              <form onSubmit={lineItemForm.handleSubmit((d) => createLineItemMutation.mutate(d))} className="space-y-4">
-                <FormField control={lineItemForm.control} name="description" render={({ field }) => (
+      <Dialog open={lineItemDialogOpen} onOpenChange={setLineItemDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-[16px] font-black uppercase tracking-tight">Add Line Item</DialogTitle>
+            <DialogDescription className="text-[11px]">Add a line item to this devis for progress tracking</DialogDescription>
+          </DialogHeader>
+          <Form {...lineItemForm}>
+            <form onSubmit={lineItemForm.handleSubmit((d) => createLineItemMutation.mutate(d))} className="space-y-4">
+              <FormField control={lineItemForm.control} name="description" render={({ field }) => (
+                <FormItem>
+                  <FormLabel><TechnicalLabel>Description</TechnicalLabel></FormLabel>
+                  <FormControl><Input {...field} data-testid="input-line-desc" /></FormControl>
+                  <FormMessage />
+                </FormItem>
+              )} />
+              <div className="grid grid-cols-3 gap-4">
+                <FormField control={lineItemForm.control} name="quantity" render={({ field }) => (
                   <FormItem>
-                    <FormLabel><TechnicalLabel>Description</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} data-testid="input-line-desc" /></FormControl>
+                    <FormLabel><TechnicalLabel>Qty</TechnicalLabel></FormLabel>
+                    <FormControl><Input {...field} type="number" step="0.001" onBlur={() => recalcLineTotal()} data-testid="input-line-qty" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
-                <div className="grid grid-cols-3 gap-4">
-                  <FormField control={lineItemForm.control} name="quantity" render={({ field }) => (
-                    <FormItem>
-                      <FormLabel><TechnicalLabel>Quantity</TechnicalLabel></FormLabel>
-                      <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcLineTotal()} data-testid="input-line-qty" /></FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                  <FormField control={lineItemForm.control} name="unit" render={({ field }) => (
-                    <FormItem>
-                      <FormLabel><TechnicalLabel>Unit</TechnicalLabel></FormLabel>
-                      <FormControl><Input {...field} placeholder="u, m², ml..." data-testid="input-line-unit" /></FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                  <FormField control={lineItemForm.control} name="unitPriceHt" render={({ field }) => (
-                    <FormItem>
-                      <FormLabel><TechnicalLabel>Unit Price HT</TechnicalLabel></FormLabel>
-                      <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcLineTotal()} data-testid="input-line-pu" /></FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                </div>
+                <FormField control={lineItemForm.control} name="unitPriceHt" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel><TechnicalLabel>Unit Price</TechnicalLabel></FormLabel>
+                    <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcLineTotal()} data-testid="input-line-price" /></FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )} />
                 <FormField control={lineItemForm.control} name="totalHt" render={({ field }) => (
                   <FormItem>
                     <FormLabel><TechnicalLabel>Total HT</TechnicalLabel></FormLabel>
@@ -852,16 +961,16 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
                     <FormMessage />
                   </FormItem>
                 )} />
-                <Button type="submit" className="w-full" disabled={createLineItemMutation.isPending} data-testid="button-submit-line">
-                  <span className="text-[9px] font-bold uppercase tracking-widest">
-                    {createLineItemMutation.isPending ? "Adding..." : "Add Line Item"}
-                  </span>
-                </Button>
-              </form>
-            </Form>
-          </DialogContent>
-        </Dialog>
-      )}
+              </div>
+              <Button type="submit" className="w-full" disabled={createLineItemMutation.isPending} data-testid="button-submit-line">
+                <span className="text-[9px] font-bold uppercase tracking-widest">
+                  {createLineItemMutation.isPending ? "Adding..." : "Add Line Item"}
+                </span>
+              </Button>
+            </form>
+          </Form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -97,6 +97,7 @@ export interface IStorage {
   updateFeeEntry(id: number, data: Partial<InsertFeeEntry>): Promise<FeeEntry | undefined>;
 
   getProjectByArchidocId(archidocId: string): Promise<Project | undefined>;
+  getProjectByName(name: string): Promise<Project | undefined>;
   getContractorByArchidocId(archidocId: string): Promise<Contractor | undefined>;
   getTrackedArchidocProjectIds(): Promise<string[]>;
 
@@ -408,6 +409,11 @@ export class DatabaseStorage implements IStorage {
 
   async getProjectByArchidocId(archidocId: string): Promise<Project | undefined> {
     const [project] = await db.select().from(projects).where(eq(projects.archidocId, archidocId));
+    return project;
+  }
+
+  async getProjectByName(name: string): Promise<Project | undefined> {
+    const [project] = await db.select().from(projects).where(eq(projects.name, name));
     return project;
   }
 

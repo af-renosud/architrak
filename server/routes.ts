@@ -177,6 +177,43 @@ export async function registerRoutes(
     res.status(201).json(d);
   });
 
+  app.post("/api/projects/:projectId/devis/upload", upload.single("file"), async (req, res) => {
+    try {
+      const projectId = Number(req.params.projectId);
+      const file = req.file;
+      if (!file) return res.status(400).json({ message: "No file provided" });
+
+      const storageKey = await uploadDocument(projectId, file.originalname, file.buffer, file.mimetype);
+
+      await storage.createProjectDocument({
+        projectId,
+        fileName: file.originalname,
+        storageKey,
+        documentType: "quotation",
+        uploadedBy: "manual",
+        description: `Devis PDF upload: ${file.originalname}`,
+      });
+
+      const { parseDocument, matchToProject } = await import("./gmail/document-parser");
+      const parsed = await parseDocument(file.buffer, file.originalname);
+
+      const projects = await storage.getProjects();
+      const contractors = await storage.getContractors();
+      const match = await matchToProject(parsed, projects, contractors);
+
+      res.json({
+        extracted: parsed,
+        match,
+        storageKey,
+        fileName: file.originalname,
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[Devis Upload] Error:", message);
+      res.status(500).json({ message: `Upload/parse failed: ${message}` });
+    }
+  });
+
   app.get("/api/devis/:id", async (req, res) => {
     const d = await storage.getDevis(Number(req.params.id));
     if (!d) return res.status(404).json({ message: "Devis not found" });

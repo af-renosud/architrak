@@ -29,27 +29,44 @@ export async function trackProject(archidocId: string, options: TrackProjectOpti
   }
 
   const clients = (mirrorProject.clients as any[]) || [];
-  const clientAddress = clients[0]?.homeAddress || clients[0]?.address || null;
+  const clientAddress = extractClientAddress(clients);
 
-  const projectData: InsertProject = {
-    name: mirrorProject.projectName,
-    code: mirrorProject.code || `AD-${archidocId.slice(0, 8).toUpperCase()}`,
-    clientName: mirrorProject.clientName || "Unknown Client",
-    clientAddress: clientAddress,
-    siteAddress: mirrorProject.address,
-    status: "active",
-    tvaRate: options.tvaRate || "20.00",
-    feeType: options.feeType || "percentage",
-    feePercentage: options.feePercentage,
-    conceptionFee: options.conceptionFee,
-    planningFee: options.planningFee,
-    hasMarche: options.hasMarche || false,
-    archidocId: archidocId,
-    archidocClients: mirrorProject.clients as Record<string, unknown> | null,
-    lastSyncedAt: new Date(),
-  };
-
-  const project = await storage.createProject(projectData);
+  const existingByName = await storage.getProjectByName(mirrorProject.projectName);
+  let project;
+  const nameMatch = existingByName && !existingByName.archidocId;
+  const clientMatch = nameMatch && mirrorProject.clientName &&
+    existingByName.clientName.toLowerCase().includes(mirrorProject.clientName.toLowerCase().split(" ")[0]);
+  if (nameMatch && clientMatch) {
+    await storage.updateProject(existingByName.id, {
+      archidocId: archidocId,
+      clientName: mirrorProject.clientName || existingByName.clientName,
+      clientAddress: clientAddress || existingByName.clientAddress,
+      siteAddress: mirrorProject.address || existingByName.siteAddress,
+      archidocClients: mirrorProject.clients as Record<string, unknown> | null,
+      lastSyncedAt: new Date(),
+    });
+    project = (await storage.getProject(existingByName.id))!;
+    console.log(`[Import] Linked existing project "${project.name}" (#${project.id}) to ArchiDoc ID ${archidocId}`);
+  } else {
+    const projectData: InsertProject = {
+      name: mirrorProject.projectName,
+      code: mirrorProject.code || `AD-${archidocId.slice(0, 8).toUpperCase()}`,
+      clientName: mirrorProject.clientName || "Unknown Client",
+      clientAddress: clientAddress,
+      siteAddress: mirrorProject.address,
+      status: "active",
+      tvaRate: options.tvaRate || "20.00",
+      feeType: options.feeType || "percentage",
+      feePercentage: options.feePercentage,
+      conceptionFee: options.conceptionFee,
+      planningFee: options.planningFee,
+      hasMarche: options.hasMarche || false,
+      archidocId: archidocId,
+      archidocClients: mirrorProject.clients as Record<string, unknown> | null,
+      lastSyncedAt: new Date(),
+    };
+    project = await storage.createProject(projectData);
+  }
   let contractorsCreated = 0;
   let lotsCreated = 0;
   let feesCreated = 0;
@@ -171,10 +188,13 @@ export async function refreshProject(projectId: number): Promise<{ updated: bool
     throw new Error(`ArchiDoc project ${project.archidocId} not found in mirror tables. Run sync first.`);
   }
 
+  const refreshClients = (mirrorProject.clients as any[]) || [];
+  const refreshClientAddress = extractClientAddress(refreshClients);
+
   await storage.updateProject(projectId, {
     name: mirrorProject.projectName,
     clientName: mirrorProject.clientName || project.clientName,
-    clientAddress: mirrorProject.address || project.clientAddress,
+    clientAddress: refreshClientAddress || project.clientAddress,
     siteAddress: mirrorProject.address || project.siteAddress,
     archidocClients: mirrorProject.clients as Record<string, unknown> | null,
     lastSyncedAt: new Date(),
@@ -208,6 +228,16 @@ export async function refreshProject(projectId: number): Promise<{ updated: bool
     updated: true,
     details: `Project refreshed. ${contractorsUpdated} contractor(s) updated/created.`,
   };
+}
+
+function extractClientAddress(clients: any[]): string | null {
+  for (const c of clients) {
+    const addr = c.homeAddress || c.address;
+    if (addr && typeof addr === "string" && addr.trim().length > 0) {
+      return addr.trim();
+    }
+  }
+  return null;
 }
 
 async function createContractorFromMirror(mirror: ArchidocContractor) {
