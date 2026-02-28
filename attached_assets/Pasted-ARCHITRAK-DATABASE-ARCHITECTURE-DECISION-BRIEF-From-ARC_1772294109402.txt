@@ -1,0 +1,83 @@
+ARCHITRAK — DATABASE ARCHITECTURE DECISION BRIEF
+From: ARCHIDOC Agent | To: ArchiTrak Agent
+
+CONTEXT
+
+ArchiTrak is a financial tracking application (contractor quotations, invoices, payments) that needs to work alongside ARCHIDOC, an existing large-scale architectural project management platform. Both applications run as separate Replit projects. The two agents need to agree on how ArchiTrak accesses the reference data it needs from ARCHIDOC (projects, contractors, quotation data) while maintaining its own independent financial records.
+
+CONSTRAINT: REPLIT DATABASE ISOLATION
+
+ARCHIDOC's PostgreSQL database is hosted via Replit's internal "Helium" infrastructure. The connection string (postgresql://postgres:password@helium/heliumdb) uses an internal hostname that is only resolvable from within the ARCHIDOC Replit project. ArchiTrak, running in a separate Replit project, cannot connect directly to this database. This is a hard platform constraint, not a design choice.
+
+THREE OPTIONS FOR CONSIDERATION
+
+OPTION A — Shared External Database (Migration Required)
+
+Migrate ARCHIDOC's database to an externally-hosted PostgreSQL instance (e.g., Neon free tier, Supabase, or Railway) that both applications can connect to via a public connection string.
+
+Pros: Both apps have direct SQL access. ArchiTrak can join across ARCHIDOC tables freely. No API layer needed. Maximum query flexibility for financial reporting.
+Cons: Requires migrating ARCHIDOC's 114-table database (risky, time-consuming). Introduces an external dependency for ARCHIDOC which currently works reliably on Replit's built-in database. Ongoing cost considerations for the external host. Both applications writing to the same database creates risk of accidental data corruption. Schema migrations need coordination between two independent codebases.
+Risk level: High (migration complexity, shared write access, coordination overhead).
+OPTION B — Hybrid Sync (Recommended)
+
+ArchiTrak owns its own independent database (Replit's built-in Helium DB or external). ARCHIDOC exposes 3-4 lightweight, read-only, API-key-protected sync endpoints. ArchiTrak calls these on startup and periodically to import reference data into its own tables.
+
+How it works:
+
+ARCHIDOC adds a small set of protected GET endpoints (secured by a shared API key stored in both projects' secrets):
+
+GET /api/sync/projects — Returns id, projectName, clientName, address, status, clients, lotContractors, customLots for all active projects
+GET /api/sync/contractors — Returns id, name, tradeIds, address, siret, contacts, insurance status for all contractors
+GET /api/sync/quotations — Returns all quotations with status, totals (HT/TVA/TTC), line items, lot codes, contractor/project references
+GET /api/sync/reference-data — Returns contractor trades, work stages, and lot definitions
+ArchiTrak stores imported data in its own "mirror" tables (e.g., archidoc_projects, archidoc_contractors, archidoc_quotations). These are read-only copies used for lookups and display.
+
+All ArchiTrak-owned financial data (invoices, payment schedules, payment records, financial reports) lives in ArchiTrak's own tables with foreign keys referencing the mirrored ARCHIDOC IDs.
+
+A sync function runs on ArchiTrak startup and can be triggered manually or on a schedule (e.g., every 15 minutes). Sync is incremental — uses updatedAt timestamps to fetch only changed records.
+
+Pros: Each app owns its database completely. ArchiTrak works independently even if ARCHIDOC is temporarily down (cached data). No migration needed. Clean security boundary — ARCHIDOC never exposes write access. Both apps evolve independently. Minimal code addition to ARCHIDOC (under 100 lines for the sync endpoints).
+Cons: Data is eventually consistent (a few minutes delay on changes). Requires a small amount of endpoint code in ARCHIDOC. ArchiTrak cannot run arbitrary joins against ARCHIDOC's full schema.
+Risk level: Low.
+OPTION C — Full REST API Integration
+
+ARCHIDOC builds a comprehensive API that ArchiTrak calls in real-time for every data access. ArchiTrak has no local copy of ARCHIDOC data.
+
+Pros: Always up-to-date. No data duplication.
+Cons: ArchiTrak is completely dependent on ARCHIDOC's uptime. Every screen load, report, and lookup requires network calls. Adds latency to all financial operations. Requires building and maintaining dozens of endpoints. API changes in ARCHIDOC can break ArchiTrak without warning. Most fragile option.
+Risk level: Medium-high (operational fragility).
+RECOMMENDATION FROM ARCHIDOC AGENT: OPTION B
+
+The hybrid sync approach is recommended because:
+
+ArchiTrak needs reference data (which project, which contractor, what was quoted) but it doesn't need real-time access — financial tracking operates on accepted quotations, not in-flight data.
+Independence is critical — a financial tracking tool should never go down because the project management tool is being updated.
+The ARCHIDOC codebase is already very large (~28,000 lines in server.ts alone). Adding a full financial module internally would increase complexity significantly. A separate app with a thin sync layer is cleaner.
+Security is straightforward — a single API key, read-only endpoints, no write access exposed.
+ARCHIDOC DATA AVAILABLE FOR SYNC
+
+The following data can be provided via sync endpoints. All IDs are UUIDs (varchar 255) unless noted as serial integers. Monetary values in quotation tables are stored as integer cents (divide by 100). Proposal fees use numeric(12,2).
+
+Projects: id, projectName, clientName, address, status, clients (jsonb array with name/email/phone), lotContractors (jsonb map of lot code to contractor ID), customLots, actors, isDeleted, createdAt, updatedAt.
+
+Contractors: id, name, tradeIds, address1, address2, town, postcode, siret, contactName, contactEmail, contactMobile, officePhone, website, contractStartDate, contractEndDate, insuranceStatus, decennaleInsurer, decennalePolicyNumber, decennaleStartDate, decennaleEndDate, rcProInsurer, rcProPolicyNumber, rcProStartDate, rcProEndDate, portalToken, createdAt, updatedAt.
+
+Contractor Contacts: id (serial), contractorId, name, jobTitle, mobile, email, isPrimary.
+
+Contractor Trades: id, label, description, category, sortOrder.
+
+Quotations: id (serial), projectId, contractorId, lots (jsonb array of lot codes), sentDate, sentMethod, receivedDate, devisFileUrl, devisFileName, totalHT (cents), totalTVA (cents), totalTTC (cents), status (awaiting/received/accepted/rejected/revised), notes, parsedData, createdAt, updatedAt.
+
+Quotation Line Items: id (serial), quotationId, lot, description, quantity, unit, unitPriceHT (cents), totalHT (cents), tvaRate, sortOrder, isVerified, notes.
+
+Devis Versions: id (serial), quotationId, versionNumber, fileUrl, fileName, totalHT, totalTVA, totalTTC, isActive, uploadedAt, notes.
+
+Proposal Fees: id (serial), proposalId, projectId, proServiceHt, proServiceTva, proServiceTtc, planningHt, planningTva, planningTtc, pmPercentage, pmNote (all numeric 12,2).
+
+Professional Fee Types: id (serial), label, sortOrder, isActive.
+
+F&F Items (pricing-relevant fields only): id (serial), projectId, itemCategory, description, supplierId, manufacturerId, unitPrice (cents), quantity, quantityUnit, prixPublicTtc, prixClientTtc, orderStatus, orderDate, orderRef, decisionStatus.
+
+DECISION REQUESTED
+
+Please evaluate these three options and confirm your preferred approach. If Option B is agreed, the ARCHIDOC agent will build the sync endpoints and provide the API key mechanism. ArchiTrak can then design its database schema with mirror tables for ARCHIDOC reference data and its own tables for financial tracking.

@@ -1,0 +1,289 @@
+ARCHITRAK — ARCHIDOC DATA IMPORT REFERENCE
+
+This document describes every database field available in ARCHIDOC that ArchiTrak can import for financial tracking purposes. ARCHIDOC uses PostgreSQL with UUID-based primary keys (varchar(255)) and timestamps. All monetary values in quotation tables are stored as integers (cents). Proposal fee values use numeric(12,2) for precision. The database is accessed via Drizzle ORM.
+
+1. PROJECTS
+The core entity. Every financial record in ARCHIDOC is scoped to a project.
+
+Field	Type	Notes
+id	varchar(255)	Primary key (UUID)
+clientName	varchar(500)	Not null
+projectName	varchar(500)	Not null
+address	text	Site address
+status	varchar(50)	Default: 'IN PREPARATION'. Values include: IN PREPARATION, LIVE, COMPLETED, ARCHIVED
+clients	jsonb	Array of client objects (name, email, phone, address details)
+emailAllClients	boolean	Whether all clients receive communications
+lotContractors	jsonb	Map of lot codes to assigned contractor IDs
+customLots	jsonb	Project-specific lot definitions
+actors	jsonb	Array of project actors (consultants, engineers, etc.)
+isLocked	boolean	Whether project is locked for editing
+isDeleted	boolean	Soft-delete flag
+deletedAt	timestamp	When deleted
+createdAt	timestamp	Creation date
+updatedAt	timestamp	Last modified
+2. CONTRACTORS
+Companies that submit quotations and perform work.
+
+Field	Type	Notes
+id	varchar(255)	Primary key (UUID)
+name	varchar(500)	Company name, not null
+tradeIds	jsonb	Array of trade IDs this contractor practises
+address1	text	Line 1
+address2	text	Line 2
+town	varchar(255)	
+postcode	varchar(20)	
+siret	varchar(50)	French company registration number
+contactName	varchar(255)	Primary contact name
+contactJobTitle	varchar(255)	
+contactEmail	varchar(255)	Primary contact email
+website	varchar(500)	
+contactMobile	varchar(50)	
+officePhone	varchar(50)	
+contractStartDate	varchar(50)	Date string
+contractEndDate	varchar(50)	Date string
+specialConditions	text	Contractual notes
+decennaleInsurer	varchar(255)	10-year insurance provider
+decennalePolicyNumber	varchar(100)	
+decennaleStartDate	varchar(50)	
+decennaleEndDate	varchar(50)	
+decennaleCertificateUrl	text	URL to certificate file
+decennaleVerifiedAt	timestamp	
+rcProInsurer	varchar(255)	Professional liability insurer
+rcProPolicyNumber	varchar(100)	
+rcProStartDate	varchar(50)	
+rcProEndDate	varchar(50)	
+rcProCertificateUrl	text	
+rcProVerifiedAt	timestamp	
+insuranceStatus	varchar(50)	Default: 'unknown'. Values: unknown, valid, expired, expiring_soon
+portalToken	varchar(255)	Token for contractor portal access
+createdAt	timestamp	
+updatedAt	timestamp	
+3. CONTRACTOR CONTACTS
+Individual people associated with a contractor company.
+
+Field	Type	Notes
+id	serial	Primary key
+contractorId	varchar(255)	FK to contractors.id, not null
+name	varchar(255)	Not null
+jobTitle	varchar(255)	
+mobile	varchar(50)	
+email	varchar(255)	
+isPrimary	boolean	Default: false
+notes	text	
+createdAt	timestamp	
+updatedAt	timestamp	
+4. CONTRACTOR TRADES
+Master list of construction trades/disciplines.
+
+Field	Type	Notes
+id	varchar(255)	Primary key
+label	varchar(255)	Trade name (e.g., "Plomberie", "Electricite"), not null
+description	varchar(500)	
+category	varchar(100)	
+sortOrder	integer	Default: 0
+isSystem	boolean	Default: true (system-provided vs user-created)
+5. CONTRACTOR QUOTATIONS (DEVIS)
+The primary financial data table — tracks quotations received from contractors per project.
+
+Field	Type	Notes
+id	serial	Primary key
+projectId	varchar(255)	FK to projects.id, not null
+contractorId	varchar(255)	FK to contractors.id, not null
+shareId	varchar(255)	Link to shared project (how the DQE was sent)
+lots	jsonb	Array of lot codes this quotation covers
+sentDate	timestamp	When the DQE request was sent
+sentMethod	varchar(50)	Default: 'link'. Values: link, email, manual
+receivedDate	timestamp	When the contractor's devis was received
+devisFileUrl	text	URL to uploaded quotation PDF
+devisFileName	varchar(500)	
+totalHT	integer	Total excluding tax (in cents)
+totalTVA	integer	Tax amount (in cents)
+totalTTC	integer	Total including tax (in cents)
+status	varchar(50)	Default: 'awaiting'. Values: awaiting, received, accepted, rejected, revised
+notes	text	
+parsedData	jsonb	AI-parsed breakdown of the devis PDF
+createdAt	timestamp	
+updatedAt	timestamp	
+6. QUOTATION LINE ITEMS
+Itemised cost breakdown within a contractor quotation.
+
+Field	Type	Notes
+id	serial	Primary key
+quotationId	integer	FK to contractor_quotations.id (cascade delete), not null
+lot	varchar(50)	Lot code this line belongs to
+description	text	Item description, not null
+quantity	varchar(100)	
+unit	varchar(50)	
+unitPriceHT	integer	Unit price excluding tax (cents)
+totalHT	integer	Line total excluding tax (cents)
+tvaRate	varchar(20)	VAT rate (e.g., "20%", "10%")
+sortOrder	integer	Default: 0
+isVerified	boolean	Default: false (architect verification flag)
+notes	text	
+createdAt	timestamp	
+7. DEVIS VERSIONS
+Version history when contractors submit revised quotations.
+
+Field	Type	Notes
+id	serial	Primary key
+quotationId	integer	FK to contractor_quotations.id (cascade delete), not null
+versionNumber	integer	Not null, default: 1
+fileUrl	text	URL to PDF file, not null
+fileName	varchar(500)	
+totalHT	integer	Cents
+totalTVA	integer	Cents
+totalTTC	integer	Cents
+parsedData	jsonb	
+isActive	boolean	Default: true (only one version active at a time)
+uploadedAt	timestamp	
+notes	text	
+8. DQE LIBRARY ITEMS
+Work specifications that quotations are priced against.
+
+Field	Type	Notes
+id	varchar(255)	Primary key (UUID)
+title	varchar(500)	Item title, not null
+category	varchar(50)	Not null. Standard French lot codes (e.g., "LOT1", "LOT2")
+description	text	Full specification text, not null
+unit	varchar(100)	Unit of measure (m2, ml, U, etc.)
+tags	jsonb	Array of classification tags
+groupedWorkTags	jsonb	Grouped works associations
+locationRef	varchar(255)	Room/zone reference
+qualityScore	integer	AI-assessed quality rating
+usageCount	integer	How many times this item has been used
+isArchived	boolean	
+isOption	boolean	Whether this is an optional item
+createdAt	timestamp	
+updatedAt	timestamp	
+9. WORK STAGES
+Construction phase classifications (French standards).
+
+Field	Type	Notes
+id	varchar(255)	Primary key
+code	varchar(50)	Stage code
+label	varchar(255)	Stage name
+description	text	
+category	varchar(100)	
+sortOrder	integer	Default: 0
+isSystem	boolean	Default: true
+10. PROPOSAL FEES
+Architect's professional service fees per project/proposal.
+
+Field	Type	Notes
+id	serial	Primary key
+proposalId	integer	FK to saved_proposals.id
+userId	varchar(255)	
+projectId	varchar(255)	
+proServiceHt	numeric(12,2)	Professional service fee excl. tax. Default: "0"
+proServiceTva	numeric(12,2)	Tax on professional fees. Default: "0"
+proServiceTtc	numeric(12,2)	Professional fee incl. tax. Default: "0"
+planningHt	numeric(12,2)	Planning fee excl. tax. Default: "0"
+planningTva	numeric(12,2)	Tax on planning fees. Default: "0"
+planningTtc	numeric(12,2)	Planning fee incl. tax. Default: "0"
+pmPercentage	numeric(5,2)	Project management fee percentage. Default: "0"
+pmNote	text	Explanatory note for PM fees
+createdAt	timestamp	
+updatedAt	timestamp	
+11. PROFESSIONAL FEE TYPES
+Master list of fee categories.
+
+Field	Type	Notes
+id	serial	Primary key
+label	varchar(500)	Fee type name, not null
+sortOrder	integer	Default: 0
+isActive	boolean	Default: true
+userId	varchar(255)	
+12. PROPOSAL PROFESSIONAL FEES
+Per-project fee selections from the master fee type list.
+
+Field	Type	Notes
+id	serial	Primary key
+userId	varchar(255)	
+projectId	varchar(255)	
+preamble	text	Introductory text for fee section
+selectedFees	jsonb	Array of { feeTypeId: number, label: string, amount: string }
+createdAt	timestamp	
+updatedAt	timestamp	
+13. F&F ITEMS (Fixtures, Fittings, Colours & Finishes)
+Items with pricing fields relevant to financial tracking.
+
+Field	Type	Notes
+id	serial	Primary key
+projectId	varchar(255)	Not null
+itemCategory	varchar(20)	FIXTURE, COLOUR, or FINISH
+description	text	
+supplierId	integer	FK to ff_suppliers.id
+supplierRef	varchar(255)	
+manufacturerId	integer	FK to ff_manufacturers.id
+manufacturerRef	varchar(255)	
+productLink	text	
+unitPrice	integer	Price in cents
+quantity	integer	Default: 1
+quantityUnit	varchar(10)	Default: 'U'
+prixPublicTtc	text	Public retail price incl. tax
+prixClientTtc	text	Client price incl. tax
+orderStatus	varchar(50)	Default: 'NOT_ORDERED'
+orderDate	timestamp	
+orderRef	varchar(255)	
+decisionStatus	varchar(50)	AWAITING, CLIENT_CONFIRMED, CLIENT_REJECTED
+14. F&F SUPPLIERS
+Field	Type	Notes
+id	serial	Primary key
+name	varchar(255)	Not null, unique
+contact	text	
+contactEmail	varchar(255)	
+contactPhone	varchar(50)	
+website	text	
+notes	text	
+additionalEmails	jsonb	Array of extra email addresses
+isActive	boolean	Default: true
+15. F&F MANUFACTURERS
+Field	Type	Notes
+id	serial	Primary key
+name	varchar(255)	Not null, unique
+contactName	varchar(255)	
+contactEmail	varchar(255)	
+contactPhone	varchar(50)	
+website	text	
+notes	text	
+isActive	boolean	Default: true
+16. CONSTRUCTION TASKS
+Tasks assigned to contractors (for tracking work against payments).
+
+Field	Type	Notes
+id	varchar(255)	Primary key (UUID)
+projectId	varchar(255)	Not null
+title	varchar(500)	Not null
+description	text	
+status	varchar(50)	Default: 'en_attente'. Values: en_attente, en_cours, termine, bloque
+lotCode	varchar(50)	Construction lot code
+assignedContractorId	varchar(255)	FK to contractors.id
+assignee	jsonb	Generic assignee object
+startDate	varchar(50)	YYYY-MM-DD string
+endDate	varchar(50)	YYYY-MM-DD string
+priority	varchar(20)	low, medium, high, urgent
+workModuleId	varchar(255)	
+createdAt	bigint	Unix timestamp
+updatedAt	bigint	Unix timestamp
+17. USERS
+Field	Type	Notes
+id	varchar	Primary key (UUID)
+email	varchar	
+firstName	varchar	
+lastName	varchar	
+role	varchar(50)	Default: 'viewer'. Values: admin, editor, viewer
+isActive	boolean	Default: true
+createdAt	timestamp	
+KEY NOTES FOR ARCHITRAK INTEGRATION
+Monetary values: Quotation tables store amounts in integer cents (divide by 100 for display). Proposal fee tables use numeric(12,2) — already in euros with 2 decimal places.
+
+Lot codes: The French construction lot system (LOT1 = Demolition, LOT2 = Gros Oeuvre, etc.) is used throughout to categorise work, quotations, and tasks. ArchiTrak should import and respect these codes for cost categorisation.
+
+Primary keys: Projects, contractors, tasks, and DQE items use UUID strings (varchar(255)). Quotations, line items, and F&F items use auto-incrementing serial integers.
+
+No existing invoice/payment tables: ARCHIDOC has no tables for invoices, payment schedules, or payment tracking. This is the gap ArchiTrak will fill.
+
+Quotation lifecycle: awaiting -> received -> accepted/rejected/revised. ArchiTrak can use the accepted status as the trigger for creating payment schedules.
+
+Shared database option: If ArchiTrak shares the same PostgreSQL database, it can reference ARCHIDOC tables directly via foreign keys. The database is Neon-backed PostgreSQL.
+
