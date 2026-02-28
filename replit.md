@@ -137,6 +137,10 @@ shared/
 - **Gmail monitoring**: Connector provides limited scope (send only, no read). Monitor detects 403 on first poll, pauses with clear message. Label operations conditionally skipped when permissions are insufficient
 - **Devis workflow**: PDF upload → AI converts PDF→PNG via `pdftoppm` → sends page images to selected AI model (Gemini/OpenAI) → auto-creates devis record + line items → toast summary. Route: `POST /api/projects/:id/devis/upload`
 - **AI Model Settings**: Configurable per task type. Default: Gemini 2.0 Flash for document_parsing. Table: `ai_model_settings`. Settings page at `/settings`. Available models: Gemini 2.0 Flash/Lite, 2.5 Flash/Pro, GPT-4o
+- **Template Assets**: Logo upload system in Settings for certificate templates. `template_assets` table stores company_logo and architects_order_logo. Served via `/api/template-assets/:type/file`
+- **Certificate Numbering**: Auto-sequential per project (C1, C2, C3...). Server assigns next ref on creation via `getNextCertificateRef`. Unique constraint on `(projectId, certificateRef)`. No manual entry
+- **Devis Sign-off Gates**: Two mandatory fields before sign-off can advance past "received": (1) Lot assignment via dropdown, (2) English works description (`descriptionUk`). Both validated server-side on certificate send
+- **Certificat de Paiement Template**: Full HTML template matching the reference PDF format. 8 sections: header with logo, parties (Maître d'Œuvre/d'Ouvrage/Contractor), works identification table, cert ref callout, requested amounts (HT/TTC/TVA), summary by devis code, payment instruction with amount in French words, footer with Order of Architects registration and composite ref (LOT{x} C{n})
 
 ## Environment Secrets (updated)
 - `GEMINI_API_KEY` — Google Gemini API key for document parsing

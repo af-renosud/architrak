@@ -26,7 +26,6 @@ function formatCurrency(value: number): string {
 }
 
 const certificatFormSchema = insertCertificatSchema.extend({
-  certificateRef: z.string().min(1, "Reference is required"),
   totalWorksHt: z.string().min(1, "Works HT amount is required"),
   netToPayHt: z.string().min(1, "Net to pay HT is required"),
   tvaAmount: z.string().min(1, "TVA amount is required"),
@@ -146,6 +145,11 @@ export default function Certificats() {
     enabled: !!selectedProjectId,
   });
 
+  const { data: nextRefData } = useQuery<{ nextRef: string }>({
+    queryKey: ["/api/projects", selectedProjectId, "certificats", "next-ref"],
+    enabled: !!selectedProjectId,
+  });
+
   const form = useForm<CertificatFormValues>({
     resolver: zodResolver(certificatFormSchema),
     defaultValues: {
@@ -190,6 +194,7 @@ export default function Certificats() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "certificats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "certificats", "next-ref"] });
       setDialogOpen(false);
       form.reset();
       toast({ title: "Certificat created successfully" });
@@ -226,7 +231,7 @@ export default function Certificats() {
     form.reset({
       projectId: parseInt(selectedProjectId),
       contractorId: 0,
-      certificateRef: "",
+      certificateRef: nextRefData?.nextRef ?? "",
       dateIssued: null,
       totalWorksHt: totalInvoicesHt.toFixed(2),
       pvMvAdjustment: "0.00",
@@ -413,21 +418,13 @@ export default function Certificats() {
                     </FormItem>
                   )}
                 />
-                <FormField
-                  control={form.control}
-                  name="certificateRef"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>
-                        <TechnicalLabel>Certificate Reference</TechnicalLabel>
-                      </FormLabel>
-                      <FormControl>
-                        <Input {...field} placeholder="e.g. C43" data-testid="input-cert-ref" />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
+                <div className="p-3 rounded-md border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
+                  <TechnicalLabel>Certificate Reference</TechnicalLabel>
+                  <p className="text-[14px] font-semibold text-foreground mt-1" data-testid="text-next-cert-ref">
+                    {nextRefData?.nextRef ?? "..."}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">Auto-assigned sequentially per project</p>
+                </div>
                 <FormField
                   control={form.control}
                   name="dateIssued"

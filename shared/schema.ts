@@ -10,6 +10,7 @@ import {
   date,
   timestamp,
   jsonb,
+  unique,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -204,7 +205,9 @@ export const certificats = pgTable("certificats", {
   status: text("status").notNull().default("draft"),
   notes: text("notes"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  unique("certificats_project_ref_unique").on(table.projectId, table.certificateRef),
+]);
 
 export const fees = pgTable("fees", {
   id: serial("id").primaryKey(),
@@ -393,6 +396,15 @@ export const clientPaymentEvidence = pgTable("client_payment_evidence", {
   uploadedAt: timestamp("uploaded_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
+export const templateAssets = pgTable("template_assets", {
+  id: serial("id").primaryKey(),
+  assetType: text("asset_type").notNull().unique(),
+  fileName: text("file_name").notNull(),
+  storageKey: text("storage_key").notNull(),
+  mimeType: text("mime_type"),
+  uploadedAt: timestamp("uploaded_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
 export const aiModelSettings = pgTable("ai_model_settings", {
   id: serial("id").primaryKey(),
   taskType: text("task_type").notNull().unique(),
@@ -537,6 +549,13 @@ export type PaymentReminder = typeof paymentReminders.$inferSelect;
 export type InsertPaymentReminder = z.infer<typeof insertPaymentReminderSchema>;
 export type ClientPaymentEvidence = typeof clientPaymentEvidence.$inferSelect;
 export type InsertClientPaymentEvidence = z.infer<typeof insertClientPaymentEvidenceSchema>;
+
+export const insertTemplateAssetSchema = createInsertSchema(templateAssets).omit({
+  id: true,
+  uploadedAt: true,
+});
+export type TemplateAsset = typeof templateAssets.$inferSelect;
+export type InsertTemplateAsset = z.infer<typeof insertTemplateAssetSchema>;
 
 export const insertAiModelSettingSchema = createInsertSchema(aiModelSettings).omit({
   id: true,

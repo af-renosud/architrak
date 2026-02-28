@@ -5,7 +5,7 @@ import {
   avenants, invoices, situations, situationLines, certificats, fees, feeEntries,
   archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog,
   emailDocuments, projectDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
-  aiModelSettings,
+  aiModelSettings, templateAssets,
   type Project, type InsertProject,
   type Contractor, type InsertContractor,
   type Lot, type InsertLot,
@@ -26,6 +26,7 @@ import {
   type PaymentReminder, type InsertPaymentReminder,
   type ClientPaymentEvidence, type InsertClientPaymentEvidence,
   type AiModelSetting,
+  type TemplateAsset, type InsertTemplateAsset,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -151,6 +152,15 @@ export interface IStorage {
   getAiModelSettings(): Promise<AiModelSetting[]>;
   getAiModelSetting(taskType: string): Promise<AiModelSetting | undefined>;
   upsertAiModelSetting(taskType: string, provider: string, modelId: string): Promise<AiModelSetting>;
+
+  getTemplateAssets(): Promise<TemplateAsset[]>;
+  getTemplateAssetByType(assetType: string): Promise<TemplateAsset | undefined>;
+  upsertTemplateAsset(data: InsertTemplateAsset): Promise<TemplateAsset>;
+  deleteTemplateAsset(id: number): Promise<void>;
+
+  getNextCertificateRef(projectId: number): Promise<string>;
+  getDevisByProjectAndContractor(projectId: number, contractorId: number): Promise<Devis[]>;
+  getLot(id: number): Promise<import("@shared/schema").Lot | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -682,6 +692,56 @@ export class DatabaseStorage implements IStorage {
       .values({ taskType, provider, modelId })
       .returning();
     return created;
+  }
+
+  async getTemplateAssets(): Promise<TemplateAsset[]> {
+    return db.select().from(templateAssets).orderBy(templateAssets.assetType);
+  }
+
+  async getTemplateAssetByType(assetType: string): Promise<TemplateAsset | undefined> {
+    const [asset] = await db.select().from(templateAssets).where(eq(templateAssets.assetType, assetType));
+    return asset;
+  }
+
+  async upsertTemplateAsset(data: InsertTemplateAsset): Promise<TemplateAsset> {
+    const existing = await this.getTemplateAssetByType(data.assetType);
+    if (existing) {
+      const [updated] = await db.update(templateAssets)
+        .set({ fileName: data.fileName, storageKey: data.storageKey, mimeType: data.mimeType, uploadedAt: new Date() })
+        .where(eq(templateAssets.assetType, data.assetType))
+        .returning();
+      return updated;
+    }
+    const [created] = await db.insert(templateAssets).values(data).returning();
+    return created;
+  }
+
+  async deleteTemplateAsset(id: number): Promise<void> {
+    await db.delete(templateAssets).where(eq(templateAssets.id, id));
+  }
+
+  async getNextCertificateRef(projectId: number): Promise<string> {
+    const existing = await db.select().from(certificats).where(eq(certificats.projectId, projectId));
+    let maxNum = 0;
+    for (const cert of existing) {
+      const match = cert.certificateRef.match(/^C(\d+)$/);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (num > maxNum) maxNum = num;
+      }
+    }
+    return `C${maxNum + 1}`;
+  }
+
+  async getDevisByProjectAndContractor(projectId: number, contractorId: number): Promise<Devis[]> {
+    return db.select().from(devis).where(
+      and(eq(devis.projectId, projectId), eq(devis.contractorId, contractorId))
+    ).orderBy(devis.devisCode);
+  }
+
+  async getLot(id: number): Promise<import("@shared/schema").Lot | undefined> {
+    const [lot] = await db.select().from(lots).where(eq(lots.id, id));
+    return lot;
   }
 }
 

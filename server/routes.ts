@@ -439,11 +439,25 @@ export async function registerRoutes(
     res.json(certs);
   });
 
+  app.get("/api/projects/:projectId/certificats/next-ref", async (req, res) => {
+    const nextRef = await storage.getNextCertificateRef(Number(req.params.projectId));
+    res.json({ nextRef });
+  });
+
   app.post("/api/projects/:projectId/certificats", async (req, res) => {
-    const parsed = insertCertificatSchema.safeParse({ ...req.body, projectId: Number(req.params.projectId) });
-    if (!parsed.success) return res.status(400).json({ message: "Invalid certificat data", errors: parsed.error.flatten() });
-    const cert = await storage.createCertificat(parsed.data);
-    res.status(201).json(cert);
+    const projectId = Number(req.params.projectId);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const nextRef = await storage.getNextCertificateRef(projectId);
+        const parsed = insertCertificatSchema.safeParse({ ...req.body, projectId, certificateRef: nextRef });
+        if (!parsed.success) return res.status(400).json({ message: "Invalid certificat data", errors: parsed.error.flatten() });
+        const cert = await storage.createCertificat(parsed.data);
+        return res.status(201).json(cert);
+      } catch (err: any) {
+        if (err?.code === "23505" && attempt < 2) continue;
+        throw err;
+      }
+    }
   });
 
   app.get("/api/certificats/:id", async (req, res) => {
@@ -993,7 +1007,28 @@ export async function registerRoutes(
 
   app.post("/api/projects/:projectId/certificats/:certId/send", async (req, res) => {
     try {
-      const commId = await sendCertificat(Number(req.params.certId));
+      const certId = Number(req.params.certId);
+      const projectId = Number(req.params.projectId);
+
+      const cert = await storage.getCertificat(certId);
+      if (!cert) return res.status(404).json({ message: "Certificat not found" });
+      if (cert.projectId !== projectId) return res.status(400).json({ message: "Certificat does not belong to this project" });
+
+      const devisList = await storage.getDevisByProject(projectId);
+      const contractorDevis = devisList.filter(d => d.contractorId === cert.contractorId && d.status !== "void");
+      const missingFields: string[] = [];
+      for (const d of contractorDevis) {
+        if (!d.lotId) missingFields.push(`Devis "${d.devisCode}" is missing lot assignment`);
+        if (!d.descriptionUk || d.descriptionUk.trim() === "") missingFields.push(`Devis "${d.devisCode}" is missing English works description`);
+      }
+      if (missingFields.length > 0) {
+        return res.status(400).json({
+          message: "Cannot send certificat: some devis are missing required fields",
+          errors: missingFields,
+        });
+      }
+
+      const commId = await sendCertificat(certId);
       const comm = await storage.getProjectCommunication(commId);
       res.json(comm);
     } catch (err: unknown) {
@@ -1082,6 +1117,56 @@ export async function registerRoutes(
     if (!provider || !modelId) return res.status(400).json({ message: "provider and modelId are required" });
     const setting = await storage.upsertAiModelSetting(req.params.taskType, provider, modelId);
     res.json(setting);
+  });
+
+  // ── Template Assets ──
+
+  app.get("/api/settings/template-assets", async (_req, res) => {
+    const assets = await storage.getTemplateAssets();
+    res.json(assets);
+  });
+
+  app.post("/api/settings/template-assets/upload", upload.single("file"), async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ message: "No file uploaded" });
+      const assetType = req.body.assetType;
+      if (!assetType) return res.status(400).json({ message: "assetType is required" });
+
+      const storageKey = await uploadDocument(null, `template_${assetType}_${req.file.originalname}`, req.file.buffer, req.file.mimetype);
+      const asset = await storage.upsertTemplateAsset({
+        assetType,
+        fileName: req.file.originalname,
+        storageKey,
+        mimeType: req.file.mimetype,
+      });
+      res.status(201).json(asset);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message || "Upload failed" });
+    }
+  });
+
+  app.delete("/api/settings/template-assets/:id", async (req, res) => {
+    await storage.deleteTemplateAsset(Number(req.params.id));
+    res.json({ success: true });
+  });
+
+  app.get("/api/template-assets/:type/url", async (req, res) => {
+    const asset = await storage.getTemplateAssetByType(req.params.type);
+    if (!asset) return res.status(404).json({ message: "Asset not found" });
+    res.json({ storageKey: asset.storageKey, fileName: asset.fileName });
+  });
+
+  app.get("/api/template-assets/:type/file", async (req, res) => {
+    try {
+      const asset = await storage.getTemplateAssetByType(req.params.type);
+      if (!asset) return res.status(404).json({ message: "Asset not found" });
+      const { stream, contentType } = await getDocumentStream(asset.storageKey);
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Cache-Control", "public, max-age=86400");
+      stream.pipe(res);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message || "Failed to retrieve asset" });
+    }
   });
 
   return httpServer;

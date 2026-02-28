@@ -9,13 +9,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Receipt, Upload, FileUp, Loader2, ExternalLink, Check, Ban } from "lucide-react";
+import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Receipt, Upload, FileUp, Loader2, ExternalLink, Check, Ban, AlertTriangle } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { insertDevisLineItemSchema, insertAvenantSchema, insertInvoiceSchema } from "@shared/schema";
+import { insertDevisLineItemSchema, insertAvenantSchema, insertInvoiceSchema, insertLotSchema } from "@shared/schema";
 import type { Devis, Contractor, Lot, DevisLineItem, Avenant, Invoice } from "@shared/schema";
 import { z } from "zod";
 
@@ -213,6 +213,7 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
                   devis={d}
                   projectId={projectId}
                   contractors={contractors}
+                  lots={lots}
                 />
               )}
             </div>
@@ -313,11 +314,15 @@ function LineItemWithCheck({ li, onUpdate }: { li: DevisLineItem; onUpdate: (dat
   );
 }
 
-function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; projectId: string; contractors: Contractor[] }) {
+function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Devis; projectId: string; contractors: Contractor[]; lots: Lot[] }) {
   const { toast } = useToast();
   const [invoiceDialogOpen, setInvoiceDialogOpen] = useState(false);
   const [avenantDialogOpen, setAvenantDialogOpen] = useState(false);
   const [lineItemDialogOpen, setLineItemDialogOpen] = useState(false);
+  const [addingNewLot, setAddingNewLot] = useState(false);
+  const [newLotNumber, setNewLotNumber] = useState("");
+  const [newLotDescription, setNewLotDescription] = useState("");
+  const [descriptionUkLocal, setDescriptionUkLocal] = useState(devis.descriptionUk || "");
 
   const { data: invoices } = useQuery<Invoice[]>({
     queryKey: ["/api/devis", devis.id, "invoices"],
@@ -461,6 +466,24 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
     },
   });
 
+  const createLotMutation = useMutation({
+    mutationFn: async (data: { lotNumber: string; descriptionFr: string }) => {
+      const res = await apiRequest("POST", `/api/projects/${projectId}/lots`, data);
+      return res.json();
+    },
+    onSuccess: (newLot: Lot) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "lots"] });
+      updateDevisMutation.mutate({ lotId: newLot.id } as any);
+      setAddingNewLot(false);
+      setNewLotNumber("");
+      setNewLotDescription("");
+      toast({ title: "Lot created and assigned" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error creating lot", description: error.message, variant: "destructive" });
+    },
+  });
+
   const [voidDialogOpen, setVoidDialogOpen] = useState(false);
   const [voidReason, setVoidReason] = useState("");
 
@@ -483,6 +506,10 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
   };
 
   const isVoid = devis.status === "void";
+  const missingLot = !devis.lotId;
+  const missingDescriptionUk = !devis.descriptionUk || devis.descriptionUk.trim() === "";
+  const signOffBlocked = missingLot || missingDescriptionUk;
+
   const SIGN_OFF_STAGES = [
     { key: "received", label: "Received" },
     { key: "checked_internal", label: "Checked Internally" },
@@ -517,6 +544,115 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
         </div>
       )}
 
+      {!isVoid && (
+        <div className="space-y-3" data-testid={`section-signoff-requirements-${devis.id}`}>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <TechnicalLabel>Lot Assignment</TechnicalLabel>
+              <p className="text-[9px] text-muted-foreground">Required for Certificat de Paiement</p>
+              {!addingNewLot ? (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Select
+                    value={devis.lotId ? String(devis.lotId) : ""}
+                    onValueChange={(val) => {
+                      if (val === "__new__") {
+                        setAddingNewLot(true);
+                      } else {
+                        updateDevisMutation.mutate({ lotId: parseInt(val) } as any);
+                        toast({ title: "Lot assigned" });
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="flex-1" data-testid={`select-lot-${devis.id}`}>
+                      <SelectValue placeholder="Select a lot..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {lots.map((lot) => (
+                        <SelectItem key={lot.id} value={String(lot.id)}>
+                          {lot.lotNumber} — {lot.descriptionFr}
+                        </SelectItem>
+                      ))}
+                      <SelectItem value="__new__">+ Add new lot</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : (
+                <div className="space-y-2 p-2 rounded-lg border border-[rgba(0,0,0,0.08)] bg-white/50">
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input
+                      placeholder="Lot number (e.g. LOT3)"
+                      value={newLotNumber}
+                      onChange={(e) => setNewLotNumber(e.target.value)}
+                      className="text-[11px]"
+                      data-testid={`input-new-lot-number-${devis.id}`}
+                    />
+                    <Input
+                      placeholder="Description"
+                      value={newLotDescription}
+                      onChange={(e) => setNewLotDescription(e.target.value)}
+                      className="text-[11px]"
+                      data-testid={`input-new-lot-desc-${devis.id}`}
+                    />
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={!newLotNumber.trim() || !newLotDescription.trim() || createLotMutation.isPending}
+                      onClick={() => createLotMutation.mutate({ lotNumber: newLotNumber.trim(), descriptionFr: newLotDescription.trim() })}
+                      data-testid={`button-save-new-lot-${devis.id}`}
+                    >
+                      <span className="text-[9px] font-bold uppercase tracking-widest">
+                        {createLotMutation.isPending ? "Saving..." : "Save Lot"}
+                      </span>
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => { setAddingNewLot(false); setNewLotNumber(""); setNewLotDescription(""); }}
+                      data-testid={`button-cancel-new-lot-${devis.id}`}
+                    >
+                      <span className="text-[9px] font-bold uppercase tracking-widest">Cancel</span>
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <TechnicalLabel>Works Description (English)</TechnicalLabel>
+              <p className="text-[9px] text-muted-foreground">Required for Certificat de Paiement</p>
+              <div className="relative">
+                <div className="absolute left-0 top-0 bottom-0 w-[3px] rounded-l-md" style={{ backgroundColor: "#c1a27b" }} />
+                <Input
+                  className="pl-4 text-[11px]"
+                  placeholder="Enter works description in English..."
+                  value={descriptionUkLocal}
+                  onChange={(e) => setDescriptionUkLocal(e.target.value)}
+                  onBlur={(e) => {
+                    const val = e.target.value.trim();
+                    if (val !== (devis.descriptionUk || "")) {
+                      updateDevisMutation.mutate({ descriptionUk: val || null });
+                      toast({ title: "Works description updated" });
+                    }
+                  }}
+                  data-testid={`input-description-uk-${devis.id}`}
+                />
+              </div>
+            </div>
+          </div>
+
+          {signOffBlocked && (
+            <div className="flex items-center gap-2 p-2.5 rounded-lg bg-amber-50 border border-amber-200" data-testid={`warning-signoff-blocked-${devis.id}`}>
+              <AlertTriangle size={14} className="text-amber-500 shrink-0" />
+              <p className="text-[10px] text-amber-700 font-medium">
+                Lot assignment and English works description are required before sign-off can proceed
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="flex items-center gap-1.5 py-2" data-testid={`stepper-signoff-${devis.id}`}>
         {SIGN_OFF_STAGES.map((stage, idx) => {
           const isCompleted = idx <= currentStageIndex && !isVoid;
@@ -535,11 +671,15 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
                   }`}
                 onClick={() => {
                   if (!isVoid) {
+                    if (signOffBlocked && idx > 0) {
+                      toast({ title: "Sign-off blocked", description: "Lot assignment and English works description are required before advancing", variant: "destructive" });
+                      return;
+                    }
                     updateDevisMutation.mutate({ signOffStage: stage.key });
                     toast({ title: `Stage: ${stage.label}` });
                   }
                 }}
-                disabled={isVoid}
+                disabled={isVoid || (signOffBlocked && idx > 0)}
                 data-testid={`button-stage-${stage.key}-${devis.id}`}
               >
                 {stage.label}
