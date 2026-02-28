@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Receipt, Upload, FileUp, Loader2 } from "lucide-react";
+import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Receipt, Upload, FileUp, Loader2, ExternalLink } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -181,6 +181,21 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
                     </div>
                   </div>
                   <div className="flex items-center gap-3 flex-wrap">
+                    {d.pdfStorageKey && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-3 gap-1.5 border-[#0B2545]/20 text-[#0B2545] hover:bg-[#0B2545]/5"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          window.open(`/api/devis/${d.id}/pdf`, "_blank");
+                        }}
+                        data-testid={`button-view-pdf-${d.id}`}
+                      >
+                        <FileText size={12} />
+                        <span className="text-[9px] font-bold uppercase tracking-widest">View PDF</span>
+                      </Button>
+                    )}
                     <div className="text-right">
                       <span className="text-[14px] font-semibold text-foreground" data-testid={`text-devis-ht-${d.id}`}>
                         {formatCurrency(parseFloat(d.amountHt))}

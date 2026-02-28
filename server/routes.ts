@@ -243,6 +243,8 @@ export async function registerRoutes(
         dateSent: parsed.date || null,
         dateSigned: null,
         pvmvRef: null,
+        pdfStorageKey: storageKey,
+        pdfFileName: file.originalname,
       });
 
       let lineItemsCreated = 0;
@@ -291,6 +293,22 @@ export async function registerRoutes(
     const d = await storage.getDevis(Number(req.params.id));
     if (!d) return res.status(404).json({ message: "Devis not found" });
     res.json(d);
+  });
+
+  app.get("/api/devis/:id/pdf", async (req, res) => {
+    try {
+      const d = await storage.getDevis(Number(req.params.id));
+      if (!d || !d.pdfStorageKey) return res.status(404).json({ message: "No PDF attached to this devis" });
+      const { getDocumentStream } = await import("./storage/object-storage");
+      const { stream, contentType, size } = await getDocumentStream(d.pdfStorageKey);
+      res.setHeader("Content-Type", contentType || "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="${d.pdfFileName || "devis.pdf"}"`);
+      if (size) res.setHeader("Content-Length", String(size));
+      stream.pipe(res);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `PDF view failed: ${message}` });
+    }
   });
 
   app.patch("/api/devis/:id", async (req, res) => {

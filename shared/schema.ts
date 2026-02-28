@@ -105,6 +105,8 @@ export const devis = pgTable("devis", {
   dateSent: date("date_sent"),
   dateSigned: date("date_signed"),
   pvmvRef: text("pvmv_ref"),
+  pdfStorageKey: text("pdf_storage_key"),
+  pdfFileName: text("pdf_file_name"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
