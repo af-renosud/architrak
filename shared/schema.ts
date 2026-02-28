@@ -121,6 +121,8 @@ export const devisLineItems = pgTable("devis_line_items", {
   unitPriceHt: numeric("unit_price_ht", { precision: 12, scale: 2 }),
   totalHt: numeric("total_ht", { precision: 12, scale: 2 }).notNull(),
   percentComplete: numeric("percent_complete", { precision: 5, scale: 2 }).default("0.00"),
+  checkStatus: text("check_status").notNull().default("unchecked"),
+  checkNotes: text("check_notes"),
 });
 
 export const avenants = pgTable("avenants", {

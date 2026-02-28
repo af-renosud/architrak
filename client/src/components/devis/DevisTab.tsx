@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Receipt, Upload, FileUp, Loader2, ExternalLink } from "lucide-react";
+import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Receipt, Upload, FileUp, Loader2, ExternalLink, Check } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -171,8 +171,8 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
                     {expandedDevis === d.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <TechnicalLabel>{d.devisCode}</TechnicalLabel>
-                        {d.devisNumber && <span className="text-[10px] text-muted-foreground">N° {d.devisNumber}</span>}
+                        <span className="text-[16px] font-black text-[#0B2545] tracking-tight" data-testid={`text-devis-code-${d.id}`}>{d.devisCode}</span>
+                        {d.devisNumber && <span className="text-[11px] text-muted-foreground">N° {d.devisNumber}</span>}
                       </div>
                       <p className="text-[12px] text-foreground mt-0.5 truncate">{d.descriptionFr}</p>
                       <span className="text-[10px] text-muted-foreground">
@@ -226,6 +226,90 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
         </LuxuryCard>
       ) : null}
     </div>
+  );
+}
+
+const CHECK_COLORS: Record<string, { bg: string; border: string; ring: string }> = {
+  green: { bg: "bg-emerald-500", border: "border-l-emerald-500", ring: "ring-emerald-300" },
+  amber: { bg: "bg-amber-400", border: "border-l-amber-400", ring: "ring-amber-200" },
+  red: { bg: "bg-rose-500", border: "border-l-rose-500", ring: "ring-rose-300" },
+  unchecked: { bg: "", border: "border-l-transparent", ring: "" },
+};
+
+function LineItemWithCheck({ li, onUpdate }: { li: DevisLineItem; onUpdate: (data: Record<string, string>) => void }) {
+  const status = li.checkStatus || "unchecked";
+  const notes = li.checkNotes || "";
+  const colors = CHECK_COLORS[status] || CHECK_COLORS.unchecked;
+
+  const toggleStatus = (newStatus: string) => {
+    onUpdate({ checkStatus: status === newStatus ? "unchecked" : newStatus });
+  };
+
+  return (
+    <>
+      <tr className={`border-l-[3px] ${colors.border}`}>
+        <td className="py-1.5 px-2 text-[11px]">{li.lineNumber}</td>
+        <td className="py-1.5 px-2 text-[11px]">{li.description}</td>
+        <td className="py-1.5 px-2 text-[11px] text-right">{li.quantity}</td>
+        <td className="py-1.5 px-2 text-[11px] text-right">{li.unitPriceHt ? formatCurrency(parseFloat(li.unitPriceHt)) : "-"}</td>
+        <td className="py-1.5 px-2 text-[11px] text-right font-medium">{formatCurrency(parseFloat(li.totalHt))}</td>
+        <td className="py-1.5 px-2 text-right">
+          <Input
+            type="number"
+            className="h-6 w-16 text-[10px] text-right inline-block"
+            defaultValue={li.percentComplete ?? "0"}
+            min={0}
+            max={100}
+            step={5}
+            onBlur={(e) => onUpdate({ percentComplete: e.target.value })}
+            data-testid={`input-line-progress-${li.id}`}
+          />
+        </td>
+      </tr>
+      <tr className={`border-l-[3px] ${colors.border}`}>
+        <td colSpan={6} className="px-2 pb-3 pt-0.5">
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              className="flex-1 h-8 px-3 text-[11px] rounded-lg border-2 outline-none transition-colors bg-white"
+              style={{ borderColor: "#c1a27b" }}
+              placeholder="Notes"
+              defaultValue={notes}
+              onBlur={(e) => {
+                if (e.target.value !== notes) {
+                  onUpdate({ checkNotes: e.target.value });
+                }
+              }}
+              data-testid={`input-line-notes-${li.id}`}
+            />
+            <button
+              className={`w-7 h-7 rounded-lg border-2 transition-all flex items-center justify-center ${status === "green" ? "bg-emerald-500 border-emerald-600 ring-2 ring-emerald-300" : "border-emerald-400 hover:bg-emerald-50"}`}
+              onClick={() => toggleStatus("green")}
+              title="Approved"
+              data-testid={`button-check-green-${li.id}`}
+            >
+              {status === "green" && <Check size={14} className="text-white" />}
+            </button>
+            <button
+              className={`w-7 h-7 rounded-lg border-2 transition-all flex items-center justify-center ${status === "amber" ? "bg-amber-400 border-amber-500 ring-2 ring-amber-200" : "border-amber-400 hover:bg-amber-50"}`}
+              onClick={() => toggleStatus("amber")}
+              title="Questioned"
+              data-testid={`button-check-amber-${li.id}`}
+            >
+              {status === "amber" && <span className="text-white text-[12px] font-bold">?</span>}
+            </button>
+            <button
+              className={`w-7 h-7 rounded-lg border-2 transition-all flex items-center justify-center ${status === "red" ? "bg-rose-500 border-rose-600 ring-2 ring-rose-300" : "border-rose-400 hover:bg-rose-50"}`}
+              onClick={() => toggleStatus("red")}
+              title="Rejected"
+              data-testid={`button-check-red-${li.id}`}
+            >
+              {status === "red" && <span className="text-white text-[12px] font-bold">✕</span>}
+            </button>
+          </div>
+        </td>
+      </tr>
+    </>
   );
 }
 
@@ -357,13 +441,12 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
   });
 
   const updateLineItemMutation = useMutation({
-    mutationFn: async ({ id, percentComplete }: { id: number; percentComplete: string }) => {
-      const res = await apiRequest("PATCH", `/api/line-items/${id}`, { percentComplete });
+    mutationFn: async ({ id, ...data }: { id: number; [key: string]: any }) => {
+      const res = await apiRequest("PATCH", `/api/line-items/${id}`, data);
       return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id, "line-items"] });
-      toast({ title: "Progress updated" });
     },
   });
 
@@ -440,25 +523,11 @@ function DevisDetailInline({ devis, projectId, contractors }: { devis: Devis; pr
                 </thead>
                 <tbody>
                   {lineItems.map((li) => (
-                    <tr key={li.id} className="border-b border-[rgba(0,0,0,0.04)]">
-                      <td className="py-1 px-2">{li.lineNumber}</td>
-                      <td className="py-1 px-2">{li.description}</td>
-                      <td className="py-1 px-2 text-right">{li.quantity}</td>
-                      <td className="py-1 px-2 text-right">{li.unitPriceHt ? formatCurrency(parseFloat(li.unitPriceHt)) : "-"}</td>
-                      <td className="py-1 px-2 text-right font-medium">{formatCurrency(parseFloat(li.totalHt))}</td>
-                      <td className="py-1 px-2 text-right">
-                        <Input
-                          type="number"
-                          className="h-6 w-16 text-[10px] text-right inline-block"
-                          defaultValue={li.percentComplete ?? "0"}
-                          min={0}
-                          max={100}
-                          step={5}
-                          onBlur={(e) => updateLineItemMutation.mutate({ id: li.id, percentComplete: e.target.value })}
-                          data-testid={`input-line-progress-${li.id}`}
-                        />
-                      </td>
-                    </tr>
+                    <LineItemWithCheck
+                      key={li.id}
+                      li={li}
+                      onUpdate={(data) => updateLineItemMutation.mutate({ id: li.id, ...data })}
+                    />
                   ))}
                 </tbody>
               </table>
