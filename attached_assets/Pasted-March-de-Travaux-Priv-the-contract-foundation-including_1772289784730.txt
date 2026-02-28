@@ -1,0 +1,16 @@
+Marché de Travaux Privé — the contract foundation, including price type (forfaitaire/unitaire), payment schedules, retenue de garantie terms
+There needs to be flexibility to allow for some projects to be established with out a Marché de Travaux Privé. This must not be a conditional Gate applicable to all projects.
+How the app monitors the Gmail account.
+This process needs to be fully automated, with the inbox being polled every 15 minutes. The agent needs to add labels when the email is read and the information is extracted, so that the extraction process can be visually confirmed within the Gmail interface.
+How the application manages sending information to contractors and clients.
+Clients
+The application needs to manage the creation of certificates of payment and send them directly to clients on proforma templates. Ideally, these would be stacked and ready to send, and presented to the user for verification before being sent. The application would summarise the certificate and draw correlations between the quotation, invoices, and the context of the request for payment, so that the user can quickly understand the certificate's context before committing to sending it.
+There needs to be a way to schedule automatic chasing for payment, or even an upload gateway where clients can upload or paste evidence of invoice payment..
+Along with the certificate, the user should have the ability to add contextual information, such as an MP3 recording, an uploaded image or any other relevant details, to support the certificate of payment and its purpose. When the client receives a certificate of payment there could be any contextual information supporting it so that client fully understands what they are paying for in the context of their project and workflow.
+Contractors
+There needs to be an email gateway for the user to open the dialogue directly with contractors concerning the project finances. This can take the form of a simple email string but contained within the project finances.
+
+A communication Hub
+The AI needs to consider how these different communication strings can be integrated into a central communication hub, which sits at both the client project level and globally, to track activity within the overall financial workflow. The goal is to achieve maximum automation and minimum intervention while maintaining the highest levels of security and accuracy.
+Notification and intelligent analysis
+On the basis that the AI agent is monitoring the email detaching document analyzing documents and correlating them to projects extracting all the data in an agentic workflow the notification and communication with the user is critical. whenever there are anomalies or anything which cannot be resolved by the AI they should be an urgent notification perhaps graded by severity so that the user can dive into the detail and understand the context of the issue and where the AI may have lost control or comprehension of the financial workflow.  on this basis having  question and answer dialogue with the agent at project level is helpful since the agent is going to know far more about the evolution of the documentation than the user. this is where the Notebook LM approach comes into play.

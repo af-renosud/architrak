@@ -1,0 +1,129 @@
+Design brief:
+ARCHIDOC COMPANION APP — VISUAL DESIGN SYSTEM BRIEF
+Use the following as your core aesthetic and technical design guidance. This application must feel like a natural extension of the ARCHIDOC platform — a high-end "Architectural Luxury" design language that prioritises clarity, sophistication, and restraint.
+
+COLOUR PALETTE
+Token
+Hex
+Usage
+Navy (Primary)
+#0B2545
+Primary buttons, headers, active icon fills, section headings
+Black
+#0C0A09
+Main heading text, active navigation labels
+Jet
+#34312D
+Secondary body text, table cell content
+Grey
+#7E7F83
+Labels, metadata, placeholder text, inactive icons
+Background
+#F8F9FA
+Page/main area background
+Sidebar
+#DFE1E2
+Navigation sidebar background
+Card White
+#FFFFFF
+Card surfaces, input backgrounds on focus
+Gold
+#c1a27b
+Accent for premium actions, secondary CTAs
+Rose/Pink
+#EA526F
+Destructive actions, urgent status badges, notification dots
+Peach
+#FFC482
+Warning states, in-progress indicators
+Emerald
+#10B981
+Success states, confirmed/live badges
+
+Borders are extremely subtle — use rgba(0,0,0,0.05) to rgba(0,0,0,0.06) for card and table borders. Never use heavy or dark borders on containers.
+
+TYPOGRAPHY
+Use Inter as the sole font family ('Inter', system-ui, -apple-system, sans-serif). Load weights 300 through 900 from Google Fonts.
+Pattern
+Size
+Weight
+Transform
+Spacing
+Example Use
+Page Title
+20-24px
+300 (light)
+uppercase
+tight (tracking-tight)
+"PROJETS", "SUIVI DEVIS"
+Section Heading
+14-16px
+900 (black)
+uppercase
+tight
+Card titles, panel headers
+Technical Label
+8-9px
+900 (black)
+uppercase
+very wide (tracking-[0.2em] or tracking-widest)
+Form field labels, column headers, metadata
+Body Text
+11-13px
+400-600
+normal
+normal
+Table cells, descriptions, form values
+Button Text
+9-10px
+700-800 (bold/extrabold)
+uppercase
+wide (tracking-widest)
+All button labels
+Status Badge
+8px
+900 (black)
+uppercase
+widest
+"BROUILLON", "EN COURS", "APPROUVE"
+
+
+COMPONENT PATTERNS
+Cards (Primary Container):
+Use the "Luxury Card" pattern — white background, 1px border at rgba(0,0,0,0.05), extreme rounded corners (rounded-[2rem] or rounded-[2.5rem]), and very soft shadows (shadow-[0_1px_3px_rgba(0,0,0,0.04)]). Cards should feel like they float gently above the background. No harsh drop shadows.
+Buttons:
+Primary: bg-[#0B2545] text-white rounded-xl font-bold text-[9px] uppercase tracking-widest with hover using opacity-90 and a subtle translate-y-[-1px] lift.
+Secondary/Gold: bg-[#c1a27b] text-white with the same shape and text treatment.
+Destructive: bg-[#EA526F] text-white — same pattern.
+Outlined: border border-slate-300 text-slate-700 rounded-full — used for less prominent actions.
+All buttons should have generous horizontal padding (px-5 to px-8) and modest vertical padding (py-2 to py-3).
+Input Fields:
+Background #F8F9FA (matching the page) with border-2 border-transparent. On focus, transition to border-[#0B2545]/20 with bg-white. Use rounded-xl, font-bold, text-sm. Labels above inputs use the Technical Label pattern (9px, black weight, uppercase, wide tracking). Some inputs use shadow-inner for a subtle inset effect.
+Navigation Sidebar:
+Fixed left column, w-64, background #DFE1E2. Navigation items are full-width with px-6 py-1.5. Active state: bg-white/70 with a border-r-[3px] border-red-500 accent stripe. Icons at 16px with strokeWidth of 1.5 (2 when active). Use Lucide React for all icons. Bottom section has a 4-column grid of small tool buttons with pastel background tints (e.g., bg-rose-50, bg-amber-50, bg-purple-50).
+Status Badges:
+Small pills with px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest border. Colour-coded by state — use the palette colours with their 50-weight Tailwind tint for backgrounds and the 600-700 weight for text/borders.
+Tables:
+Use rounded-2xl containers with border at rgba(0,0,0,0.06). Headers use the Technical Label pattern. Row hover at hover:bg-slate-50. Cell text is text-[11px] to text-[13px].
+Section Headers:
+Follow the pattern: an icon box (p-3 rounded-2xl shadow-lg with a gradient from navy), adjacent title in Section Heading style, and a subtitle in Technical Label style at text-[#7E7F83].
+
+LAYOUT PRINCIPLES
+Two-column layout: fixed sidebar (264px) + fluid main content area.
+Main content uses a max-width constraint (typically max-w-[1600px]) centered horizontally.
+Generous vertical spacing between sections (space-y-6 to space-y-8).
+Internal card spacing uses p-6 with space-y-4 between elements.
+The interface favours whitespace and breathing room over density. When in doubt, add more space.
+Use glassmorphism sparingly for overlays and floating panels: bg-white/95 backdrop-blur-xl.
+
+TECH STACK ALIGNMENT
+To maintain full coherence, the new application should use:
+React 19 with TypeScript
+Tailwind CSS 3.4 (with @tailwindcss/typography plugin)
+Vite 6 as the build tool
+Lucide React for all iconography (consistent stroke widths, never mix icon libraries)
+Inter from Google Fonts
+Define the colour palette as CSS custom properties in :root (matching the tokens above) so they can be referenced globally.
+
+GENERAL AESTHETIC NOTES
+The ARCHIDOC aesthetic is best described as "Swiss Architecture meets SaaS" — clean, precise, and quietly premium. It avoids flashy gradients, loud colours, or playful illustrations. The interface communicates professionalism and technical competence through restraint: ultra-light title weights contrasted with ultra-heavy label weights, muted backgrounds with strategic colour accents, and generous whitespace. Every element should feel considered and intentional. When adding a new feature or screen, always default to the minimal expression first — you can add complexity later, but the baseline should be calm and structured.
