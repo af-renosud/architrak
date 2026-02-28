@@ -49,7 +49,7 @@ export function Sidebar() {
         <img
           src={logoPath}
           alt="ArchiTrak"
-          className="h-10 w-auto object-contain"
+          className="h-28 w-auto object-contain"
           data-testid="img-logo"
         />
         <p className="text-[8px] font-black uppercase tracking-widest mt-1" style={{ color: "#7E7F83" }}>
