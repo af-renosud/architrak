@@ -14,6 +14,7 @@ import CertificatsPage from "@/pages/certificats";
 import Fees from "@/pages/fees";
 import EmailDocuments from "@/pages/email-documents";
 import Communications from "@/pages/communications";
+import SettingsPage from "@/pages/settings";
 
 function Router() {
   return (
@@ -28,6 +29,7 @@ function Router() {
       <Route path="/honoraires" component={Fees} />
       <Route path="/documents" component={EmailDocuments} />
       <Route path="/communications" component={Communications} />
+      <Route path="/settings" component={SettingsPage} />
       <Route component={NotFound} />
     </Switch>
   );

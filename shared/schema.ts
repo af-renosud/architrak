@@ -387,6 +387,14 @@ export const clientPaymentEvidence = pgTable("client_payment_evidence", {
   uploadedAt: timestamp("uploaded_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
+export const aiModelSettings = pgTable("ai_model_settings", {
+  id: serial("id").primaryKey(),
+  taskType: text("task_type").notNull().unique(),
+  provider: text("provider").notNull().default("gemini"),
+  modelId: text("model_id").notNull().default("gemini-2.0-flash"),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
 export { conversations, messages } from "./models/chat";
 
 export const insertProjectSchema = createInsertSchema(projects).omit({
@@ -523,3 +531,10 @@ export type PaymentReminder = typeof paymentReminders.$inferSelect;
 export type InsertPaymentReminder = z.infer<typeof insertPaymentReminderSchema>;
 export type ClientPaymentEvidence = typeof clientPaymentEvidence.$inferSelect;
 export type InsertClientPaymentEvidence = z.infer<typeof insertClientPaymentEvidenceSchema>;
+
+export const insertAiModelSettingSchema = createInsertSchema(aiModelSettings).omit({
+  id: true,
+  updatedAt: true,
+});
+export type AiModelSetting = typeof aiModelSettings.$inferSelect;
+export type InsertAiModelSetting = z.infer<typeof insertAiModelSettingSchema>;

@@ -135,4 +135,8 @@ shared/
 - **Duplicate detection**: trackProject checks by archidocId first, then by name+clientName match to link untracked projects
 - **Client address**: Extracted from ArchiDoc `clients[].homeAddress` (not site address). `refreshProject` also uses this logic
 - **Gmail monitoring**: Connector provides limited scope (send only, no read). Monitor detects 403 on first poll, pauses with clear message. Label operations conditionally skipped when permissions are insufficient
-- **Devis workflow**: PDF upload → AI extraction → review form → confirm. Route: `POST /api/projects/:id/devis/upload`
+- **Devis workflow**: PDF upload → AI converts PDF→PNG via `pdftoppm` → sends page images to selected AI model (Gemini/OpenAI) → auto-creates devis record + line items → toast summary. Route: `POST /api/projects/:id/devis/upload`
+- **AI Model Settings**: Configurable per task type. Default: Gemini 2.0 Flash for document_parsing. Table: `ai_model_settings`. Settings page at `/settings`. Available models: Gemini 2.0 Flash/Lite, 2.5 Flash/Pro, GPT-4o
+
+## Environment Secrets (updated)
+- `GEMINI_API_KEY` — Google Gemini API key for document parsing

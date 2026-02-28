@@ -197,13 +197,86 @@ export async function registerRoutes(
       const { parseDocument, matchToProject } = await import("./gmail/document-parser");
       const parsed = await parseDocument(file.buffer, file.originalname);
 
-      const projects = await storage.getProjects();
-      const contractors = await storage.getContractors();
-      const match = await matchToProject(parsed, projects, contractors);
+      if (parsed.documentType === "unknown" && !parsed.amountHt && !parsed.contractorName && !parsed.lineItems?.length) {
+        return res.status(422).json({
+          message: "Could not extract meaningful data from this PDF. Please check the file is a valid quotation/devis.",
+          extraction: parsed,
+          storageKey,
+          fileName: file.originalname,
+        });
+      }
 
-      res.json({
-        extracted: parsed,
-        match,
+      const allProjects = await storage.getProjects();
+      const allContractors = await storage.getContractors();
+      const match = await matchToProject(parsed, allProjects, allContractors);
+
+      const contractorId = match.contractorId || (allContractors.length > 0 ? allContractors[0].id : null);
+      if (!contractorId) {
+        return res.status(422).json({
+          message: "No contractors exist in the database. Please sync from ArchiDoc first before uploading documents.",
+          extraction: parsed,
+          storageKey,
+          fileName: file.originalname,
+        });
+      }
+
+      const tvaRate = parsed.tvaRate != null ? String(parsed.tvaRate) : "20.00";
+      const amountHt = parsed.amountHt != null ? String(parsed.amountHt) : "0.00";
+      const amountTtc = parsed.amountTtc != null ? String(parsed.amountTtc) :
+        (parsed.amountHt != null ? String(parsed.amountHt * (1 + (parsed.tvaRate || 20) / 100)) : "0.00");
+
+      const devisRecord = await storage.createDevis({
+        projectId,
+        contractorId,
+        lotId: null,
+        marcheId: null,
+        devisCode: parsed.reference || file.originalname.replace(/\.pdf$/i, ""),
+        devisNumber: parsed.reference || null,
+        ref2: null,
+        descriptionFr: parsed.description || parsed.contractorName || file.originalname,
+        descriptionUk: null,
+        amountHt,
+        tvaRate,
+        amountTtc,
+        invoicingMode: (parsed.lineItems && parsed.lineItems.length > 0) ? "mode_b" : "mode_a",
+        status: "pending",
+        dateSent: parsed.date || null,
+        dateSigned: null,
+        pvmvRef: null,
+      });
+
+      let lineItemsCreated = 0;
+      if (parsed.lineItems && parsed.lineItems.length > 0) {
+        for (let i = 0; i < parsed.lineItems.length; i++) {
+          const li = parsed.lineItems[i];
+          try {
+            await storage.createDevisLineItem({
+              devisId: devisRecord.id,
+              lineNumber: i + 1,
+              description: li.description || `Line ${i + 1}`,
+              quantity: String(li.quantity ?? 1),
+              unit: "u",
+              unitPriceHt: String(li.unitPrice ?? 0),
+              totalHt: String(li.total ?? 0),
+              percentComplete: "0",
+            });
+            lineItemsCreated++;
+          } catch (lineErr) {
+            console.warn(`[Devis Upload] Failed to create line item ${i + 1}:`, lineErr);
+          }
+        }
+      }
+
+      res.status(201).json({
+        devis: devisRecord,
+        extraction: {
+          documentType: parsed.documentType,
+          contractorName: parsed.contractorName,
+          matchConfidence: match.confidence,
+          matchedFields: match.matchedFields,
+          lineItemsExtracted: parsed.lineItems?.length ?? 0,
+          lineItemsCreated,
+        },
         storageKey,
         fileName: file.originalname,
       });
@@ -970,6 +1043,24 @@ export async function registerRoutes(
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ message: `Upload failed: ${message}` });
     }
+  });
+
+  // ── AI Model Settings ──
+
+  app.get("/api/settings/ai-models", async (_req, res) => {
+    let settings = await storage.getAiModelSettings();
+    if (settings.length === 0) {
+      await storage.upsertAiModelSetting("document_parsing", "gemini", "gemini-2.0-flash");
+      settings = await storage.getAiModelSettings();
+    }
+    res.json(settings);
+  });
+
+  app.patch("/api/settings/ai-models/:taskType", async (req, res) => {
+    const { provider, modelId } = req.body;
+    if (!provider || !modelId) return res.status(400).json({ message: "provider and modelId are required" });
+    const setting = await storage.upsertAiModelSetting(req.params.taskType, provider, modelId);
+    res.json(setting);
   });
 
   return httpServer;

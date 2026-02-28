@@ -9,26 +9,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Receipt, Upload, FileUp, Loader2, Check, AlertCircle } from "lucide-react";
+import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Receipt, Upload, FileUp, Loader2 } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { insertDevisSchema, insertDevisLineItemSchema, insertAvenantSchema, insertInvoiceSchema } from "@shared/schema";
+import { insertDevisLineItemSchema, insertAvenantSchema, insertInvoiceSchema } from "@shared/schema";
 import type { Devis, Contractor, Lot, DevisLineItem, Avenant, Invoice } from "@shared/schema";
 import { z } from "zod";
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
 }
-
-const devisFormSchema = insertDevisSchema.extend({
-  devisCode: z.string().min(1, "Code is required"),
-  descriptionFr: z.string().min(1, "Description is required"),
-  amountHt: z.string().min(1, "HT amount is required"),
-  amountTtc: z.string().min(1, "TTC amount is required"),
-});
 
 const invoiceFormSchema = insertInvoiceSchema.extend({
   amountHt: z.string().min(1, "Required"),
@@ -49,28 +42,6 @@ const lineItemFormSchema = insertDevisLineItemSchema.extend({
   totalHt: z.string().min(1, "Required"),
 });
 
-interface ExtractedData {
-  documentType?: string;
-  contractorName?: string;
-  clientName?: string;
-  projectAddress?: string;
-  reference?: string;
-  date?: string;
-  amountHt?: number;
-  amountTtc?: number;
-  tvaAmount?: number;
-  tvaRate?: number;
-  description?: string;
-  lineItems?: Array<{ description: string; quantity?: number; unitPrice?: number; total?: number }>;
-}
-
-interface UploadResponse {
-  extracted: ExtractedData;
-  match: { projectId: number | null; contractorId: number | null; confidence: number; matchedFields: Record<string, string> };
-  storageKey: string;
-  fileName: string;
-}
-
 interface DevisTabProps {
   projectId: string;
   contractors: Contractor[];
@@ -79,37 +50,13 @@ interface DevisTabProps {
 
 export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
   const { toast } = useToast();
-  const [devisDialogOpen, setDevisDialogOpen] = useState(false);
   const [expandedDevis, setExpandedDevis] = useState<number | null>(null);
-  const [uploadStep, setUploadStep] = useState<"upload" | "extracting" | "review">("upload");
-  const [extractedResult, setExtractedResult] = useState<UploadResponse | null>(null);
+  const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: devisList, isLoading } = useQuery<Devis[]>({
     queryKey: ["/api/projects", projectId, "devis"],
-  });
-
-  const devisForm = useForm<z.infer<typeof devisFormSchema>>({
-    resolver: zodResolver(devisFormSchema),
-    defaultValues: {
-      projectId: parseInt(projectId),
-      contractorId: 0,
-      lotId: null,
-      marcheId: null,
-      devisCode: "",
-      devisNumber: "",
-      ref2: null,
-      descriptionFr: "",
-      descriptionUk: null,
-      amountHt: "0.00",
-      tvaRate: "20.00",
-      amountTtc: "0.00",
-      invoicingMode: "mode_a",
-      status: "pending",
-      dateSent: null,
-      dateSigned: null,
-    },
   });
 
   const uploadMutation = useMutation({
@@ -124,92 +71,33 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
         const err = await res.json().catch(() => ({ message: "Upload failed" }));
         throw new Error(err.message);
       }
-      return res.json() as Promise<UploadResponse>;
-    },
-    onSuccess: (data) => {
-      setExtractedResult(data);
-      const e = data.extracted;
-      const matchedContractor = data.match.contractorId || 0;
-      devisForm.reset({
-        projectId: parseInt(projectId),
-        contractorId: matchedContractor,
-        lotId: null,
-        marcheId: null,
-        devisCode: e.reference || "",
-        devisNumber: e.reference || "",
-        ref2: null,
-        descriptionFr: e.description || e.contractorName || "",
-        descriptionUk: null,
-        amountHt: e.amountHt != null ? String(e.amountHt) : "0.00",
-        tvaRate: e.tvaRate != null ? String(e.tvaRate) : "20.00",
-        amountTtc: e.amountTtc != null ? String(e.amountTtc) : "0.00",
-        invoicingMode: (e.lineItems && e.lineItems.length > 0) ? "mode_b" : "mode_a",
-        status: "pending",
-        dateSent: e.date || null,
-        dateSigned: null,
-      });
-      setUploadStep("review");
-    },
-    onError: (error: Error) => {
-      toast({ title: "Extraction failed", description: error.message, variant: "destructive" });
-      setUploadStep("upload");
-    },
-  });
-
-  const createDevisMutation = useMutation({
-    mutationFn: async (data: z.infer<typeof devisFormSchema>) => {
-      const res = await apiRequest("POST", `/api/projects/${projectId}/devis`, data);
       return res.json();
     },
-    onSuccess: async (devis) => {
-      const e = extractedResult?.extracted;
-      if (e?.lineItems && e.lineItems.length > 0 && devis.id) {
-        for (let i = 0; i < e.lineItems.length; i++) {
-          const li = e.lineItems[i];
-          try {
-            await apiRequest("POST", `/api/devis/${devis.id}/line-items`, {
-              devisId: devis.id,
-              lineNumber: i + 1,
-              description: li.description || `Line ${i + 1}`,
-              quantity: String(li.quantity ?? 1),
-              unit: "u",
-              unitPriceHt: String(li.unitPrice ?? 0),
-              totalHt: String(li.total ?? 0),
-              percentComplete: "0",
-            });
-          } catch {}
-        }
-      }
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis"] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
-      handleCloseDialog();
-      toast({ title: "Devis created from PDF" });
+      const ext = data.extraction;
+      const matchInfo = ext.matchConfidence > 0
+        ? ` • Matched: ${ext.contractorName} (${Math.round(ext.matchConfidence)}%)`
+        : "";
+      toast({
+        title: "Devis created from PDF",
+        description: `${ext.documentType || "document"} — ${formatCurrency(parseFloat(data.devis.amountHt))} HT${matchInfo}${ext.lineItemsCreated > 0 ? ` • ${ext.lineItemsCreated} line items` : ""}`,
+      });
+      setUploading(false);
     },
     onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+      toast({ title: "Upload failed", description: error.message, variant: "destructive" });
+      setUploading(false);
     },
   });
-
-  const recalcDevisTtc = () => {
-    const ht = parseFloat(devisForm.watch("amountHt") || "0");
-    const tva = parseFloat(devisForm.watch("tvaRate") || "20");
-    devisForm.setValue("amountTtc", (ht * (1 + tva / 100)).toFixed(2));
-  };
-
-  const handleCloseDialog = () => {
-    setDevisDialogOpen(false);
-    setUploadStep("upload");
-    setExtractedResult(null);
-    setDragOver(false);
-    devisForm.reset();
-  };
 
   const handleFileSelect = useCallback((file: File) => {
     if (!file.type.includes("pdf") && !file.name.toLowerCase().endsWith(".pdf")) {
       toast({ title: "Invalid file", description: "Please upload a PDF file", variant: "destructive" });
       return;
     }
-    setUploadStep("extracting");
+    setUploading(true);
     uploadMutation.mutate(file);
   }, [uploadMutation, toast]);
 
@@ -226,12 +114,48 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-end">
-        <Button onClick={() => { setUploadStep("upload"); setDevisDialogOpen(true); }} data-testid="button-new-devis">
-          <Upload size={14} />
-          <span className="text-[9px] font-bold uppercase tracking-widest">Upload Devis PDF</span>
-        </Button>
-      </div>
+      {uploading ? (
+        <LuxuryCard>
+          <div className="py-12 text-center">
+            <Loader2 className="mx-auto mb-4 animate-spin text-[#0B2545]" size={40} />
+            <p className="text-[13px] font-semibold text-foreground mb-1">
+              Processing PDF...
+            </p>
+            <p className="text-[11px] text-muted-foreground">
+              Converting pages, extracting contractor, amounts, and line items
+            </p>
+          </div>
+        </LuxuryCard>
+      ) : (
+        <div
+          className={`border-2 border-dashed rounded-2xl p-8 text-center transition-colors cursor-pointer ${dragOver ? "border-[#0B2545] bg-[#0B2545]/5" : "border-[rgba(0,0,0,0.12)] hover:border-[#0B2545]/40"}`}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handleDrop}
+          onClick={() => fileInputRef.current?.click()}
+          data-testid="dropzone-devis-pdf"
+        >
+          <FileUp className="mx-auto mb-3 text-muted-foreground" size={36} strokeWidth={1} />
+          <p className="text-[12px] font-semibold text-foreground mb-0.5">
+            Drop a quotation PDF here or click to browse
+          </p>
+          <p className="text-[10px] text-muted-foreground">
+            AI will extract contractor, amounts, and line items automatically
+          </p>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".pdf,application/pdf"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleFileSelect(file);
+              if (e.target) e.target.value = "";
+            }}
+            data-testid="input-devis-pdf"
+          />
+        </div>
+      )}
 
       {devisList && devisList.length > 0 ? (
         <div className="space-y-3">
@@ -279,235 +203,13 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
             </div>
           ))}
         </div>
-      ) : (
+      ) : !uploading ? (
         <LuxuryCard data-testid="card-empty-devis">
-          <p className="text-[12px] text-muted-foreground text-center py-8">
-            No Devis for this project. Upload a quotation PDF to get started.
+          <p className="text-[12px] text-muted-foreground text-center py-6">
+            No Devis for this project yet. Drop a quotation PDF above to get started.
           </p>
         </LuxuryCard>
-      )}
-
-      <Dialog open={devisDialogOpen} onOpenChange={(open) => { if (!open) handleCloseDialog(); }}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="text-[16px] font-black uppercase tracking-tight">
-              {uploadStep === "upload" && "Upload Devis PDF"}
-              {uploadStep === "extracting" && "Extracting Data..."}
-              {uploadStep === "review" && "Review Extracted Data"}
-            </DialogTitle>
-            <DialogDescription className="text-[11px] text-muted-foreground">
-              {uploadStep === "upload" && "Upload a quotation PDF and we'll extract the data automatically"}
-              {uploadStep === "extracting" && "AI is reading the document and extracting financial data"}
-              {uploadStep === "review" && "Review and adjust the extracted data, then confirm to create the devis"}
-            </DialogDescription>
-          </DialogHeader>
-
-          {uploadStep === "upload" && (
-            <div
-              className={`border-2 border-dashed rounded-2xl p-12 text-center transition-colors cursor-pointer ${dragOver ? "border-[#0B2545] bg-[#0B2545]/5" : "border-[rgba(0,0,0,0.15)] hover:border-[#0B2545]/50"}`}
-              onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-              onDragLeave={() => setDragOver(false)}
-              onDrop={handleDrop}
-              onClick={() => fileInputRef.current?.click()}
-              data-testid="dropzone-devis-pdf"
-            >
-              <FileUp className="mx-auto mb-4 text-muted-foreground" size={48} strokeWidth={1} />
-              <p className="text-[13px] font-semibold text-foreground mb-1">
-                Drop a PDF here or click to browse
-              </p>
-              <p className="text-[11px] text-muted-foreground">
-                Supports quotations, devis, and similar documents
-              </p>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".pdf,application/pdf"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) handleFileSelect(file);
-                }}
-                data-testid="input-devis-pdf"
-              />
-            </div>
-          )}
-
-          {uploadStep === "extracting" && (
-            <div className="py-16 text-center">
-              <Loader2 className="mx-auto mb-4 animate-spin text-[#0B2545]" size={48} />
-              <p className="text-[13px] font-semibold text-foreground mb-1">
-                Analysing document...
-              </p>
-              <p className="text-[11px] text-muted-foreground">
-                Extracting contractor, amounts, line items, and references
-              </p>
-            </div>
-          )}
-
-          {uploadStep === "review" && extractedResult && (
-            <div className="space-y-4">
-              {extractedResult.match.confidence > 0 && (
-                <div className={`flex items-start gap-2 p-3 rounded-xl text-[11px] ${extractedResult.match.confidence >= 70 ? "bg-emerald-50 text-emerald-800 border border-emerald-200" : "bg-amber-50 text-amber-800 border border-amber-200"}`}>
-                  {extractedResult.match.confidence >= 70 ? <Check size={14} className="mt-0.5 flex-shrink-0" /> : <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />}
-                  <div>
-                    <span className="font-semibold">Match confidence: {Math.round(extractedResult.match.confidence)}%</span>
-                    {Object.entries(extractedResult.match.matchedFields).map(([key, val]) => (
-                      <p key={key} className="text-[10px] mt-0.5 opacity-80">{key}: {val}</p>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {extractedResult.extracted.lineItems && extractedResult.extracted.lineItems.length > 0 && (
-                <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.08)] bg-white/50">
-                  <TechnicalLabel>Extracted Line Items ({extractedResult.extracted.lineItems.length})</TechnicalLabel>
-                  <div className="mt-2 max-h-40 overflow-y-auto">
-                    <table className="w-full text-[10px]">
-                      <thead>
-                        <tr className="border-b border-[rgba(0,0,0,0.08)]">
-                          <th className="text-left py-1 font-black uppercase tracking-widest text-[8px]">Description</th>
-                          <th className="text-right py-1 font-black uppercase tracking-widest text-[8px]">Qty</th>
-                          <th className="text-right py-1 font-black uppercase tracking-widest text-[8px]">Unit Price</th>
-                          <th className="text-right py-1 font-black uppercase tracking-widest text-[8px]">Total</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {extractedResult.extracted.lineItems.map((li, i) => (
-                          <tr key={i} className="border-b border-[rgba(0,0,0,0.04)]">
-                            <td className="py-1 pr-2 max-w-[200px] truncate">{li.description}</td>
-                            <td className="py-1 text-right">{li.quantity ?? "-"}</td>
-                            <td className="py-1 text-right">{li.unitPrice != null ? formatCurrency(li.unitPrice) : "-"}</td>
-                            <td className="py-1 text-right font-medium">{li.total != null ? formatCurrency(li.total) : "-"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-
-              <Form {...devisForm}>
-                <form onSubmit={devisForm.handleSubmit((d) => createDevisMutation.mutate(d))} className="space-y-4">
-                  <FormField control={devisForm.control} name="contractorId" render={({ field }) => (
-                    <FormItem>
-                      <FormLabel><TechnicalLabel>Contractor</TechnicalLabel></FormLabel>
-                      <Select onValueChange={(v) => field.onChange(parseInt(v))} value={field.value ? String(field.value) : ""}>
-                        <FormControl><SelectTrigger data-testid="select-devis-contractor"><SelectValue placeholder="Select contractor" /></SelectTrigger></FormControl>
-                        <SelectContent>
-                          {contractors.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                  <div className="grid grid-cols-2 gap-4">
-                    <FormField control={devisForm.control} name="devisCode" render={({ field }) => (
-                      <FormItem>
-                        <FormLabel><TechnicalLabel>Devis Code</TechnicalLabel></FormLabel>
-                        <FormControl><Input {...field} placeholder="e.g. 1231.1.GROS OEUVRE" data-testid="input-devis-code" /></FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )} />
-                    <FormField control={devisForm.control} name="devisNumber" render={({ field }) => (
-                      <FormItem>
-                        <FormLabel><TechnicalLabel>Devis N° (contractor ref)</TechnicalLabel></FormLabel>
-                        <FormControl><Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} placeholder="e.g. D-2024-001" data-testid="input-devis-number" /></FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )} />
-                  </div>
-                  <FormField control={devisForm.control} name="descriptionFr" render={({ field }) => (
-                    <FormItem>
-                      <FormLabel><TechnicalLabel>Description (FR)</TechnicalLabel></FormLabel>
-                      <FormControl><Textarea {...field} className="resize-none" placeholder="Devis description" data-testid="input-devis-desc-fr" /></FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                  {lots.length > 0 && (
-                    <FormField control={devisForm.control} name="lotId" render={({ field }) => (
-                      <FormItem>
-                        <FormLabel><TechnicalLabel>Lot</TechnicalLabel></FormLabel>
-                        <Select onValueChange={(v) => field.onChange(v === "none" ? null : parseInt(v))} value={field.value ? String(field.value) : "none"}>
-                          <FormControl><SelectTrigger data-testid="select-devis-lot"><SelectValue placeholder="None" /></SelectTrigger></FormControl>
-                          <SelectContent>
-                            <SelectItem value="none">None</SelectItem>
-                            {lots.map((l) => <SelectItem key={l.id} value={String(l.id)}>Lot {l.lotNumber} — {l.descriptionFr}</SelectItem>)}
-                          </SelectContent>
-                        </Select>
-                        <FormMessage />
-                      </FormItem>
-                    )} />
-                  )}
-                  <div className="grid grid-cols-3 gap-4">
-                    <FormField control={devisForm.control} name="amountHt" render={({ field }) => (
-                      <FormItem>
-                        <FormLabel><TechnicalLabel>Amount HT</TechnicalLabel></FormLabel>
-                        <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcDevisTtc()} data-testid="input-devis-ht" /></FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )} />
-                    <FormField control={devisForm.control} name="tvaRate" render={({ field }) => (
-                      <FormItem>
-                        <FormLabel><TechnicalLabel>TVA %</TechnicalLabel></FormLabel>
-                        <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcDevisTtc()} data-testid="input-devis-tva" /></FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )} />
-                    <FormField control={devisForm.control} name="amountTtc" render={({ field }) => (
-                      <FormItem>
-                        <FormLabel><TechnicalLabel>Amount TTC</TechnicalLabel></FormLabel>
-                        <FormControl><Input {...field} type="number" step="0.01" readOnly data-testid="input-devis-ttc" /></FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )} />
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <FormField control={devisForm.control} name="invoicingMode" render={({ field }) => (
-                      <FormItem>
-                        <FormLabel><TechnicalLabel>Invoicing Mode</TechnicalLabel></FormLabel>
-                        <Select onValueChange={field.onChange} value={field.value}>
-                          <FormControl><SelectTrigger data-testid="select-devis-mode"><SelectValue /></SelectTrigger></FormControl>
-                          <SelectContent>
-                            <SelectItem value="mode_a">Mode A — Simple invoicing</SelectItem>
-                            <SelectItem value="mode_b">Mode B — Situation de Travaux</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <FormMessage />
-                      </FormItem>
-                    )} />
-                    <FormField control={devisForm.control} name="status" render={({ field }) => (
-                      <FormItem>
-                        <FormLabel><TechnicalLabel>Status</TechnicalLabel></FormLabel>
-                        <Select onValueChange={field.onChange} value={field.value}>
-                          <FormControl><SelectTrigger data-testid="select-devis-status"><SelectValue /></SelectTrigger></FormControl>
-                          <SelectContent>
-                            <SelectItem value="pending">Pending</SelectItem>
-                            <SelectItem value="live">Live</SelectItem>
-                            <SelectItem value="completed">Completed</SelectItem>
-                            <SelectItem value="void">Void</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <FormMessage />
-                      </FormItem>
-                    )} />
-                  </div>
-                  <div className="flex gap-3">
-                    <Button type="button" variant="outline" className="flex-1" onClick={() => { setUploadStep("upload"); setExtractedResult(null); }} data-testid="button-reupload">
-                      <Upload size={14} />
-                      <span className="text-[9px] font-bold uppercase tracking-widest">Upload Different PDF</span>
-                    </Button>
-                    <Button type="submit" className="flex-1" disabled={createDevisMutation.isPending} data-testid="button-submit-devis">
-                      <span className="text-[9px] font-bold uppercase tracking-widest">
-                        {createDevisMutation.isPending ? "Creating..." : "Confirm & Create Devis"}
-                      </span>
-                    </Button>
-                  </div>
-                </form>
-              </Form>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      ) : null}
     </div>
   );
 }

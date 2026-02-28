@@ -5,6 +5,7 @@ import {
   avenants, invoices, situations, situationLines, certificats, fees, feeEntries,
   archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog,
   emailDocuments, projectDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
+  aiModelSettings,
   type Project, type InsertProject,
   type Contractor, type InsertContractor,
   type Lot, type InsertLot,
@@ -24,6 +25,7 @@ import {
   type ProjectCommunication, type InsertProjectCommunication,
   type PaymentReminder, type InsertPaymentReminder,
   type ClientPaymentEvidence, type InsertClientPaymentEvidence,
+  type AiModelSetting,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -145,6 +147,10 @@ export interface IStorage {
 
   getClientPaymentEvidence(projectId: number): Promise<ClientPaymentEvidence[]>;
   createClientPaymentEvidence(data: InsertClientPaymentEvidence): Promise<ClientPaymentEvidence>;
+
+  getAiModelSettings(): Promise<AiModelSetting[]>;
+  getAiModelSetting(taskType: string): Promise<AiModelSetting | undefined>;
+  upsertAiModelSetting(taskType: string, provider: string, modelId: string): Promise<AiModelSetting>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -652,6 +658,30 @@ export class DatabaseStorage implements IStorage {
   async createClientPaymentEvidence(data: InsertClientPaymentEvidence): Promise<ClientPaymentEvidence> {
     const [evidence] = await db.insert(clientPaymentEvidence).values(data).returning();
     return evidence;
+  }
+
+  async getAiModelSettings(): Promise<AiModelSetting[]> {
+    return db.select().from(aiModelSettings).orderBy(aiModelSettings.taskType);
+  }
+
+  async getAiModelSetting(taskType: string): Promise<AiModelSetting | undefined> {
+    const [setting] = await db.select().from(aiModelSettings).where(eq(aiModelSettings.taskType, taskType));
+    return setting;
+  }
+
+  async upsertAiModelSetting(taskType: string, provider: string, modelId: string): Promise<AiModelSetting> {
+    const existing = await this.getAiModelSetting(taskType);
+    if (existing) {
+      const [updated] = await db.update(aiModelSettings)
+        .set({ provider, modelId, updatedAt: new Date() })
+        .where(eq(aiModelSettings.taskType, taskType))
+        .returning();
+      return updated;
+    }
+    const [created] = await db.insert(aiModelSettings)
+      .values({ taskType, provider, modelId })
+      .returning();
+    return created;
   }
 }
 
