@@ -255,19 +255,19 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   }
 
   .cover-header {
-    background: linear-gradient(135deg, #0B2545 0%, #143661 55%, #1a4a7a 100%);
-    color: #FFFFFF;
-    padding: 14px 24px;
-    margin: -2mm 0 0 0;
+    background: #FFFFFF;
+    color: #0B2545;
+    padding: 0 0 10px 0;
+    margin: 0;
   }
   .cover-header-top {
     display: flex;
     justify-content: space-between;
-    align-items: center;
-    margin-bottom: 6px;
+    align-items: flex-start;
+    margin-bottom: 8px;
   }
   .cover-header-top img {
-    height: 32px;
+    height: 96px;
     width: auto;
   }
   .cover-header-top .firm-name {
@@ -275,7 +275,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     font-weight: 700;
     letter-spacing: 0.15em;
     text-transform: uppercase;
-    opacity: 0.7;
+    color: #7E7F83;
   }
   .cover-header-bottom {
     display: flex;
@@ -286,18 +286,19 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     font-size: 18pt;
     font-weight: 700;
     letter-spacing: 0.05em;
+    color: #0B2545;
   }
   .cover-header .doc-ref {
     font-size: 10pt;
     font-weight: 400;
-    opacity: 0.85;
+    color: #7E7F83;
     text-align: right;
   }
   .cover-header .doc-ref strong {
     font-size: 14pt;
     font-weight: 800;
     display: block;
-    opacity: 1;
+    color: #0B2545;
   }
 
   .accent-bar {
