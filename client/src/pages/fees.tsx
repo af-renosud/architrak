@@ -4,6 +4,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
+import { Badge } from "@/components/ui/badge";
 import { Coins, Plus, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,7 +25,37 @@ function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
 }
 
+const PHASE_OPTIONS = [
+  { value: "conception", label: "Conception" },
+  { value: "chantier", label: "Chantier" },
+  { value: "aor", label: "AOR" },
+] as const;
+
+const PHASE_COLORS: Record<string, { bg: string; text: string; border: string }> = {
+  conception: { bg: "bg-[#0B2545]/10", text: "text-[#0B2545] dark:text-[#8BA4C7]", border: "border-[#0B2545]/20" },
+  chantier: { bg: "bg-[#c1a27b]/15", text: "text-[#8B6914] dark:text-[#c1a27b]", border: "border-[#c1a27b]/30" },
+  aor: { bg: "bg-emerald-500/10", text: "text-emerald-700 dark:text-emerald-400", border: "border-emerald-500/20" },
+  unassigned: { bg: "bg-muted", text: "text-muted-foreground", border: "border-muted" },
+};
+
+function PhaseBadge({ phase }: { phase: string | null }) {
+  const p = phase ?? "unassigned";
+  const colors = PHASE_COLORS[p] ?? PHASE_COLORS.unassigned;
+  const label = PHASE_OPTIONS.find(o => o.value === p)?.label ?? "Unassigned";
+  return (
+    <Badge variant="outline" className={`${colors.bg} ${colors.text} ${colors.border} text-[10px]`} data-testid={`badge-phase-${p}`}>
+      {label}
+    </Badge>
+  );
+}
+
+type PhaseByData = {
+  phases: Array<{ phase: string; fees: Fee[]; totalHt: number; totalInvoiced: number; totalRemaining: number }>;
+  grandTotals: { totalHt: number; totalInvoiced: number; totalRemaining: number };
+};
+
 const feeFormSchema = insertFeeSchema.extend({
+  phase: z.enum(["conception", "chantier", "aor"], { required_error: "Phase is required" }),
   feeAmountHt: z.string().min(1, "HT amount is required"),
   feeAmountTtc: z.string().min(1, "TTC amount is required"),
   remainingAmount: z.string().min(1, "Remaining amount is required"),
@@ -55,6 +86,7 @@ export default function Fees() {
   const [entryDialogOpen, setEntryDialogOpen] = useState(false);
   const [selectedFeeId, setSelectedFeeId] = useState<number | null>(null);
   const [editingEntryId, setEditingEntryId] = useState<number | null>(null);
+  const [phaseFilter, setPhaseFilter] = useState<string>("all");
   const { toast } = useToast();
 
   const { data: projects, isLoading: loadingProjects } = useQuery<Project[]>({
@@ -71,11 +103,17 @@ export default function Fees() {
     enabled: !!selectedProjectId,
   });
 
+  const { data: phaseData } = useQuery<PhaseByData>({
+    queryKey: ["/api/projects", selectedProjectId, "fees", "by-phase"],
+    enabled: !!selectedProjectId,
+  });
+
   const feeForm = useForm<FeeFormValues>({
     resolver: zodResolver(feeFormSchema),
     defaultValues: {
       projectId: 0,
       feeType: "works_percentage",
+      phase: "conception" as const,
       baseAmountHt: "0.00",
       feeRate: null,
       feeAmountHt: "0.00",
@@ -175,6 +213,7 @@ export default function Fees() {
     feeForm.reset({
       projectId: parseInt(selectedProjectId),
       feeType: "works_percentage",
+      phase: "conception" as const,
       baseAmountHt: "0.00",
       feeRate: null,
       feeAmountHt: "0.00",
@@ -262,6 +301,10 @@ export default function Fees() {
   const totalInvoiced = (feesList ?? []).reduce((sum, f) => sum + parseFloat(f.invoicedAmount ?? "0"), 0);
   const totalRemaining = totalFeeEarned - totalInvoiced;
 
+  const filteredFees = phaseFilter === "all"
+    ? (feesList ?? [])
+    : (feesList ?? []).filter(f => (f.phase ?? "unassigned") === phaseFilter);
+
   const isLoading = loadingProjects || loadingFees;
 
   return (
@@ -298,6 +341,62 @@ export default function Fees() {
             </SelectContent>
           </Select>
         </div>
+
+        {selectedProjectId && !isLoading && (
+          <div className="flex items-center gap-2 flex-wrap" data-testid="phase-filter-tabs">
+            {[
+              { value: "all", label: "All" },
+              { value: "conception", label: "Conception" },
+              { value: "chantier", label: "Chantier" },
+              { value: "aor", label: "AOR" },
+            ].map((tab) => (
+              <Button
+                key={tab.value}
+                variant={phaseFilter === tab.value ? "default" : "outline"}
+                onClick={() => setPhaseFilter(tab.value)}
+                data-testid={`tab-phase-${tab.value}`}
+                className={phaseFilter === tab.value ? "bg-[#0B2545] text-white" : ""}
+              >
+                <span className="text-[9px] font-bold uppercase tracking-widest">{tab.label}</span>
+              </Button>
+            ))}
+          </div>
+        )}
+
+        {selectedProjectId && !isLoading && phaseData && phaseData.phases.length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4" data-testid="phase-summary-cards">
+            {phaseData.phases.filter(p => p.phase !== "unassigned").map((phaseGroup) => {
+              const progress = phaseGroup.totalHt > 0 ? Math.min((phaseGroup.totalInvoiced / phaseGroup.totalHt) * 100, 100) : 0;
+              const phaseLabel = PHASE_OPTIONS.find(o => o.value === phaseGroup.phase)?.label ?? phaseGroup.phase;
+              return (
+                <LuxuryCard key={phaseGroup.phase} data-testid={`card-phase-summary-${phaseGroup.phase}`}>
+                  <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+                    <TechnicalLabel>{phaseLabel}</TechnicalLabel>
+                    <PhaseBadge phase={phaseGroup.phase} />
+                  </div>
+                  <p className="text-[16px] font-light text-foreground" data-testid={`text-phase-total-${phaseGroup.phase}`}>
+                    {formatCurrency(phaseGroup.totalHt)}
+                  </p>
+                  <div className="h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800 mt-2 mb-1">
+                    <div
+                      className="h-full rounded-full bg-[#c1a27b] transition-all"
+                      style={{ width: `${progress}%` }}
+                      data-testid={`progress-phase-${phaseGroup.phase}`}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <span className="text-[10px] text-muted-foreground">
+                      Invoiced: {formatCurrency(phaseGroup.totalInvoiced)}
+                    </span>
+                    <span className="text-[10px] font-semibold text-foreground">
+                      {progress.toFixed(0)}%
+                    </span>
+                  </div>
+                </LuxuryCard>
+              );
+            })}
+          </div>
+        )}
 
         {!selectedProjectId ? (
           <LuxuryCard data-testid="card-no-project-selected">
@@ -337,9 +436,9 @@ export default function Fees() {
               </LuxuryCard>
             </div>
 
-            {feesList && feesList.length > 0 ? (
+            {filteredFees && filteredFees.length > 0 ? (
               <div className="space-y-4">
-                {feesList.map((fee) => {
+                {filteredFees.map((fee) => {
                   const entries = (feeEntries ?? []).filter((e) => e.feeId === fee.id);
                   const feeHt = parseFloat(fee.feeAmountHt);
                   const invoiced = parseFloat(fee.invoicedAmount ?? "0");
@@ -354,6 +453,7 @@ export default function Fees() {
                             <h3 className="text-[14px] font-black uppercase tracking-tight text-foreground">
                               <FeeTypeLabel type={fee.feeType} />
                             </h3>
+                            <PhaseBadge phase={fee.phase} />
                             <StatusBadge status={fee.status} />
                           </div>
                           {fee.feeRate && (
@@ -493,6 +593,30 @@ export default function Fees() {
                           <SelectItem value="works_percentage">% Works</SelectItem>
                           <SelectItem value="conception">Conception</SelectItem>
                           <SelectItem value="planning">Planning</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={feeForm.control}
+                  name="phase"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        <TechnicalLabel>Phase</TechnicalLabel>
+                      </FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value}>
+                        <FormControl>
+                          <SelectTrigger data-testid="select-fee-phase">
+                            <SelectValue placeholder="Select phase" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="conception">Conception</SelectItem>
+                          <SelectItem value="chantier">Chantier</SelectItem>
+                          <SelectItem value="aor">AOR</SelectItem>
                         </SelectContent>
                       </Select>
                       <FormMessage />

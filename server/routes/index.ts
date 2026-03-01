@@ -18,6 +18,7 @@ import documentsRouter from "./documents";
 import communicationsRouter from "./communications";
 import settingsRouter from "./settings";
 import webhooksRouter from "./webhooks";
+import exportRouter from "./export";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -40,6 +41,7 @@ export async function registerRoutes(
   app.use(communicationsRouter);
   app.use(settingsRouter);
   app.use(webhooksRouter);
+  app.use(exportRouter);
 
   return httpServer;
 }

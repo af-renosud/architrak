@@ -1,5 +1,6 @@
 import { storage } from "../storage";
 import { getGmailMonitorStatus } from "../gmail/monitor";
+import { roundCurrency } from "../../shared/financial-utils";
 
 export async function getDashboardSummary() {
   const allProjects = await storage.getProjects();
@@ -124,5 +125,98 @@ export async function getDashboardSummary() {
     projectSummaries,
     recentActivity: recentActivity.slice(0, 15),
     urgentItems,
+  };
+}
+
+export async function getProjectBurnUpData(projectId: number) {
+  const projectCertificats = await storage.getCertificatsByProject(projectId);
+  const projectDevis = await storage.getDevisByProject(projectId);
+
+  const allAvenants = await Promise.all(
+    projectDevis.map(d => storage.getAvenantsByDevis(d.id))
+  );
+  const avenantsByDevisId = new Map<number, typeof allAvenants[0]>();
+  projectDevis.forEach((d, i) => {
+    avenantsByDevisId.set(d.id, allAvenants[i]);
+  });
+
+  const baseContractValue = projectDevis
+    .filter(d => d.status !== "void")
+    .reduce((sum, d) => sum + parseFloat(d.amountHt), 0);
+
+  interface TimeEvent {
+    date: string;
+    type: "avenant" | "certificat";
+    avenantDelta?: number;
+    certNetToPayHt?: number;
+  }
+
+  const events: TimeEvent[] = [];
+
+  for (const d of projectDevis.filter(dv => dv.status !== "void")) {
+    const avs = avenantsByDevisId.get(d.id) || [];
+    for (const av of avs) {
+      if (av.status === "approved" || av.status === "signed") {
+        const delta = av.type === "pv"
+          ? parseFloat(av.amountHt)
+          : -Math.abs(parseFloat(av.amountHt));
+        const date = av.dateSigned || av.createdAt.toISOString().split("T")[0];
+        events.push({ date, type: "avenant", avenantDelta: delta });
+      }
+    }
+  }
+
+  for (const cert of projectCertificats) {
+    const date = cert.dateIssued || cert.createdAt.toISOString().split("T")[0];
+    events.push({ date, type: "certificat", certNetToPayHt: parseFloat(cert.netToPayHt) });
+  }
+
+  events.sort((a, b) => a.date.localeCompare(b.date));
+
+  const contractValueHistory: Array<{ date: string; value: number }> = [];
+  const certifiedHistory: Array<{ date: string; value: number }> = [];
+
+  let runningContractValue = roundCurrency(baseContractValue);
+  let runningCertified = 0;
+
+  const seenContractDates = new Set<string>();
+  const seenCertDates = new Set<string>();
+
+  for (const ev of events) {
+    if (ev.type === "avenant" && ev.avenantDelta !== undefined) {
+      runningContractValue = roundCurrency(runningContractValue + ev.avenantDelta);
+      if (seenContractDates.has(ev.date)) {
+        const last = contractValueHistory[contractValueHistory.length - 1];
+        last.value = runningContractValue;
+      } else {
+        contractValueHistory.push({ date: ev.date, value: runningContractValue });
+        seenContractDates.add(ev.date);
+      }
+    }
+
+    if (ev.type === "certificat" && ev.certNetToPayHt !== undefined) {
+      runningCertified = roundCurrency(runningCertified + ev.certNetToPayHt);
+      if (seenCertDates.has(ev.date)) {
+        const last = certifiedHistory[certifiedHistory.length - 1];
+        last.value = runningCertified;
+      } else {
+        certifiedHistory.push({ date: ev.date, value: runningCertified });
+        seenCertDates.add(ev.date);
+      }
+    }
+  }
+
+  const currentContractValue = runningContractValue;
+  const currentCertifiedTotal = runningCertified;
+  const percentComplete = currentContractValue > 0
+    ? roundCurrency((currentCertifiedTotal / currentContractValue) * 100)
+    : 0;
+
+  return {
+    contractValueHistory,
+    certifiedHistory,
+    currentContractValue,
+    currentCertifiedTotal,
+    percentComplete,
   };
 }

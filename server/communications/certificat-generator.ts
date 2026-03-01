@@ -1,13 +1,65 @@
 import { storage } from "../storage";
 import { uploadDocument, getDocumentBuffer } from "../storage/object-storage";
 import { convertHtmlToPdf } from "../services/docraptor";
-import type { Certificat, Project, Contractor, Devis, Lot, Invoice } from "@shared/schema";
+import { roundCurrency, calculateTtc } from "@shared/financial-utils";
+import type { Certificat, Project, Contractor, Devis, Lot, Invoice, Avenant } from "@shared/schema";
 
 interface DevisWithDetails {
   devis: Devis;
   lot: Lot | null;
   invoices: Invoice[];
   invoicedTtc: number;
+}
+
+interface AvenantRow {
+  avenantNumber: string;
+  type: string;
+  descriptionFr: string;
+  amountHt: number;
+  amountTtc: number;
+}
+
+interface DevisAnnexeRow {
+  devisCode: string;
+  descriptionFr: string;
+  lotNumber: string;
+  originalHt: number;
+  originalTtc: number;
+  tvaRate: number;
+  avenants: AvenantRow[];
+  pvTotalHt: number;
+  mvTotalHt: number;
+  adjustedHt: number;
+  adjustedTtc: number;
+}
+
+interface PreviousCertificatRow {
+  certificateRef: string;
+  dateIssued: string;
+  amountHt: number;
+  amountTtc: number;
+}
+
+interface AnnexeData {
+  projectName: string;
+  projectCode: string;
+  contractorName: string;
+  devisRows: DevisAnnexeRow[];
+  previousCertificats: PreviousCertificatRow[];
+  previousCumulativeHt: number;
+  previousCumulativeTtc: number;
+  currentCertificatHt: number;
+  currentCertificatTtc: number;
+  cumulativeTotalHt: number;
+  cumulativeTotalTtc: number;
+  grandTotalOriginalHt: number;
+  grandTotalPvHt: number;
+  grandTotalMvHt: number;
+  grandTotalAdjustedHt: number;
+  grandTotalAdjustedTtc: number;
+  resteARealiserHt: number;
+  resteARealiserTtc: number;
+  tvaRate: number;
 }
 
 interface CertificatPdfData {
@@ -17,6 +69,7 @@ interface CertificatPdfData {
   devisDetails: DevisWithDetails[];
   companyLogoBase64: string | null;
   architectsLogoBase64: string | null;
+  annexeData: AnnexeData | null;
 }
 
 function formatCurrency(value: string | number): string {
@@ -119,6 +172,260 @@ async function loadLogoAsBase64(assetType: string): Promise<string | null> {
   }
 }
 
+async function buildAnnexeData(
+  certificat: Certificat,
+  project: Project,
+  contractor: Contractor,
+  activeDevis: Devis[],
+): Promise<AnnexeData> {
+  const tvaRate = parseFloat(project.tvaRate) || 20;
+
+  const devisRows: DevisAnnexeRow[] = await Promise.all(
+    activeDevis.map(async (d) => {
+      const lot = d.lotId ? await storage.getLot(d.lotId) : null;
+      const allAvenants = await storage.getAvenantsByDevis(d.id);
+      const approvedAvenants = allAvenants.filter((a) => a.status === "approved");
+
+      const originalHt = roundCurrency(parseFloat(d.amountHt));
+      const devisTvaRate = parseFloat(d.tvaRate) || tvaRate;
+      const originalTtc = calculateTtc(originalHt, devisTvaRate);
+
+      const avenantRows: AvenantRow[] = approvedAvenants.map((a) => {
+        const aHt = roundCurrency(parseFloat(a.amountHt));
+        return {
+          avenantNumber: a.avenantNumber || "—",
+          type: a.type,
+          descriptionFr: a.descriptionFr,
+          amountHt: aHt,
+          amountTtc: calculateTtc(aHt, devisTvaRate),
+        };
+      });
+
+      const pvTotalHt = roundCurrency(
+        avenantRows.filter((a) => a.type === "pv").reduce((s, a) => s + a.amountHt, 0)
+      );
+      const mvTotalHt = roundCurrency(
+        avenantRows.filter((a) => a.type === "mv").reduce((s, a) => s + a.amountHt, 0)
+      );
+      const adjustedHt = roundCurrency(originalHt + pvTotalHt - mvTotalHt);
+      const adjustedTtc = calculateTtc(adjustedHt, devisTvaRate);
+
+      return {
+        devisCode: d.devisCode,
+        descriptionFr: d.descriptionFr || d.descriptionUk || "—",
+        lotNumber: lot ? lot.lotNumber : "—",
+        originalHt,
+        originalTtc,
+        tvaRate: devisTvaRate,
+        avenants: avenantRows,
+        pvTotalHt,
+        mvTotalHt,
+        adjustedHt,
+        adjustedTtc,
+      };
+    })
+  );
+
+  const allCertificats = await storage.getCertificatsByProjectAndContractor(
+    certificat.projectId,
+    certificat.contractorId
+  );
+  const previousCerts = allCertificats.filter((c) => c.id !== certificat.id);
+
+  const previousCertificats: PreviousCertificatRow[] = previousCerts.map((c) => ({
+    certificateRef: c.certificateRef,
+    dateIssued: formatDateFr(c.dateIssued),
+    amountHt: roundCurrency(parseFloat(c.netToPayHt)),
+    amountTtc: roundCurrency(parseFloat(c.netToPayTtc)),
+  }));
+
+  const previousCumulativeHt = roundCurrency(
+    previousCertificats.reduce((s, c) => s + c.amountHt, 0)
+  );
+  const previousCumulativeTtc = roundCurrency(
+    previousCertificats.reduce((s, c) => s + c.amountTtc, 0)
+  );
+
+  const currentCertificatHt = roundCurrency(parseFloat(certificat.netToPayHt));
+  const currentCertificatTtc = roundCurrency(parseFloat(certificat.netToPayTtc));
+
+  const cumulativeTotalHt = roundCurrency(previousCumulativeHt + currentCertificatHt);
+  const cumulativeTotalTtc = roundCurrency(previousCumulativeTtc + currentCertificatTtc);
+
+  const grandTotalOriginalHt = roundCurrency(devisRows.reduce((s, d) => s + d.originalHt, 0));
+  const grandTotalPvHt = roundCurrency(devisRows.reduce((s, d) => s + d.pvTotalHt, 0));
+  const grandTotalMvHt = roundCurrency(devisRows.reduce((s, d) => s + d.mvTotalHt, 0));
+  const grandTotalAdjustedHt = roundCurrency(devisRows.reduce((s, d) => s + d.adjustedHt, 0));
+  const grandTotalAdjustedTtc = roundCurrency(devisRows.reduce((s, d) => s + d.adjustedTtc, 0));
+
+  const resteARealiserHt = roundCurrency(grandTotalAdjustedHt - cumulativeTotalHt);
+  const resteARealiserTtc = roundCurrency(grandTotalAdjustedTtc - cumulativeTotalTtc);
+
+  return {
+    projectName: project.name,
+    projectCode: project.code,
+    contractorName: contractor.name,
+    devisRows,
+    previousCertificats,
+    previousCumulativeHt,
+    previousCumulativeTtc,
+    currentCertificatHt,
+    currentCertificatTtc,
+    cumulativeTotalHt,
+    cumulativeTotalTtc,
+    grandTotalOriginalHt,
+    grandTotalPvHt,
+    grandTotalMvHt,
+    grandTotalAdjustedHt,
+    grandTotalAdjustedTtc,
+    resteARealiserHt,
+    resteARealiserTtc,
+    tvaRate,
+  };
+}
+
+function buildAnnexeHtml(data: AnnexeData): string {
+  const fmtNum = (v: number) => formatCurrencyNoSymbol(v);
+
+  let marcheRows = "";
+  let rowIdx = 0;
+  for (const dr of data.devisRows) {
+    const zebraClass = rowIdx % 2 === 1 ? ' style="background:#F8F9FA;"' : "";
+    marcheRows += `<tr${zebraClass}>
+      <td style="font-weight:700;color:#0B2545;">LOT ${dr.lotNumber}</td>
+      <td style="font-weight:700;color:#0B2545;">${dr.devisCode}</td>
+      <td style="font-weight:600;">${dr.descriptionFr}</td>
+      <td style="text-align:right;font-weight:600;">${fmtNum(dr.originalHt)}</td>
+      <td style="text-align:right;">—</td>
+      <td style="text-align:right;">—</td>
+      <td style="text-align:right;font-weight:700;color:#0B2545;">${fmtNum(dr.adjustedHt)}</td>
+    </tr>`;
+    for (const av of dr.avenants) {
+      const typeLabel = av.type === "pv" ? "PV" : "MV";
+      const typeColor = av.type === "pv" ? "#2a7d2e" : "#c0392b";
+      marcheRows += `<tr style="background:#FAFAFA;">
+        <td></td>
+        <td style="padding-left:16px;border-left:3px solid #C1A27B;font-size:6.5pt;color:#7E7F83;">${av.avenantNumber}</td>
+        <td style="font-size:6.5pt;color:#34312D;">${av.descriptionFr}</td>
+        <td style="text-align:right;font-size:6.5pt;">—</td>
+        <td style="text-align:right;font-size:6.5pt;color:${typeColor};font-weight:600;">${av.type === "pv" ? fmtNum(av.amountHt) : "—"}</td>
+        <td style="text-align:right;font-size:6.5pt;color:${typeColor};font-weight:600;">${av.type === "mv" ? fmtNum(av.amountHt) : "—"}</td>
+        <td style="text-align:right;font-size:6.5pt;">—</td>
+      </tr>`;
+    }
+    if (dr.avenants.length > 0) {
+      marcheRows += `<tr style="background:#F0F2F5;">
+        <td colspan="3" style="text-align:right;font-weight:700;font-size:6.5pt;color:#7E7F83;text-transform:uppercase;">Sous-total ${dr.devisCode}</td>
+        <td style="text-align:right;font-size:6.5pt;font-weight:600;">${fmtNum(dr.originalHt)}</td>
+        <td style="text-align:right;font-size:6.5pt;font-weight:600;color:#2a7d2e;">${fmtNum(dr.pvTotalHt)}</td>
+        <td style="text-align:right;font-size:6.5pt;font-weight:600;color:#c0392b;">${fmtNum(dr.mvTotalHt)}</td>
+        <td style="text-align:right;font-size:6.5pt;font-weight:700;color:#0B2545;">${fmtNum(dr.adjustedHt)}</td>
+      </tr>`;
+    }
+    rowIdx++;
+  }
+
+  let situationRows = "";
+  for (let i = 0; i < data.previousCertificats.length; i++) {
+    const pc = data.previousCertificats[i];
+    const zClass = i % 2 === 1 ? ' style="background:#F8F9FA;"' : "";
+    situationRows += `<tr${zClass}>
+      <td>${pc.certificateRef}</td>
+      <td style="text-align:center;">${pc.dateIssued}</td>
+      <td style="text-align:right;">${fmtNum(pc.amountHt)}</td>
+      <td style="text-align:right;">${fmtNum(pc.amountTtc)}</td>
+    </tr>`;
+  }
+
+  return `
+  <div class="annexe-section" style="page-break-before:always;">
+    <div style="text-align:center;margin-bottom:6mm;">
+      <div style="font-size:14pt;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:#0B2545;">Annexe Financi\u00E8re</div>
+      <div style="font-size:8pt;color:#7E7F83;margin-top:2px;">${data.projectName} (${data.projectCode}) — ${data.contractorName}</div>
+    </div>
+    <div class="accent-bar"></div>
+
+    <div style="font-size:10pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#0B2545;margin-bottom:3mm;padding-bottom:1.5mm;border-bottom:1px solid #E6E6E6;">
+      1. March\u00E9 — R\u00E9capitulatif des Devis &amp; Avenants
+    </div>
+    <table class="annexe-table" style="width:100%;border-collapse:collapse;margin-bottom:6mm;font-size:7pt;">
+      <thead>
+        <tr>
+          <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:left;">Lot</th>
+          <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:left;">Devis</th>
+          <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:left;">Description</th>
+          <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:right;">Original HT</th>
+          <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:right;">PV (+)</th>
+          <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:right;">MV (\u2212)</th>
+          <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:right;">Ajust\u00E9 HT</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${marcheRows}
+      </tbody>
+      <tfoot>
+        <tr style="border-top:2px solid #0B2545;background:#E8ECF1;">
+          <td colspan="3" style="font-weight:800;font-size:7pt;color:#0B2545;text-transform:uppercase;padding:6px;">TOTAL G\u00C9N\u00C9RAL</td>
+          <td style="text-align:right;font-weight:800;font-size:7pt;color:#0B2545;padding:6px;">${fmtNum(data.grandTotalOriginalHt)}</td>
+          <td style="text-align:right;font-weight:800;font-size:7pt;color:#2a7d2e;padding:6px;">${fmtNum(data.grandTotalPvHt)}</td>
+          <td style="text-align:right;font-weight:800;font-size:7pt;color:#c0392b;padding:6px;">${fmtNum(data.grandTotalMvHt)}</td>
+          <td style="text-align:right;font-weight:800;font-size:7pt;color:#0B2545;padding:6px;">${fmtNum(data.grandTotalAdjustedHt)}</td>
+        </tr>
+        <tr style="background:#E8ECF1;">
+          <td colspan="6" style="text-align:right;font-size:6.5pt;color:#7E7F83;padding:3px 6px;">March\u00E9 Ajust\u00E9 TTC (TVA ${data.tvaRate}%)</td>
+          <td style="text-align:right;font-weight:700;font-size:7pt;color:#0B2545;padding:3px 6px;">${fmtNum(data.grandTotalAdjustedTtc)}</td>
+        </tr>
+      </tfoot>
+    </table>
+
+    <div style="font-size:10pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#0B2545;margin-bottom:3mm;padding-bottom:1.5mm;border-bottom:1px solid #E6E6E6;">
+      2. Situation des Travaux — Historique des Paiements
+    </div>
+    <table class="annexe-table" style="width:100%;border-collapse:collapse;margin-bottom:6mm;font-size:7pt;">
+      <thead>
+        <tr>
+          <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:left;">R\u00E9f\u00E9rence</th>
+          <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:center;">Date</th>
+          <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:right;">Montant HT</th>
+          <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:right;">Montant TTC</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${situationRows || `<tr><td colspan="4" style="color:#7E7F83;font-style:italic;padding:6px;">Aucun certificat pr\u00E9c\u00E9dent</td></tr>`}
+        ${data.previousCertificats.length > 0 ? `
+        <tr style="border-top:1px solid #C1A27B;background:#FDF8F3;">
+          <td colspan="2" style="font-weight:700;font-size:6.5pt;color:#7E7F83;text-transform:uppercase;padding:4px 6px;">Cumul pr\u00E9c\u00E9dent</td>
+          <td style="text-align:right;font-weight:700;font-size:7pt;color:#34312D;padding:4px 6px;">${fmtNum(data.previousCumulativeHt)}</td>
+          <td style="text-align:right;font-weight:700;font-size:7pt;color:#34312D;padding:4px 6px;">${fmtNum(data.previousCumulativeTtc)}</td>
+        </tr>` : ""}
+        <tr style="background:#FFF9F0;border-left:3px solid #C1A27B;">
+          <td style="font-weight:800;color:#0B2545;padding:6px;">CERTIFICAT ACTUEL</td>
+          <td style="text-align:center;font-weight:600;color:#0B2545;padding:6px;">${formatDateFr(null)}</td>
+          <td style="text-align:right;font-weight:800;color:#0B2545;padding:6px;">${fmtNum(data.currentCertificatHt)}</td>
+          <td style="text-align:right;font-weight:800;color:#0B2545;padding:6px;">${fmtNum(data.currentCertificatTtc)}</td>
+        </tr>
+      </tbody>
+      <tfoot>
+        <tr style="border-top:2px solid #0B2545;background:#E8ECF1;">
+          <td colspan="2" style="font-weight:800;font-size:7pt;color:#0B2545;text-transform:uppercase;padding:6px;">CUMUL TOTAL CERTIFI\u00C9</td>
+          <td style="text-align:right;font-weight:800;font-size:7pt;color:#0B2545;padding:6px;">${fmtNum(data.cumulativeTotalHt)}</td>
+          <td style="text-align:right;font-weight:800;font-size:7pt;color:#0B2545;padding:6px;">${fmtNum(data.cumulativeTotalTtc)}</td>
+        </tr>
+        <tr style="background:#F8F9FA;">
+          <td colspan="2" style="font-weight:700;font-size:7pt;color:#0B2545;padding:6px;">March\u00E9 Ajust\u00E9</td>
+          <td style="text-align:right;font-weight:700;font-size:7pt;color:#0B2545;padding:6px;">${fmtNum(data.grandTotalAdjustedHt)}</td>
+          <td style="text-align:right;font-weight:700;font-size:7pt;color:#0B2545;padding:6px;">${fmtNum(data.grandTotalAdjustedTtc)}</td>
+        </tr>
+        <tr style="background:#FDF8F3;border-top:1px solid #C1A27B;">
+          <td colspan="2" style="font-weight:800;font-size:7pt;color:#C1A27B;text-transform:uppercase;padding:6px;">RESTE \u00C0 R\u00C9ALISER</td>
+          <td style="text-align:right;font-weight:800;font-size:7pt;color:#C1A27B;padding:6px;">${fmtNum(data.resteARealiserHt)}</td>
+          <td style="text-align:right;font-weight:800;font-size:7pt;color:#C1A27B;padding:6px;">${fmtNum(data.resteARealiserTtc)}</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>`;
+}
+
 export async function generateCertificatPdf(certificatId: number): Promise<{ storageKey: string; pdfBuffer: Buffer }> {
   const certificat = await storage.getCertificat(certificatId);
   if (!certificat) throw new Error(`Certificat ${certificatId} not found`);
@@ -134,7 +441,7 @@ export async function generateCertificatPdf(certificatId: number): Promise<{ sto
 
   const devisDetails: DevisWithDetails[] = await Promise.all(
     activeDevis.map(async (d) => {
-      const lot = d.lotId ? await storage.getLot(d.lotId) : null;
+      const lot = d.lotId ? (await storage.getLot(d.lotId)) ?? null : null;
       const invoices = await storage.getInvoicesByDevis(d.id);
       const invoicedTtc = invoices.reduce((sum, inv) => sum + parseFloat(inv.amountTtc), 0);
       return { devis: d, lot, invoices, invoicedTtc };
@@ -146,7 +453,9 @@ export async function generateCertificatPdf(certificatId: number): Promise<{ sto
     loadLogoAsBase64("architects_order_logo"),
   ]);
 
-  const html = buildCertificatHtml({ certificat, project, contractor, devisDetails, companyLogoBase64, architectsLogoBase64 });
+  const annexeData = await buildAnnexeData(certificat, project, contractor, activeDevis);
+
+  const html = buildCertificatHtml({ certificat, project, contractor, devisDetails, companyLogoBase64, architectsLogoBase64, annexeData });
 
   const dateStr = new Date().toISOString().split("T")[0].replace(/-/g, "");
   const projectCode = (project.code || "PROJ").replace(/[^a-zA-Z0-9]/g, "");
@@ -160,7 +469,7 @@ export async function generateCertificatPdf(certificatId: number): Promise<{ sto
 }
 
 function buildCertificatHtml(data: CertificatPdfData): string {
-  const { certificat, project, contractor, devisDetails, companyLogoBase64, architectsLogoBase64 } = data;
+  const { certificat, project, contractor, devisDetails, companyLogoBase64, architectsLogoBase64, annexeData } = data;
 
   const netTtc = parseFloat(certificat.netToPayTtc);
   const netHt = parseFloat(certificat.netToPayHt);
@@ -499,6 +808,37 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     text-align: right;
     letter-spacing: 0.05em;
   }
+
+  .annexe-section {
+    page: annexe;
+  }
+  @page annexe {
+    @bottom-left {
+      content: "${project.name} \u2014 ${contractor.name}";
+      font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      font-size: 7pt;
+      color: #7E7F83;
+    }
+    @bottom-center {
+      content: "Annexe Financi\u00E8re";
+      font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      font-size: 7pt;
+      color: #7E7F83;
+    }
+    @bottom-right {
+      content: "Annexe \u2014 Page " counter(page) " / " counter(pages);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      font-size: 7pt;
+      color: #7E7F83;
+    }
+  }
+
+  .annexe-table td {
+    padding: 3px 6px;
+    font-size: 7pt;
+    border-bottom: 0.5pt solid #E6E6E6;
+    font-variant-numeric: tabular-nums;
+  }
 </style>
 </head>
 <body>
@@ -603,6 +943,8 @@ function buildCertificatHtml(data: CertificatPdfData): string {
       contractor must receive the equivalent euros in full, exactly as indicated.
     </div>
   </div>
+
+  ${annexeData ? buildAnnexeHtml(annexeData) : ""}
 
   <div class="doc-footer">
     <div class="doc-footer-left">

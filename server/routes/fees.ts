@@ -2,6 +2,7 @@ import { Router } from "express";
 import { storage } from "../storage";
 import { insertFeeSchema, insertFeeEntrySchema } from "@shared/schema";
 import { markFeeEntryInvoiced } from "../services/fee-calculation.service";
+import { roundCurrency } from "@shared/financial-utils";
 
 const router = Router();
 
@@ -48,6 +49,59 @@ router.patch("/api/fee-entries/:id", async (req, res) => {
   const entry = await storage.updateFeeEntry(Number(req.params.id), parsed.data);
   if (!entry) return res.status(404).json({ message: "Fee entry not found" });
   res.json(entry);
+});
+
+router.get("/api/projects/:projectId/fees/by-phase", async (req, res) => {
+  try {
+    const projectId = Number(req.params.projectId);
+    if (isNaN(projectId)) return res.status(400).json({ message: "Invalid project ID" });
+
+    const feesList = await storage.getFeesByProject(projectId);
+
+    const phases = ["conception", "chantier", "aor", "unassigned"] as const;
+    const grouped: Record<string, { phase: string; fees: typeof feesList; totalHt: number; totalInvoiced: number; totalRemaining: number }> = {};
+
+    for (const phase of phases) {
+      grouped[phase] = { phase, fees: [], totalHt: 0, totalInvoiced: 0, totalRemaining: 0 };
+    }
+
+    let grandTotalHt = 0;
+    let grandTotalInvoiced = 0;
+    let grandTotalRemaining = 0;
+
+    for (const fee of feesList) {
+      const phase = fee.phase && phases.includes(fee.phase as any) ? fee.phase : "unassigned";
+      const ht = parseFloat(fee.feeAmountHt);
+      const invoiced = parseFloat(fee.invoicedAmount ?? "0");
+      const remaining = roundCurrency(ht - invoiced);
+
+      grouped[phase].fees.push(fee);
+      grouped[phase].totalHt += ht;
+      grouped[phase].totalInvoiced += invoiced;
+      grouped[phase].totalRemaining += remaining;
+
+      grandTotalHt += ht;
+      grandTotalInvoiced += invoiced;
+      grandTotalRemaining += remaining;
+    }
+
+    res.json({
+      phases: phases.map(p => ({
+        ...grouped[p],
+        totalHt: roundCurrency(grouped[p].totalHt),
+        totalInvoiced: roundCurrency(grouped[p].totalInvoiced),
+        totalRemaining: roundCurrency(grouped[p].totalRemaining),
+      })).filter(g => g.fees.length > 0),
+      grandTotals: {
+        totalHt: roundCurrency(grandTotalHt),
+        totalInvoiced: roundCurrency(grandTotalInvoiced),
+        totalRemaining: roundCurrency(grandTotalRemaining),
+      },
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ message: `Fee phase summary failed: ${message}` });
+  }
 });
 
 router.post("/api/fee-entries/:id/mark-invoiced", async (req, res) => {

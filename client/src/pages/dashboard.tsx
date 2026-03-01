@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
@@ -13,10 +14,13 @@ import {
   PenLine,
   Check,
   HelpCircle,
+  TrendingUp,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "wouter";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import BurnUpChart from "@/components/dashboard/BurnUpChart";
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
@@ -81,6 +85,7 @@ interface DashboardData {
 }
 
 export default function Dashboard() {
+  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const { data, isLoading } = useQuery<DashboardData>({
     queryKey: ["/api/dashboard/summary"],
   });
@@ -207,6 +212,42 @@ export default function Dashboard() {
                 </Link>
               ))}
             </div>
+          </div>
+        )}
+
+        {data && data.projectSummaries.length > 0 && (
+          <div>
+            <SectionHeader
+              icon={TrendingUp}
+              title="Project Financial Health"
+              subtitle="Burn-up chart"
+            />
+            <LuxuryCard className="mt-3" data-testid="card-burn-up">
+              <div className="mb-3">
+                <Select
+                  value={selectedProjectId?.toString() ?? ""}
+                  onValueChange={(val) => setSelectedProjectId(val ? parseInt(val, 10) : null)}
+                >
+                  <SelectTrigger className="w-full max-w-xs" data-testid="select-burnup-project">
+                    <SelectValue placeholder="Select a project" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {data.projectSummaries.map((ps) => (
+                      <SelectItem key={ps.id} value={ps.id.toString()} data-testid={`option-project-${ps.id}`}>
+                        {ps.code} — {ps.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {selectedProjectId ? (
+                <BurnUpChart projectId={selectedProjectId} />
+              ) : (
+                <div className="flex items-center justify-center h-[200px] text-muted-foreground text-[12px]" data-testid="text-select-project-prompt">
+                  Select a project to view its burn-up chart.
+                </div>
+              )}
+            </LuxuryCard>
           </div>
         )}
 

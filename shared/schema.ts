@@ -219,6 +219,7 @@ export const fees = pgTable("fees", {
   id: serial("id").primaryKey(),
   projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
   feeType: text("fee_type").notNull(),
+  phase: text("phase"),
   baseAmountHt: numeric("base_amount_ht", { precision: 12, scale: 2 }).notNull().default("0.00"),
   feeRate: numeric("fee_rate", { precision: 5, scale: 2 }),
   feeAmountHt: numeric("fee_amount_ht", { precision: 12, scale: 2 }).notNull(),

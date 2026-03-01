@@ -98,7 +98,8 @@ server/
     invoice-approval.service.ts  — Approve invoice → fee entry + fee recalculation
     fee-calculation.service.ts   — Mark fee-entry invoiced → fee totals recalculation
     financial-summary.service.ts — Three Buckets aggregation per project
-    dashboard.service.ts         — Dashboard summary aggregation
+    dashboard.service.ts         — Dashboard summary + burn-up chart data aggregation
+    bulk-export.service.ts       — ZIP generation for project financial folder
     webhook.service.ts           — ArchiDoc webhook event routing (13 event types → sync-service)
   archidoc/             — ArchiDoc sync: sync-client, sync-service, import-service
   gmail/                — Gmail monitoring: client, monitor, document-parser
@@ -125,8 +126,11 @@ shared/
 - `/api/devis/:id/situations` — Situation de Travaux
 - `/api/projects/:id/certificats` — Payment certificates
 - `/api/projects/:id/fees` — Fee tracking
+- `/api/projects/:id/fees/by-phase` — Fees grouped by phase (conception/chantier/aor)
 - `/api/projects/:id/financial-summary` — Three buckets calculation
 - `/api/dashboard/summary` — Global dashboard data
+- `/api/projects/:id/burn-up` — Burn-up chart time-series data
+- `/api/projects/:id/export` — Bulk export ZIP (Project Financial Folder)
 
 **ArchiDoc Sync:**
 - `/api/archidoc/status` — Connection status (includes webhookEnabled, pollingEnabled, webhookSecretConfigured)
@@ -182,8 +186,11 @@ shared/
 - **Template Assets**: Logo upload system in Settings for certificate templates. `template_assets` table stores company_logo and architects_order_logo. Served via `/api/template-assets/:type/file`
 - **Certificate Numbering**: Auto-sequential per project (C1, C2, C3...). Server assigns next ref on creation via `getNextCertificateRef`. Unique constraint on `(projectId, certificateRef)`. No manual entry
 - **Devis Sign-off Gates**: Two mandatory fields before sign-off can advance past "received": (1) Lot assignment via dropdown, (2) English works description (`descriptionUk`). Both validated server-side on certificate send
-- **Certificat de Paiement Template**: Full HTML→PDF via DocRaptor (PrinceXML engine). ARCHIDOC design system: Navy gradient cover header, gold accent bars, Inter font, KPI cards for financial figures, zebra-striped tables, info boxes with gold left border, running headers/footers with page numbering. 8 sections: cover header with cert ref, parties (3 cards), works table, cert ref callout, financial KPI cards (HT/TVA/TTC), summary by devis code, payment instruction with amount in French words, footer with Order of Architects registration
+- **Certificat de Paiement Template**: Full HTML→PDF via DocRaptor (PrinceXML engine). ARCHIDOC design system: Navy gradient cover header, gold accent bars, Inter font, KPI cards for financial figures, zebra-striped tables, info boxes with gold left border, running headers/footers with page numbering. 8 sections: cover header with cert ref, parties (3 cards), works table, cert ref callout, financial KPI cards (HT/TVA/TTC), summary by devis code, payment instruction with amount in French words, footer with Order of Architects registration. **Phase 6**: Added Financial Annexe with two tables — Marche Summary (devis + avenant sub-rows with PV/MV breakdown, per-devis subtotals, grand total) and Situation des Travaux (previous certificat payments, current claim, cumulative total, reste a realiser). Annexe uses `page-break-before: always`, named `@page annexe`, and single `<table>` with repeating `<thead>` for PrinceXML pagination. Scales to 50+ avenants
 - **DocRaptor PDF Integration**: `server/services/docraptor.ts` — POST HTML to DocRaptor API, returns PDF buffer. Used by `generateCertificatPdf()` in certificat-generator.ts. Logos converted to base64 data URIs for DocRaptor rendering. PDFs stored in object storage as `.pdf` (not `.html`). Preview route returns `application/pdf`. Email attachments auto-detect content type from file extension
+- **Executive Dashboard (Phase 6)**: `getProjectBurnUpData(projectId)` in `dashboard.service.ts` computes time-series: contract value history (from devis + approved avenants over time) and certified value history (cumulative netToPayHt from certificats). Frontend uses recharts `AreaChart` with two series (navy contract, gold certified). Project selector on dashboard page
+- **Advanced Fee Tracking (Phase 6)**: `phase` column on fees table (conception/chantier/aor). `GET /api/projects/:id/fees/by-phase` returns fees grouped by phase with subtotals (totalHt/totalInvoiced/totalRemaining) and grand totals. All totals use `roundCurrency()`. Frontend: phase filter tabs, summary cards with progress bars, phase dropdown on fee creation
+- **Bulk Export (Phase 6)**: `server/services/bulk-export.service.ts` — generates ZIP with `archiver` package. Structure: `ProjectCode_ProjectName/01_Devis/`, `02_Factures/`, `03_Certificats/`. Downloads PDFs from object storage, generates certificat PDFs on-the-fly if needed. Route: `GET /api/projects/:id/export`. Frontend: "Export Project Folder" button with FolderDown icon, blob download
 
 ## Testing Infrastructure
 - **Framework**: Vitest 4.x (native Vite integration, TypeScript, ESM)

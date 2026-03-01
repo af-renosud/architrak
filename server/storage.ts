@@ -89,6 +89,7 @@ export interface IStorage {
   createSituationLine(data: InsertSituationLine): Promise<SituationLine>;
 
   getCertificatsByProject(projectId: number): Promise<Certificat[]>;
+  getCertificatsByProjectAndContractor(projectId: number, contractorId: number): Promise<Certificat[]>;
   getCertificat(id: number): Promise<Certificat | undefined>;
   createCertificat(data: InsertCertificat): Promise<Certificat>;
   updateCertificat(id: number, data: Partial<InsertCertificat>): Promise<Certificat | undefined>;
@@ -383,6 +384,10 @@ export class DatabaseStorage implements IStorage {
 
   async getCertificatsByProject(projectId: number): Promise<Certificat[]> {
     return db.select().from(certificats).where(eq(certificats.projectId, projectId)).orderBy(desc(certificats.createdAt));
+  }
+
+  async getCertificatsByProjectAndContractor(projectId: number, contractorId: number): Promise<Certificat[]> {
+    return db.select().from(certificats).where(and(eq(certificats.projectId, projectId), eq(certificats.contractorId, contractorId))).orderBy(certificats.dateIssued);
   }
 
   async getCertificat(id: number): Promise<Certificat | undefined> {

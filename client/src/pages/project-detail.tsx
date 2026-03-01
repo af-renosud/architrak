@@ -4,7 +4,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { FolderOpen, ArrowLeft, MapPin, User, FileText, Layers, ScrollText, Award, Coins, BarChart3, Plus, Eye, EyeOff, ChevronRight, Pencil, Upload, Download, ExternalLink, MessageSquare, Send, Clock, RefreshCw, FileCheck, AlertTriangle, Settings, Loader2 } from "lucide-react";
+import { FolderOpen, ArrowLeft, MapPin, User, FileText, Layers, ScrollText, Award, Coins, BarChart3, Plus, Eye, EyeOff, ChevronRight, Pencil, Upload, Download, ExternalLink, MessageSquare, Send, Clock, RefreshCw, FileCheck, AlertTriangle, Settings, Loader2, FolderDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -155,6 +155,7 @@ export default function ProjectDetail() {
   const [showVoidSummary, setShowVoidSummary] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [previewingCertId, setPreviewingCertId] = useState<number | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   const { data: project, isLoading } = useQuery<Project>({
     queryKey: ["/api/projects", projectId],
@@ -474,6 +475,34 @@ export default function ProjectDetail() {
     },
   });
 
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const res = await window.fetch(`/api/projects/${projectId}/export`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ message: "Export failed" }));
+        throw new Error(err.message);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${project?.code ?? "Project"}_Export.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+    } catch (err: unknown) {
+      toast({
+        title: "Export failed",
+        description: err instanceof Error ? err.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const handleFileUpload = () => {
     const input = document.createElement("input");
     input.type = "file";
@@ -671,7 +700,17 @@ export default function ProjectDetail() {
           </div>
         </div>
 
-        <div className="flex items-center justify-end mb-1">
+        <div className="flex items-center justify-end gap-2 mb-1 flex-wrap">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleExport}
+            disabled={exporting}
+            data-testid="button-export-project"
+          >
+            {exporting ? <Loader2 size={12} className="animate-spin" /> : <FolderDown size={12} />}
+            {exporting ? "Exporting..." : "Export Project Folder"}
+          </Button>
           <Button
             variant="outline"
             size="sm"
