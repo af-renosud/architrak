@@ -38,13 +38,19 @@ export function registerAuthRoutes(app: Express) {
         lastLoginAt: new Date(),
       });
 
-      req.session.userId = user.id;
-      req.session.save((err) => {
-        if (err) {
-          console.error("Session save error:", err);
+      req.session.regenerate((regenerateErr) => {
+        if (regenerateErr) {
+          console.error("Session regenerate error:", regenerateErr);
           return res.status(500).json({ message: "Failed to create session" });
         }
-        res.redirect("/");
+        req.session.userId = user.id;
+        req.session.save((saveErr) => {
+          if (saveErr) {
+            console.error("Session save error:", saveErr);
+            return res.status(500).json({ message: "Failed to create session" });
+          }
+          res.redirect("/");
+        });
       });
     } catch (error: any) {
       if (error instanceof DomainRestrictionError) {

@@ -1,6 +1,6 @@
 import { OAuth2Client } from "google-auth-library";
 
-const ALLOWED_DOMAIN = "sas-architects.fr";
+const ALLOWED_DOMAIN = "renosud.com";
 
 export interface GoogleUser {
   googleId: string;
@@ -57,6 +57,12 @@ export async function exchangeCodeForUser(code: string, callbackUrl: string): Pr
   if (!payload.email || !payload.email.endsWith(`@${ALLOWED_DOMAIN}`)) {
     throw new DomainRestrictionError(
       `Access restricted to @${ALLOWED_DOMAIN} accounts. Your email: ${payload.email || "unknown"}`
+    );
+  }
+
+  if (!payload.email_verified) {
+    throw new DomainRestrictionError(
+      "Email address has not been verified by Google"
     );
   }
 

@@ -158,6 +158,19 @@ shared/
 - **Financial utilities module**: `shared/financial-utils.ts` — pure functions with strict 2-decimal rounding (`roundCurrency` using half-up via `Number.EPSILON`). All currency-returning functions apply rounding before returning. This is a NEW additive module; `routes.ts` and `certificat-generator.ts` still use inline logic (Phase 3 refactor will migrate them)
 - **Rounding policy**: `roundCurrency(value)` = `Math.round((value + Number.EPSILON) * 100) / 100` — prevents floating-point drift in financial aggregation
 
+## Authentication (Phase 2)
+- **Strategy**: Google Workspace OAuth 2.0 via `google-auth-library` (direct, no Passport)
+- **Domain restriction**: `@renosud.com` — double-layer enforcement (Google `hd` param + server-side email suffix check + `email_verified` check)
+- **Session store**: PostgreSQL via `connect-pg-simple`, 7-day cookie, `createTableIfMissing: false` (table managed by Drizzle)
+- **Session security**: Session ID regenerated on login (prevents fixation), httpOnly + sameSite:lax cookies
+- **Route protection**: `requireAuth` middleware on all `/api` routes except `/api/auth/*`; frontend auth gate via `useAuth` hook in `App.tsx`
+- **Schema**: `users` table (googleId, email, firstName, lastName, profileImageUrl, lastLoginAt) + `session` table (sid, sess, expire)
+- **Files**: `server/auth/google-oauth.ts`, `server/auth/routes.ts`, `server/auth/middleware.ts`, `client/src/hooks/use-auth.ts`, `client/src/pages/login.tsx`
+- **Login flow**: `/api/auth/login` → Google consent → `/api/auth/callback` → session created → redirect to `/`
+- **Logout**: `/api/auth/logout` → session destroyed → redirect to `/`
+
 ## Environment Secrets (updated)
 - `GEMINI_API_KEY` — Google Gemini API key for document parsing
 - `DOCRAPTOR_API_KEY` — DocRaptor API key for HTML→PDF conversion (PrinceXML engine)
+- `GOOGLE_CLIENT_ID` — Google OAuth 2.0 client ID (Cloud Console)
+- `GOOGLE_CLIENT_SECRET` — Google OAuth 2.0 client secret (Cloud Console)

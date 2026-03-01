@@ -92,7 +92,7 @@ export default function LoginPage() {
           <div className="mt-6 flex items-center justify-center gap-2" style={{ color: "#7E7F83" }}>
             <Shield size={12} />
             <span className="text-xs">
-              Restricted to @sas-architects.fr accounts
+              Restricted to @renosud.com accounts
             </span>
           </div>
         </div>
