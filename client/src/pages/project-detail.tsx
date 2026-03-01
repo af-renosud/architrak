@@ -33,9 +33,13 @@ interface FinancialSummary {
   projectName: string;
   projectCode: string;
   totalContractedHt: number;
+  totalContractedTtc: number;
   totalCertifiedHt: number;
+  totalCertifiedTtc: number;
   totalResteARealiser: number;
+  totalResteARealiserTtc: number;
   totalOriginalHt: number;
+  totalOriginalTtc: number;
   totalPv: number;
   totalMv: number;
   devis: DevisSummary[];
@@ -49,12 +53,17 @@ interface DevisSummary {
   status: string;
   contractorId: number;
   invoicingMode: string;
+  tvaRate: number;
   originalHt: number;
+  originalTtc: number;
   pvTotal: number;
   mvTotal: number;
   adjustedHt: number;
+  adjustedTtc: number;
   certifiedHt: number;
+  certifiedTtc: number;
   resteARealiser: number;
+  resteARealiserTtc: number;
   invoiceCount: number;
   avenantCount: number;
 }
@@ -642,22 +651,25 @@ export default function ProjectDetail() {
               <div className="space-y-6">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <LuxuryCard data-testid="card-total-contracted">
-                    <TechnicalLabel>Total Contracted HT</TechnicalLabel>
+                    <TechnicalLabel>Total Contracted</TechnicalLabel>
                     <p className="text-[20px] font-light text-foreground mt-2" data-testid="text-total-contracted">
-                      {formatCurrency(financialSummary.totalContractedHt)}
+                      {formatCurrency(financialSummary.totalContractedTtc)} <span className="text-[11px] text-muted-foreground">TTC</span>
                     </p>
+                    <p className="text-[12px] text-muted-foreground">{formatCurrency(financialSummary.totalContractedHt)} HT</p>
                   </LuxuryCard>
                   <LuxuryCard data-testid="card-total-certified">
-                    <TechnicalLabel>Total Certified HT</TechnicalLabel>
+                    <TechnicalLabel>Total Certified</TechnicalLabel>
                     <p className="text-[20px] font-light text-emerald-600 dark:text-emerald-400 mt-2" data-testid="text-total-certified">
-                      {formatCurrency(financialSummary.totalCertifiedHt)}
+                      {formatCurrency(financialSummary.totalCertifiedTtc)} <span className="text-[11px] text-muted-foreground">TTC</span>
                     </p>
+                    <p className="text-[12px] text-muted-foreground">{formatCurrency(financialSummary.totalCertifiedHt)} HT</p>
                   </LuxuryCard>
                   <LuxuryCard data-testid="card-total-reste">
                     <TechnicalLabel>Reste à Réaliser</TechnicalLabel>
                     <p className="text-[20px] font-light text-amber-600 dark:text-amber-400 mt-2" data-testid="text-total-reste">
-                      {formatCurrency(financialSummary.totalResteARealiser)}
+                      {formatCurrency(financialSummary.totalResteARealiserTtc)} <span className="text-[11px] text-muted-foreground">TTC</span>
                     </p>
+                    <p className="text-[12px] text-muted-foreground">{formatCurrency(financialSummary.totalResteARealiser)} HT</p>
                   </LuxuryCard>
                 </div>
 

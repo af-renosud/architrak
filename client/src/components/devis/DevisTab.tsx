@@ -191,10 +191,13 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
                       </Button>
                     )}
                     <div className="text-right">
-                      <span className="text-[14px] font-semibold text-foreground" data-testid={`text-devis-ht-${d.id}`}>
-                        {formatCurrency(parseFloat(d.amountHt))}
+                      <span className="text-[14px] font-semibold text-foreground" data-testid={`text-devis-ttc-${d.id}`}>
+                        {formatCurrency(parseFloat(d.amountTtc))}
                       </span>
-                      <p className="text-[9px] text-muted-foreground">HT</p>
+                      <p className="text-[9px] text-muted-foreground">TTC</p>
+                      <span className="text-[10px] text-muted-foreground" data-testid={`text-devis-ht-${d.id}`}>
+                        {formatCurrency(parseFloat(d.amountHt))} HT
+                      </span>
                     </div>
                     <TechnicalLabel>{d.invoicingMode === "mode_a" ? "Mode A" : "Mode B"}</TechnicalLabel>
                     <StatusBadge status={d.status} />
@@ -351,13 +354,18 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
     enabled: devis.invoicingMode === "mode_b",
   });
 
+  const tvaMultiplier = 1 + (parseFloat(devis.tvaRate) || 20) / 100;
   const originalHt = parseFloat(devis.amountHt);
+  const originalTtc = parseFloat(devis.amountTtc);
   const approvedAvenants = (avenants ?? []).filter((a) => a.status === "approved");
   const pvTotal = approvedAvenants.filter((a) => a.type === "pv").reduce((s, a) => s + parseFloat(a.amountHt), 0);
   const mvTotal = approvedAvenants.filter((a) => a.type === "mv").reduce((s, a) => s + parseFloat(a.amountHt), 0);
   const adjustedHt = originalHt + pvTotal - mvTotal;
+  const adjustedTtc = adjustedHt * tvaMultiplier;
   const invoicedHt = (invoices ?? []).reduce((s, i) => s + parseFloat(i.amountHt), 0);
+  const invoicedTtc = (invoices ?? []).reduce((s, i) => s + parseFloat(i.amountTtc), 0);
   const remainingHt = adjustedHt - invoicedHt;
+  const remainingTtc = adjustedTtc - invoicedTtc;
   const progress = adjustedHt > 0 ? Math.min((invoicedHt / adjustedHt) * 100, 100) : 0;
 
   const invoiceFileRef = useRef<HTMLInputElement>(null);
@@ -711,21 +719,25 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
       <div className="grid grid-cols-4 gap-3">
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
           <TechnicalLabel>Original Contracted</TechnicalLabel>
-          <p className="text-[13px] font-semibold text-foreground mt-1">{formatCurrency(originalHt)}</p>
+          <p className="text-[13px] font-semibold text-foreground mt-1">{formatCurrency(originalTtc)} <span className="text-[9px] text-muted-foreground">TTC</span></p>
+          <p className="text-[10px] text-muted-foreground">{formatCurrency(originalHt)} HT</p>
         </div>
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
           <TechnicalLabel>Adjusted (+ PV/MV)</TechnicalLabel>
-          <p className="text-[13px] font-semibold text-foreground mt-1">{formatCurrency(adjustedHt)}</p>
+          <p className="text-[13px] font-semibold text-foreground mt-1">{formatCurrency(adjustedTtc)} <span className="text-[9px] text-muted-foreground">TTC</span></p>
+          <p className="text-[10px] text-muted-foreground">{formatCurrency(adjustedHt)} HT</p>
         </div>
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
           <TechnicalLabel>Invoiced</TechnicalLabel>
-          <p className="text-[13px] font-semibold text-emerald-600 mt-1">{formatCurrency(invoicedHt)}</p>
+          <p className="text-[13px] font-semibold text-emerald-600 mt-1">{formatCurrency(invoicedTtc)} <span className="text-[9px] text-muted-foreground">TTC</span></p>
+          <p className="text-[10px] text-muted-foreground">{formatCurrency(invoicedHt)} HT</p>
         </div>
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
           <TechnicalLabel>Reste à Réaliser</TechnicalLabel>
           <p className={`text-[13px] font-semibold mt-1 ${remainingHt < 0 ? "text-red-600" : "text-amber-600"}`}>
-            {formatCurrency(remainingHt)}
+            {formatCurrency(remainingTtc)} <span className="text-[9px] text-muted-foreground">TTC</span>
           </p>
+          <p className="text-[10px] text-muted-foreground">{formatCurrency(remainingHt)} HT</p>
         </div>
       </div>
       <div className="h-1.5 w-full rounded-full bg-slate-100">
