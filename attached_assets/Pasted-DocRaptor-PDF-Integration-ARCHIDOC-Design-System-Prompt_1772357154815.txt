@@ -1,0 +1,80 @@
+DocRaptor PDF Integration — ARCHIDOC Design System Prompt
+
+This application is a sister product to ARCHIDOC (an architectural project management OS). All PDF reports must share the same professional "High-End Architectural" aesthetic. Use DocRaptor with the PrinceXML engine for PDF generation. Below is the complete design specification.
+
+DocRaptor Integration
+
+Send HTML+CSS to DocRaptor's API (https://docraptor.com/docs) to produce PDF output
+Use prince_backend as the document engine — this enables advanced @page rules, running headers/footers, and proper page numbering via CSS counters
+All styling is inline CSS embedded in the HTML — no external stylesheets
+Brand Color Palette
+
+Token	Hex	Usage
+Brand Navy	#0B2545	Primary headers, page titles, table headers, buttons
+Accent Gold	#C1A27B	Rule lines, accent bars, section dividers, list bullets
+Charcoal	#34312D	Main body text
+Grey	#7E7F83	Subtitles, metadata, secondary labels
+Light Grey	#E6E6E6	Borders, thin dividers, table row separators
+Faint Grey	#F8F9FA	Alternating table row backgrounds, info box fills
+White	#FFFFFF	Page background, inverted text on Navy headers
+Accent Bar (used as section dividers)
+
+background: linear-gradient(90deg, #c1a27b 0%, #FFC482 50%, #c1a27b 100%);
+height: 4px;
+Header Gradient (used on cover pages and report headers)
+
+background: linear-gradient(135deg, #0B2545 0%, #143661 55%, #1a4a7a 100%);
+Typography
+
+Primary font: Inter (with fallback: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif)
+Body text: 10pt, color #34312D, line-height: 1.55
+Main titles: 18pt, weight 700, color #0B2545
+Section headers: 12pt, weight 700, uppercase, letter-spacing: 0.08em, color #0B2545
+Metadata/footer text: 7pt–9pt, color #7E7F83
+If the Inter font is unavailable, fall back to a stylized "ARCHIDOC" text header in Navy with letter-spacing: 1.5pt
+Page Layout (@page rules)
+
+@page {
+  size: A4;
+  margin: 22mm 18mm 25mm 18mm;
+}
+Running header: Logo top-left, document title top-right (uppercase, grey, small)
+Running footer: Project/client info left, date center, "Page X / Y" right
+Page numbering via PrinceXML CSS counters: content: "Page " counter(page) " / " counter(pages)
+Table Design
+
+Header row: Background #0B2545, text white, font-weight: 700, text-transform: uppercase, letter-spacing: 0.08em, font-size: 8pt
+Body rows: Alternating zebra stripes — odd rows white, even rows #F8F9FA
+Row borders: 0.5pt solid #E6E6E6 bottom border
+Numeric/financial columns: Right-aligned for professional clarity
+Cell padding: 8px 12px
+Info Boxes / Callout Panels
+
+Background: #F8F9FA
+Left border: 3pt solid #C1A27B (gold accent)
+Padding: 12px 16px
+Used for project metadata summaries, notes, and contextual information
+KPI / Metric Cards
+
+background: linear-gradient(135deg, #f7f9fc 0%, #f0f4f8 100%);
+border-top: 3px solid #0B2545;
+border-radius: 8px;
+padding: 16px;
+Large number in #0B2545, weight 800
+Label below in #7E7F83, 9pt, uppercase
+Cover Page Pattern
+
+Full Navy header block with document title in white, 18pt, centered
+Gold accent bar below the header (4px gradient)
+Project metadata block: Project name, client name, date, reference number
+Branding logo centered or top-left (inject as Base64 data URI for reliability)
+Logo aspect ratio: approximately 1.79:1
+General Principles
+
+Clean, airy layouts with generous whitespace — aim for an architectural drawing aesthetic
+Section separation using margin-bottom: 6mm minimum between blocks
+All financial figures should use monospace or tabular number formatting
+Currency formatting: Euro (€) with French locale (e.g., 1 234,56 €)
+Date formatting: French locale (dd/mm/yyyy)
+Maintain high contrast for readability — never use light text on light backgrounds
+PDF file names should follow the pattern: [TYPE]-[PROJECT]-[DATE].pdf
