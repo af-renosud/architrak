@@ -56,6 +56,13 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
   const voidCount = devisList?.filter(d => d.status === "void").length ?? 0;
   const filteredDevisList = showVoid ? devisList : devisList?.filter(d => d.status !== "void");
 
+  const activeDevis = devisList?.filter(d => d.status !== "void") ?? [];
+  const totalDevisCount = activeDevis.length;
+  const totalAmountTtc = activeDevis.reduce((sum, d) => sum + parseFloat(d.amountTtc?.toString() ?? "0"), 0);
+  const totalAmountHt = activeDevis.reduce((sum, d) => sum + parseFloat(d.amountHt?.toString() ?? "0"), 0);
+  const pendingDevisCount = activeDevis.filter(d => d.signOffStage !== "signed").length;
+  const signedDevisCount = activeDevis.filter(d => d.signOffStage === "signed").length;
+
   const uploadMutation = useMutation({
     mutationFn: async (file: File) => {
       const formData = new FormData();
@@ -105,6 +112,26 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
 
   return (
     <div className="space-y-4">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <LuxuryCard data-testid="card-devis-count">
+          <TechnicalLabel>Total Devis</TechnicalLabel>
+          <p className="text-[20px] font-light text-foreground mt-1" data-testid="text-devis-count">{totalDevisCount}</p>
+        </LuxuryCard>
+        <LuxuryCard data-testid="card-devis-total">
+          <TechnicalLabel>Total Amount</TechnicalLabel>
+          <p className="text-[16px] font-semibold text-foreground mt-1">{formatCurrency(totalAmountTtc)} <span className="text-[9px] text-muted-foreground">TTC</span></p>
+          <p className="text-[10px] text-muted-foreground">{formatCurrency(totalAmountHt)} HT</p>
+        </LuxuryCard>
+        <LuxuryCard data-testid="card-devis-pending">
+          <TechnicalLabel>Pending</TechnicalLabel>
+          <p className="text-[20px] font-light text-amber-600 mt-1" data-testid="text-devis-pending">{pendingDevisCount}</p>
+        </LuxuryCard>
+        <LuxuryCard data-testid="card-devis-signed">
+          <TechnicalLabel>Signed</TechnicalLabel>
+          <p className="text-[20px] font-light text-emerald-600 mt-1" data-testid="text-devis-signed">{signedDevisCount}</p>
+        </LuxuryCard>
+      </div>
+
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           {uploading ? (
