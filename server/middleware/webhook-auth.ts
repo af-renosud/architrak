@@ -44,17 +44,20 @@ export function verifyWebhookSignature(req: Request, res: Response, next: NextFu
   }
 
   const body = req.body;
-  if (body && body.timestamp) {
-    const eventTime = new Date(body.timestamp).getTime();
-    const now = Date.now();
-    if (isNaN(eventTime)) {
-      console.warn("[Webhook] Invalid timestamp in payload:", body.timestamp);
-      return res.status(400).json({ message: "Invalid timestamp in webhook payload" });
-    }
-    if (Math.abs(now - eventTime) > TIMESTAMP_TOLERANCE_MS) {
-      console.warn(`[Webhook] Replay attack rejected — event timestamp ${body.timestamp} is outside ${TIMESTAMP_TOLERANCE_MS / 1000}s tolerance`);
-      return res.status(401).json({ message: "Webhook timestamp outside acceptable window" });
-    }
+  if (!body || !body.timestamp) {
+    console.warn("[Webhook] Missing timestamp in payload — rejecting for replay protection");
+    return res.status(400).json({ message: "Missing timestamp in webhook payload" });
+  }
+
+  const eventTime = new Date(body.timestamp).getTime();
+  const now = Date.now();
+  if (isNaN(eventTime)) {
+    console.warn("[Webhook] Invalid timestamp in payload:", body.timestamp);
+    return res.status(400).json({ message: "Invalid timestamp in webhook payload" });
+  }
+  if (Math.abs(now - eventTime) > TIMESTAMP_TOLERANCE_MS) {
+    console.warn(`[Webhook] Replay attack rejected — event timestamp ${body.timestamp} is outside ${TIMESTAMP_TOLERANCE_MS / 1000}s tolerance`);
+    return res.status(401).json({ message: "Webhook timestamp outside acceptable window" });
   }
 
   next();

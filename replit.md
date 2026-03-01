@@ -70,7 +70,7 @@ server/
   storage.ts            — DatabaseStorage implementation (IStorage interface)
   db.ts                 — Drizzle ORM database connection
   auth/                 — Google OAuth: google-oauth.ts, routes.ts, middleware.ts
-  middleware/            — upload.ts (multer configuration, isolated to prevent circular deps)
+  middleware/            — upload.ts (multer), webhook-auth.ts (HMAC-SHA256 signature verification)
   routes/               — Domain-driven router modules (Phase 3 refactor)
     index.ts            — Orchestrator: mounts all domain routers
     projects.ts         — /api/projects CRUD (5 routes)
@@ -89,6 +89,7 @@ server/
     documents.ts        — /api/documents + downloads (4 routes)
     communications.ts   — /api/communications + reminders + payment-evidence (9 routes)
     settings.ts         — /api/settings/* AI models + template assets (6 routes)
+    webhooks.ts         — POST /api/webhooks/archidoc (HMAC-protected, 1 route)
   services/             — Business logic services (no HTTP concerns)
     docraptor.ts        — DocRaptor PDF generation client
     devis-upload.service.ts      — AI extraction → Devis + line items creation
@@ -97,6 +98,7 @@ server/
     fee-calculation.service.ts   — Mark fee-entry invoiced → fee totals recalculation
     financial-summary.service.ts — Three Buckets aggregation per project
     dashboard.service.ts         — Dashboard summary aggregation
+    webhook.service.ts           — ArchiDoc webhook event routing (13 event types → sync-service)
   archidoc/             — ArchiDoc sync: sync-client, sync-service, import-service
   gmail/                — Gmail monitoring: client, monitor, document-parser
   communications/       — certificat-generator, email-sender, payment-scheduler
@@ -124,11 +126,14 @@ shared/
 - `/api/dashboard/summary` — Global dashboard data
 
 **ArchiDoc Sync:**
-- `/api/archidoc/status` — Connection status
+- `/api/archidoc/status` — Connection status (includes webhookEnabled, pollingEnabled, webhookSecretConfigured)
 - `/api/archidoc/projects` — List ArchiDoc projects (with isTracked flag)
 - `/api/archidoc/sync` — Trigger full sync
 - `/api/archidoc/track/:id` — Import/track an ArchiDoc project
 - `/api/projects/:id/refresh` — Refresh project from ArchiDoc
+
+**Webhooks:**
+- `POST /api/webhooks/archidoc` — Event-driven webhook endpoint for ArchiDoc push notifications (OAuth-exempt, HMAC-secured)
 
 **Documents:**
 - `/api/email-documents` — List/filter email-extracted documents
@@ -161,7 +166,7 @@ shared/
 - Projects ONLY created via ArchiDoc API — no manual project creation
 
 ## Integration Status (tested 2026-02-28)
-- **ArchiDoc sync**: Working. 14 projects, 11 contractors, 29 trades synced successfully
+- **ArchiDoc sync**: Working. 14 projects, 11 contractors, 29 trades synced successfully. Phase 4: Event-driven webhook mode active (polling disabled by default, re-enable via `ARCHIDOC_POLLING_ENABLED=true`). Webhook endpoint: `POST /api/webhooks/archidoc` — HMAC-SHA256 signature verification, 5-minute replay attack prevention, 13 event types (project/contractor/trade/proposal_fee CRUD + sync.full). Auto-refreshes tracked projects/contractors on relevant events
 - **Project import**: Working. LIVERMORE/DANCE and BARTHALON tracked with lots, contractors, fees
 - **Lot numbers**: Use text/string codes (e.g. "FN", "GO", "VRD", "EL") — not integers
 - **Duplicate detection**: trackProject checks by archidocId first, then by name+clientName match to link untracked projects
@@ -202,3 +207,5 @@ shared/
 - `DOCRAPTOR_API_KEY` — DocRaptor API key for HTML→PDF conversion (PrinceXML engine)
 - `GOOGLE_CLIENT_ID` — Google OAuth 2.0 client ID (Cloud Console)
 - `GOOGLE_CLIENT_SECRET` — Google OAuth 2.0 client secret (Cloud Console)
+- `ARCHIDOC_WEBHOOK_SECRET` — HMAC-SHA256 shared secret for webhook signature verification
+- `ARCHIDOC_POLLING_ENABLED` — Set to `"true"` to re-enable legacy polling (default: webhook mode)

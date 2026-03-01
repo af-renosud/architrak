@@ -22,8 +22,12 @@ export const webhookEventSchema = z.object({
     "contractor.created",
     "contractor.updated",
     "contractor.deleted",
+    "trade.created",
     "trade.updated",
+    "trade.deleted",
+    "proposal_fee.created",
     "proposal_fee.updated",
+    "proposal_fee.deleted",
     "sync.full",
   ]),
   timestamp: z.string(),
@@ -84,22 +88,42 @@ export async function processWebhookEvent(payload: WebhookEvent): Promise<Proces
       return { processed: true, event, details: `Contractor ${deletedContractor.id} updated in mirror` };
     }
 
+    case "trade.created":
     case "trade.updated": {
       const tradeData = data as unknown as ArchidocTradeData;
       if (!tradeData.id || !tradeData.label) {
-        throw new Error("trade.updated event requires 'id' and 'label' in data");
+        throw new Error(`${event} event requires 'id' and 'label' in data`);
       }
       await upsertTrade(tradeData);
       return { processed: true, event, details: `Trade ${tradeData.id} upserted in mirror` };
     }
 
+    case "trade.deleted": {
+      const deletedTrade = data as unknown as ArchidocTradeData;
+      if (!deletedTrade.id) {
+        throw new Error("trade.deleted event requires 'id' in data");
+      }
+      await upsertTrade({ ...deletedTrade, label: deletedTrade.label || "Deleted" });
+      return { processed: true, event, details: `Trade ${deletedTrade.id} updated in mirror` };
+    }
+
+    case "proposal_fee.created":
     case "proposal_fee.updated": {
       const feeData = data as unknown as { projectId: string; proServiceHt?: number; proServiceTva?: number; proServiceTtc?: number; planningHt?: number; planningTva?: number; planningTtc?: number; pmPercentage?: number; pmNote?: string };
       if (!feeData.projectId) {
-        throw new Error("proposal_fee.updated event requires 'projectId' in data");
+        throw new Error(`${event} event requires 'projectId' in data`);
       }
       await upsertProposalFee(feeData);
       return { processed: true, event, details: `Proposal fee for project ${feeData.projectId} upserted` };
+    }
+
+    case "proposal_fee.deleted": {
+      const deletedFee = data as unknown as { projectId: string };
+      if (!deletedFee.projectId) {
+        throw new Error("proposal_fee.deleted event requires 'projectId' in data");
+      }
+      await upsertProposalFee({ projectId: deletedFee.projectId });
+      return { processed: true, event, details: `Proposal fee for project ${deletedFee.projectId} cleared` };
     }
 
     case "sync.full": {
