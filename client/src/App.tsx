@@ -3,6 +3,8 @@ import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useAuth } from "@/hooks/use-auth";
+import LoginPage from "@/pages/login";
 import NotFound from "@/pages/not-found";
 import Dashboard from "@/pages/dashboard";
 import Projects from "@/pages/projects";
@@ -15,6 +17,7 @@ import Fees from "@/pages/fees";
 import EmailDocuments from "@/pages/email-documents";
 import Communications from "@/pages/communications";
 import SettingsPage from "@/pages/settings";
+import { Loader2 } from "lucide-react";
 
 function Router() {
   return (
@@ -35,12 +38,30 @@ function Router() {
   );
 }
 
+function AuthGate() {
+  const { isLoading, isAuthenticated } = useAuth();
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-[#F8F9FA]">
+        <Loader2 className="h-8 w-8 animate-spin" style={{ color: "#0B2545" }} />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <LoginPage />;
+  }
+
+  return <Router />;
+}
+
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Toaster />
-        <Router />
+        <AuthGate />
       </TooltipProvider>
     </QueryClientProvider>
   );

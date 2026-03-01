@@ -563,3 +563,27 @@ export const insertAiModelSettingSchema = createInsertSchema(aiModelSettings).om
 });
 export type AiModelSetting = typeof aiModelSettings.$inferSelect;
 export type InsertAiModelSetting = z.infer<typeof insertAiModelSettingSchema>;
+
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
+  googleId: text("google_id").notNull().unique(),
+  email: text("email").notNull().unique(),
+  firstName: text("first_name"),
+  lastName: text("last_name"),
+  profileImageUrl: text("profile_image_url"),
+  lastLoginAt: timestamp("last_login_at"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export const sessions = pgTable("session", {
+  sid: varchar("sid").primaryKey(),
+  sess: jsonb("sess").notNull(),
+  expire: timestamp("expire", { precision: 6 }).notNull(),
+});
+
+export const insertUserSchema = createInsertSchema(users).omit({
+  id: true,
+  createdAt: true,
+});
+export type User = typeof users.$inferSelect;
+export type InsertUser = z.infer<typeof insertUserSchema>;

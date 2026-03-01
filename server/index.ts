@@ -1,10 +1,15 @@
 import express, { type Request, Response, NextFunction } from "express";
+import session from "express-session";
+import connectPgSimple from "connect-pg-simple";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { startPolling } from "./gmail/monitor";
 import { startScheduler } from "./communications/payment-scheduler";
+import { registerAuthRoutes } from "./auth/routes";
+import { requireAuth } from "./auth/middleware";
+import { pool } from "./db";
 
 const app = express();
 const httpServer = createServer(app);
@@ -24,6 +29,28 @@ app.use(
 );
 
 app.use(express.urlencoded({ extended: false }));
+
+app.set("trust proxy", 1);
+
+const PgStore = connectPgSimple(session);
+app.use(
+  session({
+    store: new PgStore({
+      pool,
+      tableName: "session",
+      createTableIfMissing: false,
+    }),
+    secret: process.env.SESSION_SECRET!,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    },
+  }),
+);
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
@@ -63,6 +90,16 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  registerAuthRoutes(app);
+
+  app.use("/api", (req, res, next) => {
+    const publicPaths = ["/auth/login", "/auth/callback", "/auth/logout", "/auth/user"];
+    if (publicPaths.includes(req.path)) {
+      return next();
+    }
+    return requireAuth(req, res, next);
+  });
+
   registerObjectStorageRoutes(app);
   await registerRoutes(httpServer, app);
 

@@ -12,9 +12,11 @@ import {
   Search,
   Mail,
   MessageSquare,
+  LogOut,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useAuth } from "@/hooks/use-auth";
 import logoPath from "@assets/Generated_Image_February_28__2026_-_3_59PM.jpg-removebg-previe_1772291017667.png";
 
 const navItems = [
@@ -40,6 +42,7 @@ const toolButtons = [
 
 export function Sidebar() {
   const [location] = useLocation();
+  const { user, logout } = useAuth();
 
   const isActive = (path: string) => {
     if (path === "/") return location === "/";
@@ -138,7 +141,7 @@ export function Sidebar() {
         })}
       </div>
 
-      <div className="px-4 pb-6">
+      <div className="px-4 pb-4">
         <div className="grid grid-cols-3 gap-2" data-testid="nav-tools">
           {toolButtons.map((tool) => (
             <Tooltip key={tool.label}>
@@ -160,6 +163,52 @@ export function Sidebar() {
           ))}
         </div>
       </div>
+
+      {user && (
+        <div className="px-4 pb-4 border-t border-black/5 pt-3" data-testid="sidebar-user">
+          <div className="flex items-center gap-2.5">
+            {user.profileImageUrl ? (
+              <img
+                src={user.profileImageUrl}
+                alt=""
+                className="w-7 h-7 rounded-full object-cover flex-shrink-0"
+                data-testid="img-user-avatar"
+              />
+            ) : (
+              <div
+                className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0"
+                style={{ backgroundColor: "#0B2545" }}
+              >
+                {(user.firstName?.[0] || user.email[0]).toUpperCase()}
+              </div>
+            )}
+            <div className="flex-1 min-w-0">
+              <p className="text-[11px] font-semibold text-[#34312D] truncate" data-testid="text-user-name">
+                {user.firstName && user.lastName
+                  ? `${user.firstName} ${user.lastName}`
+                  : user.email}
+              </p>
+              <p className="text-[9px] text-[#7E7F83] truncate" data-testid="text-user-email">
+                {user.email}
+              </p>
+            </div>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={logout}
+                  className="p-1.5 rounded-lg hover:bg-black/5 transition-colors flex-shrink-0"
+                  data-testid="button-logout"
+                >
+                  <LogOut size={13} strokeWidth={1.5} className="text-[#7E7F83]" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                <span className="text-xs">Sign out</span>
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }

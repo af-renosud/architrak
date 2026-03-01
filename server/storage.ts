@@ -5,8 +5,9 @@ import {
   avenants, invoices, situations, situationLines, certificats, fees, feeEntries,
   archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog,
   emailDocuments, projectDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
-  aiModelSettings, templateAssets,
+  aiModelSettings, templateAssets, users,
   type Project, type InsertProject,
+  type User, type InsertUser,
   type Contractor, type InsertContractor,
   type Lot, type InsertLot,
   type Marche, type InsertMarche,
@@ -162,6 +163,10 @@ export interface IStorage {
   getNextCertificateRef(projectId: number): Promise<string>;
   getDevisByProjectAndContractor(projectId: number, contractorId: number): Promise<Devis[]>;
   getLot(id: number): Promise<import("@shared/schema").Lot | undefined>;
+
+  getUser(id: number): Promise<User | undefined>;
+  getUserByGoogleId(googleId: string): Promise<User | undefined>;
+  upsertUser(data: InsertUser): Promise<User>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -748,6 +753,32 @@ export class DatabaseStorage implements IStorage {
   async getLot(id: number): Promise<import("@shared/schema").Lot | undefined> {
     const [lot] = await db.select().from(lots).where(eq(lots.id, id));
     return lot;
+  }
+
+  async getUser(id: number): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.id, id));
+    return user;
+  }
+
+  async getUserByGoogleId(googleId: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.googleId, googleId));
+    return user;
+  }
+
+  async upsertUser(data: InsertUser): Promise<User> {
+    const existing = await this.getUserByGoogleId(data.googleId);
+    if (existing) {
+      const [updated] = await db.update(users).set({
+        email: data.email,
+        firstName: data.firstName,
+        lastName: data.lastName,
+        profileImageUrl: data.profileImageUrl,
+        lastLoginAt: new Date(),
+      }).where(eq(users.id, existing.id)).returning();
+      return updated;
+    }
+    const [created] = await db.insert(users).values(data).returning();
+    return created;
   }
 }
 
