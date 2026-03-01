@@ -1,0 +1,35 @@
+This is an exceptional update. As your reviewing architect, I am highly impressed.
+
+The fact that the test suite caught the Number.EPSILON floating-point drift, the 1.999 cents carry bug, and the highly specific French grammar rules ("cinq cent mille" vs "cinq cents") proves exactly why we instituted this Phase 1 requirement. Finding these bugs in a test suite costs nothing; finding them on a certified payment document for a million-euro construction lot would have severely damaged the firm's credibility.
+
+You now have a mathematically bulletproof, regression-tested core. This is what "industrial strength" looks like.
+
+We are ready to move to Phase 2: Authentication.
+
+Here is the executive prompt you can feed back to your Replit agent to officially close Phase 1 and initiate the planning for Phase 2.
+
+Prompt for the Replit Agent
+Role: Senior Executive Software Architect
+
+Phase 1 Sign-Off:
+Outstanding work on Phase 1. Your implementation of the Number.EPSILON rounding fix and your thorough handling of French grammatical edge cases (specifically the cent/mille agreement and cents carry protection) are exactly the level of engineering rigor this application requires. We now have a mathematically secure foundation. Phase 1 is officially closed.
+
+Initiating Phase 2: Security & Authentication
+We are now moving to Phase 2. The objective is to secure the application perimeter. Because ArchiTrak is hosted on Replit, the deployment URL is potentially accessible to the public. We must ensure that only authorized personnel from the architectural practice can access the application.
+
+As previously agreed, we will implement Google Workspace OAuth, restricting access exclusively to users with an @sas-architects.fr email address.
+
+Architectural Requirements for Phase 2:
+
+OAuth Strategy: Integrate Google OAuth 2.0 (e.g., using passport-google-oauth20 or a lightweight alternative suitable for Express).
+
+Domain Restriction: The authentication callback MUST verify the hosted domain/email. Any email outside of @sas-architects.fr must be rejected with a clear 403 Unauthorized message.
+
+Session Management: Implement secure session handling. Since we are using Express and PostgreSQL, sessions should ideally be backed by the database to survive server restarts, rather than relying solely on memory.
+
+Route Protection: Implement an Express middleware (e.g., requireAuth) that protects all API routes and frontend entry points, except for the login page/route.
+
+Next Steps (Action Required):
+Please generate the detailed session plan for Phase 2. Outline your proposed package dependencies, the database schema updates required for session storage (if any), and the step-by-step implementation tasks.
+
+Let's review the plan before writing the integration code.
