@@ -15,19 +15,19 @@ Integrates with **ArchiDoc** (project/contractor management) via API sync — pr
 
 ### Database Schema (30+ tables)
 **Core Financial:**
-- `projects` — Client projects with fee configuration + ArchiDoc linkage
-- `contractors` — Contractor companies (name, SIRET, contacts, insurance) + ArchiDoc linkage
-- `lots` — Construction lot divisions per project
-- `marches` — Marché de Travaux Privé contracts (optional per project)
-- `devis` — Quotations with Mode A (simple) and Mode B (progress billing) support
-- `devis_line_items` — Line items for Mode B progress tracking
-- `avenants` — Plus-value (PV) and Moins-value (MV) variation orders
-- `invoices` — Contractor invoices linked to devis
-- `situations` — Situation de Travaux (cumulative progress claims)
-- `situation_lines` — Per-line-item progress in situations
-- `certificats` — Certificat de Paiement (architect-verified payment instructions)
-- `fees` — Fee tracking (works %, conception, planning)
-- `fee_entries` — Individual fee entries linked to invoices
+- `projects` — Client projects with fee configuration + ArchiDoc linkage. Unique constraint on `archidoc_id`
+- `contractors` — Contractor companies (name, SIRET, contacts, insurance) + ArchiDoc linkage. Unique constraint on `archidoc_id`
+- `lots` — Construction lot divisions per project. Unique constraint on `(project_id, lot_number)`. Index on `project_id`
+- `marches` — Marché de Travaux Privé contracts. Indexes on `project_id`, `contractor_id`
+- `devis` — Quotations with Mode A/B support. Indexes on `project_id`, `contractor_id`. `lot_id` and `marche_id` use ON DELETE SET NULL
+- `devis_line_items` — Line items for Mode B. Index on `devis_id`
+- `avenants` — PV/MV variation orders. Index on `devis_id`
+- `invoices` — Contractor invoices. Indexes on `project_id`, `devis_id`, `contractor_id`. `project_id` uses ON DELETE CASCADE
+- `situations` — Situation de Travaux. Index on `devis_id`. `invoice_id` uses ON DELETE SET NULL
+- `situation_lines` — Per-line-item progress. Index on `situation_id`
+- `certificats` — Certificat de Paiement. Composite index on `(project_id, contractor_id)`. Unique on `(project_id, certificate_ref)`
+- `fees` — Fee tracking (works %, conception, planning). Index on `project_id`
+- `fee_entries` — Individual fee entries. Index on `fee_id`
 
 **ArchiDoc Mirror:**
 - `archidoc_projects` — Mirrored project data from ArchiDoc

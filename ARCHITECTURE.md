@@ -109,6 +109,69 @@ Rules:
 - Status fields use `text()` — no DB-level enums. Valid values are enforced by application logic
 - All `numeric` columns use `{ precision: 12, scale: 2 }` for currency
 
+### 2.2.1 Index and Constraint Policy
+
+**Every foreign key column MUST have a corresponding index.** PostgreSQL does not auto-index FK columns. Without indexes, queries filtering by FK degrade to full table scans as data grows.
+
+Current indexes (26 custom indexes across all tables):
+
+| Table | Index | Columns |
+|---|---|---|
+| lots | `lots_project_id_idx` | `project_id` |
+| marches | `marches_project_id_idx` | `project_id` |
+| marches | `marches_contractor_id_idx` | `contractor_id` |
+| devis | `devis_project_id_idx` | `project_id` |
+| devis | `devis_contractor_id_idx` | `contractor_id` |
+| devis_line_items | `devis_line_items_devis_id_idx` | `devis_id` |
+| avenants | `avenants_devis_id_idx` | `devis_id` |
+| invoices | `invoices_project_id_idx` | `project_id` |
+| invoices | `invoices_devis_id_idx` | `devis_id` |
+| invoices | `invoices_contractor_id_idx` | `contractor_id` |
+| situations | `situations_devis_id_idx` | `devis_id` |
+| situation_lines | `situation_lines_situation_id_idx` | `situation_id` |
+| situation_lines | `situation_lines_devis_line_item_id_idx` | `devis_line_item_id` |
+| certificats | `certificats_project_contractor_idx` | `(project_id, contractor_id)` composite |
+| fees | `fees_project_id_idx` | `project_id` |
+| fee_entries | `fee_entries_fee_id_idx` | `fee_id` |
+| email_documents | `email_documents_project_id_idx` | `project_id` |
+| email_documents | `email_documents_extraction_status_idx` | `extraction_status` |
+| project_documents | `project_documents_project_id_idx` | `project_id` |
+| project_documents | `project_documents_source_email_doc_idx` | `source_email_document_id` |
+| project_communications | `project_communications_project_id_idx` | `project_id` |
+| payment_reminders | `payment_reminders_project_id_idx` | `project_id` |
+| payment_reminders | `payment_reminders_status_date_idx` | `(status, scheduled_date)` composite |
+| client_payment_evidence | `client_payment_evidence_project_id_idx` | `project_id` |
+| messages | `messages_conversation_id_idx` | `conversation_id` |
+| session | `sessions_expire_idx` | `expire` |
+
+Unique constraints enforcing data integrity:
+
+| Table | Constraint | Columns | Rationale |
+|---|---|---|---|
+| projects | `projects_archidoc_id_unique` | `archidoc_id` | 1:1 mapping with ArchiDoc |
+| contractors | `contractors_archidoc_id_unique` | `archidoc_id` | 1:1 mapping with ArchiDoc |
+| lots | `lots_project_lot_unique` | `(project_id, lot_number)` | No duplicate lot numbers per project |
+| certificats | `certificats_project_ref_unique` | `(project_id, certificate_ref)` | No duplicate certificate refs per project |
+| archidoc_proposal_fees | `archidoc_proposal_fees_project_unique` | `archidoc_project_id` | One fee record per ArchiDoc project |
+
+### 2.2.2 ON DELETE Policy
+
+Child records follow a strict cascade/set-null policy:
+
+| FK Column | ON DELETE | Rationale |
+|---|---|---|
+| `*.project_id` (most tables) | `CASCADE` | When a project is deleted, all child records are removed |
+| `email_documents.project_id` | `SET NULL` | Email docs survive project deletion (nullable FK) |
+| `devis.lot_id` | `SET NULL` | Devis records survive lot deletion |
+| `devis.marche_id` | `SET NULL` | Devis records survive marche deletion |
+| `situations.invoice_id` | `SET NULL` | Situations survive invoice deletion |
+| `*.contractor_id` (all tables) | `RESTRICT` (default) | Contractors are ArchiDoc-mastered — cannot be deleted if referenced |
+| `devis_line_items.devis_id` | `CASCADE` | Line items are owned by devis |
+| `avenants.devis_id` | `CASCADE` | Avenants are owned by devis |
+| `invoices.devis_id` | `CASCADE` | Invoices are owned by devis |
+
+**When adding a new foreign key, you MUST also add an index on that column.** This is non-negotiable.
+
 ### 2.3 Storage Interface
 
 All database access goes through `IStorage` defined in `server/storage.ts`. Routes and services never import `db` or Drizzle query builders directly.

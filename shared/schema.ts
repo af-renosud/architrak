@@ -11,6 +11,7 @@ import {
   timestamp,
   jsonb,
   unique,
+  index,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -34,7 +35,9 @@ export const projects = pgTable("projects", {
   lastSyncedAt: timestamp("last_synced_at"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  unique("projects_archidoc_id_unique").on(table.archidocId),
+]);
 
 export const contractors = pgTable("contractors", {
   id: serial("id").primaryKey(),
@@ -61,7 +64,9 @@ export const contractors = pgTable("contractors", {
   rcProEndDate: date("rc_pro_end_date"),
   specialConditions: text("special_conditions"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  unique("contractors_archidoc_id_unique").on(table.archidocId),
+]);
 
 export const lots = pgTable("lots", {
   id: serial("id").primaryKey(),
@@ -70,7 +75,10 @@ export const lots = pgTable("lots", {
   descriptionFr: text("description_fr").notNull(),
   descriptionUk: text("description_uk"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  index("lots_project_id_idx").on(table.projectId),
+  unique("lots_project_lot_unique").on(table.projectId, table.lotNumber),
+]);
 
 export const marches = pgTable("marches", {
   id: serial("id").primaryKey(),
@@ -85,14 +93,17 @@ export const marches = pgTable("marches", {
   signedDate: date("signed_date"),
   status: text("status").notNull().default("draft"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  index("marches_project_id_idx").on(table.projectId),
+  index("marches_contractor_id_idx").on(table.contractorId),
+]);
 
 export const devis = pgTable("devis", {
   id: serial("id").primaryKey(),
   projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
   contractorId: integer("contractor_id").notNull().references(() => contractors.id),
-  lotId: integer("lot_id").references(() => lots.id),
-  marcheId: integer("marche_id").references(() => marches.id),
+  lotId: integer("lot_id").references(() => lots.id, { onDelete: "set null" }),
+  marcheId: integer("marche_id").references(() => marches.id, { onDelete: "set null" }),
   devisCode: text("devis_code").notNull(),
   devisNumber: text("devis_number"),
   ref2: text("ref2"),
@@ -115,7 +126,10 @@ export const devis = pgTable("devis", {
   aiConfidence: integer("ai_confidence"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  index("devis_project_id_idx").on(table.projectId),
+  index("devis_contractor_id_idx").on(table.contractorId),
+]);
 
 export const devisLineItems = pgTable("devis_line_items", {
   id: serial("id").primaryKey(),
@@ -129,7 +143,9 @@ export const devisLineItems = pgTable("devis_line_items", {
   percentComplete: numeric("percent_complete", { precision: 5, scale: 2 }).default("0.00"),
   checkStatus: text("check_status").notNull().default("unchecked"),
   checkNotes: text("check_notes"),
-});
+}, (table) => [
+  index("devis_line_items_devis_id_idx").on(table.devisId),
+]);
 
 export const avenants = pgTable("avenants", {
   id: serial("id").primaryKey(),
@@ -144,13 +160,15 @@ export const avenants = pgTable("avenants", {
   status: text("status").notNull().default("draft"),
   pvmvRef: text("pvmv_ref"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  index("avenants_devis_id_idx").on(table.devisId),
+]);
 
 export const invoices = pgTable("invoices", {
   id: serial("id").primaryKey(),
   devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
   contractorId: integer("contractor_id").notNull().references(() => contractors.id),
-  projectId: integer("project_id").notNull().references(() => projects.id),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
   certificateNumber: text("certificate_number"),
   invoiceNumber: integer("invoice_number").notNull(),
   amountHt: numeric("amount_ht", { precision: 12, scale: 2 }).notNull(),
@@ -166,12 +184,16 @@ export const invoices = pgTable("invoices", {
   aiExtractedData: jsonb("ai_extracted_data"),
   aiConfidence: integer("ai_confidence"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  index("invoices_project_id_idx").on(table.projectId),
+  index("invoices_devis_id_idx").on(table.devisId),
+  index("invoices_contractor_id_idx").on(table.contractorId),
+]);
 
 export const situations = pgTable("situations", {
   id: serial("id").primaryKey(),
   devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
-  invoiceId: integer("invoice_id").references(() => invoices.id),
+  invoiceId: integer("invoice_id").references(() => invoices.id, { onDelete: "set null" }),
   situationNumber: integer("situation_number").notNull(),
   dateIssued: date("date_issued"),
   cumulativeHt: numeric("cumulative_ht", { precision: 12, scale: 2 }).notNull(),
@@ -183,7 +205,9 @@ export const situations = pgTable("situations", {
   netToPayTtc: numeric("net_to_pay_ttc", { precision: 12, scale: 2 }).notNull(),
   status: text("status").notNull().default("draft"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  index("situations_devis_id_idx").on(table.devisId),
+]);
 
 export const situationLines = pgTable("situation_lines", {
   id: serial("id").primaryKey(),
@@ -193,7 +217,10 @@ export const situationLines = pgTable("situation_lines", {
   cumulativeAmount: numeric("cumulative_amount", { precision: 12, scale: 2 }).notNull(),
   previousAmount: numeric("previous_amount", { precision: 12, scale: 2 }).notNull().default("0.00"),
   netAmount: numeric("net_amount", { precision: 12, scale: 2 }).notNull(),
-});
+}, (table) => [
+  index("situation_lines_situation_id_idx").on(table.situationId),
+  index("situation_lines_devis_line_item_id_idx").on(table.devisLineItemId),
+]);
 
 export const certificats = pgTable("certificats", {
   id: serial("id").primaryKey(),
@@ -213,6 +240,7 @@ export const certificats = pgTable("certificats", {
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   unique("certificats_project_ref_unique").on(table.projectId, table.certificateRef),
+  index("certificats_project_contractor_idx").on(table.projectId, table.contractorId),
 ]);
 
 export const fees = pgTable("fees", {
@@ -229,7 +257,9 @@ export const fees = pgTable("fees", {
   pennylaneRef: text("pennylane_ref"),
   status: text("status").notNull().default("pending"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  index("fees_project_id_idx").on(table.projectId),
+]);
 
 export const feeEntries = pgTable("fee_entries", {
   id: serial("id").primaryKey(),
@@ -243,7 +273,9 @@ export const feeEntries = pgTable("fee_entries", {
   dateInvoiced: date("date_invoiced"),
   status: text("status").notNull().default("pending"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  index("fee_entries_fee_id_idx").on(table.feeId),
+]);
 
 export const archidocProjects = pgTable("archidoc_projects", {
   archidocId: varchar("archidoc_id", { length: 255 }).primaryKey(),
@@ -306,7 +338,9 @@ export const archidocProposalFees = pgTable("archidoc_proposal_fees", {
   pmPercentage: numeric("pm_percentage", { precision: 5, scale: 2 }),
   pmNote: text("pm_note"),
   syncedAt: timestamp("synced_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  unique("archidoc_proposal_fees_project_unique").on(table.archidocProjectId),
+]);
 
 export const archidocSyncLog = pgTable("archidoc_sync_log", {
   id: serial("id").primaryKey(),
@@ -320,7 +354,7 @@ export const archidocSyncLog = pgTable("archidoc_sync_log", {
 
 export const emailDocuments = pgTable("email_documents", {
   id: serial("id").primaryKey(),
-  projectId: integer("project_id").references(() => projects.id),
+  projectId: integer("project_id").references(() => projects.id, { onDelete: "set null" }),
   emailMessageId: text("email_message_id").notNull().unique(),
   emailThreadId: text("email_thread_id"),
   emailFrom: text("email_from"),
@@ -341,7 +375,10 @@ export const emailDocuments = pgTable("email_documents", {
   notes: text("notes"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  index("email_documents_project_id_idx").on(table.projectId),
+  index("email_documents_extraction_status_idx").on(table.extractionStatus),
+]);
 
 export const projectDocuments = pgTable("project_documents", {
   id: serial("id").primaryKey(),
@@ -353,7 +390,10 @@ export const projectDocuments = pgTable("project_documents", {
   description: text("description"),
   sourceEmailDocumentId: integer("source_email_document_id").references(() => emailDocuments.id),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  index("project_documents_project_id_idx").on(table.projectId),
+  index("project_documents_source_email_doc_idx").on(table.sourceEmailDocumentId),
+]);
 
 export const projectCommunications = pgTable("project_communications", {
   id: serial("id").primaryKey(),
@@ -372,7 +412,9 @@ export const projectCommunications = pgTable("project_communications", {
   relatedCertificatId: integer("related_certificat_id").references(() => certificats.id),
   relatedInvoiceId: integer("related_invoice_id").references(() => invoices.id),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  index("project_communications_project_id_idx").on(table.projectId),
+]);
 
 export const paymentReminders = pgTable("payment_reminders", {
   id: serial("id").primaryKey(),
@@ -389,7 +431,10 @@ export const paymentReminders = pgTable("payment_reminders", {
   responseReceivedAt: timestamp("response_received_at"),
   notes: text("notes"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  index("payment_reminders_project_id_idx").on(table.projectId),
+  index("payment_reminders_status_date_idx").on(table.status, table.scheduledDate),
+]);
 
 export const clientPaymentEvidence = pgTable("client_payment_evidence", {
   id: serial("id").primaryKey(),
@@ -401,7 +446,9 @@ export const clientPaymentEvidence = pgTable("client_payment_evidence", {
   fileName: text("file_name").notNull(),
   notes: text("notes"),
   uploadedAt: timestamp("uploaded_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  index("client_payment_evidence_project_id_idx").on(table.projectId),
+]);
 
 export const templateAssets = pgTable("template_assets", {
   id: serial("id").primaryKey(),
@@ -586,7 +633,9 @@ export const sessions = pgTable("session", {
   sid: varchar("sid").primaryKey(),
   sess: jsonb("sess").notNull(),
   expire: timestamp("expire", { precision: 6 }).notNull(),
-});
+}, (table) => [
+  index("sessions_expire_idx").on(table.expire),
+]);
 
 export const insertUserSchema = createInsertSchema(users).omit({
   id: true,
