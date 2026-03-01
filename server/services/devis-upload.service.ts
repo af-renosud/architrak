@@ -1,5 +1,7 @@
 import { storage } from "../storage";
 import { uploadDocument } from "../storage/object-storage";
+import { validateExtraction } from "./extraction-validator";
+import { calculateTtc, roundCurrency } from "../../shared/financial-utils";
 
 interface UploadedFile {
   originalname: string;
@@ -35,6 +37,10 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
     };
   }
 
+  const validation = validateExtraction(parsed);
+
+  const corrected = { ...parsed, ...validation.correctedValues };
+
   const allProjects = await storage.getProjects();
   const allContractors = await storage.getContractors();
   const match = await matchToProject(parsed, allProjects, allContractors);
@@ -53,10 +59,12 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
     };
   }
 
-  const tvaRate = parsed.tvaRate != null ? String(parsed.tvaRate) : "20.00";
-  const amountHt = parsed.amountHt != null ? String(parsed.amountHt) : "0.00";
-  const amountTtc = parsed.amountTtc != null ? String(parsed.amountTtc) :
-    (parsed.amountHt != null ? String(parsed.amountHt * (1 + (parsed.tvaRate || 20) / 100)) : "0.00");
+  const tvaRate = corrected.tvaRate != null ? String(roundCurrency(corrected.tvaRate)) : "20.00";
+  const amountHt = corrected.amountHt != null ? String(roundCurrency(corrected.amountHt)) : "0.00";
+  const numericTvaRate = corrected.tvaRate != null ? corrected.tvaRate : 20;
+  const amountTtc = corrected.amountTtc != null
+    ? String(roundCurrency(corrected.amountTtc))
+    : (corrected.amountHt != null ? String(calculateTtc(corrected.amountHt, numericTvaRate)) : "0.00");
 
   const devisRecord = await storage.createDevis({
     projectId,
@@ -64,7 +72,7 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
     lotId: null,
     marcheId: null,
     devisCode: parsed.reference || file.originalname.replace(/\.pdf$/i, ""),
-    devisNumber: parsed.reference || null,
+    devisNumber: parsed.devisNumber || parsed.reference || null,
     ref2: null,
     descriptionFr: parsed.description || parsed.contractorName || file.originalname,
     descriptionUk: null,
@@ -72,12 +80,15 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
     tvaRate,
     amountTtc,
     invoicingMode: (parsed.lineItems && parsed.lineItems.length > 0) ? "mode_b" : "mode_a",
-    status: "pending",
+    status: "draft",
     dateSent: parsed.date || null,
     dateSigned: null,
     pvmvRef: null,
     pdfStorageKey: storageKey,
     pdfFileName: file.originalname,
+    validationWarnings: validation.warnings,
+    aiExtractedData: parsed,
+    aiConfidence: validation.confidenceScore,
   });
 
   let lineItemsCreated = 0;
@@ -91,8 +102,8 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
           description: li.description || `Line ${i + 1}`,
           quantity: String(li.quantity ?? 1),
           unit: "u",
-          unitPriceHt: String(li.unitPrice ?? 0),
-          totalHt: String(li.total ?? 0),
+          unitPriceHt: String(roundCurrency(li.unitPrice ?? 0)),
+          totalHt: String(roundCurrency(li.total ?? 0)),
           percentComplete: "0",
         });
         lineItemsCreated++;
@@ -114,6 +125,12 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
         matchedFields: match.matchedFields,
         lineItemsExtracted: parsed.lineItems?.length ?? 0,
         lineItemsCreated,
+      },
+      validation: {
+        isValid: validation.isValid,
+        warnings: validation.warnings,
+        confidenceScore: validation.confidenceScore,
+        correctedValues: validation.correctedValues,
       },
       storageKey,
       fileName: file.originalname,

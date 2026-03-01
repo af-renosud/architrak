@@ -78,6 +78,7 @@ export interface IStorage {
   getInvoicesByProject(projectId: number): Promise<Invoice[]>;
   createInvoice(data: InsertInvoice): Promise<Invoice>;
   updateInvoice(id: number, data: Partial<InsertInvoice>): Promise<Invoice | undefined>;
+  deleteInvoice(id: number): Promise<boolean>;
 
   getSituationsByDevis(devisId: number): Promise<Situation[]>;
   getSituation(id: number): Promise<Situation | undefined>;
@@ -345,6 +346,11 @@ export class DatabaseStorage implements IStorage {
   async updateInvoice(id: number, data: Partial<InsertInvoice>): Promise<Invoice | undefined> {
     const [invoice] = await db.update(invoices).set(data).where(eq(invoices.id, id)).returning();
     return invoice;
+  }
+
+  async deleteInvoice(id: number): Promise<boolean> {
+    const result = await db.delete(invoices).where(eq(invoices.id, id)).returning();
+    return result.length > 0;
   }
 
   async getSituationsByDevis(devisId: number): Promise<Situation[]> {

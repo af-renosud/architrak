@@ -1,8 +1,9 @@
 import OpenAI from "openai";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenerativeAI, SchemaType, type ResponseSchema } from "@google/generative-ai";
 import { storage } from "../storage";
 import { getDocumentBuffer, uploadDocument } from "../storage/object-storage";
 import type { Project, Contractor } from "@shared/schema";
+import { validateExtraction } from "../services/extraction-validator";
 import { execFile } from "child_process";
 import { writeFile, readFile, readdir, unlink, mkdtemp } from "fs/promises";
 import { tmpdir } from "os";
@@ -27,11 +28,19 @@ export interface ParsedDocument {
   clientName?: string;
   projectAddress?: string;
   reference?: string;
+  invoiceNumber?: string;
+  devisNumber?: string;
+  siret?: string;
   date?: string;
   amountHt?: number;
   amountTtc?: number;
   tvaAmount?: number;
   tvaRate?: number;
+  autoLiquidation?: boolean;
+  retenueDeGarantie?: number;
+  netAPayer?: number;
+  paymentTerms?: string;
+  lotReferences?: string[];
   description?: string;
   lineItems?: Array<{
     description: string;
@@ -49,27 +58,184 @@ interface MatchResult {
   matchedFields: Record<string, string>;
 }
 
-const SYSTEM_PROMPT = `You are a document analyzer specializing in French architecture/construction financial documents.
-Analyze the document images and extract structured data. Return valid JSON only.
-Document types: quotation (devis), invoice (facture), situation (situation de travaux), avenant (amendment), other.
-All amounts should be numbers (not strings). Dates in YYYY-MM-DD format.
-For line items, extract as many as you can see — each with description, quantity, unitPrice, and total.`;
+const SYSTEM_PROMPT = `You are an Expert-Comptable specialise BTP (French Construction Accountant) with deep expertise in analyzing financial documents from the French architecture and construction industry.
 
-const USER_PROMPT = `Analyze this document and extract the following fields as JSON:
-- documentType: quotation|invoice|situation|avenant|other|unknown
-- contractorName: the company/contractor name (the one providing the service/goods)
-- clientName: the client/maître d'ouvrage name
+Your role is to extract structured financial data from scanned construction documents (devis, factures, situations de travaux, avenants) with accounting-grade precision.
+
+Domain Knowledge:
+- Auto-liquidation de TVA (Article 283-2 nonies du CGI): When a subcontractor invoices a main contractor, TVA is reverse-charged. The document will state "TVA due par le preneur" or "Auto-liquidation de TVA". In this case, set tvaRate to 0 and autoLiquidation to true.
+- Retenue de Garantie: Per Loi n°71-584, a 5% holdback is standard on construction contracts. Look for "Retenue de garantie" line items.
+- Net a payer vs Montant TTC: The net payable amount may differ from TTC when retenue de garantie or other deductions apply. Net a payer = TTC - retenue de garantie - other deductions.
+- SIRET: 14-digit identifier for French companies, often on letterhead.
+- RCS: Registre du Commerce et des Societes registration.
+- Lot references: Construction projects are divided into lots (e.g., "Lot 1 - Gros Oeuvre", "Lot 7 - Electricite"). Extract all lot codes visible.
+- Distinguish Acompte (deposit invoice) from Situation (progress claim with cumulative percentages).
+
+Extraction Rules:
+- All monetary amounts must be numbers with exactly 2 decimal precision (e.g., 15000.00 not 15000).
+- TVA rate must be a percentage number (e.g., 20 for 20%, not 0.20).
+- If auto-liquidation applies, set tvaRate to 0 and autoLiquidation to true.
+- Dates in YYYY-MM-DD format.
+- For line items, extract description, quantity, unitPrice, and total for each visible line.
+- If a field is not visible on the document, omit it (do not guess).`;
+
+const USER_PROMPT = `Analyze this French construction document and extract the following fields:
+
+- documentType: "quotation" (devis), "invoice" (facture), "situation" (situation de travaux), "avenant" (amendment), "other", or "unknown"
+- contractorName: the company/contractor name (the entity providing the service/goods, often at the top of the document)
+- clientName: the client/maitre d'ouvrage name (the entity receiving the service)
 - projectAddress: site/project address if visible
-- reference: document reference number (e.g. devis number, invoice number)
-- date: document date (YYYY-MM-DD)
-- amountHt: total amount excluding tax (number)
-- amountTtc: total amount including tax (number)
-- tvaAmount: TVA amount (number)
-- tvaRate: TVA rate percentage (number, e.g. 20 for 20%)
+- reference: primary document reference number
+- invoiceNumber: specific invoice number if this is a facture (e.g., "FA-2024-001")
+- devisNumber: specific devis number if this is a devis (e.g., "DEV-2024-042")
+- siret: contractor SIRET number (14-digit identifier) if visible on the document
+- date: document date in YYYY-MM-DD format
+- amountHt: total amount excluding tax (Montant HT) as a number with 2 decimal places
+- amountTtc: total amount including tax (Montant TTC) as a number with 2 decimal places
+- tvaAmount: TVA amount as a number with 2 decimal places
+- tvaRate: TVA rate as a percentage number (e.g., 20 for 20%). If auto-liquidation, set to 0.
+- autoLiquidation: true if TVA auto-liquidation applies (Article 283-2 nonies CGI), false otherwise
+- retenueDeGarantie: retenue de garantie holdback amount if present, as a number with 2 decimal places
+- netAPayer: net payable amount (after deductions) if visible, as a number with 2 decimal places
+- paymentTerms: payment conditions text if visible (e.g., "30 jours fin de mois")
+- lotReferences: array of lot codes/references visible on the document (e.g., ["Lot 1", "Lot 7 - Electricite"])
 - description: brief description of the work/service
-- lineItems: array of {description, quantity, unitPrice, total}
+- lineItems: array of line items, each with {description, quantity, unitPrice, total}
 
 Return ONLY valid JSON, no markdown, no code blocks.`;
+
+const EXTRACTION_SCHEMA: ResponseSchema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    documentType: {
+      type: SchemaType.STRING,
+      description: "Type of document: quotation, invoice, situation, avenant, other, or unknown",
+      enum: ["quotation", "invoice", "situation", "avenant", "other", "unknown"],
+    },
+    contractorName: {
+      type: SchemaType.STRING,
+      description: "Company/contractor name providing the service",
+      nullable: true,
+    },
+    clientName: {
+      type: SchemaType.STRING,
+      description: "Client/maitre d'ouvrage name",
+      nullable: true,
+    },
+    projectAddress: {
+      type: SchemaType.STRING,
+      description: "Site/project address",
+      nullable: true,
+    },
+    reference: {
+      type: SchemaType.STRING,
+      description: "Primary document reference number",
+      nullable: true,
+    },
+    invoiceNumber: {
+      type: SchemaType.STRING,
+      description: "Specific invoice number for factures",
+      nullable: true,
+    },
+    devisNumber: {
+      type: SchemaType.STRING,
+      description: "Specific devis number for quotations",
+      nullable: true,
+    },
+    siret: {
+      type: SchemaType.STRING,
+      description: "Contractor SIRET number (14-digit identifier)",
+      nullable: true,
+    },
+    date: {
+      type: SchemaType.STRING,
+      description: "Document date in YYYY-MM-DD format",
+      nullable: true,
+    },
+    amountHt: {
+      type: SchemaType.NUMBER,
+      description: "Total amount excluding tax (HT) with 2 decimal precision",
+      nullable: true,
+    },
+    amountTtc: {
+      type: SchemaType.NUMBER,
+      description: "Total amount including tax (TTC) with 2 decimal precision",
+      nullable: true,
+    },
+    tvaAmount: {
+      type: SchemaType.NUMBER,
+      description: "TVA amount with 2 decimal precision",
+      nullable: true,
+    },
+    tvaRate: {
+      type: SchemaType.NUMBER,
+      description: "TVA rate as percentage (e.g., 20 for 20%). Set to 0 if auto-liquidation.",
+      nullable: true,
+    },
+    autoLiquidation: {
+      type: SchemaType.BOOLEAN,
+      description: "True if TVA auto-liquidation applies (Article 283-2 nonies CGI)",
+      nullable: true,
+    },
+    retenueDeGarantie: {
+      type: SchemaType.NUMBER,
+      description: "Retenue de garantie holdback amount with 2 decimal precision",
+      nullable: true,
+    },
+    netAPayer: {
+      type: SchemaType.NUMBER,
+      description: "Net payable amount after deductions with 2 decimal precision",
+      nullable: true,
+    },
+    paymentTerms: {
+      type: SchemaType.STRING,
+      description: "Payment conditions text",
+      nullable: true,
+    },
+    lotReferences: {
+      type: SchemaType.ARRAY,
+      description: "Array of lot codes/references visible on the document",
+      items: { type: SchemaType.STRING },
+      nullable: true,
+    },
+    description: {
+      type: SchemaType.STRING,
+      description: "Brief description of the work/service",
+      nullable: true,
+    },
+    lineItems: {
+      type: SchemaType.ARRAY,
+      description: "Array of line items extracted from the document",
+      nullable: true,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          description: {
+            type: SchemaType.STRING,
+            description: "Line item description",
+          },
+          quantity: {
+            type: SchemaType.NUMBER,
+            description: "Quantity",
+            nullable: true,
+          },
+          unitPrice: {
+            type: SchemaType.NUMBER,
+            description: "Unit price",
+            nullable: true,
+          },
+          total: {
+            type: SchemaType.NUMBER,
+            description: "Line total",
+            nullable: true,
+          },
+        },
+        required: ["description"],
+      },
+    },
+  },
+  required: ["documentType"],
+};
 
 async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Promise<Buffer[]> {
   const tempDir = await mkdtemp(join(tmpdir(), "architrak-pdf-"));
@@ -119,7 +285,15 @@ async function getActiveModel(): Promise<{ provider: string; modelId: string }> 
 
 async function parseWithGemini(images: Buffer[], modelId: string): Promise<ParsedDocument> {
   const genAI = getGeminiClient();
-  const model = genAI.getGenerativeModel({ model: modelId });
+  const model = genAI.getGenerativeModel({
+    model: modelId,
+    systemInstruction: SYSTEM_PROMPT,
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema: EXTRACTION_SCHEMA,
+      temperature: 0,
+    },
+  });
 
   const imageParts = images.map(buf => ({
     inlineData: {
@@ -129,13 +303,12 @@ async function parseWithGemini(images: Buffer[], modelId: string): Promise<Parse
   }));
 
   const result = await model.generateContent([
-    SYSTEM_PROMPT + "\n\n" + USER_PROMPT,
+    USER_PROMPT,
     ...imageParts,
   ]);
 
   const text = result.response.text();
-  const cleaned = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-  return JSON.parse(cleaned);
+  return JSON.parse(text);
 }
 
 async function parseWithOpenAI(images: Buffer[], modelId: string): Promise<ParsedDocument> {
@@ -186,7 +359,7 @@ export async function parseDocument(pdfBuffer: Buffer, fileName: string): Promis
       parsed = await parseWithOpenAI(images, modelId);
     }
 
-    console.log(`[DocumentParser] Extracted: type=${parsed.documentType}, contractor=${parsed.contractorName}, HT=${parsed.amountHt}, lines=${parsed.lineItems?.length ?? 0}`);
+    console.log(`[DocumentParser] Extracted: type=${parsed.documentType}, contractor=${parsed.contractorName}, HT=${parsed.amountHt}, TTC=${parsed.amountTtc}, autoLiq=${parsed.autoLiquidation}, lines=${parsed.lineItems?.length ?? 0}`);
     return parsed;
   } catch (err: any) {
     console.error("[DocumentParser] Parse error:", err.message);
@@ -279,12 +452,22 @@ export async function processEmailDocument(emailDocumentId: number): Promise<voi
     const contractors = await storage.getContractors();
     const match = await matchToProject(parsed, projects, contractors);
 
-    const status = match.confidence >= 80 ? "completed" : "needs_review";
+    const validation = validateExtraction(parsed);
+
+    const status = (validation.isValid && match.confidence >= 80) ? "completed" : "needs_review";
 
     await storage.updateEmailDocument(emailDocumentId, {
       documentType: parsed.documentType || "unknown",
       extractionStatus: status,
-      extractedData: parsed,
+      extractedData: {
+        ...parsed,
+        validation: {
+          isValid: validation.isValid,
+          warnings: validation.warnings,
+          correctedValues: validation.correctedValues,
+          confidenceScore: validation.confidenceScore,
+        },
+      },
       projectId: match.projectId,
       contractorId: match.contractorId,
       matchConfidence: String(match.confidence),
@@ -310,7 +493,7 @@ export async function processEmailDocument(emailDocumentId: number): Promise<voi
       });
     }
 
-    console.log(`[DocumentParser] Processed document ${emailDocumentId}: type=${parsed.documentType}, confidence=${match.confidence}%`);
+    console.log(`[DocumentParser] Processed document ${emailDocumentId}: type=${parsed.documentType}, matchConfidence=${match.confidence}%, validationValid=${validation.isValid}, validationScore=${validation.confidenceScore}, status=${status}`);
   } catch (err: any) {
     console.error(`[DocumentParser] Failed to process document ${emailDocumentId}:`, err);
     await storage.updateEmailDocument(emailDocumentId, {

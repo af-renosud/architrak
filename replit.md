@@ -92,8 +92,9 @@ server/
     webhooks.ts         — POST /api/webhooks/archidoc (HMAC-protected, 1 route)
   services/             — Business logic services (no HTTP concerns)
     docraptor.ts        — DocRaptor PDF generation client
-    devis-upload.service.ts      — AI extraction → Devis + line items creation
-    invoice-upload.service.ts    — AI extraction → Invoice creation
+    devis-upload.service.ts      — AI extraction → validation → Devis draft creation
+    invoice-upload.service.ts    — AI extraction → validation → Invoice draft creation
+    extraction-validator.ts      — Financial validation layer (HT+TVA=TTC cross-check, auto-liquidation, RG, line items)
     invoice-approval.service.ts  — Approve invoice → fee entry + fee recalculation
     fee-calculation.service.ts   — Mark fee-entry invoiced → fee totals recalculation
     financial-summary.service.ts — Three Buckets aggregation per project
@@ -117,8 +118,10 @@ shared/
 - `/api/projects/:id/lots` — Lot management
 - `/api/projects/:id/devis` — Devis management
 - `/api/devis/:id/line-items` — Devis line items (Mode B)
+- `/api/devis/:id/confirm` — Confirm draft devis (with optional corrections)
 - `/api/devis/:id/avenants` — PV/MV variations
 - `/api/devis/:id/invoices` — Invoice tracking
+- `/api/invoices/:id/confirm` — Confirm draft invoice (with optional corrections)
 - `/api/devis/:id/situations` — Situation de Travaux
 - `/api/projects/:id/certificats` — Payment certificates
 - `/api/projects/:id/fees` — Fee tracking
@@ -172,8 +175,9 @@ shared/
 - **Duplicate detection**: trackProject checks by archidocId first, then by name+clientName match to link untracked projects
 - **Client address**: Extracted from ArchiDoc `clients[].homeAddress` (not site address). `refreshProject` also uses this logic
 - **Gmail monitoring**: Connector provides limited scope (send only, no read). Monitor detects 403 on first poll, pauses with clear message. Label operations conditionally skipped when permissions are insufficient
-- **Devis workflow**: PDF upload → AI converts PDF→PNG via `pdftoppm` → sends page images to selected AI model (Gemini/OpenAI) → auto-creates devis record + line items → toast summary. Route: `POST /api/projects/:id/devis/upload`
-- **Invoice workflow**: Architect does NOT create invoices — they receive and process contractor invoices. Invoices enter the system only via (1) AI extraction from Gmail or (2) manual PDF upload. Route: `POST /api/devis/:devisId/invoices/upload` — stores PDF, runs AI extraction, auto-creates invoice record with extracted amounts
+- **Devis workflow**: PDF upload → AI converts PDF→PNG via `pdftoppm` → Gemini structured JSON extraction (Expert-Comptable BTP prompt) → financial validation via `extraction-validator.ts` (HT+TVA=TTC cross-check, auto-liquidation, retenue de garantie, line items total) → creates devis as "draft" with validation warnings + AI confidence score → architect reviews in DraftReviewPanel (editable fields, validation badges) → confirms to "pending". Route: `POST /api/projects/:id/devis/upload`, confirm: `POST /api/devis/:id/confirm`
+- **Invoice workflow**: Architect does NOT create invoices — they receive and process contractor invoices. Invoices enter the system only via (1) AI extraction from Gmail or (2) manual PDF upload. Same Gemini extraction + validation pipeline → creates invoice as "draft" → architect reviews → confirms to "pending" → then existing approval flow (pending→approved with fee calculation). Route: `POST /api/devis/:devisId/invoices/upload`, confirm: `POST /api/invoices/:id/confirm`
+- **AI Extraction Layer (Phase 5)**: Gemini structured output with `responseMimeType: "application/json"` and `responseSchema` — guarantees valid JSON. System prompt defines AI as Expert-Comptable specialise BTP with knowledge of Auto-liquidation de TVA (Article 283-2 nonies CGI), Retenue de Garantie (Loi n 71-584), SIRET/RCS extraction, lot references, Acompte vs Situation distinction. Extracts 20+ fields including invoiceNumber, devisNumber, siret, autoLiquidation, retenueDeGarantie, netAPayer, paymentTerms, lotReferences. Financial validation cross-checks all amounts through `shared/financial-utils.ts` functions. Confidence scoring (0-100) based on checks passed. Auto-correction of missing values (e.g., calculate TTC from HT+rate)
 - **AI Model Settings**: Configurable per task type. Default: Gemini 2.0 Flash for document_parsing. Table: `ai_model_settings`. Settings page at `/settings`. Available models: Gemini 2.0 Flash/Lite, 2.5 Flash/Pro, GPT-4o
 - **Template Assets**: Logo upload system in Settings for certificate templates. `template_assets` table stores company_logo and architects_order_logo. Served via `/api/template-assets/:type/file`
 - **Certificate Numbering**: Auto-sequential per project (C1, C2, C3...). Server assigns next ref on creation via `getNextCertificateRef`. Unique constraint on `(projectId, certificateRef)`. No manual entry
@@ -187,7 +191,8 @@ shared/
 - **Run**: `npx vitest run` (all tests) or `npx vitest` (watch mode)
 - **Test files**:
   - `shared/__tests__/financial-utils.test.ts` — roundCurrency, TVA/TTC, Three Buckets, fees, currency formatting (46 tests)
-  - `shared/__tests__/number-to-french-words.test.ts` — French number-to-words conversion (45 tests)
+  - `shared/__tests__/number-to-french-words.test.ts` — French number-to-words conversion (49 tests)
+  - `shared/__tests__/extraction-validator.test.ts` — HT+TVA=TTC cross-check, auto-liquidation, missing value correction, line items total, retenue de garantie, net a payer, confidence scoring (24 tests)
 - **Financial utilities module**: `shared/financial-utils.ts` — pure functions with strict 2-decimal rounding (`roundCurrency` using half-up via `Number.EPSILON`). All currency-returning functions apply rounding before returning. This is a NEW additive module; `routes.ts` and `certificat-generator.ts` still use inline logic (Phase 3 refactor will migrate them)
 - **Rounding policy**: `roundCurrency(value)` = `Math.round((value + Number.EPSILON) * 100) / 100` — prevents floating-point drift in financial aggregation
 

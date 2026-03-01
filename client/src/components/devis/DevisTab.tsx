@@ -9,7 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff, ShieldCheck, ShieldAlert, ShieldX, Trash2, X } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -47,6 +48,12 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
   const [expandedDevis, setExpandedDevis] = useState<number | null>(null);
   const [uploading, setUploading] = useState(false);
   const [showVoid, setShowVoid] = useState(false);
+  const [draftReviewData, setDraftReviewData] = useState<{
+    devisId: number;
+    extraction: any;
+    validation: any;
+    devis: any;
+  } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: devisList, isLoading } = useQuery<Devis[]>({
@@ -80,15 +87,24 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis"] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
-      const ext = data.extraction;
-      const matchInfo = ext.matchConfidence > 0
-        ? ` • Matched: ${ext.contractorName} (${Math.round(ext.matchConfidence)}%)`
-        : "";
-      toast({
-        title: "Devis created from PDF",
-        description: `${ext.documentType || "document"} — ${formatCurrency(parseFloat(data.devis.amountHt))} HT${matchInfo}${ext.lineItemsCreated > 0 ? ` • ${ext.lineItemsCreated} line items` : ""}`,
-      });
       setUploading(false);
+      if (data.devis?.status === "draft" && data.validation) {
+        setDraftReviewData({
+          devisId: data.devis.id,
+          extraction: data.extraction,
+          validation: data.validation,
+          devis: data.devis,
+        });
+      } else {
+        const ext = data.extraction;
+        const matchInfo = ext.matchConfidence > 0
+          ? ` • Matched: ${ext.contractorName} (${Math.round(ext.matchConfidence)}%)`
+          : "";
+        toast({
+          title: "Devis created from PDF",
+          description: `${ext.documentType || "document"} — ${formatCurrency(parseFloat(data.devis.amountHt))} HT${matchInfo}${ext.lineItemsCreated > 0 ? ` • ${ext.lineItemsCreated} line items` : ""}`,
+        });
+      }
     },
     onError: (error: Error) => {
       toast({ title: "Upload failed", description: error.message, variant: "destructive" });
@@ -228,6 +244,30 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
                     </div>
                     <TechnicalLabel>{d.invoicingMode === "mode_a" ? "Mode A" : "Mode B"}</TechnicalLabel>
                     <StatusBadge status={d.status} />
+                    {d.status === "draft" && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-1.5"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDraftReviewData({
+                            devisId: d.id,
+                            extraction: { contractorName: contractors.find(c => c.id === d.contractorId)?.name ?? "Unknown" },
+                            validation: {
+                              isValid: !(d.validationWarnings as any[])?.some((w: any) => w.severity === "error"),
+                              warnings: (d.validationWarnings as any[]) || [],
+                              confidenceScore: d.aiConfidence ?? 50,
+                            },
+                            devis: d,
+                          });
+                        }}
+                        data-testid={`button-review-draft-${d.id}`}
+                      >
+                        <ShieldAlert size={12} />
+                        <span className="text-[9px] font-bold uppercase tracking-widest">Review</span>
+                      </Button>
+                    )}
                   </div>
                 </div>
               </LuxuryCard>
@@ -250,7 +290,310 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
           </p>
         </LuxuryCard>
       ) : null}
+
+      {draftReviewData && (
+        <DraftReviewPanel
+          data={draftReviewData}
+          projectId={projectId}
+          onClose={() => setDraftReviewData(null)}
+        />
+      )}
     </div>
+  );
+}
+
+interface DraftReviewPanelProps {
+  data: {
+    devisId: number;
+    extraction: any;
+    validation: any;
+    devis: any;
+  };
+  projectId: string;
+  onClose: () => void;
+}
+
+function ConfidenceIndicator({ score }: { score: number }) {
+  const color = score > 80 ? "text-emerald-600" : score >= 50 ? "text-amber-500" : "text-rose-500";
+  const bgColor = score > 80 ? "bg-emerald-50 dark:bg-emerald-950/40" : score >= 50 ? "bg-amber-50 dark:bg-amber-950/40" : "bg-rose-50 dark:bg-rose-950/40";
+  const borderColor = score > 80 ? "border-emerald-200 dark:border-emerald-800" : score >= 50 ? "border-amber-200 dark:border-amber-800" : "border-rose-200 dark:border-rose-800";
+  const Icon = score > 80 ? ShieldCheck : score >= 50 ? ShieldAlert : ShieldX;
+  return (
+    <div className={`flex items-center gap-1.5 px-2 py-1 rounded-md border ${bgColor} ${borderColor}`} data-testid="indicator-ai-confidence">
+      <Icon size={14} className={color} />
+      <span className={`text-[11px] font-bold ${color}`}>{score}%</span>
+      <span className="text-[9px] text-muted-foreground">AI Confidence</span>
+    </div>
+  );
+}
+
+function DraftReviewPanel({ data, projectId, onClose }: DraftReviewPanelProps) {
+  const { toast } = useToast();
+  const { devisId, extraction, validation, devis } = data;
+  const warnings: Array<{ field: string; expected: any; actual: any; message: string; severity: "error" | "warning" }> = validation?.warnings || [];
+  const confidenceScore: number = validation?.confidenceScore ?? 50;
+
+  const [editValues, setEditValues] = useState({
+    amountHt: devis.amountHt ?? "",
+    tvaRate: devis.tvaRate ?? "20.00",
+    amountTtc: devis.amountTtc ?? "",
+    devisCode: devis.devisCode ?? "",
+    devisNumber: devis.devisNumber ?? "",
+    descriptionFr: devis.descriptionFr ?? "",
+    dateSent: devis.dateSent ?? "",
+  });
+
+  const fieldWarnings = (field: string) => warnings.filter(w => w.field === field);
+
+  const confirmMutation = useMutation({
+    mutationFn: async (corrections: Record<string, any>) => {
+      const res = await apiRequest("POST", `/api/devis/${devisId}/confirm`, corrections);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
+      toast({ title: "Devis confirmed", description: "Draft has been confirmed and is now pending" });
+      onClose();
+    },
+    onError: (error: Error) => {
+      toast({ title: "Confirmation failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const discardMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("PATCH", `/api/devis/${devisId}`, { status: "void", voidReason: "Discarded draft — AI extraction rejected by user" });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
+      toast({ title: "Draft discarded", description: "The draft devis has been voided" });
+      onClose();
+    },
+    onError: (error: Error) => {
+      toast({ title: "Discard failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const handleConfirm = () => {
+    const corrections: Record<string, any> = {};
+    if (editValues.amountHt !== (devis.amountHt ?? "")) corrections.amountHt = editValues.amountHt;
+    if (editValues.tvaRate !== (devis.tvaRate ?? "20.00")) corrections.tvaRate = editValues.tvaRate;
+    if (editValues.amountTtc !== (devis.amountTtc ?? "")) corrections.amountTtc = editValues.amountTtc;
+    if (editValues.devisCode !== (devis.devisCode ?? "")) corrections.devisCode = editValues.devisCode;
+    if (editValues.devisNumber !== (devis.devisNumber ?? "")) corrections.devisNumber = editValues.devisNumber;
+    if (editValues.descriptionFr !== (devis.descriptionFr ?? "")) corrections.descriptionFr = editValues.descriptionFr;
+    if (editValues.dateSent !== (devis.dateSent ?? "")) corrections.dateSent = editValues.dateSent;
+    confirmMutation.mutate(corrections);
+  };
+
+  const updateField = (field: string, value: string) => {
+    setEditValues(prev => ({ ...prev, [field]: value }));
+  };
+
+  const contractorName = extraction?.contractorName || "Unknown";
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open && !confirmMutation.isPending && !discardMutation.isPending) onClose(); }}>
+      <DialogContent className="max-w-lg" data-testid="dialog-draft-review">
+        <DialogHeader>
+          <DialogTitle className="text-[16px] font-black uppercase tracking-tight flex items-center gap-3 flex-wrap">
+            Review AI Extraction
+            <ConfidenceIndicator score={confidenceScore} />
+          </DialogTitle>
+          <DialogDescription className="text-[11px]">
+            Verify AI-extracted values before confirming. Edit any incorrect fields.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
+          {warnings.length > 0 && (
+            <div className="space-y-1.5" data-testid="section-validation-warnings">
+              {warnings.map((w, i) => (
+                <div
+                  key={i}
+                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded-md border text-[10px] ${
+                    w.severity === "error"
+                      ? "bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-400"
+                      : "bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400"
+                  }`}
+                  data-testid={`warning-${w.field}-${i}`}
+                >
+                  <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+                  <span>{w.message}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <TechnicalLabel>Contractor</TechnicalLabel>
+            <p className="text-[12px] text-foreground" data-testid="text-draft-contractor">{contractorName}</p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <TechnicalLabel>Devis Code</TechnicalLabel>
+                {fieldWarnings("devisCode").map((w, i) => (
+                  <Badge key={i} variant="outline" className={`text-[8px] ${w.severity === "error" ? "border-rose-300 text-rose-600" : "border-amber-300 text-amber-600"}`}>
+                    {w.severity}
+                  </Badge>
+                ))}
+              </div>
+              <Input
+                value={editValues.devisCode}
+                onChange={(e) => updateField("devisCode", e.target.value)}
+                className="text-[11px]"
+                data-testid="input-draft-devis-code"
+              />
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <TechnicalLabel>Devis Number</TechnicalLabel>
+                {fieldWarnings("devisNumber").map((w, i) => (
+                  <Badge key={i} variant="outline" className={`text-[8px] ${w.severity === "error" ? "border-rose-300 text-rose-600" : "border-amber-300 text-amber-600"}`}>
+                    {w.severity}
+                  </Badge>
+                ))}
+              </div>
+              <Input
+                value={editValues.devisNumber}
+                onChange={(e) => updateField("devisNumber", e.target.value)}
+                className="text-[11px]"
+                data-testid="input-draft-devis-number"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <TechnicalLabel>Description</TechnicalLabel>
+              {fieldWarnings("descriptionFr").map((w, i) => (
+                <Badge key={i} variant="outline" className={`text-[8px] ${w.severity === "error" ? "border-rose-300 text-rose-600" : "border-amber-300 text-amber-600"}`}>
+                  {w.severity}
+                </Badge>
+              ))}
+            </div>
+            <Textarea
+              value={editValues.descriptionFr}
+              onChange={(e) => updateField("descriptionFr", e.target.value)}
+              className="text-[11px] resize-none"
+              rows={2}
+              data-testid="input-draft-description"
+            />
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <div className="space-y-1">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <TechnicalLabel>Amount HT</TechnicalLabel>
+                {fieldWarnings("amountHt").map((w, i) => (
+                  <Badge key={i} variant="outline" className={`text-[8px] ${w.severity === "error" ? "border-rose-300 text-rose-600" : "border-amber-300 text-amber-600"}`}>
+                    {w.severity}
+                  </Badge>
+                ))}
+              </div>
+              <Input
+                type="number"
+                step="0.01"
+                value={editValues.amountHt}
+                onChange={(e) => updateField("amountHt", e.target.value)}
+                className="text-[11px]"
+                data-testid="input-draft-amount-ht"
+              />
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <TechnicalLabel>TVA Rate %</TechnicalLabel>
+                {fieldWarnings("tvaRate").map((w, i) => (
+                  <Badge key={i} variant="outline" className={`text-[8px] ${w.severity === "error" ? "border-rose-300 text-rose-600" : "border-amber-300 text-amber-600"}`}>
+                    {w.severity}
+                  </Badge>
+                ))}
+              </div>
+              <Input
+                type="number"
+                step="0.01"
+                value={editValues.tvaRate}
+                onChange={(e) => updateField("tvaRate", e.target.value)}
+                className="text-[11px]"
+                data-testid="input-draft-tva-rate"
+              />
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <TechnicalLabel>Amount TTC</TechnicalLabel>
+                {fieldWarnings("amountTtc").map((w, i) => (
+                  <Badge key={i} variant="outline" className={`text-[8px] ${w.severity === "error" ? "border-rose-300 text-rose-600" : "border-amber-300 text-amber-600"}`}>
+                    {w.severity}
+                  </Badge>
+                ))}
+              </div>
+              <Input
+                type="number"
+                step="0.01"
+                value={editValues.amountTtc}
+                onChange={(e) => updateField("amountTtc", e.target.value)}
+                className="text-[11px]"
+                data-testid="input-draft-amount-ttc"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <TechnicalLabel>Date</TechnicalLabel>
+            <Input
+              type="date"
+              value={editValues.dateSent}
+              onChange={(e) => updateField("dateSent", e.target.value)}
+              className="text-[11px]"
+              data-testid="input-draft-date"
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-2 pt-2 flex-wrap">
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5 border-rose-200 text-rose-600"
+            onClick={() => discardMutation.mutate()}
+            disabled={discardMutation.isPending || confirmMutation.isPending}
+            data-testid="button-discard-draft"
+          >
+            <Trash2 size={12} />
+            <span className="text-[9px] font-bold uppercase tracking-widest">
+              {discardMutation.isPending ? "Discarding..." : "Discard"}
+            </span>
+          </Button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onClose}
+              disabled={confirmMutation.isPending || discardMutation.isPending}
+              data-testid="button-cancel-draft-review"
+            >
+              <span className="text-[9px] font-bold uppercase tracking-widest">Review Later</span>
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleConfirm}
+              disabled={confirmMutation.isPending || discardMutation.isPending}
+              data-testid="button-confirm-draft"
+            >
+              <Check size={12} />
+              <span className="text-[9px] font-bold uppercase tracking-widest">
+                {confirmMutation.isPending ? "Confirming..." : "Confirm"}
+              </span>
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

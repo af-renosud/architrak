@@ -1,5 +1,7 @@
 import { storage } from "../storage";
 import { uploadDocument } from "../storage/object-storage";
+import { validateExtraction } from "./extraction-validator";
+import { roundCurrency, calculateTtc, calculateTva } from "../../shared/financial-utils";
 
 interface UploadedFile {
   originalname: string;
@@ -27,25 +29,44 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
   const { parseDocument } = await import("../gmail/document-parser");
   const parsed = await parseDocument(file.buffer, file.originalname);
 
+  const validation = validateExtraction(parsed);
+
+  const effectiveHt = validation.correctedValues.amountHt ?? parsed.amountHt;
+  const effectiveTtc = validation.correctedValues.amountTtc ?? parsed.amountTtc;
+  const effectiveTvaAmount = validation.correctedValues.tvaAmount ?? parsed.tvaAmount;
+
   const tvaRate = parsed.tvaRate != null ? parsed.tvaRate : parseFloat(devis.tvaRate) || 20;
-  const amountHt = parsed.amountHt != null ? String(parsed.amountHt) : "0.00";
-  const amountTtc = parsed.amountTtc != null ? String(parsed.amountTtc) :
-    (parsed.amountHt != null ? String(parsed.amountHt * (1 + tvaRate / 100)) : "0.00");
+
+  const amountHt = effectiveHt != null
+    ? String(roundCurrency(effectiveHt))
+    : "0.00";
+
+  const amountTtc = effectiveTtc != null
+    ? String(roundCurrency(effectiveTtc))
+    : (effectiveHt != null ? String(calculateTtc(effectiveHt, tvaRate)) : "0.00");
+
+  const tvaAmount = effectiveTvaAmount != null
+    ? String(roundCurrency(effectiveTvaAmount))
+    : (effectiveHt != null ? String(calculateTva(effectiveHt, tvaRate)) : "0.00");
 
   const invoice = await storage.createInvoice({
     devisId,
     projectId: devis.projectId,
     contractorId: devis.contractorId,
-    invoiceNumber: parsed.reference || file.originalname.replace(/\.pdf$/i, ""),
+    invoiceNumber: parsed.invoiceNumber || parsed.reference || file.originalname.replace(/\.pdf$/i, ""),
     certificateNumber: null,
     amountHt,
-    tvaRate: String(tvaRate),
+    tvaRate: String(roundCurrency(tvaRate)),
+    tvaAmount,
     amountTtc,
-    status: "pending",
+    status: "draft",
     dateIssued: parsed.date || null,
     datePaid: null,
     pdfPath: storageKey,
     notes: null,
+    validationWarnings: validation.warnings,
+    aiExtractedData: parsed,
+    aiConfidence: validation.confidenceScore,
   });
 
   return {
@@ -61,6 +82,12 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
         reference: parsed.reference,
         date: parsed.date,
         confidence: parsed.amountHt != null ? "high" : "low",
+      },
+      validation: {
+        isValid: validation.isValid,
+        warnings: validation.warnings,
+        confidenceScore: validation.confidenceScore,
+        correctedValues: validation.correctedValues,
       },
       storageKey,
       fileName: file.originalname,

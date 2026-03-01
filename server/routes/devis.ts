@@ -1,9 +1,22 @@
 import { Router } from "express";
+import { z } from "zod";
 import { storage } from "../storage";
 import { insertDevisSchema, insertDevisLineItemSchema, insertAvenantSchema } from "@shared/schema";
 import { upload } from "../middleware/upload";
 import { processDevisUpload } from "../services/devis-upload.service";
 import { getDocumentStream } from "../storage/object-storage";
+import { validateExtraction } from "../services/extraction-validator";
+import { roundCurrency, calculateTtc } from "../../shared/financial-utils";
+
+const devisConfirmSchema = z.object({
+  amountHt: z.coerce.number().nonnegative().optional(),
+  tvaRate: z.coerce.number().min(0).max(100).optional(),
+  amountTtc: z.coerce.number().nonnegative().optional(),
+  devisCode: z.string().min(1).optional(),
+  devisNumber: z.string().optional(),
+  descriptionFr: z.string().optional(),
+  dateSent: z.string().optional(),
+}).strict();
 
 const router = Router();
 
@@ -106,6 +119,49 @@ router.patch("/api/avenants/:id", async (req, res) => {
   const av = await storage.updateAvenant(Number(req.params.id), parsed.data);
   if (!av) return res.status(404).json({ message: "Avenant not found" });
   res.json(av);
+});
+
+router.post("/api/devis/:id/confirm", async (req, res) => {
+  try {
+    const devis = await storage.getDevis(Number(req.params.id));
+    if (!devis) return res.status(404).json({ message: "Devis not found" });
+    if (devis.status !== "draft") return res.status(400).json({ message: "Only draft devis can be confirmed" });
+
+    const parsed = devisConfirmSchema.safeParse(req.body || {});
+    if (!parsed.success) return res.status(400).json({ message: "Invalid corrections", errors: parsed.error.flatten() });
+    const corrections = parsed.data;
+    const updates: Record<string, any> = { status: "pending" };
+
+    if (corrections.amountHt != null) updates.amountHt = String(roundCurrency(corrections.amountHt));
+    if (corrections.tvaRate != null) updates.tvaRate = String(roundCurrency(corrections.tvaRate));
+    if (corrections.amountTtc != null) {
+      updates.amountTtc = String(roundCurrency(Number(corrections.amountTtc)));
+    } else if (corrections.amountHt != null || corrections.tvaRate != null) {
+      const ht = corrections.amountHt != null ? Number(corrections.amountHt) : Number(devis.amountHt);
+      const rate = corrections.tvaRate != null ? Number(corrections.tvaRate) : Number(devis.tvaRate);
+      updates.amountTtc = String(calculateTtc(ht, rate));
+    }
+    if (corrections.devisCode != null) updates.devisCode = corrections.devisCode;
+    if (corrections.devisNumber != null) updates.devisNumber = corrections.devisNumber;
+    if (corrections.descriptionFr != null) updates.descriptionFr = corrections.descriptionFr;
+    if (corrections.dateSent != null) updates.dateSent = corrections.dateSent;
+
+    if (Object.keys(corrections).length > 0) {
+      const aiData = (devis.aiExtractedData as any) || {};
+      const correctedParsed = { ...aiData, ...corrections };
+      const revalidation = validateExtraction(correctedParsed);
+      updates.validationWarnings = revalidation.isValid ? null : revalidation.warnings;
+      updates.aiConfidence = revalidation.confidenceScore;
+    } else {
+      updates.validationWarnings = null;
+    }
+
+    const updated = await storage.updateDevis(Number(req.params.id), updates);
+    res.json(updated);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ message: `Confirm failed: ${message}` });
+  }
 });
 
 export default router;
