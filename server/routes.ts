@@ -465,6 +465,22 @@ export async function registerRoutes(
     res.status(201).json(invoice);
   });
 
+  app.get("/api/invoices/:id/pdf", async (req, res) => {
+    try {
+      const inv = await storage.getInvoice(Number(req.params.id));
+      if (!inv || !inv.pdfPath) return res.status(404).json({ message: "No PDF attached to this invoice" });
+      const { getDocumentStream } = await import("./storage/object-storage");
+      const { stream, contentType, size } = await getDocumentStream(inv.pdfPath);
+      res.setHeader("Content-Type", contentType || "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="invoice-${inv.invoiceNumber}.pdf"`);
+      if (size) res.setHeader("Content-Length", String(size));
+      stream.pipe(res);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `PDF view failed: ${message}` });
+    }
+  });
+
   app.patch("/api/invoices/:id", async (req, res) => {
     const parsed = insertInvoiceSchema.partial().safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid invoice data", errors: parsed.error.flatten() });

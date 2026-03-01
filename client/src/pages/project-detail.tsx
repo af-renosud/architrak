@@ -22,6 +22,8 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { insertCertificatSchema, insertFeeSchema, insertFeeEntrySchema, insertLotSchema, insertMarcheSchema } from "@shared/schema";
 import type { Project, Devis, Lot, Marche, Certificat, Fee, FeeEntry, Contractor, Invoice, ProjectDocument, ProjectCommunication, PaymentReminder } from "@shared/schema";
 import { DevisTab } from "@/components/devis/DevisTab";
+import { FacturesTab } from "@/components/factures/FacturesTab";
+import { Receipt } from "lucide-react";
 import { z } from "zod";
 
 function formatCurrency(value: number): string {
@@ -618,6 +620,10 @@ export default function ProjectDetail() {
               <FileText size={12} className="mr-1" />
               Devis
             </TabsTrigger>
+            <TabsTrigger value="factures" data-testid="tab-factures">
+              <Receipt size={12} className="mr-1" />
+              Factures
+            </TabsTrigger>
             <TabsTrigger value="lots" data-testid="tab-lots">
               <Layers size={12} className="mr-1" />
               Lots
@@ -765,6 +771,13 @@ export default function ProjectDetail() {
               projectId={projectId!}
               contractors={contractors ?? []}
               lots={lotsList ?? []}
+            />
+          </TabsContent>
+
+          <TabsContent value="factures">
+            <FacturesTab
+              projectId={projectId!}
+              contractors={contractors ?? []}
             />
           </TabsContent>
 

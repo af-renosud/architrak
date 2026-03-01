@@ -72,6 +72,7 @@ export interface IStorage {
   createAvenant(data: InsertAvenant): Promise<Avenant>;
   updateAvenant(id: number, data: Partial<InsertAvenant>): Promise<Avenant | undefined>;
 
+  getInvoice(id: number): Promise<Invoice | undefined>;
   getInvoicesByDevis(devisId: number): Promise<Invoice[]>;
   getInvoicesByProject(projectId: number): Promise<Invoice[]>;
   createInvoice(data: InsertInvoice): Promise<Invoice>;
@@ -316,6 +317,11 @@ export class DatabaseStorage implements IStorage {
   async updateAvenant(id: number, data: Partial<InsertAvenant>): Promise<Avenant | undefined> {
     const [avenant] = await db.update(avenants).set(data).where(eq(avenants.id, id)).returning();
     return avenant;
+  }
+
+  async getInvoice(id: number): Promise<Invoice | undefined> {
+    const [inv] = await db.select().from(invoices).where(eq(invoices.id, id));
+    return inv;
   }
 
   async getInvoicesByDevis(devisId: number): Promise<Invoice[]> {

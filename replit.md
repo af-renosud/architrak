@@ -57,6 +57,7 @@ client/src/
   components/layout/    — AppLayout, Sidebar
   components/ui/        — Shadcn + custom (luxury-card, status-badge, section-header, technical-label)
   components/devis/     — DevisTab component
+  components/factures/  — FacturesTab component (invoice list, PDF viewer, notes)
   pages/                — Dashboard, Projects, Contractors, Financial Tracking, Certificats, Fees,
                           Email Documents, Communications, Project Detail, Contractor Detail
   hooks/                — use-toast, use-mobile
