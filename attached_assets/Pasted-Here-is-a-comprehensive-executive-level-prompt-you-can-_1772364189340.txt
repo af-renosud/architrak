@@ -1,0 +1,47 @@
+Here is a comprehensive, executive-level prompt you can copy and paste directly to your Replit agent. It establishes the consulting framework, outlines the architectural findings, and mandates a clear agreement on how to secure the foundation before writing any new feature code.
+
+Prompt for the Replit Agent
+Role & Context:
+Act as the Lead Developer for ArchiTrak. I am stepping in as the Senior Executive Software Architect to review our current progress and establish a robust, industrial-strength foundation for this application.
+
+We have successfully proven the core concepts: the boundary between ArchiDoc and ArchiTrak is well-defined, the tech stack (React 18, Express, Postgres, Drizzle, TanStack) is highly capable, and the complex financial workflows (Mode A/B, Three Buckets) are functioning in prototype. Great work getting us to this stage.
+
+However, as a financial application replacing a critical Excel workflow for a real architectural practice, we must now transition from "functional prototype" to "enterprise-grade software." We need to establish a secure, stable baseline reference before we build any further features.
+
+Executive Assessment (The Current Gaps):
+Based on an architectural review, we have identified three critical areas of technical debt and risk that must be addressed immediately:
+
+Security Risk: The application currently lacks authentication/authorization. A financial tool accessible via a public Replit URL is a critical vulnerability. Furthermore, our current Gmail integration strategy (gmail.readonly) presents scaling and compliance hurdles.
+
+Stability Risk: There is no automated testing infrastructure. We cannot rely on manual testing for deterministic financial calculations (HT/TVA/TTC, Reste à Réaliser, fee percentages). A single regression here is unacceptable.
+
+Architectural Bottleneck: The single ~1400-line routes.ts file is a massive maintenance hazard that will hinder our ability to scale, debug, and maintain the codebase.
+
+The Agreement & Path Forward:
+Before we implement any new features or workflows, we need to agree on a structured remediation plan to establish our "V1.0 Secure Foundation."
+
+Please review and confirm your alignment with the following immediate phased approach:
+
+Phase 1: Secure the Perimeter (Immediate)
+
+Implement basic Authentication (e.g., Google Workspace SSO restricting access to @sas-architects.fr emails).
+
+Pivot the Gmail strategy: Move away from inbox polling and plan for an inbound webhook parsing strategy to handle contractor invoices.
+
+Phase 2: Fortify the Core (Next Step)
+
+Implement a testing framework (Vitest/Jest).
+
+Write 100% coverage unit tests for all financial calculation utilities (the "Three Buckets" math, TVA applications, fee calculations) to ensure the AI's non-deterministic outputs are strictly validated against mathematical reality.
+
+Phase 3: Restructure for Scale (Subsequent Step)
+
+Refactor the monolithic routes.ts into a modular Controller/Service pattern based on domain entities (Devis, Factures, Sync).
+
+Your Action Required:
+
+Acknowledge this executive assessment.
+
+Confirm your agreement to halt new feature development until we secure this baseline.
+
+Outline your proposed technical approach and required dependencies to execute Phase 1: Secure the Perimeter specifically focusing on adding Google Workspace SSO to our Express/React stack in the Replit environment.
