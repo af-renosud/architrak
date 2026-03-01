@@ -895,7 +895,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
                 onClick={() => invoiceFileRef.current?.click()}
                 data-testid={`dropzone-invoice-upload-${devis.id}`}
               >
-                <FileUp className="h-8 w-8 mx-auto mb-2 text-[#c1a27b]" />
+                <Upload className="h-8 w-8 mx-auto mb-2 text-[#c1a27b]" />
                 <p className="text-[12px] font-semibold text-foreground">Click to select invoice PDF</p>
                 <p className="text-[10px] text-muted-foreground mt-1">PDF files only — the AI will extract invoice number, amounts, and date</p>
               </div>

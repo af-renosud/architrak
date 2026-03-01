@@ -33,6 +33,7 @@ import { processEmailDocument } from "./gmail/document-parser";
 import { uploadDocument } from "./storage/object-storage";
 import { getDocumentStream } from "./storage/object-storage";
 import { sendCertificat, sendCommunication, sendPaymentChase } from "./communications/email-sender";
+import { generateCertificatPdf } from "./communications/certificat-generator";
 import { scheduleReminders } from "./communications/payment-scheduler";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -657,6 +658,20 @@ export async function registerRoutes(
     const cert = await storage.updateCertificat(Number(req.params.id), parsed.data);
     if (!cert) return res.status(404).json({ message: "Certificat not found" });
     res.json(cert);
+  });
+
+  app.post("/api/certificats/:certId/preview", async (req, res) => {
+    try {
+      const certId = Number(req.params.certId);
+      const cert = await storage.getCertificat(certId);
+      if (!cert) return res.status(404).json({ message: "Certificat not found" });
+      const { htmlContent } = await generateCertificatPdf(certId);
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(htmlContent);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Preview generation failed: ${message}` });
+    }
   });
 
   // ── Fees ──

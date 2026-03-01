@@ -240,7 +240,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   .summary-table tr.remaining td { font-weight: 700; border-top: 1px solid #ccc; padding-top: 4px; }
 
   .warning-note { font-size: 8px; color: #888; margin-top: 6px; font-style: italic; }
-  .warning-note::before { content: "⚠ "; }
+  .warning-note::before { content: "ATTENTION: "; font-weight: 800; }
 
   .payment-section { margin: 20px 0; padding: 16px; background: #f8f9fa; border-radius: 4px; }
   .payment-propose { font-size: 11px; margin-bottom: 8px; }

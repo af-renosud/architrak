@@ -4,7 +4,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { FolderOpen, ArrowLeft, MapPin, User, FileText, Layers, ScrollText, Award, Coins, BarChart3, Plus, Eye, EyeOff, ChevronRight, Pencil, Upload, Download, ExternalLink, MessageSquare, Send, Clock, RefreshCw, FileCheck, AlertTriangle, Settings } from "lucide-react";
+import { FolderOpen, ArrowLeft, MapPin, User, FileText, Layers, ScrollText, Award, Coins, BarChart3, Plus, Eye, EyeOff, ChevronRight, Pencil, Upload, Download, ExternalLink, MessageSquare, Send, Clock, RefreshCw, FileCheck, AlertTriangle, Settings, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -154,6 +154,7 @@ export default function ProjectDetail() {
   const [markInvoicedRef, setMarkInvoicedRef] = useState("");
   const [showVoidSummary, setShowVoidSummary] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [previewingCertId, setPreviewingCertId] = useState<number | null>(null);
 
   const { data: project, isLoading } = useQuery<Project>({
     queryKey: ["/api/projects", projectId],
@@ -512,6 +513,30 @@ export default function ProjectDetail() {
     const base = parseFloat(entryForm.watch("baseHt") || "0");
     const rate = parseFloat(entryForm.watch("feeRate") || "0");
     entryForm.setValue("feeAmount", (base * rate / 100).toFixed(2));
+  };
+
+  const previewCertPdf = async (certId: number) => {
+    setPreviewingCertId(certId);
+    try {
+      const res = await fetch(`/api/certificats/${certId}/preview`, { method: "POST" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ message: "Preview failed" }));
+        throw new Error(err.message);
+      }
+      const html = await res.text();
+      const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const win = window.open(url, "_blank");
+      if (win) {
+        win.addEventListener("load", () => URL.revokeObjectURL(url));
+      } else {
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+      }
+    } catch (err: unknown) {
+      toast({ title: "Preview failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
+    } finally {
+      setPreviewingCertId(null);
+    }
   };
 
   const openCreateCert = () => {
@@ -1120,6 +1145,17 @@ export default function ProjectDetail() {
                                 <span className="text-[8px] font-bold uppercase tracking-widest">{nextLabel}</span>
                               </Button>
                             )}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 text-[10px] px-3 gap-1.5"
+                              onClick={() => previewCertPdf(c.id)}
+                              disabled={previewingCertId === c.id}
+                              data-testid={`button-preview-cert-${c.id}`}
+                            >
+                              {previewingCertId === c.id ? <Loader2 size={12} className="animate-spin" /> : <FileCheck size={12} />}
+                              Preview PDF
+                            </Button>
                             <Button
                               variant="ghost"
                               size="icon"
