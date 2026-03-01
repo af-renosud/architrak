@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ChevronDown, ChevronRight, FileText, Upload, FileUp, Loader2, ExternalLink, Save } from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, Upload, FileUp, Loader2, Save, Calendar, Building2, Hash, Receipt } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -25,6 +25,7 @@ export function FacturesTab({ projectId, contractors }: FacturesTabProps) {
   const { toast } = useToast();
   const [expandedInvoice, setExpandedInvoice] = useState<number | null>(null);
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+  const [selectedDevisId, setSelectedDevisId] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: invoices, isLoading } = useQuery<Invoice[]>({
@@ -69,8 +70,6 @@ export function FacturesTab({ projectId, contractors }: FacturesTabProps) {
     },
   });
 
-  const [selectedDevisId, setSelectedDevisId] = useState<number | null>(null);
-
   const totalHt = (invoices ?? []).reduce((s, i) => s + parseFloat(i.amountHt), 0);
   const totalTtc = (invoices ?? []).reduce((s, i) => s + parseFloat(i.amountTtc), 0);
   const pendingCount = (invoices ?? []).filter(i => i.status === "pending").length;
@@ -109,10 +108,7 @@ export function FacturesTab({ projectId, contractors }: FacturesTabProps) {
       </div>
 
       <div className="flex items-center justify-end">
-        <Button
-          onClick={() => setUploadDialogOpen(true)}
-          data-testid="button-upload-facture"
-        >
+        <Button onClick={() => setUploadDialogOpen(true)} data-testid="button-upload-facture">
           <Upload size={14} />
           <span className="text-[9px] font-bold uppercase tracking-widest">Upload Invoice</span>
         </Button>
@@ -141,13 +137,11 @@ export function FacturesTab({ projectId, contractors }: FacturesTabProps) {
                         </div>
                         <p className="text-[12px] text-foreground mt-0.5 truncate">
                           {contractorMap.get(inv.contractorId) ?? `Contractor #${inv.contractorId}`}
-                          {dv && <span className="text-muted-foreground ml-2">— {dv.devisCode}</span>}
                         </p>
-                        {inv.dateIssued && (
-                          <span className="text-[10px] text-muted-foreground">
-                            Issued: {new Date(inv.dateIssued).toLocaleDateString("fr-FR")}
-                          </span>
-                        )}
+                        <span className="text-[10px] text-muted-foreground">
+                          {dv ? dv.devisCode : `Devis #${inv.devisId}`}
+                          {inv.dateIssued && ` · ${new Date(inv.dateIssued).toLocaleDateString("fr-FR")}`}
+                        </span>
                       </div>
                     </div>
                     <div className="flex items-center gap-3 flex-wrap">
@@ -181,7 +175,12 @@ export function FacturesTab({ projectId, contractors }: FacturesTabProps) {
                 </LuxuryCard>
 
                 {expandedInvoice === inv.id && (
-                  <InvoiceDetailInline invoice={inv} projectId={projectId} devis={dv} contractorName={contractorMap.get(inv.contractorId) ?? `#${inv.contractorId}`} />
+                  <InvoiceDetailInline
+                    invoice={inv}
+                    projectId={projectId}
+                    devis={dv}
+                    contractorName={contractorMap.get(inv.contractorId) ?? `#${inv.contractorId}`}
+                  />
                 )}
               </div>
             );
@@ -282,68 +281,76 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName }: {
     },
   });
 
+  const tvaRate = devis ? (parseFloat(devis.tvaRate) || 20) : (parseFloat(invoice.amountHt) > 0 ? ((parseFloat(invoice.amountTtc) - parseFloat(invoice.amountHt)) / parseFloat(invoice.amountHt) * 100) : 20);
+
   return (
     <div className="ml-4 mt-2 space-y-4 border-l-2 border-[#c1a27b]/30 pl-4 pb-2">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
           <TechnicalLabel>Amount HT</TechnicalLabel>
-          <p className="text-[13px] font-semibold text-foreground mt-1">{formatCurrency(parseFloat(invoice.amountHt))}</p>
+          <p className="text-[15px] font-semibold text-foreground mt-1" data-testid={`text-detail-ht-${invoice.id}`}>
+            {formatCurrency(parseFloat(invoice.amountHt))}
+          </p>
         </div>
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-          <TechnicalLabel>TVA</TechnicalLabel>
-          <p className="text-[13px] font-semibold text-foreground mt-1">{formatCurrency(parseFloat(invoice.tvaAmount))}</p>
+          <TechnicalLabel>TVA ({tvaRate.toFixed(1)}%)</TechnicalLabel>
+          <p className="text-[15px] font-semibold text-foreground mt-1" data-testid={`text-detail-tva-${invoice.id}`}>
+            {formatCurrency(parseFloat(invoice.tvaAmount))}
+          </p>
         </div>
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
           <TechnicalLabel>Amount TTC</TechnicalLabel>
-          <p className="text-[13px] font-semibold text-foreground mt-1">{formatCurrency(parseFloat(invoice.amountTtc))}</p>
+          <p className="text-[15px] font-semibold text-[#0B2545] mt-1" data-testid={`text-detail-ttc-${invoice.id}`}>
+            {formatCurrency(parseFloat(invoice.amountTtc))}
+          </p>
         </div>
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
           <TechnicalLabel>Status</TechnicalLabel>
-          <div className="mt-1"><StatusBadge status={invoice.status} /></div>
+          <div className="mt-2"><StatusBadge status={invoice.status} /></div>
         </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-          <TechnicalLabel>Contractor</TechnicalLabel>
-          <p className="text-[12px] text-foreground mt-1">{contractorName}</p>
+          <div className="flex items-center gap-1.5 mb-1">
+            <Building2 size={10} className="text-muted-foreground" />
+            <TechnicalLabel>Contractor</TechnicalLabel>
+          </div>
+          <p className="text-[12px] font-medium text-foreground">{contractorName}</p>
         </div>
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-          <TechnicalLabel>Related Devis</TechnicalLabel>
-          <p className="text-[12px] text-foreground mt-1">{devis ? devis.devisCode : `#${invoice.devisId}`}</p>
+          <div className="flex items-center gap-1.5 mb-1">
+            <Receipt size={10} className="text-muted-foreground" />
+            <TechnicalLabel>Related Devis</TechnicalLabel>
+          </div>
+          <p className="text-[12px] font-medium text-foreground">
+            {devis ? `${devis.devisCode} — ${devis.descriptionFr}` : `Devis #${invoice.devisId}`}
+          </p>
         </div>
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-          <TechnicalLabel>Dates</TechnicalLabel>
-          <div className="text-[11px] mt-1 space-y-0.5">
-            {invoice.dateIssued && <p>Issued: {new Date(invoice.dateIssued).toLocaleDateString("fr-FR")}</p>}
-            {invoice.dateSent && <p>Sent: {new Date(invoice.dateSent).toLocaleDateString("fr-FR")}</p>}
-            {invoice.datePaid && <p className="text-emerald-600">Paid: {new Date(invoice.datePaid).toLocaleDateString("fr-FR")}</p>}
-            {!invoice.dateIssued && !invoice.dateSent && !invoice.datePaid && <p className="text-muted-foreground">No dates recorded</p>}
+          <div className="flex items-center gap-1.5 mb-1">
+            <Calendar size={10} className="text-muted-foreground" />
+            <TechnicalLabel>Dates</TechnicalLabel>
+          </div>
+          <div className="text-[11px] space-y-0.5">
+            {invoice.dateIssued ? (
+              <p className="font-medium text-foreground">Issued: {new Date(invoice.dateIssued).toLocaleDateString("fr-FR")}</p>
+            ) : (
+              <p className="text-muted-foreground italic">No issue date</p>
+            )}
+            {invoice.dateSent && <p className="text-foreground">Sent: {new Date(invoice.dateSent).toLocaleDateString("fr-FR")}</p>}
+            {invoice.datePaid && <p className="text-emerald-600 font-medium">Paid: {new Date(invoice.datePaid).toLocaleDateString("fr-FR")}</p>}
           </div>
         </div>
       </div>
 
-      {invoice.pdfPath && (
-        <div className="rounded-2xl border border-[rgba(0,0,0,0.08)] overflow-hidden bg-white/50">
-          <div className="flex items-center justify-between px-4 py-2 border-b border-[rgba(0,0,0,0.06)]">
-            <TechnicalLabel>Original PDF</TechnicalLabel>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 px-3 gap-1.5 border-[#0B2545]/20 text-[#0B2545] hover:bg-[#0B2545]/5"
-              onClick={() => window.open(`/api/invoices/${invoice.id}/pdf`, "_blank")}
-              data-testid={`button-open-pdf-newtab-${invoice.id}`}
-            >
-              <ExternalLink size={12} />
-              <span className="text-[9px] font-bold uppercase tracking-widest">Open in New Tab</span>
-            </Button>
+      {invoice.certificateNumber && (
+        <div className="p-3 rounded-xl border border-emerald-200 bg-emerald-50/50">
+          <div className="flex items-center gap-1.5 mb-1">
+            <Hash size={10} className="text-emerald-600" />
+            <TechnicalLabel>Payment Certificate</TechnicalLabel>
           </div>
-          <iframe
-            src={`/api/invoices/${invoice.id}/pdf`}
-            className="w-full h-[500px] border-0"
-            title={`Invoice ${invoice.invoiceNumber} PDF`}
-            data-testid={`iframe-pdf-facture-${invoice.id}`}
-          />
+          <p className="text-[12px] text-emerald-700 font-semibold">Certificat: {invoice.certificateNumber}</p>
         </div>
       )}
 
@@ -393,13 +400,6 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName }: {
           </p>
         )}
       </div>
-
-      {invoice.certificateNumber && (
-        <div className="p-3 rounded-xl border border-emerald-200 bg-emerald-50/50">
-          <TechnicalLabel>Payment Certificate</TechnicalLabel>
-          <p className="text-[12px] text-emerald-700 mt-1 font-semibold">Certificat: {invoice.certificateNumber}</p>
-        </div>
-      )}
     </div>
   );
 }
