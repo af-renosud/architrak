@@ -269,11 +269,13 @@ export default function Dashboard() {
                               value={ps.devisApprovedCount}
                               variant={ps.devisApprovedCount > 0 ? "green" : "neutral"}
                               testId={`cell-devis-approved-${ps.id}`}
+                              hint="Number of devis"
                             />
                             <CounterCell
                               value={ps.devisUnapprovedCount}
                               variant={ps.devisUnapprovedCount > 0 ? "red" : "neutral"}
                               testId={`cell-devis-unapproved-${ps.id}`}
+                              hint="Devis pending approval"
                             />
                             <SignedIcon
                               allSigned={ps.allDevisSigned}
@@ -287,11 +289,13 @@ export default function Dashboard() {
                               value={ps.invoiceApprovedCount}
                               variant={ps.invoiceApprovedCount > 0 ? "green" : "neutral"}
                               testId={`cell-factures-approved-${ps.id}`}
+                              hint="Number of factures"
                             />
                             <CounterCell
                               value={ps.invoiceUnapprovedCount}
                               variant={ps.invoiceUnapprovedCount > 0 ? "red" : "neutral"}
                               testId={`cell-factures-unapproved-${ps.id}`}
+                              hint="Factures pending approval"
                             />
                           </div>
 
@@ -321,10 +325,11 @@ export default function Dashboard() {
   );
 }
 
-function CounterCell({ value, variant, testId }: {
+function CounterCell({ value, variant, testId, hint }: {
   value: number;
   variant: "green" | "red" | "neutral";
   testId: string;
+  hint: string;
 }) {
   const styles = {
     green: "bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800",
@@ -336,6 +341,7 @@ function CounterCell({ value, variant, testId }: {
     <div
       className={`w-[34px] h-[34px] rounded-lg border flex items-center justify-center ${styles[variant]}`}
       data-testid={testId}
+      title={hint}
     >
       <span className="text-[14px] font-bold">{value}</span>
     </div>
@@ -352,6 +358,7 @@ function SignedIcon({ allSigned, hasDevis, testId }: {
       <div
         className="w-[34px] h-[34px] rounded-lg border border-border bg-muted/50 flex items-center justify-center"
         data-testid={testId}
+        title="No devis"
       >
         <span className="text-muted-foreground text-[12px]">—</span>
       </div>
@@ -366,6 +373,7 @@ function SignedIcon({ allSigned, hasDevis, testId }: {
           : "bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800"
       }`}
       data-testid={testId}
+      title={allSigned ? "All devis signed" : "Devis not yet signed"}
     >
       <PenLine size={14} className={allSigned ? "text-emerald-600 dark:text-emerald-400" : "text-red-500 dark:text-red-400"} />
     </div>
@@ -384,6 +392,7 @@ function AgentIcon({ status, testId }: {
           : "bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800"
       }`}
       data-testid={testId}
+      title={status === "ok" ? "Agent status: all clear" : "Agent status: queries/anomalies need attention"}
     >
       {status === "ok" ? (
         <Check size={14} className="text-emerald-600 dark:text-emerald-400" />
