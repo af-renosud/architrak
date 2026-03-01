@@ -53,15 +53,19 @@ export function Sidebar() {
       data-testid="sidebar"
     >
       <div className="px-6 pt-6 pb-4">
-        <img
-          src={logoPath}
-          alt="ArchiTrak"
-          className="h-28 w-auto object-contain"
-          data-testid="img-logo"
-        />
-        <p className="text-[8px] font-black uppercase tracking-widest mt-1" style={{ color: "#7E7F83" }}>
-          Financial Management
-        </p>
+        <Link href="/" data-testid="link-logo-home">
+          <div className="cursor-pointer">
+            <img
+              src={logoPath}
+              alt="ArchiTrak"
+              className="h-28 w-auto object-contain"
+              data-testid="img-logo"
+            />
+            <p className="text-[8px] font-black uppercase tracking-widest mt-1" style={{ color: "#7E7F83" }}>
+              Financial Management
+            </p>
+          </div>
+        </Link>
       </div>
 
       <nav className="flex-1 py-2" data-testid="nav-main">
