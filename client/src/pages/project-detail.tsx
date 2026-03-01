@@ -4,7 +4,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { FolderOpen, ArrowLeft, MapPin, User, FileText, Layers, ScrollText, Award, Coins, BarChart3, Plus, Eye, ChevronRight, Pencil, Upload, Download, ExternalLink, MessageSquare, Send, Clock, RefreshCw, FileCheck } from "lucide-react";
+import { FolderOpen, ArrowLeft, MapPin, User, FileText, Layers, ScrollText, Award, Coins, BarChart3, Plus, Eye, ChevronRight, Pencil, Upload, Download, ExternalLink, MessageSquare, Send, Clock, RefreshCw, FileCheck, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -150,6 +150,8 @@ export default function ProjectDetail() {
   const [editingEntryId, setEditingEntryId] = useState<number | null>(null);
   const [lotDialogOpen, setLotDialogOpen] = useState(false);
   const [marcheDialogOpen, setMarcheDialogOpen] = useState(false);
+  const [markInvoicedEntryId, setMarkInvoicedEntryId] = useState<number | null>(null);
+  const [markInvoicedRef, setMarkInvoicedRef] = useState("");
 
   const { data: project, isLoading } = useQuery<Project>({
     queryKey: ["/api/projects", projectId],
@@ -372,6 +374,25 @@ export default function ProjectDetail() {
       setEditingEntryId(null);
       entryForm.reset();
       toast({ title: "Entry updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const markInvoicedMutation = useMutation({
+    mutationFn: async ({ entryId, pennylaneInvoiceRef }: { entryId: number; pennylaneInvoiceRef?: string }) => {
+      const res = await apiRequest("POST", `/api/fee-entries/${entryId}/mark-invoiced`, {
+        pennylaneInvoiceRef: pennylaneInvoiceRef || undefined,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "fee-entries"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "fees"] });
+      setMarkInvoicedEntryId(null);
+      setMarkInvoicedRef("");
+      toast({ title: "Commission marked as invoiced" });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -1357,12 +1378,30 @@ export default function ProjectDetail() {
                                       ) : null;
                                     })()}
                                     <span className="text-[11px] text-foreground">Base: {formatCurrency(parseFloat(entry.baseHt))} x {entry.feeRate}%</span>
-                                    {entry.pennylaneInvoiceRef && <p className="text-[10px] text-muted-foreground mt-0.5">PL: {entry.pennylaneInvoiceRef}</p>}
+                                    {entry.pennylaneInvoiceRef && <p className="text-[10px] text-muted-foreground mt-0.5">Ref: {entry.pennylaneInvoiceRef}</p>}
+                                    {entry.status === "invoiced" && !entry.pennylaneInvoiceRef && (
+                                      <div className="flex items-center gap-1 mt-0.5 text-amber-600 dark:text-amber-400" data-testid={`warning-missing-ref-${entry.id}`}>
+                                        <AlertTriangle size={10} />
+                                        <span className="text-[10px] font-semibold">Missing invoice ref</span>
+                                      </div>
+                                    )}
                                     {entry.dateInvoiced && <p className="text-[10px] text-muted-foreground">{entry.dateInvoiced}</p>}
                                   </div>
                                   <div className="flex items-center gap-2 flex-wrap">
                                     <span className="text-[12px] font-semibold text-foreground">{formatCurrency(parseFloat(entry.feeAmount))}</span>
                                     <StatusBadge status={entry.status} />
+                                    {entry.status === "pending" && (
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-7 text-[10px] px-2 border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                                        onClick={() => { setMarkInvoicedEntryId(entry.id); setMarkInvoicedRef(""); }}
+                                        data-testid={`button-mark-invoiced-${entry.id}`}
+                                      >
+                                        <FileCheck size={12} className="mr-1" />
+                                        Mark Invoiced
+                                      </Button>
+                                    )}
                                     <Button variant="ghost" size="icon" onClick={() => openEditEntry(entry)} data-testid={`button-edit-entry-tab-${entry.id}`}>
                                       <Pencil size={12} />
                                     </Button>
@@ -1522,6 +1561,57 @@ export default function ProjectDetail() {
                     </Button>
                   </form>
                 </Form>
+              </DialogContent>
+            </Dialog>
+
+            <Dialog open={markInvoicedEntryId !== null} onOpenChange={(open) => { if (!open) { setMarkInvoicedEntryId(null); setMarkInvoicedRef(""); } }}>
+              <DialogContent className="max-w-sm" data-testid="dialog-mark-invoiced">
+                <DialogHeader>
+                  <DialogTitle className="text-[14px]">Mark Commission as Invoiced</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4 pt-2">
+                  <p className="text-[12px] text-muted-foreground">
+                    Enter the invoice number from your accounting software (optional — you can add it later).
+                  </p>
+                  <div>
+                    <TechnicalLabel>Accounting Invoice Number</TechnicalLabel>
+                    <Input
+                      value={markInvoicedRef}
+                      onChange={(e) => setMarkInvoicedRef(e.target.value)}
+                      placeholder="e.g. FA-2026-001"
+                      className="mt-1"
+                      data-testid="input-accounting-invoice-ref"
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      className="flex-1"
+                      onClick={() => { setMarkInvoicedEntryId(null); setMarkInvoicedRef(""); }}
+                      data-testid="button-cancel-mark-invoiced"
+                    >
+                      <span className="text-[9px] font-bold uppercase tracking-widest">Cancel</span>
+                    </Button>
+                    <Button
+                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white"
+                      disabled={markInvoicedMutation.isPending}
+                      onClick={() => {
+                        if (markInvoicedEntryId) {
+                          markInvoicedMutation.mutate({
+                            entryId: markInvoicedEntryId,
+                            pennylaneInvoiceRef: markInvoicedRef.trim() || undefined,
+                          });
+                        }
+                      }}
+                      data-testid="button-confirm-mark-invoiced"
+                    >
+                      <FileCheck size={14} className="mr-1" />
+                      <span className="text-[9px] font-bold uppercase tracking-widest">
+                        {markInvoicedMutation.isPending ? "Saving..." : "Mark Invoiced"}
+                      </span>
+                    </Button>
+                  </div>
+                </div>
               </DialogContent>
             </Dialog>
           </TabsContent>
