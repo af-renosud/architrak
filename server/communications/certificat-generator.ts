@@ -175,12 +175,16 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   const worksRows = devisDetails.map((dd, i) => {
     const lotNum = dd.lot ? `LOT ${dd.lot.lotNumber}` : "\u2014";
     const worksDesc = dd.devis.descriptionUk || dd.devis.descriptionFr || "\u2014";
+    const invoiceNums = dd.invoices.length > 0
+      ? dd.invoices.map(inv => `#${inv.invoiceNumber}`).join(", ")
+      : "\u2014";
     const rowClass = i % 2 === 1 ? ' class="zebra"' : "";
     return `<tr${rowClass}>
       <td>${worksDesc}</td>
       <td>${contractor.name}</td>
       <td style="text-align:center;">${lotNum}</td>
       <td style="text-align:center;">${dd.devis.devisCode}</td>
+      <td style="text-align:center;">${invoiceNums}</td>
     </tr>`;
   }).join("");
 
@@ -220,34 +224,22 @@ function buildCertificatHtml(data: CertificatPdfData): string {
 <style>
   @page {
     size: A4;
-    margin: 22mm 18mm 25mm 18mm;
-    @top-left {
-      content: "ARCHITRAK";
-      font-size: 7pt;
-      font-weight: 700;
-      letter-spacing: 0.15em;
-      color: #0B2545;
-    }
-    @top-right {
-      content: "CERTIFICAT DE PAIEMENT";
-      font-size: 7pt;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: #7E7F83;
-    }
+    margin: 12mm 18mm 18mm 18mm;
     @bottom-left {
       content: "${project.name} \u2014 ${project.clientName}";
+      font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       font-size: 7pt;
       color: #7E7F83;
     }
     @bottom-center {
       content: "${dateIssued}";
+      font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       font-size: 7pt;
       color: #7E7F83;
     }
     @bottom-right {
       content: "Page " counter(page) " / " counter(pages);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       font-size: 7pt;
       color: #7E7F83;
     }
@@ -265,14 +257,14 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   .cover-header {
     background: linear-gradient(135deg, #0B2545 0%, #143661 55%, #1a4a7a 100%);
     color: #FFFFFF;
-    padding: 20px 30px;
+    padding: 14px 24px;
     margin: -2mm 0 0 0;
   }
   .cover-header-top {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 10px;
+    margin-bottom: 6px;
   }
   .cover-header-top img {
     height: 32px;
@@ -311,30 +303,30 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   .accent-bar {
     height: 4px;
     background: linear-gradient(90deg, #c1a27b 0%, #FFC482 50%, #c1a27b 100%);
-    margin-bottom: 6mm;
+    margin-bottom: 4mm;
   }
 
   .section-title {
-    font-size: 12pt;
+    font-size: 11pt;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: #0B2545;
-    margin-bottom: 4mm;
-    padding-bottom: 2mm;
+    margin-bottom: 3mm;
+    padding-bottom: 1.5mm;
     border-bottom: 1px solid #E6E6E6;
   }
 
   .parties-grid {
     display: flex;
-    gap: 16px;
-    margin-bottom: 6mm;
+    gap: 12px;
+    margin-bottom: 4mm;
   }
   .party-card {
     flex: 1;
     background: #F8F9FA;
     border-left: 3pt solid #C1A27B;
-    padding: 12px 16px;
+    padding: 8px 12px;
   }
   .party-label {
     font-size: 8pt;
@@ -359,21 +351,21 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   table.works-table {
     width: 100%;
     border-collapse: collapse;
-    margin-bottom: 6mm;
+    margin-bottom: 4mm;
   }
   table.works-table th {
     background: #0B2545;
     color: #FFFFFF;
-    font-size: 8pt;
+    font-size: 7pt;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    padding: 8px 12px;
+    padding: 6px 8px;
     text-align: left;
   }
   table.works-table td {
-    padding: 8px 12px;
-    font-size: 9pt;
+    padding: 6px 8px;
+    font-size: 8pt;
     border-bottom: 0.5pt solid #E6E6E6;
   }
   table.works-table tr.zebra td {
@@ -382,94 +374,73 @@ function buildCertificatHtml(data: CertificatPdfData): string {
 
   .kpi-row {
     display: flex;
-    gap: 12px;
-    margin-bottom: 6mm;
+    gap: 10px;
+    margin-bottom: 4mm;
   }
   .kpi-card {
     flex: 1;
     background: linear-gradient(135deg, #f7f9fc 0%, #f0f4f8 100%);
     border-top: 3px solid #0B2545;
     border-radius: 8px;
-    padding: 16px;
+    padding: 10px;
     text-align: center;
   }
   .kpi-label {
-    font-size: 8pt;
+    font-size: 7pt;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: #7E7F83;
-    margin-bottom: 4px;
+    margin-bottom: 2px;
   }
   .kpi-value {
-    font-size: 16pt;
+    font-size: 14pt;
     font-weight: 800;
     color: #0B2545;
     font-variant-numeric: tabular-nums;
   }
   .kpi-sub {
-    font-size: 7pt;
+    font-size: 6pt;
     color: #7E7F83;
-    margin-top: 2px;
-  }
-
-  .cert-ref-box {
-    text-align: center;
-    margin: 6mm 0;
-    padding: 12px 20px;
-    border: 2px solid #0B2545;
-    background: #F8F9FA;
-  }
-  .cert-ref-box .label {
-    font-size: 9pt;
-    font-weight: 400;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: #7E7F83;
-  }
-  .cert-ref-box .ref {
-    font-size: 16pt;
-    font-weight: 800;
-    color: #0B2545;
-    letter-spacing: 0.05em;
+    margin-top: 1px;
   }
 
   .info-box {
     background: #F8F9FA;
     border-left: 3pt solid #C1A27B;
-    padding: 12px 16px;
+    padding: 8px 12px;
   }
 
   .num {
     text-align: right;
     font-variant-numeric: tabular-nums;
-    font-size: 9pt;
-    padding: 3px 0;
+    font-size: 8pt;
+    padding: 2px 0;
   }
 
   .payment-section {
-    margin: 6mm 0;
-    padding: 20px 24px;
+    margin: 4mm 0;
+    padding: 12px 16px;
     background: linear-gradient(135deg, #f7f9fc 0%, #f0f4f8 100%);
     border-top: 3px solid #C1A27B;
     border-radius: 0 0 8px 8px;
   }
   .payment-propose {
-    font-size: 10pt;
-    margin-bottom: 10px;
-    line-height: 1.6;
+    font-size: 9pt;
+    margin-bottom: 6px;
+    line-height: 1.5;
   }
   .payment-propose strong {
     color: #0B2545;
   }
   .payment-amount-words {
     text-align: center;
-    font-size: 11pt;
+    font-size: 10pt;
     font-weight: 800;
     text-transform: uppercase;
     color: #0B2545;
-    margin: 12px 0;
-    padding: 10px;
+    margin: 8px 0;
+    padding: 8px;
     background: #FFFFFF;
     border: 1px solid #E6E6E6;
     border-left: 3pt solid #C1A27B;
@@ -477,33 +448,33 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   }
   .payment-attention {
     text-align: center;
-    font-size: 10pt;
+    font-size: 9pt;
     font-weight: 800;
     text-transform: uppercase;
     color: #c0392b;
-    margin: 10px 0;
+    margin: 6px 0;
     letter-spacing: 0.06em;
   }
   .payment-instructions {
-    font-size: 8pt;
+    font-size: 7pt;
     color: #7E7F83;
-    line-height: 1.6;
-    margin-top: 10px;
+    line-height: 1.5;
+    margin-top: 6px;
     text-align: justify;
   }
 
   .warning-note {
-    font-size: 7pt;
+    font-size: 6pt;
     color: #7E7F83;
-    margin-top: 8px;
+    margin-top: 4px;
     font-style: italic;
     padding-left: 6px;
     border-left: 2px solid #E6E6E6;
   }
 
   .doc-footer {
-    margin-top: 8mm;
-    padding-top: 4mm;
+    margin-top: 4mm;
+    padding-top: 3mm;
     border-top: 0.5pt solid #E6E6E6;
     display: flex;
     justify-content: space-between;
@@ -515,13 +486,13 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     line-height: 1.5;
   }
   .doc-footer-left img {
-    height: 28px;
+    height: 24px;
     width: auto;
-    margin-bottom: 4px;
+    margin-bottom: 3px;
     display: block;
   }
   .doc-footer-right {
-    font-size: 12pt;
+    font-size: 11pt;
     font-weight: 800;
     color: #0B2545;
     text-align: right;
@@ -559,7 +530,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
       <div class="party-label">Ma\u00EEtre d'Ouvrage</div>
       <div class="party-name">${project.clientName}</div>
       <div class="party-detail">
-        ${project.code}${project.clientAddress ? `<br/>${project.clientAddress}` : ""}
+        ${project.siteAddress || ""}
       </div>
     </div>
     <div class="party-card">
@@ -579,17 +550,13 @@ function buildCertificatHtml(data: CertificatPdfData): string {
         <th>Contractor</th>
         <th style="text-align:center;">Lot</th>
         <th style="text-align:center;">Devis No</th>
+        <th style="text-align:center;">Invoice No</th>
       </tr>
     </thead>
     <tbody>
-      ${worksRows || `<tr><td colspan="4" style="color:#7E7F83;font-style:italic;">No devis linked</td></tr>`}
+      ${worksRows || `<tr><td colspan="5" style="color:#7E7F83;font-style:italic;">No devis linked</td></tr>`}
     </tbody>
   </table>
-
-  <div class="cert-ref-box">
-    <div class="label">This Certificate of Payment Reference Is</div>
-    <div class="ref">${certificat.certificateRef}</div>
-  </div>
 
   <div class="section-title">Financial Summary</div>
   <div class="kpi-row">
