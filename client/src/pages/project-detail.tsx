@@ -4,7 +4,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { FolderOpen, ArrowLeft, MapPin, User, FileText, Layers, ScrollText, Award, Coins, BarChart3, Plus, Eye, ChevronRight, Pencil, Upload, Download, ExternalLink, MessageSquare, Send, Clock, RefreshCw, FileCheck, AlertTriangle } from "lucide-react";
+import { FolderOpen, ArrowLeft, MapPin, User, FileText, Layers, ScrollText, Award, Coins, BarChart3, Plus, Eye, EyeOff, ChevronRight, Pencil, Upload, Download, ExternalLink, MessageSquare, Send, Clock, RefreshCw, FileCheck, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -152,6 +152,7 @@ export default function ProjectDetail() {
   const [marcheDialogOpen, setMarcheDialogOpen] = useState(false);
   const [markInvoicedEntryId, setMarkInvoicedEntryId] = useState<number | null>(null);
   const [markInvoicedRef, setMarkInvoicedRef] = useState("");
+  const [showVoidSummary, setShowVoidSummary] = useState(false);
 
   const { data: project, isLoading } = useQuery<Project>({
     queryKey: ["/api/projects", projectId],
@@ -741,11 +742,25 @@ export default function ProjectDetail() {
 
                 {financialSummary.devis.length > 0 ? (
                   <LuxuryCard data-testid="card-devis-breakdown">
-                    <h3 className="text-[14px] font-black uppercase tracking-tight text-foreground mb-4">
-                      Breakdown by Devis
-                    </h3>
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-[14px] font-black uppercase tracking-tight text-foreground">
+                        Breakdown by Devis
+                      </h3>
+                      {financialSummary.devis.filter(ds => ds.status === "void").length > 0 && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-[10px] px-3 gap-1.5"
+                          onClick={() => setShowVoidSummary(!showVoidSummary)}
+                          data-testid="button-toggle-void-summary"
+                        >
+                          {showVoidSummary ? <EyeOff size={12} /> : <Eye size={12} />}
+                          {showVoidSummary ? "Hide" : "Show"} Void [{financialSummary.devis.filter(ds => ds.status === "void").length}]
+                        </Button>
+                      )}
+                    </div>
                     <div className="space-y-4">
-                      {financialSummary.devis.map((ds) => {
+                      {financialSummary.devis.filter(ds => showVoidSummary || ds.status !== "void").map((ds) => {
                         const progress = ds.adjustedHt > 0
                           ? Math.min((ds.certifiedHt / ds.adjustedHt) * 100, 100)
                           : 0;
