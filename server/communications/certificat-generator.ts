@@ -222,9 +222,11 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     size: A4;
     margin: 22mm 18mm 25mm 18mm;
     @top-left {
-      content: ${companyLogoBase64 ? `url("${companyLogoBase64}")` : `"ARCHITRAK"`};
+      content: "ARCHITRAK";
       font-size: 7pt;
-      color: #7E7F83;
+      font-weight: 700;
+      letter-spacing: 0.15em;
+      color: #0B2545;
     }
     @top-right {
       content: "CERTIFICAT DE PAIEMENT";
@@ -263,11 +265,30 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   .cover-header {
     background: linear-gradient(135deg, #0B2545 0%, #143661 55%, #1a4a7a 100%);
     color: #FFFFFF;
-    padding: 24px 30px;
+    padding: 20px 30px;
     margin: -2mm 0 0 0;
+  }
+  .cover-header-top {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    margin-bottom: 10px;
+  }
+  .cover-header-top img {
+    height: 32px;
+    width: auto;
+  }
+  .cover-header-top .firm-name {
+    font-size: 8pt;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    opacity: 0.7;
+  }
+  .cover-header-bottom {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
   }
   .cover-header .doc-title {
     font-size: 18pt;
@@ -494,8 +515,8 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     line-height: 1.5;
   }
   .doc-footer-left img {
-    max-height: 36px;
-    max-width: 110px;
+    height: 28px;
+    width: auto;
     margin-bottom: 4px;
     display: block;
   }
@@ -511,10 +532,16 @@ function buildCertificatHtml(data: CertificatPdfData): string {
 <body>
 
   <div class="cover-header">
-    <div class="doc-title">Certificat de Paiement</div>
-    <div class="doc-ref">
-      Payment Authorisation
-      <strong>${certificat.certificateRef}</strong>
+    <div class="cover-header-top">
+      ${companyLogoBase64 ? `<img src="${companyLogoBase64}" alt="Company Logo" />` : `<span class="firm-name">SAS Architects-France</span>`}
+      <span class="firm-name">${dateIssued}</span>
+    </div>
+    <div class="cover-header-bottom">
+      <div class="doc-title">Certificat de Paiement</div>
+      <div class="doc-ref">
+        Payment Authorisation
+        <strong>${certificat.certificateRef}</strong>
+      </div>
     </div>
   </div>
   <div class="accent-bar"></div>
