@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ChevronDown, ChevronRight, FileText, Upload, FileUp, Loader2, Save, Calendar, Building2, Hash, Receipt } from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, Upload, FileUp, Loader2, Save, Calendar, Building2, Hash, Receipt, CheckCircle2, ShieldCheck } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -281,10 +281,59 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName }: {
     },
   });
 
+  const approveMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/invoices/${invoice.id}/approve`);
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "fees"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "fee-entries"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
+      const commission = data.commissionAmount;
+      if (commission > 0) {
+        toast({ title: "Invoice approved", description: `${formatCurrency(commission)} commission added to Honoraires` });
+      } else {
+        toast({ title: "Invoice approved", description: "No commission rate set — set Honoraires % in the project header" });
+      }
+    },
+    onError: (error: Error) => {
+      toast({ title: "Approval failed", description: error.message, variant: "destructive" });
+    },
+  });
+
   const tvaRate = devis ? (parseFloat(devis.tvaRate) || 20) : (parseFloat(invoice.amountHt) > 0 ? ((parseFloat(invoice.amountTtc) - parseFloat(invoice.amountHt)) / parseFloat(invoice.amountHt) * 100) : 20);
 
   return (
     <div className="ml-4 mt-2 space-y-4 border-l-2 border-[#c1a27b]/30 pl-4 pb-2">
+      {invoice.status === "pending" && (
+        <div className="p-4 rounded-xl border-2 border-amber-200 bg-amber-50/50 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-[13px] font-semibold text-amber-800">Pending Approval</p>
+            <p className="text-[10px] text-amber-600 mt-0.5">Review the extracted data below, then approve to calculate commission</p>
+          </div>
+          <Button
+            onClick={() => approveMutation.mutate()}
+            disabled={approveMutation.isPending}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1.5"
+            data-testid={`button-approve-invoice-${invoice.id}`}
+          >
+            {approveMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
+            <span className="text-[10px] font-bold uppercase tracking-widest">
+              {approveMutation.isPending ? "Approving..." : "Approve Invoice"}
+            </span>
+          </Button>
+        </div>
+      )}
+
+      {invoice.status === "approved" && (
+        <div className="p-3 rounded-xl border border-emerald-200 bg-emerald-50/50 flex items-center gap-2">
+          <CheckCircle2 size={16} className="text-emerald-600" />
+          <p className="text-[12px] font-semibold text-emerald-700">Approved — commission calculated and added to Honoraires</p>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
           <TechnicalLabel>Amount HT</TechnicalLabel>

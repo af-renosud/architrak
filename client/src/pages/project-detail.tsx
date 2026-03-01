@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
@@ -68,6 +68,51 @@ interface DevisSummary {
   resteARealiserTtc: number;
   invoiceCount: number;
   avenantCount: number;
+}
+
+function CommissionInput({ projectId, initialValue }: { projectId: number; initialValue: string }) {
+  const { toast } = useToast();
+  const [value, setValue] = useState(initialValue);
+  const [savedValue, setSavedValue] = useState(initialValue);
+
+  useEffect(() => {
+    setValue(initialValue);
+    setSavedValue(initialValue);
+  }, [initialValue]);
+
+  const saveMutation = useMutation({
+    mutationFn: async (newPct: string) => {
+      await apiRequest("PATCH", `/api/projects/${projectId}`, { feePercentage: newPct });
+    },
+    onSuccess: (_data, newPct) => {
+      setSavedValue(newPct);
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId)] });
+      toast({ title: "Commission rate saved" });
+    },
+    onError: (error: Error) => {
+      setValue(savedValue);
+      toast({ title: "Failed to save commission rate", description: error.message, variant: "destructive" });
+    },
+  });
+  return (
+    <div className="flex items-center gap-1.5 mt-1">
+      <Input
+        type="number"
+        step="0.1"
+        min="0"
+        max="100"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={() => {
+          if (value !== savedValue) saveMutation.mutate(value);
+        }}
+        className="w-20 h-8 text-[13px] font-semibold border-[#c1a27b]/40 focus:border-[#c1a27b]"
+        data-testid="input-commission-pct"
+      />
+      <span className="text-[12px] text-muted-foreground">%</span>
+      {saveMutation.isPending && <span className="text-[10px] text-muted-foreground">Saving...</span>}
+    </div>
+  );
 }
 
 const certFormSchema = insertCertificatSchema.extend({
@@ -584,23 +629,17 @@ export default function ProjectDetail() {
         </div>
 
         <LuxuryCard data-testid="card-project-info">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div>
-              <TechnicalLabel>TVA Rate</TechnicalLabel>
-              <p className="text-[13px] font-semibold text-foreground mt-1" data-testid="text-tva-rate">{project.tvaRate}%</p>
-            </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <div>
               <TechnicalLabel>Honoraires Type</TechnicalLabel>
               <p className="text-[13px] font-semibold text-foreground mt-1" data-testid="text-fee-type">
                 {project.feeType === "percentage" ? "Percentage" : "Fixed"}
               </p>
             </div>
-            {project.feePercentage && (
-              <div>
-                <TechnicalLabel>Honoraires %</TechnicalLabel>
-                <p className="text-[13px] font-semibold text-foreground mt-1" data-testid="text-fee-pct">{project.feePercentage}%</p>
-              </div>
-            )}
+            <div>
+              <TechnicalLabel>Honoraires %</TechnicalLabel>
+              <CommissionInput projectId={parseInt(projectId!)} initialValue={project.feePercentage ?? "0"} />
+            </div>
             <div>
               <TechnicalLabel>Marché</TechnicalLabel>
               <p className="text-[13px] font-semibold text-foreground mt-1" data-testid="text-has-marche">
@@ -1308,6 +1347,15 @@ export default function ProjectDetail() {
                                   data-testid={`row-entry-tab-${entry.id}`}
                                 >
                                   <div>
+                                    {entry.invoiceId && (() => {
+                                      const linkedInv = (projectInvoices ?? []).find(i => i.id === entry.invoiceId);
+                                      const linkedContractor = linkedInv ? contractors?.find(c => c.id === linkedInv.contractorId) : null;
+                                      return linkedInv ? (
+                                        <p className="text-[10px] font-semibold text-[#0B2545] mb-0.5">
+                                          Facture #{linkedInv.invoiceNumber}{linkedContractor ? ` — ${linkedContractor.name}` : ""}
+                                        </p>
+                                      ) : null;
+                                    })()}
                                     <span className="text-[11px] text-foreground">Base: {formatCurrency(parseFloat(entry.baseHt))} x {entry.feeRate}%</span>
                                     {entry.pennylaneInvoiceRef && <p className="text-[10px] text-muted-foreground mt-0.5">PL: {entry.pennylaneInvoiceRef}</p>}
                                     {entry.dateInvoiced && <p className="text-[10px] text-muted-foreground">{entry.dateInvoiced}</p>}

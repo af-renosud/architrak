@@ -50,6 +50,8 @@ Integrates with **ArchiDoc** (project/contractor management) via API sync — pr
 - **Retenue de Garantie**: 5% holdback on each payment, released after 1 year
 - **PV/MV (Plus-value/Moins-value)**: Variation orders that adjust the contracted value
 - **Fee Types**: Works percentage (% of contractor HT), Conception (fixed), Planning (fixed)
+- **Commission Workflow**: Invoice uploaded (pending) → Approve → auto-calculate commission (project feePercentage × invoice HT) → fee entry created in Honoraires
+- **Commission Rate**: Set per-project via editable input in project header (Honoraires %), stored as `feePercentage` on project record
 
 ### Directory Structure
 ```
