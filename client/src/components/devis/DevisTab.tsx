@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, FileUp, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff } from "lucide-react";
+import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -46,7 +46,6 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
   const { toast } = useToast();
   const [expandedDevis, setExpandedDevis] = useState<number | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [dragOver, setDragOver] = useState(false);
   const [showVoid, setShowVoid] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -99,12 +98,6 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
     uploadMutation.mutate(file);
   }, [uploadMutation, toast]);
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    const file = e.dataTransfer.files[0];
-    if (file) handleFileSelect(file);
-  }, [handleFileSelect]);
 
   if (isLoading) {
     return <LuxuryCard><Skeleton className="h-40 w-full" /></LuxuryCard>;
@@ -112,34 +105,25 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
 
   return (
     <div className="space-y-4">
-      {uploading ? (
-        <LuxuryCard>
-          <div className="py-12 text-center">
-            <Loader2 className="mx-auto mb-4 animate-spin text-[#0B2545]" size={40} />
-            <p className="text-[13px] font-semibold text-foreground mb-1">
-              Processing PDF...
-            </p>
-            <p className="text-[11px] text-muted-foreground">
-              Converting pages, extracting contractor, amounts, and line items
-            </p>
-          </div>
-        </LuxuryCard>
-      ) : (
-        <div
-          className={`border-2 border-dashed rounded-2xl p-8 text-center transition-colors cursor-pointer ${dragOver ? "border-[#0B2545] bg-[#0B2545]/5" : "border-[rgba(0,0,0,0.12)] hover:border-[#0B2545]/40"}`}
-          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={handleDrop}
-          onClick={() => fileInputRef.current?.click()}
-          data-testid="dropzone-devis-pdf"
-        >
-          <FileUp className="mx-auto mb-3 text-muted-foreground" size={36} strokeWidth={1} />
-          <p className="text-[12px] font-semibold text-foreground mb-0.5">
-            Drop a quotation PDF here or click to browse
-          </p>
-          <p className="text-[10px] text-muted-foreground">
-            AI will extract contractor, amounts, and line items automatically
-          </p>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          {uploading ? (
+            <Button variant="outline" size="sm" className="h-7 text-[10px] px-3 gap-1.5" disabled data-testid="button-upload-devis">
+              <Loader2 size={12} className="animate-spin" />
+              Processing...
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-[10px] px-3 gap-1.5"
+              onClick={() => fileInputRef.current?.click()}
+              data-testid="button-upload-devis"
+            >
+              <Upload size={12} />
+              Upload Devis
+            </Button>
+          )}
           <input
             ref={fileInputRef}
             type="file"
@@ -153,10 +137,7 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
             data-testid="input-devis-pdf"
           />
         </div>
-      )}
-
-      {voidCount > 0 && (
-        <div className="flex justify-end">
+        {voidCount > 0 && (
           <Button
             variant="outline"
             size="sm"
@@ -167,8 +148,8 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
             {showVoid ? <EyeOff size={12} /> : <Eye size={12} />}
             {showVoid ? "Hide" : "Show"} Void [{voidCount}]
           </Button>
-        </div>
-      )}
+        )}
+      </div>
 
       {filteredDevisList && filteredDevisList.length > 0 ? (
         <div className="space-y-3">
