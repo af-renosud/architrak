@@ -37,7 +37,7 @@ async function completeSyncLog(id: number, status: string, recordsUpdated: numbe
     .where(eq(archidocSyncLog.id, id));
 }
 
-async function upsertProject(p: ArchidocProjectData) {
+export async function upsertProject(p: ArchidocProjectData) {
   const clientName = p.clients?.[0]?.name || null;
   const values = {
     archidocId: p.id,
@@ -69,7 +69,7 @@ async function upsertProject(p: ArchidocProjectData) {
   }
 }
 
-async function upsertContractor(c: ArchidocContractorData) {
+export async function upsertContractor(c: ArchidocContractorData) {
   const values = {
     archidocId: c.id,
     name: c.name,
@@ -108,7 +108,7 @@ async function upsertContractor(c: ArchidocContractorData) {
   }
 }
 
-async function upsertTrade(t: ArchidocTradeData) {
+export async function upsertTrade(t: ArchidocTradeData) {
   const values = {
     archidocId: t.id,
     label: t.label,
@@ -228,6 +228,34 @@ export async function syncTrades(): Promise<{ updated: number; error?: string }>
     await completeSyncLog(log.id, "failed", 0, message);
     console.error(`[ArchiDoc Sync] Trades sync failed: ${message}`);
     return { updated: 0, error: message };
+  }
+}
+
+export async function upsertProposalFee(fee: { projectId: string; proServiceHt?: number; proServiceTva?: number; proServiceTtc?: number; planningHt?: number; planningTva?: number; planningTtc?: number; pmPercentage?: number; pmNote?: string }) {
+  const values = {
+    archidocProjectId: fee.projectId,
+    proServiceHt: fee.proServiceHt?.toString() || null,
+    proServiceTva: fee.proServiceTva?.toString() || null,
+    proServiceTtc: fee.proServiceTtc?.toString() || null,
+    planningHt: fee.planningHt?.toString() || null,
+    planningTva: fee.planningTva?.toString() || null,
+    planningTtc: fee.planningTtc?.toString() || null,
+    pmPercentage: fee.pmPercentage?.toString() || null,
+    pmNote: fee.pmNote || null,
+    syncedAt: new Date(),
+  };
+
+  const existing = await db.select()
+    .from(archidocProposalFees)
+    .where(eq(archidocProposalFees.archidocProjectId, fee.projectId))
+    .limit(1);
+
+  if (existing.length > 0) {
+    await db.update(archidocProposalFees)
+      .set(values)
+      .where(eq(archidocProposalFees.archidocProjectId, fee.projectId));
+  } else {
+    await db.insert(archidocProposalFees).values(values);
   }
 }
 

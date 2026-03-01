@@ -32,6 +32,9 @@ router.get("/api/archidoc/status", async (_req, res) => {
       mirroredProjects: mirroredProjects.length,
       mirroredContractors: mirroredContractors.length,
       trackedProjects: trackedIds.length,
+      webhookEnabled: true,
+      webhookSecretConfigured: !!process.env.ARCHIDOC_WEBHOOK_SECRET,
+      pollingEnabled: process.env.ARCHIDOC_POLLING_ENABLED === "true",
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

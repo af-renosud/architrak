@@ -17,6 +17,7 @@ import gmailRouter from "./gmail";
 import documentsRouter from "./documents";
 import communicationsRouter from "./communications";
 import settingsRouter from "./settings";
+import webhooksRouter from "./webhooks";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -38,6 +39,7 @@ export async function registerRoutes(
   app.use(documentsRouter);
   app.use(communicationsRouter);
   app.use(settingsRouter);
+  app.use(webhooksRouter);
 
   return httpServer;
 }

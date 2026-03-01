@@ -93,7 +93,7 @@ app.use((req, res, next) => {
   registerAuthRoutes(app);
 
   app.use("/api", (req, res, next) => {
-    const publicPaths = ["/auth/login", "/auth/callback", "/auth/logout", "/auth/user"];
+    const publicPaths = ["/auth/login", "/auth/callback", "/auth/logout", "/auth/user", "/webhooks/archidoc"];
     if (publicPaths.includes(req.path)) {
       return next();
     }
@@ -103,7 +103,12 @@ app.use((req, res, next) => {
   registerObjectStorageRoutes(app);
   await registerRoutes(httpServer, app);
 
-  startPolling(15 * 60 * 1000);
+  if (process.env.ARCHIDOC_POLLING_ENABLED === "true") {
+    startPolling(15 * 60 * 1000);
+    console.log("[ArchiDoc] Polling mode active (ARCHIDOC_POLLING_ENABLED=true)");
+  } else {
+    console.log("[ArchiDoc] Webhook mode active, polling disabled. Set ARCHIDOC_POLLING_ENABLED=true to re-enable polling.");
+  }
   startScheduler(60 * 60 * 1000);
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
