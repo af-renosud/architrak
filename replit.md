@@ -148,6 +148,16 @@ shared/
 - **Certificat de Paiement Template**: Full HTML→PDF via DocRaptor (PrinceXML engine). ARCHIDOC design system: Navy gradient cover header, gold accent bars, Inter font, KPI cards for financial figures, zebra-striped tables, info boxes with gold left border, running headers/footers with page numbering. 8 sections: cover header with cert ref, parties (3 cards), works table, cert ref callout, financial KPI cards (HT/TVA/TTC), summary by devis code, payment instruction with amount in French words, footer with Order of Architects registration
 - **DocRaptor PDF Integration**: `server/services/docraptor.ts` — POST HTML to DocRaptor API, returns PDF buffer. Used by `generateCertificatPdf()` in certificat-generator.ts. Logos converted to base64 data URIs for DocRaptor rendering. PDFs stored in object storage as `.pdf` (not `.html`). Preview route returns `application/pdf`. Email attachments auto-detect content type from file extension
 
+## Testing Infrastructure
+- **Framework**: Vitest 4.x (native Vite integration, TypeScript, ESM)
+- **Config**: `vitest.config.ts` — path aliases (`@shared/*`, `@/*`), scoped to `shared/__tests__/**/*.test.ts`
+- **Run**: `npx vitest run` (all tests) or `npx vitest` (watch mode)
+- **Test files**:
+  - `shared/__tests__/financial-utils.test.ts` — roundCurrency, TVA/TTC, Three Buckets, fees, currency formatting (46 tests)
+  - `shared/__tests__/number-to-french-words.test.ts` — French number-to-words conversion (45 tests)
+- **Financial utilities module**: `shared/financial-utils.ts` — pure functions with strict 2-decimal rounding (`roundCurrency` using half-up via `Number.EPSILON`). All currency-returning functions apply rounding before returning. This is a NEW additive module; `routes.ts` and `certificat-generator.ts` still use inline logic (Phase 3 refactor will migrate them)
+- **Rounding policy**: `roundCurrency(value)` = `Math.round((value + Number.EPSILON) * 100) / 100` — prevents floating-point drift in financial aggregation
+
 ## Environment Secrets (updated)
 - `GEMINI_API_KEY` — Google Gemini API key for document parsing
 - `DOCRAPTOR_API_KEY` — DocRaptor API key for HTML→PDF conversion (PrinceXML engine)
