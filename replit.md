@@ -52,6 +52,7 @@ Integrates with **ArchiDoc** (project/contractor management) via API sync — pr
 - **Fee Types**: Works percentage (% of contractor HT), Conception (fixed), Planning (fixed)
 - **Commission Workflow**: Invoice uploaded (pending) → Approve → auto-calculate commission (project feePercentage × invoice HT) → fee entry created in Honoraires
 - **Commission Rate**: Set per-project via editable input in project header (Honoraires %), stored as `feePercentage` on project record
+- **Dashboard Layout**: Gmail status bar (last check time) + per-project rows with 4 counter boxes: Devis (approved/unapproved), Signed (all signed status), Factures (approved/unapproved), Agent (ok/warning). No global financial overview cards
 
 ### Directory Structure
 ```

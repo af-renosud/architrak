@@ -866,60 +866,28 @@ export async function registerRoutes(
     const allInvoices = await storage.getAllInvoices();
     const allCertificatsData = await storage.getAllCertificats();
     const contractors = await storage.getContractors();
+    const allEmailDocs = await storage.getEmailDocuments();
 
     const contractorMap = new Map(contractors.map(c => [c.id, c.name]));
-
-    let totalContractedHt = 0;
-    let totalContractedTtc = 0;
-    let totalCertifiedHt = 0;
-    let totalCertifiedTtc = 0;
-    let totalResteARealiser = 0;
-    let totalResteARealiserTtc = 0;
+    const gmailStatus = getGmailMonitorStatus();
 
     const projectSummaries = await Promise.all(
       allProjects.map(async (project) => {
         const projectDevis = await storage.getDevisByProject(project.id);
         const projectInvoices = allInvoices.filter(inv => inv.projectId === project.id);
-
-        let projContractedHt = 0;
-        let projContractedTtc = 0;
-        let projCertifiedHt = 0;
-        let projCertifiedTtc = 0;
-        let projResteHt = 0;
-        let projResteTtc = 0;
-        let anomalyCount = 0;
+        const projectEmailDocs = allEmailDocs.filter(d => d.projectId === project.id);
 
         const activeDevis = projectDevis.filter(d => d.status !== "void");
-        for (const d of activeDevis) {
-          const avs = await storage.getAvenantsByDevis(d.id);
-          const tvaMultiplier = 1 + (parseFloat(d.tvaRate) || 20) / 100;
-          const originalHt = parseFloat(d.amountHt);
-          const approvedAvenants = avs.filter(a => a.status === "approved");
-          const pvTotal = approvedAvenants.filter(a => a.type === "pv").reduce((s, a) => s + parseFloat(a.amountHt), 0);
-          const mvTotal = approvedAvenants.filter(a => a.type === "mv").reduce((s, a) => s + parseFloat(a.amountHt), 0);
-          const adjustedHt = originalHt + pvTotal - mvTotal;
-          const adjustedTtc = adjustedHt * tvaMultiplier;
-          const certifiedHt = projectInvoices.filter(inv => inv.devisId === d.id).reduce((s, inv) => s + parseFloat(inv.amountHt), 0);
-          const certifiedTtc = projectInvoices.filter(inv => inv.devisId === d.id).reduce((s, inv) => s + parseFloat(inv.amountTtc), 0);
-          const resteHt = adjustedHt - certifiedHt;
-          const resteTtc = adjustedTtc - certifiedTtc;
+        const approvedStatuses = ["approved", "sent", "signed"];
+        const devisApprovedCount = activeDevis.filter(d => approvedStatuses.includes(d.status)).length;
+        const devisUnapprovedCount = activeDevis.length - devisApprovedCount;
+        const allDevisSigned = activeDevis.length > 0 && activeDevis.every(d => d.signOffStage === "signed");
 
-          projContractedHt += adjustedHt;
-          projContractedTtc += adjustedTtc;
-          projCertifiedHt += certifiedHt;
-          projCertifiedTtc += certifiedTtc;
-          projResteHt += resteHt;
-          projResteTtc += resteTtc;
+        const invoiceApprovedCount = projectInvoices.filter(inv => inv.status === "approved").length;
+        const invoiceUnapprovedCount = projectInvoices.filter(inv => inv.status === "pending").length;
 
-          if (resteHt < 0 || certifiedHt > adjustedHt) anomalyCount++;
-        }
-
-        totalContractedHt += projContractedHt;
-        totalContractedTtc += projContractedTtc;
-        totalCertifiedHt += projCertifiedHt;
-        totalCertifiedTtc += projCertifiedTtc;
-        totalResteARealiser += projResteHt;
-        totalResteARealiserTtc += projResteTtc;
+        const agentIssues = projectEmailDocs.filter(d => d.extractionStatus === "pending" || d.extractionStatus === "needs_review");
+        const agentStatus = agentIssues.length > 0 ? "warning" : "ok";
 
         return {
           id: project.id,
@@ -927,15 +895,15 @@ export async function registerRoutes(
           code: project.code,
           clientName: project.clientName,
           status: project.status,
-          devisCount: projectDevis.length,
-          contractedHt: projContractedHt,
-          contractedTtc: projContractedTtc,
-          certifiedHt: projCertifiedHt,
-          certifiedTtc: projCertifiedTtc,
-          resteARealiser: projResteHt,
-          resteARealiserTtc: projResteTtc,
-          progress: projContractedHt > 0 ? Math.min((projCertifiedHt / projContractedHt) * 100, 100) : 0,
-          anomalyCount,
+          devisCount: activeDevis.length,
+          devisApprovedCount,
+          devisUnapprovedCount,
+          allDevisSigned,
+          invoiceCount: projectInvoices.length,
+          invoiceApprovedCount,
+          invoiceUnapprovedCount,
+          agentStatus,
+          agentIssueCount: agentIssues.length,
         };
       })
     );
@@ -1005,15 +973,11 @@ export async function registerRoutes(
     });
 
     res.json({
+      gmailLastCheck: gmailStatus.lastPollTime,
+      gmailPolling: gmailStatus.polling,
       overview: {
         activeProjects: allProjects.filter(p => p.status === "active").length,
         totalProjects: allProjects.length,
-        totalContractedHt,
-        totalContractedTtc,
-        totalCertifiedHt,
-        totalCertifiedTtc,
-        totalResteARealiser,
-        totalResteARealiserTtc,
       },
       projectSummaries,
       recentActivity: recentActivity.slice(0, 15),
