@@ -4,12 +4,12 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { FolderOpen, ArrowLeft, MapPin, User, FileText, Layers, ScrollText, Award, Coins, BarChart3, Plus, Eye, EyeOff, ChevronRight, Pencil, Upload, Download, ExternalLink, MessageSquare, Send, Clock, RefreshCw, FileCheck, AlertTriangle } from "lucide-react";
+import { FolderOpen, ArrowLeft, MapPin, User, FileText, Layers, ScrollText, Award, Coins, BarChart3, Plus, Eye, EyeOff, ChevronRight, Pencil, Upload, Download, ExternalLink, MessageSquare, Send, Clock, RefreshCw, FileCheck, AlertTriangle, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -153,6 +153,7 @@ export default function ProjectDetail() {
   const [markInvoicedEntryId, setMarkInvoicedEntryId] = useState<number | null>(null);
   const [markInvoicedRef, setMarkInvoicedRef] = useState("");
   const [showVoidSummary, setShowVoidSummary] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const { data: project, isLoading } = useQuery<Project>({
     queryKey: ["/api/projects", projectId],
@@ -650,26 +651,47 @@ export default function ProjectDetail() {
           </div>
         </div>
 
-        <LuxuryCard data-testid="card-project-info">
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            <div>
-              <TechnicalLabel>Honoraires Type</TechnicalLabel>
-              <p className="text-[13px] font-semibold text-foreground mt-1" data-testid="text-fee-type">
-                {project.feeType === "percentage" ? "Percentage" : "Fixed"}
-              </p>
+        <div className="flex items-center justify-end mb-1">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-[10px] px-3 gap-1.5"
+            onClick={() => setSettingsOpen(true)}
+            data-testid="button-project-settings"
+          >
+            <Settings size={12} />
+            Honoraires: {project.feeType === "percentage" ? `${project.feePercentage ?? 0}%` : "Fixed"} · Marché: {project.hasMarche ? "Yes" : "No"}
+          </Button>
+        </div>
+
+        <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle className="text-[16px] font-black uppercase tracking-tight">Project Settings</DialogTitle>
+              <DialogDescription className="text-[11px] text-muted-foreground">
+                Commission and contract settings for this project
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 pt-2">
+              <div>
+                <TechnicalLabel>Honoraires Type</TechnicalLabel>
+                <p className="text-[13px] font-semibold text-foreground mt-1" data-testid="text-fee-type">
+                  {project.feeType === "percentage" ? "Percentage" : "Fixed"}
+                </p>
+              </div>
+              <div>
+                <TechnicalLabel>Honoraires %</TechnicalLabel>
+                <CommissionInput projectId={parseInt(projectId!)} initialValue={project.feePercentage ?? "0"} />
+              </div>
+              <div>
+                <TechnicalLabel>Marché</TechnicalLabel>
+                <p className="text-[13px] font-semibold text-foreground mt-1" data-testid="text-has-marche">
+                  {project.hasMarche ? "Yes" : "No"}
+                </p>
+              </div>
             </div>
-            <div>
-              <TechnicalLabel>Honoraires %</TechnicalLabel>
-              <CommissionInput projectId={parseInt(projectId!)} initialValue={project.feePercentage ?? "0"} />
-            </div>
-            <div>
-              <TechnicalLabel>Marché</TechnicalLabel>
-              <p className="text-[13px] font-semibold text-foreground mt-1" data-testid="text-has-marche">
-                {project.hasMarche ? "Yes" : "No"}
-              </p>
-            </div>
-          </div>
-        </LuxuryCard>
+          </DialogContent>
+        </Dialog>
 
         <Tabs defaultValue="resume" data-testid="tabs-project-detail">
           <TabsList className="flex-wrap">
