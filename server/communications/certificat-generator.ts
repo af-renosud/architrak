@@ -1,5 +1,6 @@
 import { storage } from "../storage";
-import { uploadDocument } from "../storage/object-storage";
+import { uploadDocument, getDocumentBuffer } from "../storage/object-storage";
+import { convertHtmlToPdf } from "../services/docraptor";
 import type { Certificat, Project, Contractor, Devis, Lot, Invoice } from "@shared/schema";
 
 interface DevisWithDetails {
@@ -14,8 +15,8 @@ interface CertificatPdfData {
   project: Project;
   contractor: Contractor;
   devisDetails: DevisWithDetails[];
-  companyLogoUrl: string | null;
-  architectsLogoUrl: string | null;
+  companyLogoBase64: string | null;
+  architectsLogoBase64: string | null;
 }
 
 function formatCurrency(value: string | number): string {
@@ -25,16 +26,16 @@ function formatCurrency(value: string | number): string {
 
 function formatCurrencyNoSymbol(value: string | number): string {
   const num = typeof value === "string" ? parseFloat(value) : value;
-  return "€ " + new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(num);
+  return new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(num) + " \u20AC";
 }
 
-function formatDate(date: string | Date | null): string {
-  if (!date) return new Date().toLocaleDateString("en-GB");
-  return new Date(date).toLocaleDateString("en-GB");
+function formatDateFr(date: string | Date | null): string {
+  if (!date) return new Date().toLocaleDateString("fr-FR");
+  return new Date(date).toLocaleDateString("fr-FR");
 }
 
 function numberToFrenchWords(n: number): string {
-  if (n === 0) return "ZÉRO EUROS";
+  if (n === 0) return "Z\u00C9RO EUROS";
 
   const units = ["", "UN", "DEUX", "TROIS", "QUATRE", "CINQ", "SIX", "SEPT", "HUIT", "NEUF",
     "DIX", "ONZE", "DOUZE", "TREIZE", "QUATORZE", "QUINZE", "SEIZE", "DIX-SEPT", "DIX-HUIT", "DIX-NEUF"];
@@ -106,7 +107,19 @@ function numberToFrenchWords(n: number): string {
   return result.trim();
 }
 
-export async function generateCertificatPdf(certificatId: number): Promise<{ storageKey: string; htmlContent: string }> {
+async function loadLogoAsBase64(assetType: string): Promise<string | null> {
+  try {
+    const asset = await storage.getTemplateAssetByType(assetType);
+    if (!asset) return null;
+    const buffer = await getDocumentBuffer(asset.storageKey);
+    const mime = asset.mimeType || "image/png";
+    return `data:${mime};base64,${buffer.toString("base64")}`;
+  } catch {
+    return null;
+  }
+}
+
+export async function generateCertificatPdf(certificatId: number): Promise<{ storageKey: string; pdfBuffer: Buffer }> {
   const certificat = await storage.getCertificat(certificatId);
   if (!certificat) throw new Error(`Certificat ${certificatId} not found`);
 
@@ -128,26 +141,26 @@ export async function generateCertificatPdf(certificatId: number): Promise<{ sto
     })
   );
 
-  let companyLogoUrl: string | null = null;
-  let architectsLogoUrl: string | null = null;
-  try {
-    const companyAsset = await storage.getTemplateAssetByType("company_logo");
-    if (companyAsset) companyLogoUrl = `/api/template-assets/company_logo/file`;
-    const archAsset = await storage.getTemplateAssetByType("architects_order_logo");
-    if (archAsset) architectsLogoUrl = `/api/template-assets/architects_order_logo/file`;
-  } catch {}
+  const [companyLogoBase64, architectsLogoBase64] = await Promise.all([
+    loadLogoAsBase64("company_logo"),
+    loadLogoAsBase64("architects_order_logo"),
+  ]);
 
-  const html = buildCertificatHtml({ certificat, project, contractor, devisDetails, companyLogoUrl, architectsLogoUrl });
+  const html = buildCertificatHtml({ certificat, project, contractor, devisDetails, companyLogoBase64, architectsLogoBase64 });
 
-  const buffer = Buffer.from(html, "utf-8");
-  const fileName = `Certificat_${certificat.certificateRef.replace(/[^a-zA-Z0-9]/g, "_")}.html`;
-  const storageKey = await uploadDocument(project.id, fileName, buffer, "text/html");
+  const dateStr = new Date().toISOString().split("T")[0].replace(/-/g, "");
+  const projectCode = (project.code || "PROJ").replace(/[^a-zA-Z0-9]/g, "");
+  const docName = `CERT-${projectCode}-${certificat.certificateRef}-${dateStr}`;
+  const fileName = `${docName}.pdf`;
 
-  return { storageKey, htmlContent: html };
+  const pdfBuffer = await convertHtmlToPdf(html, docName);
+  const storageKey = await uploadDocument(project.id, fileName, pdfBuffer, "application/pdf");
+
+  return { storageKey, pdfBuffer };
 }
 
 function buildCertificatHtml(data: CertificatPdfData): string {
-  const { certificat, project, contractor, devisDetails, companyLogoUrl, architectsLogoUrl } = data;
+  const { certificat, project, contractor, devisDetails, companyLogoBase64, architectsLogoBase64 } = data;
 
   const netTtc = parseFloat(certificat.netToPayTtc);
   const netHt = parseFloat(certificat.netToPayHt);
@@ -157,15 +170,17 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   const primaryLot = devisDetails.find(d => d.lot)?.lot;
   const lotLabel = primaryLot ? `LOT ${primaryLot.lotNumber}` : "LOT";
   const compositeRef = `${lotLabel} ${certificat.certificateRef}`;
+  const dateIssued = formatDateFr(certificat.dateIssued);
 
-  const worksRows = devisDetails.map(dd => {
-    const lotNum = dd.lot ? `LOT ${dd.lot.lotNumber}` : "—";
-    const worksDesc = dd.devis.descriptionUk || dd.devis.descriptionFr || "—";
-    return `<tr>
+  const worksRows = devisDetails.map((dd, i) => {
+    const lotNum = dd.lot ? `LOT ${dd.lot.lotNumber}` : "\u2014";
+    const worksDesc = dd.devis.descriptionUk || dd.devis.descriptionFr || "\u2014";
+    const rowClass = i % 2 === 1 ? ' class="zebra"' : "";
+    return `<tr${rowClass}>
       <td>${worksDesc}</td>
       <td>${contractor.name}</td>
-      <td>${lotNum}</td>
-      <td>${dd.devis.devisCode}</td>
+      <td style="text-align:center;">${lotNum}</td>
+      <td style="text-align:center;">${dd.devis.devisCode}</td>
     </tr>`;
   }).join("");
 
@@ -173,15 +188,26 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     const worksTtc = parseFloat(dd.devis.amountTtc);
     const invoicedTtc = dd.invoicedTtc;
     const remaining = worksTtc - invoicedTtc;
-    return `<div class="devis-summary-block">
-      <div class="devis-summary-header">
-        <span class="devis-desc">${dd.devis.descriptionFr || dd.devis.descriptionUk || "—"}</span>
-        <span class="devis-ref">${dd.devis.devisCode}</span>
-      </div>
-      <table class="summary-table">
-        <tr><td>WORKS VALUE TTC</td><td class="amount">${formatCurrencyNoSymbol(worksTtc)}</td></tr>
-        <tr><td>INVOICED TO DATE</td><td class="amount">${formatCurrencyNoSymbol(invoicedTtc)}</td></tr>
-        <tr class="remaining"><td>REMAINING</td><td class="amount">${formatCurrencyNoSymbol(remaining)}</td></tr>
+    return `<div class="info-box" style="margin-bottom:10px;">
+      <table style="width:100%;border-collapse:collapse;">
+        <tr>
+          <td style="font-weight:700;font-size:10pt;color:#0B2545;padding-bottom:6px;" colspan="2">
+            ${dd.devis.descriptionFr || dd.devis.descriptionUk || "\u2014"}
+            <span style="float:right;font-size:9pt;color:#7E7F83;font-weight:400;">${dd.devis.devisCode}</span>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:3px 0;font-size:9pt;color:#34312D;">Valeur Travaux TTC</td>
+          <td class="num">${formatCurrencyNoSymbol(worksTtc)}</td>
+        </tr>
+        <tr>
+          <td style="padding:3px 0;font-size:9pt;color:#34312D;">Factur\u00E9 \u00E0 ce jour</td>
+          <td class="num">${formatCurrencyNoSymbol(invoicedTtc)}</td>
+        </tr>
+        <tr style="border-top:1px solid #E6E6E6;">
+          <td style="padding:5px 0 3px;font-size:9pt;font-weight:700;color:#0B2545;">Restant</td>
+          <td class="num" style="font-weight:700;color:#0B2545;">${formatCurrencyNoSymbol(remaining)}</td>
+        </tr>
       </table>
     </div>`;
   }).join("");
@@ -190,180 +216,405 @@ function buildCertificatHtml(data: CertificatPdfData): string {
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>${compositeRef} — Certificat de Paiement</title>
+<title>${compositeRef} \u2014 Certificat de Paiement</title>
 <style>
-  @page { size: A4; margin: 20mm; }
+  @page {
+    size: A4;
+    margin: 22mm 18mm 25mm 18mm;
+    @top-left {
+      content: ${companyLogoBase64 ? `url("${companyLogoBase64}")` : `"ARCHITRAK"`};
+      font-size: 7pt;
+      color: #7E7F83;
+    }
+    @top-right {
+      content: "CERTIFICAT DE PAIEMENT";
+      font-size: 7pt;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #7E7F83;
+    }
+    @bottom-left {
+      content: "${project.name} \u2014 ${project.clientName}";
+      font-size: 7pt;
+      color: #7E7F83;
+    }
+    @bottom-center {
+      content: "${dateIssued}";
+      font-size: 7pt;
+      color: #7E7F83;
+    }
+    @bottom-right {
+      content: "Page " counter(page) " / " counter(pages);
+      font-size: 7pt;
+      color: #7E7F83;
+    }
+  }
+
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: 'Helvetica Neue', Arial, sans-serif; color: #1a1a1a; font-size: 11px; line-height: 1.5; padding: 30px 40px; }
 
-  .top-ref { text-align: right; font-size: 12px; color: #0B2545; margin-bottom: 20px; letter-spacing: 0.5px; }
-  .top-ref strong { font-weight: 800; }
+  body {
+    font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    font-size: 10pt;
+    color: #34312D;
+    line-height: 1.55;
+  }
 
-  .main-title { text-align: center; font-size: 16px; font-weight: 800; color: #0B2545; text-transform: uppercase; letter-spacing: 3px; margin-bottom: 4px; border-top: 3px solid #0B2545; border-bottom: 3px solid #0B2545; padding: 10px 0; }
-  .sub-title { text-align: center; font-size: 10px; font-weight: 700; color: #0B2545; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 20px; }
+  .cover-header {
+    background: linear-gradient(135deg, #0B2545 0%, #143661 55%, #1a4a7a 100%);
+    color: #FFFFFF;
+    padding: 24px 30px;
+    margin: -2mm 0 0 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .cover-header .doc-title {
+    font-size: 18pt;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+  }
+  .cover-header .doc-ref {
+    font-size: 10pt;
+    font-weight: 400;
+    opacity: 0.85;
+    text-align: right;
+  }
+  .cover-header .doc-ref strong {
+    font-size: 14pt;
+    font-weight: 800;
+    display: block;
+    opacity: 1;
+  }
 
-  .header-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
-  .header-logo img { max-height: 60px; max-width: 200px; }
-  .header-date { text-align: right; font-size: 12px; }
-  .header-date strong { color: #0B2545; }
+  .accent-bar {
+    height: 4px;
+    background: linear-gradient(90deg, #c1a27b 0%, #FFC482 50%, #c1a27b 100%);
+    margin-bottom: 6mm;
+  }
 
-  .parties { margin: 16px 0; }
-  .party { margin-bottom: 12px; }
-  .party-label { font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 1.5px; color: #0B2545; margin-bottom: 3px; }
-  .party-value { font-size: 11px; }
-  .party-value strong { font-weight: 700; }
+  .section-title {
+    font-size: 12pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #0B2545;
+    margin-bottom: 4mm;
+    padding-bottom: 2mm;
+    border-bottom: 1px solid #E6E6E6;
+  }
 
-  .works-table { width: 100%; border-collapse: collapse; margin: 16px 0; }
-  .works-table th { background: #0B2545; color: white; padding: 7px 10px; text-align: left; font-size: 9px; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; }
-  .works-table td { padding: 7px 10px; border-bottom: 1px solid #e5e5e5; font-size: 11px; }
+  .parties-grid {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 6mm;
+  }
+  .party-card {
+    flex: 1;
+    background: #F8F9FA;
+    border-left: 3pt solid #C1A27B;
+    padding: 12px 16px;
+  }
+  .party-label {
+    font-size: 8pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #7E7F83;
+    margin-bottom: 4px;
+  }
+  .party-name {
+    font-size: 10pt;
+    font-weight: 700;
+    color: #0B2545;
+    margin-bottom: 2px;
+  }
+  .party-detail {
+    font-size: 8pt;
+    color: #34312D;
+    line-height: 1.5;
+  }
 
-  .cert-ref-callout { text-align: center; margin: 20px 0; padding: 10px; border: 2px solid #0B2545; }
-  .cert-ref-callout span { font-size: 12px; font-weight: 400; color: #0B2545; text-transform: uppercase; letter-spacing: 1px; }
-  .cert-ref-callout strong { font-size: 16px; font-weight: 900; color: #0B2545; }
+  table.works-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 6mm;
+  }
+  table.works-table th {
+    background: #0B2545;
+    color: #FFFFFF;
+    font-size: 8pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 8px 12px;
+    text-align: left;
+  }
+  table.works-table td {
+    padding: 8px 12px;
+    font-size: 9pt;
+    border-bottom: 0.5pt solid #E6E6E6;
+  }
+  table.works-table tr.zebra td {
+    background: #F8F9FA;
+  }
 
-  .amounts-section { margin: 16px 0; }
-  .amount-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #eee; }
-  .amount-row:last-child { border-bottom: none; }
-  .amount-label { font-size: 11px; flex: 1; }
-  .amount-code { font-size: 10px; font-weight: 700; color: #0B2545; width: 40px; text-align: center; }
-  .amount-value { font-size: 13px; font-weight: 700; text-align: right; width: 140px; font-family: 'Courier New', monospace; }
+  .kpi-row {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 6mm;
+  }
+  .kpi-card {
+    flex: 1;
+    background: linear-gradient(135deg, #f7f9fc 0%, #f0f4f8 100%);
+    border-top: 3px solid #0B2545;
+    border-radius: 8px;
+    padding: 16px;
+    text-align: center;
+  }
+  .kpi-label {
+    font-size: 8pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #7E7F83;
+    margin-bottom: 4px;
+  }
+  .kpi-value {
+    font-size: 16pt;
+    font-weight: 800;
+    color: #0B2545;
+    font-variant-numeric: tabular-nums;
+  }
+  .kpi-sub {
+    font-size: 7pt;
+    color: #7E7F83;
+    margin-top: 2px;
+  }
 
-  .devis-summary-section { margin: 20px 0; }
-  .devis-summary-section h3 { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 1.5px; color: #0B2545; margin-bottom: 8px; }
-  .devis-summary-block { border: 1px solid #e5e5e5; border-radius: 4px; padding: 10px; margin-bottom: 10px; }
-  .devis-summary-header { display: flex; justify-content: space-between; margin-bottom: 6px; }
-  .devis-desc { font-size: 11px; font-weight: 700; }
-  .devis-ref { font-size: 10px; color: #666; }
-  .summary-table { width: 100%; border-collapse: collapse; }
-  .summary-table td { padding: 3px 0; font-size: 10px; }
-  .summary-table td.amount { text-align: right; font-family: 'Courier New', monospace; font-weight: 600; }
-  .summary-table tr.remaining td { font-weight: 700; border-top: 1px solid #ccc; padding-top: 4px; }
+  .cert-ref-box {
+    text-align: center;
+    margin: 6mm 0;
+    padding: 12px 20px;
+    border: 2px solid #0B2545;
+    background: #F8F9FA;
+  }
+  .cert-ref-box .label {
+    font-size: 9pt;
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #7E7F83;
+  }
+  .cert-ref-box .ref {
+    font-size: 16pt;
+    font-weight: 800;
+    color: #0B2545;
+    letter-spacing: 0.05em;
+  }
 
-  .warning-note { font-size: 8px; color: #888; margin-top: 6px; font-style: italic; }
-  .warning-note::before { content: "ATTENTION: "; font-weight: 800; }
+  .info-box {
+    background: #F8F9FA;
+    border-left: 3pt solid #C1A27B;
+    padding: 12px 16px;
+  }
 
-  .payment-section { margin: 20px 0; padding: 16px; background: #f8f9fa; border-radius: 4px; }
-  .payment-propose { font-size: 11px; margin-bottom: 8px; }
-  .payment-propose strong { color: #0B2545; }
-  .payment-amount-words { font-size: 12px; font-weight: 800; text-align: center; text-transform: uppercase; color: #0B2545; margin: 10px 0; letter-spacing: 1px; }
-  .payment-attention { font-size: 11px; font-weight: 800; text-transform: uppercase; color: #c0392b; text-align: center; margin: 10px 0; letter-spacing: 1px; }
-  .payment-instructions { font-size: 9px; color: #555; line-height: 1.6; margin-top: 10px; text-align: justify; }
+  .num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-size: 9pt;
+    padding: 3px 0;
+  }
 
-  .footer { margin-top: 30px; border-top: 1px solid #ccc; padding-top: 12px; display: flex; justify-content: space-between; align-items: flex-end; }
-  .footer-left { font-size: 9px; color: #666; }
-  .footer-left img { max-height: 40px; max-width: 120px; margin-bottom: 4px; display: block; }
-  .footer-right { font-size: 14px; font-weight: 900; color: #0B2545; text-align: right; letter-spacing: 1px; }
+  .payment-section {
+    margin: 6mm 0;
+    padding: 20px 24px;
+    background: linear-gradient(135deg, #f7f9fc 0%, #f0f4f8 100%);
+    border-top: 3px solid #C1A27B;
+    border-radius: 0 0 8px 8px;
+  }
+  .payment-propose {
+    font-size: 10pt;
+    margin-bottom: 10px;
+    line-height: 1.6;
+  }
+  .payment-propose strong {
+    color: #0B2545;
+  }
+  .payment-amount-words {
+    text-align: center;
+    font-size: 11pt;
+    font-weight: 800;
+    text-transform: uppercase;
+    color: #0B2545;
+    margin: 12px 0;
+    padding: 10px;
+    background: #FFFFFF;
+    border: 1px solid #E6E6E6;
+    border-left: 3pt solid #C1A27B;
+    letter-spacing: 0.04em;
+  }
+  .payment-attention {
+    text-align: center;
+    font-size: 10pt;
+    font-weight: 800;
+    text-transform: uppercase;
+    color: #c0392b;
+    margin: 10px 0;
+    letter-spacing: 0.06em;
+  }
+  .payment-instructions {
+    font-size: 8pt;
+    color: #7E7F83;
+    line-height: 1.6;
+    margin-top: 10px;
+    text-align: justify;
+  }
+
+  .warning-note {
+    font-size: 7pt;
+    color: #7E7F83;
+    margin-top: 8px;
+    font-style: italic;
+    padding-left: 6px;
+    border-left: 2px solid #E6E6E6;
+  }
+
+  .doc-footer {
+    margin-top: 8mm;
+    padding-top: 4mm;
+    border-top: 0.5pt solid #E6E6E6;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+  }
+  .doc-footer-left {
+    font-size: 7pt;
+    color: #7E7F83;
+    line-height: 1.5;
+  }
+  .doc-footer-left img {
+    max-height: 36px;
+    max-width: 110px;
+    margin-bottom: 4px;
+    display: block;
+  }
+  .doc-footer-right {
+    font-size: 12pt;
+    font-weight: 800;
+    color: #0B2545;
+    text-align: right;
+    letter-spacing: 0.05em;
+  }
 </style>
 </head>
 <body>
 
-  <div class="top-ref">
-    STATEMENT OF ACCOUNT REFERENCE [CERTIFICAT] <strong>${certificat.certificateRef}</strong>
-  </div>
-
-  <div class="main-title">CERTIFICAT DE PAIEMENT: PAYMENT AUTHORISATION</div>
-
-  <div class="header-row">
-    <div class="header-logo">
-      ${companyLogoUrl ? `<img src="${companyLogoUrl}" alt="Company Logo" />` : ""}
-    </div>
-    <div class="header-date">
-      <strong>DATE</strong>&nbsp;&nbsp;&nbsp;&nbsp;${formatDate(certificat.dateIssued)}
+  <div class="cover-header">
+    <div class="doc-title">Certificat de Paiement</div>
+    <div class="doc-ref">
+      Payment Authorisation
+      <strong>${certificat.certificateRef}</strong>
     </div>
   </div>
+  <div class="accent-bar"></div>
 
-  <div class="parties">
-    <div class="party">
-      <div class="party-label">MAÎTRE D'ŒUVRE :</div>
-      <div class="party-value">
-        <strong>SAS ARCHITECTS-FRANCE</strong><br/>
-        2 ROUTE D'AIGUES-VIVES, 34480, CABREROLLES. SIRET: 953 443 918 00016
+  <div class="parties-grid">
+    <div class="party-card">
+      <div class="party-label">Ma\u00EEtre d'\u0152uvre</div>
+      <div class="party-name">SAS ARCHITECTS-FRANCE</div>
+      <div class="party-detail">
+        2 Route d'Aigues-Vives, 34480 Cabrerolles<br/>
+        SIRET : 953 443 918 00016
       </div>
     </div>
-    <div class="party">
-      <div class="party-label">MAÎTRE D'OUVRAGE:</div>
-      <div class="party-value">
-        <strong>${project.clientName}</strong> (${project.code})${project.clientAddress ? `<br/>${project.clientAddress}` : ""}
+    <div class="party-card">
+      <div class="party-label">Ma\u00EEtre d'Ouvrage</div>
+      <div class="party-name">${project.clientName}</div>
+      <div class="party-detail">
+        ${project.code}${project.clientAddress ? `<br/>${project.clientAddress}` : ""}
       </div>
     </div>
-    <div class="party">
-      <div class="party-label">CONTRACTOR:</div>
-      <div class="party-value">
-        <strong>${contractor.name}</strong>${contractor.address ? `, ${contractor.address}` : ""}${contractor.siret ? `, SIRET : ${contractor.siret}` : ""}
+    <div class="party-card">
+      <div class="party-label">Contractor</div>
+      <div class="party-name">${contractor.name}</div>
+      <div class="party-detail">
+        ${contractor.address || ""}${contractor.siret ? `<br/>SIRET : ${contractor.siret}` : ""}
       </div>
     </div>
   </div>
 
+  <div class="section-title">Works Description</div>
   <table class="works-table">
     <thead>
       <tr>
-        <th>WORKS DESCRIPTION UK</th>
-        <th>CONTRACTOR</th>
-        <th>LOT</th>
-        <th>DEVIS NO</th>
+        <th>Description</th>
+        <th>Contractor</th>
+        <th style="text-align:center;">Lot</th>
+        <th style="text-align:center;">Devis No</th>
       </tr>
     </thead>
     <tbody>
-      ${worksRows || `<tr><td colspan="4" style="color:#999;font-style:italic;">No devis linked</td></tr>`}
+      ${worksRows || `<tr><td colspan="4" style="color:#7E7F83;font-style:italic;">No devis linked</td></tr>`}
     </tbody>
   </table>
 
-  <div class="cert-ref-callout">
-    <span>THIS CERTIFICATE OF PAYMENT REFERENCE IS</span>&nbsp;&nbsp;&nbsp;<strong>${certificat.certificateRef}</strong>
+  <div class="cert-ref-box">
+    <div class="label">This Certificate of Payment Reference Is</div>
+    <div class="ref">${certificat.certificateRef}</div>
   </div>
 
-  <div class="amounts-section">
-    <div class="amount-row">
-      <div class="amount-label">THE CONTRACTOR IS REQUESTING THIS AMOUNT [NET TAX]</div>
-      <div class="amount-code">HT</div>
-      <div class="amount-value">${formatCurrencyNoSymbol(netHt)}</div>
+  <div class="section-title">Financial Summary</div>
+  <div class="kpi-row">
+    <div class="kpi-card">
+      <div class="kpi-label">Net HT</div>
+      <div class="kpi-value">${formatCurrencyNoSymbol(netHt)}</div>
+      <div class="kpi-sub">Hors Taxes</div>
     </div>
-    <div class="amount-row">
-      <div class="amount-label">THE CONTRACTOR IS REQUESTING THIS AMOUNT [INC TAX]</div>
-      <div class="amount-code">TTC</div>
-      <div class="amount-value">${formatCurrencyNoSymbol(netTtc)}</div>
+    <div class="kpi-card">
+      <div class="kpi-label">TVA</div>
+      <div class="kpi-value">${formatCurrencyNoSymbol(tvaAmount)}</div>
+      <div class="kpi-sub">Taxe sur la Valeur Ajout\u00E9e</div>
     </div>
-    <div class="amount-row">
-      <div class="amount-label">THE SALES TAX [TVA] IN THIS PAYMENT IS</div>
-      <div class="amount-code">TVA</div>
-      <div class="amount-value">${formatCurrencyNoSymbol(tvaAmount)}</div>
+    <div class="kpi-card" style="border-top-color:#C1A27B;">
+      <div class="kpi-label">Net TTC</div>
+      <div class="kpi-value">${formatCurrencyNoSymbol(netTtc)}</div>
+      <div class="kpi-sub">Toutes Taxes Comprises</div>
     </div>
   </div>
 
   ${devisDetails.length > 0 ? `
-  <div class="devis-summary-section">
-    <h3>SUMMARY BY DEVIS CODE</h3>
-    ${devisSummaryRows}
-    <div class="warning-note">
-      NOTE: INCLUDES ALL INVOICES INCLUDING THIS ONE. MAY NOT REFLECT ACTUAL MONIES RECEIVED.
-    </div>
+  <div class="section-title">Summary by Devis Code</div>
+  ${devisSummaryRows}
+  <div class="warning-note">
+    ATTENTION : Includes all invoices to date. May not reflect actual monies received.
   </div>
   ` : ""}
 
   <div class="payment-section">
     <div class="payment-propose">
-      IN VIEW OF THE PROGRESS OF THE WORK, <strong>SAS ARCHITECTS-FRANCE</strong> PROPOSES THAT THE CLIENT PAY THE SUM OF :
+      In view of the progress of the work, <strong>SAS ARCHITECTS-FRANCE</strong> proposes that the client pay the sum of :
       <strong>${formatCurrencyNoSymbol(netTtc)}</strong>
     </div>
     <div class="payment-amount-words">
-      IN WORDS: ${amountInWords}
+      En toutes lettres : ${amountInWords}
     </div>
     <div class="payment-attention">
-      THIS REQUIRES YOUR PAYMENT AND ATTENTION.
+      This Requires Your Payment and Attention.
     </div>
     <div class="payment-instructions">
-      PLEASE PAY THIS NOW USING THE BANK DETAILS PROVIDED IN THE EMAIL. IF YOU NEED TO PAY FROM DIFFERENT ACCOUNTS ENSURE THAT THE TOTAL IS THE EXACT
-      AMOUNT AS SHOWN. PLEASE MAKE SURE THAT YOUR BANK DOES NOT DEDUCT A TRANSFER FEE FROM THE RECIPIENT. ALL TRANSACTION FEES REMAIN YOURS. THE
-      CONTRACTOR MUST RECEIVE THE EQUIVALENT EUROS IN FULL, EXACTLY AS INDICATED.
+      Please pay this now using the bank details provided in the email. If you need to pay from different accounts ensure that the total is the exact
+      amount as shown. Please make sure that your bank does not deduct a transfer fee from the recipient. All transaction fees remain yours. The
+      contractor must receive the equivalent euros in full, exactly as indicated.
     </div>
   </div>
 
-  <div class="footer">
-    <div class="footer-left">
-      ${architectsLogoUrl ? `<img src="${architectsLogoUrl}" alt="Order of Architects" />` : ""}
-      ARCHITECTS-FRANCE: REGISTRATION WITH THE ORDER OF ARCHITECTS OCCITANIE S24348
+  <div class="doc-footer">
+    <div class="doc-footer-left">
+      ${architectsLogoBase64 ? `<img src="${architectsLogoBase64}" alt="Order of Architects" />` : ""}
+      Architects-France : Registration with the Order of Architects Occitanie S24348
     </div>
-    <div class="footer-right">
+    <div class="doc-footer-right">
       ${compositeRef}
     </div>
   </div>
@@ -376,13 +627,13 @@ export function buildCertificatEmailBody(data: { certificat: Certificat; project
   const { certificat, project, contractor } = data;
   return `Madame, Monsieur,
 
-Veuillez trouver ci-joint le Certificat de Paiement n° ${certificat.certificateRef} relatif au projet "${project.name}" (${project.code}).
+Veuillez trouver ci-joint le Certificat de Paiement n\u00B0 ${certificat.certificateRef} relatif au projet "${project.name}" (${project.code}).
 
-Ce certificat concerne les travaux réalisés par l'entreprise ${contractor.name}.
+Ce certificat concerne les travaux r\u00E9alis\u00E9s par l'entreprise ${contractor.name}.
 
-Montant net à payer TTC: ${formatCurrency(certificat.netToPayTtc)}
+Montant net \u00E0 payer TTC: ${formatCurrency(certificat.netToPayTtc)}
 
-Nous vous remercions de bien vouloir procéder au règlement dans les meilleurs délais.
+Nous vous remercions de bien vouloir proc\u00E9der au r\u00E8glement dans les meilleurs d\u00E9lais.
 
 Cordialement,
 SAS Architects-France`;

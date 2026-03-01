@@ -523,15 +523,10 @@ export default function ProjectDetail() {
         const err = await res.json().catch(() => ({ message: "Preview failed" }));
         throw new Error(err.message);
       }
-      const html = await res.text();
-      const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+      const blob = await res.blob();
       const url = URL.createObjectURL(blob);
-      const win = window.open(url, "_blank");
-      if (win) {
-        win.addEventListener("load", () => URL.revokeObjectURL(url));
-      } else {
-        setTimeout(() => URL.revokeObjectURL(url), 5000);
-      }
+      window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
     } catch (err: unknown) {
       toast({ title: "Preview failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
     } finally {

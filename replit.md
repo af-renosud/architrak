@@ -145,7 +145,9 @@ shared/
 - **Template Assets**: Logo upload system in Settings for certificate templates. `template_assets` table stores company_logo and architects_order_logo. Served via `/api/template-assets/:type/file`
 - **Certificate Numbering**: Auto-sequential per project (C1, C2, C3...). Server assigns next ref on creation via `getNextCertificateRef`. Unique constraint on `(projectId, certificateRef)`. No manual entry
 - **Devis Sign-off Gates**: Two mandatory fields before sign-off can advance past "received": (1) Lot assignment via dropdown, (2) English works description (`descriptionUk`). Both validated server-side on certificate send
-- **Certificat de Paiement Template**: Full HTML template matching the reference PDF format. 8 sections: header with logo, parties (Maître d'Œuvre/d'Ouvrage/Contractor), works identification table, cert ref callout, requested amounts (HT/TTC/TVA), summary by devis code, payment instruction with amount in French words, footer with Order of Architects registration and composite ref (LOT{x} C{n})
+- **Certificat de Paiement Template**: Full HTML→PDF via DocRaptor (PrinceXML engine). ARCHIDOC design system: Navy gradient cover header, gold accent bars, Inter font, KPI cards for financial figures, zebra-striped tables, info boxes with gold left border, running headers/footers with page numbering. 8 sections: cover header with cert ref, parties (3 cards), works table, cert ref callout, financial KPI cards (HT/TVA/TTC), summary by devis code, payment instruction with amount in French words, footer with Order of Architects registration
+- **DocRaptor PDF Integration**: `server/services/docraptor.ts` — POST HTML to DocRaptor API, returns PDF buffer. Used by `generateCertificatPdf()` in certificat-generator.ts. Logos converted to base64 data URIs for DocRaptor rendering. PDFs stored in object storage as `.pdf` (not `.html`). Preview route returns `application/pdf`. Email attachments auto-detect content type from file extension
 
 ## Environment Secrets (updated)
 - `GEMINI_API_KEY` — Google Gemini API key for document parsing
+- `DOCRAPTOR_API_KEY` — DocRaptor API key for HTML→PDF conversion (PrinceXML engine)

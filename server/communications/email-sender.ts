@@ -14,7 +14,7 @@ export async function sendCertificat(certificatId: number): Promise<number> {
   const contractor = await storage.getContractor(certificat.contractorId);
   if (!contractor) throw new Error(`Contractor not found`);
 
-  const { storageKey, htmlContent } = await generateCertificatPdf(certificatId);
+  const { storageKey } = await generateCertificatPdf(certificatId);
 
   const subject = `Certificat de Paiement ${certificat.certificateRef} - ${project.name}`;
   const body = buildCertificatEmailBody({ certificat, project, contractor });
@@ -58,10 +58,13 @@ export async function sendCommunication(communicationId: number): Promise<void> 
       try {
         const buffer = await getDocumentBuffer(key);
         const filename = key.split("/").pop() || "attachment";
+        let contentType = "application/octet-stream";
+        if (filename.endsWith(".pdf")) contentType = "application/pdf";
+        else if (filename.endsWith(".html")) contentType = "text/html";
         attachments.push({
           filename,
           content: buffer.toString("base64"),
-          contentType: "application/octet-stream",
+          contentType,
         });
       } catch (err) {
         console.error(`[EmailSender] Failed to load attachment ${key}:`, err);
