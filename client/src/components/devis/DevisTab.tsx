@@ -235,6 +235,7 @@ function LineItemWithCheck({ li, onUpdate }: { li: DevisLineItem; onUpdate: (dat
   const status = li.checkStatus || "unchecked";
   const notes = li.checkNotes || "";
   const colors = CHECK_COLORS[status] || CHECK_COLORS.unchecked;
+  const [notesOpen, setNotesOpen] = useState(!!notes);
 
   const toggleStatus = (newStatus: string) => {
     onUpdate({ checkStatus: status === newStatus ? "unchecked" : newStatus });
@@ -248,25 +249,61 @@ function LineItemWithCheck({ li, onUpdate }: { li: DevisLineItem; onUpdate: (dat
         <td className="py-1.5 px-2 text-[11px] text-right">{li.quantity}</td>
         <td className="py-1.5 px-2 text-[11px] text-right">{li.unitPriceHt ? formatCurrency(parseFloat(li.unitPriceHt)) : "-"}</td>
         <td className="py-1.5 px-2 text-[11px] text-right font-medium">{formatCurrency(parseFloat(li.totalHt))}</td>
-        <td className="py-1.5 px-2 text-right">
-          <Input
-            type="number"
-            className="h-6 w-16 text-[10px] text-right inline-block"
-            defaultValue={li.percentComplete ?? "0"}
-            min={0}
-            max={100}
-            step={5}
-            onBlur={(e) => onUpdate({ percentComplete: e.target.value })}
-            data-testid={`input-line-progress-${li.id}`}
-          />
+        <td className="py-1.5 px-2">
+          <div className="flex items-center justify-end gap-1">
+            <Input
+              type="number"
+              className="h-6 w-16 text-[10px] text-right inline-block"
+              defaultValue={li.percentComplete ?? "0"}
+              min={0}
+              max={100}
+              step={5}
+              onBlur={(e) => onUpdate({ percentComplete: e.target.value })}
+              data-testid={`input-line-progress-${li.id}`}
+            />
+            <div className="flex items-center gap-0.5 ml-1">
+              <button
+                className={`w-6 h-6 rounded-md border-2 transition-all flex items-center justify-center ${status === "green" ? "bg-emerald-500 border-emerald-600 ring-2 ring-emerald-300" : "border-emerald-400 hover:bg-emerald-50"}`}
+                onClick={() => toggleStatus("green")}
+                title="Approved"
+                data-testid={`button-check-green-${li.id}`}
+              >
+                {status === "green" && <Check size={12} className="text-white" />}
+              </button>
+              <button
+                className={`w-6 h-6 rounded-md border-2 transition-all flex items-center justify-center ${status === "amber" ? "bg-amber-400 border-amber-500 ring-2 ring-amber-200" : "border-amber-400 hover:bg-amber-50"}`}
+                onClick={() => toggleStatus("amber")}
+                title="Questioned"
+                data-testid={`button-check-amber-${li.id}`}
+              >
+                {status === "amber" && <span className="text-white text-[10px] font-bold">?</span>}
+              </button>
+              <button
+                className={`w-6 h-6 rounded-md border-2 transition-all flex items-center justify-center ${status === "red" ? "bg-rose-500 border-rose-600 ring-2 ring-rose-300" : "border-rose-400 hover:bg-rose-50"}`}
+                onClick={() => toggleStatus("red")}
+                title="Rejected"
+                data-testid={`button-check-red-${li.id}`}
+              >
+                {status === "red" && <span className="text-white text-[10px] font-bold">✕</span>}
+              </button>
+            </div>
+            <button
+              className={`w-6 h-6 rounded-md border transition-all flex items-center justify-center ml-0.5 ${notesOpen ? "bg-[#c1a27b]/10 border-[#c1a27b] text-[#c1a27b]" : notes ? "border-[#c1a27b]/50 text-[#c1a27b]" : "border-gray-200 text-gray-400 hover:text-[#c1a27b] hover:border-[#c1a27b]/50"}`}
+              onClick={() => setNotesOpen(!notesOpen)}
+              title={notesOpen ? "Hide notes" : "Show notes"}
+              data-testid={`button-toggle-notes-${li.id}`}
+            >
+              <FileText size={11} />
+            </button>
+          </div>
         </td>
       </tr>
-      <tr className={`border-l-[3px] ${colors.border}`}>
-        <td colSpan={6} className="px-2 pb-3 pt-0.5">
-          <div className="flex items-center gap-2">
+      {notesOpen && (
+        <tr className={`border-l-[3px] ${colors.border}`}>
+          <td colSpan={6} className="px-2 pb-2 pt-0.5">
             <input
               type="text"
-              className="flex-1 h-8 px-3 text-[11px] rounded-lg border-2 outline-none transition-colors bg-white"
+              className="w-full h-7 px-3 text-[11px] rounded-lg border-2 outline-none transition-colors bg-white"
               style={{ borderColor: "#c1a27b" }}
               placeholder="Notes"
               defaultValue={notes}
@@ -277,33 +314,18 @@ function LineItemWithCheck({ li, onUpdate }: { li: DevisLineItem; onUpdate: (dat
               }}
               data-testid={`input-line-notes-${li.id}`}
             />
-            <button
-              className={`w-7 h-7 rounded-lg border-2 transition-all flex items-center justify-center ${status === "green" ? "bg-emerald-500 border-emerald-600 ring-2 ring-emerald-300" : "border-emerald-400 hover:bg-emerald-50"}`}
-              onClick={() => toggleStatus("green")}
-              title="Approved"
-              data-testid={`button-check-green-${li.id}`}
-            >
-              {status === "green" && <Check size={14} className="text-white" />}
-            </button>
-            <button
-              className={`w-7 h-7 rounded-lg border-2 transition-all flex items-center justify-center ${status === "amber" ? "bg-amber-400 border-amber-500 ring-2 ring-amber-200" : "border-amber-400 hover:bg-amber-50"}`}
-              onClick={() => toggleStatus("amber")}
-              title="Questioned"
-              data-testid={`button-check-amber-${li.id}`}
-            >
-              {status === "amber" && <span className="text-white text-[12px] font-bold">?</span>}
-            </button>
-            <button
-              className={`w-7 h-7 rounded-lg border-2 transition-all flex items-center justify-center ${status === "red" ? "bg-rose-500 border-rose-600 ring-2 ring-rose-300" : "border-rose-400 hover:bg-rose-50"}`}
-              onClick={() => toggleStatus("red")}
-              title="Rejected"
-              data-testid={`button-check-red-${li.id}`}
-            >
-              {status === "red" && <span className="text-white text-[12px] font-bold">✕</span>}
-            </button>
-          </div>
-        </td>
-      </tr>
+          </td>
+        </tr>
+      )}
+      {!notesOpen && notes && (
+        <tr className={`border-l-[3px] ${colors.border}`}>
+          <td colSpan={6} className="px-2 pb-1 pt-0">
+            <p className="text-[10px] text-[#c1a27b] italic truncate cursor-pointer" onClick={() => setNotesOpen(true)} data-testid={`text-note-preview-${li.id}`}>
+              {notes}
+            </p>
+          </td>
+        </tr>
+      )}
     </>
   );
 }
