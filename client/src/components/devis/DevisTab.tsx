@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, FileUp, Loader2, ExternalLink, Check, Ban, AlertTriangle } from "lucide-react";
+import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, FileUp, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -47,11 +47,15 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
   const [expandedDevis, setExpandedDevis] = useState<number | null>(null);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [showVoid, setShowVoid] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: devisList, isLoading } = useQuery<Devis[]>({
     queryKey: ["/api/projects", projectId, "devis"],
   });
+
+  const voidCount = devisList?.filter(d => d.status === "void").length ?? 0;
+  const filteredDevisList = showVoid ? devisList : devisList?.filter(d => d.status !== "void");
 
   const uploadMutation = useMutation({
     mutationFn: async (file: File) => {
@@ -151,9 +155,24 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
         </div>
       )}
 
-      {devisList && devisList.length > 0 ? (
+      {voidCount > 0 && (
+        <div className="flex justify-end">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-[10px] px-3 gap-1.5"
+            onClick={() => setShowVoid(!showVoid)}
+            data-testid="button-toggle-void"
+          >
+            {showVoid ? <EyeOff size={12} /> : <Eye size={12} />}
+            {showVoid ? "Hide" : "Show"} Void [{voidCount}]
+          </Button>
+        </div>
+      )}
+
+      {filteredDevisList && filteredDevisList.length > 0 ? (
         <div className="space-y-3">
-          {devisList.map((d) => (
+          {filteredDevisList.map((d) => (
             <div key={d.id}>
               <LuxuryCard data-testid={`card-devis-${d.id}`}>
                 <div
