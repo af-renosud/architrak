@@ -62,14 +62,41 @@ client/src/
   components/devis/     — DevisTab component
   components/factures/  — FacturesTab component (invoice list, PDF viewer, notes)
   pages/                — Dashboard, Projects, Contractors, Financial Tracking, Certificats, Fees,
-                          Email Documents, Communications, Project Detail, Contractor Detail
-  hooks/                — use-toast, use-mobile
-  lib/                  — queryClient, utils
+                          Email Documents, Communications, Project Detail, Contractor Detail, Login
+  hooks/                — use-toast, use-mobile, use-auth
+  lib/                  — queryClient, utils, auth-utils
 server/
-  index.ts              — Express server entry point
-  routes.ts             — All API routes
+  index.ts              — Express server entry point (session, auth, middleware, route mounting)
   storage.ts            — DatabaseStorage implementation (IStorage interface)
   db.ts                 — Drizzle ORM database connection
+  auth/                 — Google OAuth: google-oauth.ts, routes.ts, middleware.ts
+  middleware/            — upload.ts (multer configuration, isolated to prevent circular deps)
+  routes/               — Domain-driven router modules (Phase 3 refactor)
+    index.ts            — Orchestrator: mounts all domain routers
+    projects.ts         — /api/projects CRUD (5 routes)
+    contractors.ts      — /api/contractors CRUD + related queries (6 routes)
+    marches.ts          — /api/marches CRUD (4 routes)
+    lots.ts             — /api/lots CRUD (4 routes)
+    devis.ts            — /api/devis CRUD + upload + line-items + avenants (13 routes)
+    invoices.ts         — /api/invoices CRUD + upload + approval (7 routes)
+    situations.ts       — /api/situations + situation lines (6 routes)
+    certificats.ts      — /api/certificats CRUD + preview + send (7 routes)
+    fees.ts             — /api/fees + fee-entries + mark-invoiced (8 routes)
+    financial.ts        — /api/projects/:id/financial-summary (1 route)
+    dashboard.ts        — /api/dashboard/summary (1 route)
+    archidoc.ts         — /api/archidoc/* sync/track/status (6 routes)
+    gmail.ts            — /api/gmail/* + /api/email-documents/* (7 routes)
+    documents.ts        — /api/documents + downloads (4 routes)
+    communications.ts   — /api/communications + reminders + payment-evidence (9 routes)
+    settings.ts         — /api/settings/* AI models + template assets (6 routes)
+  services/             — Business logic services (no HTTP concerns)
+    docraptor.ts        — DocRaptor PDF generation client
+    devis-upload.service.ts      — AI extraction → Devis + line items creation
+    invoice-upload.service.ts    — AI extraction → Invoice creation
+    invoice-approval.service.ts  — Approve invoice → fee entry + fee recalculation
+    fee-calculation.service.ts   — Mark fee-entry invoiced → fee totals recalculation
+    financial-summary.service.ts — Three Buckets aggregation per project
+    dashboard.service.ts         — Dashboard summary aggregation
   archidoc/             — ArchiDoc sync: sync-client, sync-service, import-service
   gmail/                — Gmail monitoring: client, monitor, document-parser
   communications/       — certificat-generator, email-sender, payment-scheduler
@@ -77,6 +104,7 @@ server/
   replit_integrations/  — Auto-generated integration code (OpenAI, Gmail, Object Storage)
 shared/
   schema.ts             — Drizzle table definitions + Zod insert schemas + types
+  financial-utils.ts    — Pure financial calculation functions (95 tests)
 ```
 
 ### API Endpoints
