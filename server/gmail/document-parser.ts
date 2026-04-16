@@ -237,19 +237,62 @@ const EXTRACTION_SCHEMA: ResponseSchema = {
   required: ["documentType"],
 };
 
+export class PdfPasswordProtectedError extends Error {
+  constructor() {
+    super(
+      "Ce PDF est protégé par un mot de passe utilisateur et ne peut pas être traité automatiquement. " +
+      "Veuillez ouvrir le PDF dans votre logiciel de comptabilité, l'imprimer en PDF (sans protection), " +
+      "puis re-télécharger le fichier résultant."
+    );
+    this.name = "PdfPasswordProtectedError";
+  }
+}
+
+async function decryptPdf(inputPath: string, outputPath: string): Promise<{ decrypted: boolean; wasProtected: boolean }> {
+  return new Promise((resolve, reject) => {
+    execFile("qpdf", ["--decrypt", inputPath, outputPath], { timeout: 15000 }, (err, _stdout, stderr) => {
+      if (!err) {
+        resolve({ decrypted: true, wasProtected: false });
+        return;
+      }
+      const msg = (stderr || "").toLowerCase();
+      if (msg.includes("invalid password") || msg.includes("password required")) {
+        reject(new PdfPasswordProtectedError());
+      } else {
+        resolve({ decrypted: false, wasProtected: false });
+      }
+    });
+  });
+}
+
 async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Promise<Buffer[]> {
   const tempDir = await mkdtemp(join(tmpdir(), "architrak-pdf-"));
   const pdfPath = join(tempDir, "input.pdf");
+  const decryptedPath = join(tempDir, "decrypted.pdf");
   const outputPrefix = join(tempDir, "page");
 
   try {
     await writeFile(pdfPath, pdfBuffer);
 
+    let pdfToProcess = pdfPath;
+    try {
+      const { decrypted } = await decryptPdf(pdfPath, decryptedPath);
+      if (decrypted) {
+        pdfToProcess = decryptedPath;
+        console.log("[document-parser] PDF had security restrictions — stripped with qpdf before extraction");
+      }
+    } catch (err) {
+      if (err instanceof PdfPasswordProtectedError) {
+        throw err;
+      }
+      console.warn("[document-parser] qpdf pre-processing failed, proceeding with original PDF:", err);
+    }
+
     await new Promise<void>((resolve, reject) => {
       execFile("pdftoppm", [
         "-png", "-r", "200",
         "-l", String(maxPages),
-        pdfPath, outputPrefix,
+        pdfToProcess, outputPrefix,
       ], { timeout: 30000 }, (err) => {
         if (err) reject(err);
         else resolve();
@@ -495,10 +538,17 @@ export async function processEmailDocument(emailDocumentId: number): Promise<voi
 
     console.log(`[DocumentParser] Processed document ${emailDocumentId}: type=${parsed.documentType}, matchConfidence=${match.confidence}%, validationValid=${validation.isValid}, validationScore=${validation.confidenceScore}, status=${status}`);
   } catch (err: any) {
-    console.error(`[DocumentParser] Failed to process document ${emailDocumentId}:`, err);
+    const isPasswordProtected = err instanceof PdfPasswordProtectedError;
+    if (isPasswordProtected) {
+      console.warn(`[DocumentParser] Document ${emailDocumentId} is password-protected — cannot extract`);
+    } else {
+      console.error(`[DocumentParser] Failed to process document ${emailDocumentId}:`, err);
+    }
     await storage.updateEmailDocument(emailDocumentId, {
       extractionStatus: "failed",
-      notes: err.message,
+      notes: isPasswordProtected
+        ? `PDF protégé par mot de passe: ${err.message}`
+        : err.message,
     });
   }
 }

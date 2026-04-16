@@ -4,6 +4,7 @@ import { storage } from "../storage";
 import { insertDevisSchema, insertDevisLineItemSchema, insertAvenantSchema } from "@shared/schema";
 import { upload } from "../middleware/upload";
 import { processDevisUpload } from "../services/devis-upload.service";
+import { PdfPasswordProtectedError } from "../gmail/document-parser";
 import { getDocumentStream } from "../storage/object-storage";
 import { validateExtraction } from "../services/extraction-validator";
 import { roundCurrency, calculateTtc } from "../../shared/financial-utils";
@@ -41,6 +42,9 @@ router.post("/api/projects/:projectId/devis/upload", upload.single("file"), asyn
     const result = await processDevisUpload(projectId, file);
     res.status(result.status).json(result.data);
   } catch (err: unknown) {
+    if (err instanceof PdfPasswordProtectedError) {
+      return res.status(422).json({ message: err.message, code: "PDF_PASSWORD_PROTECTED" });
+    }
     const message = err instanceof Error ? err.message : String(err);
     console.error("[Devis Upload] Error:", message);
     res.status(500).json({ message: `Upload/parse failed: ${message}` });

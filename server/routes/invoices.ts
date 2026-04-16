@@ -4,6 +4,7 @@ import { storage } from "../storage";
 import { insertInvoiceSchema } from "@shared/schema";
 import { upload } from "../middleware/upload";
 import { processInvoiceUpload } from "../services/invoice-upload.service";
+import { PdfPasswordProtectedError } from "../gmail/document-parser";
 import { approveInvoice } from "../services/invoice-approval.service";
 import { getDocumentStream } from "../storage/object-storage";
 import { validateExtraction } from "../services/extraction-validator";
@@ -33,6 +34,9 @@ router.post("/api/devis/:devisId/invoices/upload", upload.single("file"), async 
     const result = await processInvoiceUpload(devisId, file);
     res.status(result.status).json(result.data);
   } catch (err: unknown) {
+    if (err instanceof PdfPasswordProtectedError) {
+      return res.status(422).json({ message: err.message, code: "PDF_PASSWORD_PROTECTED" });
+    }
     const message = err instanceof Error ? err.message : String(err);
     console.error("[Invoice Upload] Error:", message);
     res.status(500).json({ message: `Invoice upload/parse failed: ${message}` });
