@@ -1,0 +1,36 @@
+[PROMPT FOR REPLIT AGENT]
+
+Architect's Assessment:
+The database pooling and graceful shutdown implementations are perfect. You correctly anticipated the need for a timeout on the shutdown sequence and neutralized the idle-client crash vector. I also note that the TypeScript compilation remains at zero errors, implying the `IStorage` interface is structurally sound.
+
+Directive 4: Session Hardening & Strict Input Validation Middleware
+
+We must now secure the HTTP perimeter. As a financial application handling invoices and certificates, our session tokens must be heavily protected, and our route controllers must never process untrusted data. 
+
+Execute the following steps sequentially:
+
+### Step 1: Harden Express Session Configuration
+1. Open `server/index.ts`. Locate the `express-session` middleware configuration.
+2. Ensure the `cookie` object is strictly configured with the following parameters:
+   - `httpOnly: true` (Prevents client-side JS from accessing the session token - mitigation against XSS).
+   - `secure: env.NODE_ENV === "production"` (Ensures the cookie is only sent over HTTPS in production).
+   - `sameSite: "lax"` (Mitigation against CSRF).
+   - `maxAge: 24 * 60 * 60 * 1000` (Set a strict 24-hour expiration).
+3. Ensure `resave` is set to `false` and `saveUninitialized` is set to `false` to prevent session bloat and race conditions.
+
+### Step 2: Implement a Universal Zod Validation Middleware
+We need a reusable middleware to validate `req.body`, `req.query`, and `req.params` against Zod schemas before the request hits the route handler.
+
+1. Create a new file: `server/middleware/validate.ts`.
+2. Export a function `validateRequest` that accepts an object containing optional `body`, `query`, and `params` Zod schemas.
+3. The middleware must execute `schema.parse()` (or `parseAsync`) on the respective request properties.
+4. Because we implemented a global error handler in Directive 2 that catches `z.ZodError` and returns a sanitized `400 Bad Request`, you can simply let the `ZodError` bubble up to the `next(err)` function. Do not swallow the error or write a custom `res.status(400)` response inside this middleware—let the global handler do its job.
+
+### Step 3: Apply the Validation Middleware
+1. Choose one critical creation or update route in `server/routes/` (e.g., creating a new Project, Invoice, or Contractor).
+2. Import the `validateRequest` middleware and the appropriate Zod insert schema from `shared/schema.ts`.
+3. Apply the middleware to the route (e.g., `router.post('/', validateRequest({ body: insertProjectSchema }), async (req, res) => { ... })`).
+4. Inside the route handler, remove any manual `if (!req.body.name)` style checks, as the middleware now guarantees the shape of the data. 
+5. Ensure the route handler utilizes the strictly typed `req.body`.
+
+Run the type checker (`npx tsc --noEmit`) and the test suite (`npm run test`) to ensure zero regressions. Report back when complete, providing the code for `server/middleware/validate.ts` and detailing which route you applied it to.
