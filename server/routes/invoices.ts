@@ -9,6 +9,7 @@ import { approveInvoice } from "../services/invoice-approval.service";
 import { getDocumentStream } from "../storage/object-storage";
 import { validateExtraction } from "../services/extraction-validator";
 import { roundCurrency, calculateTtc } from "../../shared/financial-utils";
+import { reconcileAdvisories, getAdvisoriesForInvoice } from "../services/advisory-reconciler";
 
 const invoiceConfirmSchema = z.object({
   amountHt: z.coerce.number().nonnegative().optional(),
@@ -107,17 +108,22 @@ router.post("/api/invoices/:id/confirm", async (req, res) => {
     if (corrections.invoiceNumber != null) updates.invoiceNumber = corrections.invoiceNumber;
     if (corrections.dateIssued != null) updates.dateIssued = corrections.dateIssued;
 
+    let nextWarnings = (invoice.validationWarnings as any[] | null) ?? [];
     if (Object.keys(corrections).length > 0) {
       const aiData = (invoice.aiExtractedData as any) || {};
       const correctedParsed = { ...aiData, ...corrections };
       const revalidation = validateExtraction(correctedParsed);
-      updates.validationWarnings = revalidation.isValid ? null : revalidation.warnings;
+      nextWarnings = revalidation.warnings;
+      updates.validationWarnings = revalidation.warnings;
       updates.aiConfidence = revalidation.confidenceScore;
-    } else {
-      updates.validationWarnings = null;
     }
 
     const updated = await storage.updateInvoice(Number(req.params.id), updates);
+    try {
+      await reconcileAdvisories({ invoiceId: Number(req.params.id) }, nextWarnings);
+    } catch (advErr) {
+      console.warn("[Invoice Confirm] Advisory reconciliation failed:", advErr);
+    }
     res.json(updated);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -141,6 +147,11 @@ router.delete("/api/invoices/:id", async (req, res) => {
 router.get("/api/projects/:projectId/invoices", async (req, res) => {
   const invs = await storage.getInvoicesByProject(Number(req.params.projectId));
   res.json(invs);
+});
+
+router.get("/api/invoices/:id/advisories", async (req, res) => {
+  const items = await getAdvisoriesForInvoice(Number(req.params.id));
+  res.json(items);
 });
 
 export default router;

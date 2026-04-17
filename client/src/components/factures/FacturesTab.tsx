@@ -13,6 +13,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Invoice, Contractor, Devis } from "@shared/schema";
+import { AdvisoriesList } from "@/components/advisories/AdvisoriesList";
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
@@ -368,6 +369,13 @@ function DraftReviewPanel({ invoice, projectId, devis }: {
           ))}
         </div>
       )}
+
+      <div className="space-y-1.5">
+        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+          Persisted Advisories
+        </p>
+        <AdvisoriesList subject={{ type: "invoice", id: invoice.id }} />
+      </div>
 
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
         <div>

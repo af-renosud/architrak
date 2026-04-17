@@ -19,6 +19,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { insertDevisLineItemSchema, insertAvenantSchema, insertLotSchema } from "@shared/schema";
 import type { Devis, Contractor, Lot, DevisLineItem, Avenant, Invoice } from "@shared/schema";
 import { z } from "zod";
+import { AdvisoriesList } from "@/components/advisories/AdvisoriesList";
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
@@ -427,6 +428,11 @@ function DraftReviewPanel({ data, projectId, onClose }: DraftReviewPanelProps) {
               ))}
             </div>
           )}
+
+          <div className="space-y-1.5">
+            <TechnicalLabel>Persisted Advisories</TechnicalLabel>
+            <AdvisoriesList subject={{ type: "devis", id: devisId }} />
+          </div>
 
           <div className="space-y-1.5">
             <TechnicalLabel>Contractor</TechnicalLabel>

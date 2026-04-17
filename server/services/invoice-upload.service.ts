@@ -2,6 +2,7 @@ import { storage } from "../storage";
 import { uploadDocument } from "../storage/object-storage";
 import { validateExtraction } from "./extraction-validator";
 import { roundCurrency, calculateTtc, calculateTva } from "../../shared/financial-utils";
+import { reconcileAdvisories } from "./advisory-reconciler";
 
 interface UploadedFile {
   originalname: string;
@@ -68,6 +69,12 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
     aiExtractedData: parsed,
     aiConfidence: validation.confidenceScore,
   });
+
+  try {
+    await reconcileAdvisories({ invoiceId: invoice.id }, validation.warnings);
+  } catch (advErr) {
+    console.warn(`[Invoice Upload] Failed to persist advisories:`, advErr);
+  }
 
   return {
     success: true,

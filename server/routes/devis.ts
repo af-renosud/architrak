@@ -9,6 +9,11 @@ import { PdfPasswordProtectedError } from "../gmail/document-parser";
 import { getDocumentStream } from "../storage/object-storage";
 import { validateExtraction } from "../services/extraction-validator";
 import { roundCurrency, calculateTtc } from "../../shared/financial-utils";
+import {
+  reconcileAdvisories,
+  getAdvisoriesForDevis,
+  acknowledgeAdvisory,
+} from "../services/advisory-reconciler";
 
 const devisConfirmSchema = z.object({
   amountHt: z.coerce.number().nonnegative().optional(),
@@ -151,17 +156,22 @@ router.post("/api/devis/:id/confirm", async (req, res) => {
     if (corrections.descriptionFr != null) updates.descriptionFr = corrections.descriptionFr;
     if (corrections.dateSent != null) updates.dateSent = corrections.dateSent;
 
+    let nextWarnings = (devis.validationWarnings as any[] | null) ?? [];
     if (Object.keys(corrections).length > 0) {
       const aiData = (devis.aiExtractedData as any) || {};
       const correctedParsed = { ...aiData, ...corrections };
       const revalidation = validateExtraction(correctedParsed);
-      updates.validationWarnings = revalidation.isValid ? null : revalidation.warnings;
+      nextWarnings = revalidation.warnings;
+      updates.validationWarnings = revalidation.warnings;
       updates.aiConfidence = revalidation.confidenceScore;
-    } else {
-      updates.validationWarnings = null;
     }
 
     const { devis: updated, inserted } = await confirmDevisAndMirror(Number(req.params.id), updates);
+    try {
+      await reconcileAdvisories({ devisId: Number(req.params.id) }, nextWarnings);
+    } catch (advErr) {
+      console.warn("[Devis Confirm] Advisory reconciliation failed:", advErr);
+    }
     if (updated && inserted.length > 0) {
       // Tag assignment is awaited (synchronous before response) so that the
       // mirrored benchmark items are fully tagged and queryable as soon as
@@ -174,6 +184,18 @@ router.post("/api/devis/:id/confirm", async (req, res) => {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ message: `Confirm failed: ${message}` });
   }
+});
+
+router.get("/api/devis/:id/advisories", async (req, res) => {
+  const items = await getAdvisoriesForDevis(Number(req.params.id));
+  res.json(items);
+});
+
+router.post("/api/advisories/:id/acknowledge", async (req, res) => {
+  const acknowledgedBy = typeof req.body?.acknowledgedBy === "string" ? req.body.acknowledgedBy : null;
+  const row = await acknowledgeAdvisory(Number(req.params.id), acknowledgedBy);
+  if (!row) return res.status(404).json({ message: "Advisory not found or already acknowledged" });
+  res.json(row);
 });
 
 export default router;

@@ -451,6 +451,28 @@ export const clientPaymentEvidence = pgTable("client_payment_evidence", {
   index("client_payment_evidence_project_id_idx").on(table.projectId),
 ]);
 
+export const documentAdvisories = pgTable("document_advisories", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").references(() => devis.id, { onDelete: "cascade" }),
+  invoiceId: integer("invoice_id").references(() => invoices.id, { onDelete: "cascade" }),
+  code: text("code").notNull(),
+  field: text("field"),
+  severity: text("severity").notNull(),
+  message: text("message").notNull(),
+  source: text("source").notNull().default("ai_extraction"),
+  raisedAt: timestamp("raised_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  resolvedAt: timestamp("resolved_at"),
+  acknowledgedAt: timestamp("acknowledged_at"),
+  acknowledgedBy: text("acknowledged_by"),
+}, (table) => [
+  index("document_advisories_devis_id_idx").on(table.devisId),
+  index("document_advisories_invoice_id_idx").on(table.invoiceId),
+  check(
+    "document_advisories_subject_check",
+    sql`(${table.devisId} IS NOT NULL) <> (${table.invoiceId} IS NOT NULL)`,
+  ),
+]);
+
 export const templateAssets = pgTable("template_assets", {
   id: serial("id").primaryKey(),
   assetType: text("asset_type").notNull().unique(),
@@ -687,6 +709,13 @@ export type PaymentReminder = typeof paymentReminders.$inferSelect;
 export type InsertPaymentReminder = z.infer<typeof insertPaymentReminderSchema>;
 export type ClientPaymentEvidence = typeof clientPaymentEvidence.$inferSelect;
 export type InsertClientPaymentEvidence = z.infer<typeof insertClientPaymentEvidenceSchema>;
+
+export const insertDocumentAdvisorySchema = createInsertSchema(documentAdvisories).omit({
+  id: true,
+  raisedAt: true,
+});
+export type DocumentAdvisory = typeof documentAdvisories.$inferSelect;
+export type InsertDocumentAdvisory = z.infer<typeof insertDocumentAdvisorySchema>;
 
 export const insertTemplateAssetSchema = createInsertSchema(templateAssets).omit({
   id: true,

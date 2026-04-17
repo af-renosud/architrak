@@ -2,6 +2,7 @@ import { storage } from "../storage";
 import { uploadDocument } from "../storage/object-storage";
 import { validateExtraction } from "./extraction-validator";
 import { calculateTtc, roundCurrency } from "../../shared/financial-utils";
+import { reconcileAdvisories } from "./advisory-reconciler";
 
 interface UploadedFile {
   originalname: string;
@@ -90,6 +91,12 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
     aiExtractedData: parsed,
     aiConfidence: validation.confidenceScore,
   });
+
+  try {
+    await reconcileAdvisories({ devisId: devisRecord.id }, validation.warnings);
+  } catch (advErr) {
+    console.warn(`[Devis Upload] Failed to persist advisories:`, advErr);
+  }
 
   let lineItemsCreated = 0;
   if (parsed.lineItems && parsed.lineItems.length > 0) {
