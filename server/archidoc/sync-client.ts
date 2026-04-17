@@ -1,5 +1,7 @@
-const getBaseUrl = () => process.env.ARCHIDOC_BASE_URL;
-const getApiKey = () => process.env.ARCHIDOC_SYNC_API_KEY;
+import { env } from "../env";
+
+const getBaseUrl = () => env.ARCHIDOC_BASE_URL;
+const getApiKey = () => env.ARCHIDOC_SYNC_API_KEY;
 
 export function isArchidocConfigured(): boolean {
   return !!(getBaseUrl() && getApiKey());

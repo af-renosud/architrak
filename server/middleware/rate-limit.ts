@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import type { Pool } from "pg";
+import { env } from "../env";
 
 interface LimiterOptions {
   /**
@@ -216,10 +217,10 @@ export function setDefaultStore(store: RateLimitStore | null) {
 }
 
 function createDefaultStore(): RateLimitStore {
-  const mode = (process.env.RATE_LIMIT_STORE || "").toLowerCase();
+  const mode = env.RATE_LIMIT_STORE;
   const useMemory =
     mode === "memory" ||
-    (mode === "" && process.env.NODE_ENV !== "production");
+    (mode === undefined && env.NODE_ENV !== "production");
 
   if (useMemory) {
     return new MemoryRateLimitStore();

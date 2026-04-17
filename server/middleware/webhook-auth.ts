@@ -1,10 +1,11 @@
 import type { Request, Response, NextFunction } from "express";
 import crypto from "crypto";
+import { env } from "../env";
 
 const TIMESTAMP_TOLERANCE_MS = 5 * 60 * 1000;
 
 export function verifyWebhookSignature(req: Request, res: Response, next: NextFunction) {
-  const secret = process.env.ARCHIDOC_WEBHOOK_SECRET;
+  const secret = env.ARCHIDOC_WEBHOOK_SECRET;
   if (!secret) {
     console.error("[Webhook] ARCHIDOC_WEBHOOK_SECRET is not configured");
     return res.status(401).json({ message: "Webhook secret not configured" });

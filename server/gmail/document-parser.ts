@@ -8,16 +8,17 @@ import { execFile } from "child_process";
 import { writeFile, readFile, readdir, unlink, mkdtemp } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
+import { env } from "../env";
 
 function getOpenAIClient() {
   return new OpenAI({
-    apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-    baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
+    apiKey: env.AI_INTEGRATIONS_OPENAI_API_KEY,
+    baseURL: env.AI_INTEGRATIONS_OPENAI_BASE_URL,
   });
 }
 
 function getGeminiClient() {
-  const key = process.env.GEMINI_API_KEY;
+  const key = env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY not set");
   return new GoogleGenerativeAI(key);
 }

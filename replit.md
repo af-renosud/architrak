@@ -162,6 +162,7 @@ shared/
 - `/api/reminders/:id/cancel` — Cancel reminder
 
 ## Environment Secrets
+> Source of truth for backend env vars: `server/env.ts` (Zod-validated, fail-fast on boot, frozen `env` export). All `server/**` code reads `env.X` instead of `process.env.X` (exception: vendored `server/replit_integrations/**`). Frontend continues to use `import.meta.env.VITE_*`.
 - `ARCHIDOC_BASE_URL` + `ARCHIDOC_SYNC_API_KEY` — ArchiDoc API connection
 - `SESSION_SECRET` — Session management
 - `DEFAULT_OBJECT_STORAGE_BUCKET_ID` — Object Storage bucket

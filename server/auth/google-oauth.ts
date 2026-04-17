@@ -1,4 +1,5 @@
 import { OAuth2Client } from "google-auth-library";
+import { env } from "../env";
 
 const ALLOWED_DOMAIN = "renosud.com";
 
@@ -11,12 +12,11 @@ export interface GoogleUser {
 }
 
 function getClient() {
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  if (!clientId || !clientSecret) {
+  const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET } = env;
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
     throw new Error("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set");
   }
-  return new OAuth2Client(clientId, clientSecret);
+  return new OAuth2Client(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
 }
 
 export function getAuthUrl(callbackUrl: string): string {
@@ -40,7 +40,7 @@ export async function exchangeCodeForUser(code: string, callbackUrl: string): Pr
 
   const ticket = await client.verifyIdToken({
     idToken: tokens.id_token,
-    audience: process.env.GOOGLE_CLIENT_ID,
+    audience: env.GOOGLE_CLIENT_ID,
   });
 
   const payload = ticket.getPayload();

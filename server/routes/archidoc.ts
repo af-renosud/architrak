@@ -3,6 +3,7 @@ import { storage } from "../storage";
 import { isArchidocConfigured, checkConnection } from "../archidoc/sync-client";
 import { fullSync, incrementalSync, getLastSyncStatus } from "../archidoc/sync-service";
 import { trackProject, refreshProject } from "../archidoc/import-service";
+import { env as envCfg } from "../env";
 
 const router = Router();
 
@@ -33,8 +34,8 @@ router.get("/api/archidoc/status", async (_req, res) => {
       mirroredContractors: mirroredContractors.length,
       trackedProjects: trackedIds.length,
       webhookEnabled: true,
-      webhookSecretConfigured: !!process.env.ARCHIDOC_WEBHOOK_SECRET,
-      pollingEnabled: process.env.ARCHIDOC_POLLING_ENABLED === "true",
+      webhookSecretConfigured: !!envCfg.ARCHIDOC_WEBHOOK_SECRET,
+      pollingEnabled: envCfg.ARCHIDOC_POLLING_ENABLED,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

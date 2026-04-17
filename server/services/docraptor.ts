@@ -1,9 +1,11 @@
+import { env } from "../env";
+
 export async function convertHtmlToPdf(
   html: string,
   documentName: string,
   test: boolean = false
 ): Promise<Buffer> {
-  const apiKey = process.env.DOCRAPTOR_API_KEY;
+  const apiKey = env.DOCRAPTOR_API_KEY;
   if (!apiKey) {
     throw new Error("DOCRAPTOR_API_KEY is not set. Cannot generate PDF.");
   }

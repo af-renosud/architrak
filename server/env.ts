@@ -1,0 +1,139 @@
+import { z } from "zod";
+
+/**
+ * Centralized, type-safe environment configuration.
+ *
+ * Single source of truth for every server-side `process.env` read.
+ * The schema is parsed once at module load. If validation fails, the
+ * process logs the offending key NAMES (never values) and exits with
+ * code 1 — fail-fast, no leaked secrets.
+ *
+ * Frontend env (Vite `import.meta.env.VITE_*`) is intentionally NOT
+ * covered here.
+ *
+ * Replit-managed auto-generated integrations under
+ * `server/replit_integrations/**` are treated as vendored and continue to
+ * read `process.env` directly so platform regenerations stay clean.
+ *
+ * Required vs optional policy: a variable is `required` only if the
+ * server cannot boot without it. Feature-scoped secrets (auth, AI,
+ * ArchiDoc, object storage, etc.) are `optional` because the existing
+ * code paths already handle their absence by disabling the relevant
+ * feature at first use.
+ */
+
+// Treats `undefined` and empty/whitespace-only strings as "not set". This
+// preserves the previous `process.env.X || ""` semantics so optional
+// feature-scoped vars don't crash boot when present-but-empty.
+const optionalString = () =>
+  z
+    .preprocess(
+      (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+      z.string().min(1),
+    )
+    .optional();
+
+const optionalUrl = () =>
+  z
+    .preprocess(
+      (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+      z.string().url(),
+    )
+    .optional();
+
+// Parses common boolean string forms ("true"/"false"/"1"/"0"/"yes"/"no")
+// into a real boolean. Empty/undefined → default. Anything unrecognized
+// fails validation (fail-fast on garbage flag values).
+const booleanFlag = (defaultValue: boolean) =>
+  z.preprocess(
+    (v) => {
+      if (v === undefined) return defaultValue;
+      if (typeof v === "boolean") return v;
+      if (typeof v !== "string") return v;
+      const normalized = v.trim().toLowerCase();
+      if (normalized === "") return defaultValue;
+      if (["true", "1", "yes", "on"].includes(normalized)) return true;
+      if (["false", "0", "no", "off"].includes(normalized)) return false;
+      return v; // let z.boolean() reject it
+    },
+    z.boolean(),
+  );
+
+const optionalEnum = <T extends [string, ...string[]]>(values: T) =>
+  z
+    .preprocess(
+      (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+      z.enum(values),
+    )
+    .optional();
+
+const envSchema = z.object({
+  // --- Runtime ---------------------------------------------------------
+  NODE_ENV: z
+    .enum(["development", "production", "test"])
+    .default("development"),
+  PORT: z.coerce.number().int().positive().default(5000),
+
+  // --- Persistence (boot-critical) -------------------------------------
+  DATABASE_URL: z.string().url(),
+  SESSION_SECRET: z.string().min(1),
+
+  // --- Google OAuth (feature-scoped) -----------------------------------
+  GOOGLE_CLIENT_ID: optionalString(),
+  GOOGLE_CLIENT_SECRET: optionalString(),
+
+  // --- AI providers (feature-scoped) -----------------------------------
+  GEMINI_API_KEY: optionalString(),
+  AI_INTEGRATIONS_OPENAI_API_KEY: optionalString(),
+  AI_INTEGRATIONS_OPENAI_BASE_URL: optionalUrl(),
+
+  // --- DocRaptor (feature-scoped) --------------------------------------
+  DOCRAPTOR_API_KEY: optionalString(),
+
+  // --- ArchiDoc sync + webhooks (feature-scoped) -----------------------
+  ARCHIDOC_BASE_URL: optionalUrl(),
+  ARCHIDOC_SYNC_API_KEY: optionalString(),
+  ARCHIDOC_WEBHOOK_SECRET: optionalString(),
+  ARCHIDOC_POLLING_ENABLED: booleanFlag(false),
+
+  // --- Object storage (feature-scoped) ---------------------------------
+  DEFAULT_OBJECT_STORAGE_BUCKET_ID: optionalString(),
+  PRIVATE_OBJECT_DIR: optionalString(),
+  PUBLIC_OBJECT_SEARCH_PATHS: z.string().optional(),
+
+  // --- Rate limit store selector ---------------------------------------
+  RATE_LIMIT_STORE: optionalEnum(["memory", "postgres"]),
+
+  // --- Replit connector identity (Gmail OAuth bridge) ------------------
+  REPLIT_CONNECTORS_HOSTNAME: optionalString(),
+  REPL_IDENTITY: optionalString(),
+  WEB_REPL_RENEWAL: optionalString(),
+});
+
+export type Env = z.infer<typeof envSchema>;
+
+const parsed = envSchema.safeParse(process.env);
+
+if (!parsed.success) {
+  // Log key NAMES only — never values. Each issue path is the env var name.
+  const invalidKeys = Array.from(
+    new Set(
+      parsed.error.issues
+        .map((issue) => (issue.path[0] ?? "").toString())
+        .filter((k) => k.length > 0),
+    ),
+  );
+  // Emit one line per offending key with its validation code so operators
+  // can act, but never the actual value.
+  console.error(
+    "[env] Invalid or missing environment variables — refusing to start.",
+  );
+  for (const issue of parsed.error.issues) {
+    const key = (issue.path[0] ?? "").toString() || "<unknown>";
+    console.error(`[env]   ${key}: ${issue.message} (${issue.code})`);
+  }
+  console.error(`[env] Offending keys: ${invalidKeys.join(", ")}`);
+  process.exit(1);
+}
+
+export const env: Readonly<Env> = Object.freeze(parsed.data);

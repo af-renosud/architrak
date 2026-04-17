@@ -9,6 +9,7 @@ import { roundCurrency } from "../../shared/financial-utils";
 import { normalizeUnit } from "./benchmark-tags";
 import OpenAI from "openai";
 import { GoogleGenerativeAI, SchemaType, type ResponseSchema } from "@google/generative-ai";
+import { env } from "../env";
 
 interface UploadedFile {
   originalname: string;
@@ -48,7 +49,7 @@ async function assignTagsToItems(
 
   try {
     if (provider === "gemini") {
-      const key = process.env.GEMINI_API_KEY;
+      const key = env.GEMINI_API_KEY;
       if (!key) return [];
       const genAI = new GoogleGenerativeAI(key);
       const schema: ResponseSchema = {
@@ -82,8 +83,8 @@ async function assignTagsToItems(
       return parsed.assignments ?? [];
     } else {
       const openai = new OpenAI({
-        apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-        baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
+        apiKey: env.AI_INTEGRATIONS_OPENAI_API_KEY,
+        baseURL: env.AI_INTEGRATIONS_OPENAI_BASE_URL,
       });
       const resp = await openai.chat.completions.create({
         model: modelId || "gpt-4o-mini",

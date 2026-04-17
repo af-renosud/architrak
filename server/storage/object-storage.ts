@@ -1,7 +1,8 @@
 import { objectStorageClient } from "../replit_integrations/object_storage";
+import { env } from "../env";
 
 function getBucketName(): string {
-  const bucketId = process.env.DEFAULT_OBJECT_STORAGE_BUCKET_ID;
+  const bucketId = env.DEFAULT_OBJECT_STORAGE_BUCKET_ID;
   if (!bucketId) {
     throw new Error("DEFAULT_OBJECT_STORAGE_BUCKET_ID not set");
   }
@@ -9,7 +10,7 @@ function getBucketName(): string {
 }
 
 function getPrivateDir(): string {
-  const dir = process.env.PRIVATE_OBJECT_DIR || "";
+  const dir = env.PRIVATE_OBJECT_DIR;
   if (!dir) {
     throw new Error("PRIVATE_OBJECT_DIR not set");
   }
@@ -89,5 +90,5 @@ function parseStorageKey(key: string): { bucketName: string; objectName: string 
 }
 
 export function isObjectStorageConfigured(): boolean {
-  return !!(process.env.DEFAULT_OBJECT_STORAGE_BUCKET_ID && process.env.PRIVATE_OBJECT_DIR);
+  return !!(env.DEFAULT_OBJECT_STORAGE_BUCKET_ID && env.PRIVATE_OBJECT_DIR);
 }
