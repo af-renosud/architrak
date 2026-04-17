@@ -4,6 +4,7 @@ import { storage } from "../storage";
 import { insertDevisSchema, insertDevisLineItemSchema, insertAvenantSchema } from "@shared/schema";
 import { upload } from "../middleware/upload";
 import { processDevisUpload } from "../services/devis-upload.service";
+import { confirmDevisAndMirror, assignTagsForInsertedItems } from "../services/benchmark-ingest.service";
 import { PdfPasswordProtectedError } from "../gmail/document-parser";
 import { getDocumentStream } from "../storage/object-storage";
 import { validateExtraction } from "../services/extraction-validator";
@@ -160,7 +161,14 @@ router.post("/api/devis/:id/confirm", async (req, res) => {
       updates.validationWarnings = null;
     }
 
-    const updated = await storage.updateDevis(Number(req.params.id), updates);
+    const { devis: updated, inserted } = await confirmDevisAndMirror(Number(req.params.id), updates);
+    if (updated && inserted.length > 0) {
+      // Tag assignment is awaited (synchronous before response) so that the
+      // mirrored benchmark items are fully tagged and queryable as soon as
+      // the devis-confirm call returns. AI tag failures are logged but
+      // never block the confirm response.
+      await assignTagsForInsertedItems(inserted);
+    }
     res.json(updated);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

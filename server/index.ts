@@ -7,6 +7,8 @@ import { createServer } from "http";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { startPolling } from "./gmail/monitor";
 import { startScheduler } from "./communications/payment-scheduler";
+import { seedBenchmarkTags } from "./services/benchmark-ingest.service";
+import { SEED_BENCHMARK_TAGS } from "./services/benchmark-tags";
 import { registerAuthRoutes } from "./auth/routes";
 import { requireAuth } from "./auth/middleware";
 import { pool } from "./db";
@@ -110,6 +112,10 @@ app.use((req, res, next) => {
     console.log("[ArchiDoc] Webhook mode active, polling disabled. Set ARCHIDOC_POLLING_ENABLED=true to re-enable polling.");
   }
   startScheduler(60 * 60 * 1000);
+
+  seedBenchmarkTags(SEED_BENCHMARK_TAGS).catch(err => {
+    console.warn("[Benchmark] tag seed failed:", (err as Error).message);
+  });
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;

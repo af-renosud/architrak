@@ -17,6 +17,7 @@ import Fees from "@/pages/fees";
 import EmailDocuments from "@/pages/email-documents";
 import Communications from "@/pages/communications";
 import SettingsPage from "@/pages/settings";
+import CostBenchmarks from "@/pages/cost-benchmarks";
 import { Loader2 } from "lucide-react";
 
 function Router() {
@@ -32,6 +33,7 @@ function Router() {
       <Route path="/honoraires" component={Fees} />
       <Route path="/documents" component={EmailDocuments} />
       <Route path="/communications" component={Communications} />
+      <Route path="/benchmarks" component={CostBenchmarks} />
       <Route path="/settings" component={SettingsPage} />
       <Route component={NotFound} />
     </Switch>

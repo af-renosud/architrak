@@ -12,6 +12,7 @@ import {
   Search,
   Mail,
   MessageSquare,
+  Database,
   LogOut,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -28,6 +29,7 @@ const navItems = [
   { path: "/honoraires", label: "Honoraires", icon: Coins },
   { path: "/documents", label: "Documents", icon: Mail },
   { path: "/communications", label: "Communications", icon: MessageSquare },
+  { path: "/benchmarks", label: "Cost Benchmarks", icon: Database },
 ];
 
 const bottomNavItems = [

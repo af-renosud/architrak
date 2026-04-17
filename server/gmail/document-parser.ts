@@ -45,6 +45,7 @@ export interface ParsedDocument {
   lineItems?: Array<{
     description: string;
     quantity?: number;
+    unit?: string;
     unitPrice?: number;
     total?: number;
   }>;
@@ -76,7 +77,7 @@ Extraction Rules:
 - TVA rate must be a percentage number (e.g., 20 for 20%, not 0.20).
 - If auto-liquidation applies, set tvaRate to 0 and autoLiquidation to true.
 - Dates in YYYY-MM-DD format.
-- For line items, extract description, quantity, unitPrice, and total for each visible line.
+- For line items, extract description, quantity, unit (e.g. m2, m3, ml, u, forfait), unitPrice, and total for each visible line.
 - If a field is not visible on the document, omit it (do not guess).`;
 
 const USER_PROMPT = `Analyze this French construction document and extract the following fields:
@@ -100,7 +101,7 @@ const USER_PROMPT = `Analyze this French construction document and extract the f
 - paymentTerms: payment conditions text if visible (e.g., "30 jours fin de mois")
 - lotReferences: array of lot codes/references visible on the document (e.g., ["Lot 1", "Lot 7 - Electricite"])
 - description: brief description of the work/service
-- lineItems: array of line items, each with {description, quantity, unitPrice, total}
+- lineItems: array of line items, each with {description, quantity, unit, unitPrice, total}
 
 Return ONLY valid JSON, no markdown, no code blocks.`;
 
@@ -217,6 +218,11 @@ const EXTRACTION_SCHEMA: ResponseSchema = {
           quantity: {
             type: SchemaType.NUMBER,
             description: "Quantity",
+            nullable: true,
+          },
+          unit: {
+            type: SchemaType.STRING,
+            description: "Unit of measure as written (e.g. m2, m3, ml, u, forfait, h)",
             nullable: true,
           },
           unitPrice: {

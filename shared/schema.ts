@@ -12,6 +12,7 @@ import {
   jsonb,
   unique,
   index,
+  check,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -466,6 +467,89 @@ export const aiModelSettings = pgTable("ai_model_settings", {
   modelId: text("model_id").notNull().default("gemini-2.0-flash"),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
+
+export const benchmarkTags = pgTable("benchmark_tags", {
+  id: serial("id").primaryKey(),
+  label: text("label").notNull().unique(),
+  category: text("category"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export const benchmarkDocuments = pgTable("benchmark_documents", {
+  id: serial("id").primaryKey(),
+  source: text("source").notNull().default("standalone"),
+  sourceDevisId: integer("source_devis_id").references(() => devis.id, { onDelete: "set null" }),
+  contractorId: integer("contractor_id").references(() => contractors.id),
+  externalContractorName: text("external_contractor_name"),
+  externalSiret: text("external_siret"),
+  documentDate: date("document_date"),
+  notes: text("notes"),
+  pdfStorageKey: text("pdf_storage_key"),
+  pdfFileName: text("pdf_file_name"),
+  totalHt: numeric("total_ht", { precision: 12, scale: 2 }),
+  aiExtractedData: jsonb("ai_extracted_data"),
+  aiConfidence: integer("ai_confidence"),
+  validationWarnings: jsonb("validation_warnings"),
+  needsReview: boolean("needs_review").notNull().default(false),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  unique("benchmark_documents_source_devis_unique").on(table.sourceDevisId),
+  index("benchmark_documents_contractor_idx").on(table.contractorId),
+  index("benchmark_documents_date_idx").on(table.documentDate),
+  check(
+    "benchmark_documents_contractor_identity_check",
+    sql`(${table.contractorId} IS NOT NULL) OR (${table.externalContractorName} IS NOT NULL AND length(trim(${table.externalContractorName})) > 0)`,
+  ),
+]);
+
+export const benchmarkItems = pgTable("benchmark_items", {
+  id: serial("id").primaryKey(),
+  documentId: integer("document_id").notNull().references(() => benchmarkDocuments.id, { onDelete: "cascade" }),
+  lineNumber: integer("line_number").notNull(),
+  description: text("description").notNull(),
+  rawQuantity: numeric("raw_quantity", { precision: 12, scale: 3 }),
+  rawUnit: text("raw_unit"),
+  rawUnitPriceHt: numeric("raw_unit_price_ht", { precision: 12, scale: 2 }),
+  rawTotalHt: numeric("raw_total_ht", { precision: 12, scale: 2 }),
+  normalizedUnit: text("normalized_unit"),
+  normalizedUnitPriceHt: numeric("normalized_unit_price_ht", { precision: 12, scale: 2 }),
+  aiConfidence: integer("ai_confidence"),
+  needsReview: boolean("needs_review").notNull().default(false),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("benchmark_items_document_id_idx").on(table.documentId),
+  index("benchmark_items_normalized_unit_idx").on(table.normalizedUnit),
+  index("benchmark_items_needs_review_idx").on(table.needsReview),
+]);
+
+export const benchmarkItemTags = pgTable("benchmark_item_tags", {
+  itemId: integer("item_id").notNull().references(() => benchmarkItems.id, { onDelete: "cascade" }),
+  tagId: integer("tag_id").notNull().references(() => benchmarkTags.id, { onDelete: "cascade" }),
+}, (table) => [
+  unique("benchmark_item_tags_unique").on(table.itemId, table.tagId),
+  index("benchmark_item_tags_tag_id_idx").on(table.tagId),
+]);
+
+export const insertBenchmarkTagSchema = createInsertSchema(benchmarkTags).omit({
+  id: true,
+  createdAt: true,
+});
+export const insertBenchmarkDocumentSchema = createInsertSchema(benchmarkDocuments).omit({
+  id: true,
+  createdAt: true,
+});
+export const insertBenchmarkItemSchema = createInsertSchema(benchmarkItems).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type BenchmarkTag = typeof benchmarkTags.$inferSelect;
+export type InsertBenchmarkTag = z.infer<typeof insertBenchmarkTagSchema>;
+export type BenchmarkDocument = typeof benchmarkDocuments.$inferSelect;
+export type InsertBenchmarkDocument = z.infer<typeof insertBenchmarkDocumentSchema>;
+export type BenchmarkItem = typeof benchmarkItems.$inferSelect;
+export type InsertBenchmarkItem = z.infer<typeof insertBenchmarkItemSchema>;
+export type BenchmarkItemTag = typeof benchmarkItemTags.$inferSelect;
 
 export { conversations, messages } from "./models/chat";
 

@@ -397,6 +397,7 @@ server/
     dashboard.ts, export.ts
     archidoc.ts, gmail.ts, documents.ts
     communications.ts, settings.ts, webhooks.ts
+    benchmarks.ts       — Cost benchmark library (search, upload, edit/delete)
   services/           — Business logic (no HTTP concerns)
     devis-upload.service.ts, invoice-upload.service.ts
     extraction-validator.ts

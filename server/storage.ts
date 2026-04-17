@@ -1,11 +1,12 @@
 import { db } from "./db";
-import { eq, desc, and, inArray, isNotNull, lte, like } from "drizzle-orm";
+import { eq, desc, asc, and, or, inArray, isNotNull, isNull, lte, gte, like, ilike, sql, type SQL } from "drizzle-orm";
 import {
   projects, contractors, lots, marches, devis, devisLineItems,
   avenants, invoices, situations, situationLines, certificats, fees, feeEntries,
   archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog,
   emailDocuments, projectDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
   aiModelSettings, templateAssets, users,
+  benchmarkDocuments, benchmarkItems, benchmarkTags, benchmarkItemTags,
   type Project, type InsertProject,
   type User, type InsertUser,
   type Contractor, type InsertContractor,
@@ -28,7 +29,40 @@ import {
   type ClientPaymentEvidence, type InsertClientPaymentEvidence,
   type AiModelSetting,
   type TemplateAsset, type InsertTemplateAsset,
+  type BenchmarkTag, type InsertBenchmarkTag,
+  type BenchmarkDocument, type InsertBenchmarkDocument,
+  type BenchmarkItem, type InsertBenchmarkItem,
 } from "@shared/schema";
+
+export interface BenchmarkSearchFilters {
+  q?: string;
+  tagIds?: number[];
+  contractorId?: number;
+  dateFrom?: string;
+  dateTo?: string;
+  normalizedUnit?: string;
+  minPrice?: number;
+  maxPrice?: number;
+  needsReview?: boolean;
+  limit?: number;
+}
+
+export interface BenchmarkSearchRow {
+  item: BenchmarkItem;
+  document: BenchmarkDocument;
+  contractorName: string | null;
+  tags: BenchmarkTag[];
+}
+
+export interface BenchmarkAggregateRow {
+  tagId: number;
+  tagLabel: string;
+  normalizedUnit: string | null;
+  count: number;
+  minPrice: number;
+  medianPrice: number;
+  maxPrice: number;
+}
 
 export interface IStorage {
   getProjects(): Promise<Project[]>;
@@ -169,6 +203,25 @@ export interface IStorage {
   getUser(id: number): Promise<User | undefined>;
   getUserByGoogleId(googleId: string): Promise<User | undefined>;
   upsertUser(data: InsertUser): Promise<User>;
+
+  getBenchmarkTags(): Promise<BenchmarkTag[]>;
+  upsertBenchmarkTag(data: InsertBenchmarkTag): Promise<BenchmarkTag>;
+
+  getBenchmarkDocuments(): Promise<BenchmarkDocument[]>;
+  getBenchmarkDocument(id: number): Promise<BenchmarkDocument | undefined>;
+  getBenchmarkDocumentBySourceDevis(devisId: number): Promise<BenchmarkDocument | undefined>;
+  createBenchmarkDocument(data: InsertBenchmarkDocument): Promise<BenchmarkDocument>;
+  updateBenchmarkDocument(id: number, data: Partial<InsertBenchmarkDocument>): Promise<BenchmarkDocument | undefined>;
+  deleteBenchmarkDocument(id: number): Promise<void>;
+
+  createBenchmarkItem(data: InsertBenchmarkItem): Promise<BenchmarkItem>;
+  deleteBenchmarkItem(id: number): Promise<void>;
+  deleteBenchmarkItemsByDocument(documentId: number): Promise<void>;
+  setBenchmarkItemTags(itemId: number, tagIds: number[]): Promise<void>;
+  getBenchmarkItemTags(itemId: number): Promise<BenchmarkTag[]>;
+
+  searchBenchmarkItems(filters: BenchmarkSearchFilters): Promise<BenchmarkSearchRow[]>;
+  aggregateBenchmarkPrices(filters: BenchmarkSearchFilters): Promise<BenchmarkAggregateRow[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -774,6 +827,197 @@ export class DatabaseStorage implements IStorage {
   async getUserByGoogleId(googleId: string): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.googleId, googleId));
     return user;
+  }
+
+  async getBenchmarkTags(): Promise<BenchmarkTag[]> {
+    return db.select().from(benchmarkTags).orderBy(benchmarkTags.label);
+  }
+
+  async upsertBenchmarkTag(data: InsertBenchmarkTag): Promise<BenchmarkTag> {
+    const [result] = await db
+      .insert(benchmarkTags)
+      .values(data)
+      .onConflictDoUpdate({
+        target: benchmarkTags.label,
+        set: { category: data.category ?? null },
+      })
+      .returning();
+    return result;
+  }
+
+  async getBenchmarkDocuments(): Promise<BenchmarkDocument[]> {
+    return db.select().from(benchmarkDocuments).orderBy(desc(benchmarkDocuments.createdAt));
+  }
+
+  async getBenchmarkDocument(id: number): Promise<BenchmarkDocument | undefined> {
+    const [doc] = await db.select().from(benchmarkDocuments).where(eq(benchmarkDocuments.id, id));
+    return doc;
+  }
+
+  async getBenchmarkDocumentBySourceDevis(devisId: number): Promise<BenchmarkDocument | undefined> {
+    const [doc] = await db.select().from(benchmarkDocuments).where(eq(benchmarkDocuments.sourceDevisId, devisId));
+    return doc;
+  }
+
+  async createBenchmarkDocument(data: InsertBenchmarkDocument): Promise<BenchmarkDocument> {
+    const [doc] = await db.insert(benchmarkDocuments).values(data).returning();
+    return doc;
+  }
+
+  async updateBenchmarkDocument(id: number, data: Partial<InsertBenchmarkDocument>): Promise<BenchmarkDocument | undefined> {
+    const [doc] = await db.update(benchmarkDocuments).set(data).where(eq(benchmarkDocuments.id, id)).returning();
+    return doc;
+  }
+
+  async deleteBenchmarkDocument(id: number): Promise<void> {
+    await db.delete(benchmarkDocuments).where(eq(benchmarkDocuments.id, id));
+  }
+
+  async createBenchmarkItem(data: InsertBenchmarkItem): Promise<BenchmarkItem> {
+    const [item] = await db.insert(benchmarkItems).values(data).returning();
+    return item;
+  }
+
+  async deleteBenchmarkItem(id: number): Promise<void> {
+    await db.delete(benchmarkItems).where(eq(benchmarkItems.id, id));
+  }
+
+  async deleteBenchmarkItemsByDocument(documentId: number): Promise<void> {
+    await db.delete(benchmarkItems).where(eq(benchmarkItems.documentId, documentId));
+  }
+
+  async setBenchmarkItemTags(itemId: number, tagIds: number[]): Promise<void> {
+    await db.delete(benchmarkItemTags).where(eq(benchmarkItemTags.itemId, itemId));
+    if (tagIds.length === 0) return;
+    const rows = tagIds.map(tagId => ({ itemId, tagId }));
+    await db.insert(benchmarkItemTags).values(rows).onConflictDoNothing();
+  }
+
+  async getBenchmarkItemTags(itemId: number): Promise<BenchmarkTag[]> {
+    const rows = await db
+      .select({ tag: benchmarkTags })
+      .from(benchmarkItemTags)
+      .innerJoin(benchmarkTags, eq(benchmarkItemTags.tagId, benchmarkTags.id))
+      .where(eq(benchmarkItemTags.itemId, itemId));
+    return rows.map(r => r.tag);
+  }
+
+  async searchBenchmarkItems(filters: BenchmarkSearchFilters): Promise<BenchmarkSearchRow[]> {
+    const conditions: SQL[] = [];
+    if (filters.contractorId != null) conditions.push(eq(benchmarkDocuments.contractorId, filters.contractorId));
+    if (filters.dateFrom) conditions.push(gte(benchmarkDocuments.documentDate, filters.dateFrom));
+    if (filters.dateTo) conditions.push(lte(benchmarkDocuments.documentDate, filters.dateTo));
+    if (filters.normalizedUnit) conditions.push(eq(benchmarkItems.normalizedUnit, filters.normalizedUnit));
+    if (filters.minPrice != null) conditions.push(gte(benchmarkItems.normalizedUnitPriceHt, String(filters.minPrice)));
+    if (filters.maxPrice != null) conditions.push(lte(benchmarkItems.normalizedUnitPriceHt, String(filters.maxPrice)));
+    if (filters.needsReview != null) conditions.push(eq(benchmarkItems.needsReview, filters.needsReview));
+
+    const trimmedQ = filters.q?.trim();
+    if (trimmedQ && trimmedQ.length > 0) {
+      // Postgres full-text search with French dictionary, OR'd with ILIKE
+      // for partial/typo-tolerant fallback. websearch_to_tsquery handles
+      // bare terms, quoted phrases, and "or"/"-" operators safely.
+      conditions.push(
+        sql`(to_tsvector('french', ${benchmarkItems.description}) @@ websearch_to_tsquery('french', ${trimmedQ}) OR ${benchmarkItems.description} ILIKE ${"%" + trimmedQ + "%"})`,
+      );
+    }
+
+    if (filters.tagIds && filters.tagIds.length > 0) {
+      const taggedItems = await db
+        .selectDistinct({ itemId: benchmarkItemTags.itemId })
+        .from(benchmarkItemTags)
+        .where(inArray(benchmarkItemTags.tagId, filters.tagIds));
+      const ids = taggedItems.map(t => t.itemId);
+      if (ids.length === 0) return [];
+      conditions.push(inArray(benchmarkItems.id, ids));
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+    const limit = filters.limit ?? 200;
+
+    // Relevance ranking. Lower rank wins; we order by rank then date.
+    // 0 = description starts with the query (best), 1 = FTS match,
+    // 2 = ILIKE substring match only, 3 = no text query.
+    const relevance: SQL<number> = trimmedQ && trimmedQ.length > 0
+      ? sql<number>`CASE
+          WHEN ${benchmarkItems.description} ILIKE ${trimmedQ + "%"} THEN 0
+          WHEN to_tsvector('french', ${benchmarkItems.description}) @@ websearch_to_tsquery('french', ${trimmedQ}) THEN 1
+          ELSE 2
+        END`
+      : sql<number>`3`;
+
+    const rows = await db
+      .select({
+        item: benchmarkItems,
+        document: benchmarkDocuments,
+        contractor: contractors,
+      })
+      .from(benchmarkItems)
+      .innerJoin(benchmarkDocuments, eq(benchmarkItems.documentId, benchmarkDocuments.id))
+      .leftJoin(contractors, eq(benchmarkDocuments.contractorId, contractors.id))
+      .where(whereClause)
+      .orderBy(asc(relevance), desc(benchmarkDocuments.documentDate), desc(benchmarkItems.id))
+      .limit(limit);
+
+    if (rows.length === 0) return [];
+    const itemIds = rows.map(r => r.item.id);
+    const tagJoinRows = await db
+      .select({ itemId: benchmarkItemTags.itemId, tag: benchmarkTags })
+      .from(benchmarkItemTags)
+      .innerJoin(benchmarkTags, eq(benchmarkItemTags.tagId, benchmarkTags.id))
+      .where(inArray(benchmarkItemTags.itemId, itemIds));
+
+    const tagsByItem = new Map<number, BenchmarkTag[]>();
+    for (const tj of tagJoinRows) {
+      const arr = tagsByItem.get(tj.itemId) ?? [];
+      arr.push(tj.tag);
+      tagsByItem.set(tj.itemId, arr);
+    }
+
+    return rows.map(r => ({
+      item: r.item,
+      document: r.document,
+      contractorName: r.contractor?.name ?? r.document.externalContractorName ?? null,
+      tags: tagsByItem.get(r.item.id) ?? [],
+    }));
+  }
+
+  async aggregateBenchmarkPrices(filters: BenchmarkSearchFilters): Promise<BenchmarkAggregateRow[]> {
+    const rows = await this.searchBenchmarkItems({ ...filters, limit: 5000 });
+    const groups = new Map<string, { tagId: number; tagLabel: string; normalizedUnit: string | null; prices: number[] }>();
+    for (const row of rows) {
+      const price = row.item.normalizedUnitPriceHt != null ? Number(row.item.normalizedUnitPriceHt) : null;
+      if (price == null || !Number.isFinite(price)) continue;
+      const tagsToUse = row.tags.length > 0 ? row.tags : [{ id: 0, label: "(untagged)" } as BenchmarkTag];
+      for (const tag of tagsToUse) {
+        const key = `${tag.id}::${row.item.normalizedUnit ?? "?"}`;
+        let g = groups.get(key);
+        if (!g) {
+          g = { tagId: tag.id, tagLabel: tag.label, normalizedUnit: row.item.normalizedUnit, prices: [] };
+          groups.set(key, g);
+        }
+        g.prices.push(price);
+      }
+    }
+    const result: BenchmarkAggregateRow[] = [];
+    for (const g of Array.from(groups.values())) {
+      const sorted = [...g.prices].sort((a, b) => a - b);
+      const min = sorted[0];
+      const max = sorted[sorted.length - 1];
+      const mid = Math.floor(sorted.length / 2);
+      const median = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+      result.push({
+        tagId: g.tagId,
+        tagLabel: g.tagLabel,
+        normalizedUnit: g.normalizedUnit,
+        count: g.prices.length,
+        minPrice: Math.round(min * 100) / 100,
+        medianPrice: Math.round(median * 100) / 100,
+        maxPrice: Math.round(max * 100) / 100,
+      });
+    }
+    result.sort((a, b) => b.count - a.count);
+    return result;
   }
 
   async upsertUser(data: InsertUser): Promise<User> {
