@@ -151,4 +151,43 @@ app.use((req, res, next) => {
       log(`serving on port ${port}`);
     },
   );
+
+  let shuttingDown = false;
+  const shutdown = (signal: NodeJS.Signals) => {
+    if (shuttingDown) {
+      console.warn(`[shutdown] ${signal} received again, ignoring`);
+      return;
+    }
+    shuttingDown = true;
+    console.log(`[shutdown] ${signal} received, closing HTTP server...`);
+
+    const forceExitTimer = setTimeout(() => {
+      console.error("[shutdown] Force exit after 10s timeout");
+      process.exit(1);
+    }, 10000);
+    forceExitTimer.unref();
+
+    httpServer.close((err) => {
+      if (err) {
+        console.error("[shutdown] HTTP server close error:", err);
+      } else {
+        console.log("[shutdown] HTTP server closed, draining pg pool...");
+      }
+      pool
+        .end()
+        .then(() => {
+          console.log("[shutdown] pg pool drained, exiting cleanly");
+          clearTimeout(forceExitTimer);
+          process.exit(err ? 1 : 0);
+        })
+        .catch((poolErr) => {
+          console.error("[shutdown] pg pool drain error:", poolErr);
+          clearTimeout(forceExitTimer);
+          process.exit(1);
+        });
+    });
+  };
+
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 })();
