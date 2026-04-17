@@ -70,7 +70,7 @@ server/
   storage.ts            — DatabaseStorage implementation (IStorage interface)
   db.ts                 — Drizzle ORM database connection
   auth/                 — Google OAuth: google-oauth.ts, routes.ts, middleware.ts
-  middleware/            — upload.ts (multer), webhook-auth.ts (HMAC-SHA256 signature verification)
+  middleware/            — upload.ts (multer), webhook-auth.ts (HMAC-SHA256 signature verification), rate-limit.ts (token-bucket; pluggable store: in-memory for dev, Postgres-backed `rate_limit_buckets` table + `rate_limit_consume()` function for multi-replica deploys; selected via `RATE_LIMIT_STORE=memory|postgres` or NODE_ENV; each limiter requires a `name` to namespace keys)
   routes/               — Domain-driven router modules (Phase 3 refactor)
     index.ts            — Orchestrator: mounts all domain routers
     projects.ts         — /api/projects CRUD (5 routes)

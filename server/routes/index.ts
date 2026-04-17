@@ -25,9 +25,9 @@ import benchmarksRouter from "./benchmarks";
 // Rate limiters: webhook is unauthenticated and takes external traffic, uploads
 // hit AI extraction which is expensive, and the general API limiter is a
 // belt-and-braces guard against runaway clients.
-const webhookLimiter = rateLimit({ windowMs: 60_000, max: 60, message: "Webhook rate limit exceeded" });
-const uploadLimiter = rateLimit({ windowMs: 60_000, max: 20, message: "Upload rate limit exceeded" });
-const apiLimiter = rateLimit({ windowMs: 60_000, max: 600, message: "API rate limit exceeded" });
+const webhookLimiter = rateLimit({ name: "webhook", windowMs: 60_000, max: 60, message: "Webhook rate limit exceeded" });
+const uploadLimiter = rateLimit({ name: "upload", windowMs: 60_000, max: 20, message: "Upload rate limit exceeded" });
+const apiLimiter = rateLimit({ name: "api", windowMs: 60_000, max: 600, message: "API rate limit exceeded" });
 
 export async function registerRoutes(
   httpServer: Server,
