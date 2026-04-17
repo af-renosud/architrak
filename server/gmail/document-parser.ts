@@ -111,6 +111,7 @@ const EXTRACTION_SCHEMA: ResponseSchema = {
   properties: {
     documentType: {
       type: SchemaType.STRING,
+      format: "enum",
       description: "Type of document: quotation, invoice, situation, avenant, other, or unknown",
       enum: ["quotation", "invoice", "situation", "avenant", "other", "unknown"],
     },

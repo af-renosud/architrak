@@ -52,6 +52,10 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
     ? String(roundCurrency(effectiveTvaAmount))
     : (effectiveHt != null ? String(calculateTva(effectiveHt, tvaRate)) : "0.00");
 
+  // Note: invoices do not persist tvaRate (schema source of truth in
+  // shared/schema.ts). The rate is used here only to derive amountTtc /
+  // tvaAmount when the parsed document omits them; the rate itself is
+  // recoverable from the linked devis or from amountHt/tvaAmount.
   const invoice = await storage.createInvoice({
     devisId,
     projectId: devis.projectId,
@@ -59,7 +63,6 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
     invoiceNumber: parsed.invoiceNumber || parsed.reference || file.originalname.replace(/\.pdf$/i, ""),
     certificateNumber: null,
     amountHt,
-    tvaRate: String(roundCurrency(tvaRate)),
     tvaAmount,
     amountTtc,
     status: "draft",

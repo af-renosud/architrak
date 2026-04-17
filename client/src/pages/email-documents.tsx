@@ -334,7 +334,7 @@ export default function EmailDocuments() {
                     <p className="text-sm">{viewingDoc.matchConfidence ? `${viewingDoc.matchConfidence}%` : "—"}</p>
                   </div>
                 </div>
-                {viewingDoc.extractedData && (
+                {viewingDoc.extractedData != null && (
                   <div>
                     <TechnicalLabel>Extracted Data</TechnicalLabel>
                     <pre className="text-xs bg-slate-50 dark:bg-slate-900 p-3 rounded-lg mt-1 overflow-auto max-h-64">
@@ -342,7 +342,7 @@ export default function EmailDocuments() {
                     </pre>
                   </div>
                 )}
-                {viewingDoc.matchedFields && (
+                {viewingDoc.matchedFields != null && (
                   <div>
                     <TechnicalLabel>Matched Fields</TechnicalLabel>
                     <pre className="text-xs bg-slate-50 dark:bg-slate-900 p-3 rounded-lg mt-1 overflow-auto max-h-32">

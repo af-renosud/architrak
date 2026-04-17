@@ -103,12 +103,17 @@ router.post("/api/invoices/:id/confirm", async (req, res) => {
     const updates: Record<string, any> = { status: "pending" };
 
     if (corrections.amountHt != null) updates.amountHt = String(roundCurrency(corrections.amountHt));
-    if (corrections.tvaRate != null) updates.tvaRate = String(roundCurrency(corrections.tvaRate));
     if (corrections.amountTtc != null) {
       updates.amountTtc = String(roundCurrency(corrections.amountTtc));
     } else if (corrections.amountHt != null || corrections.tvaRate != null) {
+      // tvaRate is not persisted on invoices (schema source of truth in shared/schema.ts).
+      // Derive the prevailing rate from existing amountHt/tvaAmount when corrections do
+      // not supply one, falling back to the project default of 20% for safety.
       const ht = corrections.amountHt != null ? corrections.amountHt : Number(invoice.amountHt);
-      const rate = corrections.tvaRate != null ? corrections.tvaRate : Number(invoice.tvaRate);
+      const existingHt = Number(invoice.amountHt);
+      const existingTva = Number(invoice.tvaAmount);
+      const derivedRate = existingHt > 0 ? (existingTva / existingHt) * 100 : 20;
+      const rate = corrections.tvaRate != null ? corrections.tvaRate : derivedRate;
       updates.amountTtc = String(calculateTtc(ht, rate));
     }
     if (corrections.invoiceNumber != null) updates.invoiceNumber = corrections.invoiceNumber;

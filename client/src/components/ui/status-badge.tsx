@@ -39,12 +39,20 @@ const statusConfig: Record<StatusType, { label: string; bg: string; text: string
   invoiced: { label: "INVOICED", bg: "bg-blue-50 dark:bg-blue-950/40", text: "text-blue-700 dark:text-blue-400", border: "border-blue-200 dark:border-blue-800" },
 };
 
+type StatusBadgeSize = "sm" | "md";
+
+const sizeClasses: Record<StatusBadgeSize, string> = {
+  sm: "px-1.5 py-0 text-[7px]",
+  md: "px-2 py-0.5 text-[8px]",
+};
+
 interface StatusBadgeProps {
   status: string;
   className?: string;
+  size?: StatusBadgeSize;
 }
 
-export function StatusBadge({ status, className }: StatusBadgeProps) {
+export function StatusBadge({ status, className, size = "md" }: StatusBadgeProps) {
   const config = statusConfig[status as StatusType] || {
     label: status.toUpperCase(),
     bg: "bg-slate-50 dark:bg-slate-900/40",
@@ -55,8 +63,9 @@ export function StatusBadge({ status, className }: StatusBadgeProps) {
   return (
     <span
       className={cn(
-        "inline-flex items-center px-2 py-0.5 rounded-md border",
-        "text-[8px] font-black uppercase tracking-widest whitespace-nowrap",
+        "inline-flex items-center rounded-md border",
+        "font-black uppercase tracking-widest whitespace-nowrap",
+        sizeClasses[size],
         config.bg,
         config.text,
         config.border,
