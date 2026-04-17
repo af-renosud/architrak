@@ -72,7 +72,10 @@ const envSchema = z.object({
   NODE_ENV: z
     .enum(["development", "production", "test"])
     .default("development"),
-  PORT: z.coerce.number().int().positive().default(5000),
+  PORT: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.coerce.number().int().positive().default(5000),
+  ),
 
   // --- Persistence (boot-critical) -------------------------------------
   DATABASE_URL: z.string().url(),
