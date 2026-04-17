@@ -1,0 +1,24 @@
+[PROMPT FOR REPLIT AGENT]
+
+Architect's Assessment:
+The system context report is acknowledged. The domain isolation and existing test suite provide a good baseline. However, the current environment variable handling is a critical architectural flaw. Scattered `process.env` reads, `!` assertions, and inline fallbacks violate our standard for type safety and fail-fast initialization.
+
+Directive 1: Centralized, Type-Safe Environment Configuration
+
+Your immediate task is to implement a strict, centralized environment validation layer using Zod. We will eliminate all ad-hoc `process.env` access across the backend.
+
+Execute the following steps precisely:
+
+1. Create a new file: `server/env.ts`.
+2. In this file, define a strict Zod schema encompassing all server-side environment variables mentioned in the context report (DATABASE_URL, SESSION_SECRET, GEMINI_API_KEY, GOOGLE_CLIENT_ID, etc.).
+3. Enforce strict types. Use `.url()`, `.min(1)`, or other appropriate Zod validators. Make optional variables explicitly `.optional()`.
+4. Parse `process.env` through this schema at the very top of `server/env.ts`. If validation fails, log the exact missing or invalid keys and synchronously exit the process (`process.exit(1)`). Do not leak the actual values in the error logs.
+5. Export the validated environment object (e.g., `export const env = envSchema.parse(process.env);`).
+6. Perform a comprehensive sweep of the entire `server/` directory. Replace every single instance of `process.env.VARIABLE_NAME` with `env.VARIABLE_NAME`. 
+7. Remove all non-null assertions (`!`) and fallback values (`||`) that were previously attached to `process.env` reads, as Zod now guarantees their presence and type.
+
+Do not touch the frontend (`client/` or `import.meta.env`) during this step. Do not alter routing logic.
+
+Run the type checker (`npx tsc --noEmit`) and the test suite (`npm run test`) after making these changes to ensure zero regressions. 
+
+Report back when this is complete. Provide the code for `server/env.ts` and confirm that the test suite is passing and all `process.env` references in the backend have been purged. If you encounter any typing errors during the sweep, fix them properly—do not use `as any` or `@ts-ignore`.
