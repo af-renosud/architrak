@@ -323,7 +323,7 @@ async function getActiveModel(): Promise<{ provider: string; modelId: string }> 
     const setting = await storage.getAiModelSetting("document_parsing");
     if (setting) return { provider: setting.provider, modelId: setting.modelId };
   } catch {}
-  return { provider: "gemini", modelId: "gemini-2.0-flash" };
+  return { provider: "gemini", modelId: "gemini-2.5-flash" };
 }
 
 async function parseWithGemini(images: Buffer[], modelId: string): Promise<ParsedDocument> {
