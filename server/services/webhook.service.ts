@@ -1,4 +1,8 @@
 import { z } from "zod";
+import { createHash } from "crypto";
+import { db } from "../db";
+import { eq } from "drizzle-orm";
+import { webhookEvents } from "@shared/schema";
 import {
   upsertProject,
   upsertContractor,
@@ -13,8 +17,10 @@ import type {
 } from "../archidoc/sync-client";
 import { storage } from "../storage";
 import { refreshProject } from "../archidoc/import-service";
+import { retry } from "../lib/retry";
 
 export const webhookEventSchema = z.object({
+  eventId: z.string().min(1).optional(),
   event: z.enum([
     "project.created",
     "project.updated",
@@ -40,12 +46,29 @@ interface ProcessResult {
   processed: boolean;
   event: string;
   details: string;
+  idempotent?: boolean;
+}
+
+function computeEventId(payload: WebhookEvent): string {
+  if (payload.eventId) return payload.eventId;
+  const hash = createHash("sha256")
+    .update(`${payload.event}|${payload.timestamp}|${JSON.stringify(payload.data ?? {})}`)
+    .digest("hex");
+  return `derived:${hash}`;
 }
 
 export async function processWebhookEvent(payload: WebhookEvent): Promise<ProcessResult> {
   const { event, data } = payload;
+  const eventId = computeEventId(payload);
 
-  console.log(`[Webhook] Processing event: ${event}`);
+  // Idempotency: skip if we've already processed this exact event id.
+  const [existing] = await db.select().from(webhookEvents).where(eq(webhookEvents.eventId, eventId));
+  if (existing) {
+    console.log(`[Webhook] Idempotency hit for event ${eventId} (${event}); skipping reprocess.`);
+    return { processed: true, event, details: `Event ${eventId} already processed at ${existing.processedAt.toISOString()}`, idempotent: true };
+  }
+
+  console.log(`[Webhook] Processing event: ${event} (${eventId})`);
 
   switch (event) {
     case "project.created":
@@ -54,8 +77,9 @@ export async function processWebhookEvent(payload: WebhookEvent): Promise<Proces
       if (!projectData.id || !projectData.projectName) {
         throw new Error("project event requires 'id' and 'projectName' in data");
       }
-      await upsertProject(projectData);
+      await retry(() => upsertProject(projectData), { retries: 2, onRetry: (e, a) => console.warn(`[Webhook] upsertProject retry ${a}`, (e as Error).message) });
       await autoRefreshTrackedProject(projectData.id);
+      await markEventProcessed(eventId, event, payload);
       return { processed: true, event, details: `Project ${projectData.id} upserted in mirror` };
     }
 
@@ -128,6 +152,7 @@ export async function processWebhookEvent(payload: WebhookEvent): Promise<Proces
 
     case "sync.full": {
       const result = await fullSync();
+      await markEventProcessed(eventId, event, payload);
       return {
         processed: true,
         event,
@@ -137,6 +162,15 @@ export async function processWebhookEvent(payload: WebhookEvent): Promise<Proces
 
     default:
       throw new Error(`Unknown webhook event: ${event}`);
+  }
+}
+
+async function markEventProcessed(eventId: string, eventType: string, payload: WebhookEvent) {
+  const payloadHash = createHash("sha256").update(JSON.stringify(payload.data ?? {})).digest("hex");
+  try {
+    await db.insert(webhookEvents).values({ eventId, eventType, payloadHash }).onConflictDoNothing();
+  } catch (err) {
+    console.warn(`[Webhook] Failed to record processed event ${eventId}:`, (err as Error).message);
   }
 }
 

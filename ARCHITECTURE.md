@@ -435,3 +435,90 @@ shared/
 | `DEFAULT_OBJECT_STORAGE_BUCKET_ID` | Replit Object Storage bucket identifier |
 | `PRIVATE_OBJECT_DIR` | Object Storage directory prefix for private documents |
 | `PUBLIC_OBJECT_SEARCH_PATHS` | Object Storage public asset search paths |
+
+## Operational Policies
+
+### Database Migrations
+
+The repo uses `drizzle-kit push` (`npm run db:push`) for development sync. For production-grade rollouts, the recommended path is to introduce versioned migrations alongside `push`:
+
+1. Generate a migration file from the current Drizzle schema:
+   ```
+   npx drizzle-kit generate --name <change-summary>
+   ```
+   Files land in `migrations/` and should be committed to source control.
+2. Apply migrations with `npx drizzle-kit migrate` in CI / on container start (preferred over `push` in production).
+3. `db:push --force` is safe for local development but should NOT be used in production because it bypasses migration history and may drop columns silently.
+
+The CI gate for any schema PR should run `drizzle-kit generate --check` to catch unintended drift.
+
+### Document Retention (French Legal Requirements)
+
+Per Code de commerce **L123-22** and Livre des procédures fiscales **L102 B**, accounting records must be retained for **10 years**. This applies to:
+
+- `invoices` rows and the original PDFs in Object Storage
+- `certificats` rows and any generated PDFs
+- `situations` rows
+- `email_documents` (where the source attachment is itself an accounting record)
+- `archidoc_sync_log` (audit trail)
+
+**Policy decisions**:
+
+- These tables use **hard deletes only when triggered by a deliberate operator action** with audit logging, and never via automatic GC.
+- Cascades from `projects.deleted` are intentionally NOT used for `invoices` rows older than the retention horizon — instead, deleting a project that has retained financial records should be blocked at the application layer (currently best-effort; see follow-ups).
+- Object Storage objects under `PRIVATE_OBJECT_DIR` should be retained for at least 10 years; bucket lifecycle rules MUST be set to never auto-expire those prefixes.
+
+### Database Invariants (DB-enforced)
+
+The schema includes the following CHECK / UNIQUE constraints to keep financial state consistent regardless of which code path writes:
+
+| Table | Constraint | Purpose |
+|---|---|---|
+| `invoices` | `invoices_amount_ht_nonneg` | HT amount cannot be negative |
+| `invoices` | `invoices_amount_ttc_nonneg` | TTC amount cannot be negative |
+| `invoices` | `invoices_tva_amount_nonneg` | VAT amount cannot be negative |
+| `situations` | `situations_devis_number_unique` | Situation numbers are unique within a devis |
+| `situations` | `situations_cumulative_ht_nonneg` | Cumulative HT cannot go negative |
+| `situations` | `situations_net_to_pay_ttc_nonneg` | Net-to-pay TTC cannot be negative |
+| `fee_entries` | `fee_entries_invoice_unique` (partial) | At most one fee entry per invoice — guarantees idempotent approval |
+| `fee_entries` | `fee_entries_fee_amount_nonneg` | Fee amount cannot be negative |
+| `fee_entries` | `fee_entries_fee_rate_pct` | Fee rate is in `[0, 100]` |
+| `document_advisories` | `document_advisories_subject_check` | XOR on `(devis_id, invoice_id)` |
+| `webhook_events` | `event_id` PK | Idempotency key for inbound webhooks |
+| `projects` | `projects_archidoc_id_unique` | 1:1 mapping with ArchiDoc |
+| `contractors` | `contractors_archidoc_id_unique` | 1:1 mapping with ArchiDoc |
+| `lots` | `lots_project_lot_unique` | No duplicate lot numbers per project |
+| `archidoc_proposal_fees` | `archidoc_proposal_fees_project_unique` | One proposal-fee row per project |
+| `certificats` | `certificats_project_ref_unique` | Certificate refs are unique per project |
+
+### Concurrency & Idempotency
+
+- **Invoice approval** (`server/services/invoice-approval.service.ts`) runs in a single DB transaction with `SELECT ... FOR UPDATE` on the invoice row, and is idempotent at the storage layer via the `fee_entries` partial unique index.
+- **Advisory reconciliation** (`server/services/advisory-reconciler.ts`) uses `SELECT ... FOR UPDATE` per subject and is append-only for resolved/acknowledged history.
+- **Inbound webhooks** (`server/services/webhook.service.ts`) check `webhook_events` by `event_id` before processing. The ID is taken from the payload when present and otherwise derived as `derived:<sha256(event|timestamp|data)>`.
+
+### Logging & Observability
+
+- Every API request gets an `X-Request-Id` header (random UUID v4 unless the caller supplied a sane value), echoed back to the client and recorded in the access log.
+- Access log lines never include the response body — financial payloads, extracted email content, and contractor PII would otherwise leak into stdout/log aggregators.
+- Mutating endpoints log `userId` only; sensitive fields are never logged.
+
+### Rate Limiting
+
+In-process token-bucket limits (see `server/middleware/rate-limit.ts`) are applied at three tiers:
+
+- `/api/webhooks/*` — 60 req/min (unauthenticated, external traffic)
+- Upload endpoints — 20 req/min (each upload triggers expensive AI extraction)
+- All other `/api/*` — 600 req/min (belt-and-braces guard)
+
+Keys are derived from the authenticated `userId` when available, otherwise the client IP (`X-Forwarded-For` aware).
+
+### File Upload Validation
+
+`server/middleware/upload.ts` enforces:
+
+- `multipart/form-data` MIME of `application/pdf` (or `application/x-pdf`)
+- `.pdf` extension
+- `%PDF` magic-byte check applied in the upload service before extraction
+- Max file size: 25 MB
+- Max files per request: 1

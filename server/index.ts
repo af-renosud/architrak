@@ -1,6 +1,7 @@
 import express, { type Request, Response, NextFunction } from "express";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
+import { randomUUID } from "crypto";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -65,27 +66,31 @@ export function log(message: string, source = "express") {
   console.log(`${formattedTime} [${source}] ${message}`);
 }
 
+declare module "express-serve-static-core" {
+  interface Request {
+    requestId?: string;
+  }
+}
+
+app.use((req, res, next) => {
+  const incoming = req.header("x-request-id");
+  const requestId = incoming && /^[A-Za-z0-9-]{8,128}$/.test(incoming) ? incoming : randomUUID();
+  req.requestId = requestId;
+  res.setHeader("X-Request-Id", requestId);
+  next();
+});
+
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
-
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
 
   res.on("finish", () => {
     const duration = Date.now() - start;
-    if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      }
-
-      log(logLine);
-    }
+    if (!path.startsWith("/api")) return;
+    // Redacted log line: never include response body. Bodies may contain
+    // financial data, extracted email content, or PII (FR accounting docs).
+    const userId = (req as any).session?.userId ? `u=${(req as any).session.userId} ` : "";
+    log(`${req.method} ${path} ${res.statusCode} ${duration}ms rid=${req.requestId} ${userId}`.trim());
   });
 
   next();

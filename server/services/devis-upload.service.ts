@@ -3,6 +3,7 @@ import { uploadDocument } from "../storage/object-storage";
 import { validateExtraction } from "./extraction-validator";
 import { calculateTtc, roundCurrency } from "../../shared/financial-utils";
 import { reconcileAdvisories } from "./advisory-reconciler";
+import { assertPdfMagic } from "../middleware/upload";
 
 interface UploadedFile {
   originalname: string;
@@ -11,6 +12,7 @@ interface UploadedFile {
 }
 
 export async function processDevisUpload(projectId: number, file: UploadedFile) {
+  assertPdfMagic(file.buffer);
   const storageKey = await uploadDocument(projectId, file.originalname, file.buffer, file.mimetype);
 
   await storage.createProjectDocument({

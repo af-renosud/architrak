@@ -3,6 +3,7 @@ import { uploadDocument } from "../storage/object-storage";
 import { validateExtraction } from "./extraction-validator";
 import { roundCurrency, calculateTtc, calculateTva } from "../../shared/financial-utils";
 import { reconcileAdvisories } from "./advisory-reconciler";
+import { assertPdfMagic } from "../middleware/upload";
 
 interface UploadedFile {
   originalname: string;
@@ -11,6 +12,7 @@ interface UploadedFile {
 }
 
 export async function processInvoiceUpload(devisId: number, file: UploadedFile) {
+  assertPdfMagic(file.buffer);
   const devis = await storage.getDevis(devisId);
   if (!devis) {
     return { success: false, status: 404, data: { message: "Devis not found" } };

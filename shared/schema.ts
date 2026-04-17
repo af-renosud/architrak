@@ -11,6 +11,7 @@ import {
   timestamp,
   jsonb,
   unique,
+  uniqueIndex,
   index,
   check,
 } from "drizzle-orm/pg-core";
@@ -171,7 +172,7 @@ export const invoices = pgTable("invoices", {
   contractorId: integer("contractor_id").notNull().references(() => contractors.id),
   projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
   certificateNumber: text("certificate_number"),
-  invoiceNumber: integer("invoice_number").notNull(),
+  invoiceNumber: text("invoice_number").notNull(),
   amountHt: numeric("amount_ht", { precision: 12, scale: 2 }).notNull(),
   tvaAmount: numeric("tva_amount", { precision: 12, scale: 2 }).notNull(),
   amountTtc: numeric("amount_ttc", { precision: 12, scale: 2 }).notNull(),
@@ -189,6 +190,9 @@ export const invoices = pgTable("invoices", {
   index("invoices_project_id_idx").on(table.projectId),
   index("invoices_devis_id_idx").on(table.devisId),
   index("invoices_contractor_id_idx").on(table.contractorId),
+  check("invoices_amount_ht_nonneg", sql`${table.amountHt} >= 0`),
+  check("invoices_amount_ttc_nonneg", sql`${table.amountTtc} >= 0`),
+  check("invoices_tva_amount_nonneg", sql`${table.tvaAmount} >= 0`),
 ]);
 
 export const situations = pgTable("situations", {
@@ -208,6 +212,9 @@ export const situations = pgTable("situations", {
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   index("situations_devis_id_idx").on(table.devisId),
+  unique("situations_devis_number_unique").on(table.devisId, table.situationNumber),
+  check("situations_cumulative_ht_nonneg", sql`${table.cumulativeHt} >= 0`),
+  check("situations_net_to_pay_ttc_nonneg", sql`${table.netToPayTtc} >= 0`),
 ]);
 
 export const situationLines = pgTable("situation_lines", {
@@ -276,6 +283,9 @@ export const feeEntries = pgTable("fee_entries", {
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   index("fee_entries_fee_id_idx").on(table.feeId),
+  uniqueIndex("fee_entries_invoice_unique").on(table.invoiceId).where(sql`${table.invoiceId} IS NOT NULL`),
+  check("fee_entries_fee_amount_nonneg", sql`${table.feeAmount} >= 0`),
+  check("fee_entries_fee_rate_pct", sql`${table.feeRate} >= 0 AND ${table.feeRate} <= 100`),
 ]);
 
 export const archidocProjects = pgTable("archidoc_projects", {
@@ -474,6 +484,16 @@ export const documentAdvisories = pgTable("document_advisories", {
     "document_advisories_subject_check",
     sql`(${table.devisId} IS NOT NULL) <> (${table.invoiceId} IS NOT NULL)`,
   ),
+]);
+
+export const webhookEvents = pgTable("webhook_events", {
+  eventId: text("event_id").primaryKey(),
+  eventType: text("event_type").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  processedAt: timestamp("processed_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("webhook_events_event_type_idx").on(table.eventType),
+  index("webhook_events_processed_at_idx").on(table.processedAt),
 ]);
 
 export const templateAssets = pgTable("template_assets", {

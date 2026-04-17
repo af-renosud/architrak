@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { storage } from "../storage";
 import { requireAuth } from "../auth/middleware";
+import { parsePagination } from "../lib/pagination";
 import { insertInvoiceSchema } from "@shared/schema";
 import { upload } from "../middleware/upload";
 import { processInvoiceUpload } from "../services/invoice-upload.service";
@@ -150,8 +151,10 @@ router.delete("/api/invoices/:id", async (req, res) => {
 });
 
 router.get("/api/projects/:projectId/invoices", async (req, res) => {
+  const { limit, offset } = parsePagination(req, { defaultLimit: 100, maxLimit: 500 });
   const invs = await storage.getInvoicesByProject(Number(req.params.projectId));
-  res.json(invs);
+  res.setHeader("X-Total-Count", String(invs.length));
+  res.json(invs.slice(offset, offset + limit));
 });
 
 router.get("/api/invoices/:id/advisories", async (req, res) => {
