@@ -1,36 +1,50 @@
 import { Router } from "express";
+import { z } from "zod";
 import { storage } from "../storage";
 import { upload } from "../middleware/upload";
 import { uploadDocument, getDocumentStream } from "../storage/object-storage";
+import { validateRequest } from "../middleware/validate";
 
 const router = Router();
+
+const projectIdParams = z.object({ projectId: z.coerce.number().int().positive() });
+const docUploadBodySchema = z.object({
+  documentType: z.string().optional(),
+  uploadedBy: z.string().optional(),
+  description: z.string().optional(),
+});
 
 router.get("/api/projects/:projectId/documents", async (req, res) => {
   const docs = await storage.getProjectDocuments(Number(req.params.projectId));
   res.json(docs);
 });
 
-router.post("/api/projects/:projectId/documents/upload", upload.single("file"), async (req, res) => {
-  try {
-    const projectId = Number(req.params.projectId);
-    const file = req.file;
-    if (!file) return res.status(400).json({ message: "No file provided" });
+router.post(
+  "/api/projects/:projectId/documents/upload",
+  upload.single("file"),
+  validateRequest({ params: projectIdParams, body: docUploadBodySchema }),
+  async (req, res) => {
+    try {
+      const projectId = Number(req.params.projectId);
+      const file = req.file;
+      if (!file) return res.status(400).json({ message: "No file provided" });
 
-    const storageKey = await uploadDocument(projectId, file.originalname, file.buffer, file.mimetype);
-    const doc = await storage.createProjectDocument({
-      projectId,
-      fileName: file.originalname,
-      storageKey,
-      documentType: req.body.documentType || "other",
-      uploadedBy: req.body.uploadedBy || "manual",
-      description: req.body.description || null,
-    });
-    res.status(201).json(doc);
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ message: `Upload failed: ${message}` });
-  }
-});
+      const storageKey = await uploadDocument(projectId, file.originalname, file.buffer, file.mimetype);
+      const doc = await storage.createProjectDocument({
+        projectId,
+        fileName: file.originalname,
+        storageKey,
+        documentType: req.body.documentType || "other",
+        uploadedBy: req.body.uploadedBy || "manual",
+        description: req.body.description || null,
+      });
+      res.status(201).json(doc);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Upload failed: ${message}` });
+    }
+  },
+);
 
 router.get("/api/documents/:id/download", async (req, res) => {
   try {

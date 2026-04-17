@@ -1,11 +1,17 @@
 import { Router } from "express";
+import { z } from "zod";
 import { storage } from "../storage";
 import { isArchidocConfigured, checkConnection } from "../archidoc/sync-client";
 import { fullSync, incrementalSync, getLastSyncStatus } from "../archidoc/sync-service";
 import { trackProject, refreshProject } from "../archidoc/import-service";
 import { env as envCfg } from "../env";
+import { validateRequest } from "../middleware/validate";
 
 const router = Router();
+
+const idParams = z.object({ id: z.coerce.number().int().positive() });
+const archidocProjectIdParams = z.object({ archidocProjectId: z.string().min(1) });
+const trackBodySchema = z.record(z.string(), z.unknown()).optional().default({});
 
 router.get("/api/archidoc/status", async (_req, res) => {
   try {
@@ -49,10 +55,10 @@ router.get("/api/archidoc/projects", async (_req, res) => {
     const trackedIds = await storage.getTrackedArchidocProjectIds();
     const allProjects = await storage.getProjects();
 
-    const enriched = mirroredProjects.map(mp => {
+    const enriched = mirroredProjects.map((mp) => {
       const isTracked = trackedIds.includes(mp.archidocId);
       const architrakProject = isTracked
-        ? allProjects.find(p => p.archidocId === mp.archidocId)
+        ? allProjects.find((p) => p.archidocId === mp.archidocId)
         : undefined;
 
       return {
@@ -69,7 +75,7 @@ router.get("/api/archidoc/projects", async (_req, res) => {
   }
 });
 
-router.post("/api/archidoc/sync", async (_req, res) => {
+router.post("/api/archidoc/sync", validateRequest({ body: z.object({}).strict().optional() }), async (_req, res) => {
   try {
     const result = await fullSync();
     res.json({ message: "Sync completed", ...result });
@@ -79,33 +85,40 @@ router.post("/api/archidoc/sync", async (_req, res) => {
   }
 });
 
-router.post("/api/archidoc/track/:archidocProjectId", async (req, res) => {
-  try {
-    const { archidocProjectId } = req.params;
-    const options = req.body || {};
-    const result = await trackProject(archidocProjectId, options);
-    res.status(201).json({
-      message: "Project tracked successfully",
-      ...result,
-    });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    const status = message.includes("already tracked") ? 409 : 500;
-    res.status(status).json({ message });
-  }
-});
+router.post(
+  "/api/archidoc/track/:archidocProjectId",
+  validateRequest({ params: archidocProjectIdParams, body: trackBodySchema }),
+  async (req, res) => {
+    try {
+      const archidocProjectId = String(req.params.archidocProjectId);
+      const result = await trackProject(archidocProjectId, (req.body ?? {}) as Record<string, unknown>);
+      res.status(201).json({
+        message: "Project tracked successfully",
+        ...result,
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      const status = message.includes("already tracked") ? 409 : 500;
+      res.status(status).json({ message });
+    }
+  },
+);
 
-router.post("/api/projects/:id/refresh", async (req, res) => {
-  try {
-    const projectId = Number(req.params.id);
-    await incrementalSync();
-    const result = await refreshProject(projectId);
-    res.json(result);
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ message: `Refresh failed: ${message}` });
-  }
-});
+router.post(
+  "/api/projects/:id/refresh",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    try {
+      const projectId = Number(req.params.id);
+      await incrementalSync();
+      const result = await refreshProject(projectId);
+      res.json(result);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Refresh failed: ${message}` });
+    }
+  },
+);
 
 router.get("/api/archidoc/proposal-fees/:archidocProjectId", async (req, res) => {
   try {

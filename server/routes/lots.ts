@@ -1,32 +1,46 @@
 import { Router } from "express";
+import { z } from "zod";
 import { storage } from "../storage";
-import { insertLotSchema } from "@shared/schema";
+import { insertLotSchema, type InsertLot } from "@shared/schema";
+import { validateRequest } from "../middleware/validate";
 
 const router = Router();
+const idParams = z.object({ id: z.coerce.number().int().positive() });
+const projectIdParams = z.object({ projectId: z.coerce.number().int().positive() });
+const createLotBodySchema = insertLotSchema.omit({ projectId: true });
+const updateLotSchema = insertLotSchema.partial();
 
 router.get("/api/projects/:projectId/lots", async (req, res) => {
   const lots = await storage.getLotsByProject(Number(req.params.projectId));
   res.json(lots);
 });
 
-router.post("/api/projects/:projectId/lots", async (req, res) => {
-  const parsed = insertLotSchema.safeParse({ ...req.body, projectId: Number(req.params.projectId) });
-  if (!parsed.success) return res.status(400).json({ message: "Invalid lot data", errors: parsed.error.flatten() });
-  const lot = await storage.createLot(parsed.data);
-  res.status(201).json(lot);
-});
+router.post(
+  "/api/projects/:projectId/lots",
+  validateRequest({ params: projectIdParams, body: createLotBodySchema }),
+  async (req, res) => {
+    const lot = await storage.createLot({ ...req.body, projectId: Number(req.params.projectId) });
+    res.status(201).json(lot);
+  },
+);
 
-router.patch("/api/lots/:id", async (req, res) => {
-  const parsed = insertLotSchema.partial().safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ message: "Invalid lot data", errors: parsed.error.flatten() });
-  const lot = await storage.updateLot(Number(req.params.id), parsed.data);
-  if (!lot) return res.status(404).json({ message: "Lot not found" });
-  res.json(lot);
-});
+router.patch(
+  "/api/lots/:id",
+  validateRequest({ params: idParams, body: updateLotSchema }),
+  async (req, res) => {
+    const lot = await storage.updateLot(Number(req.params.id), req.body);
+    if (!lot) return res.status(404).json({ message: "Lot not found" });
+    res.json(lot);
+  },
+);
 
-router.delete("/api/lots/:id", async (req, res) => {
-  await storage.deleteLot(Number(req.params.id));
-  res.status(204).send();
-});
+router.delete(
+  "/api/lots/:id",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    await storage.deleteLot(Number(req.params.id));
+    res.status(204).send();
+  },
+);
 
 export default router;

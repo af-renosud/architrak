@@ -22,6 +22,22 @@ import webhooksRouter from "./webhooks";
 import exportRouter from "./export";
 import benchmarksRouter from "./benchmarks";
 
+// IDOR / Tenancy assumption (single-tenant deployment):
+// ArchiTrak runs as a dedicated single-firm deployment for Renosud
+// (`@renosud.com` Google Workspace domain). All `@renosud.com` users
+// authenticated via session cookies are treated as authorised operators
+// for every resource in this database. There is intentionally NO
+// row-level tenant ID, NO per-user ownership scoping on Project/Devis/
+// Invoice/Certificat/Fee/Contractor/etc., and resource mutations
+// (PATCH/DELETE) are NOT scoped to req.session.userId.
+//
+// If this app is ever multi-tenanted, every storage call below MUST be
+// scoped by tenantId AND every mutation route MUST re-check that the
+// target row belongs to the caller's tenant before write — the current
+// `validateRequest` perimeter only checks shape, not ownership. Do NOT
+// expose this server publicly without first adding row-level tenancy
+// and ownership checks.
+
 // Rate limiters: webhook is unauthenticated and takes external traffic, uploads
 // hit AI extraction which is expensive, and the general API limiter is a
 // belt-and-braces guard against runaway clients.

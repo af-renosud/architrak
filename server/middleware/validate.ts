@@ -1,34 +1,21 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
-import type { ParamsDictionary } from "express-serve-static-core";
-import type { ParsedQs } from "qs";
-import type { ZodTypeAny, infer as zInfer } from "zod";
+import type { ZodTypeAny } from "zod";
 
-export interface ValidateRequestSchemas<
-  TBody extends ZodTypeAny | undefined = undefined,
-  TQuery extends ZodTypeAny | undefined = undefined,
-  TParams extends ZodTypeAny | undefined = undefined,
-> {
-  body?: TBody;
-  query?: TQuery;
-  params?: TParams;
+export interface ValidateRequestSchemas {
+  body?: ZodTypeAny;
+  query?: ZodTypeAny;
+  params?: ZodTypeAny;
 }
 
-type InferOr<T extends ZodTypeAny | undefined, Fallback> = T extends ZodTypeAny
-  ? zInfer<T>
-  : Fallback;
-
-export function validateRequest<
-  TBody extends ZodTypeAny | undefined = undefined,
-  TQuery extends ZodTypeAny | undefined = undefined,
-  TParams extends ZodTypeAny | undefined = undefined,
->(
-  schemas: ValidateRequestSchemas<TBody, TQuery, TParams>,
-): RequestHandler<
-  InferOr<TParams, ParamsDictionary>,
-  unknown,
-  InferOr<TBody, unknown>,
-  InferOr<TQuery, ParsedQs>
-> {
+// Returns a plain `RequestHandler` (no custom Params/Body generics) so that
+// chaining with other middleware (e.g. `upload.single`, `requireAuth`) does
+// not provoke Express's overload resolver into reporting type-mismatches.
+// Validation still mutates `req.body`/`req.query`/`req.params` at runtime
+// using each schema's coerced output; handlers should narrow with explicit
+// casts (e.g. `req.body as InsertX`) where strict typing is needed.
+export function validateRequest(
+  schemas: ValidateRequestSchemas,
+): RequestHandler {
   return async (req: Request, _res: Response, next: NextFunction) => {
     try {
       if (schemas.body) {

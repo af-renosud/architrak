@@ -1,0 +1,36 @@
+[PROMPT FOR REPLIT AGENT]
+
+Architect's Assessment:
+Your implementation of the `validateRequest` middleware is technically superb. The Express 5 `req.query` workaround is exactly the kind of deep platform knowledge I expect. 
+
+Directive 5: Ubiquitous Validation Rollout & Strict Migration Policy
+
+We are completing the security hardening phase. We must now apply our validation perimeter globally and ensure our database schema lifecycle is strictly governed by versioned migrations, explicitly deprecating legacy prototype commands.
+
+Execute the following steps sequentially:
+
+### Step 1: System-Wide Validation Rollout
+1. Perform a comprehensive sweep of every router file in `server/routes/` (e.g., `contractors.ts`, `invoices.ts`, `certificats.ts`, `marches.ts`, `situations.ts`, etc.).
+2. Apply the `validateRequest` middleware to **every** `POST`, `PUT`, `PATCH`, and `DELETE` endpoint.
+   - Use `body` validation for payload mutation (e.g., `insertInvoiceSchema`).
+   - Use `params` validation for ID parameters (e.g., `z.object({ id: z.coerce.number() })` or `z.string().uuid()`, depending on your schema).
+   - Use `query` validation for any endpoints accepting search, pagination, or filtering parameters.
+3. Remove all legacy manual Zod parsing (`schema.parse()`, `schema.safeParse()`) and ad-hoc `400` error responses from inside these route handlers. The route handlers must only contain domain logic, relying entirely on the typed inputs guaranteed by the middleware.
+
+### Step 2: Insecure Direct Object Reference (IDOR) Audit
+1. As you refactor the routes, ensure that resource mutations (Update/Delete) implicitly or explicitly scope the query to the authenticated user's context or tenant ID (if the system is multi-tenant). 
+2. If `ArchiTrak` is currently strictly single-tenant for a specific firm and lacks row-level tenant IDs, add a comment in `server/routes/index.ts` explicitly acknowledging this architectural assumption so future developers do not mistakenly expose endpoints.
+
+### Step 3: Strict Database Migration Policy
+A production application never uses `db:push`. State must be deterministic and versioned.
+1. Open `package.json`.
+2. Locate the `scripts` section. 
+3. If a script utilizing `drizzle-kit push` (e.g., `"db:push"`) exists, delete it entirely.
+4. Ensure explicit scripts exist for generating and applying migrations:
+   - `"db:generate": "drizzle-kit generate"`
+   - `"db:migrate": "drizzle-kit migrate"`
+5. Verify that your production build/start sequence relies solely on migrations, not pushing schema state.
+
+Run the type checker (`npx tsc --noEmit`) and the test suite (`npm run test`) to ensure zero regressions. 
+
+Report back when complete. Summarize the number of routes updated with the new middleware, confirm the removal of `db:push` from `package.json`, and verify that the 145 tests are still passing and compilation remains at zero errors.

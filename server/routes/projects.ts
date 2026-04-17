@@ -1,10 +1,12 @@
 import { Router, type Request, type Response } from "express";
+import { z } from "zod";
 import { storage } from "../storage";
 import { insertProjectSchema, type InsertProject } from "@shared/schema";
 import { validateRequest } from "../middleware/validate";
 
 const router = Router();
 
+const idParams = z.object({ id: z.coerce.number().int().positive() });
 const updateProjectSchema = insertProjectSchema.partial();
 type UpdateProject = Partial<InsertProject>;
 
@@ -16,7 +18,7 @@ router.get("/api/projects", async (_req, res) => {
 router.post(
   "/api/projects",
   validateRequest({ body: insertProjectSchema }),
-  async (req: Request<unknown, unknown, InsertProject>, res: Response) => {
+  async (req, res: Response) => {
     const project = await storage.createProject(req.body);
     res.status(201).json(project);
   },
@@ -30,17 +32,21 @@ router.get("/api/projects/:id", async (req, res) => {
 
 router.patch(
   "/api/projects/:id",
-  validateRequest({ body: updateProjectSchema }),
-  async (req: Request<{ id: string }, unknown, UpdateProject>, res: Response) => {
+  validateRequest({ params: idParams, body: updateProjectSchema }),
+  async (req, res: Response) => {
     const project = await storage.updateProject(Number(req.params.id), req.body);
     if (!project) return res.status(404).json({ message: "Project not found" });
     res.json(project);
   },
 );
 
-router.delete("/api/projects/:id", async (req, res) => {
-  await storage.deleteProject(Number(req.params.id));
-  res.status(204).send();
-});
+router.delete(
+  "/api/projects/:id",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    await storage.deleteProject(Number(req.params.id));
+    res.status(204).send();
+  },
+);
 
 export default router;
