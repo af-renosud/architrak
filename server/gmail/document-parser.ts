@@ -318,10 +318,36 @@ async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Promise<Buf
   }
 }
 
+const RETIRED_GEMINI_MODELS: Record<string, string> = {
+  "gemini-2.0-flash": "gemini-2.5-flash",
+  "gemini-2.0-flash-001": "gemini-2.5-flash",
+  "gemini-1.5-flash": "gemini-2.5-flash",
+  "gemini-1.5-flash-latest": "gemini-2.5-flash",
+  "gemini-1.5-pro": "gemini-2.5-pro",
+  "gemini-1.5-pro-latest": "gemini-2.5-pro",
+  "gemini-pro": "gemini-2.5-flash",
+  "gemini-pro-vision": "gemini-2.5-flash",
+};
+
+function upgradeRetiredModel(provider: string, modelId: string): string {
+  if (provider !== "gemini") return modelId;
+  const replacement = RETIRED_GEMINI_MODELS[modelId];
+  if (replacement) {
+    console.warn(`[document-parser] Configured model "${modelId}" is retired by Google; auto-upgrading to "${replacement}". Update ai_model_settings to silence this warning.`);
+    return replacement;
+  }
+  return modelId;
+}
+
 async function getActiveModel(): Promise<{ provider: string; modelId: string }> {
   try {
     const setting = await storage.getAiModelSetting("document_parsing");
-    if (setting) return { provider: setting.provider, modelId: setting.modelId };
+    if (setting) {
+      return {
+        provider: setting.provider,
+        modelId: upgradeRetiredModel(setting.provider, setting.modelId),
+      };
+    }
   } catch {}
   return { provider: "gemini", modelId: "gemini-2.5-flash" };
 }
