@@ -323,8 +323,8 @@ const RETIRED_GEMINI_MODELS: Record<string, string> = {
   "gemini-2.0-flash-001": "gemini-2.5-flash",
   "gemini-1.5-flash": "gemini-2.5-flash",
   "gemini-1.5-flash-latest": "gemini-2.5-flash",
-  "gemini-1.5-pro": "gemini-2.5-pro",
-  "gemini-1.5-pro-latest": "gemini-2.5-pro",
+  "gemini-1.5-pro": "gemini-2.5-flash",
+  "gemini-1.5-pro-latest": "gemini-2.5-flash",
   "gemini-pro": "gemini-2.5-flash",
   "gemini-pro-vision": "gemini-2.5-flash",
 };
