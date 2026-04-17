@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { storage } from "../storage";
+import { requireAuth } from "../auth/middleware";
 import { insertInvoiceSchema } from "@shared/schema";
 import { upload } from "../middleware/upload";
 import { processInvoiceUpload } from "../services/invoice-upload.service";
@@ -158,12 +159,16 @@ router.get("/api/invoices/:id/advisories", async (req, res) => {
   res.json(items);
 });
 
-router.post("/api/invoices/:id/advisories/:advisoryId/acknowledge", async (req, res) => {
+router.post("/api/invoices/:id/advisories/:advisoryId/acknowledge", requireAuth, async (req, res) => {
   const invoiceId = Number(req.params.id);
   const advisoryId = Number(req.params.advisoryId);
-  const acknowledgedBy =
-    typeof req.body?.acknowledgedBy === "string" ? req.body.acknowledgedBy : null;
-  const row = await acknowledgeAdvisoryForSubject(advisoryId, { invoiceId }, acknowledgedBy);
+  const userId = req.session?.userId;
+  if (!userId) return res.status(401).json({ message: "Authentication required" });
+  const row = await acknowledgeAdvisoryForSubject(
+    advisoryId,
+    { invoiceId },
+    String(userId),
+  );
   if (!row) {
     return res
       .status(404)

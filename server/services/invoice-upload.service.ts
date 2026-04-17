@@ -71,7 +71,7 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
   });
 
   try {
-    await reconcileAdvisories({ invoiceId: invoice.id }, validation.warnings);
+    await reconcileAdvisories({ invoiceId: invoice.id }, validation.warnings, "extractor");
   } catch (advErr) {
     console.warn(`[Invoice Upload] Failed to persist advisories:`, advErr);
   }

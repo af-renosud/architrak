@@ -459,7 +459,7 @@ export const documentAdvisories = pgTable("document_advisories", {
   field: text("field"),
   severity: text("severity").notNull(),
   message: text("message").notNull(),
-  source: text("source").notNull().default("ai_extraction"),
+  source: text("source").notNull().default("extractor"),
   raisedAt: timestamp("raised_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   resolvedAt: timestamp("resolved_at"),
   acknowledgedAt: timestamp("acknowledged_at"),

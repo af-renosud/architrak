@@ -16,7 +16,7 @@ export type AdvisoryCode = (typeof ADVISORY_CODES)[keyof typeof ADVISORY_CODES];
 export const ADVISORY_SEVERITIES = ["error", "warning", "info"] as const;
 export type AdvisorySeverity = (typeof ADVISORY_SEVERITIES)[number];
 
-export const ADVISORY_SOURCES = ["ai_extraction", "manual"] as const;
+export const ADVISORY_SOURCES = ["extractor", "validator", "manual"] as const;
 export type AdvisorySource = (typeof ADVISORY_SOURCES)[number];
 
 export interface ValidatorWarningLike {

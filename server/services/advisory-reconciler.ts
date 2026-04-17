@@ -21,7 +21,7 @@ export interface ReconcileResult {
 export async function reconcileAdvisories(
   subject: ReconcileSubject,
   warnings: ValidatorWarningLike[],
-  source: AdvisorySource = "ai_extraction",
+  source: AdvisorySource = "validator",
 ): Promise<ReconcileResult> {
   if (!subject.devisId && !subject.invoiceId) {
     throw new Error("reconcileAdvisories requires devisId or invoiceId");
@@ -130,12 +130,13 @@ export async function reconcileAdvisories(
       unchanged++;
     }
 
-    // Resolve open advisories whose identity is no longer present in desired.
+    // Resolve advisories whose identity is no longer present in desired.
+    // Acknowledgement and resolution are independent: an acknowledged advisory
+    // can still transition to resolved when the validator stops raising it.
     for (const a of existing) {
       const key = identityKey(a.code, a.field);
       if (desired.has(key)) continue;
       if (a.resolvedAt) continue;
-      if (a.acknowledgedAt) continue;
       await tx
         .update(documentAdvisories)
         .set({ resolvedAt: now })

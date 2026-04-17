@@ -93,7 +93,7 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
   });
 
   try {
-    await reconcileAdvisories({ devisId: devisRecord.id }, validation.warnings);
+    await reconcileAdvisories({ devisId: devisRecord.id }, validation.warnings, "extractor");
   } catch (advErr) {
     console.warn(`[Devis Upload] Failed to persist advisories:`, advErr);
   }
