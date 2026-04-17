@@ -9,7 +9,11 @@ import { approveInvoice } from "../services/invoice-approval.service";
 import { getDocumentStream } from "../storage/object-storage";
 import { validateExtraction } from "../services/extraction-validator";
 import { roundCurrency, calculateTtc } from "../../shared/financial-utils";
-import { reconcileAdvisories, getAdvisoriesForInvoice } from "../services/advisory-reconciler";
+import {
+  reconcileAdvisories,
+  getAdvisoriesForInvoice,
+  acknowledgeAdvisoryForSubject,
+} from "../services/advisory-reconciler";
 
 const invoiceConfirmSchema = z.object({
   amountHt: z.coerce.number().nonnegative().optional(),
@@ -152,6 +156,20 @@ router.get("/api/projects/:projectId/invoices", async (req, res) => {
 router.get("/api/invoices/:id/advisories", async (req, res) => {
   const items = await getAdvisoriesForInvoice(Number(req.params.id));
   res.json(items);
+});
+
+router.post("/api/invoices/:id/advisories/:advisoryId/acknowledge", async (req, res) => {
+  const invoiceId = Number(req.params.id);
+  const advisoryId = Number(req.params.advisoryId);
+  const acknowledgedBy =
+    typeof req.body?.acknowledgedBy === "string" ? req.body.acknowledgedBy : null;
+  const row = await acknowledgeAdvisoryForSubject(advisoryId, { invoiceId }, acknowledgedBy);
+  if (!row) {
+    return res
+      .status(404)
+      .json({ message: "Advisory not found, already acknowledged, or not on this invoice" });
+  }
+  res.json(row);
 });
 
 export default router;

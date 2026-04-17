@@ -467,6 +467,9 @@ export const documentAdvisories = pgTable("document_advisories", {
 }, (table) => [
   index("document_advisories_devis_id_idx").on(table.devisId),
   index("document_advisories_invoice_id_idx").on(table.invoiceId),
+  index("document_advisories_devis_severity_idx").on(table.devisId, table.severity),
+  index("document_advisories_invoice_severity_idx").on(table.invoiceId, table.severity),
+  index("document_advisories_code_idx").on(table.code),
   check(
     "document_advisories_subject_check",
     sql`(${table.devisId} IS NOT NULL) <> (${table.invoiceId} IS NOT NULL)`,

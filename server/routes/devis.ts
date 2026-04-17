@@ -12,7 +12,7 @@ import { roundCurrency, calculateTtc } from "../../shared/financial-utils";
 import {
   reconcileAdvisories,
   getAdvisoriesForDevis,
-  acknowledgeAdvisory,
+  acknowledgeAdvisoryForSubject,
 } from "../services/advisory-reconciler";
 
 const devisConfirmSchema = z.object({
@@ -191,10 +191,17 @@ router.get("/api/devis/:id/advisories", async (req, res) => {
   res.json(items);
 });
 
-router.post("/api/advisories/:id/acknowledge", async (req, res) => {
-  const acknowledgedBy = typeof req.body?.acknowledgedBy === "string" ? req.body.acknowledgedBy : null;
-  const row = await acknowledgeAdvisory(Number(req.params.id), acknowledgedBy);
-  if (!row) return res.status(404).json({ message: "Advisory not found or already acknowledged" });
+router.post("/api/devis/:id/advisories/:advisoryId/acknowledge", async (req, res) => {
+  const devisId = Number(req.params.id);
+  const advisoryId = Number(req.params.advisoryId);
+  const acknowledgedBy =
+    typeof req.body?.acknowledgedBy === "string" ? req.body.acknowledgedBy : null;
+  const row = await acknowledgeAdvisoryForSubject(advisoryId, { devisId }, acknowledgedBy);
+  if (!row) {
+    return res
+      .status(404)
+      .json({ message: "Advisory not found, already acknowledged, or not on this devis" });
+  }
   res.json(row);
 });
 

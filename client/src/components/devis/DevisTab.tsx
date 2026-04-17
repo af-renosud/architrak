@@ -19,7 +19,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { insertDevisLineItemSchema, insertAvenantSchema, insertLotSchema } from "@shared/schema";
 import type { Devis, Contractor, Lot, DevisLineItem, Avenant, Invoice } from "@shared/schema";
 import { z } from "zod";
-import { AdvisoriesList } from "@/components/advisories/AdvisoriesList";
+import { AdvisoriesList, AdvisoryBadge } from "@/components/advisories/AdvisoriesList";
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
@@ -244,6 +244,7 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
                       </span>
                     </div>
                     <TechnicalLabel>{d.invoicingMode === "mode_a" ? "Mode A" : "Mode B"}</TechnicalLabel>
+                    <AdvisoryBadge subject={{ type: "devis", id: d.id }} />
                     <StatusBadge status={d.status} />
                     {d.status === "draft" && (
                       <Button
@@ -909,6 +910,10 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
 
   return (
     <div className={`ml-4 mt-1 mb-3 border-l-2 border-[rgba(0,0,0,0.08)] pl-4 space-y-4 ${isVoid ? "opacity-50" : ""}`} data-testid={`detail-devis-${devis.id}`}>
+      <div className="space-y-1.5" data-testid={`section-advisories-${devis.id}`}>
+        <TechnicalLabel>Extraction Advisories</TechnicalLabel>
+        <AdvisoriesList subject={{ type: "devis", id: devis.id }} />
+      </div>
       {isVoid && (
         <div className="flex items-center gap-3 p-3 rounded-xl bg-red-50 border border-red-200">
           <Ban size={16} className="text-red-500 shrink-0" />

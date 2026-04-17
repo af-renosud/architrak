@@ -13,7 +13,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Invoice, Contractor, Devis } from "@shared/schema";
-import { AdvisoriesList } from "@/components/advisories/AdvisoriesList";
+import { AdvisoriesList, AdvisoryBadge } from "@/components/advisories/AdvisoriesList";
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
@@ -179,6 +179,7 @@ export function FacturesTab({ projectId, contractors }: FacturesTabProps) {
                           {formatCurrency(parseFloat(inv.amountHt))} HT
                         </span>
                       </div>
+                      <AdvisoryBadge subject={{ type: "invoice", id: inv.id }} />
                       <StatusBadge status={inv.status} />
                     </div>
                   </div>
@@ -523,6 +524,13 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName }: {
 
   return (
     <div className="ml-4 mt-2 space-y-4 border-l-2 border-[#c1a27b]/30 pl-4 pb-2">
+      <div className="space-y-1.5" data-testid={`section-advisories-invoice-${invoice.id}`}>
+        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+          Extraction Advisories
+        </p>
+        <AdvisoriesList subject={{ type: "invoice", id: invoice.id }} />
+      </div>
+
       {invoice.status === "draft" && (
         <DraftReviewPanel invoice={invoice} projectId={projectId} devis={devis} />
       )}

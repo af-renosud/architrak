@@ -34,10 +34,14 @@ export async function reconcileAdvisories(
     ? eq(documentAdvisories.devisId, subject.devisId)
     : eq(documentAdvisories.invoiceId, subject.invoiceId!);
 
-  const desired = new Map<string, ValidatorWarningLike>();
+  const identityKey = (code: string, field: string | null | undefined) =>
+    `${code}::${field ?? ""}`;
+
+  const desired = new Map<string, ValidatorWarningLike & { _code: string }>();
   for (const w of warnings) {
     const code = deriveAdvisoryCode(w);
-    if (!desired.has(code)) desired.set(code, w);
+    const key = identityKey(code, w.field ?? null);
+    if (!desired.has(key)) desired.set(key, { ...w, _code: code });
   }
 
   let inserted = 0;
@@ -52,16 +56,29 @@ export async function reconcileAdvisories(
       .where(subjectFilter)
       .for("update");
 
-    const existingByCode = new Map<string, DocumentAdvisory>();
-    for (const a of existing) existingByCode.set(a.code, a);
+    // Group existing rows by (code, field). Newest first so we look at the
+    // latest state for that identity.
+    const existingByIdentity = new Map<string, DocumentAdvisory[]>();
+    for (const a of existing) {
+      const key = identityKey(a.code, a.field);
+      const list = existingByIdentity.get(key) ?? [];
+      list.push(a);
+      existingByIdentity.set(key, list);
+    }
+    for (const list of Array.from(existingByIdentity.values())) {
+      list.sort((x, y) => y.id - x.id);
+    }
 
-    for (const [code, w] of Array.from(desired.entries())) {
-      const prior = existingByCode.get(code);
-      if (!prior) {
+    for (const [key, w] of Array.from(desired.entries())) {
+      const list = existingByIdentity.get(key) ?? [];
+      // The "latest" advisory for this identity governs whether we re-raise.
+      const latest = list[0];
+
+      if (!latest) {
         await tx.insert(documentAdvisories).values({
           devisId: subject.devisId ?? null,
           invoiceId: subject.invoiceId ?? null,
-          code,
+          code: w._code,
           field: w.field ?? null,
           severity: w.severity,
           message: w.message,
@@ -70,11 +87,25 @@ export async function reconcileAdvisories(
         inserted++;
         continue;
       }
-      if (prior.acknowledgedAt) {
-        unchanged++;
+
+      if (latest.acknowledgedAt) {
+        // Acknowledged advisories are immutable history. If the same condition
+        // reappears after acknowledgement, raise a NEW row.
+        await tx.insert(documentAdvisories).values({
+          devisId: subject.devisId ?? null,
+          invoiceId: subject.invoiceId ?? null,
+          code: w._code,
+          field: w.field ?? null,
+          severity: w.severity,
+          message: w.message,
+          source,
+        });
+        inserted++;
         continue;
       }
-      if (prior.resolvedAt) {
+
+      if (latest.resolvedAt) {
+        // Re-raise the previously resolved row (was not acknowledged).
         await tx
           .update(documentAdvisories)
           .set({
@@ -82,24 +113,27 @@ export async function reconcileAdvisories(
             raisedAt: now,
             message: w.message,
             severity: w.severity,
-            field: w.field ?? null,
             source,
           })
-          .where(eq(documentAdvisories.id, prior.id));
+          .where(eq(documentAdvisories.id, latest.id));
         inserted++;
         continue;
       }
-      if (prior.message !== w.message || prior.severity !== w.severity) {
+
+      // Open + same identity: keep, refresh wording if validator changed it.
+      if (latest.message !== w.message || latest.severity !== w.severity) {
         await tx
           .update(documentAdvisories)
           .set({ message: w.message, severity: w.severity })
-          .where(eq(documentAdvisories.id, prior.id));
+          .where(eq(documentAdvisories.id, latest.id));
       }
       unchanged++;
     }
 
+    // Resolve open advisories whose identity is no longer present in desired.
     for (const a of existing) {
-      if (desired.has(a.code)) continue;
+      const key = identityKey(a.code, a.field);
+      if (desired.has(key)) continue;
       if (a.resolvedAt) continue;
       if (a.acknowledgedAt) continue;
       await tx
@@ -129,18 +163,30 @@ export async function getAdvisoriesForInvoice(invoiceId: number): Promise<Docume
     .orderBy(documentAdvisories.id);
 }
 
-export async function acknowledgeAdvisory(
-  id: number,
+export async function acknowledgeAdvisoryForSubject(
+  advisoryId: number,
+  subject: ReconcileSubject,
   acknowledgedBy: string | null,
 ): Promise<DocumentAdvisory | undefined> {
+  const subjectFilter = subject.devisId
+    ? eq(documentAdvisories.devisId, subject.devisId)
+    : eq(documentAdvisories.invoiceId, subject.invoiceId!);
+
+  // Acknowledgement is independent of resolution: a row may still be "open"
+  // (validator still flags it) yet be acknowledged ("I've seen this; OK").
   const [row] = await db
     .update(documentAdvisories)
     .set({
       acknowledgedAt: new Date(),
       acknowledgedBy: acknowledgedBy ?? null,
-      resolvedAt: new Date(),
     })
-    .where(and(eq(documentAdvisories.id, id), isNull(documentAdvisories.acknowledgedAt)))
+    .where(
+      and(
+        eq(documentAdvisories.id, advisoryId),
+        subjectFilter,
+        isNull(documentAdvisories.acknowledgedAt),
+      ),
+    )
     .returning();
   return row;
 }
