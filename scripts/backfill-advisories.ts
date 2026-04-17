@@ -11,7 +11,7 @@ async function main() {
     const w = (d.validationWarnings as ValidatorWarningLike[] | null) ?? [];
     if (w.length === 0) continue;
     devisWithWarnings++;
-    await reconcileAdvisories({ devisId: d.id }, w, "ai_extraction");
+    await reconcileAdvisories({ devisId: d.id }, w, "extractor");
     devisProcessed++;
   }
 
@@ -22,7 +22,7 @@ async function main() {
     const w = (inv.validationWarnings as ValidatorWarningLike[] | null) ?? [];
     if (w.length === 0) continue;
     invoicesWithWarnings++;
-    await reconcileAdvisories({ invoiceId: inv.id }, w, "ai_extraction");
+    await reconcileAdvisories({ invoiceId: inv.id }, w, "extractor");
     invoicesProcessed++;
   }
 

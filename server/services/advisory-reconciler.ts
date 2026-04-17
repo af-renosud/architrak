@@ -105,17 +105,18 @@ export async function reconcileAdvisories(
       }
 
       if (latest.resolvedAt) {
-        // Re-raise the previously resolved row (was not acknowledged).
-        await tx
-          .update(documentAdvisories)
-          .set({
-            resolvedAt: null,
-            raisedAt: now,
-            message: w.message,
-            severity: w.severity,
-            source,
-          })
-          .where(eq(documentAdvisories.id, latest.id));
+        // Append-only audit: the prior row stays resolved with its original
+        // raisedAt/resolvedAt; reappearance of the same identity creates a NEW
+        // row so historical chronology is preserved.
+        await tx.insert(documentAdvisories).values({
+          devisId: subject.devisId ?? null,
+          invoiceId: subject.invoiceId ?? null,
+          code: w._code,
+          field: w.field ?? null,
+          severity: w.severity,
+          message: w.message,
+          source,
+        });
         inserted++;
         continue;
       }
