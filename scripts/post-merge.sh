@@ -1,4 +1,4 @@
 #!/bin/bash
 set -e
 npm install
-npm run db:migrate
+npx tsx scripts/run-migrations.mjs
