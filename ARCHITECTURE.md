@@ -440,17 +440,36 @@ shared/
 
 ### Database Migrations
 
-The repo uses `drizzle-kit push` (`npm run db:push`) for development sync. For production-grade rollouts, the recommended path is to introduce versioned migrations alongside `push`:
+The repo uses **versioned migrations** as the source of truth for schema state, with `drizzle-kit push` available for fast local iteration only.
 
-1. Generate a migration file from the current Drizzle schema:
+**File layout**
+
+- `migrations/` — generated SQL migration files, committed to source control
+- `migrations/meta/` — drizzle's snapshot + journal (DO NOT hand-edit)
+- `migrations/0000_baseline.sql` — initial baseline captured from the live schema
+
+**Workflow for schema changes**
+
+1. Edit `shared/schema.ts`.
+2. Generate a new migration file:
    ```
    npx drizzle-kit generate --name <change-summary>
    ```
-   Files land in `migrations/` and should be committed to source control.
-2. Apply migrations with `npx drizzle-kit migrate` in CI / on container start (preferred over `push` in production).
-3. `db:push --force` is safe for local development but should NOT be used in production because it bypasses migration history and may drop columns silently.
+   Review the SQL diff, commit both the new `NNNN_*.sql` and the updated `migrations/meta/` files.
+3. Locally, apply with `npx drizzle-kit migrate` (or restart the server — see below).
+4. `npm run db:push` remains available for throwaway prototyping against a scratch DB. It must **NOT** be run against staging or production because it bypasses migration history and can drop columns silently.
 
-The CI gate for any schema PR should run `drizzle-kit generate --check` to catch unintended drift.
+**Application at deploy / start time**
+
+`server/index.ts` calls `runMigrations()` (see `server/migrate.ts`) before binding the HTTP listener. This uses drizzle-orm's `node-postgres` migrator to apply any pending files from the `migrations/` folder against `DATABASE_URL`. On a fresh database, the baseline migration creates every table/index/constraint; on an existing database, drizzle's `__drizzle_migrations` table tracks what's been applied and only new entries run.
+
+- The behavior can be disabled by setting `RUN_MIGRATIONS_ON_START=false` (useful for read-only replicas or one-off scripts).
+- The migrations folder location can be overridden with `MIGRATIONS_FOLDER`; otherwise it resolves to `<cwd>/migrations`.
+- Deployment containers must ship the `migrations/` directory alongside `dist/`. The autoscale deployment includes the full repo, so no extra build step is required.
+
+**CI gate**
+
+Any PR that touches `shared/schema.ts` should run `npx drizzle-kit generate --check` to catch unintended drift between the schema and the committed migration files.
 
 ### Document Retention (French Legal Requirements)
 

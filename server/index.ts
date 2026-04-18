@@ -15,6 +15,7 @@ import { requireAuth } from "./auth/middleware";
 import { pool } from "./db";
 import { env } from "./env";
 import { errorHandler } from "./middleware/error-handler";
+import { runMigrations } from "./migrate";
 
 const app = express();
 const httpServer = createServer(app);
@@ -99,6 +100,15 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  if (process.env.RUN_MIGRATIONS_ON_START !== "false") {
+    try {
+      await runMigrations();
+    } catch (err) {
+      console.error("[migrate] failed to apply migrations:", err);
+      throw err;
+    }
+  }
+
   registerAuthRoutes(app);
 
   app.use("/api", (req, res, next) => {

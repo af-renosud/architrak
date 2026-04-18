@@ -1,0 +1,98 @@
+import { migrate } from "drizzle-orm/node-postgres/migrator";
+import { sql } from "drizzle-orm";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import { db, pool } from "./db";
+
+function resolveMigrationsFolder(): string {
+  const fromEnv = process.env.MIGRATIONS_FOLDER;
+  if (fromEnv) return fromEnv;
+
+  const candidates: string[] = [];
+  candidates.push(path.resolve(process.cwd(), "migrations"));
+
+  try {
+    const here = typeof __dirname !== "undefined"
+      ? __dirname
+      : path.dirname(fileURLToPath(import.meta.url));
+    candidates.push(path.resolve(here, "..", "migrations"));
+    candidates.push(path.resolve(here, "..", "..", "migrations"));
+  } catch {
+  }
+
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(c, "meta", "_journal.json"))) return c;
+  }
+  return candidates[0];
+}
+
+/**
+ * Bootstrap the migration tracking table for databases that already contain the
+ * schema (created by an earlier `drizzle-kit push`). If the application's
+ * tables exist but the `drizzle.__drizzle_migrations` table does not, we mark
+ * the baseline migration as already applied so the migrator does not try to
+ * re-create existing tables. Safe because the baseline was generated FROM the
+ * live schema.
+ */
+async function bootstrapBaselineIfNeeded(migrationsFolder: string): Promise<void> {
+  const tracker = await pool.query<{ reg: string | null }>(
+    `SELECT to_regclass('drizzle.__drizzle_migrations')::text AS reg`,
+  );
+  const trackerExists = tracker.rows[0]?.reg != null;
+  if (trackerExists) {
+    const count = await pool.query<{ c: string }>(
+      `SELECT COUNT(*)::text AS c FROM drizzle.__drizzle_migrations`,
+    );
+    if (Number(count.rows[0]?.c ?? "0") > 0) return;
+  }
+
+  const sentinelTables = [
+    "public.users",
+    "public.projects",
+    "public.invoices",
+    "public.devis",
+  ];
+  const probe = await pool.query<{ found: number }>(
+    `SELECT COUNT(*)::int AS found
+     FROM unnest($1::text[]) AS t(name)
+     WHERE to_regclass(t.name) IS NOT NULL`,
+    [sentinelTables],
+  );
+  const schemaExists = (probe.rows[0]?.found ?? 0) >= sentinelTables.length;
+  if (!schemaExists) return;
+
+  const journalPath = path.join(migrationsFolder, "meta", "_journal.json");
+  const journal = JSON.parse(fs.readFileSync(journalPath, "utf-8"));
+  const entries: Array<{ tag: string; when: number }> = journal.entries ?? [];
+  if (entries.length === 0) return;
+  const baseline = entries[0];
+
+  const sqlPath = path.join(migrationsFolder, `${baseline.tag}.sql`);
+  const sqlText = fs.readFileSync(sqlPath, "utf-8");
+  const hash = crypto.createHash("sha256").update(sqlText).digest("hex");
+
+  console.log(`[migrate] bootstrapping __drizzle_migrations with baseline ${baseline.tag}`);
+  await db.execute(sql`CREATE SCHEMA IF NOT EXISTS drizzle`);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS drizzle.__drizzle_migrations (
+      id SERIAL PRIMARY KEY,
+      hash text NOT NULL,
+      created_at bigint
+    )
+  `);
+  await pool.query(
+    `INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)`,
+    [hash, baseline.when],
+  );
+}
+
+export async function runMigrations(): Promise<void> {
+  const migrationsFolder = resolveMigrationsFolder();
+  const start = Date.now();
+  console.log(`[migrate] applying migrations from ${migrationsFolder}`);
+  await bootstrapBaselineIfNeeded(migrationsFolder);
+  await migrate(db, { migrationsFolder });
+  console.log(`[migrate] done in ${Date.now() - start}ms`);
+}
