@@ -4,7 +4,19 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { FolderOpen, Plus, RefreshCw, Search, MapPin, Users, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
+import { FolderOpen, Plus, RefreshCw, Search, MapPin, Users, CheckCircle2, AlertCircle, Loader2, Trash2 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { RetentionBlockedDialog, type RetainedRecordCounts } from "@/components/projects/RetentionBlockedDialog";
+import { ApiError } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -442,8 +454,42 @@ function ProjectCard({ project }: { project: Project }) {
     totalResteARealiser: number;
   }
 
+  const { toast } = useToast();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [retentionOpen, setRetentionOpen] = useState(false);
+  const [retained, setRetained] = useState<RetainedRecordCounts | null>(null);
+
   const { data: summary } = useQuery<FinancialSummary>({
     queryKey: ["/api/projects", project.id, "financial-summary"],
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("DELETE", `/api/projects/${project.id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/archidoc/projects"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/archidoc/status"] });
+      toast({
+        title: "Project deleted",
+        description: `${project.name} has been removed.`,
+      });
+    },
+    onError: (error: unknown) => {
+      if (error instanceof ApiError && error.status === 409 && error.code === "PROJECT_RETENTION_BLOCKED") {
+        const data = error.data as { retained?: RetainedRecordCounts } | null;
+        setRetained(data?.retained ?? { invoices: 0, situations: 0, certificats: 0 });
+        setConfirmOpen(false);
+        setRetentionOpen(true);
+        return;
+      }
+      toast({
+        title: "Could not delete project",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      });
+    },
   });
 
   const contracted = summary?.totalContractedHt ?? 0;
@@ -452,66 +498,114 @@ function ProjectCard({ project }: { project: Project }) {
   const progress = contracted > 0 ? Math.min((certified / contracted) * 100, 100) : 0;
 
   return (
-    <Link href={`/projets/${project.id}`}>
-      <LuxuryCard
-        className="cursor-pointer hover-elevate transition-all"
-        data-testid={`card-project-${project.id}`}
+    <div className="relative group">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setConfirmOpen(true);
+        }}
+        className="absolute top-2 right-2 z-10 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 dark:hover:bg-red-950"
+        aria-label={`Delete project ${project.name}`}
+        data-testid={`button-delete-project-${project.id}`}
       >
-        <div className="flex items-start justify-between gap-2 mb-3">
-          <div>
-            <TechnicalLabel>{project.code}</TechnicalLabel>
-            <h3 className="text-[14px] font-bold text-foreground mt-1" data-testid={`text-project-name-${project.id}`}>
-              {project.name}
-            </h3>
-          </div>
-          <div className="flex items-center gap-1.5">
-            {project.archidocId && (
-              <span className="text-[8px] font-bold uppercase tracking-wider text-emerald-600 bg-emerald-50 rounded px-1.5 py-0.5">
-                ArchiDoc
-              </span>
-            )}
-            <StatusBadge status={project.status} />
-          </div>
-        </div>
-        <p className="text-[11px] text-muted-foreground mb-1" data-testid={`text-project-client-${project.id}`}>
-          {project.clientName}
-        </p>
-        {project.siteAddress && (
-          <p className="text-[10px] text-muted-foreground mb-4 flex items-center gap-1">
-            <MapPin className="w-3 h-3" />
-            {project.siteAddress}
-          </p>
-        )}
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
 
-        {summary && contracted > 0 && (
-          <div className="space-y-2 pt-3 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
-            <div className="flex items-center justify-between gap-2">
-              <TechnicalLabel>Contracted HT</TechnicalLabel>
-              <span className="text-[11px] font-semibold text-foreground" data-testid={`text-contracted-${project.id}`}>
-                {formatCurrency(contracted)}
-              </span>
+      <Link href={`/projets/${project.id}`}>
+        <LuxuryCard
+          className="cursor-pointer hover-elevate transition-all"
+          data-testid={`card-project-${project.id}`}
+        >
+          <div className="flex items-start justify-between gap-2 mb-3">
+            <div>
+              <TechnicalLabel>{project.code}</TechnicalLabel>
+              <h3 className="text-[14px] font-bold text-foreground mt-1" data-testid={`text-project-name-${project.id}`}>
+                {project.name}
+              </h3>
             </div>
-            <div className="flex items-center justify-between gap-2">
-              <TechnicalLabel>Certified HT</TechnicalLabel>
-              <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400" data-testid={`text-certified-${project.id}`}>
-                {formatCurrency(certified)}
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <TechnicalLabel>Reste à Réaliser</TechnicalLabel>
-              <span className="text-[11px] font-semibold text-amber-600 dark:text-amber-400" data-testid={`text-reste-${project.id}`}>
-                {formatCurrency(reste)}
-              </span>
-            </div>
-            <div className="h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800 mt-1">
-              <div
-                className="h-full rounded-full bg-emerald-500 transition-all"
-                style={{ width: `${progress}%` }}
-              />
+            <div className="flex items-center gap-1.5 pr-8">
+              {project.archidocId && (
+                <span className="text-[8px] font-bold uppercase tracking-wider text-emerald-600 bg-emerald-50 rounded px-1.5 py-0.5">
+                  ArchiDoc
+                </span>
+              )}
+              <StatusBadge status={project.status} />
             </div>
           </div>
-        )}
-      </LuxuryCard>
-    </Link>
+          <p className="text-[11px] text-muted-foreground mb-1" data-testid={`text-project-client-${project.id}`}>
+            {project.clientName}
+          </p>
+          {project.siteAddress && (
+            <p className="text-[10px] text-muted-foreground mb-4 flex items-center gap-1">
+              <MapPin className="w-3 h-3" />
+              {project.siteAddress}
+            </p>
+          )}
+
+          {summary && contracted > 0 && (
+            <div className="space-y-2 pt-3 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
+              <div className="flex items-center justify-between gap-2">
+                <TechnicalLabel>Contracted HT</TechnicalLabel>
+                <span className="text-[11px] font-semibold text-foreground" data-testid={`text-contracted-${project.id}`}>
+                  {formatCurrency(contracted)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <TechnicalLabel>Certified HT</TechnicalLabel>
+                <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400" data-testid={`text-certified-${project.id}`}>
+                  {formatCurrency(certified)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <TechnicalLabel>Reste à Réaliser</TechnicalLabel>
+                <span className="text-[11px] font-semibold text-amber-600 dark:text-amber-400" data-testid={`text-reste-${project.id}`}>
+                  {formatCurrency(reste)}
+                </span>
+              </div>
+              <div className="h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800 mt-1">
+                <div
+                  className="h-full rounded-full bg-emerald-500 transition-all"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+            </div>
+          )}
+        </LuxuryCard>
+      </Link>
+
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent data-testid={`dialog-confirm-delete-${project.id}`}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this project?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently remove <span className="font-semibold text-foreground">{project.name}</span> from ArchiTrak.
+              Projects with retained accounting records (invoices, situations, certificats) cannot be deleted under French law.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid={`button-cancel-delete-${project.id}`}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                deleteMutation.mutate();
+              }}
+              disabled={deleteMutation.isPending}
+              data-testid={`button-confirm-delete-${project.id}`}
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <RetentionBlockedDialog
+        open={retentionOpen}
+        onOpenChange={setRetentionOpen}
+        projectName={project.name}
+        retained={retained}
+      />
+    </div>
   );
 }
