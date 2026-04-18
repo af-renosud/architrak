@@ -469,7 +469,7 @@ The repo uses **versioned migrations** as the source of truth for schema state, 
 
 **CI gate**
 
-Any PR that touches `shared/schema.ts` should run `npx drizzle-kit generate --check` to catch unintended drift between the schema and the committed migration files.
+The GitHub Actions workflow `.github/workflows/schema-drift.yml` runs on every PR that touches `shared/schema.ts`, `migrations/`, or `drizzle.config.ts`. It executes `scripts/check-schema-drift.sh`, which runs `npx drizzle-kit generate` and fails if any new SQL file or `migrations/meta/` change is produced — i.e. the committed migrations are out of sync with the schema. To fix a failing run locally, run `npx drizzle-kit generate --name <change-summary>` and commit the new migration plus the updated `migrations/meta/` files.
 
 ### Document Retention (French Legal Requirements)
 

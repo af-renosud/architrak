@@ -1,0 +1,30 @@
+name: Schema drift check
+
+on:
+  pull_request:
+    paths:
+      - "shared/schema.ts"
+      - "migrations/**"
+      - "drizzle.config.ts"
+      - ".github/workflows/schema-drift.yml"
+      - "scripts/check-schema-drift.sh"
+
+jobs:
+  drift:
+    name: drizzle-kit generate (drift gate)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run schema drift check
+        run: bash scripts/check-schema-drift.sh
