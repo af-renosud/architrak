@@ -525,7 +525,7 @@ export async function processEmailDocument(emailDocumentId: number): Promise<voi
     const buffer = await getDocumentBuffer(emailDoc.storageKey);
     const parsed = await parseDocument(buffer, emailDoc.attachmentFileName || "document.pdf");
 
-    const projects = await storage.getProjects();
+    const projects = await storage.getProjects({ includeArchived: true });
     const contractors = await storage.getContractors();
     const match = await matchToProject(parsed, projects, contractors);
 

@@ -44,7 +44,7 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
 
   const corrected = { ...parsed, ...validation.correctedValues };
 
-  const allProjects = await storage.getProjects();
+  const allProjects = await storage.getProjects({ includeArchived: true });
   const allContractors = await storage.getContractors();
   const match = await matchToProject(parsed, allProjects, allContractors);
 

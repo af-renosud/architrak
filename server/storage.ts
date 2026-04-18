@@ -65,10 +65,12 @@ export interface BenchmarkAggregateRow {
 }
 
 export interface IStorage {
-  getProjects(): Promise<Project[]>;
+  getProjects(options?: { includeArchived?: boolean; archivedOnly?: boolean }): Promise<Project[]>;
   getProject(id: number): Promise<Project | undefined>;
   createProject(data: InsertProject): Promise<Project>;
   updateProject(id: number, data: Partial<InsertProject>): Promise<Project | undefined>;
+  archiveProject(id: number): Promise<Project | undefined>;
+  unarchiveProject(id: number): Promise<Project | undefined>;
   deleteProject(id: number): Promise<void>;
 
   getAllInvoices(): Promise<Invoice[]>;
@@ -225,8 +227,36 @@ export interface IStorage {
 }
 
 export class DatabaseStorage implements IStorage {
-  async getProjects(): Promise<Project[]> {
-    return db.select().from(projects).orderBy(desc(projects.createdAt));
+  async getProjects(options?: { includeArchived?: boolean; archivedOnly?: boolean }): Promise<Project[]> {
+    const where = options?.archivedOnly
+      ? isNotNull(projects.archivedAt)
+      : options?.includeArchived
+        ? undefined
+        : isNull(projects.archivedAt);
+    const query = db.select().from(projects);
+    const rows = where ? await query.where(where).orderBy(desc(projects.createdAt)) : await query.orderBy(desc(projects.createdAt));
+    return rows;
+  }
+
+  async archiveProject(id: number): Promise<Project | undefined> {
+    const now = new Date();
+    const [project] = await db
+      .update(projects)
+      .set({ archivedAt: now, updatedAt: now })
+      .where(and(eq(projects.id, id), isNull(projects.archivedAt)))
+      .returning();
+    if (project) return project;
+    const [existing] = await db.select().from(projects).where(eq(projects.id, id));
+    return existing;
+  }
+
+  async unarchiveProject(id: number): Promise<Project | undefined> {
+    const [project] = await db
+      .update(projects)
+      .set({ archivedAt: null, updatedAt: new Date() })
+      .where(eq(projects.id, id))
+      .returning();
+    return project;
   }
 
   async getProject(id: number): Promise<Project | undefined> {

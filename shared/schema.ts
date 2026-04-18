@@ -35,6 +35,7 @@ export const projects = pgTable("projects", {
   archidocId: varchar("archidoc_id", { length: 255 }),
   archidocClients: jsonb("archidoc_clients"),
   lastSyncedAt: timestamp("last_synced_at"),
+  archivedAt: timestamp("archived_at"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
@@ -602,6 +603,7 @@ export const insertProjectSchema = createInsertSchema(projects).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+  archivedAt: true,
 });
 
 export const insertContractorSchema = createInsertSchema(contractors).omit({

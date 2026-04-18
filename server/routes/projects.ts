@@ -15,8 +15,14 @@ const idParams = z.object({ id: z.coerce.number().int().positive() });
 const updateProjectSchema = insertProjectSchema.partial();
 type UpdateProject = Partial<InsertProject>;
 
-router.get("/api/projects", async (_req, res) => {
-  const projects = await storage.getProjects();
+router.get("/api/projects", async (req, res) => {
+  const archived = typeof req.query.archived === "string" ? req.query.archived : undefined;
+  const options = archived === "true" || archived === "only"
+    ? { archivedOnly: true }
+    : archived === "all"
+      ? { includeArchived: true }
+      : undefined;
+  const projects = await storage.getProjects(options);
   res.json(projects);
 });
 
@@ -40,6 +46,26 @@ router.patch(
   validateRequest({ params: idParams, body: updateProjectSchema }),
   async (req, res: Response) => {
     const project = await storage.updateProject(Number(req.params.id), req.body);
+    if (!project) return res.status(404).json({ message: "Project not found" });
+    res.json(project);
+  },
+);
+
+router.post(
+  "/api/projects/:id/archive",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    const project = await storage.archiveProject(Number(req.params.id));
+    if (!project) return res.status(404).json({ message: "Project not found" });
+    res.json(project);
+  },
+);
+
+router.post(
+  "/api/projects/:id/unarchive",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    const project = await storage.unarchiveProject(Number(req.params.id));
     if (!project) return res.status(404).json({ message: "Project not found" });
     res.json(project);
   },

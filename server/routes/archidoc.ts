@@ -53,7 +53,7 @@ router.get("/api/archidoc/projects", async (_req, res) => {
   try {
     const mirroredProjects = await storage.getArchidocProjects();
     const trackedIds = await storage.getTrackedArchidocProjectIds();
-    const allProjects = await storage.getProjects();
+    const allProjects = await storage.getProjects({ includeArchived: true });
 
     const enriched = mirroredProjects.map((mp) => {
       const isTracked = trackedIds.includes(mp.archidocId);

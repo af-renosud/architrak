@@ -8,6 +8,13 @@
       "when": 1776447170658,
       "tag": "0000_baseline",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1776495081689,
+      "tag": "0001_regular_leo",
+      "breakpoints": true
     }
   ]
 }

@@ -4,7 +4,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { FolderOpen, Plus, RefreshCw, Search, MapPin, Users, CheckCircle2, AlertCircle, Loader2, Trash2 } from "lucide-react";
+import { FolderOpen, Plus, RefreshCw, Search, MapPin, Users, CheckCircle2, AlertCircle, Loader2, Trash2, Archive, ArchiveRestore } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,6 +14,7 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { RetentionBlockedDialog, type RetainedRecordCounts } from "@/components/projects/RetentionBlockedDialog";
 import { ApiError } from "@/lib/queryClient";
@@ -49,7 +50,10 @@ function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
 }
 
+type ProjectsView = "active" | "archived";
+
 export default function Projects() {
+  const [view, setView] = useState<ProjectsView>("active");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selectedArchidocId, setSelectedArchidocId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -62,7 +66,13 @@ export default function Projects() {
   const { toast } = useToast();
 
   const { data: projects, isLoading } = useQuery<Project[]>({
-    queryKey: ["/api/projects"],
+    queryKey: ["/api/projects", { archived: view === "archived" ? "only" : undefined }],
+    queryFn: async () => {
+      const url = view === "archived" ? "/api/projects?archived=only" : "/api/projects";
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
+      return res.json();
+    },
   });
 
   const { data: archidocStatus } = useQuery<ArchidocStatus>({
@@ -413,11 +423,29 @@ export default function Projects() {
           </div>
         </div>
 
-        <SectionHeader
-          icon={FolderOpen}
-          title="All Projects"
-          subtitle="Manage active projects"
-        />
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <SectionHeader
+            icon={view === "archived" ? Archive : FolderOpen}
+            title={view === "archived" ? "Archived Projects" : "All Projects"}
+            subtitle={view === "archived" ? "Hidden from active list, retained for legal records" : "Manage active projects"}
+          />
+          <div className="flex items-center gap-2 rounded-lg border border-border bg-card p-1">
+            <button
+              onClick={() => setView("active")}
+              className={`px-3 py-1.5 text-[9px] font-bold uppercase tracking-widest rounded-md transition-colors ${view === "active" ? "bg-[#0B2545] text-white" : "text-muted-foreground hover:text-foreground"}`}
+              data-testid="button-view-active"
+            >
+              Active
+            </button>
+            <button
+              onClick={() => setView("archived")}
+              className={`px-3 py-1.5 text-[9px] font-bold uppercase tracking-widest rounded-md transition-colors ${view === "archived" ? "bg-[#0B2545] text-white" : "text-muted-foreground hover:text-foreground"}`}
+              data-testid="button-view-archived"
+            >
+              Archived
+            </button>
+          </div>
+        </div>
 
         {isLoading ? (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -438,7 +466,9 @@ export default function Projects() {
         ) : (
           <LuxuryCard data-testid="card-empty-projects">
             <p className="text-[12px] text-muted-foreground text-center py-8">
-              No projects yet. Click "New Project" to import from ArchiDoc.
+              {view === "archived"
+                ? "No archived projects."
+                : "No projects yet. Click \"New Project\" to import from ArchiDoc."}
             </p>
           </LuxuryCard>
         )}
@@ -458,6 +488,8 @@ function ProjectCard({ project }: { project: Project }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [retentionOpen, setRetentionOpen] = useState(false);
   const [retained, setRetained] = useState<RetainedRecordCounts | null>(null);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const isArchived = !!project.archivedAt;
 
   const { data: summary } = useQuery<FinancialSummary>({
     queryKey: ["/api/projects", project.id, "financial-summary"],
@@ -492,6 +524,26 @@ function ProjectCard({ project }: { project: Project }) {
     },
   });
 
+  const archiveMutation = useMutation({
+    mutationFn: async () => {
+      const action = isArchived ? "unarchive" : "archive";
+      const res = await apiRequest("POST", `/api/projects/${project.id}/${action}`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
+      toast({
+        title: isArchived ? "Project restored" : "Project archived",
+        description: isArchived
+          ? `${project.name} is back in the active list.`
+          : `${project.name} is hidden from the active list. Financial records remain on file.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Action failed", description: error.message, variant: "destructive" });
+    },
+  });
+
   const contracted = summary?.totalContractedHt ?? 0;
   const certified = summary?.totalCertifiedHt ?? 0;
   const reste = summary?.totalResteARealiser ?? 0;
@@ -499,19 +551,51 @@ function ProjectCard({ project }: { project: Project }) {
 
   return (
     <div className="relative group">
-      <button
-        type="button"
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          setConfirmOpen(true);
-        }}
-        className="absolute top-2 right-2 z-10 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 dark:hover:bg-red-950"
-        aria-label={`Delete project ${project.name}`}
-        data-testid={`button-delete-project-${project.id}`}
-      >
-        <Trash2 className="h-3.5 w-3.5" />
-      </button>
+      <div className="absolute top-2 right-2 z-10 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+        {isArchived ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              archiveMutation.mutate();
+            }}
+            disabled={archiveMutation.isPending}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-emerald-50 hover:text-emerald-600 dark:hover:bg-emerald-950"
+            aria-label={`Restore project ${project.name}`}
+            data-testid={`button-unarchive-${project.id}`}
+          >
+            <ArchiveRestore className="h-3.5 w-3.5" />
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setArchiveOpen(true);
+            }}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-amber-50 hover:text-amber-600 dark:hover:bg-amber-950"
+            aria-label={`Archive project ${project.name}`}
+            data-testid={`button-archive-${project.id}`}
+          >
+            <Archive className="h-3.5 w-3.5" />
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setConfirmOpen(true);
+          }}
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950"
+          aria-label={`Delete project ${project.name}`}
+          data-testid={`button-delete-project-${project.id}`}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
 
       <Link href={`/projets/${project.id}`}>
         <LuxuryCard
@@ -525,7 +609,12 @@ function ProjectCard({ project }: { project: Project }) {
                 {project.name}
               </h3>
             </div>
-            <div className="flex items-center gap-1.5 pr-8">
+            <div className="flex items-center gap-1.5 pr-16">
+              {isArchived && (
+                <span className="text-[8px] font-bold uppercase tracking-wider text-slate-600 bg-slate-100 rounded px-1.5 py-0.5" data-testid={`badge-archived-${project.id}`}>
+                  Archived
+                </span>
+              )}
               {project.archidocId && (
                 <span className="text-[8px] font-bold uppercase tracking-wider text-emerald-600 bg-emerald-50 rounded px-1.5 py-0.5">
                   ArchiDoc
@@ -581,7 +670,7 @@ function ProjectCard({ project }: { project: Project }) {
             <AlertDialogTitle>Delete this project?</AlertDialogTitle>
             <AlertDialogDescription>
               This will permanently remove <span className="font-semibold text-foreground">{project.name}</span> from ArchiTrak.
-              Projects with retained accounting records (invoices, situations, certificats) cannot be deleted under French law.
+              Projects with retained accounting records (invoices, situations, certificats) cannot be deleted under French law — archive them instead to keep the records on file.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -606,6 +695,32 @@ function ProjectCard({ project }: { project: Project }) {
         projectName={project.name}
         retained={retained}
       />
+
+      <AlertDialog open={archiveOpen} onOpenChange={setArchiveOpen}>
+        <AlertDialogContent data-testid={`dialog-confirm-archive-${project.id}`}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Archive this project?</AlertDialogTitle>
+            <AlertDialogDescription>
+              "{project.name}" will be hidden from your active project list. All financial records
+              (invoices, situations, certificats) remain on file and accessible for the 10-year
+              legal retention window. You can restore it from the Archived tab at any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid={`button-cancel-archive-${project.id}`}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                archiveMutation.mutate();
+              }}
+              disabled={archiveMutation.isPending}
+              data-testid={`button-confirm-archive-${project.id}`}
+            >
+              {archiveMutation.isPending ? "Archiving..." : "Archive"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
