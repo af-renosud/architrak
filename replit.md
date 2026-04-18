@@ -222,3 +222,16 @@ shared/
 - `GOOGLE_CLIENT_SECRET` — Google OAuth 2.0 client secret (Cloud Console)
 - `ARCHIDOC_WEBHOOK_SECRET` — HMAC-SHA256 shared secret for webhook signature verification
 - `ARCHIDOC_POLLING_ENABLED` — Set to `"true"` to re-enable legacy polling (default: webhook mode)
+
+## Core Development Protocols (Enforced)
+
+- **Zero-Tolerance TypeScript:** The build must compile with 0 errors (`npx tsc --noEmit`). The use of `as any`, `@ts-ignore`, or `@ts-expect-error` is strictly forbidden. Unknown types must be typed as `unknown` and parsed via Zod.
+- **Environment Variables:** Direct access to `process.env` is prohibited outside of `server/env.ts` and auto-generated Replit integrations. All server-side environment variables must be Zod-validated fail-fast exports from `server/env.ts`.
+- **API Perimeter Validation:** All HTTP routes accepting payload data, queries, or parameters must use the `validateRequest` middleware with strict Zod schemas from `shared/schema.ts`. Controllers must never manually parse or assert `req.body`.
+- **Database Mutations:** `db:push` is deprecated. All database schema changes must be processed through Drizzle versioned migrations (`db:generate` and `db:migrate`).
+- **Error Handling:** Never leak stack traces or raw database error strings to the client in production. All unhandled exceptions must bubble up to the global error handler in `server/middleware/error-handler.ts`.
+
+### Pending Architectural Tech Debt
+
+- Scheduled upgrade to `drizzle-orm@0.45.2+` (requires dedicated migration window due to breaking identifier changes).
+- Evaluate replacing `xlsx` with `exceljs` for benchmark imports to resolve Prototype Pollution / ReDoS vulnerabilities.

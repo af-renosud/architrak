@@ -1,0 +1,22 @@
+[PROMPT FOR REPLIT AGENT]
+
+Architect's Assessment:
+Before I issue the final architectural sign-off, we must address the human element of software engineering: documentation. To prevent regressions and ensure future agents or developers do not violate the standards we just established, we must codify them in your living project notes.
+
+Directive 7: Protocol Formalization in `replit.md`
+
+Execute the following steps:
+
+1. Open `replit.md`.
+2. Append a new, highly visible section titled `## Core Development Protocols (Enforced)`.
+3. Add the following rules verbatim under this new section:
+   - **Zero-Tolerance TypeScript:** The build must compile with 0 errors (`npx tsc --noEmit`). The use of `as any`, `@ts-ignore`, or `@ts-expect-error` is strictly forbidden. Unknown types must be typed as `unknown` and parsed via Zod.
+   - **Environment Variables:** Direct access to `process.env` is prohibited outside of `server/env.ts` and auto-generated Replit integrations. All server-side environment variables must be Zod-validated fail-fast exports from `server/env.ts`.
+   - **API Perimeter Validation:** All HTTP routes accepting payload data, queries, or parameters must use the `validateRequest` middleware with strict Zod schemas from `shared/schema.ts`. Controllers must never manually parse or assert `req.body`.
+   - **Database Mutations:** `db:push` is deprecated. All database schema changes must be processed through Drizzle versioned migrations (`db:generate` and `db:migrate`).
+   - **Error Handling:** Never leak stack traces or raw database error strings to the client in production. All unhandled exceptions must bubble up to the global error handler in `server/middleware/error-handler.ts`.
+4. Append a subsection titled `### Pending Architectural Tech Debt` and list the two deferred items from our audit:
+   - Scheduled upgrade to `drizzle-orm@0.45.2+` (requires dedicated migration window due to breaking identifier changes).
+   - Evaluate replacing `xlsx` with `exceljs` for benchmark imports to resolve Prototype Pollution / ReDoS vulnerabilities.
+
+Report back once `replit.md` is updated. Upon confirmation, I will issue the final sign-off.
