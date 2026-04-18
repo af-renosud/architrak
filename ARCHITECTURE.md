@@ -471,6 +471,10 @@ The repo uses **versioned migrations** as the source of truth for schema state, 
 
 The GitHub Actions workflow `.github/workflows/schema-drift.yml` runs on every PR that touches `shared/schema.ts`, `migrations/`, or `drizzle.config.ts`. It executes `scripts/check-schema-drift.sh`, which runs `npx drizzle-kit generate` and fails if any new SQL file or `migrations/meta/` change is produced — i.e. the committed migrations are out of sync with the schema. To fix a failing run locally, run `npx drizzle-kit generate --name <change-summary>` and commit the new migration plus the updated `migrations/meta/` files.
 
+**Deploy-time gate**
+
+The same `scripts/check-schema-drift.sh` check is invoked at the start of `script/build.ts` (i.e. `npm run build`, which is the deploy build command in `.replit`). This guarantees that a deploy triggered from a branch that bypassed PR review — or a manual deploy — will still abort if `shared/schema.ts` and the committed `migrations/` are out of sync, before the server bundle is produced.
+
 ### Document Retention (French Legal Requirements)
 
 Per Code de commerce **L123-22** and Livre des procédures fiscales **L102 B**, accounting records must be retained for **10 years**. This applies to:

@@ -1,6 +1,7 @@
 import { build as esbuild } from "esbuild";
 import { build as viteBuild } from "vite";
 import { rm, readFile } from "fs/promises";
+import { spawnSync } from "child_process";
 
 // server deps to bundle to reduce openat(2) syscalls
 // which helps cold start times
@@ -32,7 +33,27 @@ const allowlist = [
   "zod-validation-error",
 ];
 
+function checkSchemaDrift() {
+  console.log("checking schema/migrations drift...");
+  const result = spawnSync("bash", ["scripts/check-schema-drift.sh"], {
+    stdio: "inherit",
+    env: process.env,
+  });
+  if (result.error) {
+    console.error("Failed to run scripts/check-schema-drift.sh:", result.error);
+    process.exit(1);
+  }
+  if (result.status !== 0) {
+    console.error(
+      `Schema drift check failed (exit code ${result.status}). Aborting build.`,
+    );
+    process.exit(result.status ?? 1);
+  }
+}
+
 async function buildAll() {
+  checkSchemaDrift();
+
   await rm("dist", { recursive: true, force: true });
 
   console.log("building client...");
