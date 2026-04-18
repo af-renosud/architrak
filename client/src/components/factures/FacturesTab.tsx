@@ -22,9 +22,10 @@ function formatCurrency(value: number): string {
 interface FacturesTabProps {
   projectId: string;
   contractors: Contractor[];
+  isArchived?: boolean;
 }
 
-export function FacturesTab({ projectId, contractors }: FacturesTabProps) {
+export function FacturesTab({ projectId, contractors, isArchived = false }: FacturesTabProps) {
   const { toast } = useToast();
   const [expandedInvoice, setExpandedInvoice] = useState<number | null>(null);
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
@@ -118,7 +119,7 @@ export function FacturesTab({ projectId, contractors }: FacturesTabProps) {
       </div>
 
       <div className="flex items-center justify-end">
-        <Button onClick={() => setUploadDialogOpen(true)} data-testid="button-upload-facture">
+        <Button onClick={() => setUploadDialogOpen(true)} disabled={isArchived} data-testid="button-upload-facture">
           <Upload size={14} />
           <span className="text-[9px] font-bold uppercase tracking-widest">Upload Invoice</span>
         </Button>
@@ -191,6 +192,7 @@ export function FacturesTab({ projectId, contractors }: FacturesTabProps) {
                     projectId={projectId}
                     devis={dv}
                     contractorName={contractorMap.get(inv.contractorId) ?? `#${inv.contractorId}`}
+                    isArchived={isArchived}
                   />
                 )}
               </div>
@@ -288,10 +290,11 @@ function ConfidenceIndicator({ score }: { score: number }) {
   );
 }
 
-function DraftReviewPanel({ invoice, projectId, devis }: {
+function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
   invoice: Invoice;
   projectId: string;
   devis?: Devis;
+  isArchived?: boolean;
 }) {
   const { toast } = useToast();
   const warnings = (invoice.validationWarnings as ValidationWarning[] | null) ?? [];
@@ -449,7 +452,7 @@ function DraftReviewPanel({ invoice, projectId, devis }: {
           size="sm"
           className="gap-1.5 text-rose-600 border-rose-200"
           onClick={() => discardMutation.mutate()}
-          disabled={discardMutation.isPending || confirmMutation.isPending}
+          disabled={discardMutation.isPending || confirmMutation.isPending || isArchived}
           data-testid={`button-discard-draft-${invoice.id}`}
         >
           {discardMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
@@ -461,7 +464,7 @@ function DraftReviewPanel({ invoice, projectId, devis }: {
           size="sm"
           className="gap-1.5"
           onClick={() => confirmMutation.mutate()}
-          disabled={confirmMutation.isPending || discardMutation.isPending}
+          disabled={confirmMutation.isPending || discardMutation.isPending || isArchived}
           data-testid={`button-confirm-draft-${invoice.id}`}
         >
           {confirmMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
@@ -474,11 +477,12 @@ function DraftReviewPanel({ invoice, projectId, devis }: {
   );
 }
 
-function InvoiceDetailInline({ invoice, projectId, devis, contractorName }: {
+function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArchived = false }: {
   invoice: Invoice;
   projectId: string;
   devis?: Devis;
   contractorName: string;
+  isArchived?: boolean;
 }) {
   const { toast } = useToast();
   const [notes, setNotes] = useState(invoice.notes ?? "");
@@ -532,7 +536,7 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName }: {
       </div>
 
       {invoice.status === "draft" && (
-        <DraftReviewPanel invoice={invoice} projectId={projectId} devis={devis} />
+        <DraftReviewPanel invoice={invoice} projectId={projectId} devis={devis} isArchived={isArchived} />
       )}
 
       {invoice.status === "pending" && (
@@ -543,7 +547,7 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName }: {
           </div>
           <Button
             onClick={() => approveMutation.mutate()}
-            disabled={approveMutation.isPending}
+            disabled={approveMutation.isPending || isArchived}
             className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1.5"
             data-testid={`button-approve-invoice-${invoice.id}`}
           >
@@ -644,6 +648,7 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName }: {
               size="sm"
               className="h-6 px-2 text-[9px] font-bold uppercase tracking-widest"
               onClick={() => setNotesEditing(true)}
+              disabled={isArchived}
               data-testid={`button-edit-notes-${invoice.id}`}
             >
               Edit

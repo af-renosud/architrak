@@ -42,9 +42,10 @@ interface DevisTabProps {
   projectId: string;
   contractors: Contractor[];
   lots: Lot[];
+  isArchived?: boolean;
 }
 
-export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
+export function DevisTab({ projectId, contractors, lots, isArchived = false }: DevisTabProps) {
   const { toast } = useToast();
   const [expandedDevis, setExpandedDevis] = useState<number | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -162,6 +163,7 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
               size="sm"
               className="h-7 text-[10px] px-3 gap-1.5"
               onClick={() => fileInputRef.current?.click()}
+              disabled={isArchived}
               data-testid="button-upload-devis"
             >
               <Upload size={12} />
@@ -264,6 +266,7 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
                             devis: d,
                           });
                         }}
+                        disabled={isArchived}
                         data-testid={`button-review-draft-${d.id}`}
                       >
                         <ShieldAlert size={12} />
@@ -280,6 +283,7 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
                   projectId={projectId}
                   contractors={contractors}
                   lots={lots}
+                  isArchived={isArchived}
                 />
               )}
             </div>
@@ -298,6 +302,7 @@ export function DevisTab({ projectId, contractors, lots }: DevisTabProps) {
           data={draftReviewData}
           projectId={projectId}
           onClose={() => setDraftReviewData(null)}
+          isArchived={isArchived}
         />
       )}
     </div>
@@ -313,6 +318,7 @@ interface DraftReviewPanelProps {
   };
   projectId: string;
   onClose: () => void;
+  isArchived?: boolean;
 }
 
 function ConfidenceIndicator({ score }: { score: number }) {
@@ -329,7 +335,7 @@ function ConfidenceIndicator({ score }: { score: number }) {
   );
 }
 
-function DraftReviewPanel({ data, projectId, onClose }: DraftReviewPanelProps) {
+function DraftReviewPanel({ data, projectId, onClose, isArchived = false }: DraftReviewPanelProps) {
   const { toast } = useToast();
   const { devisId, extraction, validation, devis } = data;
   const warnings: Array<{ field: string; expected: any; actual: any; message: string; severity: "error" | "warning" }> = validation?.warnings || [];
@@ -568,7 +574,7 @@ function DraftReviewPanel({ data, projectId, onClose }: DraftReviewPanelProps) {
             size="sm"
             className="gap-1.5 border-rose-200 text-rose-600"
             onClick={() => discardMutation.mutate()}
-            disabled={discardMutation.isPending || confirmMutation.isPending}
+            disabled={discardMutation.isPending || confirmMutation.isPending || isArchived}
             data-testid="button-discard-draft"
           >
             <Trash2 size={12} />
@@ -589,7 +595,7 @@ function DraftReviewPanel({ data, projectId, onClose }: DraftReviewPanelProps) {
             <Button
               size="sm"
               onClick={handleConfirm}
-              disabled={confirmMutation.isPending || discardMutation.isPending}
+              disabled={confirmMutation.isPending || discardMutation.isPending || isArchived}
               data-testid="button-confirm-draft"
             >
               <Check size={12} />
@@ -611,13 +617,14 @@ const CHECK_COLORS: Record<string, { bg: string; border: string; ring: string }>
   unchecked: { bg: "", border: "border-l-transparent", ring: "" },
 };
 
-function LineItemWithCheck({ li, onUpdate }: { li: DevisLineItem; onUpdate: (data: Record<string, string>) => void }) {
+function LineItemWithCheck({ li, onUpdate, disabled = false }: { li: DevisLineItem; onUpdate: (data: Record<string, string>) => void; disabled?: boolean }) {
   const status = li.checkStatus || "unchecked";
   const notes = li.checkNotes || "";
   const colors = CHECK_COLORS[status] || CHECK_COLORS.unchecked;
   const [notesOpen, setNotesOpen] = useState(!!notes);
 
   const toggleStatus = (newStatus: string) => {
+    if (disabled) return;
     onUpdate({ checkStatus: status === newStatus ? "unchecked" : newStatus });
   };
 
@@ -638,29 +645,33 @@ function LineItemWithCheck({ li, onUpdate }: { li: DevisLineItem; onUpdate: (dat
               min={0}
               max={100}
               step={5}
-              onBlur={(e) => onUpdate({ percentComplete: e.target.value })}
+              onBlur={(e) => { if (!disabled) onUpdate({ percentComplete: e.target.value }); }}
+              disabled={disabled}
               data-testid={`input-line-progress-${li.id}`}
             />
             <div className="flex items-center gap-0.5 ml-1">
               <button
-                className={`w-6 h-6 rounded-md border-2 transition-all flex items-center justify-center ${status === "green" ? "bg-emerald-500 border-emerald-600 ring-2 ring-emerald-300" : "border-emerald-400 hover:bg-emerald-50"}`}
+                className={`w-6 h-6 rounded-md border-2 transition-all flex items-center justify-center ${status === "green" ? "bg-emerald-500 border-emerald-600 ring-2 ring-emerald-300" : "border-emerald-400 hover:bg-emerald-50"} ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
                 onClick={() => toggleStatus("green")}
+                disabled={disabled}
                 title="Approved"
                 data-testid={`button-check-green-${li.id}`}
               >
                 {status === "green" && <Check size={12} className="text-white" />}
               </button>
               <button
-                className={`w-6 h-6 rounded-md border-2 transition-all flex items-center justify-center ${status === "amber" ? "bg-amber-400 border-amber-500 ring-2 ring-amber-200" : "border-amber-400 hover:bg-amber-50"}`}
+                className={`w-6 h-6 rounded-md border-2 transition-all flex items-center justify-center ${status === "amber" ? "bg-amber-400 border-amber-500 ring-2 ring-amber-200" : "border-amber-400 hover:bg-amber-50"} ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
                 onClick={() => toggleStatus("amber")}
+                disabled={disabled}
                 title="Questioned"
                 data-testid={`button-check-amber-${li.id}`}
               >
                 {status === "amber" && <span className="text-white text-[10px] font-bold">?</span>}
               </button>
               <button
-                className={`w-6 h-6 rounded-md border-2 transition-all flex items-center justify-center ${status === "red" ? "bg-rose-500 border-rose-600 ring-2 ring-rose-300" : "border-rose-400 hover:bg-rose-50"}`}
+                className={`w-6 h-6 rounded-md border-2 transition-all flex items-center justify-center ${status === "red" ? "bg-rose-500 border-rose-600 ring-2 ring-rose-300" : "border-rose-400 hover:bg-rose-50"} ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
                 onClick={() => toggleStatus("red")}
+                disabled={disabled}
                 title="Rejected"
                 data-testid={`button-check-red-${li.id}`}
               >
@@ -683,15 +694,17 @@ function LineItemWithCheck({ li, onUpdate }: { li: DevisLineItem; onUpdate: (dat
           <td colSpan={6} className="px-2 pb-2 pt-0.5">
             <input
               type="text"
-              className="w-full h-7 px-3 text-[11px] rounded-lg border-2 outline-none transition-colors bg-white"
+              className="w-full h-7 px-3 text-[11px] rounded-lg border-2 outline-none transition-colors bg-white disabled:opacity-50 disabled:cursor-not-allowed"
               style={{ borderColor: "#c1a27b" }}
               placeholder="Notes"
               defaultValue={notes}
               onBlur={(e) => {
+                if (disabled) return;
                 if (e.target.value !== notes) {
                   onUpdate({ checkNotes: e.target.value });
                 }
               }}
+              disabled={disabled}
               data-testid={`input-line-notes-${li.id}`}
             />
           </td>
@@ -710,7 +723,7 @@ function LineItemWithCheck({ li, onUpdate }: { li: DevisLineItem; onUpdate: (dat
   );
 }
 
-function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Devis; projectId: string; contractors: Contractor[]; lots: Lot[] }) {
+function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = false }: { devis: Devis; projectId: string; contractors: Contractor[]; lots: Lot[]; isArchived?: boolean }) {
   const { toast } = useToast();
   const [invoiceDialogOpen, setInvoiceDialogOpen] = useState(false);
   const [avenantDialogOpen, setAvenantDialogOpen] = useState(false);
@@ -930,6 +943,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
               updateDevisMutation.mutate({ status: "pending", voidReason: null });
               toast({ title: "Quotation restored", description: "Devis is no longer void" });
             }}
+            disabled={isArchived}
             data-testid={`button-unvoid-${devis.id}`}
           >
             Restore
@@ -955,6 +969,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
                         toast({ title: "Lot assigned" });
                       }
                     }}
+                    disabled={isArchived}
                   >
                     <SelectTrigger className="flex-1" data-testid={`select-lot-${devis.id}`}>
                       <SelectValue placeholder="Select a lot..." />
@@ -991,7 +1006,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={!newLotNumber.trim() || !newLotDescription.trim() || createLotMutation.isPending}
+                      disabled={!newLotNumber.trim() || !newLotDescription.trim() || createLotMutation.isPending || isArchived}
                       onClick={() => createLotMutation.mutate({ lotNumber: newLotNumber.trim(), descriptionFr: newLotDescription.trim() })}
                       data-testid={`button-save-new-lot-${devis.id}`}
                     >
@@ -1029,6 +1044,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
                       toast({ title: "Works description updated" });
                     }
                   }}
+                  disabled={isArchived}
                   data-testid={`input-description-uk-${devis.id}`}
                 />
               </div>
@@ -1063,7 +1079,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
                         : "border-slate-200 bg-white text-slate-400 cursor-pointer hover:border-slate-300 hover:text-slate-600"
                   }`}
                 onClick={() => {
-                  if (!isVoid) {
+                  if (!isVoid && !isArchived) {
                     if (signOffBlocked && idx > 0) {
                       toast({ title: "Sign-off blocked", description: "Lot assignment and English works description are required before advancing", variant: "destructive" });
                       return;
@@ -1072,7 +1088,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
                     toast({ title: `Stage: ${stage.label}` });
                   }
                 }}
-                disabled={isVoid || (signOffBlocked && idx > 0)}
+                disabled={isVoid || isArchived || (signOffBlocked && idx > 0)}
                 data-testid={`button-stage-${stage.key}-${devis.id}`}
               >
                 {stage.label}
@@ -1089,6 +1105,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
             size="sm"
             className="h-7 px-2 gap-1 ml-2 border-red-200 text-red-500 hover:bg-red-50 hover:text-red-700 shrink-0"
             onClick={() => setVoidDialogOpen(true)}
+            disabled={isArchived}
             data-testid={`button-void-${devis.id}`}
           >
             <Ban size={10} />
@@ -1134,7 +1151,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
             <Button variant="outline" size="sm" onClick={() => {
               lineItemForm.reset({ devisId: devis.id, lineNumber: (lineItems?.length ?? 0) + 1, description: "", quantity: "1", unit: "u", unitPriceHt: "0.00", totalHt: "0.00", percentComplete: "0" });
               setLineItemDialogOpen(true);
-            }} data-testid={`button-add-line-${devis.id}`}>
+            }} disabled={isArchived} data-testid={`button-add-line-${devis.id}`}>
               <Plus size={12} />
               <span className="text-[8px] font-bold uppercase tracking-widest">Line Item</span>
             </Button>
@@ -1158,6 +1175,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
                       key={li.id}
                       li={li}
                       onUpdate={(data) => updateLineItemMutation.mutate({ id: li.id, ...data })}
+                      disabled={isArchived}
                     />
                   ))}
                 </tbody>
@@ -1176,7 +1194,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
         <Button variant="outline" size="sm" onClick={() => {
           avenantForm.reset({ devisId: devis.id, avenantNumber: "", type: "pv", descriptionFr: "", descriptionUk: null, amountHt: "0.00", amountTtc: "0.00", dateSigned: null, status: "draft", pvmvRef: null });
           setAvenantDialogOpen(true);
-        }} data-testid={`button-add-avenant-${devis.id}`}>
+        }} disabled={isArchived} data-testid={`button-add-avenant-${devis.id}`}>
           <Plus size={12} />
           <span className="text-[8px] font-bold uppercase tracking-widest">Avenant</span>
         </Button>
@@ -1206,7 +1224,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots }: { devis: Dev
         <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
           Invoices ({invoices?.length ?? 0})
         </h4>
-        <Button variant="outline" size="sm" onClick={() => setInvoiceDialogOpen(true)} data-testid={`button-upload-invoice-${devis.id}`}>
+        <Button variant="outline" size="sm" onClick={() => setInvoiceDialogOpen(true)} disabled={isArchived} data-testid={`button-upload-invoice-${devis.id}`}>
           <Upload size={12} />
           <span className="text-[8px] font-bold uppercase tracking-widest">Upload Invoice</span>
         </Button>

@@ -4,7 +4,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { FolderOpen, ArrowLeft, MapPin, User, FileText, Layers, ScrollText, Award, Coins, BarChart3, Plus, Eye, EyeOff, ChevronRight, Pencil, Upload, Download, ExternalLink, MessageSquare, Send, Clock, RefreshCw, FileCheck, AlertTriangle, Settings, Loader2, FolderDown } from "lucide-react";
+import { FolderOpen, ArrowLeft, MapPin, User, FileText, Layers, ScrollText, Award, Coins, BarChart3, Plus, Eye, EyeOff, ChevronRight, Pencil, Upload, Download, ExternalLink, MessageSquare, Send, Clock, RefreshCw, FileCheck, AlertTriangle, Settings, Loader2, FolderDown, Archive, ArchiveRestore } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -460,6 +460,21 @@ export default function ProjectDetail() {
     },
   });
 
+  const unarchiveProjectMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/projects/${projectId}/unarchive`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
+      toast({ title: "Project restored", description: "Project is back in the active list." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Restore failed", description: error.message, variant: "destructive" });
+    },
+  });
+
   const refreshProjectMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/projects/${projectId}/refresh`);
@@ -607,6 +622,8 @@ export default function ProjectDetail() {
     setEntryDialogOpen(true);
   };
 
+  const isArchived = !!project?.archivedAt;
+
   const getNextCertStatus = (s: string) => ({ draft: "ready", ready: "sent", sent: "paid" }[s] ?? null);
   const getNextCertLabel = (s: string) => ({ draft: "Mark Ready", ready: "Mark Sent", sent: "Mark Paid" }[s] ?? null);
 
@@ -689,7 +706,7 @@ export default function ProjectDetail() {
                   size="sm"
                   className="h-5 px-2"
                   onClick={() => refreshProjectMutation.mutate()}
-                  disabled={refreshProjectMutation.isPending}
+                  disabled={refreshProjectMutation.isPending || isArchived}
                   data-testid="button-refresh-project"
                 >
                   <RefreshCw size={10} className={refreshProjectMutation.isPending ? "animate-spin" : ""} />
@@ -699,6 +716,47 @@ export default function ProjectDetail() {
             )}
           </div>
         </div>
+
+        {isArchived && (
+          <LuxuryCard
+            className="border-amber-300 dark:border-amber-700 bg-amber-50/70 dark:bg-amber-950/30"
+            data-testid="banner-archived"
+          >
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-start gap-3 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-amber-100 dark:bg-amber-900/40 flex items-center justify-center flex-shrink-0">
+                  <Archive size={16} className="text-amber-700 dark:text-amber-300" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[13px] font-bold text-amber-900 dark:text-amber-100" data-testid="text-archived-title">
+                    This project is archived
+                  </p>
+                  <p className="text-[11px] text-amber-800/80 dark:text-amber-200/80 mt-0.5">
+                    Hidden from the active list. Financial records remain on file. New uploads, devis edits and other write actions are disabled — restore the project to make changes.
+                    {project.archivedAt && (
+                      <>
+                        {" "}<span className="font-semibold">Archived on {new Date(project.archivedAt).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" })}.</span>
+                      </>
+                    )}
+                  </p>
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="border-amber-400 text-amber-900 hover:bg-amber-100 dark:text-amber-100 dark:hover:bg-amber-900/40"
+                onClick={() => unarchiveProjectMutation.mutate()}
+                disabled={unarchiveProjectMutation.isPending}
+                data-testid="button-restore-project"
+              >
+                <ArchiveRestore size={12} />
+                <span className="text-[9px] font-bold uppercase tracking-widest">
+                  {unarchiveProjectMutation.isPending ? "Restoring..." : "Restore Project"}
+                </span>
+              </Button>
+            </div>
+          </LuxuryCard>
+        )}
 
         <div className="flex items-center justify-end gap-2 mb-1 flex-wrap">
           <Button
@@ -740,7 +798,13 @@ export default function ProjectDetail() {
               </div>
               <div>
                 <TechnicalLabel>Honoraires %</TechnicalLabel>
-                <CommissionInput projectId={parseInt(projectId!)} initialValue={project.feePercentage ?? "0"} />
+                {isArchived ? (
+                  <p className="text-[13px] font-semibold text-muted-foreground mt-1" data-testid="text-fee-pct-readonly">
+                    {project.feePercentage ?? "0"}%
+                  </p>
+                ) : (
+                  <CommissionInput projectId={parseInt(projectId!)} initialValue={project.feePercentage ?? "0"} />
+                )}
               </div>
               <div>
                 <TechnicalLabel>Marché</TechnicalLabel>
@@ -927,6 +991,7 @@ export default function ProjectDetail() {
               projectId={projectId!}
               contractors={contractors ?? []}
               lots={lotsList ?? []}
+              isArchived={isArchived}
             />
           </TabsContent>
 
@@ -934,6 +999,7 @@ export default function ProjectDetail() {
             <FacturesTab
               projectId={projectId!}
               contractors={contractors ?? []}
+              isArchived={isArchived}
             />
           </TabsContent>
 
@@ -943,7 +1009,7 @@ export default function ProjectDetail() {
                 <Button onClick={() => {
                   lotForm.reset({ projectId: parseInt(projectId!), lotNumber: "", descriptionFr: "", descriptionUk: null });
                   setLotDialogOpen(true);
-                }} data-testid="button-new-lot">
+                }} disabled={isArchived} data-testid="button-new-lot">
                   <Plus size={14} />
                   <span className="text-[9px] font-bold uppercase tracking-widest">New Lot</span>
                 </Button>
@@ -1025,7 +1091,7 @@ export default function ProjectDetail() {
                       retenueGarantiePercent: "5.00", paymentSchedule: null, signedDate: null, status: "draft",
                     });
                     setMarcheDialogOpen(true);
-                  }} data-testid="button-new-marche">
+                  }} disabled={isArchived} data-testid="button-new-marche">
                     <Plus size={14} />
                     <span className="text-[9px] font-bold uppercase tracking-widest">New Marché</span>
                   </Button>
@@ -1140,7 +1206,7 @@ export default function ProjectDetail() {
           <TabsContent value="certificats">
             <div className="space-y-4">
               <div className="flex items-center justify-end">
-                <Button onClick={openCreateCert} data-testid="button-new-cert-tab">
+                <Button onClick={openCreateCert} disabled={isArchived} data-testid="button-new-cert-tab">
                   <Plus size={14} />
                   <span className="text-[9px] font-bold uppercase tracking-widest">New Certificat</span>
                 </Button>
@@ -1172,7 +1238,7 @@ export default function ProjectDetail() {
                               <Button
                                 variant="outline"
                                 onClick={() => updateCertStatusMutation.mutate({ id: c.id, status: nextStatus })}
-                                disabled={updateCertStatusMutation.isPending}
+                                disabled={updateCertStatusMutation.isPending || isArchived}
                                 data-testid={`button-advance-cert-tab-${c.id}`}
                               >
                                 <ChevronRight size={12} />
@@ -1414,7 +1480,7 @@ export default function ProjectDetail() {
                     </p>
                   </div>
                 </div>
-                <Button onClick={openCreateFee} data-testid="button-new-fee-tab">
+                <Button onClick={openCreateFee} disabled={isArchived} data-testid="button-new-fee-tab">
                   <Plus size={14} />
                   <span className="text-[9px] font-bold uppercase tracking-widest">New Fee</span>
                 </Button>
@@ -1440,7 +1506,7 @@ export default function ProjectDetail() {
                             {f.feeRate && <p className="text-[11px] text-muted-foreground mt-0.5">Rate: {f.feeRate}%</p>}
                             {f.pennylaneRef && <p className="text-[10px] text-muted-foreground">PL: {f.pennylaneRef}</p>}
                           </div>
-                          <Button variant="outline" onClick={() => openCreateEntry(f.id)} data-testid={`button-add-entry-tab-${f.id}`}>
+                          <Button variant="outline" onClick={() => openCreateEntry(f.id)} disabled={isArchived} data-testid={`button-add-entry-tab-${f.id}`}>
                             <Plus size={12} />
                             <span className="text-[8px] font-bold uppercase tracking-widest">Entry</span>
                           </Button>
@@ -1503,13 +1569,14 @@ export default function ProjectDetail() {
                                         size="sm"
                                         className="h-7 text-[10px] px-2 border-emerald-300 text-emerald-700 hover:bg-emerald-50"
                                         onClick={() => { setMarkInvoicedEntryId(entry.id); setMarkInvoicedRef(""); }}
+                                        disabled={isArchived}
                                         data-testid={`button-mark-invoiced-${entry.id}`}
                                       >
                                         <FileCheck size={12} className="mr-1" />
                                         Mark Invoiced
                                       </Button>
                                     )}
-                                    <Button variant="ghost" size="icon" onClick={() => openEditEntry(entry)} data-testid={`button-edit-entry-tab-${entry.id}`}>
+                                    <Button variant="ghost" size="icon" onClick={() => openEditEntry(entry)} disabled={isArchived} data-testid={`button-edit-entry-tab-${entry.id}`}>
                                       <Pencil size={12} />
                                     </Button>
                                   </div>
@@ -1726,7 +1793,7 @@ export default function ProjectDetail() {
           <TabsContent value="documents">
             <div className="space-y-4">
               <div className="flex items-center justify-end">
-                <Button onClick={handleFileUpload} disabled={uploadDocMutation.isPending} data-testid="button-upload-doc">
+                <Button onClick={handleFileUpload} disabled={uploadDocMutation.isPending || isArchived} data-testid="button-upload-doc">
                   <Upload size={14} />
                   <span className="text-[9px] font-bold uppercase tracking-widest">
                     {uploadDocMutation.isPending ? "Uploading..." : "Upload Document"}
@@ -1810,7 +1877,7 @@ export default function ProjectDetail() {
                           variant="outline"
                           size="sm"
                           onClick={() => sendCertMutation.mutate(cert.id)}
-                          disabled={sendCertMutation.isPending}
+                          disabled={sendCertMutation.isPending || isArchived}
                           data-testid={`button-send-cert-${cert.id}`}
                         >
                           <Send size={12} />
@@ -1858,7 +1925,7 @@ export default function ProjectDetail() {
                               variant="outline"
                               size="sm"
                               onClick={() => sendCommMutation.mutate(comm.id)}
-                              disabled={sendCommMutation.isPending}
+                              disabled={sendCommMutation.isPending || isArchived}
                               data-testid={`button-send-comm-${comm.id}`}
                             >
                               <Send size={12} />
