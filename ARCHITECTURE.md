@@ -440,7 +440,7 @@ shared/
 
 ### Database Migrations
 
-The repo uses **versioned migrations** as the source of truth for schema state, with `drizzle-kit push` available for fast local iteration only.
+The repo uses **versioned migrations** as the source of truth for schema state. `drizzle-kit push` is reserved for throwaway local scratch databases and is gated behind an explicit env flag — it is never wired into the post-merge hook or any deployment path.
 
 **File layout**
 
@@ -457,7 +457,35 @@ The repo uses **versioned migrations** as the source of truth for schema state, 
    ```
    Review the SQL diff, commit both the new `NNNN_*.sql` and the updated `migrations/meta/` files.
 3. Locally, apply with `npx drizzle-kit migrate` (or restart the server — see below).
-4. `npm run db:push` remains available for throwaway prototyping against a scratch DB. It must **NOT** be run against staging or production because it bypasses migration history and can drop columns silently.
+
+**Scratch-DB-only push (never against shared databases)**
+
+`drizzle-kit push` bypasses the migration journal and can drop columns silently. It MUST NOT be run against the shared dev DB, staging, or production — doing so will drift the live schema away from `migrations/` and from what `runMigrations()` will reapply on the next deploy.
+
+For a local-only scratch database, use the gated wrapper:
+
+```
+ALLOW_DESTRUCTIVE_PUSH=true \
+DATABASE_URL=postgres://localhost:5432/architrak_scratch \
+  bash scripts/db-push-scratch.sh
+```
+
+The wrapper refuses to run unless `ALLOW_DESTRUCTIVE_PUSH=true` is set, and rejects any `DATABASE_URL` whose host matches known hosted-Postgres providers (Neon, Supabase, RDS, Render, Railway, Replit, pooler hosts, …).
+
+**Resetting a scratch DB**
+
+To start over against a local scratch DB:
+
+```
+psql "$DATABASE_URL" -c 'drop schema public cascade; create schema public;'
+npx tsx scripts/run-migrations.mjs   # apply the committed migration history
+```
+
+Use `db-push-scratch.sh` only when iterating on `shared/schema.ts` before you are ready to generate a migration. Once the schema is settled, run `npx drizzle-kit generate --name <change-summary>` and commit the result — that committed SQL is what will run on the shared DB and in production via `runMigrations()`.
+
+**Post-merge hook**
+
+`scripts/post-merge.sh` runs `npm install` followed by `npx tsx scripts/run-migrations.mjs`. It does NOT call `drizzle-kit push` — every shared environment converges on schema state exclusively through committed migration files.
 
 **Application at deploy / start time**
 
