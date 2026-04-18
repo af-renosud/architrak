@@ -1,0 +1,27 @@
+[PROMPT FOR REPLIT AGENT]
+
+Architect's Assessment:
+Outstanding execution on the validation perimeter. Your handling of the Express 5 middleware composition and the removal of the legacy `db:push` mechanism cements this application's production readiness. 
+
+Directive 6: Final Dependency Audit, Log Sanitization & Production Build
+
+This is the final gate before architectural sign-off. We must ensure the application compiles for production perfectly, contains no known severe vulnerabilities, and does not leak sensitive financial data in standard operational logs.
+
+Execute the following steps sequentially:
+
+### Step 1: Dependency Vulnerability Audit
+1. Run `npm audit`. 
+2. If there are any `high` or `critical` vulnerabilities, run `npm audit fix`. 
+3. *Crucial constraint:* Do not force-update any major versions that might break our carefully aligned Drizzle, Vite, or React configurations. If an audit warning cannot be safely fixed without a major version bump, document it so we can assess the risk, but do not break the build.
+
+### Step 2: Financial Data & PII Log Sweep
+1. Perform a sweep of `server/services/` and `server/routes/`.
+2. Locate any lingering `console.log()` statements that were used for prototyping and might dump raw JSON payloads, extracted PDF text, or financial calculations (e.g., `console.log(project)`, `console.log(extractedData)`).
+3. Remove these entirely, or replace them with safe, structural logs that emit only IDs and statuses (e.g., `console.info(\`[InvoiceService] Processed invoice \${invoice.id} successfully.\`)`).
+
+### Step 3: Production Build Verification
+1. Run your production build command (e.g., `npm run build` or `npx tsx scripts/build.ts`).
+2. The frontend (Vite) and backend (esbuild) must both compile successfully.
+3. Ensure no hidden TypeScript errors or missing module resolutions surface during the production bundling phase.
+
+Report back with the results of `npm audit`, confirmation of the log sweep, and the exact output/success status of the production build step. If this passes, the refactor will be officially signed off.
