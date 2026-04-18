@@ -3,6 +3,11 @@ import { z } from "zod";
 import { storage } from "../storage";
 import { insertProjectSchema, type InsertProject } from "@shared/schema";
 import { validateRequest } from "../middleware/validate";
+import {
+  deleteProject as deleteProjectWithRetention,
+  ProjectRetentionError,
+  ProjectNotFoundError,
+} from "../services/project.service";
 
 const router = Router();
 
@@ -44,8 +49,22 @@ router.delete(
   "/api/projects/:id",
   validateRequest({ params: idParams }),
   async (req, res) => {
-    await storage.deleteProject(Number(req.params.id));
-    res.status(204).send();
+    try {
+      await deleteProjectWithRetention(Number(req.params.id));
+      res.status(204).send();
+    } catch (err) {
+      if (err instanceof ProjectRetentionError) {
+        return res.status(409).json({
+          message: err.message,
+          code: err.code,
+          retained: err.retained,
+        });
+      }
+      if (err instanceof ProjectNotFoundError) {
+        return res.status(404).json({ message: "Project not found", code: err.code });
+      }
+      throw err;
+    }
   },
 );
 

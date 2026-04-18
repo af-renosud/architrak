@@ -484,7 +484,7 @@ Per Code de commerce **L123-22** and Livre des procédures fiscales **L102 B**, 
 **Policy decisions**:
 
 - These tables use **hard deletes only when triggered by a deliberate operator action** with audit logging, and never via automatic GC.
-- Cascades from `projects.deleted` are intentionally NOT used for `invoices` rows older than the retention horizon — instead, deleting a project that has retained financial records should be blocked at the application layer (currently best-effort; see follow-ups).
+- Cascades from `projects.deleted` are intentionally NOT used for `invoices` rows older than the retention horizon. Project deletion is gated by `server/services/project.service.ts#deleteProject`, which inside one transaction (1) takes a `SELECT ... FOR UPDATE` row lock on the `projects` row, (2) takes a `SELECT ... FOR UPDATE` lock on every `devis` row for the project (situations FK to `devis`, not directly to `projects`, so this second lock is required to block concurrent situation inserts), (3) counts retained `invoices`, `situations` (joined via `devis`), and `certificats`, and (4) issues the `DELETE`. Any concurrent transaction trying to insert an invoice/certificat (FK to projects), a new devis (FK to projects), or a situation against an existing devis (FK to devis) is forced to wait on the FK key-share lock until our transaction commits or rolls back, closing the TOCTOU window. Refusal is signalled with `ProjectRetentionError` (HTTP 409, code `PROJECT_RETENTION_BLOCKED`, payload `{ retained: { invoices, situations, certificats } }`).
 - Object Storage objects under `PRIVATE_OBJECT_DIR` should be retained for at least 10 years; bucket lifecycle rules MUST be set to never auto-expire those prefixes.
 
 ### Database Invariants (DB-enforced)
