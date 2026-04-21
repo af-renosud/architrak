@@ -316,17 +316,21 @@ router.patch(
 
 router.patch(
   "/api/devis/:id",
+  requireAuth,
   validateRequest({ params: idParams, body: updateDevisSchema }),
   async (req, res) => {
     const id = Number(req.params.id);
+    const userId = req.session?.userId;
+    if (!userId) return res.status(401).json({ message: "Authentication required" });
+    const user = await storage.getUser(Number(userId));
+    if (!user) return res.status(401).json({ message: "Authentication required" });
+
     const before = await storage.getDevis(id);
     if (!before) return res.status(404).json({ message: "Devis not found" });
     const d = await storage.updateDevis(id, req.body);
     if (!d) return res.status(404).json({ message: "Devis not found" });
 
     if (before.status !== "draft") {
-      const userId = req.session?.userId;
-      const user = userId ? await storage.getUser(Number(userId)) : null;
       const auditFields: Array<"devisCode" | "devisNumber" | "ref2"> = ["devisCode", "devisNumber", "ref2"];
       for (const f of auditFields) {
         if (Object.prototype.hasOwnProperty.call(req.body, f)) {
@@ -338,8 +342,8 @@ router.patch(
               field: f,
               previousValue: prev,
               newValue: next,
-              editedByUserId: user?.id ?? null,
-              editedByEmail: user?.email ?? null,
+              editedByUserId: user.id,
+              editedByEmail: user.email,
             });
           }
         }

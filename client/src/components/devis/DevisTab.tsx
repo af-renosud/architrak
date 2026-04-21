@@ -16,6 +16,7 @@ import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight
 import { Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -491,6 +492,7 @@ interface EditDevisRefsDialogProps {
 
 function EditDevisRefsDialog({ devis, projectId, onClose }: EditDevisRefsDialogProps) {
   const { toast } = useToast();
+  const { isAuthenticated, isLoading: authLoading } = useAuth();
   const [devisCode, setDevisCode] = useState(devis.devisCode ?? "");
   const [devisNumber, setDevisNumber] = useState(devis.devisNumber ?? "");
   const [ref2, setRef2] = useState(devis.ref2 ?? "");
@@ -512,6 +514,14 @@ function EditDevisRefsDialog({ devis, projectId, onClose }: EditDevisRefsDialogP
   });
 
   const handleSave = () => {
+    if (!isAuthenticated) {
+      toast({
+        title: "Sign in required",
+        description: "You must be signed in as an architect to edit devis references.",
+        variant: "destructive",
+      });
+      return;
+    }
     const trimmedCode = devisCode.trim();
     const trimmedNumber = devisNumber.trim();
     const trimmedRef2 = ref2.trim();
@@ -539,6 +549,14 @@ function EditDevisRefsDialog({ devis, projectId, onClose }: EditDevisRefsDialogP
             Correct the devis code or supplier reference numbers if the AI mis-extracted them.
           </DialogDescription>
         </DialogHeader>
+        {!authLoading && !isAuthenticated && (
+          <div
+            className="rounded border border-destructive/40 bg-destructive/10 p-2 text-[11px] text-destructive"
+            data-testid="text-edit-devis-refs-auth-warning"
+          >
+            You're signed out. Sign in as an architect to edit devis references — anonymous edits aren't allowed.
+          </div>
+        )}
         <div className="space-y-3">
           <div className="space-y-1">
             <TechnicalLabel>Devis Code</TechnicalLabel>
@@ -584,7 +602,7 @@ function EditDevisRefsDialog({ devis, projectId, onClose }: EditDevisRefsDialogP
           <Button
             size="sm"
             onClick={handleSave}
-            disabled={mutation.isPending || !devisCode.trim()}
+            disabled={mutation.isPending || !devisCode.trim() || !isAuthenticated || authLoading}
             data-testid="button-save-edit-devis-refs"
           >
             {mutation.isPending ? <Loader2 size={12} className="animate-spin" /> : "Save"}
