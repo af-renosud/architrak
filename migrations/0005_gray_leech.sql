@@ -1,0 +1,1 @@
+ALTER TABLE "lot_catalog" ADD COLUMN "description_uk" text;

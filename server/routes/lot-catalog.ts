@@ -39,9 +39,10 @@ router.post(
 const idParamSchema = z.object({ id: z.coerce.number().int().positive() });
 const updateLotCatalogSchema = insertLotCatalogSchema
   .partial()
-  .refine((v) => v.code !== undefined || v.descriptionFr !== undefined, {
-    message: "Provide a code or description to update",
-  });
+  .refine(
+    (v) => v.code !== undefined || v.descriptionFr !== undefined || v.descriptionUk !== undefined,
+    { message: "Provide a code or description to update" },
+  );
 
 router.patch(
   "/api/lot-catalog/:id",
@@ -52,9 +53,10 @@ router.patch(
     if (!existing) {
       return res.status(404).json({ message: "Lot catalog entry not found" });
     }
-    const data: { code?: string; descriptionFr?: string } = {};
+    const data: { code?: string; descriptionFr?: string; descriptionUk?: string | null } = {};
     if (req.body.code !== undefined) data.code = req.body.code;
     if (req.body.descriptionFr !== undefined) data.descriptionFr = req.body.descriptionFr;
+    if (req.body.descriptionUk !== undefined) data.descriptionUk = req.body.descriptionUk;
     if (data.code && data.code !== existing.code) {
       const clash = await storage.getLotCatalogByCode(data.code);
       if (clash) {

@@ -75,6 +75,7 @@ export const lotCatalog = pgTable("lot_catalog", {
   id: serial("id").primaryKey(),
   code: text("code").notNull(),
   descriptionFr: text("description_fr").notNull(),
+  descriptionUk: text("description_uk"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   unique("lot_catalog_code_unique").on(table.code),
@@ -637,6 +638,13 @@ export const insertLotCatalogSchema = createInsertSchema(lotCatalog).omit({
     .transform((v) => v.toUpperCase())
     .pipe(z.string().regex(/^[A-Z0-9]+$/, "Code must contain only A-Z and 0-9")),
   descriptionFr: z.string().trim().min(1, "Description is required").max(200),
+  descriptionUk: z
+    .string()
+    .trim()
+    .max(200)
+    .transform((v) => (v.length === 0 ? null : v))
+    .nullable()
+    .optional(),
 });
 
 export const insertMarcheSchema = createInsertSchema(marches).omit({

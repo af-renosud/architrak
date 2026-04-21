@@ -381,11 +381,18 @@ export class DatabaseStorage implements IStorage {
       if (!updated) return undefined;
       const codeChanged = data.code !== undefined && data.code !== existing.code;
       const descChanged = data.descriptionFr !== undefined && data.descriptionFr !== existing.descriptionFr;
+      const ukChanged = data.descriptionUk !== undefined && data.descriptionUk !== existing.descriptionUk;
       if (codeChanged || descChanged) {
         const setClause: { lotNumber?: string; descriptionFr?: string } = {};
         if (codeChanged) setClause.lotNumber = updated.code;
         if (descChanged) setClause.descriptionFr = updated.descriptionFr;
         await tx.update(lots).set(setClause).where(eq(lots.lotNumber, existing.code));
+      }
+      if (ukChanged && updated.descriptionUk !== null) {
+        await tx
+          .update(lots)
+          .set({ descriptionUk: updated.descriptionUk })
+          .where(and(eq(lots.lotNumber, updated.code), isNull(lots.descriptionUk)));
       }
       return updated;
     });
@@ -408,10 +415,20 @@ export class DatabaseStorage implements IStorage {
     }
     const [row] = await db
       .insert(lots)
-      .values({ projectId, lotNumber: entry.code, descriptionFr: entry.descriptionFr })
+      .values({
+        projectId,
+        lotNumber: entry.code,
+        descriptionFr: entry.descriptionFr,
+        descriptionUk: entry.descriptionUk,
+      })
       .onConflictDoUpdate({
         target: [lots.projectId, lots.lotNumber],
-        set: { descriptionFr: entry.descriptionFr },
+        set: {
+          descriptionFr: entry.descriptionFr,
+          ...(entry.descriptionUk !== null
+            ? { descriptionUk: sql`COALESCE(${lots.descriptionUk}, ${entry.descriptionUk})` }
+            : {}),
+        },
       })
       .returning();
     return row;

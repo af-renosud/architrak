@@ -267,9 +267,11 @@ function LotCatalogSection() {
   const { toast } = useToast();
   const [code, setCode] = useState("");
   const [descriptionFr, setDescriptionFr] = useState("");
+  const [descriptionUk, setDescriptionUk] = useState("");
   const [editing, setEditing] = useState<LotCatalog | null>(null);
   const [editCode, setEditCode] = useState("");
   const [editDescriptionFr, setEditDescriptionFr] = useState("");
+  const [editDescriptionUk, setEditDescriptionUk] = useState("");
   const [deleting, setDeleting] = useState<LotCatalog | null>(null);
 
   const { data: catalog, isLoading } = useQuery<LotCatalog[]>({
@@ -277,7 +279,7 @@ function LotCatalogSection() {
   });
 
   const createMutation = useMutation({
-    mutationFn: async (data: { code: string; descriptionFr: string }) => {
+    mutationFn: async (data: { code: string; descriptionFr: string; descriptionUk?: string | null }) => {
       const res = await apiRequest("POST", "/api/lot-catalog", data);
       return res.json();
     },
@@ -285,6 +287,7 @@ function LotCatalogSection() {
       queryClient.invalidateQueries({ queryKey: ["/api/lot-catalog"] });
       setCode("");
       setDescriptionFr("");
+      setDescriptionUk("");
       toast({ title: "Lot added to master list" });
     },
     onError: (error: Error) => {
@@ -293,7 +296,7 @@ function LotCatalogSection() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: async ({ id, data }: { id: number; data: { code: string; descriptionFr: string } }) => {
+    mutationFn: async ({ id, data }: { id: number; data: { code: string; descriptionFr: string; descriptionUk?: string | null } }) => {
       const res = await apiRequest("PATCH", `/api/lot-catalog/${id}`, data);
       return res.json();
     },
@@ -325,6 +328,7 @@ function LotCatalogSection() {
     setEditing(entry);
     setEditCode(entry.code);
     setEditDescriptionFr(entry.descriptionFr);
+    setEditDescriptionUk(entry.descriptionUk ?? "");
   };
 
   const canSubmit = code.trim().length > 0 && descriptionFr.trim().length > 0 && !createMutation.isPending;
@@ -333,7 +337,9 @@ function LotCatalogSection() {
     editCode.trim().length > 0 &&
     editDescriptionFr.trim().length > 0 &&
     !updateMutation.isPending &&
-    (editCode.trim().toUpperCase() !== editing.code || editDescriptionFr.trim() !== editing.descriptionFr);
+    (editCode.trim().toUpperCase() !== editing.code ||
+      editDescriptionFr.trim() !== editing.descriptionFr ||
+      editDescriptionUk.trim() !== (editing.descriptionUk ?? ""));
 
   return (
     <div className="mt-10">
@@ -363,7 +369,7 @@ function LotCatalogSection() {
             <p className="text-[10px] text-muted-foreground leading-relaxed mb-3">
               New entries become available on every project's Lot Assignment dropdown.
             </p>
-            <div className="grid grid-cols-1 sm:grid-cols-[160px_1fr_auto] gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-[160px_1fr_1fr_auto] gap-2">
               <Input
                 placeholder="Code (e.g. LOT3)"
                 value={code}
@@ -380,9 +386,24 @@ function LotCatalogSection() {
                 maxLength={200}
                 data-testid="input-lot-catalog-description"
               />
+              <Input
+                placeholder="English description (optional)"
+                value={descriptionUk}
+                onChange={(e) => setDescriptionUk(e.target.value)}
+                className="text-[11px]"
+                maxLength={200}
+                data-testid="input-lot-catalog-description-uk"
+              />
               <Button
                 size="sm"
-                onClick={() => createMutation.mutate({ code: code.trim(), descriptionFr: descriptionFr.trim() })}
+                onClick={() => {
+                  const uk = descriptionUk.trim();
+                  createMutation.mutate({
+                    code: code.trim(),
+                    descriptionFr: descriptionFr.trim(),
+                    descriptionUk: uk.length > 0 ? uk : null,
+                  });
+                }}
                 disabled={!canSubmit}
                 data-testid="button-add-lot-catalog"
               >
@@ -420,9 +441,17 @@ function LotCatalogSection() {
                   >
                     {entry.code}
                   </span>
-                  <span className="text-[11px] text-foreground truncate flex-1" data-testid={`text-lot-catalog-description-${entry.code}`}>
-                    {entry.descriptionFr}
-                  </span>
+                  <div className="flex flex-col min-w-0 flex-1">
+                    <span className="text-[11px] text-foreground truncate" data-testid={`text-lot-catalog-description-${entry.code}`}>
+                      {entry.descriptionFr}
+                    </span>
+                    <span
+                      className="text-[10px] text-muted-foreground truncate italic"
+                      data-testid={`text-lot-catalog-description-uk-${entry.code}`}
+                    >
+                      {entry.descriptionUk ?? "No English description"}
+                    </span>
+                  </div>
                   <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                     <Button
                       size="icon"
@@ -481,6 +510,20 @@ function LotCatalogSection() {
                 data-testid="input-edit-lot-catalog-description"
               />
             </div>
+            <div>
+              <TechnicalLabel className="mb-1.5 block">English description (optional)</TechnicalLabel>
+              <Input
+                value={editDescriptionUk}
+                onChange={(e) => setEditDescriptionUk(e.target.value)}
+                className="text-[11px]"
+                maxLength={200}
+                placeholder="Leave empty to clear"
+                data-testid="input-edit-lot-catalog-description-uk"
+              />
+              <p className="mt-1 text-[9px] text-muted-foreground">
+                Saving an English description backfills it on existing project lots that don't yet have one.
+              </p>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditing(null)} data-testid="button-cancel-edit-lot-catalog">
@@ -489,9 +532,14 @@ function LotCatalogSection() {
             <Button
               onClick={() => {
                 if (!editing) return;
+                const uk = editDescriptionUk.trim();
                 updateMutation.mutate({
                   id: editing.id,
-                  data: { code: editCode.trim(), descriptionFr: editDescriptionFr.trim() },
+                  data: {
+                    code: editCode.trim(),
+                    descriptionFr: editDescriptionFr.trim(),
+                    descriptionUk: uk.length > 0 ? uk : null,
+                  },
                 });
               }}
               disabled={!canSaveEdit}
