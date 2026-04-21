@@ -1,7 +1,7 @@
 import { db } from "./db";
 import { eq, desc, asc, and, or, inArray, isNotNull, isNull, lte, gte, like, ilike, sql, type SQL } from "drizzle-orm";
 import {
-  projects, contractors, lots, marches, devis, devisLineItems,
+  projects, contractors, lots, lotCatalog, marches, devis, devisLineItems,
   avenants, invoices, situations, situationLines, certificats, fees, feeEntries,
   archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog,
   emailDocuments, projectDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
@@ -11,6 +11,7 @@ import {
   type User, type InsertUser,
   type Contractor, type InsertContractor,
   type Lot, type InsertLot,
+  type LotCatalog, type InsertLotCatalog,
   type Marche, type InsertMarche,
   type Devis, type InsertDevis,
   type DevisLineItem, type InsertDevisLineItem,
@@ -89,6 +90,11 @@ export interface IStorage {
   createLot(data: InsertLot): Promise<Lot>;
   updateLot(id: number, data: Partial<InsertLot>): Promise<Lot | undefined>;
   deleteLot(id: number): Promise<void>;
+
+  getLotCatalog(): Promise<LotCatalog[]>;
+  getLotCatalogByCode(code: string): Promise<LotCatalog | undefined>;
+  createLotCatalogEntry(data: InsertLotCatalog): Promise<LotCatalog>;
+  ensureProjectLotFromCatalog(projectId: number, catalogCode: string): Promise<Lot | undefined>;
 
   getMarchesByProject(projectId: number): Promise<Marche[]>;
   getMarche(id: number): Promise<Marche | undefined>;
@@ -337,6 +343,37 @@ export class DatabaseStorage implements IStorage {
 
   async deleteLot(id: number): Promise<void> {
     await db.delete(lots).where(eq(lots.id, id));
+  }
+
+  async getLotCatalog(): Promise<LotCatalog[]> {
+    return db.select().from(lotCatalog).orderBy(asc(lotCatalog.code));
+  }
+
+  async getLotCatalogByCode(code: string): Promise<LotCatalog | undefined> {
+    const [row] = await db.select().from(lotCatalog).where(eq(lotCatalog.code, code)).limit(1);
+    return row;
+  }
+
+  async createLotCatalogEntry(data: InsertLotCatalog): Promise<LotCatalog> {
+    const [row] = await db.insert(lotCatalog).values(data).returning();
+    return row;
+  }
+
+  async ensureProjectLotFromCatalog(projectId: number, catalogCode: string): Promise<Lot | undefined> {
+    const normalizedCode = catalogCode.trim().toUpperCase();
+    const entry = await this.getLotCatalogByCode(normalizedCode);
+    if (!entry) {
+      return undefined;
+    }
+    const [row] = await db
+      .insert(lots)
+      .values({ projectId, lotNumber: entry.code, descriptionFr: entry.descriptionFr })
+      .onConflictDoUpdate({
+        target: [lots.projectId, lots.lotNumber],
+        set: { descriptionFr: entry.descriptionFr },
+      })
+      .returning();
+    return row;
   }
 
   async getMarchesByProject(projectId: number): Promise<Marche[]> {

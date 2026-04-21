@@ -71,6 +71,15 @@ export const contractors = pgTable("contractors", {
   unique("contractors_archidoc_id_unique").on(table.archidocId),
 ]);
 
+export const lotCatalog = pgTable("lot_catalog", {
+  id: serial("id").primaryKey(),
+  code: text("code").notNull(),
+  descriptionFr: text("description_fr").notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  unique("lot_catalog_code_unique").on(table.code),
+]);
+
 export const lots = pgTable("lots", {
   id: serial("id").primaryKey(),
   projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
@@ -616,6 +625,20 @@ export const insertLotSchema = createInsertSchema(lots).omit({
   createdAt: true,
 });
 
+export const insertLotCatalogSchema = createInsertSchema(lotCatalog).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  code: z
+    .string()
+    .trim()
+    .min(1, "Code is required")
+    .max(16, "Code must be 16 characters or less")
+    .transform((v) => v.toUpperCase())
+    .pipe(z.string().regex(/^[A-Z0-9]+$/, "Code must contain only A-Z and 0-9")),
+  descriptionFr: z.string().trim().min(1, "Description is required").max(200),
+});
+
 export const insertMarcheSchema = createInsertSchema(marches).omit({
   id: true,
   createdAt: true,
@@ -671,6 +694,8 @@ export type Contractor = typeof contractors.$inferSelect;
 export type InsertContractor = z.infer<typeof insertContractorSchema>;
 export type Lot = typeof lots.$inferSelect;
 export type InsertLot = z.infer<typeof insertLotSchema>;
+export type LotCatalog = typeof lotCatalog.$inferSelect;
+export type InsertLotCatalog = z.infer<typeof insertLotCatalogSchema>;
 export type Marche = typeof marches.$inferSelect;
 export type InsertMarche = z.infer<typeof insertMarcheSchema>;
 export type Devis = typeof devis.$inferSelect;

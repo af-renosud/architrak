@@ -6,6 +6,7 @@ import projectsRouter from "./projects";
 import contractorsRouter from "./contractors";
 import marchesRouter from "./marches";
 import lotsRouter from "./lots";
+import lotCatalogRouter from "./lot-catalog";
 import devisRouter from "./devis";
 import invoicesRouter from "./invoices";
 import situationsRouter from "./situations";
@@ -57,6 +58,7 @@ export async function registerRoutes(
   app.use(contractorsRouter);
   app.use(marchesRouter);
   app.use(lotsRouter);
+  app.use(lotCatalogRouter);
   app.use(devisRouter);
   app.use(invoicesRouter);
   app.use(situationsRouter);

@@ -17,7 +17,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { insertDevisLineItemSchema, insertAvenantSchema, insertLotSchema } from "@shared/schema";
-import type { Devis, Contractor, Lot, DevisLineItem, Avenant, Invoice } from "@shared/schema";
+import type { Devis, Contractor, Lot, LotCatalog, DevisLineItem, Avenant, Invoice } from "@shared/schema";
 import { z } from "zod";
 import { AdvisoriesList, AdvisoryBadge } from "@/components/advisories/AdvisoriesList";
 
@@ -875,23 +875,49 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
     },
   });
 
-  const createLotMutation = useMutation({
-    mutationFn: async (data: { lotNumber: string; descriptionFr: string }) => {
-      const res = await apiRequest("POST", `/api/projects/${projectId}/lots`, data);
+  const { data: lotCatalog = [] } = useQuery<LotCatalog[]>({
+    queryKey: ["/api/lot-catalog"],
+  });
+
+  const assignFromCatalogMutation = useMutation({
+    mutationFn: async (catalogCode: string) => {
+      const res = await apiRequest("POST", `/api/projects/${projectId}/lots/assign-from-catalog`, {
+        catalogCode,
+        devisId: devis.id,
+      });
       return res.json();
     },
-    onSuccess: (newLot: Lot) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "lots"] });
-      updateDevisMutation.mutate({ lotId: newLot.id } as any);
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
+      toast({ title: "Lot assigned" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error assigning lot", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const createCatalogLotMutation = useMutation({
+    mutationFn: async (data: { code: string; descriptionFr: string }) => {
+      const res = await apiRequest("POST", `/api/lot-catalog`, data);
+      return res.json();
+    },
+    onSuccess: (newEntry: LotCatalog) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/lot-catalog"] });
+      assignFromCatalogMutation.mutate(newEntry.code);
       setAddingNewLot(false);
       setNewLotNumber("");
       setNewLotDescription("");
-      toast({ title: "Lot created and assigned" });
+      toast({ title: "Lot added to master list and assigned" });
     },
     onError: (error: Error) => {
       toast({ title: "Error creating lot", description: error.message, variant: "destructive" });
     },
   });
+
+  const currentLot = devis.lotId ? lots.find(l => l.id === devis.lotId) : undefined;
+  const currentCatalogCode = currentLot?.lotNumber ?? "";
 
   const [voidDialogOpen, setVoidDialogOpen] = useState(false);
   const [voidReason, setVoidReason] = useState("");
@@ -960,24 +986,23 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
               {!addingNewLot ? (
                 <div className="flex items-center gap-2 flex-wrap">
                   <Select
-                    value={devis.lotId ? String(devis.lotId) : ""}
+                    value={currentCatalogCode}
                     onValueChange={(val) => {
                       if (val === "__new__") {
                         setAddingNewLot(true);
                       } else {
-                        updateDevisMutation.mutate({ lotId: parseInt(val) } as any);
-                        toast({ title: "Lot assigned" });
+                        assignFromCatalogMutation.mutate(val);
                       }
                     }}
-                    disabled={isArchived}
+                    disabled={isArchived || assignFromCatalogMutation.isPending}
                   >
                     <SelectTrigger className="flex-1" data-testid={`select-lot-${devis.id}`}>
                       <SelectValue placeholder="Select a lot..." />
                     </SelectTrigger>
                     <SelectContent>
-                      {lots.map((lot) => (
-                        <SelectItem key={lot.id} value={String(lot.id)}>
-                          {lot.lotNumber} — {lot.descriptionFr}
+                      {lotCatalog.map((entry) => (
+                        <SelectItem key={entry.id} value={entry.code} data-testid={`option-lot-${entry.code}`}>
+                          {entry.code} — {entry.descriptionFr}
                         </SelectItem>
                       ))}
                       <SelectItem value="__new__">+ Add new lot</SelectItem>
@@ -986,16 +1011,17 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
                 </div>
               ) : (
                 <div className="space-y-2 p-2 rounded-lg border border-[rgba(0,0,0,0.08)] bg-white/50">
+                  <p className="text-[9px] text-muted-foreground">Adds to the master list — available across all projects.</p>
                   <div className="grid grid-cols-2 gap-2">
                     <Input
-                      placeholder="Lot number (e.g. LOT3)"
+                      placeholder="Code (e.g. LOT3)"
                       value={newLotNumber}
                       onChange={(e) => setNewLotNumber(e.target.value)}
                       className="text-[11px]"
                       data-testid={`input-new-lot-number-${devis.id}`}
                     />
                     <Input
-                      placeholder="Description"
+                      placeholder="French description"
                       value={newLotDescription}
                       onChange={(e) => setNewLotDescription(e.target.value)}
                       className="text-[11px]"
@@ -1006,12 +1032,12 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={!newLotNumber.trim() || !newLotDescription.trim() || createLotMutation.isPending || isArchived}
-                      onClick={() => createLotMutation.mutate({ lotNumber: newLotNumber.trim(), descriptionFr: newLotDescription.trim() })}
+                      disabled={!newLotNumber.trim() || !newLotDescription.trim() || createCatalogLotMutation.isPending || assignFromCatalogMutation.isPending || isArchived}
+                      onClick={() => createCatalogLotMutation.mutate({ code: newLotNumber.trim(), descriptionFr: newLotDescription.trim() })}
                       data-testid={`button-save-new-lot-${devis.id}`}
                     >
                       <span className="text-[9px] font-bold uppercase tracking-widest">
-                        {createLotMutation.isPending ? "Saving..." : "Save Lot"}
+                        {createCatalogLotMutation.isPending ? "Saving..." : "Save & Assign"}
                       </span>
                     </Button>
                     <Button

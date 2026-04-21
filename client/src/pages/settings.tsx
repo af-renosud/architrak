@@ -1,5 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Sidebar } from "@/components/layout/Sidebar";
@@ -7,9 +7,10 @@ import { LuxuryCard } from "@/components/ui/luxury-card";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { Zap, Sparkles, Crown, Gauge, DollarSign, Brain, Check, Upload, Trash2, Image, Building2, Scale } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Zap, Sparkles, Crown, Gauge, DollarSign, Brain, Check, Upload, Trash2, Image, Building2, Scale, Layers, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { AiModelSetting, TemplateAsset } from "@shared/schema";
+import type { AiModelSetting, TemplateAsset, LotCatalog } from "@shared/schema";
 
 interface ModelOption {
   provider: string;
@@ -238,7 +239,133 @@ export default function SettingsPage() {
         </div>
 
         <TemplateAssetsSection />
+        <LotCatalogSection />
       </main>
+    </div>
+  );
+}
+
+function LotCatalogSection() {
+  const { toast } = useToast();
+  const [code, setCode] = useState("");
+  const [descriptionFr, setDescriptionFr] = useState("");
+
+  const { data: catalog, isLoading } = useQuery<LotCatalog[]>({
+    queryKey: ["/api/lot-catalog"],
+  });
+
+  const createMutation = useMutation({
+    mutationFn: async (data: { code: string; descriptionFr: string }) => {
+      const res = await apiRequest("POST", "/api/lot-catalog", data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/lot-catalog"] });
+      setCode("");
+      setDescriptionFr("");
+      toast({ title: "Lot added to master list" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to add lot", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const canSubmit = code.trim().length > 0 && descriptionFr.trim().length > 0 && !createMutation.isPending;
+
+  return (
+    <div className="mt-10">
+      <div className="mb-6">
+        <h2
+          className="text-[16px] font-black uppercase tracking-tight mb-1"
+          style={{ color: "#0B2545" }}
+          data-testid="text-lot-catalog-title"
+        >
+          Lots Master List
+        </h2>
+        <p className="text-[11px] text-muted-foreground mb-4">
+          Standard lot codes used across all projects. Selecting a lot on a Devis pulls from this list.
+        </p>
+      </div>
+
+      <LuxuryCard>
+        <div className="flex items-start gap-3 mb-5">
+          <div
+            className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"
+            style={{ backgroundColor: "rgba(11, 37, 69, 0.08)" }}
+          >
+            <Layers size={14} style={{ color: "#0B2545" }} />
+          </div>
+          <div className="flex-1">
+            <h3 className="text-[12px] font-bold text-foreground mb-0.5">Add a new lot</h3>
+            <p className="text-[10px] text-muted-foreground leading-relaxed mb-3">
+              New entries become available on every project's Lot Assignment dropdown.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-[160px_1fr_auto] gap-2">
+              <Input
+                placeholder="Code (e.g. LOT3)"
+                value={code}
+                onChange={(e) => setCode(e.target.value.toUpperCase())}
+                className="text-[11px] uppercase tracking-wider"
+                maxLength={16}
+                data-testid="input-lot-catalog-code"
+              />
+              <Input
+                placeholder="French description"
+                value={descriptionFr}
+                onChange={(e) => setDescriptionFr(e.target.value)}
+                className="text-[11px]"
+                maxLength={200}
+                data-testid="input-lot-catalog-description"
+              />
+              <Button
+                size="sm"
+                onClick={() => createMutation.mutate({ code: code.trim(), descriptionFr: descriptionFr.trim() })}
+                disabled={!canSubmit}
+                data-testid="button-add-lot-catalog"
+              >
+                <Plus size={12} className="mr-1.5" />
+                <span className="text-[10px] font-bold uppercase tracking-widest">
+                  {createMutation.isPending ? "Adding..." : "Add Lot"}
+                </span>
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        <div className="border-t border-[rgba(0,0,0,0.06)] pt-4">
+          <TechnicalLabel className="mb-3 block">
+            Master List ({catalog?.length ?? 0} {catalog?.length === 1 ? "entry" : "entries"})
+          </TechnicalLabel>
+          {isLoading ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <Skeleton key={i} className="h-9 rounded-md" />
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+              {catalog?.map((entry) => (
+                <div
+                  key={entry.id}
+                  className="flex items-center gap-2 px-3 py-2 rounded-md bg-[rgba(0,0,0,0.02)] border border-[rgba(0,0,0,0.04)]"
+                  data-testid={`row-lot-catalog-${entry.code}`}
+                >
+                  <span
+                    className="text-[10px] font-black uppercase tracking-widest shrink-0 px-1.5 py-0.5 rounded bg-[rgba(11,37,69,0.08)]"
+                    style={{ color: "#0B2545" }}
+                    data-testid={`text-lot-catalog-code-${entry.code}`}
+                  >
+                    {entry.code}
+                  </span>
+                  <span className="text-[11px] text-foreground truncate" data-testid={`text-lot-catalog-description-${entry.code}`}>
+                    {entry.descriptionFr}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </LuxuryCard>
     </div>
   );
 }
