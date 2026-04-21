@@ -270,10 +270,13 @@ export async function generateCombinedPdf(
   const originalDoc = await PDFDocument.load(originalBuf, { ignoreEncryption: true });
   const translatedDoc = await PDFDocument.load(translatedBuf, { ignoreEncryption: true });
 
-  const originalPages = await merged.copyPages(originalDoc, originalDoc.getPageIndices());
-  for (const p of originalPages) merged.addPage(p);
+  // Combined PDF leads with the English translation so the English-speaking
+  // client sees the readable version first; the original French follows as
+  // the legally binding reference.
   const translatedPages = await merged.copyPages(translatedDoc, translatedDoc.getPageIndices());
   for (const p of translatedPages) merged.addPage(p);
+  const originalPages = await merged.copyPages(originalDoc, originalDoc.getPageIndices());
+  for (const p of originalPages) merged.addPage(p);
 
   const mergedBytes = await merged.save();
   const pdfBuffer = Buffer.from(mergedBytes);

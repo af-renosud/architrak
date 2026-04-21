@@ -5,7 +5,11 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
-    include: ["shared/__tests__/**/*.test.ts", "server/__tests__/**/*.test.ts"],
+    include: [
+      "shared/__tests__/**/*.test.ts",
+      "server/__tests__/**/*.test.ts",
+      "server/**/__tests__/**/*.test.ts",
+    ],
     exclude: ["node_modules", ".cache", "dist"],
   },
   resolve: {
