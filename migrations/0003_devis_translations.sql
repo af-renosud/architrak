@@ -1,4 +1,4 @@
-CREATE TABLE "devis_translations" (
+CREATE TABLE IF NOT EXISTS "devis_translations" (
 	"devis_id" integer PRIMARY KEY NOT NULL,
 	"status" text DEFAULT 'pending' NOT NULL,
 	"provider" text,
@@ -12,4 +12,8 @@ CREATE TABLE "devis_translations" (
 	"updated_at" timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 --> statement-breakpoint
-ALTER TABLE "devis_translations" ADD CONSTRAINT "devis_translations_devis_id_devis_id_fk" FOREIGN KEY ("devis_id") REFERENCES "public"."devis"("id") ON DELETE cascade ON UPDATE no action;
+DO $$ BEGIN
+	ALTER TABLE "devis_translations" ADD CONSTRAINT "devis_translations_devis_id_devis_id_fk" FOREIGN KEY ("devis_id") REFERENCES "public"."devis"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+	WHEN duplicate_object THEN NULL;
+END $$;
