@@ -327,6 +327,122 @@ function LotCatalogSection() {
   type SuggestTarget = "add" | "edit";
   const [suggesting, setSuggesting] = useState<SuggestTarget | null>(null);
 
+  type BulkRow = {
+    id: number;
+    code: string;
+    descriptionFr: string;
+    translation: string;
+    edited: string;
+    skipped: boolean;
+    error?: string;
+  };
+  const [bulkRows, setBulkRows] = useState<BulkRow[] | null>(null);
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [bulkSaving, setBulkSaving] = useState(false);
+
+  const emptyRows = (catalog ?? []).filter(
+    (e) => !e.descriptionUk || e.descriptionUk.trim().length === 0,
+  );
+
+  const startBulkSuggest = async () => {
+    if (emptyRows.length === 0) {
+      toast({ title: "Nothing to translate", description: "All lots already have an English description." });
+      return;
+    }
+    setBulkLoading(true);
+    setBulkRows([]);
+    try {
+      const res = await apiRequest("POST", "/api/lot-catalog/translate-batch", {
+        items: emptyRows.map((e) => ({
+          id: e.id,
+          descriptionFr: e.descriptionFr,
+          code: e.code,
+        })),
+      });
+      const data = (await res.json()) as {
+        results: Array<{ id: number; ok: boolean; translation?: string; error?: string }>;
+      };
+      const byId = new Map(data.results.map((r) => [r.id, r]));
+      const rows: BulkRow[] = emptyRows.map((e) => {
+        const r = byId.get(e.id);
+        return {
+          id: e.id,
+          code: e.code,
+          descriptionFr: e.descriptionFr,
+          translation: r?.translation ?? "",
+          edited: r?.translation ?? "",
+          skipped: !r?.ok,
+          error: r?.ok ? undefined : r?.error ?? "Translation failed",
+        };
+      });
+      setBulkRows(rows);
+      const failures = rows.filter((r) => r.error).length;
+      if (failures > 0) {
+        toast({
+          title: `Generated ${rows.length - failures} of ${rows.length} suggestions`,
+          description: `${failures} failed — review and retry by editing manually.`,
+          variant: failures === rows.length ? "destructive" : undefined,
+        });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Bulk translation failed";
+      toast({ title: "Bulk translation failed", description: message, variant: "destructive" });
+      setBulkRows(null);
+    } finally {
+      setBulkLoading(false);
+    }
+  };
+
+  const saveBulk = async () => {
+    if (!bulkRows) return;
+    const toSave = bulkRows.filter((r) => !r.skipped && r.edited.trim().length > 0);
+    if (toSave.length === 0) {
+      toast({ title: "Nothing to save", description: "Accept at least one suggestion first." });
+      return;
+    }
+    setBulkSaving(true);
+    const savedIds = new Set<number>();
+    const failedIds = new Map<number, string>();
+    for (const row of toSave) {
+      try {
+        await apiRequest("PATCH", `/api/lot-catalog/${row.id}`, {
+          descriptionUk: row.edited.trim(),
+        });
+        savedIds.add(row.id);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Save failed";
+        failedIds.set(row.id, message);
+        console.warn(`[LotCatalog] Failed to save translation for ${row.code}:`, err);
+      }
+    }
+    setBulkSaving(false);
+    queryClient.invalidateQueries({ queryKey: ["/api/lot-catalog"] });
+    const saved = savedIds.size;
+    const failed = failedIds.size;
+    if (failed === 0) {
+      toast({ title: `Saved ${saved} translation${saved === 1 ? "" : "s"}` });
+      setBulkRows(null);
+    } else {
+      // Drop saved rows so a retry only targets the failures.
+      setBulkRows((prev) =>
+        prev
+          ? prev
+              .filter((r) => !savedIds.has(r.id))
+              .map((r) =>
+                failedIds.has(r.id)
+                  ? { ...r, error: failedIds.get(r.id), skipped: false }
+                  : r,
+              )
+          : prev,
+      );
+      toast({
+        title: `Saved ${saved}, ${failed} failed`,
+        description: "Failed rows remain in the dialog for retry.",
+        variant: "destructive",
+      });
+    }
+  };
+
   const suggestMutation = useMutation({
     mutationFn: async (data: { descriptionFr: string; code?: string }) => {
       const res = await apiRequest("POST", "/api/lot-catalog/translate", data);
@@ -500,9 +616,34 @@ function LotCatalogSection() {
         </div>
 
         <div className="border-t border-[rgba(0,0,0,0.06)] pt-4">
-          <TechnicalLabel className="mb-3 block">
-            Master List ({catalog?.length ?? 0} {catalog?.length === 1 ? "entry" : "entries"})
-          </TechnicalLabel>
+          <div className="flex items-center justify-between mb-3 gap-3">
+            <TechnicalLabel className="block">
+              Master List ({catalog?.length ?? 0} {catalog?.length === 1 ? "entry" : "entries"})
+            </TechnicalLabel>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={startBulkSuggest}
+              disabled={bulkLoading || emptyRows.length === 0}
+              data-testid="button-suggest-all-empty"
+              title={
+                emptyRows.length === 0
+                  ? "Every lot already has an English description"
+                  : `Generate English suggestions for ${emptyRows.length} empty row${emptyRows.length === 1 ? "" : "s"}`
+              }
+            >
+              {bulkLoading ? (
+                <Loader2 size={12} className="mr-1.5 animate-spin" />
+              ) : (
+                <Wand2 size={12} className="mr-1.5" />
+              )}
+              <span className="text-[10px] font-bold uppercase tracking-widest">
+                {bulkLoading
+                  ? "Suggesting..."
+                  : `Suggest English for all empty${emptyRows.length > 0 ? ` (${emptyRows.length})` : ""}`}
+              </span>
+            </Button>
+          </div>
           {isLoading ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
               {Array.from({ length: 6 }).map((_, i) => (
@@ -575,6 +716,121 @@ function LotCatalogSection() {
           )}
         </div>
       </LuxuryCard>
+
+      <Dialog
+        open={bulkRows !== null}
+        onOpenChange={(open) => {
+          if (!open && !bulkSaving) setBulkRows(null);
+        }}
+      >
+        <DialogContent className="max-w-2xl" data-testid="dialog-bulk-suggest-lot-catalog">
+          <DialogHeader>
+            <DialogTitle>Review English suggestions</DialogTitle>
+            <DialogDescription>
+              Edit, accept, or skip each suggestion. Nothing is saved until you click "Save accepted".
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[60vh] overflow-y-auto space-y-2 py-2 pr-1">
+            {bulkRows?.length === 0 ? (
+              <div className="text-[11px] text-muted-foreground py-4 text-center">
+                No empty rows to translate.
+              </div>
+            ) : (
+              bulkRows?.map((row, idx) => (
+                <div
+                  key={row.id}
+                  className={cn(
+                    "flex items-start gap-2 p-2 rounded-md border",
+                    row.skipped
+                      ? "border-[rgba(0,0,0,0.04)] bg-[rgba(0,0,0,0.02)] opacity-60"
+                      : "border-[rgba(0,0,0,0.06)] bg-white",
+                  )}
+                  data-testid={`row-bulk-suggest-${row.code}`}
+                >
+                  <span
+                    className="text-[10px] font-black uppercase tracking-widest shrink-0 px-1.5 py-0.5 rounded bg-[rgba(11,37,69,0.08)]"
+                    style={{ color: "#0B2545" }}
+                  >
+                    {row.code}
+                  </span>
+                  <div className="flex flex-col flex-1 min-w-0 gap-1">
+                    <span className="text-[11px] text-foreground truncate" title={row.descriptionFr}>
+                      {row.descriptionFr}
+                    </span>
+                    {row.error ? (
+                      <span className="text-[10px] text-destructive" data-testid={`text-bulk-error-${row.code}`}>
+                        {row.error}
+                      </span>
+                    ) : null}
+                    <Input
+                      value={row.edited}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        setBulkRows((prev) =>
+                          prev ? prev.map((r, i) => (i === idx ? { ...r, edited: next } : r)) : prev,
+                        );
+                      }}
+                      disabled={row.skipped || bulkSaving}
+                      placeholder={row.error ? "Type a translation manually" : "English description"}
+                      className="text-[11px]"
+                      maxLength={200}
+                      data-testid={`input-bulk-suggest-${row.code}`}
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={row.skipped ? "outline" : "ghost"}
+                    onClick={() =>
+                      setBulkRows((prev) =>
+                        prev ? prev.map((r, i) => (i === idx ? { ...r, skipped: !r.skipped } : r)) : prev,
+                      )
+                    }
+                    disabled={bulkSaving}
+                    className="text-[10px] font-bold uppercase tracking-widest shrink-0"
+                    data-testid={`button-bulk-toggle-${row.code}`}
+                  >
+                    {row.skipped ? "Include" : "Skip"}
+                  </Button>
+                </div>
+              ))
+            )}
+          </div>
+          <DialogFooter>
+            <div className="flex-1 text-[10px] text-muted-foreground">
+              {bulkRows
+                ? `${bulkRows.filter((r) => !r.skipped && r.edited.trim().length > 0).length} of ${bulkRows.length} ready to save`
+                : ""}
+            </div>
+            <Button
+              variant="outline"
+              onClick={() => setBulkRows(null)}
+              disabled={bulkSaving}
+              data-testid="button-cancel-bulk-suggest"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={saveBulk}
+              disabled={
+                bulkSaving ||
+                !bulkRows ||
+                bulkRows.every((r) => r.skipped || r.edited.trim().length === 0)
+              }
+              data-testid="button-save-bulk-suggest"
+            >
+              {bulkSaving ? (
+                <Loader2 size={12} className="mr-1.5 animate-spin" />
+              ) : (
+                <Check size={12} className="mr-1.5" />
+              )}
+              <span className="text-[10px] font-bold uppercase tracking-widest">
+                {bulkSaving ? "Saving..." : "Save accepted"}
+              </span>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={editing !== null} onOpenChange={(open) => !open && setEditing(null)}>
         <DialogContent data-testid="dialog-edit-lot-catalog">

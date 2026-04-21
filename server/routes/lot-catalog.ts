@@ -30,6 +30,40 @@ router.post(
   },
 );
 
+const translateBatchBodySchema = z.object({
+  items: z
+    .array(
+      z.object({
+        id: z.number().int().positive(),
+        descriptionFr: z.string().trim().min(1).max(500),
+        code: z.string().trim().max(16).optional(),
+      }),
+    )
+    .min(1)
+    .max(100),
+});
+
+router.post(
+  "/api/lot-catalog/translate-batch",
+  validateRequest({ body: translateBatchBodySchema }),
+  async (req, res) => {
+    const { items } = req.body as z.infer<typeof translateBatchBodySchema>;
+    const results = await Promise.all(
+      items.map(async (item) => {
+        try {
+          const { translation } = await translateLotDescription(item.descriptionFr, item.code);
+          return { id: item.id, translation, ok: true as const };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Translation failed";
+          console.warn(`[LotCatalog] Batch translation failed for id=${item.id}:`, message);
+          return { id: item.id, ok: false as const, error: message };
+        }
+      }),
+    );
+    res.json({ results });
+  },
+);
+
 const catalogCodeSchema = insertLotCatalogSchema.shape.code;
 
 const assignSchema = z.object({
