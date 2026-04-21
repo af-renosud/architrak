@@ -3,6 +3,8 @@ import { z } from "zod";
 import { storage } from "../storage";
 import { insertLotCatalogSchema } from "@shared/schema";
 import { validateRequest } from "../middleware/validate";
+import { reconcileAdvisories } from "../services/advisory-reconciler";
+import type { ValidatorWarningLike } from "@shared/advisory-codes";
 
 const router = Router();
 
@@ -101,8 +103,9 @@ router.post(
       return res.status(404).json({ message: "Project not found" });
     }
 
+    let devis: Awaited<ReturnType<typeof storage.getDevis>> | undefined;
     if (devisId !== undefined) {
-      const devis = await storage.getDevis(devisId);
+      devis = await storage.getDevis(devisId);
       if (!devis) {
         return res.status(404).json({ message: "Devis not found" });
       }
@@ -115,8 +118,24 @@ router.post(
     if (!lot) {
       return res.status(404).json({ message: `Lot code "${catalogCode}" not found in master list` });
     }
-    if (devisId !== undefined) {
-      await storage.updateDevis(devisId, { lotId: lot.id });
+    if (devisId !== undefined && devis) {
+      const updates: Record<string, unknown> = { lotId: lot.id };
+
+      // Clear stale "needs new lot" warnings now that a master code is assigned.
+      const existingWarnings = (devis.validationWarnings as ValidatorWarningLike[] | null) ?? [];
+      const remainingWarnings = existingWarnings.filter((w) => w?.field !== "lotReferences");
+      if (remainingWarnings.length !== existingWarnings.length) {
+        updates.validationWarnings = remainingWarnings;
+      }
+
+      await storage.updateDevis(devisId, updates);
+
+      // Reconcile advisories so any open lotReferences advisory rows get resolved.
+      try {
+        await reconcileAdvisories({ devisId }, remainingWarnings);
+      } catch (err) {
+        console.warn("[Assign From Catalog] Advisory reconciliation failed:", err);
+      }
     }
     res.json({ lot });
   },

@@ -327,18 +327,14 @@ interface LotReferenceWarningBannerProps {
   warnings: Array<{ field: string; expected: any; actual: any; message: string; severity: "error" | "warning" }>;
   projectId: string;
   devisId: number;
-  currentLotId?: number | null;
   isArchived?: boolean;
-  onAssigned?: () => void;
 }
 
 function LotReferenceWarningBanner({
   warnings,
   projectId,
   devisId,
-  currentLotId,
   isArchived = false,
-  onAssigned,
 }: LotReferenceWarningBannerProps) {
   const { toast } = useToast();
   const [addingNew, setAddingNew] = useState(false);
@@ -362,7 +358,6 @@ function LotReferenceWarningBanner({
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis"] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
       toast({ title: "Lot assigned" });
-      onAssigned?.();
     },
     onError: (error: Error) => {
       toast({ title: "Error assigning lot", description: error.message, variant: "destructive" });
@@ -388,7 +383,6 @@ function LotReferenceWarningBanner({
   });
 
   if (warnings.length === 0) return null;
-  if (currentLotId) return null;
 
   return (
     <div
@@ -524,7 +518,6 @@ function DraftReviewPanel({ data, projectId, onClose, isArchived = false }: Draf
   const lotRefWarnings = allWarnings.filter((w) => w.field === "lotReferences");
   const warnings = allWarnings.filter((w) => w.field !== "lotReferences");
   const confidenceScore: number = validation?.confidenceScore ?? 50;
-  const [lotAssignedLocally, setLotAssignedLocally] = useState<boolean>(!!devis.lotId);
 
   const [editValues, setEditValues] = useState({
     amountHt: devis.amountHt ?? "",
@@ -607,9 +600,7 @@ function DraftReviewPanel({ data, projectId, onClose, isArchived = false }: Draf
               warnings={lotRefWarnings}
               projectId={projectId}
               devisId={devisId}
-              currentLotId={lotAssignedLocally ? devis.lotId ?? -1 : null}
               isArchived={isArchived}
-              onAssigned={() => setLotAssignedLocally(true)}
             />
           )}
           {warnings.length > 0 && (
@@ -1157,7 +1148,6 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
             warnings={lotRefWarnings}
             projectId={projectId}
             devisId={devis.id}
-            currentLotId={devis.lotId}
             isArchived={isArchived}
           />
         );
