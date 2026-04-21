@@ -195,11 +195,16 @@ router.post(
     try {
       const devisId = Number(req.params.id);
       const force = !!(req.body && (req.body as { force?: boolean }).force);
+      const d = await storage.getDevis(devisId);
+      if (!d) return res.status(404).json({ message: "Devis not found" });
       await translateDevis(devisId, { force });
       const row = await storage.getDevisTranslation(devisId);
       res.json(row);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
+      if (/finalised/i.test(message)) {
+        return res.status(409).json({ message });
+      }
       console.error("[Devis Translation] Failed:", message);
       res.status(500).json({ message: `Translation failed: ${message}` });
     }
@@ -219,14 +224,22 @@ router.post(
       const devisId = Number(req.params.id);
       const lineNumber = Number(req.params.lineNumber);
       const existing = await storage.getDevisTranslation(devisId);
-      if (existing && existing.status === "finalised") {
+      if (!existing) return res.status(404).json({ message: "No translation exists yet" });
+      if (existing.status === "finalised") {
         return res.status(409).json({ message: "Translation is finalised — re-open by editing or re-translating all lines." });
       }
+      if (existing.status !== "draft" && existing.status !== "edited") {
+        return res.status(409).json({ message: `Cannot retranslate line while translation is ${existing.status}` });
+      }
       const updatedLine = await retranslateSingleLine(devisId, lineNumber);
+      if (!updatedLine) return res.status(404).json({ message: `Line ${lineNumber} not found` });
       const row = await storage.getDevisTranslation(devisId);
       res.json({ line: updatedLine, translation: row });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
+      if (/not found/i.test(message)) {
+        return res.status(404).json({ message });
+      }
       console.error("[Devis Translation] Line retranslate failed:", message);
       res.status(500).json({ message: `Retranslate failed: ${message}` });
     }

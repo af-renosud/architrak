@@ -157,15 +157,8 @@ export async function translateDevis(
 
   const existing = await storage.getDevisTranslation(devisId);
 
-  if (!opts.force && existing && (existing.status === "draft" || existing.status === "edited" || existing.status === "finalised")) {
-    return {
-      translation: {
-        header: (existing.headerTranslated as DevisTranslationHeader) || {},
-        lines: (existing.lineTranslations as DevisTranslationLine[]) || [],
-      },
-      provider: existing.provider || "gemini",
-      modelId: existing.modelId || "gemini-2.5-flash",
-    };
+  if (existing?.status === "finalised" && !opts.force) {
+    throw new Error("Translation is finalised. Use force=true (Re-translate all) to regenerate.");
   }
 
   const lines = await storage.getDevisLineItems(devisId);
@@ -271,9 +264,18 @@ export async function retranslateSingleLine(
 }
 
 export function triggerDevisTranslation(devisId: number): void {
-  setImmediate(() => {
-    translateDevis(devisId).catch((err) => {
-      console.warn(`[DevisTranslation] Background translation failed for devis ${devisId}:`, err instanceof Error ? err.message : err);
-    });
+  setImmediate(async () => {
+    try {
+      const existing = await storage.getDevisTranslation(devisId);
+      if (existing && existing.status !== "failed" && existing.status !== "pending") {
+        return;
+      }
+      await translateDevis(devisId);
+    } catch (err) {
+      console.warn(
+        `[DevisTranslation] Background translation failed for devis ${devisId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   });
 }

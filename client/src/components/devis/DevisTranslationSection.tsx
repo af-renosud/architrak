@@ -229,21 +229,38 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
           )}
 
           {(status === "draft" || status === "edited") && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => translateMutation.mutate(true)}
-              disabled={translateMutation.isPending || isProcessing}
-              data-testid={`button-retranslate-all-${devisId}`}
-              title="Re-run AI translation and overwrite all lines — including any manual edits."
-            >
-              {translateMutation.isPending || isProcessing ? (
-                <Loader2 className="h-3 w-3 animate-spin mr-1" />
-              ) : (
-                <RefreshCw className="h-3 w-3 mr-1" />
-              )}
-              Re-translate all
-            </Button>
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => translateMutation.mutate(false)}
+                disabled={translateMutation.isPending || isProcessing}
+                data-testid={`button-regenerate-${devisId}`}
+                title="Re-run AI translation while keeping any lines you've edited."
+              >
+                {translateMutation.isPending || isProcessing ? (
+                  <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                ) : (
+                  <RefreshCw className="h-3 w-3 mr-1" />
+                )}
+                Regenerate (keep edits)
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => translateMutation.mutate(true)}
+                disabled={translateMutation.isPending || isProcessing}
+                data-testid={`button-retranslate-all-${devisId}`}
+                title="Re-run AI translation and overwrite all lines — including any manual edits."
+              >
+                {translateMutation.isPending || isProcessing ? (
+                  <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                ) : (
+                  <RefreshCw className="h-3 w-3 mr-1" />
+                )}
+                Re-translate all
+              </Button>
+            </>
           )}
 
           {(status === "draft" || status === "edited") && (
