@@ -389,53 +389,56 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
             </div>
           )}
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-border text-left text-[10px] uppercase tracking-wider text-muted-foreground">
-                  <th className="w-10 py-2 pr-2">#</th>
-                  <th className="py-2 pr-3">French (original)</th>
-                  <th className="py-2 pr-3">English (literal)</th>
-                  {showExplanations && <th className="py-2 pr-3">Plain-English explanation</th>}
-                  <th className="w-10 py-2 pr-2"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {orderedLines.map((li) => {
-                  const t = localLines.get(li.lineNumber);
-                  const isLineRetranslating = retranslateLineMutation.isPending && retranslateLineMutation.variables === li.lineNumber;
-                  return (
-                    <tr key={li.lineNumber} className="border-b border-border/40 align-top" data-testid={`row-translation-${devisId}-${li.lineNumber}`}>
-                      <td className="py-2 pr-2 font-mono text-muted-foreground">
-                        {li.lineNumber}
-                        {t?.edited && (
-                          <span className="ml-1 text-[9px] uppercase text-amber-600" title="Edited by user">●</span>
-                        )}
-                      </td>
-                      <td className="py-2 pr-3 text-muted-foreground">{li.description}</td>
-                      <td className="py-2 pr-3">
-                        <Textarea
-                          value={t?.translation ?? ""}
-                          readOnly={isFinalised}
-                          onChange={(e) => {
-                            const newMap = new Map(localLines);
-                            const cur = newMap.get(li.lineNumber);
-                            newMap.set(li.lineNumber, {
-                              lineNumber: li.lineNumber,
-                              originalDescription: li.description,
-                              explanation: cur?.explanation ?? null,
-                              ...cur,
-                              translation: e.target.value,
-                            });
-                            setLocalLines(newMap);
-                          }}
-                          onBlur={(e) => persistLine(li.lineNumber, li.description, { translation: e.target.value })}
-                          className="min-h-[44px] text-xs"
-                          data-testid={`input-translation-${devisId}-${li.lineNumber}`}
-                        />
-                      </td>
+          <div className="space-y-3">
+            {orderedLines.length === 0 && (
+              <p className="py-3 text-center text-xs text-muted-foreground">No line items to translate.</p>
+            )}
+            {orderedLines.map((li) => {
+              const t = localLines.get(li.lineNumber);
+              const isLineRetranslating = retranslateLineMutation.isPending && retranslateLineMutation.variables === li.lineNumber;
+              return (
+                <div
+                  key={li.lineNumber}
+                  className="rounded-sm border border-border/60 p-3"
+                  data-testid={`row-translation-${devisId}-${li.lineNumber}`}
+                >
+                  <div className="flex items-start gap-2">
+                    <span className="font-mono text-[11px] text-muted-foreground pt-0.5 min-w-[1.5rem]">
+                      {li.lineNumber}
+                      {t?.edited && (
+                        <span className="ml-1 text-[9px] uppercase text-amber-600" title="Edited by user">●</span>
+                      )}
+                    </span>
+                    <div className="flex-1 min-w-0 space-y-1.5">
+                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">French (original)</div>
+                      <p className="text-[11px] text-muted-foreground leading-snug whitespace-pre-wrap">
+                        {li.description}
+                      </p>
+                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground pt-1">English (literal)</div>
+                      <Textarea
+                        value={t?.translation ?? ""}
+                        readOnly={isFinalised}
+                        onChange={(e) => {
+                          const newMap = new Map(localLines);
+                          const cur = newMap.get(li.lineNumber);
+                          newMap.set(li.lineNumber, {
+                            lineNumber: li.lineNumber,
+                            originalDescription: li.description,
+                            explanation: cur?.explanation ?? null,
+                            ...cur,
+                            translation: e.target.value,
+                          });
+                          setLocalLines(newMap);
+                        }}
+                        onBlur={(e) => persistLine(li.lineNumber, li.description, { translation: e.target.value })}
+                        className="min-h-[44px] w-full text-[11px] leading-snug"
+                        data-testid={`input-translation-${devisId}-${li.lineNumber}`}
+                      />
                       {showExplanations && (
-                        <td className="py-2 pr-3">
+                        <>
+                          <div className="text-[10px] uppercase tracking-wider text-muted-foreground pt-1">
+                            Plain-English explanation
+                          </div>
                           <Textarea
                             value={t?.explanation ?? ""}
                             readOnly={isFinalised}
@@ -453,37 +456,29 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
                             }}
                             onBlur={(e) => persistLine(li.lineNumber, li.description, { explanation: e.target.value || null })}
                             placeholder="Optional plain-English note"
-                            className="min-h-[44px] text-xs"
+                            className="min-h-[44px] w-full text-[11px] leading-snug"
                             data-testid={`input-explanation-${devisId}-${li.lineNumber}`}
                           />
-                        </td>
+                        </>
                       )}
-                      <td className="py-2 pr-2 text-right">
-                        {!isFinalised && (
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            disabled={isLineRetranslating}
-                            onClick={() => retranslateLineMutation.mutate(li.lineNumber)}
-                            title="Re-translate this line"
-                            data-testid={`button-retranslate-line-${devisId}-${li.lineNumber}`}
-                          >
-                            {isLineRetranslating ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                          </Button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-                {orderedLines.length === 0 && (
-                  <tr>
-                    <td colSpan={showExplanations ? 5 : 4} className="py-3 text-center text-muted-foreground">
-                      No line items to translate.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                    </div>
+                    {!isFinalised && (
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7 shrink-0"
+                        disabled={isLineRetranslating}
+                        onClick={() => retranslateLineMutation.mutate(li.lineNumber)}
+                        title="Re-translate this line"
+                        data-testid={`button-retranslate-line-${devisId}-${li.lineNumber}`}
+                      >
+                        {isLineRetranslating ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </>
       )}
