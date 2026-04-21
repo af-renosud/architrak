@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -353,9 +354,31 @@ function formatEditTimestamp(ts: string | Date) {
   return d.toLocaleString();
 }
 
-function DevisRefEditsHistory({ devisId }: { devisId: number }) {
+function DevisRefEditsHistory({ devisId, projectId }: { devisId: number; projectId: string }) {
+  const { toast } = useToast();
   const { data: edits } = useQuery<DevisRefEdit[]>({
     queryKey: ["/api/devis", devisId, "ref-edits"],
+  });
+  const [revertCandidate, setRevertCandidate] = useState<DevisRefEdit | null>(null);
+
+  const revertMutation = useMutation({
+    mutationFn: async (edit: DevisRefEdit) => {
+      const raw = edit.previousValue;
+      const normalized = edit.field === "devisCode" ? raw : (raw == null || raw === "" ? null : raw);
+      const res = await apiRequest("PATCH", `/api/devis/${devisId}`, {
+        [edit.field]: normalized,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "ref-edits"] });
+      toast({ title: "Reference reverted" });
+      setRevertCandidate(null);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Revert failed", description: error.message, variant: "destructive" });
+    },
   });
 
   if (!edits || edits.length === 0) return null;
@@ -381,29 +404,81 @@ function DevisRefEditsHistory({ devisId }: { devisId: number }) {
           <div className="space-y-2">
             <p className="text-[11px] font-bold uppercase tracking-widest text-[#0B2545]">Reference edit history</p>
             <ul className="space-y-2">
-              {edits.map((e) => (
-                <li
-                  key={e.id}
-                  className="text-[10px] border-b border-[rgba(0,0,0,0.06)] pb-2 last:border-b-0 last:pb-0"
-                  data-testid={`row-ref-edit-${e.id}`}
-                >
-                  <div className="font-semibold text-foreground">
-                    {REF_FIELD_LABELS[e.field] ?? e.field}
-                  </div>
-                  <div className="text-muted-foreground">
-                    <span className="line-through">{formatRefValue(e.previousValue)}</span>
-                    <span className="mx-1">→</span>
-                    <span className="text-foreground">{formatRefValue(e.newValue)}</span>
-                  </div>
-                  <div className="text-muted-foreground mt-0.5">
-                    {(e.editedByEmail ?? "Unknown editor")} · {formatEditTimestamp(e.editedAt)}
-                  </div>
-                </li>
-              ))}
+              {edits.map((e) => {
+                const canRevert = e.field !== "devisCode" || (e.previousValue != null && e.previousValue !== "");
+                const latestForField = edits.find((x) => x.field === e.field);
+                const isCurrentValueOfField = latestForField
+                  ? (latestForField.newValue ?? "") === (e.previousValue ?? "")
+                  : false;
+                return (
+                  <li
+                    key={e.id}
+                    className="text-[10px] border-b border-[rgba(0,0,0,0.06)] pb-2 last:border-b-0 last:pb-0"
+                    data-testid={`row-ref-edit-${e.id}`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="font-semibold text-foreground">
+                          {REF_FIELD_LABELS[e.field] ?? e.field}
+                        </div>
+                        <div className="text-muted-foreground">
+                          <span className="line-through">{formatRefValue(e.previousValue)}</span>
+                          <span className="mx-1">→</span>
+                          <span className="text-foreground">{formatRefValue(e.newValue)}</span>
+                        </div>
+                        <div className="text-muted-foreground mt-0.5">
+                          {(e.editedByEmail ?? "Unknown editor")} · {formatEditTimestamp(e.editedAt)}
+                        </div>
+                      </div>
+                      {canRevert && !isCurrentValueOfField && (
+                        <button
+                          type="button"
+                          className="shrink-0 text-[10px] font-bold uppercase tracking-widest text-[#0B2545] underline hover:text-[#1a3a6b] transition-colors disabled:opacity-50"
+                          onClick={() => setRevertCandidate(e)}
+                          disabled={revertMutation.isPending}
+                          data-testid={`button-revert-ref-edit-${e.id}`}
+                        >
+                          Revert
+                        </button>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           </div>
         </PopoverContent>
       </Popover>
+      <AlertDialog open={revertCandidate !== null} onOpenChange={(open) => { if (!open && !revertMutation.isPending) setRevertCandidate(null); }}>
+        <AlertDialogContent data-testid={`dialog-confirm-revert-${devisId}`}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Revert this reference?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {revertCandidate && (
+                <>
+                  This will set <strong>{REF_FIELD_LABELS[revertCandidate.field] ?? revertCandidate.field}</strong> back to{" "}
+                  <strong>{formatRefValue(revertCandidate.previousValue)}</strong>. The change will be recorded in the edit history under your name.
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={revertMutation.isPending} data-testid={`button-cancel-revert-${devisId}`}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={revertMutation.isPending}
+              onClick={(e) => {
+                e.preventDefault();
+                if (revertCandidate) revertMutation.mutate(revertCandidate);
+              }}
+              data-testid={`button-confirm-revert-${devisId}`}
+            >
+              {revertMutation.isPending ? "Reverting…" : "Revert"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -1438,7 +1513,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
         <TechnicalLabel>Extraction Advisories</TechnicalLabel>
         <AdvisoriesList subject={{ type: "devis", id: devis.id }} />
       </div>
-      <DevisRefEditsHistory devisId={devis.id} />
+      <DevisRefEditsHistory devisId={devis.id} projectId={projectId} />
       {isVoid && (
         <div className="flex items-center gap-3 p-3 rounded-xl bg-red-50 border border-red-200">
           <Ban size={16} className="text-red-500 shrink-0" />
