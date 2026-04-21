@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff, ShieldCheck, ShieldAlert, ShieldX, Trash2, X, Tag, Settings as SettingsIcon, Wand2 } from "lucide-react";
+import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff, ShieldCheck, ShieldAlert, ShieldX, Trash2, X, Tag, Settings as SettingsIcon, Wand2, Pencil } from "lucide-react";
 import { Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -59,6 +59,7 @@ export function DevisTab({ projectId, contractors, lots, isArchived = false }: D
     validation: any;
     devis: any;
   } | null>(null);
+  const [editRefsFor, setEditRefsFor] = useState<Devis | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: devisList, isLoading } = useQuery<Devis[]>({
@@ -215,7 +216,22 @@ export function DevisTab({ projectId, contractors, lots, isArchived = false }: D
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-[16px] font-black text-[#0B2545] tracking-tight" data-testid={`text-devis-code-${d.id}`}>{d.devisCode}</span>
-                        {d.devisNumber && <span className="text-[11px] text-muted-foreground">N° {d.devisNumber}</span>}
+                        {d.devisNumber && <span className="text-[11px] text-muted-foreground" data-testid={`text-devis-number-${d.id}`}>N° {d.devisNumber}</span>}
+                        {d.ref2 && <span className="text-[11px] text-muted-foreground" data-testid={`text-devis-ref2-${d.id}`}>Ref {d.ref2}</span>}
+                        {d.status !== "void" && d.status !== "draft" && !isArchived && (
+                          <button
+                            type="button"
+                            className="p-0.5 text-muted-foreground hover:text-[#0B2545] transition-colors"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditRefsFor(d);
+                            }}
+                            title="Edit devis code & references"
+                            data-testid={`button-edit-devis-refs-${d.id}`}
+                          >
+                            <Pencil size={11} />
+                          </button>
+                        )}
                       </div>
                       <p className="text-[12px] text-foreground mt-0.5 truncate">{d.descriptionFr}</p>
                       <span className="text-[10px] text-muted-foreground">
@@ -308,7 +324,126 @@ export function DevisTab({ projectId, contractors, lots, isArchived = false }: D
           isArchived={isArchived}
         />
       )}
+
+      {editRefsFor && (
+        <EditDevisRefsDialog
+          devis={editRefsFor}
+          projectId={projectId}
+          onClose={() => setEditRefsFor(null)}
+        />
+      )}
     </div>
+  );
+}
+
+interface EditDevisRefsDialogProps {
+  devis: Devis;
+  projectId: string;
+  onClose: () => void;
+}
+
+function EditDevisRefsDialog({ devis, projectId, onClose }: EditDevisRefsDialogProps) {
+  const { toast } = useToast();
+  const [devisCode, setDevisCode] = useState(devis.devisCode ?? "");
+  const [devisNumber, setDevisNumber] = useState(devis.devisNumber ?? "");
+  const [ref2, setRef2] = useState(devis.ref2 ?? "");
+
+  const mutation = useMutation({
+    mutationFn: async (payload: Record<string, string | null>) => {
+      const res = await apiRequest("PATCH", `/api/devis/${devis.id}`, payload);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis"] });
+      toast({ title: "References updated" });
+      onClose();
+    },
+    onError: (error: Error) => {
+      toast({ title: "Update failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const handleSave = () => {
+    const trimmedCode = devisCode.trim();
+    const trimmedNumber = devisNumber.trim();
+    const trimmedRef2 = ref2.trim();
+    if (!trimmedCode) {
+      toast({ title: "Devis code required", description: "Devis code cannot be empty", variant: "destructive" });
+      return;
+    }
+    const payload: Record<string, string | null> = {};
+    if (trimmedCode !== (devis.devisCode ?? "")) payload.devisCode = trimmedCode;
+    if (trimmedNumber !== (devis.devisNumber ?? "")) payload.devisNumber = trimmedNumber === "" ? null : trimmedNumber;
+    if (trimmedRef2 !== (devis.ref2 ?? "")) payload.ref2 = trimmedRef2 === "" ? null : trimmedRef2;
+    if (Object.keys(payload).length === 0) {
+      onClose();
+      return;
+    }
+    mutation.mutate(payload);
+  };
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open && !mutation.isPending) onClose(); }}>
+      <DialogContent className="max-w-md" data-testid="dialog-edit-devis-refs">
+        <DialogHeader>
+          <DialogTitle className="text-[14px] font-black uppercase tracking-tight">Edit References</DialogTitle>
+          <DialogDescription className="text-[11px]">
+            Correct the devis code or supplier reference numbers if the AI mis-extracted them.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <TechnicalLabel>Devis Code</TechnicalLabel>
+            <Input
+              value={devisCode}
+              onChange={(e) => setDevisCode(e.target.value)}
+              className="text-[12px]"
+              placeholder="e.g. GRACE_1348_1"
+              data-testid="input-edit-devis-code"
+            />
+          </div>
+          <div className="space-y-1">
+            <TechnicalLabel>Supplier Reference (N°)</TechnicalLabel>
+            <Input
+              value={devisNumber}
+              onChange={(e) => setDevisNumber(e.target.value)}
+              className="text-[12px]"
+              placeholder="e.g. DVP0000580"
+              data-testid="input-edit-devis-number"
+            />
+          </div>
+          <div className="space-y-1">
+            <TechnicalLabel>Additional Reference</TechnicalLabel>
+            <Input
+              value={ref2}
+              onChange={(e) => setRef2(e.target.value)}
+              className="text-[12px]"
+              placeholder="Optional"
+              data-testid="input-edit-devis-ref2"
+            />
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 pt-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onClose}
+            disabled={mutation.isPending}
+            data-testid="button-cancel-edit-devis-refs"
+          >
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            onClick={handleSave}
+            disabled={mutation.isPending || !devisCode.trim()}
+            data-testid="button-save-edit-devis-refs"
+          >
+            {mutation.isPending ? <Loader2 size={12} className="animate-spin" /> : "Save"}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
