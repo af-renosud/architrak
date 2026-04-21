@@ -18,7 +18,11 @@ async function loadLogoAsBase64(assetType: string): Promise<string | null> {
     const buffer = await getDocumentBuffer(asset.storageKey);
     const mime = asset.mimeType || "image/png";
     return `data:${mime};base64,${buffer.toString("base64")}`;
-  } catch {
+  } catch (err) {
+    console.warn(
+      `[DevisTranslationPdf] Failed to load logo asset '${assetType}':`,
+      err instanceof Error ? err.message : err,
+    );
     return null;
   }
 }
@@ -187,7 +191,8 @@ export async function generateDevisTranslationPdf(
   if (!devis) throw new Error(`Devis ${devisId} not found`);
 
   const translation = await storage.getDevisTranslation(devisId);
-  if (!translation || translation.status !== "completed") {
+  const ready = translation && (translation.status === "draft" || translation.status === "edited" || translation.status === "finalised");
+  if (!translation || !ready) {
     throw new Error(`Translation for devis ${devisId} is not ready (status: ${translation?.status ?? "missing"})`);
   }
 
@@ -252,13 +257,13 @@ export async function generateCombinedPdf(
   ]);
 
   const merged = await PDFDocument.create();
-  const translatedDoc = await PDFDocument.load(translatedBuf, { ignoreEncryption: true });
   const originalDoc = await PDFDocument.load(originalBuf, { ignoreEncryption: true });
+  const translatedDoc = await PDFDocument.load(translatedBuf, { ignoreEncryption: true });
 
-  const translatedPages = await merged.copyPages(translatedDoc, translatedDoc.getPageIndices());
-  for (const p of translatedPages) merged.addPage(p);
   const originalPages = await merged.copyPages(originalDoc, originalDoc.getPageIndices());
   for (const p of originalPages) merged.addPage(p);
+  const translatedPages = await merged.copyPages(translatedDoc, translatedDoc.getPageIndices());
+  for (const p of translatedPages) merged.addPage(p);
 
   const mergedBytes = await merged.save();
   const pdfBuffer = Buffer.from(mergedBytes);

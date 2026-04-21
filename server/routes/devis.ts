@@ -25,7 +25,7 @@ import {
   acknowledgeAdvisoryForSubject,
 } from "../services/advisory-reconciler";
 import { validateRequest } from "../middleware/validate";
-import { translateDevis } from "../services/devis-translation";
+import { translateDevis, retranslateSingleLine } from "../services/devis-translation";
 import {
   generateDevisTranslationPdf,
   generateCombinedPdf,
@@ -117,11 +117,17 @@ router.get(
   async (req, res) => {
     try {
       const devisId = Number(req.params.id);
-      const variant = (req.query.variant as "original" | "translation" | "combined" | undefined) ?? "original";
+      let variant = req.query.variant as "original" | "translation" | "combined" | undefined;
       const includeExplanations = (req.query as { explanations?: boolean }).explanations === true;
 
       const d = await storage.getDevis(devisId);
       if (!d) return res.status(404).json({ message: "Devis not found" });
+
+      if (!variant) {
+        const t = await storage.getDevisTranslation(devisId);
+        const ready = !!t && (t.status === "draft" || t.status === "edited" || t.status === "finalised");
+        variant = ready && d.pdfStorageKey ? "combined" : "original";
+      }
 
       let storageKey: string | null = null;
       let fileName = d.pdfFileName || "devis.pdf";
@@ -131,7 +137,8 @@ router.get(
         storageKey = d.pdfStorageKey;
       } else if (variant === "translation") {
         const t = await storage.getDevisTranslation(devisId);
-        if (!t || t.status !== "completed") {
+        const ready = !!t && (t.status === "draft" || t.status === "edited" || t.status === "finalised");
+        if (!t || !ready) {
           return res.status(409).json({ message: "Translation not ready", status: t?.status ?? "missing" });
         }
         if (t.translatedPdfStorageKey && !includeExplanations) {
@@ -143,7 +150,8 @@ router.get(
         fileName = `DEVIS-${d.devisCode}-EN${includeExplanations ? "-explained" : ""}.pdf`;
       } else {
         const t = await storage.getDevisTranslation(devisId);
-        if (!t || t.status !== "completed") {
+        const ready = !!t && (t.status === "draft" || t.status === "edited" || t.status === "finalised");
+        if (!t || !ready) {
           return res.status(409).json({ message: "Translation not ready", status: t?.status ?? "missing" });
         }
         if (t.combinedPdfStorageKey && !includeExplanations) {
@@ -175,17 +183,69 @@ router.get("/api/devis/:id/translation", validateRequest({ params: idParams }), 
   res.json(t);
 });
 
-router.post("/api/devis/:id/translate", validateRequest({ params: idParams }), async (req, res) => {
-  try {
-    const devisId = Number(req.params.id);
-    const result = await translateDevis(devisId, { force: true });
-    const row = await storage.getDevisTranslation(devisId);
-    res.json({ ...row, translation: result.translation });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error("[Devis Translation] Failed:", message);
-    res.status(500).json({ message: `Translation failed: ${message}` });
+const translateBodySchema = z
+  .object({ force: z.boolean().optional() })
+  .partial()
+  .optional();
+
+router.post(
+  "/api/devis/:id/translate",
+  validateRequest({ params: idParams, body: translateBodySchema }),
+  async (req, res) => {
+    try {
+      const devisId = Number(req.params.id);
+      const force = !!(req.body && (req.body as { force?: boolean }).force);
+      await translateDevis(devisId, { force });
+      const row = await storage.getDevisTranslation(devisId);
+      res.json(row);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[Devis Translation] Failed:", message);
+      res.status(500).json({ message: `Translation failed: ${message}` });
+    }
+  },
+);
+
+const lineNumberParams = z.object({
+  id: z.coerce.number().int().positive(),
+  lineNumber: z.coerce.number().int().nonnegative(),
+});
+
+router.post(
+  "/api/devis/:id/translation/lines/:lineNumber/retranslate",
+  validateRequest({ params: lineNumberParams }),
+  async (req, res) => {
+    try {
+      const devisId = Number(req.params.id);
+      const lineNumber = Number(req.params.lineNumber);
+      const existing = await storage.getDevisTranslation(devisId);
+      if (existing && existing.status === "finalised") {
+        return res.status(409).json({ message: "Translation is finalised — re-open by editing or re-translating all lines." });
+      }
+      const updatedLine = await retranslateSingleLine(devisId, lineNumber);
+      const row = await storage.getDevisTranslation(devisId);
+      res.json({ line: updatedLine, translation: row });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[Devis Translation] Line retranslate failed:", message);
+      res.status(500).json({ message: `Retranslate failed: ${message}` });
+    }
+  },
+);
+
+router.post("/api/devis/:id/translation/finalise", validateRequest({ params: idParams }), async (req, res) => {
+  const devisId = Number(req.params.id);
+  const existing = await storage.getDevisTranslation(devisId);
+  if (!existing) return res.status(404).json({ message: "No translation to finalise" });
+  if (existing.status !== "draft" && existing.status !== "edited") {
+    return res.status(409).json({ message: `Cannot finalise translation in status ${existing.status}` });
   }
+  const updated = await storage.updateDevisTranslation(devisId, {
+    status: "finalised",
+    translatedPdfStorageKey: null,
+    combinedPdfStorageKey: null,
+  });
+  res.json(updated);
 });
 
 const patchTranslationSchema = z.object({
@@ -200,12 +260,31 @@ router.patch(
     const devisId = Number(req.params.id);
     const existing = await storage.getDevisTranslation(devisId);
     if (!existing) return res.status(404).json({ message: "No translation to update" });
+    if (existing.status === "finalised") {
+      return res.status(409).json({ message: "Translation is finalised and cannot be edited. Re-translate all to unlock." });
+    }
+
+    const previousLines = (existing.lineTranslations as z.infer<typeof devisTranslationLineSchema>[] | null) || [];
+    const previousByNum = new Map(previousLines.map((l) => [l.lineNumber, l]));
+    const incomingLines = req.body.lines as z.infer<typeof devisTranslationLineSchema>[] | undefined;
+
+    const mergedLines = incomingLines
+      ? incomingLines.map((l) => {
+          const prev = previousByNum.get(l.lineNumber);
+          const userChanged =
+            !prev ||
+            (prev.translation ?? "") !== (l.translation ?? "") ||
+            (prev.explanation ?? null) !== (l.explanation ?? null);
+          return { ...l, edited: l.edited ?? (userChanged ? true : prev?.edited ?? false) };
+        })
+      : previousLines;
+
     const updated = await storage.updateDevisTranslation(devisId, {
       headerTranslated: req.body.header ?? existing.headerTranslated,
-      lineTranslations: req.body.lines ?? existing.lineTranslations,
+      lineTranslations: mergedLines,
       translatedPdfStorageKey: null,
       combinedPdfStorageKey: null,
-      status: "completed",
+      status: "edited",
     });
     res.json(updated);
   },

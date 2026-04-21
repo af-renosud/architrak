@@ -802,7 +802,22 @@ export const devisTranslationLineSchema = z.object({
   originalDescription: z.string(),
   translation: z.string(),
   explanation: z.string().nullable().optional(),
+  edited: z.boolean().optional(),
 });
+
+export const DEVIS_TRANSLATION_STATUSES = [
+  "pending",
+  "processing",
+  "draft",
+  "edited",
+  "finalised",
+  "failed",
+] as const;
+export type DevisTranslationStatus = (typeof DEVIS_TRANSLATION_STATUSES)[number];
+
+export function isTranslationReady(status: string | null | undefined): boolean {
+  return status === "draft" || status === "edited" || status === "finalised";
+}
 
 export const devisTranslationHeaderSchema = z.object({
   description: z.string().nullable().optional(),
