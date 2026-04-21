@@ -8,7 +8,25 @@ import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Zap, Sparkles, Crown, Gauge, DollarSign, Brain, Check, Upload, Trash2, Image, Building2, Scale, Layers, Plus } from "lucide-react";
+import { Zap, Sparkles, Crown, Gauge, DollarSign, Brain, Check, Upload, Trash2, Image, Building2, Scale, Layers, Plus, Pencil } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import type { AiModelSetting, TemplateAsset, LotCatalog } from "@shared/schema";
 
@@ -249,6 +267,10 @@ function LotCatalogSection() {
   const { toast } = useToast();
   const [code, setCode] = useState("");
   const [descriptionFr, setDescriptionFr] = useState("");
+  const [editing, setEditing] = useState<LotCatalog | null>(null);
+  const [editCode, setEditCode] = useState("");
+  const [editDescriptionFr, setEditDescriptionFr] = useState("");
+  const [deleting, setDeleting] = useState<LotCatalog | null>(null);
 
   const { data: catalog, isLoading } = useQuery<LotCatalog[]>({
     queryKey: ["/api/lot-catalog"],
@@ -270,7 +292,48 @@ function LotCatalogSection() {
     },
   });
 
+  const updateMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: number; data: { code: string; descriptionFr: string } }) => {
+      const res = await apiRequest("PATCH", `/api/lot-catalog/${id}`, data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/lot-catalog"] });
+      setEditing(null);
+      toast({ title: "Lot updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update lot", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      await apiRequest("DELETE", `/api/lot-catalog/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/lot-catalog"] });
+      setDeleting(null);
+      toast({ title: "Lot deleted" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Cannot delete lot", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const openEdit = (entry: LotCatalog) => {
+    setEditing(entry);
+    setEditCode(entry.code);
+    setEditDescriptionFr(entry.descriptionFr);
+  };
+
   const canSubmit = code.trim().length > 0 && descriptionFr.trim().length > 0 && !createMutation.isPending;
+  const canSaveEdit =
+    editing !== null &&
+    editCode.trim().length > 0 &&
+    editDescriptionFr.trim().length > 0 &&
+    !updateMutation.isPending &&
+    (editCode.trim().toUpperCase() !== editing.code || editDescriptionFr.trim() !== editing.descriptionFr);
 
   return (
     <div className="mt-10">
@@ -347,7 +410,7 @@ function LotCatalogSection() {
               {catalog?.map((entry) => (
                 <div
                   key={entry.id}
-                  className="flex items-center gap-2 px-3 py-2 rounded-md bg-[rgba(0,0,0,0.02)] border border-[rgba(0,0,0,0.04)]"
+                  className="group flex items-center gap-2 px-3 py-2 rounded-md bg-[rgba(0,0,0,0.02)] border border-[rgba(0,0,0,0.04)]"
                   data-testid={`row-lot-catalog-${entry.code}`}
                 >
                   <span
@@ -357,15 +420,112 @@ function LotCatalogSection() {
                   >
                     {entry.code}
                   </span>
-                  <span className="text-[11px] text-foreground truncate" data-testid={`text-lot-catalog-description-${entry.code}`}>
+                  <span className="text-[11px] text-foreground truncate flex-1" data-testid={`text-lot-catalog-description-${entry.code}`}>
                     {entry.descriptionFr}
                   </span>
+                  <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-6 w-6"
+                      onClick={() => openEdit(entry)}
+                      data-testid={`button-edit-lot-catalog-${entry.code}`}
+                      aria-label={`Edit ${entry.code}`}
+                    >
+                      <Pencil size={11} />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-6 w-6 text-destructive hover:text-destructive"
+                      onClick={() => setDeleting(entry)}
+                      data-testid={`button-delete-lot-catalog-${entry.code}`}
+                      aria-label={`Delete ${entry.code}`}
+                    >
+                      <Trash2 size={11} />
+                    </Button>
+                  </div>
                 </div>
               ))}
             </div>
           )}
         </div>
       </LuxuryCard>
+
+      <Dialog open={editing !== null} onOpenChange={(open) => !open && setEditing(null)}>
+        <DialogContent data-testid="dialog-edit-lot-catalog">
+          <DialogHeader>
+            <DialogTitle>Edit lot</DialogTitle>
+            <DialogDescription>
+              Changes update the description for this lot everywhere it's used. Renaming the code also updates project lots.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div>
+              <TechnicalLabel className="mb-1.5 block">Code</TechnicalLabel>
+              <Input
+                value={editCode}
+                onChange={(e) => setEditCode(e.target.value.toUpperCase())}
+                className="text-[11px] uppercase tracking-wider"
+                maxLength={16}
+                data-testid="input-edit-lot-catalog-code"
+              />
+            </div>
+            <div>
+              <TechnicalLabel className="mb-1.5 block">French description</TechnicalLabel>
+              <Input
+                value={editDescriptionFr}
+                onChange={(e) => setEditDescriptionFr(e.target.value)}
+                className="text-[11px]"
+                maxLength={200}
+                data-testid="input-edit-lot-catalog-description"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditing(null)} data-testid="button-cancel-edit-lot-catalog">
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (!editing) return;
+                updateMutation.mutate({
+                  id: editing.id,
+                  data: { code: editCode.trim(), descriptionFr: editDescriptionFr.trim() },
+                });
+              }}
+              disabled={!canSaveEdit}
+              data-testid="button-save-edit-lot-catalog"
+            >
+              {updateMutation.isPending ? "Saving..." : "Save changes"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
+        <AlertDialogContent data-testid="dialog-delete-lot-catalog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete lot "{deleting?.code}"?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes the lot from the master list. If any project still uses this code, deletion will be blocked.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-delete-lot-catalog">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                if (deleting) deleteMutation.mutate(deleting.id);
+              }}
+              disabled={deleteMutation.isPending}
+              data-testid="button-confirm-delete-lot-catalog"
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

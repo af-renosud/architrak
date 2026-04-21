@@ -34,6 +34,61 @@ router.post(
   },
 );
 
+const idParamSchema = z.object({ id: z.coerce.number().int().positive() });
+const updateLotCatalogSchema = insertLotCatalogSchema
+  .partial()
+  .refine((v) => v.code !== undefined || v.descriptionFr !== undefined, {
+    message: "Provide a code or description to update",
+  });
+
+router.patch(
+  "/api/lot-catalog/:id",
+  validateRequest({ params: idParamSchema, body: updateLotCatalogSchema }),
+  async (req, res) => {
+    const id = Number(req.params.id);
+    const existing = await storage.getLotCatalogEntry(id);
+    if (!existing) {
+      return res.status(404).json({ message: "Lot catalog entry not found" });
+    }
+    const data: { code?: string; descriptionFr?: string } = {};
+    if (req.body.code !== undefined) data.code = req.body.code;
+    if (req.body.descriptionFr !== undefined) data.descriptionFr = req.body.descriptionFr;
+    if (data.code && data.code !== existing.code) {
+      const clash = await storage.getLotCatalogByCode(data.code);
+      if (clash) {
+        return res.status(409).json({ message: `Lot code "${data.code}" already exists` });
+      }
+    }
+    try {
+      const updated = await storage.updateLotCatalogEntry(id, data);
+      res.json(updated);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to update lot";
+      res.status(409).json({ message });
+    }
+  },
+);
+
+router.delete(
+  "/api/lot-catalog/:id",
+  validateRequest({ params: idParamSchema }),
+  async (req, res) => {
+    const id = Number(req.params.id);
+    const existing = await storage.getLotCatalogEntry(id);
+    if (!existing) {
+      return res.status(404).json({ message: "Lot catalog entry not found" });
+    }
+    const usage = await storage.countProjectLotsByCode(existing.code);
+    if (usage > 0) {
+      return res.status(409).json({
+        message: `Cannot delete "${existing.code}" — still used by ${usage} project lot${usage === 1 ? "" : "s"} (and any devis referencing them). Reassign or remove those lots first.`,
+      });
+    }
+    await storage.deleteLotCatalogEntry(id);
+    res.status(204).end();
+  },
+);
+
 router.post(
   "/api/projects/:projectId/lots/assign-from-catalog",
   validateRequest({ params: assignSchema, body: assignBodySchema }),

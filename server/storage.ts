@@ -93,7 +93,11 @@ export interface IStorage {
 
   getLotCatalog(): Promise<LotCatalog[]>;
   getLotCatalogByCode(code: string): Promise<LotCatalog | undefined>;
+  getLotCatalogEntry(id: number): Promise<LotCatalog | undefined>;
   createLotCatalogEntry(data: InsertLotCatalog): Promise<LotCatalog>;
+  updateLotCatalogEntry(id: number, data: Partial<InsertLotCatalog>): Promise<LotCatalog | undefined>;
+  deleteLotCatalogEntry(id: number): Promise<void>;
+  countProjectLotsByCode(code: string): Promise<number>;
   ensureProjectLotFromCatalog(projectId: number, catalogCode: string): Promise<Lot | undefined>;
 
   getMarchesByProject(projectId: number): Promise<Marche[]>;
@@ -354,9 +358,41 @@ export class DatabaseStorage implements IStorage {
     return row;
   }
 
+  async getLotCatalogEntry(id: number): Promise<LotCatalog | undefined> {
+    const [row] = await db.select().from(lotCatalog).where(eq(lotCatalog.id, id)).limit(1);
+    return row;
+  }
+
   async createLotCatalogEntry(data: InsertLotCatalog): Promise<LotCatalog> {
     const [row] = await db.insert(lotCatalog).values(data).returning();
     return row;
+  }
+
+  async updateLotCatalogEntry(id: number, data: Partial<InsertLotCatalog>): Promise<LotCatalog | undefined> {
+    const existing = await this.getLotCatalogEntry(id);
+    if (!existing) return undefined;
+    return db.transaction(async (tx) => {
+      const [updated] = await tx.update(lotCatalog).set(data).where(eq(lotCatalog.id, id)).returning();
+      if (!updated) return undefined;
+      const codeChanged = data.code !== undefined && data.code !== existing.code;
+      const descChanged = data.descriptionFr !== undefined && data.descriptionFr !== existing.descriptionFr;
+      if (codeChanged || descChanged) {
+        const setClause: { lotNumber?: string; descriptionFr?: string } = {};
+        if (codeChanged) setClause.lotNumber = updated.code;
+        if (descChanged) setClause.descriptionFr = updated.descriptionFr;
+        await tx.update(lots).set(setClause).where(eq(lots.lotNumber, existing.code));
+      }
+      return updated;
+    });
+  }
+
+  async deleteLotCatalogEntry(id: number): Promise<void> {
+    await db.delete(lotCatalog).where(eq(lotCatalog.id, id));
+  }
+
+  async countProjectLotsByCode(code: string): Promise<number> {
+    const rows = await db.select({ id: lots.id }).from(lots).where(eq(lots.lotNumber, code));
+    return rows.length;
   }
 
   async ensureProjectLotFromCatalog(projectId: number, catalogCode: string): Promise<Lot | undefined> {
