@@ -2,6 +2,7 @@ import { PDFDocument } from "pdf-lib";
 import { storage } from "../storage";
 import { uploadDocument, getDocumentBuffer } from "../storage/object-storage";
 import { convertHtmlToPdf } from "../services/docraptor";
+import { roundCurrency } from "@shared/financial-utils";
 import type {
   Devis,
   DevisLineItem,
@@ -39,9 +40,10 @@ function escapeHtml(input: string | null | undefined): string {
 
 function formatCurrency(value: string | number | null): string {
   if (value == null) return "—";
-  const num = typeof value === "string" ? parseFloat(value) : value;
-  if (!Number.isFinite(num)) return "—";
-  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "EUR" }).format(num);
+  const raw = typeof value === "string" ? parseFloat(value) : value;
+  if (!Number.isFinite(raw)) return "—";
+  const rounded = roundCurrency(raw);
+  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "EUR" }).format(rounded);
 }
 
 function formatDate(value: string | Date | null): string {
