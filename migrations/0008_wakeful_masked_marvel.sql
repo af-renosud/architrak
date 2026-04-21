@@ -1,0 +1,1 @@
+ALTER TABLE "contractors" ADD COLUMN "archidoc_orphaned_at" timestamp;

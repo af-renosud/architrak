@@ -1191,7 +1191,7 @@ export default function ProjectDetail() {
                           <Select onValueChange={(v) => field.onChange(parseInt(v))} value={field.value ? String(field.value) : ""}>
                             <FormControl><SelectTrigger data-testid="select-marche-contractor"><SelectValue placeholder="Select" /></SelectTrigger></FormControl>
                             <SelectContent>
-                              {(contractors ?? []).map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                              {(contractors ?? []).filter((c) => !c.archidocOrphanedAt).map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
                             </SelectContent>
                           </Select>
                           <FormMessage />
@@ -1422,7 +1422,7 @@ export default function ProjectDetail() {
                         <Select onValueChange={(v) => field.onChange(parseInt(v))} value={field.value ? String(field.value) : ""}>
                           <FormControl><SelectTrigger data-testid="select-cert-contractor-tab"><SelectValue placeholder="Select" /></SelectTrigger></FormControl>
                           <SelectContent>
-                            {(contractors ?? []).map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                            {(contractors ?? []).filter((c) => !c.archidocOrphanedAt).map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
                           </SelectContent>
                         </Select>
                         <FormMessage />

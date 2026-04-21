@@ -66,6 +66,7 @@ export const contractors = pgTable("contractors", {
   rcProPolicyNumber: text("rc_pro_policy_number"),
   rcProEndDate: date("rc_pro_end_date"),
   specialConditions: text("special_conditions"),
+  archidocOrphanedAt: timestamp("archidoc_orphaned_at"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   unique("contractors_archidoc_id_unique").on(table.archidocId),
@@ -619,6 +620,7 @@ export const insertProjectSchema = createInsertSchema(projects).omit({
 export const insertContractorSchema = createInsertSchema(contractors).omit({
   id: true,
   createdAt: true,
+  archidocOrphanedAt: true,
 });
 
 export const insertLotSchema = createInsertSchema(lots).omit({

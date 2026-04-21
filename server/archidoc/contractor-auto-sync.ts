@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, and, isNotNull, isNull, notInArray } from "drizzle-orm";
 import { archidocSyncLog, archidocContractors, contractors } from "@shared/schema";
 import type { ArchidocContractor, InsertContractor } from "@shared/schema";
 import { syncContractors } from "./sync-service";
@@ -50,12 +50,14 @@ export interface ContractorAutoSyncResult {
   created: number;
   updated: number;
   skipped: number;
+  orphaned: number;
+  unorphaned: number;
   error?: string;
 }
 
 export async function runContractorAutoSync(options: { incremental?: boolean } = {}): Promise<ContractorAutoSyncResult> {
   if (!isArchidocConfigured()) {
-    return { mirrorUpdated: 0, created: 0, updated: 0, skipped: 0, error: "ArchiDoc not configured" };
+    return { mirrorUpdated: 0, created: 0, updated: 0, skipped: 0, orphaned: 0, unorphaned: 0, error: "ArchiDoc not configured" };
   }
 
   const [logEntry] = await db
@@ -64,17 +66,27 @@ export async function runContractorAutoSync(options: { incremental?: boolean } =
     .returning();
 
   try {
-    const mirrorResult = await syncContractors(options.incremental ?? false);
+    const incremental = options.incremental ?? false;
+    const syncStartedAt = new Date();
+    const mirrorResult = await syncContractors(incremental);
     if (mirrorResult.error) {
       throw new Error(mirrorResult.error);
     }
 
     const allMirror = await db.select().from(archidocContractors);
+    // On a full sync, only iterate mirror rows refreshed in this run so we
+    // don't keep upserting (and re-clearing the orphan flag for) stale rows.
+    // On incremental runs, every mirror row is potentially up-to-date.
+    const mirrorToProcess = incremental
+      ? allMirror
+      : allMirror.filter((m) => m.syncedAt && m.syncedAt >= syncStartedAt);
+
     let created = 0;
     let updated = 0;
     let skipped = 0;
+    let unorphaned = 0;
 
-    for (const mirror of allMirror) {
+    for (const mirror of mirrorToProcess) {
       const fields = buildSyncedFields(mirror);
 
       const [existing] = await db
@@ -84,11 +96,17 @@ export async function runContractorAutoSync(options: { incremental?: boolean } =
         .limit(1);
 
       if (existing) {
+        // Only flip archidocOrphanedAt back to null when transitioning out of
+        // the orphaned state, so we don't churn the column on every run.
+        const setFields = existing.archidocOrphanedAt
+          ? { ...fields, archidocOrphanedAt: null }
+          : fields;
         await db
           .update(contractors)
-          .set(fields)
+          .set(setFields)
           .where(eq(contractors.id, existing.id));
         updated++;
+        if (existing.archidocOrphanedAt) unorphaned++;
       } else {
         try {
           await db.insert(contractors).values({
@@ -107,6 +125,38 @@ export async function runContractorAutoSync(options: { incremental?: boolean } =
       }
     }
 
+    // Orphan detection only runs after a full (non-incremental) sync, because
+    // incremental syncs only return contractors changed since the last run, so
+    // absence from the response is not proof of upstream deletion.
+    let orphaned = 0;
+    if (!incremental) {
+      // Use this run's syncedAt timestamp as source of truth: any mirror row
+      // not refreshed in this pass is stale (no longer returned by ArchiDoc).
+      const freshMirrorIds = mirrorToProcess.map((m) => m.archidocId);
+
+      if (freshMirrorIds.length > 0) {
+        const newlyOrphaned = await db
+          .update(contractors)
+          .set({ archidocOrphanedAt: new Date() })
+          .where(
+            and(
+              isNotNull(contractors.archidocId),
+              isNull(contractors.archidocOrphanedAt),
+              notInArray(contractors.archidocId, freshMirrorIds),
+            ),
+          )
+          .returning({ id: contractors.id });
+        orphaned = newlyOrphaned.length;
+      } else {
+        const newlyOrphaned = await db
+          .update(contractors)
+          .set({ archidocOrphanedAt: new Date() })
+          .where(and(isNotNull(contractors.archidocId), isNull(contractors.archidocOrphanedAt)))
+          .returning({ id: contractors.id });
+        orphaned = newlyOrphaned.length;
+      }
+    }
+
     await db
       .update(archidocSyncLog)
       .set({
@@ -117,10 +167,10 @@ export async function runContractorAutoSync(options: { incremental?: boolean } =
       .where(eq(archidocSyncLog.id, logEntry.id));
 
     console.log(
-      `[ArchiDoc Contractor AutoSync] Done: mirror=${mirrorResult.updated} created=${created} updated=${updated} skipped=${skipped}`,
+      `[ArchiDoc Contractor AutoSync] Done: mirror=${mirrorResult.updated} created=${created} updated=${updated} skipped=${skipped} orphaned=${orphaned}`,
     );
 
-    return { mirrorUpdated: mirrorResult.updated, created, updated, skipped };
+    return { mirrorUpdated: mirrorResult.updated, created, updated, skipped, orphaned, unorphaned };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     await db
@@ -133,7 +183,7 @@ export async function runContractorAutoSync(options: { incremental?: boolean } =
       })
       .where(eq(archidocSyncLog.id, logEntry.id));
     console.error(`[ArchiDoc Contractor AutoSync] Failed: ${message}`);
-    return { mirrorUpdated: 0, created: 0, updated: 0, skipped: 0, error: message };
+    return { mirrorUpdated: 0, created: 0, updated: 0, skipped: 0, orphaned: 0, unorphaned: 0, error: message };
   }
 }
 

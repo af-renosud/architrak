@@ -3,7 +3,7 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { Building2, Plus, Mail, Phone, Pencil, Shield, MapPin, RefreshCw, Link2 } from "lucide-react";
+import { Building2, Plus, Mail, Phone, Pencil, Shield, MapPin, RefreshCw, Link2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -357,15 +357,27 @@ export default function Contractors() {
                       <h3 className="text-[14px] font-bold text-foreground" data-testid={`text-contractor-name-${contractor.id}`}>
                         {contractor.name}
                       </h3>
-                      {contractor.archidocId && (
-                        <span
-                          className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-widest bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
-                          data-testid={`badge-archidoc-${contractor.id}`}
-                        >
-                          <Link2 size={8} />
-                          ArchiDoc
-                        </span>
-                      )}
+                      <div className="flex items-center gap-1 mt-1 flex-wrap">
+                        {contractor.archidocId && (
+                          <span
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-widest bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+                            data-testid={`badge-archidoc-${contractor.id}`}
+                          >
+                            <Link2 size={8} />
+                            ArchiDoc
+                          </span>
+                        )}
+                        {contractor.archidocOrphanedAt && (
+                          <span
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-widest bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300"
+                            data-testid={`badge-orphaned-${contractor.id}`}
+                            title="No longer present in ArchiDoc"
+                          >
+                            <AlertTriangle size={8} />
+                            Orphaned
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <Button
                       variant="ghost"

@@ -3,7 +3,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { Building2, ArrowLeft, Mail, Phone, MapPin, FileText, Receipt, Shield, Globe, User, RefreshCw, Link2 } from "lucide-react";
+import { Building2, ArrowLeft, Mail, Phone, MapPin, FileText, Receipt, Shield, Globe, User, RefreshCw, Link2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -96,13 +96,28 @@ export default function ContractorDetail() {
                   ArchiDoc
                 </span>
               )}
+              {contractor.archidocOrphanedAt && (
+                <span
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-widest bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300"
+                  data-testid="badge-orphaned"
+                  title="No longer present in ArchiDoc"
+                >
+                  <AlertTriangle size={10} />
+                  Orphaned
+                </span>
+              )}
             </div>
             {contractor.siret && (
               <TechnicalLabel data-testid="text-contractor-siret">SIRET: {contractor.siret}</TechnicalLabel>
             )}
-            {contractor.archidocId && (
+            {contractor.archidocId && !contractor.archidocOrphanedAt && (
               <p className="text-[10px] text-muted-foreground mt-1" data-testid="text-archidoc-managed-note">
                 Managed in ArchiDoc — synced fields are read-only here.
+              </p>
+            )}
+            {contractor.archidocOrphanedAt && (
+              <p className="text-[10px] text-amber-700 dark:text-amber-300 mt-1" data-testid="text-archidoc-orphaned-note">
+                This contractor was removed from ArchiDoc on {new Date(contractor.archidocOrphanedAt).toLocaleDateString()}. It is hidden from new selectors but kept here for historical records.
               </p>
             )}
           </div>

@@ -407,7 +407,7 @@ export default function Certificats() {
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
-                          {(contractors ?? []).map((c) => (
+                          {(contractors ?? []).filter((c) => !c.archidocOrphanedAt).map((c) => (
                             <SelectItem key={c.id} value={String(c.id)}>
                               {c.name}
                             </SelectItem>
