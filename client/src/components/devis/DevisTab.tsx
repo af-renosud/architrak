@@ -10,7 +10,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff, ShieldCheck, ShieldAlert, ShieldX, Trash2, X } from "lucide-react";
+import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff, ShieldCheck, ShieldAlert, ShieldX, Trash2, X, Tag, Settings as SettingsIcon } from "lucide-react";
+import { Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -321,6 +322,186 @@ interface DraftReviewPanelProps {
   isArchived?: boolean;
 }
 
+interface LotReferenceWarningBannerProps {
+  warnings: Array<{ field: string; expected: any; actual: any; message: string; severity: "error" | "warning" }>;
+  projectId: string;
+  devisId: number;
+  currentLotId?: number | null;
+  isArchived?: boolean;
+  onAssigned?: () => void;
+}
+
+function LotReferenceWarningBanner({
+  warnings,
+  projectId,
+  devisId,
+  currentLotId,
+  isArchived = false,
+  onAssigned,
+}: LotReferenceWarningBannerProps) {
+  const { toast } = useToast();
+  const [addingNew, setAddingNew] = useState(false);
+  const [newCode, setNewCode] = useState("");
+  const [newDesc, setNewDesc] = useState("");
+
+  const { data: lotCatalog = [] } = useQuery<LotCatalog[]>({
+    queryKey: ["/api/lot-catalog"],
+  });
+
+  const assignMutation = useMutation({
+    mutationFn: async (catalogCode: string) => {
+      const res = await apiRequest("POST", `/api/projects/${projectId}/lots/assign-from-catalog`, {
+        catalogCode,
+        devisId,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "lots"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
+      toast({ title: "Lot assigned" });
+      onAssigned?.();
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error assigning lot", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const createMutation = useMutation({
+    mutationFn: async (data: { code: string; descriptionFr: string }) => {
+      const res = await apiRequest("POST", `/api/lot-catalog`, data);
+      return res.json();
+    },
+    onSuccess: (entry: LotCatalog) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/lot-catalog"] });
+      assignMutation.mutate(entry.code);
+      setAddingNew(false);
+      setNewCode("");
+      setNewDesc("");
+      toast({ title: "Lot added to master list" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error creating lot", description: error.message, variant: "destructive" });
+    },
+  });
+
+  if (warnings.length === 0) return null;
+  if (currentLotId) return null;
+
+  return (
+    <div
+      className="rounded-lg border-2 border-amber-400 bg-amber-50 dark:bg-amber-950/40 p-3 space-y-2.5"
+      data-testid={`banner-needs-new-lot-${devisId}`}
+    >
+      <div className="flex items-start gap-2">
+        <Tag size={16} className="text-amber-600 mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-amber-800">
+            Needs new lot
+          </p>
+          <p className="text-[10px] mt-0.5 text-amber-800/90">
+            The AI suggested lot code(s) that don't exist in the master catalog. Pick an existing master code or add a new one before confirming.
+          </p>
+          <ul className="mt-1.5 space-y-0.5">
+            {warnings.map((w, i) => (
+              <li
+                key={i}
+                className="text-[10px] text-foreground/80 font-mono truncate"
+                data-testid={`needs-new-lot-suggestion-${devisId}-${i}`}
+              >
+                AI suggested: <span className="font-semibold">"{String(w.actual ?? "")}"</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+
+      {!isArchived && (
+        <div className="space-y-2 pl-6">
+          {!addingNew ? (
+            <div className="flex items-center gap-2 flex-wrap">
+              <Select
+                onValueChange={(val) => {
+                  if (val === "__new__") setAddingNew(true);
+                  else assignMutation.mutate(val);
+                }}
+                disabled={assignMutation.isPending}
+              >
+                <SelectTrigger className="flex-1 h-8 text-[11px] bg-white" data-testid={`select-needs-new-lot-${devisId}`}>
+                  <SelectValue placeholder="Pick a master lot code..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {lotCatalog.map((entry) => (
+                    <SelectItem key={entry.id} value={entry.code} data-testid={`option-needs-new-lot-${entry.code}`}>
+                      {entry.code} — {entry.descriptionFr}
+                    </SelectItem>
+                  ))}
+                  <SelectItem value="__new__">+ Add new lot to master list</SelectItem>
+                </SelectContent>
+              </Select>
+              <Link href="/settings">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 px-2 gap-1 text-[10px] text-amber-800 hover:text-amber-900"
+                  data-testid={`link-manage-master-list-${devisId}`}
+                >
+                  <SettingsIcon size={11} />
+                  Manage master list
+                </Button>
+              </Link>
+            </div>
+          ) : (
+            <div className="space-y-2 p-2 rounded-md border border-amber-300 bg-white/70">
+              <p className="text-[9px] text-muted-foreground">Adds to the master list — available across all projects.</p>
+              <div className="grid grid-cols-2 gap-2">
+                <Input
+                  placeholder="Code (e.g. LOT3)"
+                  value={newCode}
+                  onChange={(e) => setNewCode(e.target.value)}
+                  className="text-[11px] h-8"
+                  data-testid={`input-needs-new-lot-code-${devisId}`}
+                />
+                <Input
+                  placeholder="French description"
+                  value={newDesc}
+                  onChange={(e) => setNewDesc(e.target.value)}
+                  className="text-[11px] h-8"
+                  data-testid={`input-needs-new-lot-desc-${devisId}`}
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7"
+                  disabled={!newCode.trim() || !newDesc.trim() || createMutation.isPending || assignMutation.isPending}
+                  onClick={() => createMutation.mutate({ code: newCode.trim(), descriptionFr: newDesc.trim() })}
+                  data-testid={`button-save-needs-new-lot-${devisId}`}
+                >
+                  <span className="text-[9px] font-bold uppercase tracking-widest">
+                    {createMutation.isPending || assignMutation.isPending ? "Saving..." : "Save & Assign"}
+                  </span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7"
+                  onClick={() => { setAddingNew(false); setNewCode(""); setNewDesc(""); }}
+                  data-testid={`button-cancel-needs-new-lot-${devisId}`}
+                >
+                  <span className="text-[9px] font-bold uppercase tracking-widest">Cancel</span>
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ConfidenceIndicator({ score }: { score: number }) {
   const color = score > 80 ? "text-emerald-600" : score >= 50 ? "text-amber-500" : "text-rose-500";
   const bgColor = score > 80 ? "bg-emerald-50 dark:bg-emerald-950/40" : score >= 50 ? "bg-amber-50 dark:bg-amber-950/40" : "bg-rose-50 dark:bg-rose-950/40";
@@ -338,8 +519,11 @@ function ConfidenceIndicator({ score }: { score: number }) {
 function DraftReviewPanel({ data, projectId, onClose, isArchived = false }: DraftReviewPanelProps) {
   const { toast } = useToast();
   const { devisId, extraction, validation, devis } = data;
-  const warnings: Array<{ field: string; expected: any; actual: any; message: string; severity: "error" | "warning" }> = validation?.warnings || [];
+  const allWarnings: Array<{ field: string; expected: any; actual: any; message: string; severity: "error" | "warning" }> = validation?.warnings || [];
+  const lotRefWarnings = allWarnings.filter((w) => w.field === "lotReferences");
+  const warnings = allWarnings.filter((w) => w.field !== "lotReferences");
   const confidenceScore: number = validation?.confidenceScore ?? 50;
+  const [lotAssignedLocally, setLotAssignedLocally] = useState<boolean>(!!devis.lotId);
 
   const [editValues, setEditValues] = useState({
     amountHt: devis.amountHt ?? "",
@@ -417,6 +601,16 @@ function DraftReviewPanel({ data, projectId, onClose, isArchived = false }: Draf
         </DialogHeader>
 
         <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
+          {lotRefWarnings.length > 0 && (
+            <LotReferenceWarningBanner
+              warnings={lotRefWarnings}
+              projectId={projectId}
+              devisId={devisId}
+              currentLotId={lotAssignedLocally ? devis.lotId ?? -1 : null}
+              isArchived={isArchived}
+              onAssigned={() => setLotAssignedLocally(true)}
+            />
+          )}
           {warnings.length > 0 && (
             <div className="space-y-1.5" data-testid="section-validation-warnings">
               {warnings.map((w, i) => (
@@ -949,6 +1143,21 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
 
   return (
     <div className={`ml-4 mt-1 mb-3 border-l-2 border-[rgba(0,0,0,0.08)] pl-4 space-y-4 ${isVoid ? "opacity-50" : ""}`} data-testid={`detail-devis-${devis.id}`}>
+      {!isVoid && (() => {
+        const lotRefWarnings = ((devis.validationWarnings as any[]) || []).filter(
+          (w: any) => w?.field === "lotReferences",
+        );
+        if (lotRefWarnings.length === 0) return null;
+        return (
+          <LotReferenceWarningBanner
+            warnings={lotRefWarnings}
+            projectId={projectId}
+            devisId={devis.id}
+            currentLotId={devis.lotId}
+            isArchived={isArchived}
+          />
+        );
+      })()}
       <div className="space-y-1.5" data-testid={`section-advisories-${devis.id}`}>
         <TechnicalLabel>Extraction Advisories</TechnicalLabel>
         <AdvisoriesList subject={{ type: "devis", id: devis.id }} />
