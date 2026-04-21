@@ -5,6 +5,7 @@ import { checkLotReferencesAgainstCatalog } from "./lot-reference-validator";
 import { calculateTtc, roundCurrency } from "../../shared/financial-utils";
 import { reconcileAdvisories } from "./advisory-reconciler";
 import { assertPdfMagic } from "../middleware/upload";
+import { triggerDevisTranslation } from "./devis-translation";
 
 interface UploadedFile {
   originalname: string;
@@ -129,6 +130,8 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
       }
     }
   }
+
+  triggerDevisTranslation(devisRecord.id);
 
   return {
     success: true,

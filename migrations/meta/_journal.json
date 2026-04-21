@@ -22,6 +22,13 @@
       "when": 1776737112273,
       "tag": "0002_lot_catalog",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1776739282328,
+      "tag": "0003_devis_translations",
+      "breakpoints": true
     }
   ]
 }

@@ -5,7 +5,7 @@ import {
   avenants, invoices, situations, situationLines, certificats, fees, feeEntries,
   archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog,
   emailDocuments, projectDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
-  aiModelSettings, templateAssets, users,
+  aiModelSettings, templateAssets, users, devisTranslations,
   benchmarkDocuments, benchmarkItems, benchmarkTags, benchmarkItemTags,
   type Project, type InsertProject,
   type User, type InsertUser,
@@ -30,6 +30,7 @@ import {
   type ClientPaymentEvidence, type InsertClientPaymentEvidence,
   type AiModelSetting,
   type TemplateAsset, type InsertTemplateAsset,
+  type DevisTranslation, type InsertDevisTranslation,
   type BenchmarkTag, type InsertBenchmarkTag,
   type BenchmarkDocument, type InsertBenchmarkDocument,
   type BenchmarkItem, type InsertBenchmarkItem,
@@ -198,6 +199,10 @@ export interface IStorage {
 
   getClientPaymentEvidence(projectId: number): Promise<ClientPaymentEvidence[]>;
   createClientPaymentEvidence(data: InsertClientPaymentEvidence): Promise<ClientPaymentEvidence>;
+
+  getDevisTranslation(devisId: number): Promise<DevisTranslation | undefined>;
+  upsertDevisTranslation(data: InsertDevisTranslation): Promise<DevisTranslation>;
+  updateDevisTranslation(devisId: number, data: Partial<InsertDevisTranslation>): Promise<DevisTranslation | undefined>;
 
   getAiModelSettings(): Promise<AiModelSetting[]>;
   getAiModelSetting(taskType: string): Promise<AiModelSetting | undefined>;
@@ -846,6 +851,32 @@ export class DatabaseStorage implements IStorage {
   async createClientPaymentEvidence(data: InsertClientPaymentEvidence): Promise<ClientPaymentEvidence> {
     const [evidence] = await db.insert(clientPaymentEvidence).values(data).returning();
     return evidence;
+  }
+
+  async getDevisTranslation(devisId: number): Promise<DevisTranslation | undefined> {
+    const [row] = await db.select().from(devisTranslations).where(eq(devisTranslations.devisId, devisId));
+    return row;
+  }
+
+  async upsertDevisTranslation(data: InsertDevisTranslation): Promise<DevisTranslation> {
+    const [row] = await db
+      .insert(devisTranslations)
+      .values(data)
+      .onConflictDoUpdate({
+        target: devisTranslations.devisId,
+        set: { ...data, updatedAt: new Date() },
+      })
+      .returning();
+    return row;
+  }
+
+  async updateDevisTranslation(devisId: number, data: Partial<InsertDevisTranslation>): Promise<DevisTranslation | undefined> {
+    const [row] = await db
+      .update(devisTranslations)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(devisTranslations.devisId, devisId))
+      .returning();
+    return row;
   }
 
   async getAiModelSettings(): Promise<AiModelSetting[]> {

@@ -781,6 +781,45 @@ export const insertAiModelSettingSchema = createInsertSchema(aiModelSettings).om
 export type AiModelSetting = typeof aiModelSettings.$inferSelect;
 export type InsertAiModelSetting = z.infer<typeof insertAiModelSettingSchema>;
 
+export const devisTranslations = pgTable("devis_translations", {
+  devisId: integer("devis_id")
+    .primaryKey()
+    .references(() => devis.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("pending"),
+  provider: text("provider"),
+  modelId: text("model_id"),
+  headerTranslated: jsonb("header_translated"),
+  lineTranslations: jsonb("line_translations"),
+  errorMessage: text("error_message"),
+  translatedPdfStorageKey: text("translated_pdf_storage_key"),
+  combinedPdfStorageKey: text("combined_pdf_storage_key"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export const devisTranslationLineSchema = z.object({
+  lineNumber: z.number().int().nonnegative(),
+  originalDescription: z.string(),
+  translation: z.string(),
+  explanation: z.string().nullable().optional(),
+});
+
+export const devisTranslationHeaderSchema = z.object({
+  description: z.string().nullable().optional(),
+  descriptionExplanation: z.string().nullable().optional(),
+  summary: z.string().nullable().optional(),
+});
+
+export type DevisTranslationLine = z.infer<typeof devisTranslationLineSchema>;
+export type DevisTranslationHeader = z.infer<typeof devisTranslationHeaderSchema>;
+
+export const insertDevisTranslationSchema = createInsertSchema(devisTranslations).omit({
+  createdAt: true,
+  updatedAt: true,
+});
+export type DevisTranslation = typeof devisTranslations.$inferSelect;
+export type InsertDevisTranslation = z.infer<typeof insertDevisTranslationSchema>;
+
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
   googleId: text("google_id").notNull().unique(),

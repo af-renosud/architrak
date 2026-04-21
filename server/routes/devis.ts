@@ -25,6 +25,15 @@ import {
   acknowledgeAdvisoryForSubject,
 } from "../services/advisory-reconciler";
 import { validateRequest } from "../middleware/validate";
+import { translateDevis } from "../services/devis-translation";
+import {
+  generateDevisTranslationPdf,
+  generateCombinedPdf,
+} from "../communications/devis-translation-generator";
+import {
+  devisTranslationLineSchema,
+  devisTranslationHeaderSchema,
+} from "@shared/schema";
 
 const router = Router();
 
@@ -97,20 +106,110 @@ router.get("/api/devis/:id", async (req, res) => {
   res.json(d);
 });
 
-router.get("/api/devis/:id/pdf", async (req, res) => {
+const pdfVariantSchema = z.object({
+  variant: z.enum(["original", "translation", "combined"]).optional(),
+  explanations: z.coerce.boolean().optional(),
+});
+
+router.get(
+  "/api/devis/:id/pdf",
+  validateRequest({ params: idParams, query: pdfVariantSchema }),
+  async (req, res) => {
+    try {
+      const devisId = Number(req.params.id);
+      const variant = (req.query.variant as "original" | "translation" | "combined" | undefined) ?? "original";
+      const includeExplanations = (req.query as { explanations?: boolean }).explanations === true;
+
+      const d = await storage.getDevis(devisId);
+      if (!d) return res.status(404).json({ message: "Devis not found" });
+
+      let storageKey: string | null = null;
+      let fileName = d.pdfFileName || "devis.pdf";
+
+      if (variant === "original") {
+        if (!d.pdfStorageKey) return res.status(404).json({ message: "No PDF attached to this devis" });
+        storageKey = d.pdfStorageKey;
+      } else if (variant === "translation") {
+        const t = await storage.getDevisTranslation(devisId);
+        if (!t || t.status !== "completed") {
+          return res.status(409).json({ message: "Translation not ready", status: t?.status ?? "missing" });
+        }
+        if (t.translatedPdfStorageKey && !includeExplanations) {
+          storageKey = t.translatedPdfStorageKey;
+        } else {
+          const generated = await generateDevisTranslationPdf(devisId, { includeExplanations });
+          storageKey = generated.storageKey;
+        }
+        fileName = `DEVIS-${d.devisCode}-EN${includeExplanations ? "-explained" : ""}.pdf`;
+      } else {
+        const t = await storage.getDevisTranslation(devisId);
+        if (!t || t.status !== "completed") {
+          return res.status(409).json({ message: "Translation not ready", status: t?.status ?? "missing" });
+        }
+        if (t.combinedPdfStorageKey && !includeExplanations) {
+          storageKey = t.combinedPdfStorageKey;
+        } else {
+          const merged = await generateCombinedPdf(devisId, { includeExplanations });
+          storageKey = merged.storageKey;
+        }
+        fileName = `DEVIS-${d.devisCode}-EN-FR${includeExplanations ? "-explained" : ""}.pdf`;
+      }
+
+      if (!storageKey) return res.status(404).json({ message: "Document not found" });
+
+      const { stream, contentType, size } = await getDocumentStream(storageKey);
+      res.setHeader("Content-Type", contentType || "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
+      if (size) res.setHeader("Content-Length", String(size));
+      stream.pipe(res);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `PDF view failed: ${message}` });
+    }
+  },
+);
+
+router.get("/api/devis/:id/translation", validateRequest({ params: idParams }), async (req, res) => {
+  const t = await storage.getDevisTranslation(Number(req.params.id));
+  if (!t) return res.json({ status: "missing" });
+  res.json(t);
+});
+
+router.post("/api/devis/:id/translate", validateRequest({ params: idParams }), async (req, res) => {
   try {
-    const d = await storage.getDevis(Number(req.params.id));
-    if (!d || !d.pdfStorageKey) return res.status(404).json({ message: "No PDF attached to this devis" });
-    const { stream, contentType, size } = await getDocumentStream(d.pdfStorageKey);
-    res.setHeader("Content-Type", contentType || "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="${d.pdfFileName || "devis.pdf"}"`);
-    if (size) res.setHeader("Content-Length", String(size));
-    stream.pipe(res);
+    const devisId = Number(req.params.id);
+    const result = await translateDevis(devisId, { force: true });
+    const row = await storage.getDevisTranslation(devisId);
+    res.json({ ...row, translation: result.translation });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ message: `PDF view failed: ${message}` });
+    console.error("[Devis Translation] Failed:", message);
+    res.status(500).json({ message: `Translation failed: ${message}` });
   }
 });
+
+const patchTranslationSchema = z.object({
+  header: devisTranslationHeaderSchema.optional(),
+  lines: z.array(devisTranslationLineSchema).optional(),
+}).strict();
+
+router.patch(
+  "/api/devis/:id/translation",
+  validateRequest({ params: idParams, body: patchTranslationSchema }),
+  async (req, res) => {
+    const devisId = Number(req.params.id);
+    const existing = await storage.getDevisTranslation(devisId);
+    if (!existing) return res.status(404).json({ message: "No translation to update" });
+    const updated = await storage.updateDevisTranslation(devisId, {
+      headerTranslated: req.body.header ?? existing.headerTranslated,
+      lineTranslations: req.body.lines ?? existing.lineTranslations,
+      translatedPdfStorageKey: null,
+      combinedPdfStorageKey: null,
+      status: "completed",
+    });
+    res.json(updated);
+  },
+);
 
 router.patch(
   "/api/devis/:id",

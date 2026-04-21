@@ -21,6 +21,7 @@ import { insertDevisLineItemSchema, insertAvenantSchema, insertLotSchema } from 
 import type { Devis, Contractor, Lot, LotCatalog, DevisLineItem, Avenant, Invoice } from "@shared/schema";
 import { z } from "zod";
 import { AdvisoriesList, AdvisoryBadge } from "@/components/advisories/AdvisoriesList";
+import { DevisTranslationSection } from "@/components/devis/DevisTranslationSection";
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
@@ -937,6 +938,9 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
     queryKey: ["/api/devis", devis.id, "line-items"],
     enabled: devis.invoicingMode === "mode_b",
   });
+  const { data: translationLineItems } = useQuery<DevisLineItem[]>({
+    queryKey: ["/api/devis", devis.id, "line-items"],
+  });
 
   const tvaMultiplier = 1 + (parseFloat(devis.tvaRate) || 20) / 100;
   const originalHt = parseFloat(devis.amountHt);
@@ -1421,6 +1425,12 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
           )}
         </div>
       )}
+
+      <DevisTranslationSection
+        devisId={devis.id}
+        devisCode={devis.devisCode}
+        lineItems={translationLineItems ?? []}
+      />
 
       <div className="flex items-center justify-between">
         <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
