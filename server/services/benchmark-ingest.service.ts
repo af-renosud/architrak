@@ -318,6 +318,15 @@ export async function confirmDevisAndMirror(
   inserted: Array<{ id: number; index: number; description: string; rawUnit: string | null }>;
   parsed: ParsedDocument | null;
 }> {
+  // Hard guard: this path mirrors devis line items into the benchmark
+  // store but must never create or mutate project lots. Lot assignment is
+  // an explicit user action via the assign-from-catalog endpoint. If a
+  // caller leaks `lotId` into devisUpdates, drop it here so an extraction
+  // confirmation can never silently change a project's lot wiring.
+  if ("lotId" in devisUpdates) {
+    delete (devisUpdates as Record<string, unknown>).lotId;
+  }
+
   return await db.transaction(async (tx) => {
     const [updatedDevis] = await tx
       .update(devisTable)

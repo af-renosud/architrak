@@ -4,6 +4,7 @@ import { storage } from "../storage";
 import { getDocumentBuffer, uploadDocument } from "../storage/object-storage";
 import type { Project, Contractor } from "@shared/schema";
 import { validateExtraction } from "../services/extraction-validator";
+import { checkLotReferencesAgainstCatalog } from "../services/lot-reference-validator";
 import { execFile } from "child_process";
 import { writeFile, readFile, readdir, unlink, mkdtemp } from "fs/promises";
 import { tmpdir } from "os";
@@ -530,6 +531,8 @@ export async function processEmailDocument(emailDocumentId: number): Promise<voi
     const match = await matchToProject(parsed, projects, contractors);
 
     const validation = validateExtraction(parsed);
+    const lotWarnings = await checkLotReferencesAgainstCatalog(parsed);
+    const allWarnings = [...validation.warnings, ...lotWarnings];
 
     const status = (validation.isValid && match.confidence >= 80) ? "completed" : "needs_review";
 
@@ -540,7 +543,7 @@ export async function processEmailDocument(emailDocumentId: number): Promise<voi
         ...parsed,
         validation: {
           isValid: validation.isValid,
-          warnings: validation.warnings,
+          warnings: allWarnings,
           correctedValues: validation.correctedValues,
           confidenceScore: validation.confidenceScore,
         },

@@ -16,6 +16,7 @@ import { confirmDevisAndMirror, assignTagsForInsertedItems } from "../services/b
 import { PdfPasswordProtectedError } from "../gmail/document-parser";
 import { getDocumentStream } from "../storage/object-storage";
 import { validateExtraction, type ValidationWarning } from "../services/extraction-validator";
+import { checkLotReferencesAgainstCatalog } from "../services/lot-reference-validator";
 import type { ParsedDocument } from "../gmail/document-parser";
 import { roundCurrency, calculateTtc } from "../../shared/financial-utils";
 import {
@@ -205,14 +206,35 @@ router.post(
       if (corrections.dateSent != null) updates.dateSent = corrections.dateSent;
 
       let nextWarnings = (devis.validationWarnings as ValidationWarning[] | null) ?? [];
+      const aiData = (devis.aiExtractedData as Record<string, unknown> | null) ?? {};
       if (Object.keys(corrections).length > 0) {
-        const aiData = (devis.aiExtractedData as Record<string, unknown> | null) ?? {};
         const correctedParsed = { ...aiData, ...corrections } as ParsedDocument;
         const revalidation = validateExtraction(correctedParsed);
-        nextWarnings = revalidation.warnings;
-        updates.validationWarnings = revalidation.warnings;
+        const lotWarnings = await checkLotReferencesAgainstCatalog(correctedParsed);
+        nextWarnings = [...revalidation.warnings, ...lotWarnings];
+        updates.validationWarnings = nextWarnings;
         updates.aiConfidence = revalidation.confidenceScore;
+      } else {
+        const lotWarnings = await checkLotReferencesAgainstCatalog(aiData as unknown as ParsedDocument);
+        if (lotWarnings.length > 0) {
+          const existingMessages = new Set(nextWarnings.map((w) => w.message));
+          const merged = [
+            ...nextWarnings,
+            ...lotWarnings.filter((w) => !existingMessages.has(w.message)),
+          ];
+          if (merged.length !== nextWarnings.length) {
+            nextWarnings = merged;
+            updates.validationWarnings = nextWarnings;
+          }
+        }
       }
+
+      // Defense-in-depth: the confirm path must never mutate lot assignment
+      // or lot descriptions. lotId is only set via the assign-from-catalog
+      // flow (server/routes/lot-catalog.ts). The confirm schema already
+      // rejects unknown fields like `lotId`, but we strip any leakage here
+      // as a hard guard.
+      delete (updates as Record<string, unknown>).lotId;
 
       const { devis: updated, inserted } = await confirmDevisAndMirror(Number(req.params.id), updates);
       try {

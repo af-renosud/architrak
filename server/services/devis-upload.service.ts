@@ -1,6 +1,7 @@
 import { storage } from "../storage";
 import { uploadDocument } from "../storage/object-storage";
 import { validateExtraction } from "./extraction-validator";
+import { checkLotReferencesAgainstCatalog } from "./lot-reference-validator";
 import { calculateTtc, roundCurrency } from "../../shared/financial-utils";
 import { reconcileAdvisories } from "./advisory-reconciler";
 import { assertPdfMagic } from "../middleware/upload";
@@ -41,6 +42,8 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
   }
 
   const validation = validateExtraction(parsed);
+  const lotWarnings = await checkLotReferencesAgainstCatalog(parsed);
+  const allWarnings = [...validation.warnings, ...lotWarnings];
 
   const corrected = { ...parsed, ...validation.correctedValues };
 
@@ -69,6 +72,11 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
     ? String(roundCurrency(corrected.amountTtc))
     : (corrected.amountHt != null ? String(calculateTtc(corrected.amountHt, numericTvaRate)) : "0.00");
 
+  // Lot assignment is intentionally NOT derived from extraction. The AI may
+  // suggest catalog codes via parsed.lotReferences, but lots can only be
+  // attached via the assign-from-catalog flow (see /api/projects/:projectId/
+  // lots/assign-from-catalog). This guarantees the extractor can never
+  // create or mutate project lots / lot descriptions.
   const devisRecord = await storage.createDevis({
     projectId,
     contractorId,
@@ -89,13 +97,13 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
     pvmvRef: null,
     pdfStorageKey: storageKey,
     pdfFileName: file.originalname,
-    validationWarnings: validation.warnings,
+    validationWarnings: allWarnings,
     aiExtractedData: parsed,
     aiConfidence: validation.confidenceScore,
   });
 
   try {
-    await reconcileAdvisories({ devisId: devisRecord.id }, validation.warnings, "extractor");
+    await reconcileAdvisories({ devisId: devisRecord.id }, allWarnings, "extractor");
   } catch (advErr) {
     console.warn(`[Devis Upload] Failed to persist advisories:`, advErr);
   }
@@ -137,7 +145,7 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
       },
       validation: {
         isValid: validation.isValid,
-        warnings: validation.warnings,
+        warnings: allWarnings,
         confidenceScore: validation.confidenceScore,
         correctedValues: validation.correctedValues,
       },
