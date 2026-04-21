@@ -3,7 +3,7 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { Building2, Plus, Mail, Phone, Pencil, Shield, MapPin } from "lucide-react";
+import { Building2, Plus, Mail, Phone, Pencil, Shield, MapPin, RefreshCw, Link2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -34,6 +34,42 @@ export default function Contractors() {
   const { data: contractors, isLoading } = useQuery<Contractor[]>({
     queryKey: ["/api/contractors"],
   });
+
+  const { data: syncStatus } = useQuery<{ lastSyncedAt: string | null; status: string | null; errorMessage: string | null }>({
+    queryKey: ["/api/contractors/sync-status"],
+    refetchInterval: 60_000,
+  });
+
+  const syncMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/contractors/sync", {});
+      return res.json();
+    },
+    onSuccess: (data: { created?: number; updated?: number; skipped?: number }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/contractors"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/contractors/sync-status"] });
+      toast({
+        title: "Sync complete",
+        description: `${data.created ?? 0} created, ${data.updated ?? 0} updated${data.skipped ? `, ${data.skipped} skipped` : ""}.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Sync failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const formatRelative = (iso: string | null | undefined): string => {
+    if (!iso) return "never";
+    const d = new Date(iso);
+    const diffMs = Date.now() - d.getTime();
+    const diffMin = Math.round(diffMs / 60000);
+    if (diffMin < 1) return "just now";
+    if (diffMin < 60) return `${diffMin} min ago`;
+    const diffH = Math.round(diffMin / 60);
+    if (diffH < 24) return `${diffH}h ago`;
+    const diffD = Math.round(diffH / 24);
+    return `${diffD}d ago`;
+  };
 
   const form = useForm<ContractorFormValues>({
     resolver: zodResolver(contractorFormSchema),
@@ -113,11 +149,16 @@ export default function Contractors() {
 
   const onSubmit = (data: ContractorFormValues) => {
     if (editingContractor) {
-      updateMutation.mutate({ id: editingContractor.id, data });
+      const payload = editingContractor.archidocId
+        ? { notes: data.notes ?? null, defaultTvaRate: data.defaultTvaRate ?? null }
+        : data;
+      updateMutation.mutate({ id: editingContractor.id, data: payload });
     } else {
       createMutation.mutate(data);
     }
   };
+
+  const isArchidocLinked = !!editingContractor?.archidocId;
 
   const isPending = createMutation.isPending || updateMutation.isPending;
 
@@ -125,13 +166,34 @@ export default function Contractors() {
     <AppLayout>
       <div className="space-y-8">
         <div className="flex items-center justify-between gap-4 flex-wrap">
-          <h1 className="text-[22px] font-light uppercase tracking-tight text-foreground" data-testid="text-page-title">
-            Contractors
-          </h1>
-          <Button onClick={openCreate} data-testid="button-new-contractor">
-            <Plus size={14} />
-            <span className="text-[9px] font-bold uppercase tracking-widest">New Contractor</span>
-          </Button>
+          <div>
+            <h1 className="text-[22px] font-light uppercase tracking-tight text-foreground" data-testid="text-page-title">
+              Contractors
+            </h1>
+            <p className="text-[10px] text-muted-foreground mt-1" data-testid="text-last-synced">
+              ArchiDoc auto-sync: last run {formatRelative(syncStatus?.lastSyncedAt)}
+              {syncStatus?.status === "failed" && (
+                <span className="text-destructive ml-1">(failed)</span>
+              )}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={() => syncMutation.mutate()}
+              disabled={syncMutation.isPending}
+              data-testid="button-sync-contractors"
+            >
+              <RefreshCw size={14} className={syncMutation.isPending ? "animate-spin" : ""} />
+              <span className="text-[9px] font-bold uppercase tracking-widest">
+                {syncMutation.isPending ? "Syncing..." : "Sync Now"}
+              </span>
+            </Button>
+            <Button onClick={openCreate} data-testid="button-new-contractor">
+              <Plus size={14} />
+              <span className="text-[9px] font-bold uppercase tracking-widest">New Contractor</span>
+            </Button>
+          </div>
         </div>
 
         <SectionHeader
@@ -147,6 +209,14 @@ export default function Contractors() {
                 {editingContractor ? "Edit Contractor" : "New Contractor"}
               </DialogTitle>
             </DialogHeader>
+            {isArchidocLinked && (
+              <div
+                className="rounded-md border border-blue-200 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/20 p-3 text-[10px] text-blue-800 dark:text-blue-200"
+                data-testid="text-archidoc-readonly-note"
+              >
+                This contractor is managed in ArchiDoc. Synced fields are read-only here — only Notes and Default TVA Rate can be edited locally.
+              </div>
+            )}
             <Form {...form}>
               <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
                 <FormField
@@ -158,7 +228,7 @@ export default function Contractors() {
                         <TechnicalLabel>Name</TechnicalLabel>
                       </FormLabel>
                       <FormControl>
-                        <Input {...field} data-testid="input-contractor-name" />
+                        <Input {...field} disabled={isArchidocLinked} data-testid="input-contractor-name" />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -173,7 +243,7 @@ export default function Contractors() {
                         <TechnicalLabel>SIRET</TechnicalLabel>
                       </FormLabel>
                       <FormControl>
-                        <Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} data-testid="input-contractor-siret" />
+                        <Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} disabled={isArchidocLinked} data-testid="input-contractor-siret" />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -188,7 +258,7 @@ export default function Contractors() {
                         <TechnicalLabel>Email</TechnicalLabel>
                       </FormLabel>
                       <FormControl>
-                        <Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} type="email" data-testid="input-contractor-email" />
+                        <Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} type="email" disabled={isArchidocLinked} data-testid="input-contractor-email" />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -203,7 +273,7 @@ export default function Contractors() {
                         <TechnicalLabel>Phone</TechnicalLabel>
                       </FormLabel>
                       <FormControl>
-                        <Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} data-testid="input-contractor-phone" />
+                        <Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} disabled={isArchidocLinked} data-testid="input-contractor-phone" />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -218,7 +288,7 @@ export default function Contractors() {
                         <TechnicalLabel>Address</TechnicalLabel>
                       </FormLabel>
                       <FormControl>
-                        <Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} data-testid="input-contractor-address" />
+                        <Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} disabled={isArchidocLinked} data-testid="input-contractor-address" />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -283,9 +353,20 @@ export default function Contractors() {
                   data-testid={`card-contractor-${contractor.id}`}
                 >
                   <div className="flex items-start justify-between gap-2 mb-1">
-                    <h3 className="text-[14px] font-bold text-foreground" data-testid={`text-contractor-name-${contractor.id}`}>
-                      {contractor.name}
-                    </h3>
+                    <div className="min-w-0">
+                      <h3 className="text-[14px] font-bold text-foreground" data-testid={`text-contractor-name-${contractor.id}`}>
+                        {contractor.name}
+                      </h3>
+                      {contractor.archidocId && (
+                        <span
+                          className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-widest bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+                          data-testid={`badge-archidoc-${contractor.id}`}
+                        >
+                          <Link2 size={8} />
+                          ArchiDoc
+                        </span>
+                      )}
+                    </div>
                     <Button
                       variant="ghost"
                       size="icon"

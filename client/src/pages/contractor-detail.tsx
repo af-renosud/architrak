@@ -3,7 +3,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { Building2, ArrowLeft, Mail, Phone, MapPin, FileText, Receipt, Shield, Globe, User, RefreshCw } from "lucide-react";
+import { Building2, ArrowLeft, Mail, Phone, MapPin, FileText, Receipt, Shield, Globe, User, RefreshCw, Link2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -83,11 +83,27 @@ export default function ContractorDetail() {
             </Button>
           </Link>
           <div>
-            <h1 className="text-[22px] font-light uppercase tracking-tight text-foreground" data-testid="text-contractor-name">
-              {contractor.name}
-            </h1>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-[22px] font-light uppercase tracking-tight text-foreground" data-testid="text-contractor-name">
+                {contractor.name}
+              </h1>
+              {contractor.archidocId && (
+                <span
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-widest bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+                  data-testid="badge-archidoc"
+                >
+                  <Link2 size={10} />
+                  ArchiDoc
+                </span>
+              )}
+            </div>
             {contractor.siret && (
               <TechnicalLabel data-testid="text-contractor-siret">SIRET: {contractor.siret}</TechnicalLabel>
+            )}
+            {contractor.archidocId && (
+              <p className="text-[10px] text-muted-foreground mt-1" data-testid="text-archidoc-managed-note">
+                Managed in ArchiDoc — synced fields are read-only here.
+              </p>
             )}
           </div>
         </div>
