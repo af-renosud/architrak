@@ -1,1 +1,1 @@
-ALTER TABLE "contractors" ADD COLUMN "archidoc_orphaned_at" timestamp;
+ALTER TABLE "contractors" ADD COLUMN IF NOT EXISTS "archidoc_orphaned_at" timestamp;
