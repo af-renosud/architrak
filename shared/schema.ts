@@ -871,3 +871,23 @@ export const insertUserSchema = createInsertSchema(users).omit({
 });
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
+
+export const devisRefEdits = pgTable("devis_ref_edits", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
+  field: text("field").notNull(),
+  previousValue: text("previous_value"),
+  newValue: text("new_value"),
+  editedByUserId: integer("edited_by_user_id").references(() => users.id),
+  editedByEmail: text("edited_by_email"),
+  editedAt: timestamp("edited_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("devis_ref_edits_devis_id_idx").on(table.devisId),
+]);
+
+export const insertDevisRefEditSchema = createInsertSchema(devisRefEdits).omit({
+  id: true,
+  editedAt: true,
+});
+export type DevisRefEdit = typeof devisRefEdits.$inferSelect;
+export type InsertDevisRefEdit = z.infer<typeof insertDevisRefEditSchema>;

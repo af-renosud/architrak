@@ -318,9 +318,43 @@ router.patch(
   "/api/devis/:id",
   validateRequest({ params: idParams, body: updateDevisSchema }),
   async (req, res) => {
-    const d = await storage.updateDevis(Number(req.params.id), req.body);
+    const id = Number(req.params.id);
+    const before = await storage.getDevis(id);
+    if (!before) return res.status(404).json({ message: "Devis not found" });
+    const d = await storage.updateDevis(id, req.body);
     if (!d) return res.status(404).json({ message: "Devis not found" });
+
+    if (before.status !== "draft") {
+      const userId = req.session?.userId;
+      const user = userId ? await storage.getUser(Number(userId)) : null;
+      const auditFields: Array<"devisCode" | "devisNumber" | "ref2"> = ["devisCode", "devisNumber", "ref2"];
+      for (const f of auditFields) {
+        if (Object.prototype.hasOwnProperty.call(req.body, f)) {
+          const prev = (before[f] ?? null) as string | null;
+          const next = (d[f] ?? null) as string | null;
+          if ((prev ?? "") !== (next ?? "")) {
+            await storage.createDevisRefEdit({
+              devisId: id,
+              field: f,
+              previousValue: prev,
+              newValue: next,
+              editedByUserId: user?.id ?? null,
+              editedByEmail: user?.email ?? null,
+            });
+          }
+        }
+      }
+    }
     res.json(d);
+  },
+);
+
+router.get(
+  "/api/devis/:id/ref-edits",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    const edits = await storage.getDevisRefEdits(Number(req.params.id));
+    res.json(edits);
   },
 );
 

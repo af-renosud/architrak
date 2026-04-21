@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -18,7 +19,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { insertDevisLineItemSchema, insertAvenantSchema, insertLotSchema } from "@shared/schema";
-import type { Devis, Contractor, Lot, LotCatalog, DevisLineItem, Avenant, Invoice } from "@shared/schema";
+import type { Devis, Contractor, Lot, LotCatalog, DevisLineItem, Avenant, Invoice, DevisRefEdit } from "@shared/schema";
 import { formatLotDescription } from "@shared/lot-label";
 import { z } from "zod";
 import { AdvisoriesList, AdvisoryBadge } from "@/components/advisories/AdvisoriesList";
@@ -336,6 +337,77 @@ export function DevisTab({ projectId, contractors, lots, isArchived = false }: D
   );
 }
 
+const REF_FIELD_LABELS: Record<string, string> = {
+  devisCode: "Devis Code",
+  devisNumber: "Supplier Reference (N°)",
+  ref2: "Additional Reference",
+};
+
+function formatRefValue(v: string | null | undefined) {
+  if (v == null || v === "") return "—";
+  return v;
+}
+
+function formatEditTimestamp(ts: string | Date) {
+  const d = typeof ts === "string" ? new Date(ts) : ts;
+  return d.toLocaleString();
+}
+
+function DevisRefEditsHistory({ devisId }: { devisId: number }) {
+  const { data: edits } = useQuery<DevisRefEdit[]>({
+    queryKey: ["/api/devis", devisId, "ref-edits"],
+  });
+
+  if (!edits || edits.length === 0) return null;
+  const last = edits[0];
+  const editor = last.editedByEmail ?? "Unknown editor";
+
+  return (
+    <div className="flex items-center gap-2 text-[10px] text-muted-foreground" data-testid={`section-ref-edits-${devisId}`}>
+      <span data-testid={`text-last-ref-edit-${devisId}`}>
+        Last edited {REF_FIELD_LABELS[last.field] ?? last.field} by {editor} on {formatEditTimestamp(last.editedAt)}
+      </span>
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className="underline hover:text-[#0B2545] transition-colors"
+            data-testid={`button-ref-edit-history-${devisId}`}
+          >
+            View history ({edits.length})
+          </button>
+        </PopoverTrigger>
+        <PopoverContent className="w-96 max-h-80 overflow-y-auto" align="start" data-testid={`popover-ref-edit-history-${devisId}`}>
+          <div className="space-y-2">
+            <p className="text-[11px] font-bold uppercase tracking-widest text-[#0B2545]">Reference edit history</p>
+            <ul className="space-y-2">
+              {edits.map((e) => (
+                <li
+                  key={e.id}
+                  className="text-[10px] border-b border-[rgba(0,0,0,0.06)] pb-2 last:border-b-0 last:pb-0"
+                  data-testid={`row-ref-edit-${e.id}`}
+                >
+                  <div className="font-semibold text-foreground">
+                    {REF_FIELD_LABELS[e.field] ?? e.field}
+                  </div>
+                  <div className="text-muted-foreground">
+                    <span className="line-through">{formatRefValue(e.previousValue)}</span>
+                    <span className="mx-1">→</span>
+                    <span className="text-foreground">{formatRefValue(e.newValue)}</span>
+                  </div>
+                  <div className="text-muted-foreground mt-0.5">
+                    {(e.editedByEmail ?? "Unknown editor")} · {formatEditTimestamp(e.editedAt)}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
+}
+
 interface EditDevisRefsDialogProps {
   devis: Devis;
   projectId: string;
@@ -355,6 +427,7 @@ function EditDevisRefsDialog({ devis, projectId, onClose }: EditDevisRefsDialogP
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id, "ref-edits"] });
       toast({ title: "References updated" });
       onClose();
     },
@@ -1365,6 +1438,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
         <TechnicalLabel>Extraction Advisories</TechnicalLabel>
         <AdvisoriesList subject={{ type: "devis", id: devis.id }} />
       </div>
+      <DevisRefEditsHistory devisId={devis.id} />
       {isVoid && (
         <div className="flex items-center gap-3 p-3 rounded-xl bg-red-50 border border-red-200">
           <Ban size={16} className="text-red-500 shrink-0" />

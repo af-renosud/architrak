@@ -34,6 +34,8 @@ import {
   type BenchmarkTag, type InsertBenchmarkTag,
   type BenchmarkDocument, type InsertBenchmarkDocument,
   type BenchmarkItem, type InsertBenchmarkItem,
+  devisRefEdits,
+  type DevisRefEdit, type InsertDevisRefEdit,
 } from "@shared/schema";
 
 export interface BenchmarkSearchFilters {
@@ -110,6 +112,8 @@ export interface IStorage {
   getDevis(id: number): Promise<Devis | undefined>;
   createDevis(data: InsertDevis): Promise<Devis>;
   updateDevis(id: number, data: Partial<InsertDevis>): Promise<Devis | undefined>;
+  getDevisRefEdits(devisId: number): Promise<DevisRefEdit[]>;
+  createDevisRefEdit(data: InsertDevisRefEdit): Promise<DevisRefEdit>;
 
   getDevisLineItems(devisId: number): Promise<DevisLineItem[]>;
   createDevisLineItem(data: InsertDevisLineItem): Promise<DevisLineItem>;
@@ -470,6 +474,15 @@ export class DatabaseStorage implements IStorage {
   async updateDevis(id: number, data: Partial<InsertDevis>): Promise<Devis | undefined> {
     const [d] = await db.update(devis).set({ ...data, updatedAt: new Date() }).where(eq(devis.id, id)).returning();
     return d;
+  }
+
+  async getDevisRefEdits(devisId: number): Promise<DevisRefEdit[]> {
+    return db.select().from(devisRefEdits).where(eq(devisRefEdits.devisId, devisId)).orderBy(desc(devisRefEdits.editedAt));
+  }
+
+  async createDevisRefEdit(data: InsertDevisRefEdit): Promise<DevisRefEdit> {
+    const [row] = await db.insert(devisRefEdits).values(data).returning();
+    return row;
   }
 
   async getDevisLineItems(devisId: number): Promise<DevisLineItem[]> {
