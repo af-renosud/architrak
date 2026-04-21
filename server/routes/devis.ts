@@ -25,7 +25,7 @@ import {
   acknowledgeAdvisoryForSubject,
 } from "../services/advisory-reconciler";
 import { validateRequest } from "../middleware/validate";
-import { translateDevis, retranslateSingleLine } from "../services/devis-translation";
+import { translateDevis, retranslateSingleLine, triggerDevisTranslation } from "../services/devis-translation";
 import {
   generateDevisTranslationPdf,
   generateCombinedPdf,
@@ -446,6 +446,9 @@ router.post(
       }
       if (updated && inserted.length > 0) {
         await assignTagsForInsertedItems(inserted);
+      }
+      if (updated) {
+        triggerDevisTranslation(updated.id);
       }
       res.json(updated);
     } catch (err: unknown) {
