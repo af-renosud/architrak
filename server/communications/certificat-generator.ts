@@ -3,6 +3,7 @@ import { uploadDocument, getDocumentBuffer } from "../storage/object-storage";
 import { convertHtmlToPdf } from "../services/docraptor";
 import { roundCurrency, calculateTtc } from "@shared/financial-utils";
 import type { Certificat, Project, Contractor, Devis, Lot, Invoice, Avenant } from "@shared/schema";
+import { formatLotDescription } from "@shared/lot-label";
 
 interface DevisWithDetails {
   devis: Devis;
@@ -15,6 +16,7 @@ interface AvenantRow {
   avenantNumber: string;
   type: string;
   descriptionFr: string;
+  descriptionUk: string | null;
   amountHt: number;
   amountTtc: number;
 }
@@ -22,7 +24,10 @@ interface AvenantRow {
 interface DevisAnnexeRow {
   devisCode: string;
   descriptionFr: string;
+  descriptionUk: string | null;
   lotNumber: string;
+  lotDescriptionFr: string | null;
+  lotDescriptionUk: string | null;
   originalHt: number;
   originalTtc: number;
   tvaRate: number;
@@ -196,6 +201,7 @@ async function buildAnnexeData(
           avenantNumber: a.avenantNumber || "—",
           type: a.type,
           descriptionFr: a.descriptionFr,
+          descriptionUk: a.descriptionUk ?? null,
           amountHt: aHt,
           amountTtc: calculateTtc(aHt, devisTvaRate),
         };
@@ -213,7 +219,10 @@ async function buildAnnexeData(
       return {
         devisCode: d.devisCode,
         descriptionFr: d.descriptionFr || d.descriptionUk || "—",
+        descriptionUk: d.descriptionUk ?? null,
         lotNumber: lot ? lot.lotNumber : "—",
+        lotDescriptionFr: lot?.descriptionFr ?? null,
+        lotDescriptionUk: lot?.descriptionUk ?? null,
         originalHt,
         originalTtc,
         tvaRate: devisTvaRate,
@@ -291,10 +300,16 @@ function buildAnnexeHtml(data: AnnexeData): string {
   let rowIdx = 0;
   for (const dr of data.devisRows) {
     const zebraClass = rowIdx % 2 === 1 ? ' style="background:#F8F9FA;"' : "";
+    const lotLabelHtml = dr.lotDescriptionFr || dr.lotDescriptionUk
+      ? `LOT ${dr.lotNumber}<div style="font-weight:400;font-size:6.5pt;color:#7E7F83;">${formatLotDescription({ descriptionFr: dr.lotDescriptionFr, descriptionUk: dr.lotDescriptionUk })}</div>`
+      : `LOT ${dr.lotNumber}`;
+    const devisDescHtml = dr.descriptionUk && dr.descriptionUk !== dr.descriptionFr
+      ? `${dr.descriptionFr}<div style="font-weight:400;font-size:6.5pt;color:#7E7F83;font-style:italic;">${dr.descriptionUk}</div>`
+      : dr.descriptionFr;
     marcheRows += `<tr${zebraClass}>
-      <td style="font-weight:700;color:#0B2545;">LOT ${dr.lotNumber}</td>
+      <td style="font-weight:700;color:#0B2545;">${lotLabelHtml}</td>
       <td style="font-weight:700;color:#0B2545;">${dr.devisCode}</td>
-      <td style="font-weight:600;">${dr.descriptionFr}</td>
+      <td style="font-weight:600;">${devisDescHtml}</td>
       <td style="text-align:right;font-weight:600;">${fmtNum(dr.originalHt)}</td>
       <td style="text-align:right;">—</td>
       <td style="text-align:right;">—</td>
@@ -303,10 +318,13 @@ function buildAnnexeHtml(data: AnnexeData): string {
     for (const av of dr.avenants) {
       const typeLabel = av.type === "pv" ? "PV" : "MV";
       const typeColor = av.type === "pv" ? "#2a7d2e" : "#c0392b";
+      const avDescHtml = av.descriptionUk && av.descriptionUk !== av.descriptionFr
+        ? `${av.descriptionFr} <span style="color:#7E7F83;font-style:italic;">(${av.descriptionUk})</span>`
+        : av.descriptionFr;
       marcheRows += `<tr style="background:#FAFAFA;">
         <td></td>
         <td style="padding-left:16px;border-left:3px solid #C1A27B;font-size:6.5pt;color:#7E7F83;">${av.avenantNumber}</td>
-        <td style="font-size:6.5pt;color:#34312D;">${av.descriptionFr}</td>
+        <td style="font-size:6.5pt;color:#34312D;">${avDescHtml}</td>
         <td style="text-align:right;font-size:6.5pt;">—</td>
         <td style="text-align:right;font-size:6.5pt;color:${typeColor};font-weight:600;">${av.type === "pv" ? fmtNum(av.amountHt) : "—"}</td>
         <td style="text-align:right;font-size:6.5pt;color:${typeColor};font-weight:600;">${av.type === "mv" ? fmtNum(av.amountHt) : "—"}</td>
@@ -482,8 +500,11 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   const dateIssued = formatDateFr(certificat.dateIssued);
 
   const worksRows = devisDetails.map((dd, i) => {
-    const lotNum = dd.lot ? `LOT ${dd.lot.lotNumber}` : "\u2014";
-    const worksDesc = dd.devis.descriptionUk || dd.devis.descriptionFr || "\u2014";
+    const lotDesc = dd.lot ? formatLotDescription(dd.lot) : "";
+    const lotNum = dd.lot
+      ? `LOT ${dd.lot.lotNumber}${lotDesc ? `<div style="font-weight:400;font-size:7pt;color:#7E7F83;">${lotDesc}</div>` : ""}`
+      : "\u2014";
+    const worksDesc = formatLotDescription(dd.devis) || "\u2014";
     const invoiceNums = dd.invoices.length > 0
       ? dd.invoices.map(inv => `#${inv.invoiceNumber}`).join(", ")
       : "\u2014";

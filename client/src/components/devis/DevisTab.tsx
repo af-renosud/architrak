@@ -19,6 +19,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { insertDevisLineItemSchema, insertAvenantSchema, insertLotSchema } from "@shared/schema";
 import type { Devis, Contractor, Lot, LotCatalog, DevisLineItem, Avenant, Invoice } from "@shared/schema";
+import { formatLotDescription } from "@shared/lot-label";
 import { z } from "zod";
 import { AdvisoriesList, AdvisoryBadge } from "@/components/advisories/AdvisoriesList";
 import { DevisTranslationSection } from "@/components/devis/DevisTranslationSection";
@@ -429,7 +430,7 @@ function LotReferenceWarningBanner({
                 <SelectContent>
                   {lotCatalog.map((entry) => (
                     <SelectItem key={entry.id} value={entry.code} data-testid={`option-needs-new-lot-${entry.code}`}>
-                      {entry.code} — {entry.descriptionFr}
+                      {entry.code} — {formatLotDescription(entry)}
                     </SelectItem>
                   ))}
                   <SelectItem value="__new__">+ Add new lot to master list</SelectItem>
@@ -1205,7 +1206,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
                     <SelectContent>
                       {lotCatalog.map((entry) => (
                         <SelectItem key={entry.id} value={entry.code} data-testid={`option-lot-${entry.code}`}>
-                          {entry.code} — {entry.descriptionFr}
+                          {entry.code} — {formatLotDescription(entry)}
                         </SelectItem>
                       ))}
                       <SelectItem value="__new__">+ Add new lot</SelectItem>

@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { RetentionBlockedDialog, type RetainedRecordCounts } from "@/components/projects/RetentionBlockedDialog";
 import { ApiError } from "@/lib/queryClient";
+import { formatLotDescription } from "@shared/lot-label";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -318,7 +319,7 @@ export default function Projects() {
                           <div className="flex flex-wrap gap-1 mt-1">
                             {customLots.map((lot, i) => (
                               <span key={i} className="text-[9px] bg-white border border-border rounded px-1.5 py-0.5">
-                                Lot {lot.lotNumber}: {lot.descriptionFr}
+                                Lot {lot.lotNumber}: {formatLotDescription(lot)}
                               </span>
                             ))}
                           </div>

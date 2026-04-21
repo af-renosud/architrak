@@ -149,6 +149,7 @@ export default function ProjectDetail() {
   const [entryDialogOpen, setEntryDialogOpen] = useState(false);
   const [editingEntryId, setEditingEntryId] = useState<number | null>(null);
   const [lotDialogOpen, setLotDialogOpen] = useState(false);
+  const [editingLot, setEditingLot] = useState<Lot | null>(null);
   const [marcheDialogOpen, setMarcheDialogOpen] = useState(false);
   const [markInvoicedEntryId, setMarkInvoicedEntryId] = useState<number | null>(null);
   const [markInvoicedRef, setMarkInvoicedRef] = useState("");
@@ -281,6 +282,23 @@ export default function ProjectDetail() {
       setLotDialogOpen(false);
       lotForm.reset();
       toast({ title: "Lot created successfully" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const updateLotMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: number; data: z.infer<typeof lotFormSchema> }) => {
+      const res = await apiRequest("PATCH", `/api/lots/${id}`, data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "lots"] });
+      setEditingLot(null);
+      setLotDialogOpen(false);
+      lotForm.reset();
+      toast({ title: "Lot updated" });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -1007,6 +1025,7 @@ export default function ProjectDetail() {
             <div className="space-y-4">
               <div className="flex items-center justify-end">
                 <Button onClick={() => {
+                  setEditingLot(null);
                   lotForm.reset({ projectId: parseInt(projectId!), lotNumber: "", descriptionFr: "", descriptionUk: null });
                   setLotDialogOpen(true);
                 }} disabled={isArchived} data-testid="button-new-lot">
@@ -1027,10 +1046,32 @@ export default function ProjectDetail() {
                         data-testid={`row-lot-${lot.id}`}
                       >
                         <TechnicalLabel>Lot {lot.lotNumber}</TechnicalLabel>
-                        <span className="text-[12px] text-foreground">{lot.descriptionFr}</span>
-                        {lot.descriptionUk && (
-                          <span className="text-[11px] text-muted-foreground">({lot.descriptionUk})</span>
+                        <span className="text-[12px] text-foreground" data-testid={`text-lot-fr-${lot.id}`}>{lot.descriptionFr}</span>
+                        {lot.descriptionUk ? (
+                          <span className="text-[11px] text-muted-foreground italic" data-testid={`text-lot-uk-${lot.id}`}>({lot.descriptionUk})</span>
+                        ) : (
+                          <span className="text-[11px] text-amber-600 dark:text-amber-400 italic" data-testid={`text-lot-uk-missing-${lot.id}`}>(no English description)</span>
                         )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="ml-auto h-7 px-2 gap-1"
+                          disabled={isArchived}
+                          onClick={() => {
+                            setEditingLot(lot);
+                            lotForm.reset({
+                              projectId: parseInt(projectId!),
+                              lotNumber: lot.lotNumber,
+                              descriptionFr: lot.descriptionFr,
+                              descriptionUk: lot.descriptionUk,
+                            });
+                            setLotDialogOpen(true);
+                          }}
+                          data-testid={`button-edit-lot-${lot.id}`}
+                        >
+                          <Pencil size={11} />
+                          <span className="text-[9px] font-bold uppercase tracking-widest">Edit</span>
+                        </Button>
                       </div>
                     ))}
                   </div>
@@ -1040,13 +1081,20 @@ export default function ProjectDetail() {
                   </p>
                 )}
               </LuxuryCard>
-              <Dialog open={lotDialogOpen} onOpenChange={setLotDialogOpen}>
+              <Dialog open={lotDialogOpen} onOpenChange={(open) => { setLotDialogOpen(open); if (!open) setEditingLot(null); }}>
                 <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
                   <DialogHeader>
-                    <DialogTitle className="text-[16px] font-black uppercase tracking-tight">New Lot</DialogTitle>
+                    <DialogTitle className="text-[16px] font-black uppercase tracking-tight">
+                      {editingLot ? `Edit Lot ${editingLot.lotNumber}` : "New Lot"}
+                    </DialogTitle>
+                    {editingLot && (
+                      <DialogDescription className="text-[11px]">
+                        Override the descriptions for this project's lot. Other projects are not affected.
+                      </DialogDescription>
+                    )}
                   </DialogHeader>
                   <Form {...lotForm}>
-                    <form onSubmit={lotForm.handleSubmit((d) => createLotMutation.mutate(d))} className="space-y-4">
+                    <form onSubmit={lotForm.handleSubmit((d) => editingLot ? updateLotMutation.mutate({ id: editingLot.id, data: d }) : createLotMutation.mutate(d))} className="space-y-4">
                       <FormField control={lotForm.control} name="lotNumber" render={({ field }) => (
                         <FormItem>
                           <FormLabel><TechnicalLabel>Lot Number</TechnicalLabel></FormLabel>
@@ -1068,9 +1116,11 @@ export default function ProjectDetail() {
                           <FormMessage />
                         </FormItem>
                       )} />
-                      <Button type="submit" className="w-full" disabled={createLotMutation.isPending} data-testid="button-submit-lot">
+                      <Button type="submit" className="w-full" disabled={createLotMutation.isPending || updateLotMutation.isPending} data-testid="button-submit-lot">
                         <span className="text-[9px] font-bold uppercase tracking-widest">
-                          {createLotMutation.isPending ? "Creating..." : "Create Lot"}
+                          {editingLot
+                            ? (updateLotMutation.isPending ? "Saving..." : "Save Changes")
+                            : (createLotMutation.isPending ? "Creating..." : "Create Lot")}
                         </span>
                       </Button>
                     </form>
