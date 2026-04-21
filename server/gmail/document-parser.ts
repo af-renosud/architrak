@@ -28,15 +28,6 @@ export function isTransientGeminiError(err: unknown): boolean {
   return /service unavailable|currently experiencing high demand|rate limit|too many requests|temporarily unavailable|deadline exceeded|fetch failed|network error|ECONNRESET|ETIMEDOUT|ENOTFOUND/i.test(msg);
 }
 
-export class TransientExtractionError extends Error {
-  readonly cause?: unknown;
-  constructor(message: string, cause?: unknown) {
-    super(message);
-    this.name = "TransientExtractionError";
-    this.cause = cause;
-  }
-}
-
 function getOpenAIClient() {
   return new OpenAI({
     apiKey: env.AI_INTEGRATIONS_OPENAI_API_KEY,
@@ -476,11 +467,31 @@ async function getOpenAIFallbackModelId(): Promise<string> {
   return "gpt-4o";
 }
 
-export async function parseDocument(pdfBuffer: Buffer, fileName: string): Promise<ParsedDocument> {
+export interface ParseDocumentDeps {
+  pdfToImages?: (pdfBuffer: Buffer) => Promise<Buffer[]>;
+  getActiveModel?: () => Promise<{ provider: string; modelId: string }>;
+  parseWithGemini?: (images: Buffer[], modelId: string) => Promise<ParsedDocument>;
+  parseWithOpenAI?: (images: Buffer[], modelId: string) => Promise<ParsedDocument>;
+  getOpenAIFallbackModelId?: () => Promise<string>;
+  hasOpenAIKey?: () => boolean;
+}
+
+export async function parseDocument(
+  pdfBuffer: Buffer,
+  fileName: string,
+  deps: ParseDocumentDeps = {},
+): Promise<ParsedDocument> {
+  const _pdfToImages = deps.pdfToImages ?? pdfToImages;
+  const _getActiveModel = deps.getActiveModel ?? getActiveModel;
+  const _parseWithGemini = deps.parseWithGemini ?? parseWithGemini;
+  const _parseWithOpenAI = deps.parseWithOpenAI ?? parseWithOpenAI;
+  const _getOpenAIFallbackModelId = deps.getOpenAIFallbackModelId ?? getOpenAIFallbackModelId;
+  const _hasOpenAIKey = deps.hasOpenAIKey ?? hasOpenAIKey;
+
   let images: Buffer[];
   try {
     console.log(`[DocumentParser] Converting PDF "${fileName}" to images...`);
-    images = await pdfToImages(pdfBuffer);
+    images = await _pdfToImages(pdfBuffer);
   } catch (err: any) {
     console.error("[DocumentParser] PDF conversion error:", err.message);
     return { documentType: "unknown", rawText: `Parse failed: ${err.message}` };
@@ -490,7 +501,7 @@ export async function parseDocument(pdfBuffer: Buffer, fileName: string): Promis
   }
   console.log(`[DocumentParser] Converted ${images.length} page(s) to PNG`);
 
-  const { provider, modelId } = await getActiveModel();
+  const { provider, modelId } = await _getActiveModel();
   console.log(`[DocumentParser] Using ${provider}/${modelId} for extraction`);
 
   let parsed: ParsedDocument | null = null;
@@ -499,16 +510,16 @@ export async function parseDocument(pdfBuffer: Buffer, fileName: string): Promis
 
   if (provider === "gemini") {
     try {
-      parsed = await parseWithGemini(images, modelId);
+      parsed = await _parseWithGemini(images, modelId);
     } catch (err: any) {
       finalErr = err;
       finalErrTransient = isTransientGeminiError(err);
       console.error(`[DocumentParser] Gemini parse error (transient=${finalErrTransient}):`, err.message);
-      if (finalErrTransient && hasOpenAIKey()) {
-        const fallbackModelId = await getOpenAIFallbackModelId();
+      if (finalErrTransient && _hasOpenAIKey()) {
+        const fallbackModelId = await _getOpenAIFallbackModelId();
         console.warn(`[DocumentParser] Falling back to OpenAI/${fallbackModelId} after Gemini transient failure`);
         try {
-          parsed = await parseWithOpenAI(images, fallbackModelId);
+          parsed = await _parseWithOpenAI(images, fallbackModelId);
           // OpenAI fallback succeeded — clear the prior error.
           finalErr = null;
           finalErrTransient = false;
@@ -524,7 +535,7 @@ export async function parseDocument(pdfBuffer: Buffer, fileName: string): Promis
     }
   } else {
     try {
-      parsed = await parseWithOpenAI(images, modelId);
+      parsed = await _parseWithOpenAI(images, modelId);
     } catch (err: any) {
       finalErr = err;
       finalErrTransient = isTransientGeminiError(err);
