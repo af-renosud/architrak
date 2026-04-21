@@ -254,6 +254,8 @@ vi.mock("../gmail/document-parser", () => ({
   matchToProject: vi.fn(async () => ({
     projectId: 1, contractorId: 1, confidence: 90, matchedFields: [],
   })),
+  isTransientParseFailure: vi.fn(() => false),
+  getParseFailureMessage: vi.fn(() => null),
   PdfPasswordProtectedError: class extends Error {},
 }));
 vi.mock("../services/advisory-reconciler", () => ({

@@ -5,11 +5,37 @@ import { getDocumentBuffer, uploadDocument } from "../storage/object-storage";
 import type { Project, Contractor } from "@shared/schema";
 import { validateExtraction } from "../services/extraction-validator";
 import { checkLotReferencesAgainstCatalog } from "../services/lot-reference-validator";
+import { retry } from "../lib/retry";
 import { execFile } from "child_process";
 import { writeFile, readFile, readdir, unlink, mkdtemp } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { env } from "../env";
+
+const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+export function isTransientGeminiError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (!msg) return false;
+  // If the error message embeds an explicit HTTP status, trust it: transient
+  // statuses retry, all other statuses (esp. 4xx like 400/401/403/404) fail
+  // fast even if the message happens to contain a transient-sounding phrase.
+  const bracketed = msg.match(/\[(\d{3})\b/);
+  if (bracketed) {
+    return TRANSIENT_HTTP_STATUSES.has(Number(bracketed[1]));
+  }
+  // No HTTP status in the message — fall back to network/transient keywords.
+  return /service unavailable|currently experiencing high demand|rate limit|too many requests|temporarily unavailable|deadline exceeded|fetch failed|network error|ECONNRESET|ETIMEDOUT|ENOTFOUND/i.test(msg);
+}
+
+export class TransientExtractionError extends Error {
+  readonly cause?: unknown;
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = "TransientExtractionError";
+    this.cause = cause;
+  }
+}
 
 function getOpenAIClient() {
   return new OpenAI({
@@ -380,13 +406,28 @@ async function parseWithGemini(images: Buffer[], modelId: string): Promise<Parse
     },
   }));
 
-  const result = await model.generateContent([
-    USER_PROMPT,
-    ...imageParts,
-  ]);
-
-  const text = result.response.text();
-  return JSON.parse(text);
+  return retry(
+    async () => {
+      const result = await model.generateContent([
+        USER_PROMPT,
+        ...imageParts,
+      ]);
+      const text = result.response.text();
+      return JSON.parse(text) as ParsedDocument;
+    },
+    {
+      retries: 2,
+      baseMs: 500,
+      maxMs: 6000,
+      factor: 3,
+      jitter: true,
+      shouldRetry: isTransientGeminiError,
+      onRetry: (err, attempt) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[document-parser] Gemini transient error on attempt ${attempt}, retrying: ${msg}`);
+      },
+    },
+  );
 }
 
 async function parseWithOpenAI(images: Buffer[], modelId: string): Promise<ParsedDocument> {
@@ -418,31 +459,101 @@ async function parseWithOpenAI(images: Buffer[], modelId: string): Promise<Parse
   return JSON.parse(cleaned);
 }
 
+function hasOpenAIKey(): boolean {
+  return Boolean(env.AI_INTEGRATIONS_OPENAI_API_KEY);
+}
+
+async function getOpenAIFallbackModelId(): Promise<string> {
+  // Prefer an explicit fallback task setting if the operator configured one,
+  // then any OpenAI-provider document_parsing setting (covers the case where
+  // OpenAI is the primary), and finally a safe vision-capable default.
+  try {
+    const fallback = await storage.getAiModelSetting("document_parsing_fallback");
+    if (fallback?.provider === "openai" && fallback.modelId) return fallback.modelId;
+    const primary = await storage.getAiModelSetting("document_parsing");
+    if (primary?.provider === "openai" && primary.modelId) return primary.modelId;
+  } catch {}
+  return "gpt-4o";
+}
+
 export async function parseDocument(pdfBuffer: Buffer, fileName: string): Promise<ParsedDocument> {
+  let images: Buffer[];
   try {
     console.log(`[DocumentParser] Converting PDF "${fileName}" to images...`);
-    const images = await pdfToImages(pdfBuffer);
-    if (images.length === 0) {
-      return { documentType: "unknown", rawText: "PDF conversion produced no images" };
-    }
-    console.log(`[DocumentParser] Converted ${images.length} page(s) to PNG`);
-
-    const { provider, modelId } = await getActiveModel();
-    console.log(`[DocumentParser] Using ${provider}/${modelId} for extraction`);
-
-    let parsed: ParsedDocument;
-    if (provider === "gemini") {
-      parsed = await parseWithGemini(images, modelId);
-    } else {
-      parsed = await parseWithOpenAI(images, modelId);
-    }
-
-    console.log(`[DocumentParser] Extracted: type=${parsed.documentType}, contractor=${parsed.contractorName}, HT=${parsed.amountHt}, TTC=${parsed.amountTtc}, autoLiq=${parsed.autoLiquidation}, lines=${parsed.lineItems?.length ?? 0}`);
-    return parsed;
+    images = await pdfToImages(pdfBuffer);
   } catch (err: any) {
-    console.error("[DocumentParser] Parse error:", err.message);
+    console.error("[DocumentParser] PDF conversion error:", err.message);
     return { documentType: "unknown", rawText: `Parse failed: ${err.message}` };
   }
+  if (images.length === 0) {
+    return { documentType: "unknown", rawText: "PDF conversion produced no images" };
+  }
+  console.log(`[DocumentParser] Converted ${images.length} page(s) to PNG`);
+
+  const { provider, modelId } = await getActiveModel();
+  console.log(`[DocumentParser] Using ${provider}/${modelId} for extraction`);
+
+  let parsed: ParsedDocument | null = null;
+  let finalErr: unknown = null;
+  let finalErrTransient = false;
+
+  if (provider === "gemini") {
+    try {
+      parsed = await parseWithGemini(images, modelId);
+    } catch (err: any) {
+      finalErr = err;
+      finalErrTransient = isTransientGeminiError(err);
+      console.error(`[DocumentParser] Gemini parse error (transient=${finalErrTransient}):`, err.message);
+      if (finalErrTransient && hasOpenAIKey()) {
+        const fallbackModelId = await getOpenAIFallbackModelId();
+        console.warn(`[DocumentParser] Falling back to OpenAI/${fallbackModelId} after Gemini transient failure`);
+        try {
+          parsed = await parseWithOpenAI(images, fallbackModelId);
+          // OpenAI fallback succeeded — clear the prior error.
+          finalErr = null;
+          finalErrTransient = false;
+        } catch (fallbackErr: any) {
+          // Replace the Gemini error with the actual final cause and
+          // re-classify so a permanent OpenAI failure (e.g., bad key)
+          // surfaces as permanent, not transient.
+          finalErr = fallbackErr;
+          finalErrTransient = isTransientGeminiError(fallbackErr);
+          console.error(`[DocumentParser] OpenAI fallback also failed (transient=${finalErrTransient}):`, fallbackErr.message);
+        }
+      }
+    }
+  } else {
+    try {
+      parsed = await parseWithOpenAI(images, modelId);
+    } catch (err: any) {
+      finalErr = err;
+      finalErrTransient = isTransientGeminiError(err);
+      console.error(`[DocumentParser] OpenAI parse error (transient=${finalErrTransient}):`, err.message);
+    }
+  }
+
+  if (parsed) {
+    console.log(`[DocumentParser] Extracted: type=${parsed.documentType}, contractor=${parsed.contractorName}, HT=${parsed.amountHt}, TTC=${parsed.amountTtc}, autoLiq=${parsed.autoLiquidation}, lines=${parsed.lineItems?.length ?? 0}`);
+    return parsed;
+  }
+
+  const message = finalErr instanceof Error ? finalErr.message : String(finalErr);
+  return {
+    documentType: "unknown",
+    rawText: `Parse failed${finalErrTransient ? " (transient)" : ""}: ${message}`,
+  };
+}
+
+export function isTransientParseFailure(parsed: ParsedDocument): boolean {
+  return parsed.documentType === "unknown"
+    && typeof parsed.rawText === "string"
+    && parsed.rawText.startsWith("Parse failed (transient):");
+}
+
+export function getParseFailureMessage(parsed: ParsedDocument): string | null {
+  if (parsed.documentType !== "unknown" || typeof parsed.rawText !== "string") return null;
+  const m = parsed.rawText.match(/^Parse failed(?:\s*\(transient\))?:\s*(.+)$/);
+  return m ? m[1] : null;
 }
 
 export async function matchToProject(

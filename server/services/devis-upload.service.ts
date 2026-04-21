@@ -26,15 +26,22 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
     description: `Devis PDF upload: ${file.originalname}`,
   });
 
-  const { parseDocument, matchToProject } = await import("../gmail/document-parser");
+  const { parseDocument, matchToProject, isTransientParseFailure, getParseFailureMessage } = await import("../gmail/document-parser");
   const parsed = await parseDocument(file.buffer, file.originalname);
 
   if (parsed.documentType === "unknown" && !parsed.amountHt && !parsed.contractorName && !parsed.lineItems?.length) {
+    const transient = isTransientParseFailure(parsed);
+    const reason = getParseFailureMessage(parsed);
+    const message = transient
+      ? `AI extraction temporarily unavailable${reason ? ` (${reason})` : ""}. Please try again in a moment.`
+      : reason
+        ? `AI extraction failed: ${reason}`
+        : "Could not extract meaningful data from this PDF. Please check the file is a valid quotation/devis.";
     return {
       success: false,
-      status: 422,
+      status: transient ? 503 : 422,
       data: {
-        message: "Could not extract meaningful data from this PDF. Please check the file is a valid quotation/devis.",
+        message,
         extraction: parsed,
         storageKey,
         fileName: file.originalname,
