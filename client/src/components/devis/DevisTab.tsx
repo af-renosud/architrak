@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff, ShieldCheck, ShieldAlert, ShieldX, Trash2, X, Tag, Settings as SettingsIcon } from "lucide-react";
+import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff, ShieldCheck, ShieldAlert, ShieldX, Trash2, X, Tag, Settings as SettingsIcon, Wand2 } from "lucide-react";
 import { Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -341,10 +341,36 @@ function LotReferenceWarningBanner({
   const [addingNew, setAddingNew] = useState(false);
   const [newCode, setNewCode] = useState("");
   const [newDesc, setNewDesc] = useState("");
+  const [newDescUk, setNewDescUk] = useState("");
+  const [suggesting, setSuggesting] = useState(false);
 
   const { data: lotCatalog = [] } = useQuery<LotCatalog[]>({
     queryKey: ["/api/lot-catalog"],
   });
+
+  const suggestMutation = useMutation({
+    mutationFn: async (data: { descriptionFr: string; code?: string }) => {
+      const res = await apiRequest("POST", "/api/lot-catalog/translate", data);
+      return (await res.json()) as { translation: string };
+    },
+    onError: (error: Error) => {
+      toast({ title: "Could not suggest translation", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const handleSuggest = async () => {
+    const fr = newDesc.trim();
+    if (!fr) return;
+    setSuggesting(true);
+    try {
+      const result = await suggestMutation.mutateAsync({ descriptionFr: fr, code: newCode.trim() || undefined });
+      if (result?.translation) setNewDescUk(result.translation);
+    } catch {
+      // handled in onError
+    } finally {
+      setSuggesting(false);
+    }
+  };
 
   const assignMutation = useMutation({
     mutationFn: async (catalogCode: string) => {
@@ -366,7 +392,7 @@ function LotReferenceWarningBanner({
   });
 
   const createMutation = useMutation({
-    mutationFn: async (data: { code: string; descriptionFr: string }) => {
+    mutationFn: async (data: { code: string; descriptionFr: string; descriptionUk?: string | null }) => {
       const res = await apiRequest("POST", `/api/lot-catalog`, data);
       return res.json();
     },
@@ -376,6 +402,7 @@ function LotReferenceWarningBanner({
       setAddingNew(false);
       setNewCode("");
       setNewDesc("");
+      setNewDescUk("");
       toast({ title: "Lot added to master list" });
     },
     onError: (error: Error) => {
@@ -467,13 +494,32 @@ function LotReferenceWarningBanner({
                   data-testid={`input-needs-new-lot-desc-${devisId}`}
                 />
               </div>
+              <div className="relative">
+                <Input
+                  placeholder="English description (optional)"
+                  value={newDescUk}
+                  onChange={(e) => setNewDescUk(e.target.value)}
+                  className="text-[11px] h-8 pr-8"
+                  data-testid={`input-needs-new-lot-desc-uk-${devisId}`}
+                />
+                <button
+                  type="button"
+                  onClick={handleSuggest}
+                  disabled={suggesting || newDesc.trim().length === 0}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="Suggest English translation"
+                  data-testid={`button-suggest-needs-new-lot-uk-${devisId}`}
+                >
+                  {suggesting ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
+                </button>
+              </div>
               <div className="flex items-center gap-2">
                 <Button
                   variant="outline"
                   size="sm"
                   className="h-7"
                   disabled={!newCode.trim() || !newDesc.trim() || createMutation.isPending || assignMutation.isPending}
-                  onClick={() => createMutation.mutate({ code: newCode.trim(), descriptionFr: newDesc.trim() })}
+                  onClick={() => createMutation.mutate({ code: newCode.trim(), descriptionFr: newDesc.trim(), descriptionUk: newDescUk.trim() || null })}
                   data-testid={`button-save-needs-new-lot-${devisId}`}
                 >
                   <span className="text-[9px] font-bold uppercase tracking-widest">
@@ -484,7 +530,7 @@ function LotReferenceWarningBanner({
                   variant="ghost"
                   size="sm"
                   className="h-7"
-                  onClick={() => { setAddingNew(false); setNewCode(""); setNewDesc(""); }}
+                  onClick={() => { setAddingNew(false); setNewCode(""); setNewDesc(""); setNewDescUk(""); }}
                   data-testid={`button-cancel-needs-new-lot-${devisId}`}
                 >
                   <span className="text-[9px] font-bold uppercase tracking-widest">Cancel</span>
@@ -918,6 +964,8 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
   const [addingNewLot, setAddingNewLot] = useState(false);
   const [newLotNumber, setNewLotNumber] = useState("");
   const [newLotDescription, setNewLotDescription] = useState("");
+  const [newLotDescriptionUk, setNewLotDescriptionUk] = useState("");
+  const [suggestingLotUk, setSuggestingLotUk] = useState(false);
   const [descriptionUkLocal, setDescriptionUkLocal] = useState(devis.descriptionUk || "");
 
   const { data: invoices } = useQuery<Invoice[]>({
@@ -1089,7 +1137,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
   });
 
   const createCatalogLotMutation = useMutation({
-    mutationFn: async (data: { code: string; descriptionFr: string }) => {
+    mutationFn: async (data: { code: string; descriptionFr: string; descriptionUk?: string | null }) => {
       const res = await apiRequest("POST", `/api/lot-catalog`, data);
       return res.json();
     },
@@ -1099,12 +1147,37 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
       setAddingNewLot(false);
       setNewLotNumber("");
       setNewLotDescription("");
+      setNewLotDescriptionUk("");
       toast({ title: "Lot added to master list and assigned" });
     },
     onError: (error: Error) => {
       toast({ title: "Error creating lot", description: error.message, variant: "destructive" });
     },
   });
+
+  const suggestLotUkMutation = useMutation({
+    mutationFn: async (data: { descriptionFr: string; code?: string }) => {
+      const res = await apiRequest("POST", "/api/lot-catalog/translate", data);
+      return (await res.json()) as { translation: string };
+    },
+    onError: (error: Error) => {
+      toast({ title: "Could not suggest translation", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const handleSuggestNewLotUk = async () => {
+    const fr = newLotDescription.trim();
+    if (!fr) return;
+    setSuggestingLotUk(true);
+    try {
+      const result = await suggestLotUkMutation.mutateAsync({ descriptionFr: fr, code: newLotNumber.trim() || undefined });
+      if (result?.translation) setNewLotDescriptionUk(result.translation);
+    } catch {
+      // handled in onError
+    } finally {
+      setSuggestingLotUk(false);
+    }
+  };
 
   const currentLot = devis.lotId ? lots.find(l => l.id === devis.lotId) : undefined;
   const currentCatalogCode = currentLot?.lotNumber ?? "";
@@ -1232,12 +1305,31 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
                       data-testid={`input-new-lot-desc-${devis.id}`}
                     />
                   </div>
+                  <div className="relative">
+                    <Input
+                      placeholder="English description (optional)"
+                      value={newLotDescriptionUk}
+                      onChange={(e) => setNewLotDescriptionUk(e.target.value)}
+                      className="text-[11px] pr-8"
+                      data-testid={`input-new-lot-desc-uk-${devis.id}`}
+                    />
+                    <button
+                      type="button"
+                      onClick={handleSuggestNewLotUk}
+                      disabled={suggestingLotUk || newLotDescription.trim().length === 0 || isArchived}
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed"
+                      title="Suggest English translation"
+                      data-testid={`button-suggest-new-lot-uk-${devis.id}`}
+                    >
+                      {suggestingLotUk ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
+                    </button>
+                  </div>
                   <div className="flex items-center gap-2 flex-wrap">
                     <Button
                       variant="outline"
                       size="sm"
                       disabled={!newLotNumber.trim() || !newLotDescription.trim() || createCatalogLotMutation.isPending || assignFromCatalogMutation.isPending || isArchived}
-                      onClick={() => createCatalogLotMutation.mutate({ code: newLotNumber.trim(), descriptionFr: newLotDescription.trim() })}
+                      onClick={() => createCatalogLotMutation.mutate({ code: newLotNumber.trim(), descriptionFr: newLotDescription.trim(), descriptionUk: newLotDescriptionUk.trim() || null })}
                       data-testid={`button-save-new-lot-${devis.id}`}
                     >
                       <span className="text-[9px] font-bold uppercase tracking-widest">
@@ -1247,7 +1339,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => { setAddingNewLot(false); setNewLotNumber(""); setNewLotDescription(""); }}
+                      onClick={() => { setAddingNewLot(false); setNewLotNumber(""); setNewLotDescription(""); setNewLotDescriptionUk(""); }}
                       data-testid={`button-cancel-new-lot-${devis.id}`}
                     >
                       <span className="text-[9px] font-bold uppercase tracking-widest">Cancel</span>
