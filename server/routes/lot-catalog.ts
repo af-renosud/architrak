@@ -4,9 +4,31 @@ import { storage } from "../storage";
 import { insertLotCatalogSchema } from "@shared/schema";
 import { validateRequest } from "../middleware/validate";
 import { reconcileAdvisories } from "../services/advisory-reconciler";
+import { translateLotDescription } from "../services/lot-translation";
 import type { ValidatorWarningLike } from "@shared/advisory-codes";
 
 const router = Router();
+
+const translateBodySchema = z.object({
+  descriptionFr: z.string().trim().min(1, "French description is required").max(500),
+  code: z.string().trim().max(16).optional(),
+});
+
+router.post(
+  "/api/lot-catalog/translate",
+  validateRequest({ body: translateBodySchema }),
+  async (req, res) => {
+    try {
+      const { descriptionFr, code } = req.body as z.infer<typeof translateBodySchema>;
+      const result = await translateLotDescription(descriptionFr, code);
+      res.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Translation failed";
+      console.warn("[LotCatalog] Translation failed:", message);
+      res.status(502).json({ message });
+    }
+  },
+);
 
 const catalogCodeSchema = insertLotCatalogSchema.shape.code;
 

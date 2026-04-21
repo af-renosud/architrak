@@ -8,7 +8,7 @@ import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Zap, Sparkles, Crown, Gauge, DollarSign, Brain, Check, Upload, Trash2, Image, Building2, Scale, Layers, Plus, Pencil } from "lucide-react";
+import { Zap, Sparkles, Crown, Gauge, DollarSign, Brain, Check, Upload, Trash2, Image, Building2, Scale, Layers, Plus, Pencil, Wand2, Loader2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -324,6 +324,72 @@ function LotCatalogSection() {
     },
   });
 
+  type SuggestTarget = "add" | "edit";
+  const [suggesting, setSuggesting] = useState<SuggestTarget | null>(null);
+
+  const suggestMutation = useMutation({
+    mutationFn: async (data: { descriptionFr: string; code?: string }) => {
+      const res = await apiRequest("POST", "/api/lot-catalog/translate", data);
+      return (await res.json()) as { translation: string };
+    },
+    onError: (error: Error) => {
+      toast({ title: "Could not suggest translation", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const suggestForAdd = async () => {
+    const fr = descriptionFr.trim();
+    if (!fr) {
+      toast({ title: "Add a French description first", variant: "destructive" });
+      return;
+    }
+    setSuggesting("add");
+    try {
+      const { translation } = await suggestMutation.mutateAsync({ descriptionFr: fr, code: code.trim() || undefined });
+      setDescriptionUk(translation);
+    } catch {
+      // toast handled in onError
+    } finally {
+      setSuggesting(null);
+    }
+  };
+
+  const suggestForEdit = async () => {
+    const fr = editDescriptionFr.trim();
+    if (!fr) {
+      toast({ title: "French description is required", variant: "destructive" });
+      return;
+    }
+    setSuggesting("edit");
+    try {
+      const { translation } = await suggestMutation.mutateAsync({ descriptionFr: fr, code: editCode.trim() || undefined });
+      setEditDescriptionUk(translation);
+    } catch {
+      // toast handled in onError
+    } finally {
+      setSuggesting(null);
+    }
+  };
+
+  const suggestForRow = async (entry: LotCatalog) => {
+    setEditing(entry);
+    setEditCode(entry.code);
+    setEditDescriptionFr(entry.descriptionFr);
+    setEditDescriptionUk(entry.descriptionUk ?? "");
+    setSuggesting("edit");
+    try {
+      const { translation } = await suggestMutation.mutateAsync({
+        descriptionFr: entry.descriptionFr,
+        code: entry.code,
+      });
+      setEditDescriptionUk(translation);
+    } catch {
+      // toast handled in onError
+    } finally {
+      setSuggesting(null);
+    }
+  };
+
   const openEdit = (entry: LotCatalog) => {
     setEditing(entry);
     setEditCode(entry.code);
@@ -386,14 +452,31 @@ function LotCatalogSection() {
                 maxLength={200}
                 data-testid="input-lot-catalog-description"
               />
-              <Input
-                placeholder="English description (optional)"
-                value={descriptionUk}
-                onChange={(e) => setDescriptionUk(e.target.value)}
-                className="text-[11px]"
-                maxLength={200}
-                data-testid="input-lot-catalog-description-uk"
-              />
+              <div className="relative">
+                <Input
+                  placeholder="English description (optional)"
+                  value={descriptionUk}
+                  onChange={(e) => setDescriptionUk(e.target.value)}
+                  className="text-[11px] pr-8"
+                  maxLength={200}
+                  data-testid="input-lot-catalog-description-uk"
+                />
+                <button
+                  type="button"
+                  onClick={suggestForAdd}
+                  disabled={suggesting !== null || descriptionFr.trim().length === 0}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 rounded text-muted-foreground hover:text-foreground hover:bg-[rgba(0,0,0,0.05)] disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="Suggest English translation"
+                  aria-label="Suggest English translation"
+                  data-testid="button-suggest-lot-catalog-description-uk"
+                >
+                  {suggesting === "add" ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <Wand2 size={12} />
+                  )}
+                </button>
+              </div>
               <Button
                 size="sm"
                 onClick={() => {
@@ -457,6 +540,18 @@ function LotCatalogSection() {
                       size="icon"
                       variant="ghost"
                       className="h-6 w-6"
+                      onClick={() => suggestForRow(entry)}
+                      disabled={suggesting !== null}
+                      data-testid={`button-suggest-lot-catalog-${entry.code}`}
+                      aria-label={`Suggest English for ${entry.code}`}
+                      title="Suggest English translation"
+                    >
+                      <Wand2 size={11} />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-6 w-6"
                       onClick={() => openEdit(entry)}
                       data-testid={`button-edit-lot-catalog-${entry.code}`}
                       aria-label={`Edit ${entry.code}`}
@@ -512,14 +607,33 @@ function LotCatalogSection() {
             </div>
             <div>
               <TechnicalLabel className="mb-1.5 block">English description (optional)</TechnicalLabel>
-              <Input
-                value={editDescriptionUk}
-                onChange={(e) => setEditDescriptionUk(e.target.value)}
-                className="text-[11px]"
-                maxLength={200}
-                placeholder="Leave empty to clear"
-                data-testid="input-edit-lot-catalog-description-uk"
-              />
+              <div className="flex gap-2">
+                <Input
+                  value={editDescriptionUk}
+                  onChange={(e) => setEditDescriptionUk(e.target.value)}
+                  className="text-[11px] flex-1"
+                  maxLength={200}
+                  placeholder="Leave empty to clear"
+                  data-testid="input-edit-lot-catalog-description-uk"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={suggestForEdit}
+                  disabled={suggesting !== null || editDescriptionFr.trim().length === 0}
+                  data-testid="button-suggest-edit-lot-catalog-description-uk"
+                >
+                  {suggesting === "edit" ? (
+                    <Loader2 size={12} className="mr-1.5 animate-spin" />
+                  ) : (
+                    <Wand2 size={12} className="mr-1.5" />
+                  )}
+                  <span className="text-[10px] font-bold uppercase tracking-widest">
+                    {suggesting === "edit" ? "Suggesting..." : "Suggest"}
+                  </span>
+                </Button>
+              </div>
               <p className="mt-1 text-[9px] text-muted-foreground">
                 Saving an English description backfills it on existing project lots that don't yet have one.
               </p>
