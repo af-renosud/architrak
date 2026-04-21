@@ -110,10 +110,10 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "translation"] });
-      toast({ title: "Translation finalised", description: "Translation locked and ready to share with the client." });
+      toast({ title: "Translation approved", description: "Translation locked and ready to share with the client." });
     },
     onError: (err: Error) => {
-      toast({ title: "Finalise failed", description: err.message, variant: "destructive" });
+      toast({ title: "Approve failed", description: err.message, variant: "destructive" });
     },
   });
 
@@ -176,7 +176,7 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
   }
 
   const statusBadge = (() => {
-    if (status === "finalised") return <Badge className="gap-1 bg-emerald-600 hover:bg-emerald-600 text-white" data-testid={`badge-translation-status-${devisId}`}><Lock className="h-3 w-3" /> Finalised</Badge>;
+    if (status === "finalised") return <Badge className="gap-1 bg-emerald-600 hover:bg-emerald-600 text-white" data-testid={`badge-translation-status-${devisId}`}><Lock className="h-3 w-3" /> Approved</Badge>;
     if (status === "edited") return <Badge variant="secondary" data-testid={`badge-translation-status-${devisId}`}>Edited</Badge>;
     if (status === "draft") return <Badge variant="secondary" data-testid={`badge-translation-status-${devisId}`}>Draft</Badge>;
     if (isProcessing) return <Badge variant="outline" className="gap-1" data-testid={`badge-translation-status-${devisId}`}><Loader2 className="h-3 w-3 animate-spin" /> Translating</Badge>;
@@ -269,13 +269,32 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
               onClick={() => finaliseMutation.mutate()}
               disabled={finaliseMutation.isPending}
               data-testid={`button-finalise-${devisId}`}
+              title="Lock this translation as reviewed and approved before sharing with the client."
             >
               {finaliseMutation.isPending ? (
                 <Loader2 className="h-3 w-3 animate-spin mr-1" />
               ) : (
                 <CheckCircle2 className="h-3 w-3 mr-1" />
               )}
-              Finalise
+              Approve translation
+            </Button>
+          )}
+
+          {isFinalised && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => translateMutation.mutate(true)}
+              disabled={translateMutation.isPending || isProcessing}
+              data-testid={`button-retranslate-all-${devisId}`}
+              title="Re-run AI translation and unlock the approved translation. All manual edits and the approval will be cleared."
+            >
+              {translateMutation.isPending || isProcessing ? (
+                <Loader2 className="h-3 w-3 animate-spin mr-1" />
+              ) : (
+                <RefreshCw className="h-3 w-3 mr-1" />
+              )}
+              Re-translate (unlock)
             </Button>
           )}
 
@@ -317,6 +336,17 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
       {status === "failed" && translation?.errorMessage && (
         <p className="text-xs text-destructive" data-testid={`text-translation-error-${devisId}`}>
           {translation.errorMessage}
+        </p>
+      )}
+
+      {isFinalised && translation?.approvedAt && (
+        <p
+          className="text-xs text-emerald-700 dark:text-emerald-400 inline-flex items-center gap-1"
+          data-testid={`text-translation-approved-${devisId}`}
+        >
+          <Lock className="h-3 w-3" />
+          Approved {translation.approvedByEmail ? `by ${translation.approvedByEmail} ` : ""}
+          on {new Date(translation.approvedAt).toLocaleString("en-GB")}. Re-translate all to unlock.
         </p>
       )}
 

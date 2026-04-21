@@ -793,6 +793,9 @@ export const devisTranslations = pgTable("devis_translations", {
   errorMessage: text("error_message"),
   translatedPdfStorageKey: text("translated_pdf_storage_key"),
   combinedPdfStorageKey: text("combined_pdf_storage_key"),
+  approvedAt: timestamp("approved_at"),
+  approvedBy: integer("approved_by"),
+  approvedByEmail: text("approved_by_email"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });

@@ -172,6 +172,9 @@ export async function translateDevis(
     combinedPdfStorageKey: null,
     provider: existing?.provider ?? null,
     modelId: existing?.modelId ?? null,
+    approvedAt: null,
+    approvedBy: null,
+    approvedByEmail: null,
   });
 
   const { provider, modelId } = await getActiveModel();

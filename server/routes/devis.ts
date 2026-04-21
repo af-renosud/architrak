@@ -246,20 +246,31 @@ router.post(
   },
 );
 
-router.post("/api/devis/:id/translation/finalise", validateRequest({ params: idParams }), async (req, res) => {
-  const devisId = Number(req.params.id);
-  const existing = await storage.getDevisTranslation(devisId);
-  if (!existing) return res.status(404).json({ message: "No translation to finalise" });
-  if (existing.status !== "draft" && existing.status !== "edited") {
-    return res.status(409).json({ message: `Cannot finalise translation in status ${existing.status}` });
-  }
-  const updated = await storage.updateDevisTranslation(devisId, {
-    status: "finalised",
-    translatedPdfStorageKey: null,
-    combinedPdfStorageKey: null,
-  });
-  res.json(updated);
-});
+router.post(
+  "/api/devis/:id/translation/finalise",
+  requireAuth,
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    const devisId = Number(req.params.id);
+    const existing = await storage.getDevisTranslation(devisId);
+    if (!existing) return res.status(404).json({ message: "No translation to finalise" });
+    if (existing.status !== "draft" && existing.status !== "edited") {
+      return res.status(409).json({ message: `Cannot finalise translation in status ${existing.status}` });
+    }
+    const userId = req.session?.userId;
+    if (!userId) return res.status(401).json({ message: "Authentication required" });
+    const approver = await storage.getUser(Number(userId));
+    const updated = await storage.updateDevisTranslation(devisId, {
+      status: "finalised",
+      translatedPdfStorageKey: null,
+      combinedPdfStorageKey: null,
+      approvedAt: new Date(),
+      approvedBy: Number(userId),
+      approvedByEmail: approver?.email ?? null,
+    });
+    res.json(updated);
+  },
+);
 
 const patchTranslationSchema = z.object({
   header: devisTranslationHeaderSchema.optional(),
