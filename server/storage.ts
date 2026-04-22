@@ -5,13 +5,14 @@ import {
   avenants, invoices, situations, situationLines, certificats, fees, feeEntries,
   archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog, archidocSiretIssues,
   emailDocuments, projectDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
-  aiModelSettings, templateAssets, users, devisTranslations,
+  aiModelSettings, templateAssets, users, devisTranslations, wishListItems,
   benchmarkDocuments, benchmarkItems, benchmarkTags, benchmarkItemTags,
   type Project, type InsertProject,
   type User, type InsertUser,
   type Contractor, type InsertContractor,
   type Lot, type InsertLot,
   type LotCatalog, type InsertLotCatalog,
+  type WishListItem, type InsertWishListItem, type UpdateWishListItem,
   type Marche, type InsertMarche,
   type Devis, type InsertDevis,
   type DevisLineItem, type InsertDevisLineItem,
@@ -102,6 +103,12 @@ export interface IStorage {
   createLotCatalogEntry(data: InsertLotCatalog): Promise<LotCatalog>;
   updateLotCatalogEntry(id: number, data: Partial<InsertLotCatalog>): Promise<LotCatalog | undefined>;
   deleteLotCatalogEntry(id: number): Promise<void>;
+
+  getWishListItems(): Promise<WishListItem[]>;
+  getWishListItem(id: number): Promise<WishListItem | undefined>;
+  createWishListItem(data: InsertWishListItem): Promise<WishListItem>;
+  updateWishListItem(id: number, data: UpdateWishListItem): Promise<WishListItem | undefined>;
+  deleteWishListItem(id: number): Promise<void>;
   countProjectLotsByCode(code: string): Promise<number>;
   ensureProjectLotFromCatalog(projectId: number, catalogCode: string): Promise<Lot | undefined>;
 
@@ -409,6 +416,33 @@ export class DatabaseStorage implements IStorage {
 
   async deleteLotCatalogEntry(id: number): Promise<void> {
     await db.delete(lotCatalog).where(eq(lotCatalog.id, id));
+  }
+
+  async getWishListItems(): Promise<WishListItem[]> {
+    return db.select().from(wishListItems).orderBy(desc(wishListItems.createdAt));
+  }
+
+  async getWishListItem(id: number): Promise<WishListItem | undefined> {
+    const [row] = await db.select().from(wishListItems).where(eq(wishListItems.id, id)).limit(1);
+    return row;
+  }
+
+  async createWishListItem(data: InsertWishListItem): Promise<WishListItem> {
+    const [row] = await db.insert(wishListItems).values(data).returning();
+    return row;
+  }
+
+  async updateWishListItem(id: number, data: UpdateWishListItem): Promise<WishListItem | undefined> {
+    const [row] = await db
+      .update(wishListItems)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(wishListItems.id, id))
+      .returning();
+    return row;
+  }
+
+  async deleteWishListItem(id: number): Promise<void> {
+    await db.delete(wishListItems).where(eq(wishListItems.id, id));
   }
 
   async countProjectLotsByCode(code: string): Promise<number> {

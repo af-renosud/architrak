@@ -945,3 +945,45 @@ export const insertInvoiceRefEditSchema = createInsertSchema(invoiceRefEdits).om
 });
 export type InvoiceRefEdit = typeof invoiceRefEdits.$inferSelect;
 export type InsertInvoiceRefEdit = z.infer<typeof insertInvoiceRefEditSchema>;
+
+export const WISH_LIST_TYPES = ["feature", "bug"] as const;
+export const WISH_LIST_STATUSES = ["open", "in_progress", "done", "wontfix"] as const;
+export type WishListType = (typeof WISH_LIST_TYPES)[number];
+export type WishListStatus = (typeof WISH_LIST_STATUSES)[number];
+
+export const wishListItems = pgTable("wish_list_items", {
+  id: serial("id").primaryKey(),
+  type: text("type").notNull().default("feature"),
+  title: text("title").notNull(),
+  description: text("description"),
+  status: text("status").notNull().default("open"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("wish_list_items_status_idx").on(table.status),
+  check("wish_list_items_type_chk", sql`${table.type} IN ('feature','bug')`),
+  check("wish_list_items_status_chk", sql`${table.status} IN ('open','in_progress','done','wontfix')`),
+]);
+
+export const insertWishListItemSchema = createInsertSchema(wishListItems).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  type: z.enum(WISH_LIST_TYPES),
+  title: z.string().trim().min(1, "Title is required").max(200, "Title must be 200 characters or less"),
+  description: z
+    .string()
+    .trim()
+    .max(2000, "Description must be 2000 characters or less")
+    .transform((v) => (v.length === 0 ? null : v))
+    .nullable()
+    .optional(),
+  status: z.enum(WISH_LIST_STATUSES).optional(),
+});
+
+export const updateWishListItemSchema = insertWishListItemSchema.partial();
+
+export type WishListItem = typeof wishListItems.$inferSelect;
+export type InsertWishListItem = z.infer<typeof insertWishListItemSchema>;
+export type UpdateWishListItem = z.infer<typeof updateWishListItemSchema>;

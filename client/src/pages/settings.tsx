@@ -8,7 +8,7 @@ import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Zap, Sparkles, Crown, Gauge, DollarSign, Brain, Check, Upload, Trash2, Image, Building2, Scale, Layers, Plus, Pencil, Wand2, Loader2, RefreshCw, Users, FileText, ExternalLink } from "lucide-react";
+import { Zap, Sparkles, Crown, Gauge, DollarSign, Brain, Check, Upload, Trash2, Image, Building2, Scale, Layers, Plus, Pencil, Wand2, Loader2, RefreshCw, Users, FileText, ExternalLink, Lightbulb, Bug } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -259,6 +259,7 @@ export default function SettingsPage() {
 
         <TemplateAssetsSection />
         <TemplatesSection />
+        <WishListSection />
         <LotCatalogSection />
         <DevisRematchSection />
         <InvoiceRematchSection />
@@ -1434,6 +1435,280 @@ const ASSET_SLOTS = [
     icon: Scale,
   },
 ] as const;
+
+interface WishListItemDto {
+  id: number;
+  type: "feature" | "bug";
+  title: string;
+  description: string | null;
+  status: "open" | "in_progress" | "done" | "wontfix";
+  createdAt: string;
+  updatedAt: string;
+}
+
+const WISH_STATUS_LABEL: Record<WishListItemDto["status"], string> = {
+  open: "Open",
+  in_progress: "In progress",
+  done: "Done",
+  wontfix: "Won't fix",
+};
+
+const WISH_STATUS_CLASS: Record<WishListItemDto["status"], string> = {
+  open: "bg-amber-100 text-amber-800 border-amber-300",
+  in_progress: "bg-blue-100 text-blue-800 border-blue-300",
+  done: "bg-emerald-100 text-emerald-800 border-emerald-300",
+  wontfix: "bg-slate-200 text-slate-700 border-slate-300",
+};
+
+function WishListSection() {
+  const { toast } = useToast();
+  const [type, setType] = useState<"feature" | "bug">("feature");
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+
+  const { data: items = [], isLoading } = useQuery<WishListItemDto[]>({
+    queryKey: ["/api/wish-list"],
+  });
+
+  const createMutation = useMutation({
+    mutationFn: async (body: { type: string; title: string; description: string }) => {
+      const res = await apiRequest("POST", "/api/wish-list", body);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/wish-list"] });
+      toast({ title: "Added to wish list" });
+      setTitle("");
+      setDescription("");
+      setType("feature");
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not save", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: async ({ id, status }: { id: number; status: WishListItemDto["status"] }) => {
+      const res = await apiRequest("PATCH", `/api/wish-list/${id}`, { status });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/wish-list"] });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not update", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("DELETE", `/api/wish-list/${id}`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/wish-list"] });
+      toast({ title: "Removed" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not delete", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = title.trim();
+    if (trimmed.length === 0) {
+      toast({ title: "Title is required", variant: "destructive" });
+      return;
+    }
+    createMutation.mutate({ type, title: trimmed, description: description.trim() });
+  };
+
+  const openItems = items.filter((i) => i.status === "open" || i.status === "in_progress");
+  const closedItems = items.filter((i) => i.status === "done" || i.status === "wontfix");
+
+  return (
+    <div className="mt-10">
+      <div className="mb-6">
+        <h2
+          className="text-[16px] font-black uppercase tracking-tight mb-1"
+          style={{ color: "#0B2545" }}
+          data-testid="text-wish-list-title"
+        >
+          Wish List
+        </h2>
+        <p className="text-[11px] text-muted-foreground">
+          Capture feature requests and bugs as you think of them. They live here so nothing gets lost.
+        </p>
+      </div>
+
+      <LuxuryCard>
+        <form onSubmit={handleSubmit} className="space-y-3" data-testid="form-wish-list">
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setType("feature")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-[11px] font-bold uppercase tracking-wide transition-colors ${
+                type === "feature"
+                  ? "bg-amber-50 border-amber-400 text-amber-900"
+                  : "bg-white border-slate-200 text-slate-500 hover:border-slate-300"
+              }`}
+              data-testid="button-wish-type-feature"
+            >
+              <Lightbulb size={13} />
+              Feature
+            </button>
+            <button
+              type="button"
+              onClick={() => setType("bug")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-[11px] font-bold uppercase tracking-wide transition-colors ${
+                type === "bug"
+                  ? "bg-rose-50 border-rose-400 text-rose-900"
+                  : "bg-white border-slate-200 text-slate-500 hover:border-slate-300"
+              }`}
+              data-testid="button-wish-type-bug"
+            >
+              <Bug size={13} />
+              Bug
+            </button>
+          </div>
+
+          <Input
+            placeholder={type === "bug" ? "What's broken? (short summary)" : "What would you like to see?"}
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            maxLength={200}
+            data-testid="input-wish-title"
+          />
+          <textarea
+            placeholder="Optional details — steps to reproduce, why it matters, etc."
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            maxLength={2000}
+            rows={3}
+            className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-[12px] text-foreground placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300"
+            data-testid="textarea-wish-description"
+          />
+          <div className="flex justify-end">
+            <Button type="submit" size="sm" disabled={createMutation.isPending} data-testid="button-wish-submit">
+              {createMutation.isPending ? <Loader2 size={14} className="mr-1.5 animate-spin" /> : <Plus size={14} className="mr-1.5" />}
+              Add to wish list
+            </Button>
+          </div>
+        </form>
+      </LuxuryCard>
+
+      <div className="mt-6">
+        {isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-16 w-full" />
+            <Skeleton className="h-16 w-full" />
+          </div>
+        ) : items.length === 0 ? (
+          <p className="text-[11px] text-muted-foreground italic" data-testid="text-wish-empty">
+            No items yet — add the first one above.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            {openItems.length > 0 && (
+              <WishListGroup
+                heading={`Active (${openItems.length})`}
+                items={openItems}
+                onChangeStatus={(id, status) => updateMutation.mutate({ id, status })}
+                onDelete={(id) => deleteMutation.mutate(id)}
+              />
+            )}
+            {closedItems.length > 0 && (
+              <WishListGroup
+                heading={`Closed (${closedItems.length})`}
+                items={closedItems}
+                onChangeStatus={(id, status) => updateMutation.mutate({ id, status })}
+                onDelete={(id) => deleteMutation.mutate(id)}
+                muted
+              />
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WishListGroup({
+  heading,
+  items,
+  onChangeStatus,
+  onDelete,
+  muted = false,
+}: {
+  heading: string;
+  items: WishListItemDto[];
+  onChangeStatus: (id: number, status: WishListItemDto["status"]) => void;
+  onDelete: (id: number) => void;
+  muted?: boolean;
+}) {
+  return (
+    <div>
+      <h3 className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground mb-2">{heading}</h3>
+      <div className="space-y-2">
+        {items.map((item) => (
+          <div
+            key={item.id}
+            className={`rounded-lg border border-slate-200 bg-white p-3 ${muted ? "opacity-70" : ""}`}
+            data-testid={`row-wish-${item.id}`}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2 min-w-0 flex-1">
+                <div
+                  className={`shrink-0 mt-0.5 w-6 h-6 rounded-md flex items-center justify-center ${
+                    item.type === "bug" ? "bg-rose-100 text-rose-700" : "bg-amber-100 text-amber-700"
+                  }`}
+                >
+                  {item.type === "bug" ? <Bug size={12} /> : <Lightbulb size={12} />}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[13px] font-semibold text-foreground break-words" data-testid={`text-wish-title-${item.id}`}>
+                    {item.title}
+                  </p>
+                  {item.description && (
+                    <p className="text-[11px] text-muted-foreground mt-0.5 whitespace-pre-wrap break-words">{item.description}</p>
+                  )}
+                  <p className="text-[9px] text-slate-400 mt-1 uppercase tracking-wide">
+                    {new Date(item.createdAt).toLocaleDateString()}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <select
+                  value={item.status}
+                  onChange={(e) => onChangeStatus(item.id, e.target.value as WishListItemDto["status"])}
+                  className={`text-[10px] font-bold uppercase tracking-wide rounded-md border px-2 py-1 ${WISH_STATUS_CLASS[item.status]}`}
+                  data-testid={`select-wish-status-${item.id}`}
+                >
+                  {(Object.keys(WISH_STATUS_LABEL) as WishListItemDto["status"][]).map((s) => (
+                    <option key={s} value={s}>
+                      {WISH_STATUS_LABEL[s]}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => onDelete(item.id)}
+                  className="h-7 w-7 text-slate-400 hover:text-rose-600"
+                  data-testid={`button-wish-delete-${item.id}`}
+                  title="Delete"
+                >
+                  <Trash2 size={13} />
+                </Button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function TemplatesSection() {
   const previewUrl = "/api/settings/templates/certificat-paiement/preview";
