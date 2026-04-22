@@ -3,7 +3,6 @@ import type { ArchidocProject, ArchidocContractor, InsertProject, InsertContract
 import { normaliseSiretForStorage } from "./contractor-auto-sync";
 
 interface TrackProjectOptions {
-  tvaRate?: string;
   feeType?: string;
   feePercentage?: string;
   conceptionFee?: string;
@@ -56,7 +55,6 @@ export async function trackProject(archidocId: string, options: TrackProjectOpti
       clientAddress: clientAddress,
       siteAddress: mirrorProject.address,
       status: "active",
-      tvaRate: options.tvaRate || "20.00",
       feeType: options.feeType || "percentage",
       feePercentage: options.feePercentage,
       conceptionFee: options.conceptionFee,
@@ -141,7 +139,6 @@ export async function trackProject(archidocId: string, options: TrackProjectOpti
         baseAmountHt: "0.00",
         feeRate: options.feePercentage,
         feeAmountHt: pf.proServiceHt,
-        feeAmountTtc: pf.proServiceTtc || pf.proServiceHt,
         invoicedAmount: "0.00",
         remainingAmount: pf.proServiceHt,
         status: "pending",
@@ -157,7 +154,6 @@ export async function trackProject(archidocId: string, options: TrackProjectOpti
         baseAmountHt: "0.00",
         feeRate: null,
         feeAmountHt: pf.planningHt,
-        feeAmountTtc: pf.planningTtc || pf.planningHt,
         invoicedAmount: "0.00",
         remainingAmount: pf.planningHt,
         status: "pending",

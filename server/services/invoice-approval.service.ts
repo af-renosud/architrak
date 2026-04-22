@@ -29,7 +29,6 @@ export async function approveInvoice(invoiceId: number) {
     }
 
     const feeRate = parseFloat(project.feePercentage ?? "0");
-    const tvaRate = parseFloat(project.tvaRate) || 20;
 
     const [updatedInvoice] = await tx
       .update(invoices)
@@ -55,7 +54,6 @@ export async function approveInvoice(invoiceId: number) {
             baseAmountHt: "0.00",
             feeRate: String(feeRate),
             feeAmountHt: "0.00",
-            feeAmountTtc: "0.00",
             invoicedAmount: "0.00",
             remainingAmount: "0.00",
             pennylaneRef: null,
@@ -99,15 +97,14 @@ export async function approveInvoice(invoiceId: number) {
       const allEntries = await tx.select().from(feeEntries).where(eq(feeEntries.feeId, fee.id));
       const totalBaseHt = allEntries.reduce((s, e) => s + parseFloat(e.baseHt), 0);
       const totalFeeAmount = allEntries.reduce((s, e) => s + parseFloat(e.feeAmount), 0);
-      const totalFeeAmountTtc = parseFloat((totalFeeAmount * (1 + tvaRate / 100)).toFixed(2));
 
+      // Architect fees are HT-only (commission % × works HT). No TTC stored.
       [updatedFee] = await tx
         .update(fees)
         .set({
           baseAmountHt: totalBaseHt.toFixed(2),
           feeRate: String(feeRate),
           feeAmountHt: totalFeeAmount.toFixed(2),
-          feeAmountTtc: totalFeeAmountTtc.toFixed(2),
           remainingAmount: totalFeeAmount.toFixed(2),
         })
         .where(eq(fees.id, fee.id))

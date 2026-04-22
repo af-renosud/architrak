@@ -60,7 +60,6 @@ export default function Projects() {
   const [siretIssuesOpen, setSiretIssuesOpen] = useState(false);
   const [selectedArchidocId, setSelectedArchidocId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [tvaRate, setTvaRate] = useState("20.00");
   const [feeType, setFeeType] = useState("percentage");
   const [feePercentage, setFeePercentage] = useState("");
   const [conceptionFee, setConceptionFee] = useState("");
@@ -110,7 +109,6 @@ export default function Projects() {
   const trackMutation = useMutation({
     mutationFn: async (archidocId: string) => {
       const res = await apiRequest("POST", `/api/archidoc/track/${archidocId}`, {
-        tvaRate,
         feeType,
         feePercentage: feePercentage || null,
         conceptionFee: conceptionFee || null,
@@ -138,7 +136,6 @@ export default function Projects() {
   function resetForm() {
     setSelectedArchidocId(null);
     setSearchQuery("");
-    setTvaRate("20.00");
     setFeeType("percentage");
     setFeePercentage("");
     setConceptionFee("");
@@ -349,18 +346,7 @@ export default function Projects() {
 
                     <div className="space-y-4">
                       <TechnicalLabel>ArchiTrak Configuration</TechnicalLabel>
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <Label className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">TVA Rate (%)</Label>
-                          <Input
-                            value={tvaRate}
-                            onChange={(e) => setTvaRate(e.target.value)}
-                            type="number"
-                            step="0.01"
-                            className="mt-1"
-                            data-testid="input-tva-rate"
-                          />
-                        </div>
+                      <div className="grid grid-cols-1 gap-4">
                         <div>
                           <Label className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">Honoraires Type</Label>
                           <Select value={feeType} onValueChange={setFeeType}>

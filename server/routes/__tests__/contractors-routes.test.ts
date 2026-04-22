@@ -60,7 +60,6 @@ function makeContractor(overrides: Partial<Record<string, unknown>> = {}) {
     address: null,
     email: null,
     phone: null,
-    defaultTvaRate: "20.00",
     notes: null,
     archidocId: "ad-1",
     contactName: null,
@@ -83,7 +82,7 @@ function makeContractor(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe("PATCH /api/contractors/:id (ArchiDoc-linked contractor)", () => {
-  it("accepts notes and defaultTvaRate updates and forwards only those fields to storage", async () => {
+  it("accepts notes updates and forwards only that field to storage", async () => {
     getContractor.mockResolvedValue(makeContractor());
     updateContractor.mockImplementation(async (id: number, data: Record<string, unknown>) => ({
       ...makeContractor({ id }),
@@ -93,17 +92,17 @@ describe("PATCH /api/contractors/:id (ArchiDoc-linked contractor)", () => {
     const res = await fetch(`${baseUrl}/api/contractors/7`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ notes: "Prefers email", defaultTvaRate: "10.00" }),
+      body: JSON.stringify({ notes: "Prefers email" }),
     });
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toMatchObject({ id: 7, notes: "Prefers email", defaultTvaRate: "10.00" });
+    expect(body).toMatchObject({ id: 7, notes: "Prefers email" });
 
     expect(updateContractor).toHaveBeenCalledTimes(1);
     const [calledId, payload] = updateContractor.mock.calls[0];
     expect(calledId).toBe(7);
-    expect(payload).toEqual({ notes: "Prefers email", defaultTvaRate: "10.00" });
+    expect(payload).toEqual({ notes: "Prefers email" });
   });
 
   it("rejects updates that touch ArchiDoc-owned fields with 400 and does not call storage", async () => {

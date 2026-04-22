@@ -223,7 +223,7 @@ function resetState() {
 describe("runContractorAutoSync", () => {
   beforeEach(resetState);
 
-  it("creates a new contractor with default notes/defaultTvaRate when no local row exists", async () => {
+  it("creates a new contractor with default notes when no local row exists", async () => {
     state.archidocContractors = [makeMirror()];
 
     const result = await runContractorAutoSync({ incremental: false });
@@ -242,7 +242,6 @@ describe("runContractorAutoSync", () => {
     expect(created.contactName).toBe("Jane Doe");
     expect(created.address).toBe("1 rue de Paris");
     expect(created.notes).toBeNull();
-    expect(created.defaultTvaRate).toBe("20.00");
 
     expect(state.syncLog).toHaveLength(1);
     expect(state.syncLog[0]).toMatchObject({
@@ -253,7 +252,7 @@ describe("runContractorAutoSync", () => {
     expect(state.syncLog[0].errorMessage ?? null).toBeNull();
   });
 
-  it("preserves local notes and defaultTvaRate when updating an existing linked contractor", async () => {
+  it("preserves local notes when updating an existing linked contractor", async () => {
     state.archidocContractors = [makeMirror({ name: "ACME BTP (renamed)" })];
     state.contractors = [
       {
@@ -263,7 +262,6 @@ describe("runContractorAutoSync", () => {
         address: "old",
         email: "old@acme.example",
         phone: "old",
-        defaultTvaRate: "10.00",
         notes: "Local-only note: prefers email contact",
         archidocId: "ad-1",
         contactName: null,
@@ -294,7 +292,6 @@ describe("runContractorAutoSync", () => {
     expect(state.updateContractorPayloads).toHaveLength(1);
     const payload = state.updateContractorPayloads[0];
     expect(payload).not.toHaveProperty("notes");
-    expect(payload).not.toHaveProperty("defaultTvaRate");
     expect(payload).toMatchObject({
       name: "ACME BTP (renamed)",
       archidocId: "ad-1",
@@ -307,7 +304,6 @@ describe("runContractorAutoSync", () => {
     expect(row.name).toBe("ACME BTP (renamed)");
     expect(row.email).toBe("jane@acme.example");
     expect(row.notes).toBe("Local-only note: prefers email contact");
-    expect(row.defaultTvaRate).toBe("10.00");
 
     expect(state.syncLog[0]).toMatchObject({
       status: "completed",
@@ -348,7 +344,6 @@ describe("runContractorAutoSync", () => {
         address: null,
         email: null,
         phone: null,
-        defaultTvaRate: "20.00",
         notes: null,
         archidocId: "ad-1",
         contactName: null,

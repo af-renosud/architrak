@@ -3,16 +3,8 @@ export function roundCurrency(value: number): number {
   return sign * Math.round((Math.abs(value) + Number.EPSILON) * 100) / 100;
 }
 
-export function calculateTva(amountHt: number, tvaRate: number): number {
-  return roundCurrency(amountHt * tvaRate / 100);
-}
-
-export function calculateTtc(amountHt: number, tvaRate: number): number {
-  return roundCurrency(amountHt * (1 + tvaRate / 100));
-}
-
-export function calculateHtFromTtc(amountTtc: number, tvaRate: number): number {
-  return roundCurrency(amountTtc / (1 + tvaRate / 100));
+export function deriveTvaAmount(amountHt: number, amountTtc: number): number {
+  return roundCurrency(amountTtc - amountHt);
 }
 
 export function calculateAdjustedAmount(originalHt: number, pvTotal: number, mvTotal: number): number {
@@ -25,10 +17,6 @@ export function calculateResteARealiser(adjustedHt: number, certifiedHt: number)
 
 export function calculateFeeAmount(invoiceHt: number, feeRate: number): number {
   return roundCurrency(invoiceHt * feeRate / 100);
-}
-
-export function calculateFeeTtc(feeAmountHt: number, tvaRate: number): number {
-  return roundCurrency(feeAmountHt * (1 + tvaRate / 100));
 }
 
 export function formatCurrencyEur(value: number): string {

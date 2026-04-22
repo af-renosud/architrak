@@ -153,12 +153,6 @@ export default function ContractorDetail() {
                   <span className="text-[12px] text-foreground" data-testid="text-address">{contractor.address}</span>
                 </div>
               )}
-              {contractor.defaultTvaRate && (
-                <div className="pt-3 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
-                  <TechnicalLabel>Default TVA Rate</TechnicalLabel>
-                  <p className="text-[12px] text-foreground mt-1" data-testid="text-default-tva">{contractor.defaultTvaRate}%</p>
-                </div>
-              )}
               {(contractor as any).contactName && (
                 <div className="pt-3 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                   <TechnicalLabel>Contact</TechnicalLabel>

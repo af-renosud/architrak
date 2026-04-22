@@ -106,7 +106,6 @@ function makeDevis(overrides: Record<string, unknown> = {}) {
     ref2: null,
     amountHt: "1000.00",
     amountTtc: "1200.00",
-    tvaRate: "20.00",
     ...overrides,
   };
 }

@@ -300,10 +300,7 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
   const warnings = (invoice.validationWarnings as ValidationWarning[] | null) ?? [];
   const confidence = invoice.aiConfidence ?? 50;
 
-  const tvaRateFromDevis = devis ? (parseFloat(devis.tvaRate) || 20) : 20;
-
   const [editAmountHt, setEditAmountHt] = useState(invoice.amountHt);
-  const [editTvaRate, setEditTvaRate] = useState(String(tvaRateFromDevis));
   const [editAmountTtc, setEditAmountTtc] = useState(invoice.amountTtc);
   const [editInvoiceNumber, setEditInvoiceNumber] = useState(String(invoice.invoiceNumber));
   const [editDateIssued, setEditDateIssued] = useState(invoice.dateIssued ?? "");
@@ -314,7 +311,6 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
     mutationFn: async () => {
       const corrections: Record<string, any> = {};
       if (editAmountHt !== invoice.amountHt) corrections.amountHt = editAmountHt;
-      if (editTvaRate !== String(tvaRateFromDevis)) corrections.tvaRate = editTvaRate;
       if (editAmountTtc !== invoice.amountTtc) corrections.amountTtc = editAmountTtc;
       if (editInvoiceNumber !== String(invoice.invoiceNumber)) corrections.invoiceNumber = editInvoiceNumber;
       if (editDateIssued !== (invoice.dateIssued ?? "")) corrections.dateIssued = editDateIssued || null;
@@ -381,7 +377,7 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
         <AdvisoriesList subject={{ type: "invoice", id: invoice.id }} />
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         <div>
           <label className="text-[10px] font-semibold text-foreground block mb-1">
             Amount HT
@@ -394,20 +390,6 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
             onChange={(e) => setEditAmountHt(e.target.value)}
             className="text-[12px]"
             data-testid={`input-draft-ht-${invoice.id}`}
-          />
-        </div>
-        <div>
-          <label className="text-[10px] font-semibold text-foreground block mb-1">
-            TVA Rate (%)
-            {fieldWarnings("tvaRate").length > 0 && <Badge variant="destructive" className="ml-1 text-[8px]">Flagged</Badge>}
-          </label>
-          <Input
-            type="number"
-            step="0.01"
-            value={editTvaRate}
-            onChange={(e) => setEditTvaRate(e.target.value)}
-            className="text-[12px]"
-            data-testid={`input-draft-tva-rate-${invoice.id}`}
           />
         </div>
         <div>
@@ -524,7 +506,6 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
     },
   });
 
-  const tvaRate = devis ? (parseFloat(devis.tvaRate) || 20) : (parseFloat(invoice.amountHt) > 0 ? ((parseFloat(invoice.amountTtc) - parseFloat(invoice.amountHt)) / parseFloat(invoice.amountHt) * 100) : 20);
 
   return (
     <div className="ml-4 mt-2 space-y-4 border-l-2 border-[#c1a27b]/30 pl-4 pb-2">
@@ -576,7 +557,7 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
               </p>
             </div>
             <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-              <TechnicalLabel>TVA ({tvaRate.toFixed(1)}%)</TechnicalLabel>
+              <TechnicalLabel>TVA</TechnicalLabel>
               <p className="text-[15px] font-semibold text-foreground mt-1" data-testid={`text-detail-tva-${invoice.id}`}>
                 {formatCurrency(parseFloat(invoice.tvaAmount))}
               </p>

@@ -1,7 +1,7 @@
 import { storage } from "../storage";
 import { uploadDocument, getDocumentBuffer } from "../storage/object-storage";
 import { convertHtmlToPdf } from "../services/docraptor";
-import { roundCurrency, calculateTtc } from "@shared/financial-utils";
+import { roundCurrency } from "@shared/financial-utils";
 import type { Certificat, Project, Contractor, Devis, Lot, Invoice, Avenant } from "@shared/schema";
 import { formatLotDescription } from "@shared/lot-label";
 
@@ -30,7 +30,6 @@ interface DevisAnnexeRow {
   lotDescriptionUk: string | null;
   originalHt: number;
   originalTtc: number;
-  tvaRate: number;
   avenants: AvenantRow[];
   pvTotalHt: number;
   mvTotalHt: number;
@@ -64,7 +63,6 @@ interface AnnexeData {
   grandTotalAdjustedTtc: number;
   resteARealiserHt: number;
   resteARealiserTtc: number;
-  tvaRate: number;
 }
 
 interface CertificatPdfData {
@@ -183,8 +181,9 @@ async function buildAnnexeData(
   contractor: Contractor,
   activeDevis: Devis[],
 ): Promise<AnnexeData> {
-  const tvaRate = parseFloat(project.tvaRate) || 20;
-
+  // TVA-neutral: every monetary value (devis HT/TTC, avenant HT/TTC) is read
+  // from storage as the user/document set it. The TVA "rate" no longer
+  // exists as a stored column; per-row TVA is implicit in TTC − HT.
   const devisRows: DevisAnnexeRow[] = await Promise.all(
     activeDevis.map(async (d) => {
       const lot = d.lotId ? await storage.getLot(d.lotId) : null;
@@ -192,20 +191,16 @@ async function buildAnnexeData(
       const approvedAvenants = allAvenants.filter((a) => a.status === "approved");
 
       const originalHt = roundCurrency(parseFloat(d.amountHt));
-      const devisTvaRate = parseFloat(d.tvaRate) || tvaRate;
-      const originalTtc = calculateTtc(originalHt, devisTvaRate);
+      const originalTtc = roundCurrency(parseFloat(d.amountTtc));
 
-      const avenantRows: AvenantRow[] = approvedAvenants.map((a) => {
-        const aHt = roundCurrency(parseFloat(a.amountHt));
-        return {
-          avenantNumber: a.avenantNumber || "—",
-          type: a.type,
-          descriptionFr: a.descriptionFr,
-          descriptionUk: a.descriptionUk ?? null,
-          amountHt: aHt,
-          amountTtc: calculateTtc(aHt, devisTvaRate),
-        };
-      });
+      const avenantRows: AvenantRow[] = approvedAvenants.map((a) => ({
+        avenantNumber: a.avenantNumber || "—",
+        type: a.type,
+        descriptionFr: a.descriptionFr,
+        descriptionUk: a.descriptionUk ?? null,
+        amountHt: roundCurrency(parseFloat(a.amountHt)),
+        amountTtc: roundCurrency(parseFloat(a.amountTtc)),
+      }));
 
       const pvTotalHt = roundCurrency(
         avenantRows.filter((a) => a.type === "pv").reduce((s, a) => s + a.amountHt, 0)
@@ -213,8 +208,14 @@ async function buildAnnexeData(
       const mvTotalHt = roundCurrency(
         avenantRows.filter((a) => a.type === "mv").reduce((s, a) => s + a.amountHt, 0)
       );
+      const pvTotalTtc = roundCurrency(
+        avenantRows.filter((a) => a.type === "pv").reduce((s, a) => s + a.amountTtc, 0)
+      );
+      const mvTotalTtc = roundCurrency(
+        avenantRows.filter((a) => a.type === "mv").reduce((s, a) => s + a.amountTtc, 0)
+      );
       const adjustedHt = roundCurrency(originalHt + pvTotalHt - mvTotalHt);
-      const adjustedTtc = calculateTtc(adjustedHt, devisTvaRate);
+      const adjustedTtc = roundCurrency(originalTtc + pvTotalTtc - mvTotalTtc);
 
       return {
         devisCode: d.devisCode,
@@ -225,7 +226,6 @@ async function buildAnnexeData(
         lotDescriptionUk: lot?.descriptionUk ?? null,
         originalHt,
         originalTtc,
-        tvaRate: devisTvaRate,
         avenants: avenantRows,
         pvTotalHt,
         mvTotalHt,
@@ -289,7 +289,6 @@ async function buildAnnexeData(
     grandTotalAdjustedTtc,
     resteARealiserHt,
     resteARealiserTtc,
-    tvaRate,
   };
 }
 
@@ -390,7 +389,7 @@ function buildAnnexeHtml(data: AnnexeData): string {
           <td style="text-align:right;font-weight:800;font-size:7pt;color:#0B2545;padding:6px;">${fmtNum(data.grandTotalAdjustedHt)}</td>
         </tr>
         <tr style="background:#E8ECF1;">
-          <td colspan="6" style="text-align:right;font-size:6.5pt;color:#7E7F83;padding:3px 6px;">March\u00E9 Ajust\u00E9 TTC (TVA ${data.tvaRate}%)</td>
+          <td colspan="6" style="text-align:right;font-size:6.5pt;color:#7E7F83;padding:3px 6px;">March\u00E9 Ajust\u00E9 TTC</td>
           <td style="text-align:right;font-weight:700;font-size:7pt;color:#0B2545;padding:3px 6px;">${fmtNum(data.grandTotalAdjustedTtc)}</td>
         </tr>
       </tfoot>
@@ -998,7 +997,6 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     clientAddress: "12 Avenue des Mimosas, 34480 Cabrerolles",
     siteAddress: "Chemin du Vignoble, 34480 Cabrerolles",
     status: "active",
-    tvaRate: "20.00",
     feePercentage: "10.00",
     feeType: "percentage",
     conceptionFee: null,
@@ -1019,7 +1017,6 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     address: "5 Rue du Commerce, 34000 Montpellier",
     email: "contact@exemple-btp.fr",
     phone: "04 67 00 00 00",
-    defaultTvaRate: "20.00",
     notes: null,
     archidocId: null,
     contactName: "Jean DUPONT",
@@ -1061,7 +1058,6 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     descriptionFr: "Travaux de maçonnerie - extension",
     descriptionUk: "Masonry works - extension",
     amountHt: "24500.00",
-    tvaRate: "20.00",
     amountTtc: "29400.00",
     invoicingMode: "mode_a",
     status: "approved",
@@ -1137,7 +1133,6 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
         lotDescriptionUk: lot.descriptionUk,
         originalHt: 24500,
         originalTtc: 29400,
-        tvaRate: 20,
         avenants: [],
         pvTotalHt: 0,
         mvTotalHt: 0,
@@ -1166,7 +1161,6 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     grandTotalAdjustedTtc: 29400,
     resteARealiserHt: 2000,
     resteARealiserTtc: 2400,
-    tvaRate: 20,
   };
 
   return buildCertificatHtml({

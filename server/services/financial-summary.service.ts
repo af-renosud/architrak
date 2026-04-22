@@ -1,4 +1,5 @@
 import { storage } from "../storage";
+import { roundCurrency } from "../../shared/financial-utils";
 
 export async function getProjectFinancialSummary(projectId: number) {
   const project = await storage.getProject(projectId);
@@ -14,19 +15,17 @@ export async function getProjectFinancialSummary(projectId: number) {
       const avs = await storage.getAvenantsByDevis(d.id);
       const devisInvoices = projectInvoices.filter((inv) => inv.devisId === d.id);
 
-      const tvaRate = parseFloat(d.tvaRate) || 20;
-      const tvaMultiplier = 1 + tvaRate / 100;
       const originalHt = parseFloat(d.amountHt);
       const originalTtc = parseFloat(d.amountTtc);
       const approvedAvenants = avs.filter((a) => a.status === "approved");
-      const pvTotal = approvedAvenants
-        .filter((a) => a.type === "pv")
-        .reduce((sum, a) => sum + parseFloat(a.amountHt), 0);
-      const mvTotal = approvedAvenants
-        .filter((a) => a.type === "mv")
-        .reduce((sum, a) => sum + parseFloat(a.amountHt), 0);
-      const adjustedHt = originalHt + pvTotal - mvTotal;
-      const adjustedTtc = adjustedHt * tvaMultiplier;
+      const pvAvs = approvedAvenants.filter((a) => a.type === "pv");
+      const mvAvs = approvedAvenants.filter((a) => a.type === "mv");
+      const pvTotal = pvAvs.reduce((sum, a) => sum + parseFloat(a.amountHt), 0);
+      const mvTotal = mvAvs.reduce((sum, a) => sum + parseFloat(a.amountHt), 0);
+      const pvTotalTtc = pvAvs.reduce((sum, a) => sum + parseFloat(a.amountTtc), 0);
+      const mvTotalTtc = mvAvs.reduce((sum, a) => sum + parseFloat(a.amountTtc), 0);
+      const adjustedHt = roundCurrency(originalHt + pvTotal - mvTotal);
+      const adjustedTtc = roundCurrency(originalTtc + pvTotalTtc - mvTotalTtc);
 
       const certifiedHt = devisInvoices.reduce(
         (sum, inv) => sum + parseFloat(inv.amountHt),
@@ -37,8 +36,8 @@ export async function getProjectFinancialSummary(projectId: number) {
         0
       );
 
-      const resteARealiser = adjustedHt - certifiedHt;
-      const resteARealiserTtc = adjustedTtc - certifiedTtc;
+      const resteARealiser = roundCurrency(adjustedHt - certifiedHt);
+      const resteARealiserTtc = roundCurrency(adjustedTtc - certifiedTtc);
 
       return {
         devisId: d.id,
@@ -49,7 +48,6 @@ export async function getProjectFinancialSummary(projectId: number) {
         signOffStage: d.signOffStage,
         contractorId: d.contractorId,
         invoicingMode: d.invoicingMode,
-        tvaRate,
         originalHt,
         originalTtc,
         pvTotal,

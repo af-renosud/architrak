@@ -242,7 +242,6 @@ vi.mock("../gmail/document-parser", () => ({
     devisNumber: "DEV-2026-001",
     date: "2026-04-01",
     amountHt: 1000,
-    tvaRate: 20,
     amountTtc: 1200,
     description: "Test devis",
     lotReferences: ["Lot 7 - Electricite", "Lot 99 - Mystère"],

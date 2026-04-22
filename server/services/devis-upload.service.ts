@@ -2,7 +2,7 @@ import { storage } from "../storage";
 import { uploadDocument } from "../storage/object-storage";
 import { validateExtraction } from "./extraction-validator";
 import { checkLotReferencesAgainstCatalog } from "./lot-reference-validator";
-import { calculateTtc, roundCurrency } from "../../shared/financial-utils";
+import { roundCurrency } from "../../shared/financial-utils";
 import { reconcileAdvisories } from "./advisory-reconciler";
 import { assertPdfMagic } from "../middleware/upload";
 import { triggerDevisTranslation } from "./devis-translation";
@@ -102,12 +102,15 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
     };
   }
 
-  const tvaRate = corrected.tvaRate != null ? String(roundCurrency(corrected.tvaRate)) : "20.00";
-  const amountHt = corrected.amountHt != null ? String(roundCurrency(corrected.amountHt)) : "0.00";
-  const numericTvaRate = corrected.tvaRate != null ? corrected.tvaRate : 20;
+  // TVA-neutral: store HT + TTC as extracted. If only one side is present we
+  // default the missing one to the available value (effective 0% TVA); the
+  // user is expected to correct it via the draft confirm flow if needed.
+  const amountHt = corrected.amountHt != null
+    ? String(roundCurrency(corrected.amountHt))
+    : (corrected.amountTtc != null ? String(roundCurrency(corrected.amountTtc)) : "0.00");
   const amountTtc = corrected.amountTtc != null
     ? String(roundCurrency(corrected.amountTtc))
-    : (corrected.amountHt != null ? String(calculateTtc(corrected.amountHt, numericTvaRate)) : "0.00");
+    : (corrected.amountHt != null ? String(roundCurrency(corrected.amountHt)) : "0.00");
 
   // Lot assignment is intentionally NOT derived from extraction. The AI may
   // suggest catalog codes via parsed.lotReferences, but lots can only be
@@ -125,7 +128,6 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
     descriptionFr: parsed.description || parsed.contractorName || file.originalname,
     descriptionUk: null,
     amountHt,
-    tvaRate,
     amountTtc,
     invoicingMode: (parsed.lineItems && parsed.lineItems.length > 0) ? "mode_b" : "mode_a",
     status: "draft",

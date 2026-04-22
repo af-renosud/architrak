@@ -55,7 +55,6 @@ interface DevisSummary {
   status: string;
   contractorId: number;
   invoicingMode: string;
-  tvaRate: number;
   originalHt: number;
   originalTtc: number;
   pvTotal: number;
@@ -126,7 +125,6 @@ type CertFormValues = z.infer<typeof certFormSchema>;
 
 const feeFormSchema = insertFeeSchema.extend({
   feeAmountHt: z.string().min(1, "Required"),
-  feeAmountTtc: z.string().min(1, "Required"),
   remainingAmount: z.string().min(1, "Required"),
 });
 type FeeFormValues = z.infer<typeof feeFormSchema>;
@@ -236,7 +234,7 @@ export default function ProjectDetail() {
     resolver: zodResolver(feeFormSchema),
     defaultValues: {
       projectId: 0, feeType: "works_percentage", baseAmountHt: "0.00",
-      feeRate: null, feeAmountHt: "0.00", feeAmountTtc: "0.00",
+      feeRate: null, feeAmountHt: "0.00",
       invoicedAmount: "0.00", remainingAmount: "0.00", pennylaneRef: null, status: "pending",
     },
   });
@@ -567,7 +565,6 @@ export default function ProjectDetail() {
     const feeType = feeForm.watch("feeType");
     let feeHt = feeType === "works_percentage" ? base * (rate / 100) : parseFloat(feeForm.watch("feeAmountHt") || "0");
     feeForm.setValue("feeAmountHt", feeHt.toFixed(2));
-    feeForm.setValue("feeAmountTtc", (feeHt * 1.2).toFixed(2));
     feeForm.setValue("remainingAmount", (feeHt - parseFloat(feeForm.watch("invoicedAmount") || "0")).toFixed(2));
   };
 
@@ -612,7 +609,7 @@ export default function ProjectDetail() {
     feeForm.reset({
       projectId: parseInt(projectId!), feeType: "works_percentage",
       baseAmountHt: "0.00", feeRate: null, feeAmountHt: "0.00",
-      feeAmountTtc: "0.00", invoicedAmount: "0.00", remainingAmount: "0.00",
+      invoicedAmount: "0.00", remainingAmount: "0.00",
       pennylaneRef: null, status: "pending",
     });
     setFeeDialogOpen(true);
@@ -1685,22 +1682,13 @@ export default function ProjectDetail() {
                         </FormItem>
                       )} />
                     </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <FormField control={feeForm.control} name="feeAmountHt" render={({ field }) => (
-                        <FormItem>
-                          <FormLabel><TechnicalLabel>Fee Amount HT</TechnicalLabel></FormLabel>
-                          <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcFee()} data-testid="input-fee-ht-tab" /></FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )} />
-                      <FormField control={feeForm.control} name="feeAmountTtc" render={({ field }) => (
-                        <FormItem>
-                          <FormLabel><TechnicalLabel>Fee Amount TTC</TechnicalLabel></FormLabel>
-                          <FormControl><Input {...field} type="number" step="0.01" readOnly data-testid="input-fee-ttc-tab" /></FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )} />
-                    </div>
+                    <FormField control={feeForm.control} name="feeAmountHt" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel><TechnicalLabel>Fee Amount HT</TechnicalLabel></FormLabel>
+                        <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcFee()} data-testid="input-fee-ht-tab" /></FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
                     <FormField control={feeForm.control} name="pennylaneRef" render={({ field }) => (
                       <FormItem>
                         <FormLabel><TechnicalLabel>Ref Penny Lane</TechnicalLabel></FormLabel>

@@ -57,7 +57,6 @@ type PhaseByData = {
 const feeFormSchema = insertFeeSchema.extend({
   phase: z.enum(["conception", "chantier", "aor"], { required_error: "Phase is required" }),
   feeAmountHt: z.string().min(1, "HT amount is required"),
-  feeAmountTtc: z.string().min(1, "TTC amount is required"),
   remainingAmount: z.string().min(1, "Remaining amount is required"),
 });
 
@@ -117,7 +116,6 @@ export default function Fees() {
       baseAmountHt: "0.00",
       feeRate: null,
       feeAmountHt: "0.00",
-      feeAmountTtc: "0.00",
       invoicedAmount: "0.00",
       remainingAmount: "0.00",
       pennylaneRef: null,
@@ -217,7 +215,6 @@ export default function Fees() {
       baseAmountHt: "0.00",
       feeRate: null,
       feeAmountHt: "0.00",
-      feeAmountTtc: "0.00",
       invoicedAmount: "0.00",
       remainingAmount: "0.00",
       pennylaneRef: null,
@@ -271,10 +268,8 @@ export default function Fees() {
     } else {
       feeHt = parseFloat(feeForm.watch("feeAmountHt") || "0");
     }
-    const feeTtc = feeHt * 1.2;
     const invoiced = parseFloat(feeForm.watch("invoicedAmount") || "0");
     feeForm.setValue("feeAmountHt", feeHt.toFixed(2));
-    feeForm.setValue("feeAmountTtc", feeTtc.toFixed(2));
     feeForm.setValue("remainingAmount", (feeHt - invoiced).toFixed(2));
   };
 
@@ -669,50 +664,27 @@ export default function Fees() {
                     )}
                   />
                 </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <FormField
-                    control={feeForm.control}
-                    name="feeAmountHt"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>
-                          <TechnicalLabel>Fee Amount HT</TechnicalLabel>
-                        </FormLabel>
-                        <FormControl>
-                          <Input
-                            {...field}
-                            type="number"
-                            step="0.01"
-                            onBlur={() => recalculateFee()}
-                            data-testid="input-fee-amount-ht"
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={feeForm.control}
-                    name="feeAmountTtc"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>
-                          <TechnicalLabel>Amount TTC</TechnicalLabel>
-                        </FormLabel>
-                        <FormControl>
-                          <Input
-                            {...field}
-                            type="number"
-                            step="0.01"
-                            readOnly
-                            data-testid="input-fee-amount-ttc"
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </div>
+                <FormField
+                  control={feeForm.control}
+                  name="feeAmountHt"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        <TechnicalLabel>Fee Amount HT</TechnicalLabel>
+                      </FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          type="number"
+                          step="0.01"
+                          onBlur={() => recalculateFee()}
+                          data-testid="input-fee-amount-ht"
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
                 <FormField
                   control={feeForm.control}
                   name="pennylaneRef"

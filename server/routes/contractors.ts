@@ -13,7 +13,6 @@ const updateContractorSchema = insertContractorSchema.partial();
 const linkedContractorUpdateSchema = z
   .object({
     notes: z.string().nullable().optional(),
-    defaultTvaRate: z.string().nullable().optional(),
   })
   .strict();
 
@@ -68,7 +67,7 @@ router.patch(
       const parsed = linkedContractorUpdateSchema.safeParse(req.body);
       if (!parsed.success) {
         return res.status(400).json({
-          message: "This contractor is managed in ArchiDoc. Only 'notes' and 'defaultTvaRate' can be edited locally.",
+          message: "This contractor is managed in ArchiDoc. Only 'notes' can be edited locally.",
           errors: parsed.error.flatten(),
         });
       }

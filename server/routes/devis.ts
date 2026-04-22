@@ -18,7 +18,7 @@ import { getDocumentStream } from "../storage/object-storage";
 import { validateExtraction, type ValidationWarning } from "../services/extraction-validator";
 import { checkLotReferencesAgainstCatalog } from "../services/lot-reference-validator";
 import type { ParsedDocument } from "../gmail/document-parser";
-import { roundCurrency, calculateTtc } from "../../shared/financial-utils";
+import { roundCurrency } from "../../shared/financial-utils";
 import {
   reconcileAdvisories,
   getAdvisoriesForDevis,
@@ -54,7 +54,6 @@ const updateAvenantSchema = insertAvenantSchema.partial();
 
 const devisConfirmSchema = z.object({
   amountHt: z.coerce.number().nonnegative().optional(),
-  tvaRate: z.coerce.number().min(0).max(100).optional(),
   amountTtc: z.coerce.number().nonnegative().optional(),
   devisCode: z.string().min(1).optional(),
   devisNumber: z.string().optional(),
@@ -471,15 +470,11 @@ router.post(
       const corrections = req.body;
       const updates: Record<string, unknown> = { status: "pending" };
 
+      // TVA-neutral: HT and TTC are independent values from the document.
+      // We persist whatever the user confirms; tvaAmount is always derivable
+      // as TTC − HT. No rate-based gross-up.
       if (corrections.amountHt != null) updates.amountHt = String(roundCurrency(corrections.amountHt));
-      if (corrections.tvaRate != null) updates.tvaRate = String(roundCurrency(corrections.tvaRate));
-      if (corrections.amountTtc != null) {
-        updates.amountTtc = String(roundCurrency(Number(corrections.amountTtc)));
-      } else if (corrections.amountHt != null || corrections.tvaRate != null) {
-        const ht = corrections.amountHt != null ? Number(corrections.amountHt) : Number(devis.amountHt);
-        const rate = corrections.tvaRate != null ? Number(corrections.tvaRate) : Number(devis.tvaRate);
-        updates.amountTtc = String(calculateTtc(ht, rate));
-      }
+      if (corrections.amountTtc != null) updates.amountTtc = String(roundCurrency(corrections.amountTtc));
       if (corrections.devisCode != null) updates.devisCode = corrections.devisCode;
       if (corrections.devisNumber != null) updates.devisNumber = corrections.devisNumber;
       if (corrections.descriptionFr != null) updates.descriptionFr = corrections.descriptionFr;

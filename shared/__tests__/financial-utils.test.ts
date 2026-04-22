@@ -1,13 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
   roundCurrency,
-  calculateTva,
-  calculateTtc,
-  calculateHtFromTtc,
+  deriveTvaAmount,
   calculateAdjustedAmount,
   calculateResteARealiser,
   calculateFeeAmount,
-  calculateFeeTtc,
   formatCurrencyEur,
   formatCurrencyNoSymbol,
 } from "../financial-utils";
@@ -41,72 +38,25 @@ describe("roundCurrency", () => {
   });
 });
 
-describe("calculateTva", () => {
-  it("calculates 20% TVA on 1000 HT", () => {
-    expect(calculateTva(1000, 20)).toBe(200.0);
+describe("deriveTvaAmount", () => {
+  it("returns TTC - HT for standard 20% case", () => {
+    expect(deriveTvaAmount(1000, 1200)).toBe(200.0);
   });
 
-  it("calculates 10% reduced rate on 1000 HT", () => {
-    expect(calculateTva(1000, 10)).toBe(100.0);
+  it("returns 0 when HT == TTC (auto-liquidation)", () => {
+    expect(deriveTvaAmount(15000, 15000)).toBe(0);
   });
 
-  it("calculates 5.5% rate on 1000 HT", () => {
-    expect(calculateTva(1000, 5.5)).toBe(55.0);
+  it("returns 0 when both are 0", () => {
+    expect(deriveTvaAmount(0, 0)).toBe(0);
   });
 
-  it("returns 0 for zero HT amount", () => {
-    expect(calculateTva(0, 20)).toBe(0);
+  it("rounds to 2 decimals", () => {
+    expect(deriveTvaAmount(5610.92, 6733.1)).toBe(1122.18);
   });
 
-  it("calculates 20% TVA on 5610.92 HT with 2dp rounding", () => {
-    expect(calculateTva(5610.92, 20)).toBe(1122.18);
-  });
-
-  it("returns 0 for zero rate", () => {
-    expect(calculateTva(1000, 0)).toBe(0);
-  });
-});
-
-describe("calculateTtc", () => {
-  it("calculates TTC at 20% for 1000 HT", () => {
-    expect(calculateTtc(1000, 20)).toBe(1200.0);
-  });
-
-  it("calculates TTC at 20% for 5610.92 HT with 2dp rounding", () => {
-    expect(calculateTtc(5610.92, 20)).toBe(6733.1);
-  });
-
-  it("returns same as HT for 0% rate", () => {
-    expect(calculateTtc(1000, 0)).toBe(1000.0);
-  });
-
-  it("calculates TTC at 5.5% for 1000 HT", () => {
-    expect(calculateTtc(1000, 5.5)).toBe(1055.0);
-  });
-
-  it("returns 0 for zero HT", () => {
-    expect(calculateTtc(0, 20)).toBe(0);
-  });
-});
-
-describe("calculateHtFromTtc", () => {
-  it("reverses 1200 TTC at 20% to 1000 HT", () => {
-    expect(calculateHtFromTtc(1200, 20)).toBe(1000.0);
-  });
-
-  it("roundtrip: calculateTtc then calculateHtFromTtc returns original", () => {
-    const original = 5610.92;
-    const ttc = calculateTtc(original, 20);
-    const recovered = calculateHtFromTtc(ttc, 20);
-    expect(recovered).toBe(original);
-  });
-
-  it("returns same as TTC for 0% rate", () => {
-    expect(calculateHtFromTtc(1000, 0)).toBe(1000.0);
-  });
-
-  it("returns 0 for zero TTC", () => {
-    expect(calculateHtFromTtc(0, 20)).toBe(0);
+  it("handles string inputs from the database", () => {
+    expect(deriveTvaAmount("1000.00", "1200.00")).toBe(200.0);
   });
 });
 
@@ -173,20 +123,6 @@ describe("calculateFeeAmount", () => {
 
   it("calculates 100% fee", () => {
     expect(calculateFeeAmount(1000, 100)).toBe(1000.0);
-  });
-});
-
-describe("calculateFeeTtc", () => {
-  it("calculates TTC on 561.09 fee at 20%", () => {
-    expect(calculateFeeTtc(561.09, 20)).toBe(673.31);
-  });
-
-  it("returns 0 for zero fee", () => {
-    expect(calculateFeeTtc(0, 20)).toBe(0);
-  });
-
-  it("returns same as HT for 0% rate", () => {
-    expect(calculateFeeTtc(561.09, 0)).toBe(561.09);
   });
 });
 

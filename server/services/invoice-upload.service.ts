@@ -1,7 +1,7 @@
 import { storage } from "../storage";
 import { uploadDocument } from "../storage/object-storage";
 import { validateExtraction } from "./extraction-validator";
-import { roundCurrency, calculateTtc, calculateTva } from "../../shared/financial-utils";
+import { roundCurrency, deriveTvaAmount } from "../../shared/financial-utils";
 import { reconcileAdvisories } from "./advisory-reconciler";
 import { assertPdfMagic } from "../middleware/upload";
 
@@ -36,26 +36,22 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
 
   const effectiveHt = validation.correctedValues.amountHt ?? parsed.amountHt;
   const effectiveTtc = validation.correctedValues.amountTtc ?? parsed.amountTtc;
-  const effectiveTvaAmount = validation.correctedValues.tvaAmount ?? parsed.tvaAmount;
 
-  const tvaRate = parsed.tvaRate != null ? parsed.tvaRate : parseFloat(devis.tvaRate) || 20;
+  // TVA-neutral: HT + TTC are the source of truth. tvaAmount is ALWAYS
+  // derived as TTC − HT — we never persist an extracted tvaAmount that
+  // could disagree with stored HT/TTC. If only one of HT / TTC is present
+  // we default the missing side to the known value (effective 0% TVA) so
+  // the draft is never auto-grossed-up; the user fixes it from the confirm UI.
+  const htNum = effectiveHt != null
+    ? roundCurrency(effectiveHt)
+    : (effectiveTtc != null ? roundCurrency(effectiveTtc) : 0);
+  const ttcNum = effectiveTtc != null
+    ? roundCurrency(effectiveTtc)
+    : (effectiveHt != null ? roundCurrency(effectiveHt) : 0);
 
-  const amountHt = effectiveHt != null
-    ? String(roundCurrency(effectiveHt))
-    : "0.00";
-
-  const amountTtc = effectiveTtc != null
-    ? String(roundCurrency(effectiveTtc))
-    : (effectiveHt != null ? String(calculateTtc(effectiveHt, tvaRate)) : "0.00");
-
-  const tvaAmount = effectiveTvaAmount != null
-    ? String(roundCurrency(effectiveTvaAmount))
-    : (effectiveHt != null ? String(calculateTva(effectiveHt, tvaRate)) : "0.00");
-
-  // Note: invoices do not persist tvaRate (schema source of truth in
-  // shared/schema.ts). The rate is used here only to derive amountTtc /
-  // tvaAmount when the parsed document omits them; the rate itself is
-  // recoverable from the linked devis or from amountHt/tvaAmount.
+  const amountHt = String(htNum);
+  const amountTtc = String(ttcNum);
+  const tvaAmount = String(deriveTvaAmount(htNum, ttcNum));
   const invoice = await storage.createInvoice({
     devisId,
     projectId: devis.projectId,

@@ -28,7 +28,7 @@ function pickContactFields(mirror: ArchidocContractor) {
   };
 }
 
-function buildSyncedFields(mirror: ArchidocContractor): Omit<InsertContractor, "notes" | "defaultTvaRate"> {
+function buildSyncedFields(mirror: ArchidocContractor): Omit<InsertContractor, "notes"> {
   const contact = pickContactFields(mirror);
   return {
     name: mirror.name,
@@ -120,7 +120,6 @@ export async function runContractorAutoSync(options: { incremental?: boolean } =
         try {
           await db.insert(contractors).values({
             ...fields,
-            defaultTvaRate: "20.00",
             notes: null,
           });
           created++;

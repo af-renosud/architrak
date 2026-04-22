@@ -11,7 +11,7 @@ import { approveInvoice } from "../services/invoice-approval.service";
 import { getDocumentStream } from "../storage/object-storage";
 import { validateExtraction, type ValidationWarning } from "../services/extraction-validator";
 import type { ParsedDocument } from "../gmail/document-parser";
-import { roundCurrency, calculateTtc } from "../../shared/financial-utils";
+import { roundCurrency, deriveTvaAmount } from "../../shared/financial-utils";
 import {
   reconcileAdvisories,
   getAdvisoriesForInvoice,
@@ -31,7 +31,6 @@ const updateInvoiceSchema = insertInvoiceSchema.partial();
 
 const invoiceConfirmSchema = z.object({
   amountHt: z.coerce.number().nonnegative().optional(),
-  tvaRate: z.coerce.number().min(0).max(100).optional(),
   amountTtc: z.coerce.number().nonnegative().optional(),
   invoiceNumber: z.string().min(1).optional(),
   dateIssued: z.string().optional(),
@@ -127,16 +126,15 @@ router.post(
       const corrections = req.body;
       const updates: Record<string, unknown> = { status: "pending" };
 
+      // TVA-neutral: HT and TTC come from the invoice; tvaAmount = TTC − HT.
+      // Both are persisted as confirmed; we re-derive tvaAmount whenever
+      // either changes so the row stays internally consistent.
       if (corrections.amountHt != null) updates.amountHt = String(roundCurrency(corrections.amountHt));
-      if (corrections.amountTtc != null) {
-        updates.amountTtc = String(roundCurrency(corrections.amountTtc));
-      } else if (corrections.amountHt != null || corrections.tvaRate != null) {
-        const ht = corrections.amountHt != null ? corrections.amountHt : Number(invoice.amountHt);
-        const existingHt = Number(invoice.amountHt);
-        const existingTva = Number(invoice.tvaAmount);
-        const derivedRate = existingHt > 0 ? (existingTva / existingHt) * 100 : 20;
-        const rate = corrections.tvaRate != null ? corrections.tvaRate : derivedRate;
-        updates.amountTtc = String(calculateTtc(ht, rate));
+      if (corrections.amountTtc != null) updates.amountTtc = String(roundCurrency(corrections.amountTtc));
+      if (corrections.amountHt != null || corrections.amountTtc != null) {
+        const newHt = corrections.amountHt != null ? roundCurrency(corrections.amountHt) : roundCurrency(Number(invoice.amountHt));
+        const newTtc = corrections.amountTtc != null ? roundCurrency(corrections.amountTtc) : roundCurrency(Number(invoice.amountTtc));
+        updates.tvaAmount = String(deriveTvaAmount(newHt, newTtc));
       }
       if (corrections.invoiceNumber != null) updates.invoiceNumber = corrections.invoiceNumber;
       if (corrections.dateIssued != null) updates.dateIssued = corrections.dateIssued;

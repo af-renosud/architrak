@@ -151,7 +151,6 @@ tbody tr:nth-child(even) td { background: #FAFAFA; }
     <div><div class="k">Devis №</div><div class="v">${escapeHtml(devis.devisNumber || devis.devisCode)}</div></div>
     <div><div class="k">Date</div><div class="v">${formatDate(devis.dateSent)}</div></div>
     <div><div class="k">Amount HT</div><div class="v">${formatCurrency(devis.amountHt)}</div></div>
-    <div><div class="k">VAT Rate</div><div class="v">${escapeHtml(devis.tvaRate)} %</div></div>
     <div><div class="k">Amount TTC</div><div class="v">${formatCurrency(devis.amountTtc)}</div></div>
     <div><div class="k">Status</div><div class="v">${escapeHtml(devis.status)}</div></div>
   </div>

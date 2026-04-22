@@ -79,7 +79,6 @@ export default function Contractors() {
       address: null,
       email: null,
       phone: null,
-      defaultTvaRate: "20.00",
       notes: null,
     },
   });
@@ -125,7 +124,6 @@ export default function Contractors() {
       address: null,
       email: null,
       phone: null,
-      defaultTvaRate: "20.00",
       notes: null,
     });
     setDialogOpen(true);
@@ -141,7 +139,6 @@ export default function Contractors() {
       address: contractor.address,
       email: contractor.email,
       phone: contractor.phone,
-      defaultTvaRate: contractor.defaultTvaRate ?? "20.00",
       notes: contractor.notes,
     });
     setDialogOpen(true);
@@ -150,7 +147,7 @@ export default function Contractors() {
   const onSubmit = (data: ContractorFormValues) => {
     if (editingContractor) {
       const payload = editingContractor.archidocId
-        ? { notes: data.notes ?? null, defaultTvaRate: data.defaultTvaRate ?? null }
+        ? { notes: data.notes ?? null }
         : data;
       updateMutation.mutate({ id: editingContractor.id, data: payload });
     } else {
@@ -214,7 +211,7 @@ export default function Contractors() {
                 className="rounded-md border border-blue-200 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/20 p-3 text-[10px] text-blue-800 dark:text-blue-200"
                 data-testid="text-archidoc-readonly-note"
               >
-                This contractor is managed in ArchiDoc. Synced fields are read-only here — only Notes and Default TVA Rate can be edited locally.
+                This contractor is managed in ArchiDoc. Synced fields are read-only here — only Notes can be edited locally.
               </div>
             )}
             <Form {...form}>
@@ -289,21 +286,6 @@ export default function Contractors() {
                       </FormLabel>
                       <FormControl>
                         <Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} disabled={isArchidocLinked} data-testid="input-contractor-address" />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="defaultTvaRate"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>
-                        <TechnicalLabel>Default TVA Rate (%)</TechnicalLabel>
-                      </FormLabel>
-                      <FormControl>
-                        <Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} type="number" step="0.01" data-testid="input-contractor-tva" />
                       </FormControl>
                       <FormMessage />
                     </FormItem>

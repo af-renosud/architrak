@@ -924,7 +924,6 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
 
   const [editValues, setEditValues] = useState({
     amountHt: devis.amountHt ?? "",
-    tvaRate: devis.tvaRate ?? "20.00",
     amountTtc: devis.amountTtc ?? "",
     devisCode: devis.devisCode ?? "",
     devisNumber: devis.devisNumber ?? "",
@@ -969,7 +968,6 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
   const handleConfirm = async () => {
     const corrections: Record<string, any> = {};
     if (editValues.amountHt !== (devis.amountHt ?? "")) corrections.amountHt = editValues.amountHt;
-    if (editValues.tvaRate !== (devis.tvaRate ?? "20.00")) corrections.tvaRate = editValues.tvaRate;
     if (editValues.amountTtc !== (devis.amountTtc ?? "")) corrections.amountTtc = editValues.amountTtc;
     if (editValues.devisCode !== (devis.devisCode ?? "")) corrections.devisCode = editValues.devisCode;
     if (editValues.devisNumber !== (devis.devisNumber ?? "")) corrections.devisNumber = editValues.devisNumber;
@@ -1098,7 +1096,7 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
             />
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
               <div className="flex items-center gap-1.5 flex-wrap">
                 <TechnicalLabel>Amount HT</TechnicalLabel>
@@ -1115,24 +1113,6 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
                 onChange={(e) => updateField("amountHt", e.target.value)}
                 className="text-[11px]"
                 data-testid="input-draft-amount-ht"
-              />
-            </div>
-            <div className="space-y-1">
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <TechnicalLabel>TVA Rate %</TechnicalLabel>
-                {fieldWarnings("tvaRate").map((w, i) => (
-                  <Badge key={i} variant="outline" className={`text-[8px] ${w.severity === "error" ? "border-rose-300 text-rose-600" : "border-amber-300 text-amber-600"}`}>
-                    {w.severity}
-                  </Badge>
-                ))}
-              </div>
-              <Input
-                type="number"
-                step="0.01"
-                value={editValues.tvaRate}
-                onChange={(e) => updateField("tvaRate", e.target.value)}
-                className="text-[11px]"
-                data-testid="input-draft-tva-rate"
               />
             </div>
             <div className="space-y-1">
@@ -1463,14 +1443,15 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
     queryKey: ["/api/devis", devis.id, "line-items"],
   });
 
-  const tvaMultiplier = 1 + (parseFloat(devis.tvaRate) || 20) / 100;
   const originalHt = parseFloat(devis.amountHt);
   const originalTtc = parseFloat(devis.amountTtc);
   const approvedAvenants = (avenants ?? []).filter((a) => a.status === "approved");
   const pvTotal = approvedAvenants.filter((a) => a.type === "pv").reduce((s, a) => s + parseFloat(a.amountHt), 0);
   const mvTotal = approvedAvenants.filter((a) => a.type === "mv").reduce((s, a) => s + parseFloat(a.amountHt), 0);
+  const pvTotalTtc = approvedAvenants.filter((a) => a.type === "pv").reduce((s, a) => s + parseFloat(a.amountTtc), 0);
+  const mvTotalTtc = approvedAvenants.filter((a) => a.type === "mv").reduce((s, a) => s + parseFloat(a.amountTtc), 0);
   const adjustedHt = originalHt + pvTotal - mvTotal;
-  const adjustedTtc = adjustedHt * tvaMultiplier;
+  const adjustedTtc = originalTtc + pvTotalTtc - mvTotalTtc;
   const invoicedHt = (invoices ?? []).reduce((s, i) => s + parseFloat(i.amountHt), 0);
   const invoicedTtc = (invoices ?? []).reduce((s, i) => s + parseFloat(i.amountTtc), 0);
   const remainingHt = adjustedHt - invoicedHt;
@@ -1667,8 +1648,13 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
   const [voidReason, setVoidReason] = useState("");
 
   const recalcAvenantTtc = () => {
+    // TVA-neutral: derive TTC from the parent devis ratio (HT/TTC)
+    // when the user enters HT. If parent has no HT, fall back to TTC = HT.
     const ht = parseFloat(avenantForm.watch("amountHt") || "0");
-    avenantForm.setValue("amountTtc", (ht * (1 + parseFloat(devis.tvaRate) / 100)).toFixed(2));
+    const parentHt = parseFloat(devis.amountHt) || 0;
+    const parentTtc = parseFloat(devis.amountTtc) || 0;
+    const ratio = parentHt > 0 ? parentTtc / parentHt : 1;
+    avenantForm.setValue("amountTtc", (ht * ratio).toFixed(2));
   };
 
   const recalcLineTotal = () => {
