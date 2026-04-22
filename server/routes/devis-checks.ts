@@ -3,7 +3,7 @@ import { z } from "zod";
 import { storage } from "../storage";
 import { requireAuth } from "../auth/middleware";
 import { validateRequest } from "../middleware/validate";
-import { issueDevisCheckToken, buildPortalUrl } from "../services/devis-checks";
+import { issueDevisCheckToken, buildPortalUrl, computeTokenExpiry, isTokenExpired } from "../services/devis-checks";
 import { queueDevisCheckBundle, sendCommunication } from "../communications/email-sender";
 import { env } from "../env";
 
@@ -293,7 +293,121 @@ router.post(
   },
 );
 
-/** Revoke any active token for this devis. */
+/**
+ * Audit helper: write a "system" message in every existing check's thread on
+ * this devis. We don't have a separate audit-log table — the devis-checks
+ * feature already uses system-channel messages as its audit trail (see the
+ * dispatch path in /checks/send), so we follow the same pattern here.
+ */
+async function auditTokenAction(devisId: number, note: string) {
+  const checks = await storage.listDevisChecks(devisId);
+  await Promise.all(
+    checks.map((c) =>
+      storage.createDevisCheckMessage({
+        checkId: c.id,
+        authorType: "system",
+        body: note,
+        channel: "system",
+      }),
+    ),
+  );
+}
+
+function describeUser(user: { firstName?: string | null; lastName?: string | null; email: string } | null): string {
+  if (!user) return "un administrateur";
+  const name = `${user.firstName ?? ""} ${user.lastName ?? ""}`.trim();
+  return name || user.email;
+}
+
+/**
+ * Return current token state for the devis (latest active token, if any).
+ * Powers the "Lien contractant" admin panel on the devis screen.
+ */
+router.get(
+  "/api/devis/:devisId/check-token",
+  validateRequest({ params: devisIdParams }),
+  async (req, res) => {
+    const devisId = Number(req.params.devisId);
+    // Use the latest token (active or revoked) so the panel can surface the
+    // revocation timestamp after a Révoquer click — getActiveDevisCheckToken
+    // would hide a just-revoked token and the UI would mis-render "Aucun lien".
+    const t = await storage.getLatestDevisCheckToken(devisId);
+    if (!t) return res.json({ token: null });
+    res.json({
+      token: {
+        id: t.id,
+        createdAt: t.createdAt,
+        lastUsedAt: t.lastUsedAt,
+        expiresAt: t.expiresAt,
+        revokedAt: t.revokedAt,
+      },
+    });
+  },
+);
+
+/**
+ * Architect "Prolonger" action: reset the sliding window on the active token
+ * by recomputing expiresAt from now. No-op (409) when there is no active
+ * token or when TTL is disabled (would be misleading).
+ */
+router.post(
+  "/api/devis/:devisId/check-token/extend",
+  validateRequest({ params: devisIdParams }),
+  async (req, res) => {
+    const devisId = Number(req.params.devisId);
+    const userId = req.session?.userId ?? null;
+    const active = await storage.getActiveDevisCheckToken(devisId);
+    if (!active) return res.status(409).json({ message: "Aucun lien actif à prolonger" });
+    // Prolonger is for still-valid tokens only. An expired-but-not-revoked
+    // token must be re-issued (rotated) via /checks/send instead, otherwise
+    // we'd silently revive a link the contractor was already told had lapsed.
+    if (isTokenExpired(active)) {
+      return res.status(409).json({ message: "Lien expiré — émettre un nouveau lien via Envoyer" });
+    }
+    const newExpiry = computeTokenExpiry();
+    const updated = await storage.extendDevisCheckTokenExpiry(active.id, newExpiry);
+    if (!updated) return res.status(409).json({ message: "Lien révoqué entre-temps" });
+    const user = (userId ? await storage.getUser(Number(userId)) : null) ?? null;
+    const expiryNote = newExpiry
+      ? `nouvelle expiration le ${newExpiry.toLocaleString("fr-FR")}`
+      : "expiration désactivée";
+    await auditTokenAction(
+      devisId,
+      `Lien contractant prolongé par ${describeUser(user)} — ${expiryNote}.`,
+    );
+    res.json({
+      token: {
+        id: updated.id,
+        createdAt: updated.createdAt,
+        lastUsedAt: updated.lastUsedAt,
+        expiresAt: updated.expiresAt,
+        revokedAt: updated.revokedAt,
+      },
+    });
+  },
+);
+
+/**
+ * Architect "Révoquer" action: revoke the currently active token. Idempotent
+ * — repeated clicks after revocation simply return 409 with no audit churn.
+ */
+router.post(
+  "/api/devis/:devisId/check-token/revoke",
+  validateRequest({ params: devisIdParams }),
+  async (req, res) => {
+    const devisId = Number(req.params.devisId);
+    const userId = req.session?.userId ?? null;
+    const active = await storage.getActiveDevisCheckToken(devisId);
+    if (!active) return res.status(409).json({ message: "Aucun lien actif à révoquer" });
+    const revoked = await storage.revokeDevisCheckTokenById(active.id);
+    if (!revoked) return res.status(409).json({ message: "Lien déjà révoqué" });
+    const user = (userId ? await storage.getUser(Number(userId)) : null) ?? null;
+    await auditTokenAction(devisId, `Lien contractant révoqué par ${describeUser(user)}.`);
+    res.json({ revoked: true });
+  },
+);
+
+/** Revoke any active token for this devis (legacy path used during resend). */
 router.post(
   "/api/devis/:devisId/checks/revoke-token",
   validateRequest({ params: devisIdParams }),

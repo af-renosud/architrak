@@ -6,7 +6,7 @@ import type { AddressInfo } from "net";
 type Status = "open" | "awaiting_contractor" | "awaiting_architect" | "resolved" | "dropped";
 interface Check { id: number; devisId: number; status: Status; query: string; lineItemId: number | null; origin: string }
 interface Comm { id: number; dedupeKey: string; status: "queued" | "sent" | "failed"; body: string; subject: string; emailThreadId: string | null; emailMessageId: string | null }
-interface Token { id: number; devisId: number; tokenHash: string; revokedAt: Date | null }
+interface Token { id: number; devisId: number; tokenHash: string; revokedAt: Date | null; createdAt?: Date | null; lastUsedAt?: Date | null; expiresAt?: Date | null }
 
 const { state, storageSpy } = vi.hoisted(() => {
   const state = {
@@ -66,6 +66,26 @@ const { state, storageSpy } = vi.hoisted(() => {
     revokeDevisCheckTokensForDevis: vi.fn(async (devisId: number) => {
       state.tokens.filter((t) => t.devisId === devisId).forEach((t) => { t.revokedAt = new Date(); });
     }),
+    getActiveDevisCheckToken: vi.fn(async (devisId: number) =>
+      state.tokens.find((t) => t.devisId === devisId && !t.revokedAt),
+    ),
+    getLatestDevisCheckToken: vi.fn(async (devisId: number) => {
+      const all = state.tokens.filter((t) => t.devisId === devisId);
+      return all.length ? all[all.length - 1] : undefined;
+    }),
+    extendDevisCheckTokenExpiry: vi.fn(async (id: number, expiresAt: Date | null) => {
+      const t = state.tokens.find((x) => x.id === id && !x.revokedAt);
+      if (!t) return undefined;
+      t.expiresAt = expiresAt;
+      return t;
+    }),
+    revokeDevisCheckTokenById: vi.fn(async (id: number) => {
+      const t = state.tokens.find((x) => x.id === id && !x.revokedAt);
+      if (!t) return undefined;
+      t.revokedAt = new Date();
+      return t;
+    }),
+    getUser: vi.fn(async (_id: number) => ({ id: 1, email: "alice@example.com", firstName: "Alice", lastName: "A" })),
   };
   return { state, storageSpy };
 });
@@ -81,6 +101,8 @@ vi.mock("../services/devis-checks", () => ({
   }),
   buildPortalUrl: (base: string, raw: string) => `${base}/p/check/${raw}`,
   hashToken: (raw: string) => `hash:${raw}`,
+  computeTokenExpiry: () => new Date("2099-01-01T00:00:00Z"),
+  isTokenExpired: (t: { expiresAt: Date | null }) => !!t.expiresAt && t.expiresAt.getTime() <= Date.now(),
 }));
 vi.mock("../communications/email-sender", () => ({
   queueDevisCheckBundle: vi.fn(async (opts: any) => {
@@ -288,6 +310,99 @@ describe("Public portal — token revocation", () => {
     expect(blocked.status).toBe(404);
     const body = await blocked.json();
     expect(body.message).toMatch(/invalide|expiré/i);
+  });
+
+  it("admin token panel: GET returns null when no token, then full state after one is issued", async () => {
+    state.devis.push({ id: 60, projectId: 1, contractorId: 1, signOffStage: "received" });
+    const empty = await fetch(`${baseUrl}/api/devis/60/check-token`);
+    expect(empty.status).toBe(200);
+    expect(await empty.json()).toEqual({ token: null });
+
+    state.tokens.push({
+      id: 9001, devisId: 60, tokenHash: "h", revokedAt: null,
+      createdAt: new Date("2026-01-01T10:00:00Z"),
+      lastUsedAt: new Date("2026-01-02T10:00:00Z"),
+      expiresAt: new Date("2026-02-01T10:00:00Z"),
+    });
+    const ok = await fetch(`${baseUrl}/api/devis/60/check-token`);
+    expect(ok.status).toBe(200);
+    const body = await ok.json();
+    expect(body.token).toMatchObject({ id: 9001 });
+    expect(body.token.createdAt).toBeTruthy();
+    expect(body.token.lastUsedAt).toBeTruthy();
+    expect(body.token.expiresAt).toBeTruthy();
+  });
+
+  it("admin extend: resets the sliding window and writes an audit message in every check thread", async () => {
+    state.devis.push({ id: 61, projectId: 1, contractorId: 1, signOffStage: "received" });
+    state.checks.push({ id: 410, devisId: 61, status: "open", query: "Q", lineItemId: null, origin: "general" });
+    state.checks.push({ id: 411, devisId: 61, status: "awaiting_contractor", query: "Q2", lineItemId: null, origin: "general" });
+    state.tokens.push({
+      id: 9100, devisId: 61, tokenHash: "h61", revokedAt: null,
+      // Pick an expiry well in the future so the still-valid precondition holds.
+      expiresAt: new Date("2090-01-15T00:00:00Z"),
+    });
+
+    const res = await fetch(`${baseUrl}/api/devis/61/check-token/extend`, { method: "POST" });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(new Date(body.token.expiresAt).toISOString()).toBe("2099-01-01T00:00:00.000Z");
+    // Audit: one system message per existing check.
+    const audits = state.messages.filter((m) => m.authorType === "system" && /prolong/i.test(m.body));
+    expect(audits.map((a) => a.checkId).sort()).toEqual([410, 411]);
+  });
+
+  it("admin extend: 409 when no active token exists", async () => {
+    state.devis.push({ id: 62, projectId: 1, contractorId: 1, signOffStage: "received" });
+    const res = await fetch(`${baseUrl}/api/devis/62/check-token/extend`, { method: "POST" });
+    expect(res.status).toBe(409);
+  });
+
+  it("admin extend: 409 when the token has already expired (must be re-issued, not revived)", async () => {
+    state.devis.push({ id: 64, projectId: 1, contractorId: 1, signOffStage: "received" });
+    state.tokens.push({
+      id: 9300, devisId: 64, tokenHash: "h64", revokedAt: null,
+      expiresAt: new Date("2000-01-01T00:00:00Z"),
+    });
+    const res = await fetch(`${baseUrl}/api/devis/64/check-token/extend`, { method: "POST" });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.message).toMatch(/expir/i);
+  });
+
+  it("admin GET after revoke: still surfaces the revoked token so the panel shows revocation state", async () => {
+    state.devis.push({ id: 65, projectId: 1, contractorId: 1, signOffStage: "received" });
+    state.checks.push({ id: 610, devisId: 65, status: "open", query: "Q", lineItemId: null, origin: "general" });
+    state.tokens.push({
+      id: 9400, devisId: 65, tokenHash: "h65", revokedAt: null,
+      createdAt: new Date("2026-03-01T00:00:00Z"),
+    });
+
+    const revoke = await fetch(`${baseUrl}/api/devis/65/check-token/revoke`, { method: "POST" });
+    expect(revoke.status).toBe(200);
+
+    const view = await fetch(`${baseUrl}/api/devis/65/check-token`);
+    expect(view.status).toBe(200);
+    const body = await view.json();
+    expect(body.token).toBeTruthy();
+    expect(body.token.id).toBe(9400);
+    expect(body.token.revokedAt).toBeTruthy();
+  });
+
+  it("admin revoke: revokes the active token, audits each check, and is idempotent (409 on retry)", async () => {
+    state.devis.push({ id: 63, projectId: 1, contractorId: 1, signOffStage: "received" });
+    state.checks.push({ id: 510, devisId: 63, status: "awaiting_contractor", query: "Q", lineItemId: null, origin: "general" });
+    state.tokens.push({ id: 9200, devisId: 63, tokenHash: "h63", revokedAt: null });
+
+    const res = await fetch(`${baseUrl}/api/devis/63/check-token/revoke`, { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(state.tokens.find((t) => t.id === 9200)!.revokedAt).toBeTruthy();
+    const audit = state.messages.find((m) => m.authorType === "system" && /révoqu/i.test(m.body));
+    expect(audit).toBeDefined();
+    expect(audit!.checkId).toBe(510);
+
+    const retry = await fetch(`${baseUrl}/api/devis/63/check-token/revoke`, { method: "POST" });
+    expect(retry.status).toBe(409);
   });
 
   it("hides resolved checks from the contractor (only open queries are surfaced)", async () => {

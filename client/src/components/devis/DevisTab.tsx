@@ -1455,6 +1455,143 @@ const CHECK_STATUS_COLOR: Record<string, string> = {
   dropped: "bg-slate-50 text-slate-400 border-slate-200",
 };
 
+type CheckTokenInfo = {
+  id: number;
+  createdAt: string | Date;
+  lastUsedAt: string | Date | null;
+  expiresAt: string | Date | null;
+  revokedAt: string | Date | null;
+};
+
+function formatDateTime(value: string | Date | null | undefined): string {
+  if (!value) return "—";
+  const d = typeof value === "string" ? new Date(value) : value;
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" });
+}
+
+function TokenPanel({ devisId, projectId, isArchived }: { devisId: number; projectId: string; isArchived: boolean }) {
+  const { toast } = useToast();
+  const { data, isLoading } = useQuery<{ token: CheckTokenInfo | null }>({
+    queryKey: ["/api/devis", devisId, "check-token"],
+  });
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "check-token"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "checks"] });
+  };
+
+  const extendMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/devis/${devisId}/check-token/extend`, {});
+      return res.json();
+    },
+    onSuccess: () => { invalidate(); toast({ title: "Lien prolongé" }); },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  const revokeMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/devis/${devisId}/check-token/revoke`, {});
+      return res.json();
+    },
+    onSuccess: () => { invalidate(); toast({ title: "Lien révoqué" }); },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  if (isLoading) return null;
+  const token = data?.token ?? null;
+  const isRevoked = !!token?.revokedAt;
+  const isExpired = !!(token?.expiresAt && new Date(token.expiresAt).getTime() <= Date.now());
+  const stateLabel = !token
+    ? "Aucun lien émis"
+    : isRevoked
+      ? "Révoqué"
+      : isExpired
+        ? "Expiré"
+        : "Actif";
+  const stateColor = !token || isRevoked || isExpired
+    ? "bg-slate-100 text-slate-600 border-slate-300"
+    : "bg-emerald-50 text-emerald-700 border-emerald-200";
+
+  return (
+    <div
+      className="rounded-lg border border-slate-200 bg-white p-2.5 space-y-2"
+      data-testid={`section-token-panel-${devisId}`}
+    >
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] font-semibold text-slate-700">Lien contractant</span>
+          <span
+            className={`px-2 py-0.5 rounded-full border text-[9px] font-bold uppercase tracking-wide ${stateColor}`}
+            data-testid={`status-token-${devisId}`}
+          >
+            {stateLabel}
+          </span>
+        </div>
+        {token && !isRevoked && !isArchived && (
+          <div className="flex items-center gap-1.5">
+            {/* Prolonger only makes sense on a still-valid token. The backend
+                rejects extending an expired token with 409 (lapsed links must
+                be re-issued via Envoyer), so we hide the button to match. */}
+            {!isExpired && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 text-[9px] font-bold uppercase tracking-widest"
+                onClick={() => extendMutation.mutate()}
+                disabled={extendMutation.isPending}
+                data-testid={`button-extend-token-${devisId}`}
+              >
+                {extendMutation.isPending ? "…" : "Prolonger"}
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 text-[9px] font-bold uppercase tracking-widest border-rose-300 text-rose-700 hover:bg-rose-50"
+              onClick={() => revokeMutation.mutate()}
+              disabled={revokeMutation.isPending}
+              data-testid={`button-revoke-token-${devisId}`}
+            >
+              {revokeMutation.isPending ? "…" : "Révoquer"}
+            </Button>
+          </div>
+        )}
+      </div>
+      {token && (
+        <div className="grid grid-cols-3 gap-2 text-[10px] text-slate-600">
+          <div>
+            <div className="text-slate-400 uppercase tracking-wide text-[9px]">Émis</div>
+            <div data-testid={`text-token-created-${devisId}`}>{formatDateTime(token.createdAt)}</div>
+          </div>
+          <div>
+            <div className="text-slate-400 uppercase tracking-wide text-[9px]">Dernier accès</div>
+            <div data-testid={`text-token-last-used-${devisId}`}>{formatDateTime(token.lastUsedAt)}</div>
+          </div>
+          <div>
+            <div className="text-slate-400 uppercase tracking-wide text-[9px]">
+              {isRevoked ? "Révoqué" : "Expire"}
+            </div>
+            <div data-testid={`text-token-expires-${devisId}`}>
+              {isRevoked
+                ? formatDateTime(token.revokedAt)
+                : token.expiresAt
+                  ? formatDateTime(token.expiresAt)
+                  : "Jamais"}
+            </div>
+          </div>
+        </div>
+      )}
+      {!token && (
+        <p className="text-[10px] text-slate-500" data-testid={`text-no-token-${devisId}`}>
+          Aucun lien n'a encore été émis pour ce devis. Envoyez les questions à l'entreprise pour générer un lien.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function ChecksPanel({ devisId, projectId, isArchived }: { devisId: number; projectId: string; isArchived: boolean }) {
   const { toast } = useToast();
   const [replyDrafts, setReplyDrafts] = useState<Record<number, string>>({});
@@ -1529,6 +1666,7 @@ function ChecksPanel({ devisId, projectId, isArchived }: { devisId: number; proj
 
   if (isLoading) return null;
   const visible = checks.filter((c) => c.status !== "dropped");
+  const tokenPanel = <TokenPanel devisId={devisId} projectId={projectId} isArchived={isArchived} />;
 
   const openCount = checks.filter((c) => c.status === "open" || c.status === "awaiting_architect" || c.status === "awaiting_contractor").length;
   // Sendable mirrors the backend bundle filter: every unresolved check
@@ -1539,6 +1677,7 @@ function ChecksPanel({ devisId, projectId, isArchived }: { devisId: number; proj
 
   return (
     <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-3 space-y-3" data-testid={`section-checks-${devisId}`}>
+      {tokenPanel}
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
           {openCount > 0 && (

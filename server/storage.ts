@@ -270,10 +270,13 @@ export interface IStorage {
   listDevisCheckMessages(checkId: number): Promise<DevisCheckMessage[]>;
   createDevisCheckMessage(data: InsertDevisCheckMessage): Promise<DevisCheckMessage>;
   getActiveDevisCheckToken(devisId: number): Promise<DevisCheckToken | undefined>;
+  getLatestDevisCheckToken(devisId: number): Promise<DevisCheckToken | undefined>;
   createDevisCheckToken(data: InsertDevisCheckToken): Promise<DevisCheckToken>;
   revokeDevisCheckTokensForDevis(devisId: number): Promise<void>;
   getDevisCheckTokenByHash(hash: string): Promise<DevisCheckToken | undefined>;
   touchDevisCheckTokenUsed(id: number, expiresAt: Date | null): Promise<void>;
+  extendDevisCheckTokenExpiry(id: number, expiresAt: Date | null): Promise<DevisCheckToken | undefined>;
+  revokeDevisCheckTokenById(id: number): Promise<DevisCheckToken | undefined>;
   revokeExpiredDevisCheckTokens(now?: Date): Promise<number>;
   /**
    * Lifecycle-bound auto-revoke. Revokes the active portal token for any
@@ -1384,6 +1387,16 @@ export class DatabaseStorage implements IStorage {
     return t;
   }
 
+  async getLatestDevisCheckToken(devisId: number): Promise<DevisCheckToken | undefined> {
+    const [t] = await db
+      .select()
+      .from(devisCheckTokens)
+      .where(eq(devisCheckTokens.devisId, devisId))
+      .orderBy(desc(devisCheckTokens.createdAt))
+      .limit(1);
+    return t;
+  }
+
   async createDevisCheckToken(data: InsertDevisCheckToken): Promise<DevisCheckToken> {
     // Revoke any existing active token first to satisfy the partial unique index.
     await this.revokeDevisCheckTokensForDevis(data.devisId);
@@ -1408,6 +1421,24 @@ export class DatabaseStorage implements IStorage {
       .update(devisCheckTokens)
       .set({ lastUsedAt: new Date(), expiresAt })
       .where(eq(devisCheckTokens.id, id));
+  }
+
+  async extendDevisCheckTokenExpiry(id: number, expiresAt: Date | null): Promise<DevisCheckToken | undefined> {
+    const [row] = await db
+      .update(devisCheckTokens)
+      .set({ expiresAt })
+      .where(and(eq(devisCheckTokens.id, id), isNull(devisCheckTokens.revokedAt)))
+      .returning();
+    return row;
+  }
+
+  async revokeDevisCheckTokenById(id: number): Promise<DevisCheckToken | undefined> {
+    const [row] = await db
+      .update(devisCheckTokens)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(devisCheckTokens.id, id), isNull(devisCheckTokens.revokedAt)))
+      .returning();
+    return row;
   }
 
   async revokeExpiredDevisCheckTokens(now: Date = new Date()): Promise<number> {
