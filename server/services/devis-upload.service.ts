@@ -51,13 +51,14 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
 
   const validation = validateExtraction(parsed);
   const lotWarnings = await checkLotReferencesAgainstCatalog(parsed);
-  const allWarnings = [...validation.warnings, ...lotWarnings];
 
   const corrected = { ...parsed, ...validation.correctedValues };
 
   const allProjects = await storage.getProjects({ includeArchived: true });
   const allContractors = await storage.getContractors();
   const match = await matchToProject(parsed, allProjects, allContractors);
+
+  const allWarnings = [...validation.warnings, ...lotWarnings, ...match.warnings];
 
   const contractorId = match.contractorId || (allContractors.length > 0 ? allContractors[0].id : null);
   if (!contractorId) {

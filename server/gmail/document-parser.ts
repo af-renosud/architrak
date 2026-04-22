@@ -3,7 +3,7 @@ import { GoogleGenerativeAI, SchemaType, type ResponseSchema } from "@google/gen
 import { storage } from "../storage";
 import { getDocumentBuffer, uploadDocument } from "../storage/object-storage";
 import type { Project, Contractor } from "@shared/schema";
-import { validateExtraction } from "../services/extraction-validator";
+import { validateExtraction, type ValidationWarning } from "../services/extraction-validator";
 import { checkLotReferencesAgainstCatalog } from "../services/lot-reference-validator";
 import { retry } from "../lib/retry";
 import { execFile } from "child_process";
@@ -50,6 +50,7 @@ export interface ParsedDocument {
   invoiceNumber?: string;
   devisNumber?: string;
   siret?: string;
+  tvaIntracom?: string;
   date?: string;
   amountHt?: number;
   amountTtc?: number;
@@ -76,6 +77,29 @@ interface MatchResult {
   contractorId: number | null;
   confidence: number;
   matchedFields: Record<string, string>;
+  warnings: ValidationWarning[];
+}
+
+export function normalizeSiret(raw: string | null | undefined): string {
+  if (!raw) return "";
+  return raw.replace(/\D/g, "");
+}
+
+export function extractSirenFromTva(raw: string | null | undefined): string {
+  // French intracom VAT: FR<2-char key><9-digit SIREN>. Tolerate spaces and
+  // missing key digits — fall back to the last 9 digits.
+  if (!raw) return "";
+  const digits = raw.replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+  const m = digits.match(/^FR[0-9A-Z]{2}(\d{9})$/);
+  if (m) return m[1];
+  const onlyDigits = raw.replace(/\D/g, "");
+  if (onlyDigits.length === 11) return onlyDigits.slice(2);
+  if (onlyDigits.length === 9) return onlyDigits;
+  return "";
+}
+
+function sirenOf(contractor: Contractor): string {
+  return normalizeSiret(contractor.siret).slice(0, 9);
 }
 
 const SYSTEM_PROMPT = `You are an Expert-Comptable specialise BTP (French Construction Accountant) with deep expertise in analyzing financial documents from the French architecture and construction industry.
@@ -109,6 +133,7 @@ const USER_PROMPT = `Analyze this French construction document and extract the f
 - invoiceNumber: specific invoice number if this is a facture (e.g., "FA-2024-001")
 - devisNumber: specific devis number if this is a devis (e.g., "DEV-2024-042")
 - siret: contractor SIRET number (14-digit identifier) if visible on the document
+- tvaIntracom: contractor's intra-community VAT number if visible (e.g., "FR75820466761") — copy the full string including the FR prefix
 - date: document date in YYYY-MM-DD format
 - amountHt: total amount excluding tax (Montant HT) as a number with 2 decimal places
 - amountTtc: total amount including tax (Montant TTC) as a number with 2 decimal places
@@ -166,6 +191,11 @@ const EXTRACTION_SCHEMA: ResponseSchema = {
     siret: {
       type: SchemaType.STRING,
       description: "Contractor SIRET number (14-digit identifier)",
+      nullable: true,
+    },
+    tvaIntracom: {
+      type: SchemaType.STRING,
+      description: "Contractor intra-community VAT number (e.g., FR75820466761)",
       nullable: true,
     },
     date: {
@@ -576,16 +606,97 @@ export async function matchToProject(
   let bestContractorId: number | null = null;
   let bestScore = 0;
   const matchedFields: Record<string, string> = {};
+  const warnings: ValidationWarning[] = [];
 
-  for (const contractor of contractors) {
-    if (parsed.contractorName && contractor.name) {
+  // ── Tier 1: SIRET / SIREN match (deterministic legal-entity ID) ───────────
+  // SIRET (14 digits) is authoritative — short, brand-style names like
+  // "AT TRAVAUX" vs "AT PISCINES" cannot collide on the legal-entity ID.
+  const extractedSiret = normalizeSiret(parsed.siret);
+  const extractedSirenFromTva = extractSirenFromTva(parsed.tvaIntracom);
+  // Some extractors put the TVA into the siret field (or vice-versa); accept
+  // either source for SIREN derivation.
+  const sirenFromSiretField = extractedSiret.length === 9
+    ? extractedSiret
+    : extractSirenFromTva(parsed.siret);
+  const effectiveSiren = extractedSirenFromTva || sirenFromSiretField || extractedSiret.slice(0, 9);
+
+  let siretMatchedContractor: Contractor | null = null;
+  let siretSignal: "siret" | "siren" | null = null;
+
+  if (extractedSiret.length === 14) {
+    const exact = contractors.filter((c) => normalizeSiret(c.siret) === extractedSiret);
+    if (exact.length === 1) {
+      siretMatchedContractor = exact[0];
+      siretSignal = "siret";
+    } else if (exact.length > 1) {
+      warnings.push({
+        field: "contractorSiret",
+        expected: exact.map((c) => c.name).join(", "),
+        actual: extractedSiret,
+        message: `Multiple contractors share SIRET ${extractedSiret}: ${exact.map((c) => `${c.name} (id ${c.id})`).join(", ")}. Resolve duplicates before relying on SIRET matching.`,
+        severity: "warning",
+      });
+    }
+  }
+
+  if (!siretMatchedContractor && effectiveSiren.length === 9) {
+    const sirenMatches = contractors.filter((c) => sirenOf(c) === effectiveSiren);
+    if (sirenMatches.length === 1) {
+      siretMatchedContractor = sirenMatches[0];
+      siretSignal = "siren";
+    }
+  }
+
+  if (siretMatchedContractor) {
+    bestContractorId = siretMatchedContractor.id;
+    matchedFields.contractorSiret =
+      `${parsed.siret ?? parsed.tvaIntracom ?? effectiveSiren} → ${siretMatchedContractor.name} (id ${siretMatchedContractor.id}, signal=${siretSignal})`;
+    bestScore += 100;
+    console.log(`[matchToProject] Contractor matched by ${siretSignal}=${extractedSiret || effectiveSiren} → ${siretMatchedContractor.name} (id ${siretMatchedContractor.id})`);
+  } else if (extractedSiret.length === 14 || effectiveSiren.length === 9) {
+    // SIRET / TVA was extracted from the document but no contractor in the DB
+    // has it on file — surface as a warning so the user can either create the
+    // contractor or trigger an ArchiDoc sync.
+    warnings.push({
+      field: "contractorSiret",
+      expected: "known contractor",
+      actual: parsed.siret ?? parsed.tvaIntracom ?? effectiveSiren,
+      message: `SIRET ${parsed.siret ?? parsed.tvaIntracom ?? effectiveSiren} was found on the document but no contractor with this identifier exists in ArchiTrak. Sync from ArchiDoc or create the contractor first.`,
+      severity: "warning",
+    });
+  }
+
+  // ── Tier 2: Name fuzzy match (only as fallback or for disagreement check) ─
+  // Threshold raised from 0.6 → 0.8 to avoid AT PISCINES / AT TRAVAUX style
+  // collisions. SIRET, when present, always wins.
+  let bestNameContractor: Contractor | null = null;
+  let bestNameScore = 0;
+  if (parsed.contractorName) {
+    for (const contractor of contractors) {
+      if (!contractor.name) continue;
       const similarity = fuzzyMatch(parsed.contractorName, contractor.name);
-      if (similarity > 0.6) {
-        bestContractorId = contractor.id;
-        matchedFields.contractorName = `${parsed.contractorName} → ${contractor.name} (${Math.round(similarity * 100)}%)`;
-        bestScore += similarity * 40;
+      if (similarity >= 0.8 && similarity > bestNameScore) {
+        bestNameContractor = contractor;
+        bestNameScore = similarity;
       }
     }
+  }
+
+  if (siretMatchedContractor && bestNameContractor && bestNameContractor.id !== siretMatchedContractor.id) {
+    // SIRET and name disagree → keep the SIRET pick, surface advisory.
+    warnings.push({
+      field: "contractorName",
+      expected: siretMatchedContractor.name,
+      actual: parsed.contractorName,
+      message: `Document name "${parsed.contractorName}" fuzzy-matches contractor "${bestNameContractor.name}" (id ${bestNameContractor.id}), but SIRET ${parsed.siret ?? parsed.tvaIntracom ?? effectiveSiren} belongs to "${siretMatchedContractor.name}" (id ${siretMatchedContractor.id}). Auto-corrected to the SIRET-matched contractor.`,
+      severity: "warning",
+    });
+    matchedFields.contractorName = `${parsed.contractorName} → ${bestNameContractor.name} (${Math.round(bestNameScore * 100)}% — overridden by SIRET)`;
+  } else if (!siretMatchedContractor && bestNameContractor) {
+    bestContractorId = bestNameContractor.id;
+    matchedFields.contractorName = `${parsed.contractorName} → ${bestNameContractor.name} (${Math.round(bestNameScore * 100)}%)`;
+    bestScore += bestNameScore * 40;
+    console.log(`[matchToProject] Contractor matched by name=${bestNameContractor.name}@${Math.round(bestNameScore * 100)}%`);
   }
 
   for (const project of projects) {
@@ -627,6 +738,7 @@ export async function matchToProject(
     contractorId: bestContractorId,
     confidence,
     matchedFields,
+    warnings,
   };
 }
 
@@ -654,7 +766,7 @@ export async function processEmailDocument(emailDocumentId: number): Promise<voi
 
     const validation = validateExtraction(parsed);
     const lotWarnings = await checkLotReferencesAgainstCatalog(parsed);
-    const allWarnings = [...validation.warnings, ...lotWarnings];
+    const allWarnings = [...validation.warnings, ...lotWarnings, ...match.warnings];
 
     const status = (validation.isValid && match.confidence >= 80) ? "completed" : "needs_review";
 
