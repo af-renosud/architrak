@@ -89,9 +89,12 @@ router.get(
     const lineItems = await storage.getDevisLineItems(t.devisId);
     const lineMap = new Map(lineItems.map((li) => [li.id, li.description]));
 
+    // Show only OPEN queries to the contractor. Resolved/dropped checks
+     // are hidden because the workflow is "answer outstanding questions";
+    // historical resolved items would be noise in the contractor view.
     const enriched = await Promise.all(
       checks
-        .filter((c) => c.status !== "dropped")
+        .filter((c) => c.status !== "dropped" && c.status !== "resolved")
         .map(async (c) => ({
           id: c.id,
           status: c.status,
