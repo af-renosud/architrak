@@ -324,9 +324,9 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
             </div>
           </div>
           <TooltipProvider delayDuration={200}>
-            <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-2 min-[900px]:gap-3 flex-wrap justify-end">
               {/* Slot: PDF */}
-              <div className="w-[7rem] flex justify-end">
+              <div className="min-[900px]:w-[7rem] flex justify-end empty:hidden">
                 {d.pdfStorageKey ? (
                   <Button
                     variant="outline"
@@ -344,7 +344,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
                 ) : null}
               </div>
               {/* Slot: Totals */}
-              <div className="w-[9rem] text-right">
+              <div className="min-[900px]:w-[9rem] text-right">
                 <span className="text-[14px] font-semibold text-foreground" data-testid={`text-devis-ttc-${d.id}`}>
                   {formatCurrency(parseFloat(d.amountTtc))}
                 </span>
@@ -354,15 +354,15 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
                 </span>
               </div>
               {/* Slot: Mode */}
-              <div className="w-[3.75rem]">
+              <div className="min-[900px]:w-[3.75rem]">
                 <TechnicalLabel>{d.invoicingMode === "mode_a" ? "Mode A" : "Mode B"}</TechnicalLabel>
               </div>
               {/* Slot: Advisory */}
-              <div className="w-[1.75rem] flex justify-center">
+              <div className="min-[900px]:w-[1.75rem] flex justify-center empty:hidden">
                 <AdvisoryBadge subject={{ type: "devis", id: d.id }} />
               </div>
               {/* Slot: Checking */}
-              <div className="w-[5.5rem] flex justify-center">
+              <div className="min-[900px]:w-[5.5rem] flex justify-center empty:hidden">
                 {openChecks > 0 ? (
                   <span
                     className="px-2 py-0.5 rounded-full bg-amber-500 text-white text-[9px] font-bold uppercase tracking-widest"
@@ -374,7 +374,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
                 ) : null}
               </div>
               {/* Slot: Quick actions (Facture / Avenant) */}
-              <div className="w-[10.5rem] flex justify-center gap-1.5">
+              <div className="min-[900px]:w-[10.5rem] flex justify-center gap-1.5 empty:hidden">
                 {!isVoid ? (
                   <>
                     <Tooltip>
@@ -419,11 +419,11 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
                 ) : null}
               </div>
               {/* Slot: Status */}
-              <div className="w-[4.75rem] flex justify-center">
+              <div className="min-[900px]:w-[4.75rem] flex justify-center">
                 <StatusBadge status={d.status} />
               </div>
               {/* Slot: Review */}
-              <div className="w-[5rem] flex justify-center">
+              <div className="min-[900px]:w-[5rem] flex justify-center empty:hidden">
                 {d.status === "draft" ? (
                   <Button
                     variant="outline"
