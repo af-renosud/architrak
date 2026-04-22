@@ -8,7 +8,7 @@ import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Zap, Sparkles, Crown, Gauge, DollarSign, Brain, Check, Upload, Trash2, Image, Building2, Scale, Layers, Plus, Pencil, Wand2, Loader2, RefreshCw, Users } from "lucide-react";
+import { Zap, Sparkles, Crown, Gauge, DollarSign, Brain, Check, Upload, Trash2, Image, Building2, Scale, Layers, Plus, Pencil, Wand2, Loader2, RefreshCw, Users, FileText, ExternalLink } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -258,6 +258,7 @@ export default function SettingsPage() {
         </div>
 
         <TemplateAssetsSection />
+        <TemplatesSection />
         <LotCatalogSection />
         <DevisRematchSection />
         <InvoiceRematchSection />
@@ -1433,6 +1434,78 @@ const ASSET_SLOTS = [
     icon: Scale,
   },
 ] as const;
+
+function TemplatesSection() {
+  const previewUrl = "/api/settings/templates/certificat-paiement/preview";
+  const [reloadKey, setReloadKey] = useState(0);
+
+  return (
+    <div className="mt-10">
+      <div className="mb-6 flex items-end justify-between gap-4">
+        <div>
+          <h2
+            className="text-[16px] font-black uppercase tracking-tight mb-1"
+            style={{ color: "#0B2545" }}
+            data-testid="text-templates-title"
+          >
+            Document Templates
+          </h2>
+          <p className="text-[11px] text-muted-foreground">
+            Live preview of the templates used to generate official PDFs. Sample data is shown — your branding (logos)
+            from <em>Template Assets</em> above is applied automatically.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setReloadKey((k) => k + 1)}
+            data-testid="button-templates-refresh"
+          >
+            <RefreshCw size={14} className="mr-1.5" />
+            Refresh
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => window.open(previewUrl, "_blank", "noopener,noreferrer")}
+            data-testid="button-templates-open-tab"
+          >
+            <ExternalLink size={14} className="mr-1.5" />
+            Open in new tab
+          </Button>
+        </div>
+      </div>
+
+      <LuxuryCard>
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-8 h-8 rounded-xl bg-slate-100 flex items-center justify-center shrink-0">
+            <FileText size={14} className="text-muted-foreground" />
+          </div>
+          <div>
+            <h3 className="text-[12px] font-bold text-foreground mb-0.5">Certificat de Paiement</h3>
+            <p className="text-[10px] text-muted-foreground leading-relaxed">
+              Cover page + financial annex. The same HTML is sent to DocRaptor when you generate a real certificate.
+            </p>
+          </div>
+        </div>
+
+        <div
+          className="rounded-lg border border-slate-200 overflow-hidden bg-slate-50"
+          style={{ height: "1100px" }}
+        >
+          <iframe
+            key={reloadKey}
+            src={previewUrl}
+            title="Certificat de Paiement preview"
+            className="w-full h-full bg-white"
+            data-testid="iframe-certificat-preview"
+          />
+        </div>
+      </LuxuryCard>
+    </div>
+  );
+}
 
 function TemplateAssetsSection() {
   const { toast } = useToast();

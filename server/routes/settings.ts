@@ -4,6 +4,7 @@ import { storage } from "../storage";
 import { upload } from "../middleware/upload";
 import { uploadDocument, getDocumentStream } from "../storage/object-storage";
 import { validateRequest } from "../middleware/validate";
+import { buildCertificatPreviewHtml } from "../communications/certificat-generator";
 
 const router = Router();
 
@@ -90,6 +91,18 @@ router.get("/api/template-assets/:type/file", async (req, res) => {
     stream.pipe(res);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Failed to retrieve asset";
+    res.status(500).json({ message });
+  }
+});
+
+router.get("/api/settings/templates/certificat-paiement/preview", async (_req, res) => {
+  try {
+    const html = await buildCertificatPreviewHtml();
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+    res.send(html);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Failed to render preview";
     res.status(500).json({ message });
   }
 });

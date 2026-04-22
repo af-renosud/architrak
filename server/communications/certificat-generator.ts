@@ -981,6 +981,205 @@ function buildCertificatHtml(data: CertificatPdfData): string {
 </html>`;
 }
 
+export async function buildCertificatPreviewHtml(): Promise<string> {
+  const [companyLogoBase64, architectsLogoBase64] = await Promise.all([
+    loadLogoAsBase64("company_logo"),
+    loadLogoAsBase64("architects_order_logo"),
+  ]);
+
+  const now = new Date();
+  const sampleDate = new Date(now.getFullYear(), now.getMonth(), 15);
+
+  const project: Project = {
+    id: -1,
+    name: "Villa Exemple",
+    code: "VEX-2026",
+    clientName: "M. et Mme EXEMPLE",
+    clientAddress: "12 Avenue des Mimosas, 34480 Cabrerolles",
+    siteAddress: "Chemin du Vignoble, 34480 Cabrerolles",
+    status: "active",
+    tvaRate: "20.00",
+    feePercentage: "10.00",
+    feeType: "percentage",
+    conceptionFee: null,
+    planningFee: null,
+    hasMarche: false,
+    archidocId: null,
+    archidocClients: null,
+    lastSyncedAt: null,
+    archivedAt: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const contractor: Contractor = {
+    id: -1,
+    name: "ENTREPRISE EXEMPLE BTP",
+    siret: "12345678900012",
+    address: "5 Rue du Commerce, 34000 Montpellier",
+    email: "contact@exemple-btp.fr",
+    phone: "04 67 00 00 00",
+    defaultTvaRate: "20.00",
+    notes: null,
+    archidocId: null,
+    contactName: "Jean DUPONT",
+    contactJobTitle: "Gérant",
+    contactMobile: "06 12 34 56 78",
+    town: "Montpellier",
+    postcode: "34000",
+    website: null,
+    insuranceStatus: "valid",
+    decennaleInsurer: null,
+    decennalePolicyNumber: null,
+    decennaleEndDate: null,
+    rcProInsurer: null,
+    rcProPolicyNumber: null,
+    rcProEndDate: null,
+    specialConditions: null,
+    archidocOrphanedAt: null,
+    createdAt: now,
+  };
+
+  const lot: Lot = {
+    id: -1,
+    projectId: -1,
+    lotNumber: "03",
+    descriptionFr: "Maçonnerie - Gros œuvre",
+    descriptionUk: "Masonry - Structural works",
+    createdAt: now,
+  };
+
+  const devisRecord: Devis = {
+    id: -1,
+    projectId: -1,
+    contractorId: -1,
+    lotId: -1,
+    marcheId: null,
+    devisCode: "DEV-2026-014",
+    devisNumber: "2026-014",
+    ref2: null,
+    descriptionFr: "Travaux de maçonnerie - extension",
+    descriptionUk: "Masonry works - extension",
+    amountHt: "24500.00",
+    tvaRate: "20.00",
+    amountTtc: "29400.00",
+    invoicingMode: "mode_a",
+    status: "approved",
+    signOffStage: "signed",
+    voidReason: null,
+    dateSent: null,
+    dateSigned: null,
+    pvmvRef: null,
+    pdfStorageKey: null,
+    pdfFileName: null,
+    validationWarnings: null,
+    aiExtractedData: null,
+    aiConfidence: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const invoice: Invoice = {
+    id: -1,
+    devisId: -1,
+    contractorId: -1,
+    projectId: -1,
+    certificateNumber: null,
+    invoiceNumber: "FAC-2026-038",
+    amountHt: "12000.00",
+    tvaAmount: "2400.00",
+    amountTtc: "14400.00",
+    dateIssued: sampleDate.toISOString().slice(0, 10),
+    dateSent: null,
+    datePaid: null,
+    status: "pending",
+    pdfPath: null,
+    notes: null,
+    validationWarnings: null,
+    aiExtractedData: null,
+    aiConfidence: null,
+    createdAt: now,
+  };
+
+  const certificat: Certificat = {
+    id: -1,
+    projectId: -1,
+    contractorId: -1,
+    certificateRef: "CP-2026-007",
+    dateIssued: sampleDate.toISOString().slice(0, 10),
+    totalWorksHt: "24500.00",
+    pvMvAdjustment: "0.00",
+    previousPayments: "12000.00",
+    retenueGarantie: "0.00",
+    netToPayHt: "12500.00",
+    tvaAmount: "2500.00",
+    netToPayTtc: "15000.00",
+    status: "draft",
+    notes: null,
+    createdAt: now,
+  };
+
+  const devisDetails: DevisWithDetails[] = [
+    { devis: devisRecord, lot, invoices: [invoice], invoicedTtc: 14400 },
+  ];
+
+  const annexeData: AnnexeData = {
+    projectName: project.name,
+    projectCode: project.code,
+    contractorName: contractor.name,
+    devisRows: [
+      {
+        devisCode: devisRecord.devisCode,
+        descriptionFr: devisRecord.descriptionFr,
+        descriptionUk: devisRecord.descriptionUk,
+        lotNumber: lot.lotNumber,
+        lotDescriptionFr: lot.descriptionFr,
+        lotDescriptionUk: lot.descriptionUk,
+        originalHt: 24500,
+        originalTtc: 29400,
+        tvaRate: 20,
+        avenants: [],
+        pvTotalHt: 0,
+        mvTotalHt: 0,
+        adjustedHt: 24500,
+        adjustedTtc: 29400,
+      },
+    ],
+    previousCertificats: [
+      {
+        certificateRef: "CP-2026-005",
+        dateIssued: new Date(now.getFullYear(), now.getMonth() - 2, 10).toISOString().slice(0, 10),
+        amountHt: 10000,
+        amountTtc: 12000,
+      },
+    ],
+    previousCumulativeHt: 10000,
+    previousCumulativeTtc: 12000,
+    currentCertificatHt: 12500,
+    currentCertificatTtc: 15000,
+    cumulativeTotalHt: 22500,
+    cumulativeTotalTtc: 27000,
+    grandTotalOriginalHt: 24500,
+    grandTotalPvHt: 0,
+    grandTotalMvHt: 0,
+    grandTotalAdjustedHt: 24500,
+    grandTotalAdjustedTtc: 29400,
+    resteARealiserHt: 2000,
+    resteARealiserTtc: 2400,
+    tvaRate: 20,
+  };
+
+  return buildCertificatHtml({
+    certificat,
+    project,
+    contractor,
+    devisDetails,
+    companyLogoBase64,
+    architectsLogoBase64,
+    annexeData,
+  });
+}
+
 export function buildCertificatEmailBody(data: { certificat: Certificat; project: Project; contractor: Contractor }): string {
   const { certificat, project, contractor } = data;
   return `Madame, Monsieur,
