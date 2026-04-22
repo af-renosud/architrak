@@ -71,6 +71,13 @@
       "when": 1776842270958,
       "tag": "0009_slow_slyde",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1777411200000,
+      "tag": "0010_contractors_siret_check",
+      "breakpoints": true
     }
   ]
 }

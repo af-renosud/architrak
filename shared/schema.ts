@@ -70,6 +70,7 @@ export const contractors = pgTable("contractors", {
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   unique("contractors_archidoc_id_unique").on(table.archidocId),
+  check("contractors_siret_format", sql`${table.siret} IS NULL OR ${table.siret} ~ '^[0-9]{14}$'`),
 ]);
 
 export const lotCatalog = pgTable("lot_catalog", {
@@ -621,6 +622,15 @@ export const insertContractorSchema = createInsertSchema(contractors).omit({
   id: true,
   createdAt: true,
   archidocOrphanedAt: true,
+}).extend({
+  siret: z
+    .union([z.string(), z.null()])
+    .optional()
+    .transform((value) => {
+      if (value === null || value === undefined) return value ?? null;
+      const digits = value.replace(/\D/g, "");
+      return digits.length === 14 ? digits : null;
+    }),
 });
 
 export const insertLotSchema = createInsertSchema(lots).omit({

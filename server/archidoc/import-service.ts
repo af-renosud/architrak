@@ -1,5 +1,6 @@
 import { storage } from "../storage";
 import type { ArchidocProject, ArchidocContractor, InsertProject, InsertContractor, InsertLot, InsertFee } from "@shared/schema";
+import { normaliseSiretForStorage } from "./contractor-auto-sync";
 
 interface TrackProjectOptions {
   tvaRate?: string;
@@ -246,7 +247,7 @@ async function createContractorFromMirror(mirror: ArchidocContractor) {
 
   const contractorData: InsertContractor = {
     name: mirror.name,
-    siret: mirror.siret,
+    siret: normaliseSiretForStorage(mirror.siret),
     address: [mirror.address1, mirror.address2].filter(Boolean).join(", ") || null,
     email: primaryContact?.email || null,
     phone: mirror.officePhone || primaryContact?.mobile || null,
@@ -276,7 +277,7 @@ async function updateContractorFromMirror(contractorId: number, mirror: Archidoc
 
   return storage.updateContractor(contractorId, {
     name: mirror.name,
-    siret: mirror.siret,
+    siret: normaliseSiretForStorage(mirror.siret),
     address: [mirror.address1, mirror.address2].filter(Boolean).join(", ") || undefined,
     email: primaryContact?.email || undefined,
     phone: mirror.officePhone || primaryContact?.mobile || undefined,

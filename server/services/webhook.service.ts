@@ -17,6 +17,7 @@ import type {
 } from "../archidoc/sync-client";
 import { storage } from "../storage";
 import { refreshProject } from "../archidoc/import-service";
+import { normaliseSiretForStorage } from "../archidoc/contractor-auto-sync";
 import { retry } from "../lib/retry";
 
 export const webhookEventSchema = z.object({
@@ -196,7 +197,7 @@ async function autoRefreshTrackedContractor(archidocContractorId: string) {
         const primaryContact = contacts.find((c: any) => c.isPrimary) || contacts[0];
         await storage.updateContractor(contractor.id, {
           name: mirrorContractor.name,
-          siret: mirrorContractor.siret || undefined,
+          siret: normaliseSiretForStorage(mirrorContractor.siret),
           address: [mirrorContractor.address1, mirrorContractor.address2].filter(Boolean).join(", ") || undefined,
           email: primaryContact?.email || undefined,
           phone: mirrorContractor.officePhone || primaryContact?.mobile || undefined,
