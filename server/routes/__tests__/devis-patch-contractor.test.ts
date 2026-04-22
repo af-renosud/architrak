@@ -231,6 +231,62 @@ describe("PATCH /api/devis/:id contractor change", () => {
     );
   });
 
+  it("supports revert round-trip from audit previousValue", async () => {
+    // Simulate the client-side revert flow: an audit row has previousValue
+    // "7:AT PISCINES" from when the contractor was changed away from 7.
+    // Reverting parses out id=7 and PATCHes contractorId: 7. The server
+    // must accept that payload and write a new audit row going back.
+    getDevis.mockResolvedValue(makeDevis({ contractorId: 42 }));
+    getProject.mockResolvedValue({ id: 9, archivedAt: null });
+    getContractor.mockImplementation(async (id: number) => {
+      if (id === 42) return makeContractor({ id: 42, name: "SAS AT TRAVAUX" });
+      if (id === 7) return makeContractor({ id: 7, name: "AT PISCINES" });
+      return undefined;
+    });
+    updateDevis.mockResolvedValue(makeDevis({ contractorId: 7 }));
+
+    const previousValue = "7:AT PISCINES";
+    const colon = previousValue.indexOf(":");
+    const revertId = Number(previousValue.slice(0, colon));
+
+    const res = await fetch(`${baseUrl}/api/devis/100`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contractorId: revertId }),
+    });
+    expect(res.status).toBe(200);
+    expect(updateDevis).toHaveBeenCalledWith(100, { contractorId: 7 });
+    expect(createDevisRefEdit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        field: "contractorId",
+        previousValue: "42:SAS AT TRAVAUX",
+        newValue: "7:AT PISCINES",
+      }),
+    );
+  });
+
+  it("audits both contractor and ref code in a single combined PATCH on non-draft", async () => {
+    getDevis.mockResolvedValue(makeDevis({ status: "pending", contractorId: 7, devisCode: "OLD_CODE" }));
+    getProject.mockResolvedValue({ id: 9, archivedAt: null });
+    getContractor.mockImplementation(async (id: number) => {
+      if (id === 42) return makeContractor({ id: 42, name: "SAS AT TRAVAUX" });
+      if (id === 7) return makeContractor({ id: 7, name: "AT PISCINES" });
+      return undefined;
+    });
+    updateDevis.mockResolvedValue(makeDevis({ contractorId: 42, devisCode: "NEW_CODE" }));
+
+    const res = await fetch(`${baseUrl}/api/devis/100`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contractorId: 42, devisCode: "NEW_CODE" }),
+    });
+    expect(res.status).toBe(200);
+    expect(createDevisRefEdit).toHaveBeenCalledTimes(2);
+    const fields = createDevisRefEdit.mock.calls.map((c) => (c[0] as { field: string }).field);
+    expect(fields).toContain("contractorId");
+    expect(fields).toContain("devisCode");
+  });
+
   it("does nothing when contractorId equals current value", async () => {
     getDevis.mockResolvedValue(makeDevis({ contractorId: 7 }));
     updateDevis.mockResolvedValue(makeDevis({ contractorId: 7 }));
