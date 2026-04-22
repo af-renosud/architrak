@@ -251,7 +251,7 @@ vi.mock("../gmail/document-parser", () => ({
     ],
   })),
   matchToProject: vi.fn(async () => ({
-    projectId: 1, contractorId: 1, confidence: 90, matchedFields: [],
+    projectId: 1, contractorId: 1, confidence: 90, matchedFields: [], warnings: [],
   })),
   isTransientParseFailure: vi.fn(() => false),
   getParseFailureMessage: vi.fn(() => null),
