@@ -630,7 +630,7 @@ export async function matchToProject(
       siretSignal = "siret";
     } else if (exact.length > 1) {
       warnings.push({
-        field: "contractorSiret",
+        field: "contractor_siret_collision",
         expected: exact.map((c) => c.name).join(", "),
         actual: extractedSiret,
         message: `Multiple contractors share SIRET ${extractedSiret}: ${exact.map((c) => `${c.name} (id ${c.id})`).join(", ")}. Resolve duplicates before relying on SIRET matching.`,
@@ -647,18 +647,24 @@ export async function matchToProject(
     }
   }
 
+  // Did the document carry a usable legal-entity ID at all?
+  const hasExtractedSiretOrSiren = extractedSiret.length === 14 || effectiveSiren.length === 9;
+
   if (siretMatchedContractor) {
     bestContractorId = siretMatchedContractor.id;
     matchedFields.contractorSiret =
       `${parsed.siret ?? parsed.tvaIntracom ?? effectiveSiren} → ${siretMatchedContractor.name} (id ${siretMatchedContractor.id}, signal=${siretSignal})`;
     bestScore += 100;
     console.log(`[matchToProject] Contractor matched by ${siretSignal}=${extractedSiret || effectiveSiren} → ${siretMatchedContractor.name} (id ${siretMatchedContractor.id})`);
-  } else if (extractedSiret.length === 14 || effectiveSiren.length === 9) {
+  } else if (hasExtractedSiretOrSiren) {
     // SIRET / TVA was extracted from the document but no contractor in the DB
-    // has it on file — surface as a warning so the user can either create the
-    // contractor or trigger an ArchiDoc sync.
+    // has it on file — surface as a warning. The fuzzy-name fallback is
+    // intentionally SKIPPED here: a SIRET that doesn't match any known
+    // contractor is authoritative evidence that the right contractor isn't
+    // in the master list yet, and silently falling back to a name guess is
+    // exactly the AT TRAVAUX / AT PISCINES regression this task fixes.
     warnings.push({
-      field: "contractorSiret",
+      field: "unknown_contractor",
       expected: "known contractor",
       actual: parsed.siret ?? parsed.tvaIntracom ?? effectiveSiren,
       message: `SIRET ${parsed.siret ?? parsed.tvaIntracom ?? effectiveSiren} was found on the document but no contractor with this identifier exists in ArchiTrak. Sync from ArchiDoc or create the contractor first.`,
@@ -666,16 +672,26 @@ export async function matchToProject(
     });
   }
 
-  // ── Tier 2: Name fuzzy match (only as fallback or for disagreement check) ─
+  // ── Tier 2: Name fuzzy match (only when no SIRET/SIREN was extracted) ─────
   // Threshold raised from 0.6 → 0.8 to avoid AT PISCINES / AT TRAVAUX style
-  // collisions. SIRET, when present, always wins.
+  // collisions. Very short names need an even higher bar so that pure substring
+  // overlaps (which trip the 0.9 `includes()` branch in fuzzyMatch) don't
+  // promote a 4-letter brand collision into a "match".
   let bestNameContractor: Contractor | null = null;
   let bestNameScore = 0;
   if (parsed.contractorName) {
     for (const contractor of contractors) {
       if (!contractor.name) continue;
       const similarity = fuzzyMatch(parsed.contractorName, contractor.name);
-      if (similarity >= 0.8 && similarity > bestNameScore) {
+      const minLen = Math.min(
+        parsed.contractorName.replace(/\s+/g, "").length,
+        contractor.name.replace(/\s+/g, "").length,
+      );
+      // For short names (under ~10 chars), require an exact normalised match
+      // (fuzzyMatch returns exactly 1.0 for a normalised equality) rather than
+      // accepting the 0.9 substring/inclusion bonus.
+      const requiredScore = minLen < 10 ? 1.0 : 0.8;
+      if (similarity >= requiredScore && similarity > bestNameScore) {
         bestNameContractor = contractor;
         bestNameScore = similarity;
       }
@@ -685,14 +701,16 @@ export async function matchToProject(
   if (siretMatchedContractor && bestNameContractor && bestNameContractor.id !== siretMatchedContractor.id) {
     // SIRET and name disagree → keep the SIRET pick, surface advisory.
     warnings.push({
-      field: "contractorName",
+      field: "contractor_identity_mismatch",
       expected: siretMatchedContractor.name,
       actual: parsed.contractorName,
       message: `Document name "${parsed.contractorName}" fuzzy-matches contractor "${bestNameContractor.name}" (id ${bestNameContractor.id}), but SIRET ${parsed.siret ?? parsed.tvaIntracom ?? effectiveSiren} belongs to "${siretMatchedContractor.name}" (id ${siretMatchedContractor.id}). Auto-corrected to the SIRET-matched contractor.`,
       severity: "warning",
     });
     matchedFields.contractorName = `${parsed.contractorName} → ${bestNameContractor.name} (${Math.round(bestNameScore * 100)}% — overridden by SIRET)`;
-  } else if (!siretMatchedContractor && bestNameContractor) {
+  } else if (!siretMatchedContractor && !hasExtractedSiretOrSiren && bestNameContractor) {
+    // Only fall back to fuzzy name when NO legal-entity ID was extracted at
+    // all — never when a SIRET/SIREN was present but unmatched.
     bestContractorId = bestNameContractor.id;
     matchedFields.contractorName = `${parsed.contractorName} → ${bestNameContractor.name} (${Math.round(bestNameScore * 100)}%)`;
     bestScore += bestNameScore * 40;

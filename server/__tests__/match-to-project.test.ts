@@ -91,7 +91,7 @@ describe("matchToProject — contractor matching", () => {
     };
     const result = await matchToProject(parsed, NO_PROJECTS, [atPiscines, atTravaux]);
     expect(result.contractorId).toBe(42);
-    const disagreement = result.warnings.find((w) => w.field === "contractorName");
+    const disagreement = result.warnings.find((w) => w.field === "contractor_identity_mismatch");
     expect(disagreement).toBeDefined();
     expect(disagreement?.message).toContain("AT TRAVAUX");
   });
@@ -115,7 +115,7 @@ describe("matchToProject — contractor matching", () => {
     };
     const result = await matchToProject(parsed, NO_PROJECTS, [atPiscines, atTravaux]);
     expect(result.contractorId).toBeNull();
-    const w = result.warnings.find((x) => x.field === "contractorSiret");
+    const w = result.warnings.find((x) => x.field === "unknown_contractor");
     expect(w).toBeDefined();
     expect(w?.message).toContain("99999999900099");
     expect(w?.message).toContain("ArchiDoc");
@@ -153,6 +153,36 @@ describe("matchToProject — contractor matching", () => {
     };
     const result = await matchToProject(parsed, NO_PROJECTS, [messy]);
     expect(result.contractorId).toBe(42);
+  });
+
+  it("unknown SIRET wins over a fuzzy-matchable contractor name (no silent fallback)", async () => {
+    // Regression: even though "SAS AT TRAVAUX" is a perfect fuzzy match for the
+    // contractor name on the document, the SIRET extracted from the PDF doesn't
+    // match any contractor in the DB. The matcher MUST NOT silently assign
+    // the fuzzy-name candidate — that would re-introduce the AT TRAVAUX /
+    // AT PISCINES regression in reverse.
+    const parsed: ParsedDocument = {
+      documentType: "quotation",
+      contractorName: "SAS AT TRAVAUX",
+      siret: "99999999900099",
+    };
+    const result = await matchToProject(parsed, NO_PROJECTS, [atTravaux, atPiscines]);
+    expect(result.contractorId).toBeNull();
+    const advisory = result.warnings.find((w) => w.field === "unknown_contractor");
+    expect(advisory).toBeDefined();
+  });
+
+  it("short-name hardening: 4-char brand 'BETO' does NOT cross-match contractor 'BETON SARL'", async () => {
+    // Without the dynamic length-based threshold, fuzzyMatch's `includes()`
+    // branch returns 0.9 here (one normalised string contains the other).
+    // 0.9 ≥ 0.8 fixed threshold, so the old code would pick the wrong row.
+    const beton = makeContractor({ id: 1, name: "BETON SARL", siret: null });
+    const parsed: ParsedDocument = {
+      documentType: "quotation",
+      contractorName: "BETO",
+    };
+    const result = await matchToProject(parsed, NO_PROJECTS, [beton]);
+    expect(result.contractorId).toBeNull();
   });
 
   it("returns no contractor and no warning when nothing matches and no SIRET extracted", async () => {
