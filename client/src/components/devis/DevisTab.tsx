@@ -1470,6 +1470,85 @@ function formatDateTime(value: string | Date | null | undefined): string {
   return d.toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" });
 }
 
+/**
+ * Yellow non-blocking banner shown above the checks panel when the active
+ * portal token's expiresAt falls within the next 7 days. Reuses the same
+ * react-query key as TokenPanel so no extra network call is made (React
+ * Query dedupes overlapping subscribers). Suppressed when there is no
+ * token, the token is revoked (lifecycle revoke handles fully-invoiced
+ * devis), the token is already expired, or expiry is further than the
+ * 7-day threshold. After a successful extend, the shared query key is
+ * invalidated so the banner recalculates and disappears on its own.
+ */
+const LAPSING_THRESHOLD_DAYS = 7;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+function LapsingTokenBanner({ devisId, isArchived }: { devisId: number; isArchived: boolean }) {
+  const { toast } = useToast();
+  const { data } = useQuery<{ token: CheckTokenInfo | null }>({
+    queryKey: ["/api/devis", devisId, "check-token"],
+  });
+
+  const extendMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/devis/${devisId}/check-token/extend`, {});
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "check-token"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "checks"] });
+      toast({ title: "Lien prolongé de 90 jours" });
+    },
+    onError: (error: Error) =>
+      toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  if (isArchived) return null;
+  const token = data?.token ?? null;
+  if (!token || token.revokedAt || !token.expiresAt) return null;
+  const expiresAt = new Date(token.expiresAt);
+  if (Number.isNaN(expiresAt.getTime())) return null;
+  const msRemaining = expiresAt.getTime() - Date.now();
+  // Already expired tokens are handled by TokenPanel (Expiré badge) and
+  // cannot be extended (backend returns 409). Don't render the banner for
+  // them — the architect must re-issue via Envoyer.
+  if (msRemaining <= 0) return null;
+  if (msRemaining > LAPSING_THRESHOLD_DAYS * MS_PER_DAY) return null;
+
+  const daysRemaining = Math.max(1, Math.ceil(msRemaining / MS_PER_DAY));
+  const copy =
+    daysRemaining === 1
+      ? "Le lien partagé avec l'entreprise expire dans 1 jour."
+      : `Le lien partagé avec l'entreprise expire dans ${daysRemaining} jours.`;
+
+  return (
+    <div
+      className="flex items-center justify-between gap-3 flex-wrap rounded-lg border border-amber-300 bg-amber-50 p-2.5"
+      data-testid={`banner-token-lapsing-${devisId}`}
+    >
+      <div className="flex items-center gap-2 min-w-0">
+        <AlertTriangle size={14} className="text-amber-600 shrink-0" />
+        <p
+          className="text-[11px] font-medium text-amber-900"
+          data-testid={`text-token-lapsing-${devisId}`}
+        >
+          {copy}
+        </p>
+      </div>
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-7 text-[9px] font-bold uppercase tracking-widest border-amber-400 text-amber-900 hover:bg-amber-100"
+        onClick={() => extendMutation.mutate()}
+        disabled={extendMutation.isPending}
+        data-testid={`button-extend-lapsing-token-${devisId}`}
+      >
+        {extendMutation.isPending ? "…" : "Prolonger de 90 jours"}
+      </Button>
+    </div>
+  );
+}
+
 function TokenPanel({ devisId, projectId, isArchived }: { devisId: number; projectId: string; isArchived: boolean }) {
   const { toast } = useToast();
   const { data, isLoading } = useQuery<{ token: CheckTokenInfo | null }>({
@@ -1676,7 +1755,9 @@ function ChecksPanel({ devisId, projectId, isArchived }: { devisId: number; proj
   const sendableCount = openCount;
 
   return (
-    <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-3 space-y-3" data-testid={`section-checks-${devisId}`}>
+    <div className="space-y-3">
+      <LapsingTokenBanner devisId={devisId} isArchived={isArchived} />
+      <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-3 space-y-3" data-testid={`section-checks-${devisId}`}>
       {tokenPanel}
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
@@ -1791,6 +1872,7 @@ function ChecksPanel({ devisId, projectId, isArchived }: { devisId: number; proj
             )}
           </div>
         ))}
+      </div>
       </div>
     </div>
   );
