@@ -158,7 +158,15 @@ router.post(
     }
 
     const allChecks = await storage.listDevisChecks(devisId);
-    const sendable = allChecks.filter((c) => c.status === "open" || c.status === "awaiting_architect");
+    // Sendable: every unresolved check participates in the bundle, regardless
+    // of whether the ball is currently in the contractor's or the architect's
+    // court. This is what enables follow-up rounds: after the contractor
+    // replies and the architect writes a follow-up message (which flips the
+    // check to awaiting_contractor), clicking Envoyer must include that check
+    // in the next outbound email.
+    const sendable = allChecks.filter(
+      (c) => c.status === "open" || c.status === "awaiting_architect" || c.status === "awaiting_contractor",
+    );
     if (sendable.length === 0) {
       return res.status(409).json({ message: "No open checks to send" });
     }
@@ -171,9 +179,19 @@ router.post(
     }
     const baseUrl = env.PUBLIC_BASE_URL;
 
-    // Dedupe key incorporates the sorted set of sendable check ids — a new
-    // question (different ids) is a fresh bundle and a fresh send.
-    const dedupeKey = `devis-check-bundle:${devisId}:${sendable.map((c) => c.id).sort((a, b) => a - b).join(",")}`;
+    // Dedupe key incorporates BOTH a per-dispatch "round" marker (count of
+    // bundles that have already been successfully sent for this devis) AND
+    // the sorted set of sendable check ids. Why both?
+    //   • Same round + same ids → the user double-clicked Envoyer or is
+    //     retrying a failed attempt → we want idempotent reuse of the row.
+    //   • Next round (round increments only on a successful prior send) →
+    //     legitimate follow-up dispatch → we MUST send a fresh email and
+    //     create a new audit row, while still threading via Gmail
+    //     (getLatestSentDevisCheckBundle).
+    //   • Different ids (architect added a new question) → fresh bundle.
+    const round = await storage.countSentDevisCheckBundles(devisId);
+    const sortedIds = sendable.map((c) => c.id).sort((a, b) => a - b).join(",");
+    const dedupeKey = `devis-check-bundle:${devisId}:r${round}:${sortedIds}`;
 
     // Probe whether this exact bundle was already SUCCESSFULLY sent. If so,
     // do not rotate the token and do not resend. If a prior attempt is queued

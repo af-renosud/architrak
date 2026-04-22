@@ -36,7 +36,15 @@ const { state, storageSpy } = vi.hoisted(() => {
     updateProjectCommunication: vi.fn(async (id: number, data: any) => {
       const r = state.comms.find((c) => c.id === id); if (!r) return undefined; Object.assign(r, data); return r;
     }),
-    getLatestSentDevisCheckBundle: vi.fn(async () => undefined),
+    getLatestSentDevisCheckBundle: vi.fn(async (devisId: number) => {
+      const prefix = `devis-check-bundle:${devisId}:`;
+      const sent = state.comms.filter((c) => c.dedupeKey.startsWith(prefix) && c.status === "sent");
+      return sent[sent.length - 1];
+    }),
+    countSentDevisCheckBundles: vi.fn(async (devisId: number) => {
+      const prefix = `devis-check-bundle:${devisId}:`;
+      return state.comms.filter((c) => c.dedupeKey.startsWith(prefix) && c.status === "sent").length;
+    }),
     updateDevisCheck: vi.fn(async (id: number, data: any) => {
       const r = state.checks.find((c) => c.id === id); if (!r) return undefined; Object.assign(r, data); return r;
     }),
@@ -141,23 +149,50 @@ describe("Devis CHECKING — bundled-send route", () => {
     expect(body.message).toMatch(/No open checks/i);
   });
 
-  it("dedupe no-op: a prior 'sent' bundle short-circuits and does NOT call queueDevisCheckBundle", async () => {
-    state.devis.push({ id: 11, projectId: 1, contractorId: 1, signOffStage: "received" });
+  it("dispatch idempotency: when the to-be-computed dedupe row is already 'sent', short-circuit (no queue, no send)", async () => {
+    state.devis.push({ id: 13, projectId: 1, contractorId: 1, signOffStage: "received" });
     state.contractors.push({ id: 1, name: "Acme", email: "a@e.com" });
     state.projects.push({ id: 1, name: "P" });
-    state.checks.push({ id: 100, devisId: 11, status: "open", query: "Q1", lineItemId: null, origin: "general" });
-    const dedupeKey = `devis-check-bundle:11:100`;
-    state.comms.push({ id: 999, dedupeKey, status: "sent", body: "old body with stale URL", subject: "old subject", emailThreadId: "thr1", emailMessageId: "msg1" });
+    state.checks.push({ id: 100, devisId: 13, status: "awaiting_contractor", query: "Q1", lineItemId: null, origin: "general" });
+    // Stub countSentDevisCheckBundles to a fixed value AND seed a matching
+    // sent row so the dedupe key the route computes matches it exactly.
+    storageSpy.countSentDevisCheckBundles.mockResolvedValueOnce(1);
+    state.comms.push({ id: 999, dedupeKey: "devis-check-bundle:13:r1:100", status: "sent", body: "old body", subject: "old subject", emailThreadId: "thr1", emailMessageId: "msg1" });
 
     const sender = await import("../communications/email-sender");
-    const res = await fetch(`${baseUrl}/api/devis/11/checks/send`, { method: "POST" });
+    const res = await fetch(`${baseUrl}/api/devis/13/checks/send`, { method: "POST" });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toMatchObject({ communicationId: 999, reused: true });
     expect(sender.queueDevisCheckBundle).not.toHaveBeenCalled();
     expect(sender.sendCommunication).not.toHaveBeenCalled();
-    // Check still in original state — not flipped to awaiting_contractor.
-    expect(state.checks[0].status).toBe("open");
+    // Check stays in awaiting_contractor (no state change on short-circuit).
+    expect(state.checks[0].status).toBe("awaiting_contractor");
+  });
+
+  it("follow-up round: prior round was 'sent' with same ids — a NEW round produces a fresh send + threads via Gmail", async () => {
+    state.devis.push({ id: 14, projectId: 1, contractorId: 1, signOffStage: "received" });
+    state.contractors.push({ id: 1, name: "Acme", email: "a@e.com" });
+    state.projects.push({ id: 1, name: "P" });
+    state.checks.push({ id: 200, devisId: 14, status: "awaiting_contractor", query: "Q1", lineItemId: null, origin: "general" });
+    // Prior round 0 succeeded.
+    state.comms.push({ id: 700, dedupeKey: "devis-check-bundle:14:r0:200", status: "sent", body: "round 0 body", subject: "round 0", emailThreadId: "gmail-thread-1", emailMessageId: "gmail-msg-1" });
+
+    const sender = await import("../communications/email-sender");
+    const res = await fetch(`${baseUrl}/api/devis/14/checks/send`, { method: "POST" });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // A new comm row with the round=1 key must have been created and sent.
+    expect(body.reused).toBe(false);
+    expect(sender.queueDevisCheckBundle).toHaveBeenCalledTimes(1);
+    expect(sender.sendCommunication).toHaveBeenCalledTimes(1);
+    // The fresh send must thread via the prior round's Gmail headers.
+    const sendCall = (sender.sendCommunication as any).mock.calls[0];
+    expect(sendCall[1]).toMatchObject({ threadId: "gmail-thread-1", inReplyToMessageId: "gmail-msg-1" });
+    // A second comm row (round=1) now exists alongside the original.
+    const r1 = state.comms.find((c) => c.dedupeKey === "devis-check-bundle:14:r1:200");
+    expect(r1).toBeDefined();
+    expect(r1!.status).toBe("sent");
   });
 
   it("retry path: prior FAILED bundle is reused, body is rewritten with fresh portal URL, and resend happens", async () => {
@@ -165,7 +200,8 @@ describe("Devis CHECKING — bundled-send route", () => {
     state.contractors.push({ id: 1, name: "Acme", email: "a@e.com" });
     state.projects.push({ id: 1, name: "P" });
     state.checks.push({ id: 200, devisId: 12, status: "open", query: "Q1", lineItemId: null, origin: "general" });
-    const dedupeKey = `devis-check-bundle:12:200`;
+    // round=0 because no prior SENT bundles exist (failed doesn't count).
+    const dedupeKey = `devis-check-bundle:12:r0:200`;
     state.comms.push({ id: 555, dedupeKey, status: "failed", body: "STALE-OLD-BODY", subject: "stale subject", emailThreadId: null, emailMessageId: null });
 
     const sender = await import("../communications/email-sender");

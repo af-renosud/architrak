@@ -276,6 +276,7 @@ export interface IStorage {
   touchDevisCheckTokenUsed(id: number): Promise<void>;
   getProjectCommunicationByDedupeKey(key: string): Promise<ProjectCommunication | undefined>;
   getLatestSentDevisCheckBundle(devisId: number): Promise<ProjectCommunication | undefined>;
+  countSentDevisCheckBundles(devisId: number): Promise<number>;
   countOpenDevisChecksForProject(projectId: number): Promise<Record<number, number>>;
 }
 
@@ -1411,6 +1412,23 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(projectCommunications.sentAt))
       .limit(1);
     return rows[0];
+  }
+
+  async countSentDevisCheckBundles(devisId: number): Promise<number> {
+    // Drives the per-dispatch "round" marker in the bundled-send dedupe key
+    // so legitimate follow-up sends are NOT short-circuited by a prior
+    // success on the same set of check ids.
+    const prefix = `devis-check-bundle:${devisId}:`;
+    const rows = await db
+      .select({ id: projectCommunications.id })
+      .from(projectCommunications)
+      .where(
+        and(
+          eq(projectCommunications.status, "sent"),
+          like(projectCommunications.dedupeKey, `${prefix}%`),
+        ),
+      );
+    return rows.length;
   }
 
   async countOpenDevisChecksForProject(projectId: number): Promise<Record<number, number>> {

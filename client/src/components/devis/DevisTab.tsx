@@ -1531,7 +1531,11 @@ function ChecksPanel({ devisId, projectId, isArchived }: { devisId: number; proj
   const visible = checks.filter((c) => c.status !== "dropped");
 
   const openCount = checks.filter((c) => c.status === "open" || c.status === "awaiting_architect" || c.status === "awaiting_contractor").length;
-  const sendableCount = checks.filter((c) => c.status === "open" || c.status === "awaiting_architect").length;
+  // Sendable mirrors the backend bundle filter: every unresolved check
+  // participates in a follow-up email round, including those already in
+  // awaiting_contractor (architect's follow-up message moves the check there
+  // but the round still needs to go out).
+  const sendableCount = openCount;
 
   return (
     <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-3 space-y-3" data-testid={`section-checks-${devisId}`}>
