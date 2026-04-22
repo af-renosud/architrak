@@ -14,6 +14,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Invoice, Contractor, Devis } from "@shared/schema";
 import { AdvisoriesList, AdvisoryBadge } from "@/components/advisories/AdvisoriesList";
+import { TvaDerivedHint } from "@/components/ui/tva-derived-hint";
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
@@ -406,6 +407,13 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
             data-testid={`input-draft-ttc-${invoice.id}`}
           />
         </div>
+        <div className="col-span-2">
+          <TvaDerivedHint
+            amountHt={editAmountHt}
+            amountTtc={editAmountTtc}
+            testId={`text-draft-invoice-tva-derived-${invoice.id}`}
+          />
+        </div>
         <div>
           <label className="text-[10px] font-semibold text-foreground block mb-1">Invoice Number</label>
           <Input
@@ -557,9 +565,9 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
               </p>
             </div>
             <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-              <TechnicalLabel>TVA</TechnicalLabel>
+              <TechnicalLabel>TVA (derived)</TechnicalLabel>
               <p className="text-[15px] font-semibold text-foreground mt-1" data-testid={`text-detail-tva-${invoice.id}`}>
-                {formatCurrency(parseFloat(invoice.tvaAmount))}
+                {formatCurrency(parseFloat(invoice.amountTtc) - parseFloat(invoice.amountHt))}
               </p>
             </div>
             <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
@@ -573,6 +581,11 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
               <div className="mt-2"><StatusBadge status={invoice.status} /></div>
             </div>
           </div>
+          <TvaDerivedHint
+            amountHt={invoice.amountHt}
+            amountTtc={invoice.amountTtc}
+            testId={`text-invoice-detail-tva-derived-${invoice.id}`}
+          />
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">

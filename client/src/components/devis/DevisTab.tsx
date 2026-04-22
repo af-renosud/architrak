@@ -27,6 +27,7 @@ import { z } from "zod";
 import { AdvisoriesList, AdvisoryBadge } from "@/components/advisories/AdvisoriesList";
 import { DevisTranslationSection } from "@/components/devis/DevisTranslationSection";
 import { ContractorSelect } from "@/components/ui/contractor-select";
+import { TvaDerivedHint } from "@/components/ui/tva-derived-hint";
 import {
   partitionDraftWarnings,
   focusContractorSelect,
@@ -1135,19 +1136,11 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
             </div>
           </div>
 
-          <div
-            className="text-[10px] text-muted-foreground"
-            data-testid="text-draft-tva-derived"
-          >
-            TVA = TTC − HT = {formatCurrency(
-              Number(
-                (
-                  parseFloat(editValues.amountTtc || "0") -
-                  parseFloat(editValues.amountHt || "0")
-                ).toFixed(2),
-              ),
-            )}
-          </div>
+          <TvaDerivedHint
+            amountHt={editValues.amountHt}
+            amountTtc={editValues.amountTtc}
+            testId="text-draft-tva-derived"
+          />
 
           <div className="space-y-1">
             <TechnicalLabel>Date</TechnicalLabel>
@@ -1932,6 +1925,11 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
           <p className="text-[10px] text-muted-foreground">{formatCurrency(remainingHt)} HT</p>
         </div>
       </div>
+      <TvaDerivedHint
+        amountHt={adjustedHt}
+        amountTtc={adjustedTtc}
+        testId={`text-devis-detail-tva-derived-${devis.id}`}
+      />
       <div className="h-1.5 w-full rounded-full bg-slate-100">
         <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} />
       </div>
@@ -2132,11 +2130,11 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
                   </FormItem>
                 )} />
               </div>
-              <div className="text-[10px] text-muted-foreground" data-testid="text-avenant-tva-derived">
-                TVA = TTC − HT = {formatCurrency(
-                  Number((parseFloat(avenantForm.watch("amountTtc") || "0") - parseFloat(avenantForm.watch("amountHt") || "0")).toFixed(2)),
-                )}
-              </div>
+              <TvaDerivedHint
+                amountHt={avenantForm.watch("amountHt")}
+                amountTtc={avenantForm.watch("amountTtc")}
+                testId="text-avenant-tva-derived"
+              />
               <Button type="submit" className="w-full" disabled={createAvenantMutation.isPending} data-testid="button-submit-avenant">
                 <span className="text-[9px] font-bold uppercase tracking-widest">
                   {createAvenantMutation.isPending ? "Creating..." : "Create Avenant"}
