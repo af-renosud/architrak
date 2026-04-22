@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
@@ -9,6 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Receipt, FilePlus2 } from "lucide-react";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -52,6 +54,415 @@ const lineItemFormSchema = insertDevisLineItemSchema.extend({
   unitPriceHt: z.string().min(1, "Required"),
   totalHt: z.string().min(1, "Required"),
 });
+
+function InvoiceUploadDialog({
+  devisId,
+  projectId,
+  open,
+  onOpenChange,
+}: {
+  devisId: number;
+  projectId: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { toast } = useToast();
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const uploadMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch(`/api/devis/${devisId}/invoices/upload`, {
+        method: "POST",
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ message: "Upload failed" }));
+        throw new Error(err.message || "Upload failed");
+      }
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "invoices"] });
+      onOpenChange(false);
+      const ext = data.extraction;
+      if (ext.confidence === "low") {
+        toast({ title: "Invoice uploaded — review needed", description: `${data.fileName} — amounts could not be extracted automatically. Please check the invoice record.`, variant: "destructive" });
+      } else {
+        toast({ title: "Invoice uploaded successfully", description: `${data.fileName} — ${formatCurrency(ext.amountHt)} HT detected` });
+      }
+    },
+    onError: (error: Error) => {
+      toast({ title: "Upload failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!uploadMutation.isPending) onOpenChange(o); }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="text-[16px] font-black uppercase tracking-tight">Upload Invoice PDF</DialogTitle>
+          <DialogDescription className="text-[11px]">Upload the contractor's invoice document. The system will extract amounts and details automatically.</DialogDescription>
+        </DialogHeader>
+        {uploadMutation.isPending ? (
+          <div className="flex flex-col items-center justify-center py-8 gap-3">
+            <Loader2 className="h-8 w-8 animate-spin text-[#0B2545]" />
+            <p className="text-[11px] text-muted-foreground text-center">Processing PDF... Extracting invoice details</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div
+              className="border-2 border-dashed border-[#c1a27b]/40 rounded-2xl p-8 text-center cursor-pointer hover:border-[#c1a27b] hover:bg-[#c1a27b]/5 transition-all"
+              onClick={() => fileRef.current?.click()}
+              data-testid={`dropzone-invoice-upload-${devisId}`}
+            >
+              <Upload className="h-8 w-8 mx-auto mb-2 text-[#c1a27b]" />
+              <p className="text-[12px] font-semibold text-foreground">Click to select invoice PDF</p>
+              <p className="text-[10px] text-muted-foreground mt-1">PDF files only — the AI will extract invoice number, amounts, and date</p>
+            </div>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".pdf"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) uploadMutation.mutate(file);
+                e.target.value = "";
+              }}
+              data-testid={`input-invoice-file-${devisId}`}
+            />
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function AvenantDialog({
+  devisId,
+  projectId,
+  open,
+  onOpenChange,
+}: {
+  devisId: number;
+  projectId: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { toast } = useToast();
+  const form = useForm<z.infer<typeof avenantFormSchema>>({
+    resolver: zodResolver(avenantFormSchema),
+    defaultValues: {
+      devisId,
+      avenantNumber: "",
+      type: "pv",
+      descriptionFr: "",
+      descriptionUk: null,
+      amountHt: "0.00",
+      amountTtc: "0.00",
+      dateSigned: null,
+      status: "draft",
+      pvmvRef: null,
+    },
+  });
+
+  const defaultAvenantValues = {
+    devisId,
+    avenantNumber: "",
+    type: "pv" as const,
+    descriptionFr: "",
+    descriptionUk: null,
+    amountHt: "0.00",
+    amountTtc: "0.00",
+    dateSigned: null,
+    status: "draft" as const,
+    pvmvRef: null,
+  };
+
+  useEffect(() => {
+    if (open) {
+      form.reset(defaultAvenantValues);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const createMutation = useMutation({
+    mutationFn: async (data: z.infer<typeof avenantFormSchema>) => {
+      const res = await apiRequest("POST", `/api/devis/${devisId}/avenants`, data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "avenants"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
+      onOpenChange(false);
+      form.reset(defaultAvenantValues);
+      toast({ title: "Avenant created successfully" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="text-[16px] font-black uppercase tracking-tight">New Avenant</DialogTitle>
+          <DialogDescription className="text-[11px]">Add a plus-value or moins-value variation</DialogDescription>
+        </DialogHeader>
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit((d) => createMutation.mutate(d))} className="space-y-4">
+            <FormField control={form.control} name="type" render={({ field }) => (
+              <FormItem>
+                <FormLabel><TechnicalLabel>Type</TechnicalLabel></FormLabel>
+                <Select onValueChange={field.onChange} value={field.value}>
+                  <FormControl><SelectTrigger data-testid="select-avenant-type"><SelectValue /></SelectTrigger></FormControl>
+                  <SelectContent>
+                    <SelectItem value="pv">Plus-value (PV)</SelectItem>
+                    <SelectItem value="mv">Moins-value (MV)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <FormMessage />
+              </FormItem>
+            )} />
+            <FormField control={form.control} name="descriptionFr" render={({ field }) => (
+              <FormItem>
+                <FormLabel><TechnicalLabel>Description</TechnicalLabel></FormLabel>
+                <FormControl><Textarea {...field} className="resize-none" data-testid="input-avenant-desc" /></FormControl>
+                <FormMessage />
+              </FormItem>
+            )} />
+            <div className="grid grid-cols-2 gap-4">
+              <FormField control={form.control} name="amountHt" render={({ field }) => (
+                <FormItem>
+                  <FormLabel><TechnicalLabel>Amount HT</TechnicalLabel></FormLabel>
+                  <FormControl><Input {...field} type="number" step="0.01" data-testid="input-avenant-ht" /></FormControl>
+                  <FormMessage />
+                </FormItem>
+              )} />
+              <FormField control={form.control} name="amountTtc" render={({ field }) => (
+                <FormItem>
+                  <FormLabel><TechnicalLabel>Amount TTC</TechnicalLabel></FormLabel>
+                  <FormControl><Input {...field} type="number" step="0.01" data-testid="input-avenant-ttc" /></FormControl>
+                  <FormMessage />
+                </FormItem>
+              )} />
+            </div>
+            <TvaDerivedHint
+              amountHt={form.watch("amountHt")}
+              amountTtc={form.watch("amountTtc")}
+              testId="text-avenant-tva-derived"
+            />
+            <Button type="submit" className="w-full" disabled={createMutation.isPending} data-testid="button-submit-avenant">
+              <span className="text-[9px] font-bold uppercase tracking-widest">
+                {createMutation.isPending ? "Creating..." : "Create Avenant"}
+              </span>
+            </Button>
+          </form>
+        </Form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+interface DevisRowProps {
+  d: Devis;
+  projectId: string;
+  contractors: Contractor[];
+  lots: Lot[];
+  isArchived: boolean;
+  expanded: boolean;
+  openChecks: number;
+  onToggle: () => void;
+  onEditRefs: (d: Devis) => void;
+  onReviewDraft: (d: Devis) => void;
+}
+
+function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openChecks, onToggle, onEditRefs, onReviewDraft }: DevisRowProps) {
+  const [invoiceOpen, setInvoiceOpen] = useState(false);
+  const [avenantOpen, setAvenantOpen] = useState(false);
+  const isVoid = d.status === "void";
+
+  return (
+    <div>
+      <LuxuryCard data-testid={`card-devis-${d.id}`}>
+        <div
+          className={`flex items-center justify-between gap-3 flex-wrap cursor-pointer ${isVoid ? "opacity-50" : ""}`}
+          onClick={onToggle}
+          data-testid={`row-devis-toggle-${d.id}`}
+        >
+          <div className="flex items-center gap-3 flex-wrap min-w-0 flex-1">
+            {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[16px] font-black text-[#0B2545] tracking-tight" data-testid={`text-devis-code-${d.id}`}>{d.devisCode}</span>
+                {d.devisNumber && <span className="text-[11px] text-muted-foreground" data-testid={`text-devis-number-${d.id}`}>N° {d.devisNumber}</span>}
+                {d.ref2 && <span className="text-[11px] text-muted-foreground" data-testid={`text-devis-ref2-${d.id}`}>Ref {d.ref2}</span>}
+                {!isVoid && !isArchived && (
+                  <button
+                    type="button"
+                    className="p-0.5 text-muted-foreground hover:text-[#0B2545] transition-colors"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onEditRefs(d);
+                    }}
+                    title="Edit contractor, devis code & references"
+                    data-testid={`button-edit-devis-refs-${d.id}`}
+                  >
+                    <Pencil size={11} />
+                  </button>
+                )}
+              </div>
+              <p className="text-[12px] text-foreground mt-0.5 truncate">{d.descriptionFr}</p>
+              <span className="text-[10px] text-muted-foreground">
+                {contractors.find((c) => c.id === d.contractorId)?.name ?? `#${d.contractorId}`}
+              </span>
+            </div>
+          </div>
+          <TooltipProvider delayDuration={200}>
+            <div className="flex items-center gap-3 flex-wrap">
+              {/* Slot: PDF */}
+              <div className="w-[7rem] flex justify-end">
+                {d.pdfStorageKey ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-3 gap-1.5 border-[#0B2545]/20 text-[#0B2545] hover:bg-[#0B2545]/5"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      window.open(`/api/devis/${d.id}/pdf`, "_blank");
+                    }}
+                    data-testid={`button-view-pdf-${d.id}`}
+                  >
+                    <FileText size={12} />
+                    <span className="text-[9px] font-bold uppercase tracking-widest">View PDF</span>
+                  </Button>
+                ) : null}
+              </div>
+              {/* Slot: Totals */}
+              <div className="w-[9rem] text-right">
+                <span className="text-[14px] font-semibold text-foreground" data-testid={`text-devis-ttc-${d.id}`}>
+                  {formatCurrency(parseFloat(d.amountTtc))}
+                </span>
+                <p className="text-[9px] text-muted-foreground">TTC</p>
+                <span className="text-[10px] text-muted-foreground" data-testid={`text-devis-ht-${d.id}`}>
+                  {formatCurrency(parseFloat(d.amountHt))} HT
+                </span>
+              </div>
+              {/* Slot: Mode */}
+              <div className="w-[3.75rem]">
+                <TechnicalLabel>{d.invoicingMode === "mode_a" ? "Mode A" : "Mode B"}</TechnicalLabel>
+              </div>
+              {/* Slot: Advisory */}
+              <div className="w-[1.75rem] flex justify-center">
+                <AdvisoryBadge subject={{ type: "devis", id: d.id }} />
+              </div>
+              {/* Slot: Checking */}
+              <div className="w-[5.5rem] flex justify-center">
+                {openChecks > 0 ? (
+                  <span
+                    className="px-2 py-0.5 rounded-full bg-amber-500 text-white text-[9px] font-bold uppercase tracking-widest"
+                    title={`${openChecks} question(s) en cours avec l'entreprise`}
+                    data-testid={`badge-checking-${d.id}`}
+                  >
+                    Checking · {openChecks}
+                  </span>
+                ) : null}
+              </div>
+              {/* Slot: Quick actions (Facture / Avenant) */}
+              <div className="w-[10.5rem] flex justify-center gap-1.5">
+                {!isVoid ? (
+                  <>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2.5 gap-1.5"
+                          disabled={isArchived}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setInvoiceOpen(true);
+                          }}
+                          data-testid={`button-quick-upload-invoice-${d.id}`}
+                        >
+                          <Receipt size={12} />
+                          <span className="text-[9px] font-bold uppercase tracking-widest">Facture</span>
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="text-[10px]">Téléverser une facture</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2.5 gap-1.5"
+                          disabled={isArchived}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setAvenantOpen(true);
+                          }}
+                          data-testid={`button-quick-add-avenant-${d.id}`}
+                        >
+                          <FilePlus2 size={12} />
+                          <span className="text-[9px] font-bold uppercase tracking-widest">Avenant</span>
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="text-[10px]">Ajouter un avenant</TooltipContent>
+                    </Tooltip>
+                  </>
+                ) : null}
+              </div>
+              {/* Slot: Status */}
+              <div className="w-[4.75rem] flex justify-center">
+                <StatusBadge status={d.status} />
+              </div>
+              {/* Slot: Review */}
+              <div className="w-[5rem] flex justify-center">
+                {d.status === "draft" ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onReviewDraft(d);
+                    }}
+                    disabled={isArchived}
+                    data-testid={`button-review-draft-${d.id}`}
+                  >
+                    <ShieldAlert size={12} />
+                    <span className="text-[9px] font-bold uppercase tracking-widest">Review</span>
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          </TooltipProvider>
+        </div>
+      </LuxuryCard>
+
+      {expanded && (
+        <DevisDetailInline
+          devis={d}
+          projectId={projectId}
+          contractors={contractors}
+          lots={lots}
+          isArchived={isArchived}
+          onOpenInvoiceUpload={() => setInvoiceOpen(true)}
+          onOpenAvenantDialog={() => setAvenantOpen(true)}
+        />
+      )}
+
+      <InvoiceUploadDialog devisId={d.id} projectId={projectId} open={invoiceOpen} onOpenChange={setInvoiceOpen} />
+      <AvenantDialog devisId={d.id} projectId={projectId} open={avenantOpen} onOpenChange={setAvenantOpen} />
+    </div>
+  );
+}
 
 interface DevisTabProps {
   projectId: string;
@@ -219,120 +630,31 @@ export function DevisTab({ projectId, contractors, lots, isArchived = false }: D
       {filteredDevisList && filteredDevisList.length > 0 ? (
         <div className="space-y-3">
           {filteredDevisList.map((d) => (
-            <div key={d.id}>
-              <LuxuryCard data-testid={`card-devis-${d.id}`}>
-                <div
-                  className={`flex items-center justify-between gap-3 flex-wrap cursor-pointer ${d.status === "void" ? "opacity-50" : ""}`}
-                  onClick={() => setExpandedDevis(expandedDevis === d.id ? null : d.id)}
-                  data-testid={`row-devis-toggle-${d.id}`}
-                >
-                  <div className="flex items-center gap-3 flex-wrap min-w-0 flex-1">
-                    {expandedDevis === d.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-[16px] font-black text-[#0B2545] tracking-tight" data-testid={`text-devis-code-${d.id}`}>{d.devisCode}</span>
-                        {d.devisNumber && <span className="text-[11px] text-muted-foreground" data-testid={`text-devis-number-${d.id}`}>N° {d.devisNumber}</span>}
-                        {d.ref2 && <span className="text-[11px] text-muted-foreground" data-testid={`text-devis-ref2-${d.id}`}>Ref {d.ref2}</span>}
-                        {d.status !== "void" && !isArchived && (
-                          <button
-                            type="button"
-                            className="p-0.5 text-muted-foreground hover:text-[#0B2545] transition-colors"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setEditRefsFor(d);
-                            }}
-                            title="Edit contractor, devis code & references"
-                            data-testid={`button-edit-devis-refs-${d.id}`}
-                          >
-                            <Pencil size={11} />
-                          </button>
-                        )}
-                      </div>
-                      <p className="text-[12px] text-foreground mt-0.5 truncate">{d.descriptionFr}</p>
-                      <span className="text-[10px] text-muted-foreground">
-                        {contractors.find((c) => c.id === d.contractorId)?.name ?? `#${d.contractorId}`}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3 flex-wrap">
-                    {d.pdfStorageKey && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-7 px-3 gap-1.5 border-[#0B2545]/20 text-[#0B2545] hover:bg-[#0B2545]/5"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          window.open(`/api/devis/${d.id}/pdf`, "_blank");
-                        }}
-                        data-testid={`button-view-pdf-${d.id}`}
-                      >
-                        <FileText size={12} />
-                        <span className="text-[9px] font-bold uppercase tracking-widest">View PDF</span>
-                      </Button>
-                    )}
-                    <div className="text-right">
-                      <span className="text-[14px] font-semibold text-foreground" data-testid={`text-devis-ttc-${d.id}`}>
-                        {formatCurrency(parseFloat(d.amountTtc))}
-                      </span>
-                      <p className="text-[9px] text-muted-foreground">TTC</p>
-                      <span className="text-[10px] text-muted-foreground" data-testid={`text-devis-ht-${d.id}`}>
-                        {formatCurrency(parseFloat(d.amountHt))} HT
-                      </span>
-                    </div>
-                    <TechnicalLabel>{d.invoicingMode === "mode_a" ? "Mode A" : "Mode B"}</TechnicalLabel>
-                    <AdvisoryBadge subject={{ type: "devis", id: d.id }} />
-                    {(openChecksByDevis[d.id] ?? 0) > 0 && (
-                      <span
-                        className="px-2 py-0.5 rounded-full bg-amber-500 text-white text-[9px] font-bold uppercase tracking-widest"
-                        title={`${openChecksByDevis[d.id]} question(s) en cours avec l'entreprise`}
-                        data-testid={`badge-checking-${d.id}`}
-                      >
-                        Checking · {openChecksByDevis[d.id]}
-                      </span>
-                    )}
-                    <StatusBadge status={d.status} />
-                    {d.status === "draft" && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="gap-1.5"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDraftReviewData({
-                            devisId: d.id,
-                            extraction: {
-                              contractorName: contractors.find(c => c.id === d.contractorId)?.name ?? "Unknown",
-                              contractorId: d.contractorId,
-                            },
-                            validation: {
-                              isValid: !(d.validationWarnings as any[])?.some((w: any) => w.severity === "error"),
-                              warnings: (d.validationWarnings as any[]) || [],
-                              confidenceScore: d.aiConfidence ?? 50,
-                            },
-                            devis: d,
-                          });
-                        }}
-                        disabled={isArchived}
-                        data-testid={`button-review-draft-${d.id}`}
-                      >
-                        <ShieldAlert size={12} />
-                        <span className="text-[9px] font-bold uppercase tracking-widest">Review</span>
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              </LuxuryCard>
-
-              {expandedDevis === d.id && (
-                <DevisDetailInline
-                  devis={d}
-                  projectId={projectId}
-                  contractors={contractors}
-                  lots={lots}
-                  isArchived={isArchived}
-                />
-              )}
-            </div>
+            <DevisRow
+              key={d.id}
+              d={d}
+              projectId={projectId}
+              contractors={contractors}
+              lots={lots}
+              isArchived={isArchived}
+              expanded={expandedDevis === d.id}
+              openChecks={openChecksByDevis[d.id] ?? 0}
+              onToggle={() => setExpandedDevis(expandedDevis === d.id ? null : d.id)}
+              onEditRefs={setEditRefsFor}
+              onReviewDraft={(dev) => setDraftReviewData({
+                devisId: dev.id,
+                extraction: {
+                  contractorName: contractors.find(c => c.id === dev.contractorId)?.name ?? "Unknown",
+                  contractorId: dev.contractorId,
+                },
+                validation: {
+                  isValid: !(dev.validationWarnings as any[])?.some((w: any) => w.severity === "error"),
+                  warnings: (dev.validationWarnings as any[]) || [],
+                  confidenceScore: dev.aiConfidence ?? 50,
+                },
+                devis: dev,
+              })}
+            />
           ))}
         </div>
       ) : !uploading ? (
@@ -1897,10 +2219,8 @@ function ChecksPanel({ devisId, projectId, isArchived }: { devisId: number; proj
   );
 }
 
-function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = false }: { devis: Devis; projectId: string; contractors: Contractor[]; lots: Lot[]; isArchived?: boolean }) {
+function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = false, onOpenInvoiceUpload, onOpenAvenantDialog }: { devis: Devis; projectId: string; contractors: Contractor[]; lots: Lot[]; isArchived?: boolean; onOpenInvoiceUpload: () => void; onOpenAvenantDialog: () => void }) {
   const { toast } = useToast();
-  const [invoiceDialogOpen, setInvoiceDialogOpen] = useState(false);
-  const [avenantDialogOpen, setAvenantDialogOpen] = useState(false);
   const [lineItemDialogOpen, setLineItemDialogOpen] = useState(false);
   const [addingNewLot, setAddingNewLot] = useState(false);
   const [newLotNumber, setNewLotNumber] = useState("");
@@ -1938,55 +2258,6 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
   const remainingTtc = adjustedTtc - invoicedTtc;
   const progress = adjustedHt > 0 ? Math.min((invoicedHt / adjustedHt) * 100, 100) : 0;
 
-  const invoiceFileRef = useRef<HTMLInputElement>(null);
-
-  const uploadInvoiceMutation = useMutation({
-    mutationFn: async (file: File) => {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch(`/api/devis/${devis.id}/invoices/upload`, {
-        method: "POST",
-        body: formData,
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ message: "Upload failed" }));
-        throw new Error(err.message || "Upload failed");
-      }
-      return res.json();
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id, "invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "invoices"] });
-      setInvoiceDialogOpen(false);
-      const ext = data.extraction;
-      if (ext.confidence === "low") {
-        toast({ title: "Invoice uploaded — review needed", description: `${data.fileName} — amounts could not be extracted automatically. Please check the invoice record.`, variant: "destructive" });
-      } else {
-        toast({ title: "Invoice uploaded successfully", description: `${data.fileName} — ${formatCurrency(ext.amountHt)} HT detected` });
-      }
-    },
-    onError: (error: Error) => {
-      toast({ title: "Upload failed", description: error.message, variant: "destructive" });
-    },
-  });
-
-  const avenantForm = useForm<z.infer<typeof avenantFormSchema>>({
-    resolver: zodResolver(avenantFormSchema),
-    defaultValues: {
-      devisId: devis.id,
-      avenantNumber: "",
-      type: "pv",
-      descriptionFr: "",
-      descriptionUk: null,
-      amountHt: "0.00",
-      amountTtc: "0.00",
-      dateSigned: null,
-      status: "draft",
-      pvmvRef: null,
-    },
-  });
-
   const lineItemForm = useForm<z.infer<typeof lineItemFormSchema>>({
     resolver: zodResolver(lineItemFormSchema),
     defaultValues: {
@@ -1998,23 +2269,6 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
       unitPriceHt: "0.00",
       totalHt: "0.00",
       percentComplete: "0",
-    },
-  });
-
-  const createAvenantMutation = useMutation({
-    mutationFn: async (data: z.infer<typeof avenantFormSchema>) => {
-      const res = await apiRequest("POST", `/api/devis/${devis.id}/avenants`, data);
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id, "avenants"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
-      setAvenantDialogOpen(false);
-      avenantForm.reset();
-      toast({ title: "Avenant created successfully" });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -2496,10 +2750,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
         <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
           Avenants ({avenants?.length ?? 0})
         </h4>
-        <Button variant="outline" size="sm" onClick={() => {
-          avenantForm.reset({ devisId: devis.id, avenantNumber: "", type: "pv", descriptionFr: "", descriptionUk: null, amountHt: "0.00", amountTtc: "0.00", dateSigned: null, status: "draft", pvmvRef: null });
-          setAvenantDialogOpen(true);
-        }} disabled={isArchived} data-testid={`button-add-avenant-${devis.id}`}>
+        <Button variant="outline" size="sm" onClick={onOpenAvenantDialog} disabled={isArchived} data-testid={`button-add-avenant-${devis.id}`}>
           <Plus size={12} />
           <span className="text-[8px] font-bold uppercase tracking-widest">Avenant</span>
         </Button>
@@ -2529,7 +2780,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
         <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
           Invoices ({invoices?.length ?? 0})
         </h4>
-        <Button variant="outline" size="sm" onClick={() => setInvoiceDialogOpen(true)} disabled={isArchived} data-testid={`button-upload-invoice-${devis.id}`}>
+        <Button variant="outline" size="sm" onClick={onOpenInvoiceUpload} disabled={isArchived} data-testid={`button-upload-invoice-${devis.id}`}>
           <Upload size={12} />
           <span className="text-[8px] font-bold uppercase tracking-widest">Upload Invoice</span>
         </Button>
@@ -2553,104 +2804,6 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
       ) : (
         <p className="text-[11px] text-muted-foreground text-center py-2">No invoices.</p>
       )}
-
-      <Dialog open={invoiceDialogOpen} onOpenChange={(open) => { if (!uploadInvoiceMutation.isPending) setInvoiceDialogOpen(open); }}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="text-[16px] font-black uppercase tracking-tight">Upload Invoice PDF</DialogTitle>
-            <DialogDescription className="text-[11px]">Upload the contractor's invoice document. The system will extract amounts and details automatically.</DialogDescription>
-          </DialogHeader>
-          {uploadInvoiceMutation.isPending ? (
-            <div className="flex flex-col items-center justify-center py-8 gap-3">
-              <Loader2 className="h-8 w-8 animate-spin text-[#0B2545]" />
-              <p className="text-[11px] text-muted-foreground text-center">Processing PDF... Extracting invoice details</p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <div
-                className="border-2 border-dashed border-[#c1a27b]/40 rounded-2xl p-8 text-center cursor-pointer hover:border-[#c1a27b] hover:bg-[#c1a27b]/5 transition-all"
-                onClick={() => invoiceFileRef.current?.click()}
-                data-testid={`dropzone-invoice-upload-${devis.id}`}
-              >
-                <Upload className="h-8 w-8 mx-auto mb-2 text-[#c1a27b]" />
-                <p className="text-[12px] font-semibold text-foreground">Click to select invoice PDF</p>
-                <p className="text-[10px] text-muted-foreground mt-1">PDF files only — the AI will extract invoice number, amounts, and date</p>
-              </div>
-              <input
-                ref={invoiceFileRef}
-                type="file"
-                accept=".pdf"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) uploadInvoiceMutation.mutate(file);
-                  e.target.value = "";
-                }}
-                data-testid={`input-invoice-file-${devis.id}`}
-              />
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={avenantDialogOpen} onOpenChange={setAvenantDialogOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="text-[16px] font-black uppercase tracking-tight">New Avenant</DialogTitle>
-            <DialogDescription className="text-[11px]">Add a plus-value or moins-value variation</DialogDescription>
-          </DialogHeader>
-          <Form {...avenantForm}>
-            <form onSubmit={avenantForm.handleSubmit((d) => createAvenantMutation.mutate(d))} className="space-y-4">
-              <FormField control={avenantForm.control} name="type" render={({ field }) => (
-                <FormItem>
-                  <FormLabel><TechnicalLabel>Type</TechnicalLabel></FormLabel>
-                  <Select onValueChange={field.onChange} value={field.value}>
-                    <FormControl><SelectTrigger data-testid="select-avenant-type"><SelectValue /></SelectTrigger></FormControl>
-                    <SelectContent>
-                      <SelectItem value="pv">Plus-value (PV)</SelectItem>
-                      <SelectItem value="mv">Moins-value (MV)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <FormMessage />
-                </FormItem>
-              )} />
-              <FormField control={avenantForm.control} name="descriptionFr" render={({ field }) => (
-                <FormItem>
-                  <FormLabel><TechnicalLabel>Description</TechnicalLabel></FormLabel>
-                  <FormControl><Textarea {...field} className="resize-none" data-testid="input-avenant-desc" /></FormControl>
-                  <FormMessage />
-                </FormItem>
-              )} />
-              <div className="grid grid-cols-2 gap-4">
-                <FormField control={avenantForm.control} name="amountHt" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel><TechnicalLabel>Amount HT</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} type="number" step="0.01" data-testid="input-avenant-ht" /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={avenantForm.control} name="amountTtc" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel><TechnicalLabel>Amount TTC</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} type="number" step="0.01" data-testid="input-avenant-ttc" /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-              </div>
-              <TvaDerivedHint
-                amountHt={avenantForm.watch("amountHt")}
-                amountTtc={avenantForm.watch("amountTtc")}
-                testId="text-avenant-tva-derived"
-              />
-              <Button type="submit" className="w-full" disabled={createAvenantMutation.isPending} data-testid="button-submit-avenant">
-                <span className="text-[9px] font-bold uppercase tracking-widest">
-                  {createAvenantMutation.isPending ? "Creating..." : "Create Avenant"}
-                </span>
-              </Button>
-            </form>
-          </Form>
-        </DialogContent>
-      </Dialog>
 
       <Dialog open={voidDialogOpen} onOpenChange={setVoidDialogOpen}>
         <DialogContent className="max-w-sm">
