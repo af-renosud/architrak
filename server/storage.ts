@@ -275,6 +275,8 @@ export interface IStorage {
   getDevisCheckTokenByHash(hash: string): Promise<DevisCheckToken | undefined>;
   touchDevisCheckTokenUsed(id: number): Promise<void>;
   getProjectCommunicationByDedupeKey(key: string): Promise<ProjectCommunication | undefined>;
+  getLatestSentDevisCheckBundle(devisId: number): Promise<ProjectCommunication | undefined>;
+  countOpenDevisChecksForProject(projectId: number): Promise<Record<number, number>>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1392,6 +1394,44 @@ export class DatabaseStorage implements IStorage {
 
   async touchDevisCheckTokenUsed(id: number): Promise<void> {
     await db.update(devisCheckTokens).set({ lastUsedAt: new Date() }).where(eq(devisCheckTokens.id, id));
+  }
+
+  async getLatestSentDevisCheckBundle(devisId: number): Promise<ProjectCommunication | undefined> {
+    // We use the dedupeKey prefix to scope to this devis without joining.
+    const prefix = `devis-check-bundle:${devisId}:`;
+    const rows = await db
+      .select()
+      .from(projectCommunications)
+      .where(
+        and(
+          eq(projectCommunications.status, "sent"),
+          like(projectCommunications.dedupeKey, `${prefix}%`),
+        ),
+      )
+      .orderBy(desc(projectCommunications.sentAt))
+      .limit(1);
+    return rows[0];
+  }
+
+  async countOpenDevisChecksForProject(projectId: number): Promise<Record<number, number>> {
+    const projectDevisRows = await db
+      .select({ id: devis.id })
+      .from(devis)
+      .where(eq(devis.projectId, projectId));
+    const ids = projectDevisRows.map((d) => d.id);
+    if (ids.length === 0) return {};
+    const rows = await db
+      .select({ devisId: devisChecks.devisId, id: devisChecks.id })
+      .from(devisChecks)
+      .where(
+        and(
+          inArray(devisChecks.devisId, ids),
+          inArray(devisChecks.status, ["open", "awaiting_contractor", "awaiting_architect"]),
+        ),
+      );
+    const out: Record<number, number> = {};
+    for (const r of rows) out[r.devisId] = (out[r.devisId] ?? 0) + 1;
+    return out;
   }
 
   async getProjectCommunicationByDedupeKey(key: string): Promise<ProjectCommunication | undefined> {

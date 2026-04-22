@@ -77,6 +77,9 @@ export function DevisTab({ projectId, contractors, lots, isArchived = false }: D
   const { data: devisList, isLoading } = useQuery<Devis[]>({
     queryKey: ["/api/projects", projectId, "devis"],
   });
+  const { data: openChecksByDevis = {} } = useQuery<Record<number, number>>({
+    queryKey: ["/api/projects", projectId, "devis-checks", "open-counts"],
+  });
 
   const voidCount = devisList?.filter(d => d.status === "void").length ?? 0;
   const filteredDevisList = showVoid ? devisList : devisList?.filter(d => d.status !== "void");
@@ -278,6 +281,15 @@ export function DevisTab({ projectId, contractors, lots, isArchived = false }: D
                     </div>
                     <TechnicalLabel>{d.invoicingMode === "mode_a" ? "Mode A" : "Mode B"}</TechnicalLabel>
                     <AdvisoryBadge subject={{ type: "devis", id: d.id }} />
+                    {(openChecksByDevis[d.id] ?? 0) > 0 && (
+                      <span
+                        className="px-2 py-0.5 rounded-full bg-amber-500 text-white text-[9px] font-bold uppercase tracking-widest"
+                        title={`${openChecksByDevis[d.id]} question(s) en cours avec l'entreprise`}
+                        data-testid={`badge-checking-${d.id}`}
+                      >
+                        Checking · {openChecksByDevis[d.id]}
+                      </span>
+                    )}
                     <StatusBadge status={d.status} />
                     {d.status === "draft" && (
                       <Button
@@ -1443,15 +1455,32 @@ const CHECK_STATUS_COLOR: Record<string, string> = {
   dropped: "bg-slate-50 text-slate-400 border-slate-200",
 };
 
-function ChecksPanel({ devisId, isArchived }: { devisId: number; isArchived: boolean }) {
+function ChecksPanel({ devisId, projectId, isArchived }: { devisId: number; projectId: string; isArchived: boolean }) {
   const { toast } = useToast();
   const [replyDrafts, setReplyDrafts] = useState<Record<number, string>>({});
+  const [generalQuery, setGeneralQuery] = useState("");
 
   const { data: checks = [], isLoading } = useQuery<CheckWithMessages[]>({
     queryKey: ["/api/devis", devisId, "checks"],
   });
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "checks"] });
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "checks"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis-checks", "open-counts"] });
+  };
+
+  const createGeneralMutation = useMutation({
+    mutationFn: async (query: string) => {
+      const res = await apiRequest("POST", `/api/devis/${devisId}/checks`, { query });
+      return res.json();
+    },
+    onSuccess: () => {
+      setGeneralQuery("");
+      invalidate();
+      toast({ title: "Question ajoutée" });
+    },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
 
   const sendMutation = useMutation({
     mutationFn: async () => {
@@ -1498,19 +1527,21 @@ function ChecksPanel({ devisId, isArchived }: { devisId: number; isArchived: boo
     onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
   });
 
+  if (isLoading) return null;
   const visible = checks.filter((c) => c.status !== "dropped");
-  if (isLoading || visible.length === 0) return null;
 
   const openCount = checks.filter((c) => c.status === "open" || c.status === "awaiting_architect" || c.status === "awaiting_contractor").length;
   const sendableCount = checks.filter((c) => c.status === "open" || c.status === "awaiting_architect").length;
 
   return (
     <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-3 space-y-3" data-testid={`section-checks-${devisId}`}>
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
-          <span className="px-2 py-0.5 rounded-full bg-amber-500 text-white text-[9px] font-bold uppercase tracking-widest">CHECKING</span>
+          {openCount > 0 && (
+            <span className="px-2 py-0.5 rounded-full bg-amber-500 text-white text-[9px] font-bold uppercase tracking-widest">CHECKING</span>
+          )}
           <span className="text-[11px] font-semibold text-amber-900" data-testid={`text-open-checks-count-${devisId}`}>
-            {openCount} question(s) en cours
+            {openCount === 0 ? "Aucune question en cours" : `${openCount} question(s) en cours`}
           </span>
         </div>
         <Button
@@ -1523,6 +1554,28 @@ function ChecksPanel({ devisId, isArchived }: { devisId: number; isArchived: boo
           {sendMutation.isPending ? "Envoi…" : `Envoyer à l'entreprise (${sendableCount})`}
         </Button>
       </div>
+
+      {!isArchived && (
+        <div className="flex items-start gap-2" data-testid={`section-add-general-check-${devisId}`}>
+          <Textarea
+            className="text-[11px] min-h-[36px] flex-1 bg-white"
+            placeholder="Ajouter une question générale (non liée à une ligne)…"
+            value={generalQuery}
+            onChange={(e) => setGeneralQuery(e.target.value)}
+            data-testid={`textarea-general-check-${devisId}`}
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-9 text-[9px] font-bold uppercase tracking-widest"
+            disabled={!generalQuery.trim() || createGeneralMutation.isPending}
+            onClick={() => createGeneralMutation.mutate(generalQuery.trim())}
+            data-testid={`button-add-general-check-${devisId}`}
+          >
+            {createGeneralMutation.isPending ? "…" : "Ajouter"}
+          </Button>
+        </div>
+      )}
 
       <div className="space-y-2">
         {visible.map((c) => (
@@ -1849,6 +1902,20 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
     { key: "client_signed_off", label: "Client Signed Off" },
   ];
   const currentStageIndex = SIGN_OFF_STAGES.findIndex(s => s.key === devis.signOffStage);
+  const SENT_TO_CLIENT_INDEX = SIGN_OFF_STAGES.findIndex(s => s.key === "sent_to_client");
+  // Open checks must be cleared before the architect can advance the devis to
+  // 'sent_to_client' or beyond. The server enforces this with a 409, but we
+  // also surface the lock visually on the stepper button.
+  const { data: openChecksCountForDevis = 0 } = useQuery<number>({
+    queryKey: ["/api/devis", devis.id, "checks", "open-count"],
+    queryFn: async () => {
+      const res = await fetch(`/api/devis/${devis.id}/checks`);
+      if (!res.ok) return 0;
+      const list: Array<{ status: string }> = await res.json();
+      return list.filter(c => c.status === "open" || c.status === "awaiting_contractor" || c.status === "awaiting_architect").length;
+    },
+  });
+  const checksLocked = openChecksCountForDevis > 0;
 
   return (
     <div className={`ml-4 mt-1 mb-3 border-l-2 border-[rgba(0,0,0,0.08)] pl-4 space-y-4 ${isVoid ? "opacity-50" : ""}`} data-testid={`detail-devis-${devis.id}`}>
@@ -2025,37 +2092,55 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
         </div>
       )}
 
-      {!isVoid && <ChecksPanel devisId={devis.id} isArchived={isArchived} />}
+      {!isVoid && <ChecksPanel devisId={devis.id} projectId={projectId} isArchived={isArchived} />}
 
       <div className="flex items-center gap-1.5 py-2" data-testid={`stepper-signoff-${devis.id}`}>
         {SIGN_OFF_STAGES.map((stage, idx) => {
           const isCompleted = idx <= currentStageIndex && !isVoid;
           const isCurrent = idx === currentStageIndex && !isVoid;
+          // Checks gate: we cannot advance to 'sent_to_client' (or any later
+          // stage) while there are open contractor questions.
+          const lockedByChecks = checksLocked && idx >= SENT_TO_CLIENT_INDEX && currentStageIndex < SENT_TO_CLIENT_INDEX;
+          const lockTitle = lockedByChecks
+            ? `Résolvez d'abord les ${openChecksCountForDevis} question(s) en cours avec l'entreprise avant l'envoi au client.`
+            : undefined;
           return (
             <div key={stage.key} className="flex items-center gap-1.5 flex-1">
               <button
-                className={`flex-1 px-2 py-1.5 rounded-lg border text-[9px] font-bold uppercase tracking-wide text-center transition-all
+                type="button"
+                title={lockTitle}
+                aria-disabled={lockedByChecks ? "true" : undefined}
+                className={`flex-1 px-2 py-1.5 rounded-lg border text-[9px] font-bold uppercase tracking-wide text-center transition-all flex items-center justify-center gap-1
                   ${isVoid
                     ? "border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed"
-                    : isCurrent
-                      ? "border-[#0B2545] bg-[#0B2545] text-white shadow-sm"
-                      : isCompleted
-                        ? "border-emerald-300 bg-emerald-50 text-emerald-700 cursor-pointer hover:bg-emerald-100"
-                        : "border-slate-200 bg-white text-slate-400 cursor-pointer hover:border-slate-300 hover:text-slate-600"
+                    : lockedByChecks
+                      ? "border-amber-300 bg-amber-50 text-amber-600 cursor-not-allowed"
+                      : isCurrent
+                        ? "border-[#0B2545] bg-[#0B2545] text-white shadow-sm"
+                        : isCompleted
+                          ? "border-emerald-300 bg-emerald-50 text-emerald-700 cursor-pointer hover:bg-emerald-100"
+                          : "border-slate-200 bg-white text-slate-400 cursor-pointer hover:border-slate-300 hover:text-slate-600"
                   }`}
                 onClick={() => {
-                  if (!isVoid && !isArchived) {
-                    if (signOffBlocked && idx > 0) {
-                      toast({ title: "Sign-off blocked", description: "Lot assignment and English works description are required before advancing", variant: "destructive" });
-                      return;
-                    }
-                    updateDevisMutation.mutate({ signOffStage: stage.key });
-                    toast({ title: `Stage: ${stage.label}` });
+                  if (isVoid || isArchived) return;
+                  // IMPORTANT: do not use `disabled` for the locked-by-checks
+                  // case — disabled buttons swallow the click and we lose the
+                  // chance to explain why to the user via toast.
+                  if (lockedByChecks) {
+                    toast({ title: "Sign-off bloqué", description: lockTitle!, variant: "destructive" });
+                    return;
                   }
+                  if (signOffBlocked && idx > 0) {
+                    toast({ title: "Sign-off blocked", description: "Lot assignment and English works description are required before advancing", variant: "destructive" });
+                    return;
+                  }
+                  updateDevisMutation.mutate({ signOffStage: stage.key });
+                  toast({ title: `Stage: ${stage.label}` });
                 }}
                 disabled={isVoid || isArchived || (signOffBlocked && idx > 0)}
                 data-testid={`button-stage-${stage.key}-${devis.id}`}
               >
+                {lockedByChecks && <Ban size={9} />}
                 {stage.label}
               </button>
               {idx < SIGN_OFF_STAGES.length - 1 && (

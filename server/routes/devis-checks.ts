@@ -11,6 +11,7 @@ const router = Router();
 
 const devisIdParams = z.object({ devisId: z.coerce.number().int().positive() });
 const checkIdParams = z.object({ checkId: z.coerce.number().int().positive() });
+const projectIdParams = z.object({ projectId: z.coerce.number().int().positive() });
 
 const createCheckSchema = z.object({
   query: z.string().min(1).max(2000),
@@ -26,6 +27,20 @@ const architectReplySchema = z.object({
 }).strict();
 
 router.use(requireAuth);
+
+/**
+ * Bulk open-checks counts for every devis in a project. Powers the CHECKING
+ * badge shown on collapsed devis rows in the project view.
+ */
+router.get(
+  "/api/projects/:projectId/devis-checks/open-counts",
+  validateRequest({ params: projectIdParams }),
+  async (req, res) => {
+    const projectId = Number(req.params.projectId);
+    const counts = await storage.countOpenDevisChecksForProject(projectId);
+    res.json(counts);
+  },
+);
 
 /** List checks for a devis (with messages, for the architect side panel). */
 router.get(
@@ -156,45 +171,36 @@ router.post(
     }
     const baseUrl = env.PUBLIC_BASE_URL;
 
-    // Dedupe key first — incorporates sorted set of sendable check ids so a
-    // new question (different ids) is a fresh bundle.
+    // Dedupe key incorporates the sorted set of sendable check ids — a new
+    // question (different ids) is a fresh bundle and a fresh send.
     const dedupeKey = `devis-check-bundle:${devisId}:${sendable.map((c) => c.id).sort((a, b) => a - b).join(",")}`;
 
-    // If we've already sent this exact bundle, do NOT rotate the token and
-    // do NOT re-send. Surface the prior communication as 'reused'.
-    const existing = await storage.getProjectCommunicationByDedupeKey(dedupeKey);
-    if (existing) {
+    // Probe whether this exact bundle was already SUCCESSFULLY sent. If so,
+    // do not rotate the token and do not resend. If a prior attempt is queued
+    // or failed, we'll fall through and retry on the same row — but with a
+    // freshly issued token AND a body rewritten with the new portal URL,
+    // since rotation would otherwise invalidate the URL embedded in the
+    // existing email body.
+    const priorSameBundle = await storage.getProjectCommunicationByDedupeKey(dedupeKey);
+    if (priorSameBundle && priorSameBundle.status === "sent") {
       return res.json({
-        communicationId: existing.id,
+        communicationId: priorSameBundle.id,
         reused: true,
         checksSent: sendable.length,
       });
     }
 
-    // Reuse an active token if one already exists; otherwise issue a fresh
-    // one. This avoids invalidating a contractor's prior link unless the
-    // bundle has actually changed AND no active token remained.
-    const active = await storage.getActiveDevisCheckToken(devisId);
-    let portalUrl: string;
-    if (active) {
-      // Active token exists but raw value isn't recoverable (we store hash
-      // only). Rotate so the new email carries a usable link.
-      const issued = await issueDevisCheckToken({
-        devisId,
-        contractorId: contractor.id,
-        contractorEmail: contractor.email,
-        createdByUserId: userId,
-      });
-      portalUrl = buildPortalUrl(baseUrl, issued.raw);
-    } else {
-      const issued = await issueDevisCheckToken({
-        devisId,
-        contractorId: contractor.id,
-        contractorEmail: contractor.email,
-        createdByUserId: userId,
-      });
-      portalUrl = buildPortalUrl(baseUrl, issued.raw);
-    }
+    // Issue / rotate a token for the (re-)send. Whether or not an active
+    // token exists we still rotate, because the old raw value is not
+    // recoverable (hash-only storage) and the new email must contain a
+    // working link.
+    const issued = await issueDevisCheckToken({
+      devisId,
+      contractorId: contractor.id,
+      contractorEmail: contractor.email,
+      createdByUserId: userId,
+    });
+    const portalUrl = buildPortalUrl(baseUrl, issued.raw);
 
     // Pull line descriptions for nicer email body.
     const lineItems = await storage.getDevisLineItems(devisId);
@@ -204,21 +210,55 @@ router.post(
       lineDescription: c.lineItemId ? lineMap.get(c.lineItemId) ?? null : null,
     }));
 
-    const { communicationId, reused } = await queueDevisCheckBundle({
-      devisId,
-      portalUrl,
-      dedupeKey,
-      checkSummaries: summaries,
-    });
+    const { communicationId, alreadySent: queueAlreadySent, refreshedBody, refreshedSubject } =
+      await queueDevisCheckBundle({
+        devisId,
+        portalUrl,
+        dedupeKey,
+        checkSummaries: summaries,
+      });
 
-    if (!reused) {
-      try {
-        await sendCommunication(communicationId);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Email send failed";
-        return res.status(502).json({ message: msg });
-      }
+    if (queueAlreadySent) {
+      return res.json({ communicationId, reused: true, checksSent: sendable.length });
     }
+
+    // Retry path: existing comm row was reused. Rewrite its body (and subject
+    // — defensive, in case a downstream change ever varies it) with the
+    // freshly generated portal URL so the resent email carries a valid link
+    // for the rotated token.
+    if (priorSameBundle && priorSameBundle.status !== "sent") {
+      await storage.updateProjectCommunication(communicationId, {
+        body: refreshedBody,
+        subject: refreshedSubject,
+      });
+    }
+
+    // Look up the most recent prior bundle for this devis so the follow-up
+    // email threads with the contractor's existing conversation in Gmail.
+    const priorThread = await storage.getLatestSentDevisCheckBundle(devisId);
+    try {
+      await sendCommunication(communicationId, {
+        threadId: priorThread?.emailThreadId ?? null,
+        inReplyToMessageId: priorThread?.emailMessageId ?? null,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Email send failed";
+      return res.status(502).json({ message: msg });
+    }
+
+    // Audit: write a system message in each check's thread recording dispatch.
+    const sentAt = new Date();
+    const dispatchNote = `Question envoyée à ${contractor.email} le ${sentAt.toLocaleString("fr-FR")}.`;
+    await Promise.all(
+      sendable.map((c) =>
+        storage.createDevisCheckMessage({
+          checkId: c.id,
+          authorType: "system",
+          body: dispatchNote,
+          channel: "email",
+        }),
+      ),
+    );
 
     // Flip eligible checks to awaiting_contractor.
     for (const c of sendable) {
@@ -227,7 +267,7 @@ router.post(
 
     res.json({
       communicationId,
-      reused,
+      reused: false,
       checksSent: sendable.length,
       portalUrl,
     });

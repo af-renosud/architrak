@@ -36,7 +36,10 @@ export async function sendCertificat(certificatId: number): Promise<number> {
   return created.id;
 }
 
-export async function sendCommunication(communicationId: number): Promise<void> {
+export async function sendCommunication(
+  communicationId: number,
+  opts?: { threadId?: string | null; inReplyToMessageId?: string | null },
+): Promise<void> {
   if (!isGmailConfigured()) {
     throw new Error("Gmail not configured");
   }
@@ -44,8 +47,12 @@ export async function sendCommunication(communicationId: number): Promise<void> 
   const comm = await storage.getProjectCommunication(communicationId);
   if (!comm) throw new Error(`Communication ${communicationId} not found`);
 
-  if (comm.status !== "queued" && comm.status !== "draft") {
-    throw new Error(`Communication is already ${comm.status}`);
+  // Allow retrying a previously failed send. Block only if it actually went out.
+  if (comm.status === "sent") {
+    throw new Error(`Communication is already sent`);
+  }
+  if (comm.status === "failed") {
+    await storage.updateProjectCommunication(communicationId, { status: "queued" });
   }
 
   try {
@@ -78,6 +85,14 @@ export async function sendCommunication(communicationId: number): Promise<void> 
       `Subject: ${comm.subject}`,
       `MIME-Version: 1.0`,
     ];
+    // Thread-reuse headers for follow-up bundled sends. Gmail also needs the
+    // thread id passed in the API call, but In-Reply-To/References make the
+    // resulting message render as a reply in any IMAP client too.
+    if (opts?.inReplyToMessageId) {
+      const mid = opts.inReplyToMessageId.startsWith("<") ? opts.inReplyToMessageId : `<${opts.inReplyToMessageId}>`;
+      rawEmail.push(`In-Reply-To: ${mid}`);
+      rawEmail.push(`References: ${mid}`);
+    }
 
     if (attachments.length > 0) {
       rawEmail.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
@@ -104,9 +119,11 @@ export async function sendCommunication(communicationId: number): Promise<void> 
 
     const encodedMessage = Buffer.from(rawEmail.join("\r\n")).toString("base64url");
 
+    const requestBody: { raw: string; threadId?: string } = { raw: encodedMessage };
+    if (opts?.threadId) requestBody.threadId = opts.threadId;
     const sendResult = await gmail.users.messages.send({
       userId: "me",
-      requestBody: { raw: encodedMessage },
+      requestBody,
     });
 
     await storage.updateProjectCommunication(communicationId, {
@@ -139,12 +156,12 @@ export async function queueDevisCheckBundle(opts: {
   portalUrl: string;
   dedupeKey: string;
   checkSummaries: Array<{ query: string; lineDescription: string | null }>;
-}): Promise<{ communicationId: number; reused: boolean }> {
-  const existing = await storage.getProjectCommunicationByDedupeKey(opts.dedupeKey);
-  if (existing) {
-    return { communicationId: existing.id, reused: true };
-  }
-
+}): Promise<{
+  communicationId: number;
+  alreadySent: boolean;
+  refreshedSubject: string;
+  refreshedBody: string;
+}> {
   const devis = await storage.getDevis(opts.devisId);
   if (!devis) throw new Error(`Devis ${opts.devisId} not found`);
   const project = await storage.getProject(devis.projectId);
@@ -169,6 +186,20 @@ export async function queueDevisCheckBundle(opts: {
 
   const body = `${greeting}\n\n${intro}\n\n${itemLines}\n\n${portalNote}\n\n${signoff}\n`;
 
+  const existing = await storage.getProjectCommunicationByDedupeKey(opts.dedupeKey);
+  if (existing) {
+    // Only treat as a true no-op if the bundle actually went out. If a prior
+    // attempt is still queued/draft/failed, reuse the same row so the caller
+    // can re-attempt the Gmail send. Caller is responsible for rewriting
+    // body/subject if the portal URL has changed since the original queue.
+    return {
+      communicationId: existing.id,
+      alreadySent: existing.status === "sent",
+      refreshedSubject: subject,
+      refreshedBody: body,
+    };
+  }
+
   const created = await storage.createProjectCommunication({
     projectId: project.id,
     type: "devis_check_bundle",
@@ -181,7 +212,12 @@ export async function queueDevisCheckBundle(opts: {
     dedupeKey: opts.dedupeKey,
   });
 
-  return { communicationId: created.id, reused: false };
+  return {
+    communicationId: created.id,
+    alreadySent: false,
+    refreshedSubject: subject,
+    refreshedBody: body,
+  };
 }
 
 export async function sendPaymentChase(reminderId: number): Promise<void> {
