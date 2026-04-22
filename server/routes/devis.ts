@@ -445,14 +445,20 @@ router.patch(
     if (!item) return res.status(404).json({ message: "Line item not found" });
 
     // Auto-create / refresh a contractor check whenever the architect flags
-    // a line item red or amber AND has captured notes. Resolution is manual:
-    // toggling back to green/unchecked does NOT auto-resolve a check that
-    // already started a conversation.
+    // a line item red or amber. Notes are optional — if the architect didn't
+    // capture a specific question yet, we open the check with a generic
+    // French placeholder so the sign-off gate engages immediately. The
+    // architect can refine the wording later via the message thread.
+    // Resolution is always manual: toggling back to green/unchecked does
+    // NOT auto-resolve a check that already started a conversation.
     const becameFlagged = item.checkStatus === "red" || item.checkStatus === "amber";
-    const note = (item.checkNotes ?? "").trim();
-    if (becameFlagged && note.length > 0) {
+    if (becameFlagged) {
+      const note = (item.checkNotes ?? "").trim();
+      const query = note.length > 0
+        ? note
+        : "Précisions demandées sur cette ligne — détails à venir.";
       const userId = req.session?.userId ? Number(req.session.userId) : null;
-      await storage.upsertLineItemCheck(item.devisId, lineItemId, note, userId);
+      await storage.upsertLineItemCheck(item.devisId, lineItemId, query, userId);
     }
     res.json(item);
   },

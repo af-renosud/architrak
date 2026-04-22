@@ -179,19 +179,20 @@ router.post(
     }
     const baseUrl = env.PUBLIC_BASE_URL;
 
-    // Dedupe key incorporates BOTH a per-dispatch "round" marker (count of
-    // bundles that have already been successfully sent for this devis) AND
-    // the sorted set of sendable check ids. Why both?
-    //   • Same round + same ids → the user double-clicked Envoyer or is
-    //     retrying a failed attempt → we want idempotent reuse of the row.
-    //   • Next round (round increments only on a successful prior send) →
-    //     legitimate follow-up dispatch → we MUST send a fresh email and
-    //     create a new audit row, while still threading via Gmail
-    //     (getLatestSentDevisCheckBundle).
-    //   • Different ids (architect added a new question) → fresh bundle.
-    const round = await storage.countSentDevisCheckBundles(devisId);
-    const sortedIds = sendable.map((c) => c.id).sort((a, b) => a - b).join(",");
-    const dedupeKey = `devis-check-bundle:${devisId}:r${round}:${sortedIds}`;
+    // Dedupe key = stable fingerprint over (sendable check ids + the latest
+    // message revision across those checks). Properties:
+    //   • Same ids + same maxMsgId ⇒ nothing has changed since the last
+    //     dispatch ⇒ retry/double-click is idempotent (sent row short-
+    //     circuits, queued/failed row is reused & retried with refreshed
+    //     body). This is the explicit "no double-sends on retry" guarantee.
+    //   • Architect (or contractor) writes a new message ⇒ maxMsgId bumps
+    //     ⇒ fresh dedupe key ⇒ legitimate follow-up round ⇒ new audit row,
+    //     new email — while still threading via Gmail (the prior round's
+    //     thread/message id is reused via getLatestSentDevisCheckBundle).
+    //   • Architect adds/removes a check ⇒ ids change ⇒ fresh key.
+    const sortedIds = sendable.map((c) => c.id).sort((a, b) => a - b);
+    const maxMsgId = await storage.getMaxMessageIdForChecks(sortedIds);
+    const dedupeKey = `devis-check-bundle:${devisId}:m${maxMsgId}:${sortedIds.join(",")}`;
 
     // Probe whether this exact bundle was already SUCCESSFULLY sent. If so,
     // do not rotate the token and do not resend. If a prior attempt is queued

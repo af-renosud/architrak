@@ -277,6 +277,7 @@ export interface IStorage {
   getProjectCommunicationByDedupeKey(key: string): Promise<ProjectCommunication | undefined>;
   getLatestSentDevisCheckBundle(devisId: number): Promise<ProjectCommunication | undefined>;
   countSentDevisCheckBundles(devisId: number): Promise<number>;
+  getMaxMessageIdForChecks(checkIds: number[]): Promise<number>;
   countOpenDevisChecksForProject(projectId: number): Promise<Record<number, number>>;
 }
 
@@ -1412,6 +1413,22 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(projectCommunications.sentAt))
       .limit(1);
     return rows[0];
+  }
+
+  async getMaxMessageIdForChecks(checkIds: number[]): Promise<number> {
+    // Used by the bundled-send dedupe key as a "conversation revision"
+    // fingerprint. Same set of checks + same max message id ⇒ nothing has
+    // changed since the last dispatch ⇒ retry must be idempotent. A new
+    // architect (or contractor) message bumps the max id ⇒ legitimate
+    // follow-up dispatch ⇒ fresh send under a new dedupe key.
+    if (checkIds.length === 0) return 0;
+    const rows = await db
+      .select({ id: devisCheckMessages.id })
+      .from(devisCheckMessages)
+      .where(inArray(devisCheckMessages.checkId, checkIds))
+      .orderBy(desc(devisCheckMessages.id))
+      .limit(1);
+    return rows[0]?.id ?? 0;
   }
 
   async countSentDevisCheckBundles(devisId: number): Promise<number> {
