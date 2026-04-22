@@ -107,6 +107,11 @@ const envSchema = z.object({
   // --- Rate limit store selector ---------------------------------------
   RATE_LIMIT_STORE: optionalEnum(["memory", "postgres"]),
 
+  // --- Public-facing portal base URL (contractor query portal) ---------
+  // Used to build /p/check/:token links in outgoing emails. Falls back to
+  // the request's own origin when unset.
+  PUBLIC_BASE_URL: optionalString(),
+
   // --- E2E / browser-test backdoor (NEVER enable in production) --------
   // Gates the dev-only POST /api/auth/dev-login endpoint. Requires
   // NODE_ENV !== "production" AND this flag set to a truthy string.

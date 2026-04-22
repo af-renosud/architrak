@@ -12,6 +12,7 @@ import { startContractorAutoSyncScheduler } from "./archidoc/contractor-auto-syn
 import { seedBenchmarkTags } from "./services/benchmark-ingest.service";
 import { SEED_BENCHMARK_TAGS } from "./services/benchmark-tags";
 import { registerAuthRoutes } from "./auth/routes";
+import publicChecksRouter from "./routes/public-checks";
 import { requireAuth } from "./auth/middleware";
 import { pool } from "./db";
 import { env } from "./env";
@@ -111,6 +112,10 @@ app.use((req, res, next) => {
   }
 
   registerAuthRoutes(app);
+
+  // Public contractor portal — token-protected, NOT under /api so it bypasses
+  // the session auth guard below. Auth is enforced by the token lookup itself.
+  app.use(publicChecksRouter);
 
   app.use("/api", (req, res, next) => {
     const publicPaths = ["/auth/login", "/auth/callback", "/auth/logout", "/auth/user", "/webhooks/archidoc"];

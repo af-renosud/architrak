@@ -7,6 +7,10 @@ import {
   emailDocuments, projectDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
   aiModelSettings, templateAssets, users, devisTranslations, wishListItems,
   benchmarkDocuments, benchmarkItems, benchmarkTags, benchmarkItemTags,
+  devisChecks, devisCheckMessages, devisCheckTokens,
+  type DevisCheck, type InsertDevisCheck,
+  type DevisCheckMessage, type InsertDevisCheckMessage,
+  type DevisCheckToken, type InsertDevisCheckToken,
   type Project, type InsertProject,
   type User, type InsertUser,
   type Contractor, type InsertContractor,
@@ -255,6 +259,22 @@ export interface IStorage {
 
   searchBenchmarkItems(filters: BenchmarkSearchFilters): Promise<BenchmarkSearchRow[]>;
   aggregateBenchmarkPrices(filters: BenchmarkSearchFilters): Promise<BenchmarkAggregateRow[]>;
+
+  listDevisChecks(devisId: number): Promise<DevisCheck[]>;
+  getDevisCheck(id: number): Promise<DevisCheck | undefined>;
+  createDevisCheck(data: InsertDevisCheck): Promise<DevisCheck>;
+  updateDevisCheck(id: number, data: Partial<InsertDevisCheck> & { resolvedAt?: Date | null; resolvedByUserId?: number | null }): Promise<DevisCheck | undefined>;
+  upsertLineItemCheck(devisId: number, lineItemId: number, query: string, userId: number | null): Promise<DevisCheck>;
+  countOpenDevisChecks(devisId: number): Promise<number>;
+  isDevisChecking(devisId: number): Promise<boolean>;
+  listDevisCheckMessages(checkId: number): Promise<DevisCheckMessage[]>;
+  createDevisCheckMessage(data: InsertDevisCheckMessage): Promise<DevisCheckMessage>;
+  getActiveDevisCheckToken(devisId: number): Promise<DevisCheckToken | undefined>;
+  createDevisCheckToken(data: InsertDevisCheckToken): Promise<DevisCheckToken>;
+  revokeDevisCheckTokensForDevis(devisId: number): Promise<void>;
+  getDevisCheckTokenByHash(hash: string): Promise<DevisCheckToken | undefined>;
+  touchDevisCheckTokenUsed(id: number): Promise<void>;
+  getProjectCommunicationByDedupeKey(key: string): Promise<ProjectCommunication | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1234,6 +1254,152 @@ export class DatabaseStorage implements IStorage {
     }
     result.sort((a, b) => b.count - a.count);
     return result;
+  }
+
+  async listDevisChecks(devisId: number): Promise<DevisCheck[]> {
+    return db.select().from(devisChecks).where(eq(devisChecks.devisId, devisId)).orderBy(asc(devisChecks.createdAt));
+  }
+
+  async getDevisCheck(id: number): Promise<DevisCheck | undefined> {
+    const [c] = await db.select().from(devisChecks).where(eq(devisChecks.id, id));
+    return c;
+  }
+
+  async createDevisCheck(data: InsertDevisCheck): Promise<DevisCheck> {
+    const [created] = await db.insert(devisChecks).values(data).returning();
+    return created;
+  }
+
+  async updateDevisCheck(
+    id: number,
+    data: Partial<InsertDevisCheck> & { resolvedAt?: Date | null; resolvedByUserId?: number | null },
+  ): Promise<DevisCheck | undefined> {
+    const [updated] = await db
+      .update(devisChecks)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(devisChecks.id, id))
+      .returning();
+    return updated;
+  }
+
+  async upsertLineItemCheck(
+    devisId: number,
+    lineItemId: number,
+    query: string,
+    userId: number | null,
+  ): Promise<DevisCheck> {
+    const [existing] = await db
+      .select()
+      .from(devisChecks)
+      .where(
+        and(
+          eq(devisChecks.devisId, devisId),
+          eq(devisChecks.lineItemId, lineItemId),
+          eq(devisChecks.origin, "line_item"),
+        ),
+      );
+    if (existing) {
+      // If a conversation has started (any status beyond 'open'), do not
+      // overwrite the check or its history; just refresh the query text.
+      const [updated] = await db
+        .update(devisChecks)
+        .set({ query, updatedAt: new Date() })
+        .where(eq(devisChecks.id, existing.id))
+        .returning();
+      return updated;
+    }
+    const [created] = await db
+      .insert(devisChecks)
+      .values({
+        devisId,
+        origin: "line_item",
+        lineItemId,
+        status: "open",
+        query,
+        createdByUserId: userId ?? undefined,
+      })
+      .returning();
+    return created;
+  }
+
+  async countOpenDevisChecks(devisId: number): Promise<number> {
+    const rows = await db
+      .select({ id: devisChecks.id })
+      .from(devisChecks)
+      .where(
+        and(
+          eq(devisChecks.devisId, devisId),
+          inArray(devisChecks.status, ["open", "awaiting_contractor", "awaiting_architect"]),
+        ),
+      );
+    return rows.length;
+  }
+
+  async isDevisChecking(devisId: number): Promise<boolean> {
+    const rows = await db
+      .select({ id: devisChecks.id })
+      .from(devisChecks)
+      .where(
+        and(
+          eq(devisChecks.devisId, devisId),
+          inArray(devisChecks.status, ["awaiting_contractor", "awaiting_architect"]),
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  async listDevisCheckMessages(checkId: number): Promise<DevisCheckMessage[]> {
+    return db
+      .select()
+      .from(devisCheckMessages)
+      .where(eq(devisCheckMessages.checkId, checkId))
+      .orderBy(asc(devisCheckMessages.createdAt));
+  }
+
+  async createDevisCheckMessage(data: InsertDevisCheckMessage): Promise<DevisCheckMessage> {
+    const [created] = await db.insert(devisCheckMessages).values(data).returning();
+    return created;
+  }
+
+  async getActiveDevisCheckToken(devisId: number): Promise<DevisCheckToken | undefined> {
+    const [t] = await db
+      .select()
+      .from(devisCheckTokens)
+      .where(and(eq(devisCheckTokens.devisId, devisId), isNull(devisCheckTokens.revokedAt)))
+      .limit(1);
+    return t;
+  }
+
+  async createDevisCheckToken(data: InsertDevisCheckToken): Promise<DevisCheckToken> {
+    // Revoke any existing active token first to satisfy the partial unique index.
+    await this.revokeDevisCheckTokensForDevis(data.devisId);
+    const [created] = await db.insert(devisCheckTokens).values(data).returning();
+    return created;
+  }
+
+  async revokeDevisCheckTokensForDevis(devisId: number): Promise<void> {
+    await db
+      .update(devisCheckTokens)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(devisCheckTokens.devisId, devisId), isNull(devisCheckTokens.revokedAt)));
+  }
+
+  async getDevisCheckTokenByHash(hash: string): Promise<DevisCheckToken | undefined> {
+    const [t] = await db.select().from(devisCheckTokens).where(eq(devisCheckTokens.tokenHash, hash));
+    return t;
+  }
+
+  async touchDevisCheckTokenUsed(id: number): Promise<void> {
+    await db.update(devisCheckTokens).set({ lastUsedAt: new Date() }).where(eq(devisCheckTokens.id, id));
+  }
+
+  async getProjectCommunicationByDedupeKey(key: string): Promise<ProjectCommunication | undefined> {
+    const [c] = await db
+      .select()
+      .from(projectCommunications)
+      .where(eq(projectCommunications.dedupeKey, key));
+    return c;
   }
 
   async upsertUser(data: InsertUser): Promise<User> {

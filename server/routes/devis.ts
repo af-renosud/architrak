@@ -327,6 +327,26 @@ router.patch(
     const before = await storage.getDevis(id);
     if (!before) return res.status(404).json({ message: "Devis not found" });
 
+    // CHECKING gate: cannot advance sign-off to 'sent_to_client' or beyond
+    // while there are unresolved contractor checks. Lifts automatically once
+    // all checks are resolved or dropped.
+    const STAGE_ORDER = ["received", "checked_internal", "approved_for_signing", "sent_to_client", "client_signed_off"];
+    const SENT_INDEX = STAGE_ORDER.indexOf("sent_to_client");
+    if (Object.prototype.hasOwnProperty.call(req.body, "signOffStage")) {
+      const nextStage = String(req.body.signOffStage);
+      const nextIdx = STAGE_ORDER.indexOf(nextStage);
+      const prevIdx = STAGE_ORDER.indexOf(before.signOffStage);
+      if (nextIdx >= SENT_INDEX && nextIdx > prevIdx) {
+        const openCount = await storage.countOpenDevisChecks(id);
+        if (openCount > 0) {
+          return res.status(409).json({
+            message: "Cannot advance sign-off while contractor checks are open",
+            openChecks: openCount,
+          });
+        }
+      }
+    }
+
     const hasContractorChange =
       Object.prototype.hasOwnProperty.call(req.body, "contractorId") &&
       Number(req.body.contractorId) !== before.contractorId;
@@ -417,10 +437,23 @@ router.post(
 
 router.patch(
   "/api/line-items/:id",
+  requireAuth,
   validateRequest({ params: idParams, body: updateLineItemSchema }),
   async (req, res) => {
-    const item = await storage.updateDevisLineItem(Number(req.params.id), req.body);
+    const lineItemId = Number(req.params.id);
+    const item = await storage.updateDevisLineItem(lineItemId, req.body);
     if (!item) return res.status(404).json({ message: "Line item not found" });
+
+    // Auto-create / refresh a contractor check whenever the architect flags
+    // a line item red or amber AND has captured notes. Resolution is manual:
+    // toggling back to green/unchecked does NOT auto-resolve a check that
+    // already started a conversation.
+    const becameFlagged = item.checkStatus === "red" || item.checkStatus === "amber";
+    const note = (item.checkNotes ?? "").trim();
+    if (becameFlagged && note.length > 0) {
+      const userId = req.session?.userId ? Number(req.session.userId) : null;
+      await storage.upsertLineItemCheck(item.devisId, lineItemId, note, userId);
+    }
     res.json(item);
   },
 );

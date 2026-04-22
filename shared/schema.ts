@@ -441,11 +441,13 @@ export const projectCommunications = pgTable("project_communications", {
   sentAt: timestamp("sent_at"),
   emailMessageId: text("email_message_id"),
   emailThreadId: text("email_thread_id"),
+  dedupeKey: text("dedupe_key"),
   relatedCertificatId: integer("related_certificat_id").references(() => certificats.id),
   relatedInvoiceId: integer("related_invoice_id").references(() => invoices.id),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   index("project_communications_project_id_idx").on(table.projectId),
+  uniqueIndex("project_communications_dedupe_key_idx").on(table.dedupeKey),
 ]);
 
 export const paymentReminders = pgTable("payment_reminders", {
@@ -505,6 +507,77 @@ export const documentAdvisories = pgTable("document_advisories", {
     "document_advisories_subject_check",
     sql`(${table.devisId} IS NOT NULL) <> (${table.invoiceId} IS NOT NULL)`,
   ),
+]);
+
+export const devisChecks = pgTable("devis_checks", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
+  origin: text("origin").notNull(),
+  lineItemId: integer("line_item_id").references(() => devisLineItems.id, { onDelete: "set null" }),
+  status: text("status").notNull().default("open"),
+  query: text("query").notNull(),
+  resolutionNote: text("resolution_note"),
+  createdByUserId: integer("created_by_user_id").references(() => users.id),
+  resolvedAt: timestamp("resolved_at"),
+  resolvedByUserId: integer("resolved_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("devis_checks_devis_id_idx").on(table.devisId),
+  index("devis_checks_status_idx").on(table.status),
+  uniqueIndex("devis_checks_line_item_unique_idx")
+    .on(table.devisId, table.lineItemId)
+    .where(sql`${table.origin} = 'line_item' AND ${table.lineItemId} IS NOT NULL`),
+  check(
+    "devis_checks_origin_check",
+    sql`${table.origin} IN ('line_item', 'general')`,
+  ),
+  check(
+    "devis_checks_status_check",
+    sql`${table.status} IN ('open', 'awaiting_contractor', 'awaiting_architect', 'resolved', 'dropped')`,
+  ),
+]);
+
+export const devisCheckMessages = pgTable("devis_check_messages", {
+  id: serial("id").primaryKey(),
+  checkId: integer("check_id").notNull().references(() => devisChecks.id, { onDelete: "cascade" }),
+  authorType: text("author_type").notNull(),
+  authorUserId: integer("author_user_id").references(() => users.id),
+  authorEmail: text("author_email"),
+  authorName: text("author_name"),
+  body: text("body").notNull(),
+  channel: text("channel").notNull().default("portal"),
+  emailMessageId: text("email_message_id"),
+  emailThreadId: text("email_thread_id"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("devis_check_messages_check_id_idx").on(table.checkId),
+  check(
+    "devis_check_messages_author_type_check",
+    sql`${table.authorType} IN ('architect', 'contractor', 'system')`,
+  ),
+  check(
+    "devis_check_messages_channel_check",
+    sql`${table.channel} IN ('portal', 'email', 'system')`,
+  ),
+]);
+
+export const devisCheckTokens = pgTable("devis_check_tokens", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull(),
+  contractorId: integer("contractor_id").notNull().references(() => contractors.id),
+  contractorEmail: text("contractor_email").notNull(),
+  createdByUserId: integer("created_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  revokedAt: timestamp("revoked_at"),
+  lastUsedAt: timestamp("last_used_at"),
+}, (table) => [
+  uniqueIndex("devis_check_tokens_token_hash_idx").on(table.tokenHash),
+  index("devis_check_tokens_devis_id_idx").on(table.devisId),
+  uniqueIndex("devis_check_tokens_one_active_idx")
+    .on(table.devisId)
+    .where(sql`${table.revokedAt} IS NULL`),
 ]);
 
 export const webhookEvents = pgTable("webhook_events", {
@@ -779,6 +852,33 @@ export const insertClientPaymentEvidenceSchema = createInsertSchema(clientPaymen
   id: true,
   uploadedAt: true,
 });
+
+export const insertDevisCheckSchema = createInsertSchema(devisChecks).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  resolvedAt: true,
+  resolvedByUserId: true,
+});
+
+export const insertDevisCheckMessageSchema = createInsertSchema(devisCheckMessages).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertDevisCheckTokenSchema = createInsertSchema(devisCheckTokens).omit({
+  id: true,
+  createdAt: true,
+  revokedAt: true,
+  lastUsedAt: true,
+});
+
+export type DevisCheck = typeof devisChecks.$inferSelect;
+export type InsertDevisCheck = z.infer<typeof insertDevisCheckSchema>;
+export type DevisCheckMessage = typeof devisCheckMessages.$inferSelect;
+export type InsertDevisCheckMessage = z.infer<typeof insertDevisCheckMessageSchema>;
+export type DevisCheckToken = typeof devisCheckTokens.$inferSelect;
+export type InsertDevisCheckToken = z.infer<typeof insertDevisCheckTokenSchema>;
 
 export type ArchidocProject = typeof archidocProjects.$inferSelect;
 export type ArchidocContractor = typeof archidocContractors.$inferSelect;
