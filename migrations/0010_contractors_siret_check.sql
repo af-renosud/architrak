@@ -10,6 +10,8 @@ WHERE "siret" IS NOT NULL
   AND "siret" !~ '^[0-9]{14}$'
   AND regexp_replace("siret", '\D', '', 'g') ~ '^[0-9]{14}$';
 
-ALTER TABLE "contractors"
-  ADD CONSTRAINT "contractors_siret_format"
-  CHECK ("siret" IS NULL OR "siret" ~ '^[0-9]{14}$');
+DO $$ BEGIN
+  ALTER TABLE "contractors"
+    ADD CONSTRAINT "contractors_siret_format"
+    CHECK ("siret" IS NULL OR "siret" ~ '^[0-9]{14}$');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
