@@ -8,6 +8,7 @@ import { createServer } from "http";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { startPolling } from "./gmail/monitor";
 import { startScheduler } from "./communications/payment-scheduler";
+import { startDevisCheckTokenCleanup } from "./services/devis-check-token-cleanup";
 import { startContractorAutoSyncScheduler } from "./archidoc/contractor-auto-sync";
 import { seedBenchmarkTags } from "./services/benchmark-ingest.service";
 import { SEED_BENCHMARK_TAGS } from "./services/benchmark-tags";
@@ -139,6 +140,7 @@ app.use((req, res, next) => {
   }
   startScheduler(60 * 60 * 1000);
   startContractorAutoSyncScheduler(60 * 60 * 1000);
+  startDevisCheckTokenCleanup(6 * 60 * 60 * 1000);
 
   seedBenchmarkTags(SEED_BENCHMARK_TAGS).catch(err => {
     console.warn("[Benchmark] tag seed failed:", (err as Error).message);

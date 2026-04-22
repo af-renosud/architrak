@@ -3,7 +3,8 @@ import { z } from "zod";
 import { storage } from "../storage";
 import { validateRequest } from "../middleware/validate";
 import { rateLimit } from "../middleware/rate-limit";
-import { hashToken } from "../services/devis-checks";
+import { hashToken, resolveDevisCheckToken, computeTokenExpiry } from "../services/devis-checks";
+import type { DevisCheckToken } from "@shared/schema";
 import { getDocumentStream } from "../storage/object-storage";
 
 const router = Router();
@@ -61,18 +62,24 @@ const portalWriteTokenLimiter = rateLimit({
   message: "Trop de requêtes. Veuillez réessayer dans une minute.",
 });
 
-async function resolveToken(token: string) {
-  const t = await storage.getDevisCheckTokenByHash(hashToken(token));
-  if (!t) return null;
-  if (t.revokedAt) return null;
-  return t;
+/**
+ * Refresh the sliding expiry whenever the contractor interacts with their
+ * link. Keeps active conversations alive while ensuring abandoned links
+ * lapse after the configured TTL.
+ */
+async function touchToken(token: DevisCheckToken): Promise<void> {
+  await storage.touchDevisCheckTokenUsed(token.id, computeTokenExpiry());
 }
 
 /** HTML shell — vanilla JS, French labels, draggable PDF iframe. */
 router.get("/p/check/:token", portalReadIpLimiter, portalReadTokenLimiter, validateRequest({ params: tokenParams }), async (req, res) => {
-  const t = await resolveToken(tokenFromReq(req));
-  if (!t) {
-    res.status(404).type("html").send(renderInvalid());
+  const lookup = await resolveDevisCheckToken(tokenFromReq(req));
+  if (!lookup.ok) {
+    if (lookup.reason === "expired") {
+      res.status(410).type("html").send(renderExpired());
+    } else {
+      res.status(404).type("html").send(renderInvalid());
+    }
     return;
   }
   res.type("html").send(renderPortalShell(tokenFromReq(req)));
@@ -84,9 +91,16 @@ router.get(
   portalReadIpLimiter, portalReadTokenLimiter,
   validateRequest({ params: tokenParams }),
   async (req, res) => {
-    const t = await resolveToken(tokenFromReq(req));
-    if (!t) return res.status(404).json({ message: "Lien invalide ou expiré" });
-    await storage.touchDevisCheckTokenUsed(t.id);
+    const lookup = await resolveDevisCheckToken(tokenFromReq(req));
+    if (!lookup.ok) {
+      const status = lookup.reason === "expired" ? 410 : 404;
+      const message = lookup.reason === "expired"
+        ? "Lien expiré. Veuillez contacter votre interlocuteur Renosud."
+        : "Lien invalide ou expiré";
+      return res.status(status).json({ message, expired: lookup.reason === "expired" });
+    }
+    const t = lookup.token;
+    await touchToken(t);
 
     const devis = await storage.getDevis(t.devisId);
     if (!devis) return res.status(404).json({ message: "Devis introuvable" });
@@ -136,8 +150,15 @@ router.post(
   portalWriteIpLimiter, portalWriteTokenLimiter,
   validateRequest({ params: tokenParams, body: replySchema }),
   async (req, res) => {
-    const t = await resolveToken(tokenFromReq(req));
-    if (!t) return res.status(404).json({ message: "Lien invalide ou expiré" });
+    const lookup = await resolveDevisCheckToken(tokenFromReq(req));
+    if (!lookup.ok) {
+      const status = lookup.reason === "expired" ? 410 : 404;
+      const message = lookup.reason === "expired"
+        ? "Lien expiré. Veuillez contacter votre interlocuteur Renosud."
+        : "Lien invalide ou expiré";
+      return res.status(status).json({ message, expired: lookup.reason === "expired" });
+    }
+    const t = lookup.token;
     const check = await storage.getDevisCheck(req.body.checkId);
     if (!check || check.devisId !== t.devisId) {
       return res.status(404).json({ message: "Question introuvable" });
@@ -155,7 +176,7 @@ router.post(
       channel: "portal",
     });
     await storage.updateDevisCheck(check.id, { status: "awaiting_architect" });
-    await storage.touchDevisCheckTokenUsed(t.id);
+    await touchToken(t);
     res.status(201).json({ id: msg.id });
   },
 );
@@ -166,8 +187,15 @@ router.get(
   portalReadIpLimiter, portalReadTokenLimiter,
   validateRequest({ params: tokenParams }),
   async (req, res) => {
-    const t = await resolveToken(tokenFromReq(req));
-    if (!t) return res.status(404).json({ message: "Lien invalide ou expiré" });
+    const lookup = await resolveDevisCheckToken(tokenFromReq(req));
+    if (!lookup.ok) {
+      const status = lookup.reason === "expired" ? 410 : 404;
+      const message = lookup.reason === "expired"
+        ? "Lien expiré. Veuillez contacter votre interlocuteur Renosud."
+        : "Lien invalide ou expiré";
+      return res.status(status).json({ message, expired: lookup.reason === "expired" });
+    }
+    const t = lookup.token;
     const devis = await storage.getDevis(t.devisId);
     if (!devis?.pdfStorageKey) return res.status(404).json({ message: "PDF indisponible" });
     try {
@@ -186,8 +214,24 @@ router.get(
 function renderInvalid(): string {
   return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Lien invalide</title>
 <style>body{font-family:system-ui,sans-serif;max-width:480px;margin:80px auto;padding:0 20px;color:#1f2937}</style>
-</head><body><h1>Lien invalide ou expiré</h1>
+</head><body data-testid="page-invalid"><h1>Lien invalide</h1>
 <p>Ce lien n'est plus valable. Merci de contacter votre interlocuteur Renosud pour obtenir un nouveau lien.</p>
+</body></html>`;
+}
+
+function renderExpired(): string {
+  return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Lien expiré</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:520px;margin:80px auto;padding:0 24px;color:#0f172a;line-height:1.5}
+h1{font-size:22px;margin:0 0 12px;color:#b45309}
+.note{background:#fef3c7;border-left:3px solid #f59e0b;padding:12px 16px;border-radius:4px;margin:16px 0}
+p{margin:8px 0}
+</style>
+</head><body data-testid="page-expired">
+<h1>Lien expiré</h1>
+<div class="note">Ce lien d'accès au portail des questions a expiré pour des raisons de sécurité.</div>
+<p>Pour reprendre la conversation sur ce devis, merci de contacter votre interlocuteur Renosud (l'architecte qui vous a transmis ce lien). Il pourra vous générer un nouveau lien d'accès.</p>
+<p>Vos réponses précédentes sont conservées et restent accessibles à l'équipe Renosud.</p>
 </body></html>`;
 }
 
@@ -262,6 +306,14 @@ const STATUS_LABELS = {
 
 async function loadData() {
   const r = await fetch("/p/check/" + encodeURIComponent(TOKEN) + "/data");
+  if (r.status === 410) {
+    const j = await r.json().catch(() => ({}));
+    document.getElementById("root").innerHTML =
+      '<div class="empty" data-testid="text-expired">' +
+      escapeHtml(j.message || "Lien expiré. Veuillez contacter votre interlocuteur Renosud.") +
+      '</div>';
+    return null;
+  }
   if (!r.ok) {
     document.getElementById("root").innerHTML = '<div class="empty">Lien invalide ou expiré.</div>';
     return null;

@@ -112,6 +112,15 @@ const envSchema = z.object({
   // the request's own origin when unset.
   PUBLIC_BASE_URL: optionalString(),
 
+  // --- Devis check portal token TTL (sliding window, in days) ----------
+  // Tokens expire `expiresAt = lastUsedAt + N days` (or createdAt + N if
+  // never used). A scheduled job revokes tokens past their expiry. Default
+  // 30 days; set to 0 to disable expiry entirely.
+  DEVIS_CHECK_TOKEN_TTL_DAYS: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.coerce.number().int().min(0).default(30),
+  ),
+
   // --- E2E / browser-test backdoor (NEVER enable in production) --------
   // Gates the dev-only POST /api/auth/dev-login endpoint. Requires
   // NODE_ENV !== "production" AND this flag set to a truthy string.

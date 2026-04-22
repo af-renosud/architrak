@@ -572,6 +572,7 @@ export const devisCheckTokens = pgTable("devis_check_tokens", {
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   revokedAt: timestamp("revoked_at"),
   lastUsedAt: timestamp("last_used_at"),
+  expiresAt: timestamp("expires_at"),
 }, (table) => [
   uniqueIndex("devis_check_tokens_token_hash_idx").on(table.tokenHash),
   index("devis_check_tokens_devis_id_idx").on(table.devisId),

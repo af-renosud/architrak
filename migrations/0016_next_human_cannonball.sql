@@ -1,0 +1,1 @@
+ALTER TABLE "devis_check_tokens" ADD COLUMN "expires_at" timestamp;

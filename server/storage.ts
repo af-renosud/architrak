@@ -273,7 +273,8 @@ export interface IStorage {
   createDevisCheckToken(data: InsertDevisCheckToken): Promise<DevisCheckToken>;
   revokeDevisCheckTokensForDevis(devisId: number): Promise<void>;
   getDevisCheckTokenByHash(hash: string): Promise<DevisCheckToken | undefined>;
-  touchDevisCheckTokenUsed(id: number): Promise<void>;
+  touchDevisCheckTokenUsed(id: number, expiresAt: Date | null): Promise<void>;
+  revokeExpiredDevisCheckTokens(now?: Date): Promise<number>;
   getProjectCommunicationByDedupeKey(key: string): Promise<ProjectCommunication | undefined>;
   getLatestSentDevisCheckBundle(devisId: number): Promise<ProjectCommunication | undefined>;
   countSentDevisCheckBundles(devisId: number): Promise<number>;
@@ -1386,8 +1387,26 @@ export class DatabaseStorage implements IStorage {
     return t;
   }
 
-  async touchDevisCheckTokenUsed(id: number): Promise<void> {
-    await db.update(devisCheckTokens).set({ lastUsedAt: new Date() }).where(eq(devisCheckTokens.id, id));
+  async touchDevisCheckTokenUsed(id: number, expiresAt: Date | null): Promise<void> {
+    await db
+      .update(devisCheckTokens)
+      .set({ lastUsedAt: new Date(), expiresAt })
+      .where(eq(devisCheckTokens.id, id));
+  }
+
+  async revokeExpiredDevisCheckTokens(now: Date = new Date()): Promise<number> {
+    const rows = await db
+      .update(devisCheckTokens)
+      .set({ revokedAt: now })
+      .where(
+        and(
+          isNull(devisCheckTokens.revokedAt),
+          isNotNull(devisCheckTokens.expiresAt),
+          lte(devisCheckTokens.expiresAt, now),
+        ),
+      )
+      .returning({ id: devisCheckTokens.id });
+    return rows.length;
   }
 
   async getLatestSentDevisCheckBundle(devisId: number): Promise<ProjectCommunication | undefined> {
