@@ -60,14 +60,42 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
 
   const allWarnings = [...validation.warnings, ...lotWarnings, ...match.warnings];
 
-  const contractorId = match.contractorId || (allContractors.length > 0 ? allContractors[0].id : null);
+  // Hard requirement: never silently auto-assign an arbitrary contractor.
+  // Either matchToProject identified one (by SIRET/SIREN or strict name) or
+  // the upload is rejected and the user is asked to fix the contractor first.
+  // Auto-picking allContractors[0] here was the bug that let AT TRAVAUX devis
+  // get filed under AT PISCINES when AI matching failed.
+  const contractorId = match.contractorId;
   if (!contractorId) {
+    if (allContractors.length === 0) {
+      return {
+        success: false,
+        status: 422,
+        data: {
+          message: "No contractors exist in the database. Please sync from ArchiDoc first before uploading documents.",
+          extraction: parsed,
+          storageKey,
+          fileName: file.originalname,
+        },
+      };
+    }
+    const unknownSiretAdvisory = match.warnings.find((w) => w.field === "unknown_contractor");
+    const message = unknownSiretAdvisory
+      ? `${unknownSiretAdvisory.message} Once the contractor exists in ArchiTrak, re-upload the devis.`
+      : `AI extraction could not confidently identify the contractor for this document${parsed.contractorName ? ` (extracted name: "${parsed.contractorName}")` : ""}. Please verify the contractor exists in ArchiTrak (sync from ArchiDoc if needed), then re-upload, or create the devis manually.`;
     return {
       success: false,
       status: 422,
       data: {
-        message: "No contractors exist in the database. Please sync from ArchiDoc first before uploading documents.",
+        message,
         extraction: parsed,
+        validation: {
+          isValid: false,
+          warnings: allWarnings,
+          confidenceScore: validation.confidenceScore,
+          correctedValues: validation.correctedValues,
+        },
+        matchedFields: match.matchedFields,
         storageKey,
         fileName: file.originalname,
       },
