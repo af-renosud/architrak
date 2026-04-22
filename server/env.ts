@@ -144,4 +144,28 @@ if (!parsed.success) {
   process.exit(1);
 }
 
+/**
+ * Refuse to boot if the dev-only E2E login backdoor is enabled in
+ * production. The route itself is already gated, but a misconfigured
+ * deployment would silently keep the flag set without anyone noticing.
+ * Failing loud at boot makes the mistake impossible to miss.
+ *
+ * Exported for tests; called immediately below for the real boot path.
+ */
+export function assertNoDevLoginBackdoorInProduction(
+  cfg: Pick<Env, "NODE_ENV" | "ENABLE_DEV_LOGIN_FOR_E2E">,
+  exit: (code: number) => never = process.exit as (code: number) => never,
+  log: (msg: string) => void = (m) => console.error(m),
+): void {
+  if (cfg.NODE_ENV === "production" && cfg.ENABLE_DEV_LOGIN_FOR_E2E) {
+    log(
+      "[env] Refusing to start: ENABLE_DEV_LOGIN_FOR_E2E must NOT be set when NODE_ENV=production. " +
+        "Unset ENABLE_DEV_LOGIN_FOR_E2E (or set it to false) before redeploying.",
+    );
+    exit(1);
+  }
+}
+
+assertNoDevLoginBackdoorInProduction(parsed.data);
+
 export const env: Readonly<Env> = Object.freeze(parsed.data);
