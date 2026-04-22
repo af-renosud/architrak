@@ -327,8 +327,48 @@ router.patch(
 
     const before = await storage.getDevis(id);
     if (!before) return res.status(404).json({ message: "Devis not found" });
+
+    const hasContractorChange =
+      Object.prototype.hasOwnProperty.call(req.body, "contractorId") &&
+      Number(req.body.contractorId) !== before.contractorId;
+
+    let nextContractor = null as Awaited<ReturnType<typeof storage.getContractor>> | null;
+    let prevContractor = null as Awaited<ReturnType<typeof storage.getContractor>> | null;
+
+    if (hasContractorChange) {
+      if (before.status === "void") {
+        return res.status(409).json({ message: "Cannot change contractor on a void devis" });
+      }
+      const project = await storage.getProject(before.projectId);
+      if (project?.archivedAt) {
+        return res.status(409).json({ message: "Cannot change contractor on an archived project" });
+      }
+      const target = await storage.getContractor(Number(req.body.contractorId));
+      if (!target) {
+        return res.status(404).json({ message: "Contractor not found" });
+      }
+      if (target.archidocOrphanedAt) {
+        return res
+          .status(409)
+          .json({ message: "Selected contractor has been removed from ArchiDoc and cannot be assigned to new devis" });
+      }
+      nextContractor = target;
+      prevContractor = (await storage.getContractor(before.contractorId)) ?? null;
+    }
+
     const d = await storage.updateDevis(id, req.body);
     if (!d) return res.status(404).json({ message: "Devis not found" });
+
+    if (hasContractorChange && nextContractor) {
+      await storage.createDevisRefEdit({
+        devisId: id,
+        field: "contractorId",
+        previousValue: `${before.contractorId}:${prevContractor?.name ?? `#${before.contractorId}`}`,
+        newValue: `${nextContractor.id}:${nextContractor.name}`,
+        editedByUserId: user.id,
+        editedByEmail: user.email,
+      });
+    }
 
     if (before.status !== "draft") {
       const auditFields: Array<"devisCode" | "devisNumber" | "ref2"> = ["devisCode", "devisNumber", "ref2"];

@@ -221,7 +221,7 @@ export function DevisTab({ projectId, contractors, lots, isArchived = false }: D
                         <span className="text-[16px] font-black text-[#0B2545] tracking-tight" data-testid={`text-devis-code-${d.id}`}>{d.devisCode}</span>
                         {d.devisNumber && <span className="text-[11px] text-muted-foreground" data-testid={`text-devis-number-${d.id}`}>N° {d.devisNumber}</span>}
                         {d.ref2 && <span className="text-[11px] text-muted-foreground" data-testid={`text-devis-ref2-${d.id}`}>Ref {d.ref2}</span>}
-                        {d.status !== "void" && d.status !== "draft" && !isArchived && (
+                        {d.status !== "void" && !isArchived && (
                           <button
                             type="button"
                             className="p-0.5 text-muted-foreground hover:text-[#0B2545] transition-colors"
@@ -229,7 +229,7 @@ export function DevisTab({ projectId, contractors, lots, isArchived = false }: D
                               e.stopPropagation();
                               setEditRefsFor(d);
                             }}
-                            title="Edit devis code & references"
+                            title="Edit contractor, devis code & references"
                             data-testid={`button-edit-devis-refs-${d.id}`}
                           >
                             <Pencil size={11} />
@@ -279,7 +279,10 @@ export function DevisTab({ projectId, contractors, lots, isArchived = false }: D
                           e.stopPropagation();
                           setDraftReviewData({
                             devisId: d.id,
-                            extraction: { contractorName: contractors.find(c => c.id === d.contractorId)?.name ?? "Unknown" },
+                            extraction: {
+                              contractorName: contractors.find(c => c.id === d.contractorId)?.name ?? "Unknown",
+                              contractorId: d.contractorId,
+                            },
                             validation: {
                               isValid: !(d.validationWarnings as any[])?.some((w: any) => w.severity === "error"),
                               warnings: (d.validationWarnings as any[]) || [],
@@ -323,6 +326,7 @@ export function DevisTab({ projectId, contractors, lots, isArchived = false }: D
         <DraftReviewPanel
           data={draftReviewData}
           projectId={projectId}
+          contractors={contractors}
           onClose={() => setDraftReviewData(null)}
           isArchived={isArchived}
         />
@@ -332,6 +336,7 @@ export function DevisTab({ projectId, contractors, lots, isArchived = false }: D
         <EditDevisRefsDialog
           devis={editRefsFor}
           projectId={projectId}
+          contractors={contractors}
           onClose={() => setEditRefsFor(null)}
         />
       )}
@@ -343,10 +348,25 @@ const REF_FIELD_LABELS: Record<string, string> = {
   devisCode: "Devis Code",
   devisNumber: "Supplier Reference (N°)",
   ref2: "Additional Reference",
+  contractorId: "Contractor",
 };
 
-function formatRefValue(v: string | null | undefined) {
+function parseContractorRef(v: string | null | undefined): { id: number | null; name: string } | null {
+  if (v == null || v === "") return null;
+  const colonAt = v.indexOf(":");
+  if (colonAt <= 0) return { id: null, name: v };
+  const idStr = v.slice(0, colonAt);
+  const name = v.slice(colonAt + 1);
+  const id = Number(idStr);
+  return { id: Number.isFinite(id) ? id : null, name };
+}
+
+function formatRefValue(v: string | null | undefined, field?: string) {
   if (v == null || v === "") return "—";
+  if (field === "contractorId") {
+    const parsed = parseContractorRef(v);
+    return parsed?.name || v;
+  }
   return v;
 }
 
@@ -365,10 +385,18 @@ function DevisRefEditsHistory({ devisId, projectId }: { devisId: number; project
   const revertMutation = useMutation({
     mutationFn: async (edit: DevisRefEdit) => {
       const raw = edit.previousValue;
-      const normalized = edit.field === "devisCode" ? raw : (raw == null || raw === "" ? null : raw);
-      const res = await apiRequest("PATCH", `/api/devis/${devisId}`, {
-        [edit.field]: normalized,
-      });
+      let payload: Record<string, unknown>;
+      if (edit.field === "contractorId") {
+        const parsed = parseContractorRef(raw);
+        if (!parsed?.id) {
+          throw new Error("Cannot revert: previous contractor reference is malformed");
+        }
+        payload = { contractorId: parsed.id };
+      } else {
+        const normalized = edit.field === "devisCode" ? raw : (raw == null || raw === "" ? null : raw);
+        payload = { [edit.field]: normalized };
+      }
+      const res = await apiRequest("PATCH", `/api/devis/${devisId}`, payload);
       return res.json();
     },
     onSuccess: () => {
@@ -423,9 +451,9 @@ function DevisRefEditsHistory({ devisId, projectId }: { devisId: number; project
                           {REF_FIELD_LABELS[e.field] ?? e.field}
                         </div>
                         <div className="text-muted-foreground">
-                          <span className="line-through">{formatRefValue(e.previousValue)}</span>
+                          <span className="line-through">{formatRefValue(e.previousValue, e.field)}</span>
                           <span className="mx-1">→</span>
-                          <span className="text-foreground">{formatRefValue(e.newValue)}</span>
+                          <span className="text-foreground">{formatRefValue(e.newValue, e.field)}</span>
                         </div>
                         <div className="text-muted-foreground mt-0.5">
                           {(e.editedByEmail ?? "Unknown editor")} · {formatEditTimestamp(e.editedAt)}
@@ -487,18 +515,22 @@ function DevisRefEditsHistory({ devisId, projectId }: { devisId: number; project
 interface EditDevisRefsDialogProps {
   devis: Devis;
   projectId: string;
+  contractors: Contractor[];
   onClose: () => void;
 }
 
-function EditDevisRefsDialog({ devis, projectId, onClose }: EditDevisRefsDialogProps) {
+function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDevisRefsDialogProps) {
   const { toast } = useToast();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
+  const [contractorId, setContractorIdState] = useState<number>(devis.contractorId);
   const [devisCode, setDevisCode] = useState(devis.devisCode ?? "");
   const [devisNumber, setDevisNumber] = useState(devis.devisNumber ?? "");
   const [ref2, setRef2] = useState(devis.ref2 ?? "");
 
+  const selectableContractors = (contractors ?? []).filter((c) => !c.archidocOrphanedAt || c.id === devis.contractorId);
+
   const mutation = useMutation({
-    mutationFn: async (payload: Record<string, string | null>) => {
+    mutationFn: async (payload: Record<string, string | number | null>) => {
       const res = await apiRequest("PATCH", `/api/devis/${devis.id}`, payload);
       return res.json();
     },
@@ -529,7 +561,8 @@ function EditDevisRefsDialog({ devis, projectId, onClose }: EditDevisRefsDialogP
       toast({ title: "Devis code required", description: "Devis code cannot be empty", variant: "destructive" });
       return;
     }
-    const payload: Record<string, string | null> = {};
+    const payload: Record<string, string | number | null> = {};
+    if (contractorId !== devis.contractorId) payload.contractorId = contractorId;
     if (trimmedCode !== (devis.devisCode ?? "")) payload.devisCode = trimmedCode;
     if (trimmedNumber !== (devis.devisNumber ?? "")) payload.devisNumber = trimmedNumber === "" ? null : trimmedNumber;
     if (trimmedRef2 !== (devis.ref2 ?? "")) payload.ref2 = trimmedRef2 === "" ? null : trimmedRef2;
@@ -558,6 +591,25 @@ function EditDevisRefsDialog({ devis, projectId, onClose }: EditDevisRefsDialogP
           </div>
         )}
         <div className="space-y-3">
+          <div className="space-y-1">
+            <TechnicalLabel>Contractor</TechnicalLabel>
+            <Select
+              value={String(contractorId)}
+              onValueChange={(v) => setContractorIdState(Number(v))}
+            >
+              <SelectTrigger className="text-[12px]" data-testid="select-edit-devis-contractor">
+                <SelectValue placeholder="Select contractor" />
+              </SelectTrigger>
+              <SelectContent>
+                {selectableContractors.map((c) => (
+                  <SelectItem key={c.id} value={String(c.id)} data-testid={`option-edit-devis-contractor-${c.id}`}>
+                    {c.name}
+                    {c.archidocOrphanedAt ? " (removed from ArchiDoc)" : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <div className="space-y-1">
             <TechnicalLabel>Devis Code</TechnicalLabel>
             <Input
@@ -621,6 +673,7 @@ interface DraftReviewPanelProps {
     devis: any;
   };
   projectId: string;
+  contractors: Contractor[];
   onClose: () => void;
   isArchived?: boolean;
 }
@@ -859,9 +912,12 @@ function ConfidenceIndicator({ score }: { score: number }) {
   );
 }
 
-function DraftReviewPanel({ data, projectId, onClose, isArchived = false }: DraftReviewPanelProps) {
+function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = false }: DraftReviewPanelProps) {
   const { toast } = useToast();
   const { devisId, extraction, validation, devis } = data;
+  const initialContractorId: number = devis.contractorId ?? extraction?.contractorId ?? 0;
+  const [draftContractorId, setDraftContractorId] = useState<number>(initialContractorId);
+  const selectableContractors = (contractors ?? []).filter((c) => !c.archidocOrphanedAt || c.id === initialContractorId);
   const allWarnings: Array<{ field: string; expected: any; actual: any; message: string; severity: "error" | "warning" }> = validation?.warnings || [];
   const lotRefWarnings = allWarnings.filter((w) => w.field === "lotReferences");
   const warnings = allWarnings.filter((w) => w.field !== "lotReferences");
@@ -911,7 +967,7 @@ function DraftReviewPanel({ data, projectId, onClose, isArchived = false }: Draf
     },
   });
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
     const corrections: Record<string, any> = {};
     if (editValues.amountHt !== (devis.amountHt ?? "")) corrections.amountHt = editValues.amountHt;
     if (editValues.tvaRate !== (devis.tvaRate ?? "20.00")) corrections.tvaRate = editValues.tvaRate;
@@ -920,14 +976,23 @@ function DraftReviewPanel({ data, projectId, onClose, isArchived = false }: Draf
     if (editValues.devisNumber !== (devis.devisNumber ?? "")) corrections.devisNumber = editValues.devisNumber;
     if (editValues.descriptionFr !== (devis.descriptionFr ?? "")) corrections.descriptionFr = editValues.descriptionFr;
     if (editValues.dateSent !== (devis.dateSent ?? "")) corrections.dateSent = editValues.dateSent;
+
+    if (draftContractorId && draftContractorId !== initialContractorId) {
+      try {
+        await apiRequest("PATCH", `/api/devis/${devisId}`, { contractorId: draftContractorId });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        toast({ title: "Could not update contractor", description: message, variant: "destructive" });
+        return;
+      }
+    }
+
     confirmMutation.mutate(corrections);
   };
 
   const updateField = (field: string, value: string) => {
     setEditValues(prev => ({ ...prev, [field]: value }));
   };
-
-  const contractorName = extraction?.contractorName || "Unknown";
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !confirmMutation.isPending && !discardMutation.isPending) onClose(); }}>
@@ -977,7 +1042,28 @@ function DraftReviewPanel({ data, projectId, onClose, isArchived = false }: Draf
 
           <div className="space-y-1.5">
             <TechnicalLabel>Contractor</TechnicalLabel>
-            <p className="text-[12px] text-foreground" data-testid="text-draft-contractor">{contractorName}</p>
+            <Select
+              value={draftContractorId ? String(draftContractorId) : ""}
+              onValueChange={(v) => setDraftContractorId(Number(v))}
+              disabled={isArchived}
+            >
+              <SelectTrigger className="text-[11px]" data-testid="select-draft-contractor">
+                <SelectValue placeholder="Select contractor" />
+              </SelectTrigger>
+              <SelectContent>
+                {selectableContractors.map((c) => (
+                  <SelectItem key={c.id} value={String(c.id)} data-testid={`option-draft-contractor-${c.id}`}>
+                    {c.name}
+                    {c.archidocOrphanedAt ? " (removed from ArchiDoc)" : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {draftContractorId !== initialContractorId && (
+              <p className="text-[10px] text-amber-700" data-testid="text-draft-contractor-changed">
+                Contractor will be reassigned when you confirm.
+              </p>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-3">
