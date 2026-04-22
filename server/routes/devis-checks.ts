@@ -148,15 +148,53 @@ router.post(
       return res.status(409).json({ message: "No open checks to send" });
     }
 
-    // Issue a fresh token (revokes any prior active token for this devis).
-    const baseUrl = env.PUBLIC_BASE_URL || `${req.protocol}://${req.get("host") ?? "localhost"}`;
-    const issued = await issueDevisCheckToken({
-      devisId,
-      contractorId: contractor.id,
-      contractorEmail: contractor.email,
-      createdByUserId: userId,
-    });
-    const portalUrl = buildPortalUrl(baseUrl, issued.raw);
+    // Canonical origin only — never derive portal URL from request Host header
+    // (host-header poisoning would let attackers exfiltrate the portal token
+    // through emails sent from a poisoned hostname).
+    if (!env.PUBLIC_BASE_URL) {
+      return res.status(500).json({ message: "PUBLIC_BASE_URL is not configured" });
+    }
+    const baseUrl = env.PUBLIC_BASE_URL;
+
+    // Dedupe key first — incorporates sorted set of sendable check ids so a
+    // new question (different ids) is a fresh bundle.
+    const dedupeKey = `devis-check-bundle:${devisId}:${sendable.map((c) => c.id).sort((a, b) => a - b).join(",")}`;
+
+    // If we've already sent this exact bundle, do NOT rotate the token and
+    // do NOT re-send. Surface the prior communication as 'reused'.
+    const existing = await storage.getProjectCommunicationByDedupeKey(dedupeKey);
+    if (existing) {
+      return res.json({
+        communicationId: existing.id,
+        reused: true,
+        checksSent: sendable.length,
+      });
+    }
+
+    // Reuse an active token if one already exists; otherwise issue a fresh
+    // one. This avoids invalidating a contractor's prior link unless the
+    // bundle has actually changed AND no active token remained.
+    const active = await storage.getActiveDevisCheckToken(devisId);
+    let portalUrl: string;
+    if (active) {
+      // Active token exists but raw value isn't recoverable (we store hash
+      // only). Rotate so the new email carries a usable link.
+      const issued = await issueDevisCheckToken({
+        devisId,
+        contractorId: contractor.id,
+        contractorEmail: contractor.email,
+        createdByUserId: userId,
+      });
+      portalUrl = buildPortalUrl(baseUrl, issued.raw);
+    } else {
+      const issued = await issueDevisCheckToken({
+        devisId,
+        contractorId: contractor.id,
+        contractorEmail: contractor.email,
+        createdByUserId: userId,
+      });
+      portalUrl = buildPortalUrl(baseUrl, issued.raw);
+    }
 
     // Pull line descriptions for nicer email body.
     const lineItems = await storage.getDevisLineItems(devisId);
@@ -165,10 +203,6 @@ router.post(
       query: c.query,
       lineDescription: c.lineItemId ? lineMap.get(c.lineItemId) ?? null : null,
     }));
-
-    // Dedupe key incorporates the sorted set of sendable check ids — if the
-    // architect adds a new check and re-sends, that's a different bundle.
-    const dedupeKey = `devis-check-bundle:${devisId}:${sendable.map((c) => c.id).sort((a, b) => a - b).join(",")}`;
 
     const { communicationId, reused } = await queueDevisCheckBundle({
       devisId,
@@ -195,7 +229,6 @@ router.post(
       communicationId,
       reused,
       checksSent: sendable.length,
-      // Raw token only returned once (architect copy/audit only).
       portalUrl,
     });
   },

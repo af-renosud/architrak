@@ -1424,6 +1424,182 @@ function LineItemWithCheck({ li, onUpdate, disabled = false }: { li: DevisLineIt
   );
 }
 
+type CheckMessage = { id: number; authorType: "architect" | "contractor" | "system"; authorName: string | null; body: string; createdAt: string | Date };
+type CheckWithMessages = { id: number; devisId: number; lineItemId: number | null; status: string; query: string; origin: string; messages: CheckMessage[] };
+
+const CHECK_STATUS_LABEL: Record<string, string> = {
+  open: "Brouillon",
+  awaiting_contractor: "En attente entreprise",
+  awaiting_architect: "Réponse reçue",
+  resolved: "Clôturé",
+  dropped: "Abandonné",
+};
+
+const CHECK_STATUS_COLOR: Record<string, string> = {
+  open: "bg-slate-100 text-slate-700 border-slate-300",
+  awaiting_contractor: "bg-blue-50 text-blue-700 border-blue-200",
+  awaiting_architect: "bg-amber-50 text-amber-700 border-amber-200",
+  resolved: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  dropped: "bg-slate-50 text-slate-400 border-slate-200",
+};
+
+function ChecksPanel({ devisId, isArchived }: { devisId: number; isArchived: boolean }) {
+  const { toast } = useToast();
+  const [replyDrafts, setReplyDrafts] = useState<Record<number, string>>({});
+
+  const { data: checks = [], isLoading } = useQuery<CheckWithMessages[]>({
+    queryKey: ["/api/devis", devisId, "checks"],
+  });
+
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "checks"] });
+
+  const sendMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/devis/${devisId}/checks/send`, {});
+      return res.json();
+    },
+    onSuccess: (data: { checksSent: number; reused: boolean }) => {
+      invalidate();
+      toast({
+        title: data.reused ? "Email déjà envoyé" : "Email envoyé",
+        description: `${data.checksSent} question(s) — l'entreprise reçoit le lien portail.`,
+      });
+    },
+    onError: (error: Error) => toast({ title: "Erreur d'envoi", description: error.message, variant: "destructive" }),
+  });
+
+  const replyMutation = useMutation({
+    mutationFn: async ({ checkId, body }: { checkId: number; body: string }) => {
+      const res = await apiRequest("POST", `/api/devis-checks/${checkId}/messages`, { body });
+      return res.json();
+    },
+    onSuccess: (_d, vars) => {
+      setReplyDrafts((p) => ({ ...p, [vars.checkId]: "" }));
+      invalidate();
+    },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  const resolveMutation = useMutation({
+    mutationFn: async (checkId: number) => {
+      const res = await apiRequest("POST", `/api/devis-checks/${checkId}/resolve`, {});
+      return res.json();
+    },
+    onSuccess: () => { invalidate(); toast({ title: "Question clôturée" }); },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  const dropMutation = useMutation({
+    mutationFn: async (checkId: number) => {
+      const res = await apiRequest("POST", `/api/devis-checks/${checkId}/drop`, {});
+      return res.json();
+    },
+    onSuccess: () => { invalidate(); toast({ title: "Question abandonnée" }); },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  const visible = checks.filter((c) => c.status !== "dropped");
+  if (isLoading || visible.length === 0) return null;
+
+  const openCount = checks.filter((c) => c.status === "open" || c.status === "awaiting_architect" || c.status === "awaiting_contractor").length;
+  const sendableCount = checks.filter((c) => c.status === "open" || c.status === "awaiting_architect").length;
+
+  return (
+    <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-3 space-y-3" data-testid={`section-checks-${devisId}`}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="px-2 py-0.5 rounded-full bg-amber-500 text-white text-[9px] font-bold uppercase tracking-widest">CHECKING</span>
+          <span className="text-[11px] font-semibold text-amber-900" data-testid={`text-open-checks-count-${devisId}`}>
+            {openCount} question(s) en cours
+          </span>
+        </div>
+        <Button
+          size="sm"
+          className="h-7 text-[9px] font-bold uppercase tracking-widest"
+          disabled={isArchived || sendableCount === 0 || sendMutation.isPending}
+          onClick={() => sendMutation.mutate()}
+          data-testid={`button-send-checks-${devisId}`}
+        >
+          {sendMutation.isPending ? "Envoi…" : `Envoyer à l'entreprise (${sendableCount})`}
+        </Button>
+      </div>
+
+      <div className="space-y-2">
+        {visible.map((c) => (
+          <div key={c.id} className="rounded-lg border border-amber-200 bg-white p-2.5 space-y-2" data-testid={`check-${c.id}`}>
+            <div className="flex items-start justify-between gap-2">
+              <p className="text-[12px] text-slate-800 flex-1">{c.query}</p>
+              <span className={`px-2 py-0.5 rounded-full border text-[9px] font-bold uppercase tracking-wide ${CHECK_STATUS_COLOR[c.status] || "bg-slate-100"}`} data-testid={`status-check-${c.id}`}>
+                {CHECK_STATUS_LABEL[c.status] || c.status}
+              </span>
+            </div>
+            {c.messages.length > 0 && (
+              <div className="space-y-1 max-h-48 overflow-y-auto">
+                {c.messages.map((m) => (
+                  <div key={m.id} className={`text-[11px] rounded p-1.5 ${m.authorType === "contractor" ? "bg-emerald-50 border border-emerald-200" : "bg-slate-50 border border-slate-200"}`}>
+                    <div className="text-[9px] font-semibold text-slate-500 mb-0.5">{m.authorType === "contractor" ? (m.authorName || "Entreprise") : "Vous"}</div>
+                    <div className="whitespace-pre-wrap">{m.body}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {c.status !== "resolved" && !isArchived && (
+              <div className="flex flex-col gap-1.5">
+                <Textarea
+                  className="text-[11px] min-h-[50px]"
+                  placeholder="Ajouter un message…"
+                  value={replyDrafts[c.id] ?? ""}
+                  onChange={(e) => setReplyDrafts((p) => ({ ...p, [c.id]: e.target.value }))}
+                  data-testid={`textarea-architect-reply-${c.id}`}
+                />
+                <div className="flex items-center justify-between gap-1.5">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 text-[9px] text-slate-500 hover:text-rose-600"
+                    onClick={() => dropMutation.mutate(c.id)}
+                    disabled={dropMutation.isPending}
+                    data-testid={`button-drop-check-${c.id}`}
+                  >
+                    Abandonner
+                  </Button>
+                  <div className="flex items-center gap-1.5">
+                    {c.status === "awaiting_architect" && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-6 text-[9px] border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                        onClick={() => resolveMutation.mutate(c.id)}
+                        disabled={resolveMutation.isPending}
+                        data-testid={`button-resolve-check-${c.id}`}
+                      >
+                        Clôturer
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      className="h-6 text-[9px]"
+                      onClick={() => {
+                        const body = (replyDrafts[c.id] ?? "").trim();
+                        if (!body) return;
+                        replyMutation.mutate({ checkId: c.id, body });
+                      }}
+                      disabled={!((replyDrafts[c.id] ?? "").trim()) || replyMutation.isPending}
+                      data-testid={`button-architect-reply-${c.id}`}
+                    >
+                      Répondre
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = false }: { devis: Devis; projectId: string; contractors: Contractor[]; lots: Lot[]; isArchived?: boolean }) {
   const { toast } = useToast();
   const [invoiceDialogOpen, setInvoiceDialogOpen] = useState(false);
@@ -1848,6 +2024,8 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
           )}
         </div>
       )}
+
+      {!isVoid && <ChecksPanel devisId={devis.id} isArchived={isArchived} />}
 
       <div className="flex items-center gap-1.5 py-2" data-testid={`stepper-signoff-${devis.id}`}>
         {SIGN_OFF_STAGES.map((stage, idx) => {

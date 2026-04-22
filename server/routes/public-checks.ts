@@ -14,28 +14,43 @@ const replySchema = z.object({
   body: z.string().min(1).max(5000),
 }).strict();
 
-// Per-token + per-IP rate limit, evaluated together. Token gets the tighter
-// budget (the legitimate contractor); IP catches scrapers/cred-stuffers.
-const tokenKeyer = (req: Request) => {
-  const token = (req.params.token as string | undefined) || "anon";
-  const fwd = req.header("x-forwarded-for");
-  const ip = (fwd?.split(",")[0] || req.ip || req.socket.remoteAddress || "anon").trim();
-  return `t:${token.slice(0, 16)}:${ip}`;
-};
+function tokenFromReq(req: Request): string {
+  const raw = req.params.token;
+  return typeof raw === "string" ? raw : Array.isArray(raw) ? String(raw[0] ?? "") : "";
+}
 
-const portalReadLimiter = rateLimit({
-  name: "portal-read",
+// Two independent buckets per request. We rely on `req.ip` rather than parsing
+// `x-forwarded-for` directly: app.set("trust proxy", 1) is configured in
+// server/index.ts, so req.ip is the trusted client IP.
+const ipKeyer = (req: Request) => `ip:${req.ip || req.socket.remoteAddress || "anon"}`;
+const tokenOnlyKeyer = (req: Request) => `tok:${(tokenFromReq(req) || "anon").slice(0, 32)}`;
+
+const portalReadIpLimiter = rateLimit({
+  name: "portal-read-ip",
   windowMs: 60_000,
-  max: 60,
-  keyer: tokenKeyer,
+  max: 240,
+  keyer: ipKeyer,
   message: "Trop de requêtes. Veuillez réessayer dans une minute.",
 });
-
-const portalWriteLimiter = rateLimit({
-  name: "portal-write",
+const portalReadTokenLimiter = rateLimit({
+  name: "portal-read-tok",
+  windowMs: 60_000,
+  max: 60,
+  keyer: tokenOnlyKeyer,
+  message: "Trop de requêtes. Veuillez réessayer dans une minute.",
+});
+const portalWriteIpLimiter = rateLimit({
+  name: "portal-write-ip",
+  windowMs: 60_000,
+  max: 30,
+  keyer: ipKeyer,
+  message: "Trop de requêtes. Veuillez réessayer dans une minute.",
+});
+const portalWriteTokenLimiter = rateLimit({
+  name: "portal-write-tok",
   windowMs: 60_000,
   max: 10,
-  keyer: tokenKeyer,
+  keyer: tokenOnlyKeyer,
   message: "Trop de requêtes. Veuillez réessayer dans une minute.",
 });
 
@@ -47,22 +62,22 @@ async function resolveToken(token: string) {
 }
 
 /** HTML shell — vanilla JS, French labels, draggable PDF iframe. */
-router.get("/p/check/:token", portalReadLimiter, validateRequest({ params: tokenParams }), async (req, res) => {
-  const t = await resolveToken(req.params.token);
+router.get("/p/check/:token", portalReadIpLimiter, portalReadTokenLimiter, validateRequest({ params: tokenParams }), async (req, res) => {
+  const t = await resolveToken(tokenFromReq(req));
   if (!t) {
     res.status(404).type("html").send(renderInvalid());
     return;
   }
-  res.type("html").send(renderPortalShell(req.params.token));
+  res.type("html").send(renderPortalShell(tokenFromReq(req)));
 });
 
 /** JSON state for the portal (devis ref + checks + messages). */
 router.get(
   "/p/check/:token/data",
-  portalReadLimiter,
+  portalReadIpLimiter, portalReadTokenLimiter,
   validateRequest({ params: tokenParams }),
   async (req, res) => {
-    const t = await resolveToken(req.params.token);
+    const t = await resolveToken(tokenFromReq(req));
     if (!t) return res.status(404).json({ message: "Lien invalide ou expiré" });
     await storage.touchDevisCheckTokenUsed(t.id);
 
@@ -108,10 +123,10 @@ router.get(
 /** Contractor posts a reply on a specific check thread. */
 router.post(
   "/p/check/:token/messages",
-  portalWriteLimiter,
+  portalWriteIpLimiter, portalWriteTokenLimiter,
   validateRequest({ params: tokenParams, body: replySchema }),
   async (req, res) => {
-    const t = await resolveToken(req.params.token);
+    const t = await resolveToken(tokenFromReq(req));
     if (!t) return res.status(404).json({ message: "Lien invalide ou expiré" });
     const check = await storage.getDevisCheck(req.body.checkId);
     if (!check || check.devisId !== t.devisId) {
@@ -138,10 +153,10 @@ router.post(
 /** Stream the devis PDF inline so the contractor can view it in the portal. */
 router.get(
   "/p/check/:token/pdf",
-  portalReadLimiter,
+  portalReadIpLimiter, portalReadTokenLimiter,
   validateRequest({ params: tokenParams }),
   async (req, res) => {
-    const t = await resolveToken(req.params.token);
+    const t = await resolveToken(tokenFromReq(req));
     if (!t) return res.status(404).json({ message: "Lien invalide ou expiré" });
     const devis = await storage.getDevis(t.devisId);
     if (!devis?.pdfStorageKey) return res.status(404).json({ message: "PDF indisponible" });
