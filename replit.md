@@ -41,6 +41,12 @@ ArchiTrak is a financial workflow management application designed for French arc
 - **Executive Dashboard**: Burn-up charts showing contract and certified value history over time.
 - **Bulk Export**: Generates ZIP archives of project financial documents from object storage.
 
+### Devis-Check Portal Token Lifecycle
+- Contractor portal tokens (`devis_check_tokens`) are tied to the devis invoicing lifecycle, not just a fixed TTL.
+- Primary trigger: a token is auto-revoked when its devis is "fully invoiced" — `sum(invoices.amount_ht) >= devis.amount_ht + approved PV − approved MV`. The check runs inline after every invoice create/update/delete/confirm, after every devis update/confirm, and after every avenant create/update.
+- Safety net: a periodic cleanup job (`server/services/devis-check-token-cleanup.ts`) sweeps both expired tokens (idle ceiling) and fully-invoiced devis, in case any mutation path is missed.
+- Idle ceiling: `DEVIS_CHECK_TOKEN_TTL_DAYS` (default 90) caps how long a token can sit idle on a never-completed devis. Set to 0 to disable.
+
 ### Core Development Protocols
 - **Zero-Tolerance TypeScript**: No `any`, `@ts-ignore`, `@ts-expect-error`. Unknown types must be Zod-parsed.
 - **Environment Variables**: Zod-validated fail-fast exports from `server/env.ts` only.

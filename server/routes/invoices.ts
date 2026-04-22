@@ -69,7 +69,11 @@ router.post(
   "/api/devis/:devisId/invoices",
   validateRequest({ params: devisIdParams, body: createInvoiceBodySchema }),
   async (req, res) => {
-    const invoice = await storage.createInvoice({ ...req.body, devisId: Number(req.params.devisId) });
+    const devisId = Number(req.params.devisId);
+    const invoice = await storage.createInvoice({ ...req.body, devisId });
+    // Lifecycle-bound auto-revoke: this invoice may have just pushed the
+    // devis to fully-invoiced. Cheap no-op when it hasn't.
+    await storage.revokeDevisCheckTokenIfFullyInvoiced(devisId);
     res.status(201).json(invoice);
   },
 );
@@ -95,6 +99,7 @@ router.patch(
   async (req, res) => {
     const invoice = await storage.updateInvoice(Number(req.params.id), req.body);
     if (!invoice) return res.status(404).json({ message: "Invoice not found" });
+    await storage.revokeDevisCheckTokenIfFullyInvoiced(invoice.devisId);
     res.json(invoice);
   },
 );
@@ -150,6 +155,9 @@ router.post(
       }
 
       const updated = await storage.updateInvoice(Number(req.params.id), updates);
+      if (updated) {
+        await storage.revokeDevisCheckTokenIfFullyInvoiced(updated.devisId);
+      }
       try {
         await reconcileAdvisories({ invoiceId: Number(req.params.id) }, nextWarnings);
       } catch (advErr) {
@@ -172,6 +180,11 @@ router.delete(
       if (!invoice) return res.status(404).json({ message: "Invoice not found" });
       if (invoice.status !== "draft") return res.status(400).json({ message: "Only draft invoices can be deleted" });
       await storage.deleteInvoice(Number(req.params.id));
+      // A delete can only DECREASE the invoiced total, so no token can flip
+      // from active-and-not-yet-fully-invoiced to fully-invoiced as a result.
+      // We still call the revoke helper for symmetry: it's a single SQL
+      // no-op when the predicate doesn't hold.
+      await storage.revokeDevisCheckTokenIfFullyInvoiced(invoice.devisId);
       res.json({ message: "Invoice deleted" });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);

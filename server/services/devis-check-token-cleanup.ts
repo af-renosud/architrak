@@ -24,11 +24,21 @@ export function stopDevisCheckTokenCleanup(): void {
 
 export async function runCleanup(): Promise<number> {
   try {
-    const revoked = await storage.revokeExpiredDevisCheckTokens();
-    if (revoked > 0) {
-      console.log(`[DevisCheckTokens] Revoked ${revoked} expired token(s)`);
+    // Two passes: (1) the idle-ceiling sweep retires tokens past their
+    // sliding-window expiry; (2) the lifecycle sweep retires tokens whose
+    // devis is now fully invoiced. Both are single-statement UPDATEs.
+    // The lifecycle pass is a safety net — every invoice/devis mutation
+    // path also calls revokeDevisCheckTokenIfFullyInvoiced inline, so this
+    // bulk pass should normally find nothing.
+    const revokedExpired = await storage.revokeExpiredDevisCheckTokens();
+    const revokedFullyInvoiced = await storage.revokeDevisCheckTokensForFullyInvoicedDevis();
+    const total = revokedExpired + revokedFullyInvoiced;
+    if (total > 0) {
+      console.log(
+        `[DevisCheckTokens] Revoked ${revokedExpired} expired + ${revokedFullyInvoiced} fully-invoiced token(s)`,
+      );
     }
-    return revoked;
+    return total;
   } catch (err) {
     console.error("[DevisCheckTokens] Cleanup failed:", err);
     return 0;

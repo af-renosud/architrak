@@ -89,6 +89,10 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
     console.warn(`[Invoice Upload] Failed to persist advisories:`, advErr);
   }
 
+  // Lifecycle-bound auto-revoke: a freshly-uploaded invoice can push the
+  // devis to fully-invoiced. Cheap no-op otherwise.
+  await storage.revokeDevisCheckTokenIfFullyInvoiced(devisId);
+
   return {
     success: true,
     status: 201,

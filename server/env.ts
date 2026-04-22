@@ -114,11 +114,19 @@ const envSchema = z.object({
 
   // --- Devis check portal token TTL (sliding window, in days) ----------
   // Tokens expire `expiresAt = lastUsedAt + N days` (or createdAt + N if
-  // never used). A scheduled job revokes tokens past their expiry. Default
-  // 30 days; set to 0 to disable expiry entirely.
+  // never used). A scheduled job revokes tokens past their expiry.
+  //
+  // Lifecycle policy: this TTL is the IDLE-CEILING safety net only. The
+  // primary lifecycle trigger is "devis fully invoiced" — once
+  // sum(invoice HT) >= adjusted devis HT, the token is auto-revoked
+  // regardless of how much TTL remains (see
+  // storage.revokeDevisCheckTokensForFullyInvoicedDevis). The sliding
+  // window therefore only kicks in when a devis is genuinely abandoned
+  // mid-flight. Default 90 days. Set to 0 to disable the idle ceiling
+  // entirely (tokens then live until the devis closes out).
   DEVIS_CHECK_TOKEN_TTL_DAYS: z.preprocess(
     (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
-    z.coerce.number().int().min(0).default(30),
+    z.coerce.number().int().min(0).default(90),
   ),
 
   // --- E2E / browser-test backdoor (NEVER enable in production) --------

@@ -380,6 +380,11 @@ router.patch(
 
     const d = await storage.updateDevis(id, req.body);
     if (!d) return res.status(404).json({ message: "Devis not found" });
+    // Lifecycle-bound auto-revoke: if this edit lowered the contracted HT
+    // (or otherwise pushed the devis to fully-invoiced), retire the active
+    // contractor portal token now. Cheap no-op when the predicate doesn't
+    // hold or when no token is active.
+    await storage.revokeDevisCheckTokenIfFullyInvoiced(id);
 
     if (hasContractorChange && nextContractor) {
       await storage.createDevisRefEdit({
@@ -485,7 +490,12 @@ router.post(
   "/api/devis/:devisId/avenants",
   validateRequest({ params: devisIdParams, body: createAvenantBodySchema }),
   async (req, res) => {
-    const av = await storage.createAvenant({ ...req.body, devisId: Number(req.params.devisId) });
+    const devisId = Number(req.params.devisId);
+    const av = await storage.createAvenant({ ...req.body, devisId });
+    // Approved PV/MV avenants change the adjusted contracted HT used by the
+    // fully-invoiced predicate. Cheap no-op when the avenant is still draft
+    // or doesn't tip the devis past its invoiced total.
+    await storage.revokeDevisCheckTokenIfFullyInvoiced(devisId);
     res.status(201).json(av);
   },
 );
@@ -496,6 +506,7 @@ router.patch(
   async (req, res) => {
     const av = await storage.updateAvenant(Number(req.params.id), req.body);
     if (!av) return res.status(404).json({ message: "Avenant not found" });
+    await storage.revokeDevisCheckTokenIfFullyInvoiced(av.devisId);
     res.json(av);
   },
 );
@@ -554,6 +565,11 @@ router.post(
       delete (updates as Record<string, unknown>).lotId;
 
       const { devis: updated, inserted } = await confirmDevisAndMirror(Number(req.params.id), updates);
+      if (updated) {
+        // Confirm may have written a corrected amountHt; re-evaluate the
+        // fully-invoiced predicate.
+        await storage.revokeDevisCheckTokenIfFullyInvoiced(updated.id);
+      }
       try {
         await reconcileAdvisories({ devisId: Number(req.params.id) }, nextWarnings);
       } catch (advErr) {

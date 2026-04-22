@@ -275,6 +275,22 @@ export interface IStorage {
   getDevisCheckTokenByHash(hash: string): Promise<DevisCheckToken | undefined>;
   touchDevisCheckTokenUsed(id: number, expiresAt: Date | null): Promise<void>;
   revokeExpiredDevisCheckTokens(now?: Date): Promise<number>;
+  /**
+   * Lifecycle-bound auto-revoke. Revokes the active portal token for any
+   * devis whose total invoiced HT has reached or exceeded its
+   * avenant-adjusted contracted HT (i.e. resteARealiser <= 0). Bulk pass
+   * — used by the periodic cleanup job as a safety net so the system
+   * self-heals if any invoice mutation path forgets to call the
+   * per-devis variant. Returns the count of tokens revoked.
+   */
+  revokeDevisCheckTokensForFullyInvoicedDevis(now?: Date): Promise<number>;
+  /**
+   * Per-devis variant of the above. Cheap to call after every invoice
+   * create/update/delete and after any devis amount edit. No-op if the
+   * devis has no active token, or if it isn't fully invoiced yet.
+   * Returns 1 if a token was revoked, 0 otherwise.
+   */
+  revokeDevisCheckTokenIfFullyInvoiced(devisId: number, now?: Date): Promise<number>;
   getProjectCommunicationByDedupeKey(key: string): Promise<ProjectCommunication | undefined>;
   getLatestSentDevisCheckBundle(devisId: number): Promise<ProjectCommunication | undefined>;
   countSentDevisCheckBundles(devisId: number): Promise<number>;
@@ -1407,6 +1423,59 @@ export class DatabaseStorage implements IStorage {
       )
       .returning({ id: devisCheckTokens.id });
     return rows.length;
+  }
+
+  // Lifecycle-bound revoke: a devis is "fully invoiced" when the sum of its
+  // invoice HT >= its avenant-adjusted contracted HT (i.e. resteARealiser
+  // <= 0). Avenants of approved type 'pv' add to the contracted total, 'mv'
+  // subtract. Implemented as a single UPDATE so it stays cheap to run
+  // either after a single mutation (with a devisId predicate) or as a
+  // bulk safety-net sweep in the periodic cleanup job.
+  private async revokeFullyInvoicedTokensQuery(
+    now: Date,
+    devisId: number | null,
+  ): Promise<number> {
+    const filter = devisId == null
+      ? sql``
+      : sql` AND t.devis_id = ${devisId}`;
+    const result = await db.execute<{ id: number }>(sql`
+      UPDATE devis_check_tokens AS t
+      SET revoked_at = ${now}
+      WHERE t.revoked_at IS NULL${filter}
+        AND EXISTS (
+          SELECT 1 FROM devis d
+          WHERE d.id = t.devis_id
+            AND (
+              SELECT COALESCE(SUM(i.amount_ht), 0)::numeric
+              FROM invoices i WHERE i.devis_id = d.id
+            ) >= (
+              d.amount_ht::numeric
+              + COALESCE((
+                  SELECT SUM(a.amount_ht)::numeric FROM avenants a
+                  WHERE a.devis_id = d.id AND a.status = 'approved' AND a.type = 'pv'
+                ), 0)
+              - COALESCE((
+                  SELECT SUM(a.amount_ht)::numeric FROM avenants a
+                  WHERE a.devis_id = d.id AND a.status = 'approved' AND a.type = 'mv'
+                ), 0)
+            )
+        )
+      RETURNING t.id
+    `);
+    // db.execute returns the underlying pg QueryResult<T>; we use its
+    // strongly-typed `rows` array so the row count is derived without a cast.
+    return result.rows.length;
+  }
+
+  async revokeDevisCheckTokensForFullyInvoicedDevis(now: Date = new Date()): Promise<number> {
+    return this.revokeFullyInvoicedTokensQuery(now, null);
+  }
+
+  async revokeDevisCheckTokenIfFullyInvoiced(
+    devisId: number,
+    now: Date = new Date(),
+  ): Promise<number> {
+    return this.revokeFullyInvoicedTokensQuery(now, devisId);
   }
 
   async getLatestSentDevisCheckBundle(devisId: number): Promise<ProjectCommunication | undefined> {
