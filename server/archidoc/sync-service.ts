@@ -17,6 +17,29 @@ import {
   type ArchidocContractorData,
   type ArchidocTradeData,
 } from "./sync-client";
+import { normalizeSiret } from "../gmail/document-parser";
+
+// Mirror writes must satisfy the same 14-digit SIRET check constraint as the
+// canonical contractors table. Strip non-digits and accept only canonical
+// 14-digit values; anything else is logged so upstream ArchiDoc data quality
+// issues surface instead of silently being persisted as garbage or dropped to
+// NULL further down the pipeline.
+export function normaliseMirrorSiret(
+  raw: string | null | undefined,
+  context: { archidocId: string; name?: string | null },
+): string | null {
+  if (raw === null || raw === undefined) return null;
+  const trimmed = String(raw).trim();
+  if (trimmed === "") return null;
+  const digits = normalizeSiret(trimmed);
+  if (digits.length === 14) return digits;
+  console.warn(
+    `[ArchiDoc Sync] Malformed SIRET on mirror contractor ${context.archidocId}` +
+      (context.name ? ` (${context.name})` : "") +
+      `: ${JSON.stringify(raw)} -> coerced to NULL (digits=${digits.length})`,
+  );
+  return null;
+}
 
 async function createSyncLog(syncType: string) {
   const [entry] = await db.insert(archidocSyncLog).values({
@@ -73,7 +96,7 @@ export async function upsertContractor(c: ArchidocContractorData) {
   const values = {
     archidocId: c.id,
     name: c.name,
-    siret: c.siret || null,
+    siret: normaliseMirrorSiret(c.siret, { archidocId: c.id, name: c.name }),
     address1: c.address1 || null,
     address2: c.address2 || null,
     town: c.town || null,

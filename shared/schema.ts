@@ -339,7 +339,9 @@ export const archidocContractors = pgTable("archidoc_contractors", {
   contacts: jsonb("contacts"),
   archidocUpdatedAt: timestamp("archidoc_updated_at"),
   syncedAt: timestamp("synced_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  check("archidoc_contractors_siret_format", sql`${table.siret} IS NULL OR ${table.siret} ~ '^[0-9]{14}$'`),
+]);
 
 export const archidocTrades = pgTable("archidoc_trades", {
   archidocId: varchar("archidoc_id", { length: 255 }).primaryKey(),
