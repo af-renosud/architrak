@@ -80,8 +80,10 @@ export async function approveInvoice(invoiceId: number) {
             status: "pending",
           })
           .returning();
-      } catch (insErr: any) {
-        if (insErr?.code === "23505" || /unique/i.test(String(insErr?.message ?? ""))) {
+      } catch (insErr: unknown) {
+        const errCode = (insErr as { code?: string } | null)?.code;
+        const errMessage = (insErr as { message?: string } | null)?.message ?? "";
+        if (errCode === "23505" || /unique/i.test(String(errMessage))) {
           // Idempotency guard: a fee_entry for this invoice already exists.
           // Return success with the existing entry so retries are safe.
           const [existing] = await tx

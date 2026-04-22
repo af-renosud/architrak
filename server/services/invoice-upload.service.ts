@@ -53,8 +53,13 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
       severity: "error",
     });
   }
-  const htNum = effectiveHt != null ? roundCurrency(effectiveHt) : 0;
-  const ttcNum = effectiveTtc != null ? roundCurrency(effectiveTtc) : 0;
+  // If only one side is present, mirror it to the other so the persisted draft
+  // satisfies the non-negative TVA constraint (derived TVA = 0). The error
+  // warning above forces the user to enter the real value before confirming.
+  const htRaw = effectiveHt ?? effectiveTtc ?? 0;
+  const ttcRaw = effectiveTtc ?? effectiveHt ?? 0;
+  const htNum = roundCurrency(htRaw);
+  const ttcNum = roundCurrency(ttcRaw);
 
   const amountHt = String(htNum);
   const amountTtc = String(ttcNum);
