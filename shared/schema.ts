@@ -626,10 +626,19 @@ export const insertContractorSchema = createInsertSchema(contractors).omit({
   siret: z
     .union([z.string(), z.null()])
     .optional()
-    .transform((value) => {
-      if (value === null || value === undefined) return value ?? null;
-      const digits = value.replace(/\D/g, "");
-      return digits.length === 14 ? digits : null;
+    .transform((value, ctx) => {
+      if (value === null || value === undefined) return null;
+      const trimmed = value.trim();
+      if (trimmed.length === 0) return null;
+      const cleaned = trimmed.replace(/[\s.\-_/]/g, "");
+      if (!/^\d{14}$/.test(cleaned)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "SIRET must be exactly 14 digits",
+        });
+        return z.NEVER;
+      }
+      return cleaned;
     }),
 });
 
