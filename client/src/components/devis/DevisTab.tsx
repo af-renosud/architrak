@@ -1480,13 +1480,41 @@ function formatDateTime(value: string | Date | null | undefined): string {
  * 7-day threshold. After a successful extend, the shared query key is
  * invalidated so the banner recalculates and disappears on its own.
  */
-const LAPSING_THRESHOLD_DAYS = 7;
+export const LAPSING_THRESHOLD_DAYS = 7;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * Pure helper — exported for unit tests. Returns the banner copy + days
+ * remaining when the active token's expiry falls within the threshold,
+ * or null when the banner should be suppressed (no token, revoked,
+ * missing/invalid expiry, already expired, or further out than the
+ * threshold). Singular "1 jour" vs plural "X jours" is handled here.
+ */
+export function computeLapsingBannerState(
+  token: Pick<CheckTokenInfo, "expiresAt" | "revokedAt"> | null | undefined,
+  now: Date = new Date(),
+  thresholdDays: number = LAPSING_THRESHOLD_DAYS,
+): { daysRemaining: number; copy: string } | null {
+  if (!token || token.revokedAt || !token.expiresAt) return null;
+  const expiresAt = new Date(token.expiresAt);
+  if (Number.isNaN(expiresAt.getTime())) return null;
+  const msRemaining = expiresAt.getTime() - now.getTime();
+  if (msRemaining <= 0) return null;
+  if (msRemaining > thresholdDays * MS_PER_DAY) return null;
+  const daysRemaining = Math.max(1, Math.ceil(msRemaining / MS_PER_DAY));
+  const copy =
+    daysRemaining === 1
+      ? "Le lien partagé avec l'entreprise expire dans 1 jour."
+      : `Le lien partagé avec l'entreprise expire dans ${daysRemaining} jours.`;
+  return { daysRemaining, copy };
+}
 
 function LapsingTokenBanner({ devisId, isArchived }: { devisId: number; isArchived: boolean }) {
   const { toast } = useToast();
+  const { isAuthenticated } = useAuth();
   const { data } = useQuery<{ token: CheckTokenInfo | null }>({
     queryKey: ["/api/devis", devisId, "check-token"],
+    enabled: isAuthenticated,
   });
 
   const extendMutation = useMutation({
@@ -1503,23 +1531,14 @@ function LapsingTokenBanner({ devisId, isArchived }: { devisId: number; isArchiv
       toast({ title: "Erreur", description: error.message, variant: "destructive" }),
   });
 
+  // Permission gate: only authenticated architects can extend the token
+  // (the backend's /extend route is auth-guarded). If the session is not
+  // authenticated we suppress the banner entirely so it never invites a
+  // click that will fail.
+  if (!isAuthenticated) return null;
   if (isArchived) return null;
-  const token = data?.token ?? null;
-  if (!token || token.revokedAt || !token.expiresAt) return null;
-  const expiresAt = new Date(token.expiresAt);
-  if (Number.isNaN(expiresAt.getTime())) return null;
-  const msRemaining = expiresAt.getTime() - Date.now();
-  // Already expired tokens are handled by TokenPanel (Expiré badge) and
-  // cannot be extended (backend returns 409). Don't render the banner for
-  // them — the architect must re-issue via Envoyer.
-  if (msRemaining <= 0) return null;
-  if (msRemaining > LAPSING_THRESHOLD_DAYS * MS_PER_DAY) return null;
-
-  const daysRemaining = Math.max(1, Math.ceil(msRemaining / MS_PER_DAY));
-  const copy =
-    daysRemaining === 1
-      ? "Le lien partagé avec l'entreprise expire dans 1 jour."
-      : `Le lien partagé avec l'entreprise expire dans ${daysRemaining} jours.`;
+  const state = computeLapsingBannerState(data?.token ?? null);
+  if (!state) return null;
 
   return (
     <div
@@ -1532,7 +1551,7 @@ function LapsingTokenBanner({ devisId, isArchived }: { devisId: number; isArchiv
           className="text-[11px] font-medium text-amber-900"
           data-testid={`text-token-lapsing-${devisId}`}
         >
-          {copy}
+          {state.copy}
         </p>
       </div>
       <Button
