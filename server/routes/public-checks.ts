@@ -23,7 +23,14 @@ function tokenFromReq(req: Request): string {
 // `x-forwarded-for` directly: app.set("trust proxy", 1) is configured in
 // server/index.ts, so req.ip is the trusted client IP.
 const ipKeyer = (req: Request) => `ip:${req.ip || req.socket.remoteAddress || "anon"}`;
-const tokenOnlyKeyer = (req: Request) => `tok:${(tokenFromReq(req) || "anon").slice(0, 32)}`;
+// IMPORTANT: never persist raw token material in the limiter bucket key — the
+// Postgres-backed bucket store would otherwise leak token prefixes at rest.
+// We hash the raw token (same SHA-256 used for storage lookup) and use the
+// hash as the limiter key. Anonymous requests get a stable non-secret marker.
+const tokenOnlyKeyer = (req: Request) => {
+  const raw = tokenFromReq(req);
+  return raw ? `tokh:${hashToken(raw)}` : "tokh:anon";
+};
 
 const portalReadIpLimiter = rateLimit({
   name: "portal-read-ip",
