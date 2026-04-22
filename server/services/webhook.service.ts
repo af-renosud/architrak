@@ -6,6 +6,7 @@ import { webhookEvents } from "@shared/schema";
 import {
   upsertProject,
   upsertContractor,
+  recordSiretIssues,
   upsertTrade,
   upsertProposalFee,
   fullSync,
@@ -99,7 +100,12 @@ export async function processWebhookEvent(payload: WebhookEvent): Promise<Proces
       if (!contractorData.id || !contractorData.name) {
         throw new Error("contractor event requires 'id' and 'name' in data");
       }
-      await upsertContractor(contractorData);
+      const { siretIssue } = await upsertContractor(contractorData);
+      await recordSiretIssues(
+        siretIssue ? [siretIssue] : [],
+        siretIssue ? [] : [contractorData.id],
+        null,
+      );
       await autoRefreshTrackedContractor(contractorData.id);
       return { processed: true, event, details: `Contractor ${contractorData.id} upserted in mirror` };
     }
@@ -109,7 +115,12 @@ export async function processWebhookEvent(payload: WebhookEvent): Promise<Proces
       if (!deletedContractor.id) {
         throw new Error("contractor.deleted event requires 'id' in data");
       }
-      await upsertContractor({ ...deletedContractor, name: deletedContractor.name || "Deleted" });
+      const { siretIssue } = await upsertContractor({ ...deletedContractor, name: deletedContractor.name || "Deleted" });
+      await recordSiretIssues(
+        siretIssue ? [siretIssue] : [],
+        siretIssue ? [] : [deletedContractor.id],
+        null,
+      );
       return { processed: true, event, details: `Contractor ${deletedContractor.id} updated in mirror` };
     }
 

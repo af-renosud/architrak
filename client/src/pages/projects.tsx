@@ -4,7 +4,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { FolderOpen, Plus, RefreshCw, Search, MapPin, Users, CheckCircle2, AlertCircle, Loader2, Trash2, Archive, ArchiveRestore } from "lucide-react";
+import { FolderOpen, Plus, RefreshCw, Search, MapPin, Users, CheckCircle2, AlertCircle, Loader2, Trash2, Archive, ArchiveRestore, AlertTriangle } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -30,7 +30,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { Project, ArchidocProject } from "@shared/schema";
+import type { Project, ArchidocProject, ArchidocSiretIssue } from "@shared/schema";
 
 interface ArchidocProjectEnriched extends ArchidocProject {
   isTracked: boolean;
@@ -45,6 +45,7 @@ interface ArchidocStatus {
   mirroredProjects: number;
   mirroredContractors: number;
   trackedProjects: number;
+  siretIssueCount?: number;
 }
 
 function formatCurrency(value: number): string {
@@ -56,6 +57,7 @@ type ProjectsView = "active" | "archived";
 export default function Projects() {
   const [view, setView] = useState<ProjectsView>("active");
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [siretIssuesOpen, setSiretIssuesOpen] = useState(false);
   const [selectedArchidocId, setSelectedArchidocId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [tvaRate, setTvaRate] = useState("20.00");
@@ -78,6 +80,11 @@ export default function Projects() {
 
   const { data: archidocStatus } = useQuery<ArchidocStatus>({
     queryKey: ["/api/archidoc/status"],
+  });
+
+  const { data: siretIssues, isLoading: loadingSiretIssues } = useQuery<ArchidocSiretIssue[]>({
+    queryKey: ["/api/archidoc/siret-issues"],
+    enabled: siretIssuesOpen,
   });
 
   const { data: archidocProjects, isLoading: loadingArchidoc } = useQuery<ArchidocProjectEnriched[]>({
@@ -170,6 +177,19 @@ export default function Projects() {
                   {archidocStatus.connected ? "ArchiDoc Connected" : archidocStatus.configured ? "ArchiDoc Offline" : "ArchiDoc Not Configured"}
                 </span>
               </div>
+            )}
+            {archidocStatus && (archidocStatus.siretIssueCount ?? 0) > 0 && (
+              <button
+                type="button"
+                onClick={() => setSiretIssuesOpen(true)}
+                className="flex items-center gap-1.5 rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 hover:bg-amber-100 transition-colors"
+                data-testid="button-archidoc-siret-issues"
+              >
+                <AlertTriangle className="w-3 h-3 text-amber-600" />
+                <span className="text-[9px] font-bold uppercase tracking-wider text-amber-800" data-testid="text-archidoc-siret-issue-count">
+                  {archidocStatus.siretIssueCount} SIRET {archidocStatus.siretIssueCount === 1 ? "issue" : "issues"}
+                </span>
+              </button>
             )}
             <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
               <DialogTrigger asChild>
@@ -474,6 +494,72 @@ export default function Projects() {
           </LuxuryCard>
         )}
       </div>
+
+      <Dialog open={siretIssuesOpen} onOpenChange={setSiretIssuesOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto" data-testid="dialog-archidoc-siret-issues">
+          <DialogHeader>
+            <DialogTitle className="text-[14px] font-black uppercase tracking-tight flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-600" />
+              ArchiDoc SIRET Issues
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-[11px] text-muted-foreground">
+            These contractors arrived from ArchiDoc with a SIRET that isn't 14 digits, so the mirror stored NULL. Fix them in ArchiDoc and they'll clear automatically on the next sync.
+          </p>
+          {loadingSiretIssues ? (
+            <div className="space-y-2 mt-3">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <Skeleton key={i} className="h-12 w-full" />
+              ))}
+            </div>
+          ) : !siretIssues || siretIssues.length === 0 ? (
+            <p className="text-[12px] text-muted-foreground text-center py-6" data-testid="text-no-siret-issues">
+              No malformed SIRETs from ArchiDoc right now.
+            </p>
+          ) : (
+            <div className="space-y-2 mt-3">
+              {siretIssues.map((issue) => (
+                <div
+                  key={issue.archidocId}
+                  className="rounded-lg border border-border bg-white p-3"
+                  data-testid={`row-siret-issue-${issue.archidocId}`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span
+                          className="text-[12px] font-semibold text-foreground truncate"
+                          data-testid={`text-siret-issue-name-${issue.archidocId}`}
+                        >
+                          {issue.name || "(no name)"}
+                        </span>
+                        <span
+                          className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground"
+                          data-testid={`text-siret-issue-archidoc-id-${issue.archidocId}`}
+                        >
+                          ArchiDoc ID: {issue.archidocId}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground mt-1">
+                        Raw SIRET:{" "}
+                        <code
+                          className="font-mono text-[11px] bg-amber-50 border border-amber-200 px-1 py-0.5 rounded"
+                          data-testid={`text-siret-issue-raw-${issue.archidocId}`}
+                        >
+                          {issue.rawSiret}
+                        </code>
+                      </p>
+                    </div>
+                    <span className="text-[9px] font-medium uppercase tracking-wider text-muted-foreground whitespace-nowrap">
+                      Last seen {new Date(issue.lastSeenAt).toLocaleDateString()}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </AppLayout>
   );
 }

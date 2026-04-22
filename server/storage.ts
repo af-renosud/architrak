@@ -3,7 +3,7 @@ import { eq, desc, asc, and, or, inArray, isNotNull, isNull, lte, gte, like, ili
 import {
   projects, contractors, lots, lotCatalog, marches, devis, devisLineItems,
   avenants, invoices, situations, situationLines, certificats, fees, feeEntries,
-  archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog,
+  archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog, archidocSiretIssues,
   emailDocuments, projectDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
   aiModelSettings, templateAssets, users, devisTranslations,
   benchmarkDocuments, benchmarkItems, benchmarkTags, benchmarkItemTags,
@@ -22,7 +22,7 @@ import {
   type Certificat, type InsertCertificat,
   type Fee, type InsertFee,
   type FeeEntry, type InsertFeeEntry,
-  type ArchidocProject, type ArchidocContractor, type ArchidocTrade, type ArchidocProposalFee, type ArchidocSyncLogEntry,
+  type ArchidocProject, type ArchidocContractor, type ArchidocTrade, type ArchidocProposalFee, type ArchidocSyncLogEntry, type ArchidocSiretIssue,
   type EmailDocument, type InsertEmailDocument,
   type ProjectDocument, type InsertProjectDocument,
   type ProjectCommunication, type InsertProjectCommunication,
@@ -180,6 +180,7 @@ export interface IStorage {
   createSyncLogEntry(data: { syncType: string; status: string; errorMessage?: string }): Promise<ArchidocSyncLogEntry>;
   updateSyncLogEntry(id: number, data: Partial<{ status: string; completedAt: Date; recordsUpdated: number; errorMessage: string }>): Promise<ArchidocSyncLogEntry | undefined>;
   getRecentSyncLogs(limit: number): Promise<ArchidocSyncLogEntry[]>;
+  getArchidocSiretIssues(): Promise<ArchidocSiretIssue[]>;
 
   getEmailDocuments(filters?: { projectId?: number; status?: string; documentType?: string }): Promise<EmailDocument[]>;
   getEmailDocument(id: number): Promise<EmailDocument | undefined>;
@@ -776,6 +777,10 @@ export class DatabaseStorage implements IStorage {
 
   async getRecentSyncLogs(limit: number): Promise<ArchidocSyncLogEntry[]> {
     return db.select().from(archidocSyncLog).orderBy(desc(archidocSyncLog.startedAt)).limit(limit);
+  }
+
+  async getArchidocSiretIssues(): Promise<ArchidocSiretIssue[]> {
+    return db.select().from(archidocSiretIssues).orderBy(desc(archidocSiretIssues.lastSeenAt));
   }
 
   async getEmailDocuments(filters?: { projectId?: number; status?: string; documentType?: string }): Promise<EmailDocument[]> {

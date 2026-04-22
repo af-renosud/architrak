@@ -1,11 +1,12 @@
 import { db } from "../db";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, inArray } from "drizzle-orm";
 import {
   archidocProjects,
   archidocContractors,
   archidocTrades,
   archidocProposalFees,
   archidocSyncLog,
+  archidocSiretIssues,
 } from "@shared/schema";
 import {
   isArchidocConfigured,
@@ -49,15 +50,67 @@ async function createSyncLog(syncType: string) {
   return entry;
 }
 
-async function completeSyncLog(id: number, status: string, recordsUpdated: number, errorMessage?: string) {
+async function completeSyncLog(
+  id: number,
+  status: string,
+  recordsUpdated: number,
+  errorMessage?: string,
+  malformedSiretCount = 0,
+) {
   await db.update(archidocSyncLog)
     .set({
       status,
       completedAt: new Date(),
       recordsUpdated,
+      malformedSiretCount,
       errorMessage: errorMessage || null,
     })
     .where(eq(archidocSyncLog.id, id));
+}
+
+export interface MirrorSiretIssue {
+  archidocId: string;
+  name: string | null;
+  rawSiret: string;
+}
+
+// Persist contractors whose upstream SIRET could not be normalised so operators
+// have a place to chase them down in ArchiDoc. Any contractors that arrived
+// with a clean SIRET in this batch are removed from the issues table because
+// they have just been fixed upstream.
+export async function recordSiretIssues(
+  issues: MirrorSiretIssue[],
+  clearedArchidocIds: string[],
+  syncLogId: number | null,
+): Promise<void> {
+  if (issues.length > 0) {
+    const now = new Date();
+    for (const issue of issues) {
+      await db.insert(archidocSiretIssues)
+        .values({
+          archidocId: issue.archidocId,
+          name: issue.name,
+          rawSiret: issue.rawSiret,
+          firstSeenAt: now,
+          lastSeenAt: now,
+          lastSyncLogId: syncLogId,
+        })
+        .onConflictDoUpdate({
+          target: archidocSiretIssues.archidocId,
+          set: {
+            name: issue.name,
+            rawSiret: issue.rawSiret,
+            lastSeenAt: now,
+            lastSyncLogId: syncLogId,
+          },
+        });
+    }
+  }
+
+  if (clearedArchidocIds.length > 0) {
+    await db.delete(archidocSiretIssues)
+      .where(inArray(archidocSiretIssues.archidocId, clearedArchidocIds));
+  }
 }
 
 export async function upsertProject(p: ArchidocProjectData) {
@@ -92,11 +145,19 @@ export async function upsertProject(p: ArchidocProjectData) {
   }
 }
 
-export async function upsertContractor(c: ArchidocContractorData) {
+export async function upsertContractor(
+  c: ArchidocContractorData,
+): Promise<{ siretIssue: MirrorSiretIssue | null }> {
+  const normalisedSiret = normaliseMirrorSiret(c.siret, { archidocId: c.id, name: c.name });
+  const rawTrimmed = c.siret == null ? "" : String(c.siret).trim();
+  const siretIssue: MirrorSiretIssue | null =
+    rawTrimmed !== "" && normalisedSiret === null
+      ? { archidocId: c.id, name: c.name ?? null, rawSiret: rawTrimmed }
+      : null;
   const values = {
     archidocId: c.id,
     name: c.name,
-    siret: normaliseMirrorSiret(c.siret, { archidocId: c.id, name: c.name }),
+    siret: normalisedSiret,
     address1: c.address1 || null,
     address2: c.address2 || null,
     town: c.town || null,
@@ -129,6 +190,8 @@ export async function upsertContractor(c: ArchidocContractorData) {
   } else {
     await db.insert(archidocContractors).values(values);
   }
+
+  return { siretIssue };
 }
 
 export async function upsertTrade(t: ArchidocTradeData) {
@@ -212,13 +275,27 @@ export async function syncContractors(incremental = true): Promise<{ updated: nu
 
     const response = await fetchContractors(since);
     let count = 0;
+    const issues: MirrorSiretIssue[] = [];
+    const cleared: string[] = [];
     for (const contractor of response.contractors) {
-      await upsertContractor(contractor);
+      const { siretIssue } = await upsertContractor(contractor);
+      if (siretIssue) {
+        issues.push(siretIssue);
+      } else {
+        cleared.push(contractor.id);
+      }
       count++;
     }
 
-    await completeSyncLog(log.id, "completed", count);
-    console.log(`[ArchiDoc Sync] Contractors synced: ${count} records`);
+    await recordSiretIssues(issues, cleared, log.id);
+    await completeSyncLog(log.id, "completed", count, undefined, issues.length);
+    if (issues.length > 0) {
+      console.log(
+        `[ArchiDoc Sync] Contractors synced: ${count} records (${issues.length} with malformed SIRETs)`,
+      );
+    } else {
+      console.log(`[ArchiDoc Sync] Contractors synced: ${count} records`);
+    }
     return { updated: count };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

@@ -375,7 +375,17 @@ export const archidocSyncLog = pgTable("archidoc_sync_log", {
   startedAt: timestamp("started_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   completedAt: timestamp("completed_at"),
   recordsUpdated: integer("records_updated").default(0),
+  malformedSiretCount: integer("malformed_siret_count").default(0).notNull(),
   errorMessage: text("error_message"),
+});
+
+export const archidocSiretIssues = pgTable("archidoc_siret_issues", {
+  archidocId: varchar("archidoc_id", { length: 255 }).primaryKey(),
+  name: text("name"),
+  rawSiret: text("raw_siret").notNull(),
+  firstSeenAt: timestamp("first_seen_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  lastSeenAt: timestamp("last_seen_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  lastSyncLogId: integer("last_sync_log_id"),
 });
 
 export const emailDocuments = pgTable("email_documents", {
@@ -779,6 +789,7 @@ export type ArchidocContractor = typeof archidocContractors.$inferSelect;
 export type ArchidocTrade = typeof archidocTrades.$inferSelect;
 export type ArchidocProposalFee = typeof archidocProposalFees.$inferSelect;
 export type ArchidocSyncLogEntry = typeof archidocSyncLog.$inferSelect;
+export type ArchidocSiretIssue = typeof archidocSiretIssues.$inferSelect;
 
 export type EmailDocument = typeof emailDocuments.$inferSelect;
 export type InsertEmailDocument = z.infer<typeof insertEmailDocumentSchema>;

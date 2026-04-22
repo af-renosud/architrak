@@ -19,6 +19,7 @@ router.get("/api/archidoc/status", async (_req, res) => {
     const mirroredProjects = await storage.getArchidocProjects();
     const mirroredContractors = await storage.getArchidocContractors();
     const trackedIds = await storage.getTrackedArchidocProjectIds();
+    const siretIssues = await storage.getArchidocSiretIssues();
 
     let connected = false;
     let connectionError: string | undefined;
@@ -39,6 +40,7 @@ router.get("/api/archidoc/status", async (_req, res) => {
       mirroredProjects: mirroredProjects.length,
       mirroredContractors: mirroredContractors.length,
       trackedProjects: trackedIds.length,
+      siretIssueCount: siretIssues.length,
       webhookEnabled: true,
       webhookSecretConfigured: !!envCfg.ARCHIDOC_WEBHOOK_SECRET,
       pollingEnabled: envCfg.ARCHIDOC_POLLING_ENABLED,
@@ -119,6 +121,16 @@ router.post(
     }
   },
 );
+
+router.get("/api/archidoc/siret-issues", async (_req, res) => {
+  try {
+    const issues = await storage.getArchidocSiretIssues();
+    res.json(issues);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ message: `Failed to load SIRET issues: ${message}` });
+  }
+});
 
 router.get("/api/archidoc/proposal-fees/:archidocProjectId", async (req, res) => {
   try {
