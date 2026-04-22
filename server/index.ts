@@ -114,6 +114,9 @@ app.use((req, res, next) => {
 
   app.use("/api", (req, res, next) => {
     const publicPaths = ["/auth/login", "/auth/callback", "/auth/logout", "/auth/user", "/webhooks/archidoc"];
+    if (env.NODE_ENV !== "production" && env.ENABLE_DEV_LOGIN_FOR_E2E) {
+      publicPaths.push("/auth/dev-login");
+    }
     if (publicPaths.includes(req.path)) {
       return next();
     }

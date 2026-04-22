@@ -1,6 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { getAuthUrl, exchangeCodeForUser, DomainRestrictionError } from "./google-oauth";
 import { storage } from "../storage";
+import { env } from "../env";
 
 function getCallbackUrl(req: Request): string {
   const protocol = req.headers["x-forwarded-proto"] || req.protocol;
@@ -72,6 +73,45 @@ export function registerAuthRoutes(app: Express) {
       res.status(500).json({ message: "Authentication failed" });
     }
   });
+
+  if (env.NODE_ENV !== "production" && env.ENABLE_DEV_LOGIN_FOR_E2E) {
+    console.warn(
+      "[auth] ⚠ DEV LOGIN ENABLED — POST /api/auth/dev-login will accept arbitrary emails. NEVER set ENABLE_DEV_LOGIN_FOR_E2E in production.",
+    );
+    app.post("/api/auth/dev-login", async (req: Request, res: Response) => {
+      const email = typeof req.body?.email === "string" ? req.body.email.trim() : "";
+      if (!email) {
+        return res.status(400).json({ message: "email is required" });
+      }
+      try {
+        const user = await storage.upsertUser({
+          googleId: `dev:${email}`,
+          email,
+          firstName: typeof req.body?.firstName === "string" ? req.body.firstName : "Dev",
+          lastName: typeof req.body?.lastName === "string" ? req.body.lastName : "User",
+          profileImageUrl: null,
+          lastLoginAt: new Date(),
+        });
+        req.session.regenerate((regenerateErr) => {
+          if (regenerateErr) {
+            console.error("[dev-login] session regenerate error:", regenerateErr);
+            return res.status(500).json({ message: "Failed to create session" });
+          }
+          req.session.userId = user.id;
+          req.session.save((saveErr) => {
+            if (saveErr) {
+              console.error("[dev-login] session save error:", saveErr);
+              return res.status(500).json({ message: "Failed to create session" });
+            }
+            res.json({ id: user.id, email: user.email });
+          });
+        });
+      } catch (error: any) {
+        console.error("[dev-login] failed:", error);
+        res.status(500).json({ message: error?.message ?? "dev-login failed" });
+      }
+    });
+  }
 
   app.get("/api/auth/logout", (req: Request, res: Response) => {
     req.session.destroy((err) => {

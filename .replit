@@ -49,3 +49,8 @@ integrations = ["javascript_database:1.0.0", "javascript_openai_ai_integrations:
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 120000
+
+[userenv]
+
+[userenv.development]
+ENABLE_DEV_LOGIN_FOR_E2E = "true"

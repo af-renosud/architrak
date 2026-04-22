@@ -107,6 +107,11 @@ const envSchema = z.object({
   // --- Rate limit store selector ---------------------------------------
   RATE_LIMIT_STORE: optionalEnum(["memory", "postgres"]),
 
+  // --- E2E / browser-test backdoor (NEVER enable in production) --------
+  // Gates the dev-only POST /api/auth/dev-login endpoint. Requires
+  // NODE_ENV !== "production" AND this flag set to a truthy string.
+  ENABLE_DEV_LOGIN_FOR_E2E: booleanFlag(false),
+
   // --- Replit connector identity (Gmail OAuth bridge) ------------------
   REPLIT_CONNECTORS_HOSTNAME: optionalString(),
   REPL_IDENTITY: optionalString(),
