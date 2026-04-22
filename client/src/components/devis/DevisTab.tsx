@@ -26,6 +26,7 @@ import { formatLotDescription } from "@shared/lot-label";
 import { z } from "zod";
 import { AdvisoriesList, AdvisoryBadge } from "@/components/advisories/AdvisoriesList";
 import { DevisTranslationSection } from "@/components/devis/DevisTranslationSection";
+import { ContractorSelect } from "@/components/ui/contractor-select";
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
@@ -527,8 +528,6 @@ function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDev
   const [devisNumber, setDevisNumber] = useState(devis.devisNumber ?? "");
   const [ref2, setRef2] = useState(devis.ref2 ?? "");
 
-  const selectableContractors = (contractors ?? []).filter((c) => !c.archidocOrphanedAt || c.id === devis.contractorId);
-
   const mutation = useMutation({
     mutationFn: async (payload: Record<string, string | number | null>) => {
       const res = await apiRequest("PATCH", `/api/devis/${devis.id}`, payload);
@@ -593,22 +592,12 @@ function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDev
         <div className="space-y-3">
           <div className="space-y-1">
             <TechnicalLabel>Contractor</TechnicalLabel>
-            <Select
-              value={String(contractorId)}
-              onValueChange={(v) => setContractorIdState(Number(v))}
-            >
-              <SelectTrigger className="text-[12px]" data-testid="select-edit-devis-contractor">
-                <SelectValue placeholder="Select contractor" />
-              </SelectTrigger>
-              <SelectContent>
-                {selectableContractors.map((c) => (
-                  <SelectItem key={c.id} value={String(c.id)} data-testid={`option-edit-devis-contractor-${c.id}`}>
-                    {c.name}
-                    {c.archidocOrphanedAt ? " (removed from ArchiDoc)" : ""}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <ContractorSelect
+              contractors={contractors}
+              value={contractorId}
+              onChange={setContractorIdState}
+              testId="select-edit-devis-contractor"
+            />
           </div>
           <div className="space-y-1">
             <TechnicalLabel>Devis Code</TechnicalLabel>
@@ -917,7 +906,6 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
   const { devisId, extraction, validation, devis } = data;
   const initialContractorId: number = devis.contractorId ?? extraction?.contractorId ?? 0;
   const [draftContractorId, setDraftContractorId] = useState<number>(initialContractorId);
-  const selectableContractors = (contractors ?? []).filter((c) => !c.archidocOrphanedAt || c.id === initialContractorId);
   const allWarnings: Array<{ field: string; expected: any; actual: any; message: string; severity: "error" | "warning" }> = validation?.warnings || [];
   const lotRefWarnings = allWarnings.filter((w) => w.field === "lotReferences");
   const warnings = allWarnings.filter((w) => w.field !== "lotReferences");
@@ -1042,23 +1030,14 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
 
           <div className="space-y-1.5">
             <TechnicalLabel>Contractor</TechnicalLabel>
-            <Select
-              value={draftContractorId ? String(draftContractorId) : ""}
-              onValueChange={(v) => setDraftContractorId(Number(v))}
+            <ContractorSelect
+              contractors={contractors}
+              value={draftContractorId}
+              onChange={setDraftContractorId}
               disabled={isArchived}
-            >
-              <SelectTrigger className="text-[11px]" data-testid="select-draft-contractor">
-                <SelectValue placeholder="Select contractor" />
-              </SelectTrigger>
-              <SelectContent>
-                {selectableContractors.map((c) => (
-                  <SelectItem key={c.id} value={String(c.id)} data-testid={`option-draft-contractor-${c.id}`}>
-                    {c.name}
-                    {c.archidocOrphanedAt ? " (removed from ArchiDoc)" : ""}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              testId="select-draft-contractor"
+              className="text-[11px]"
+            />
             {draftContractorId !== initialContractorId && (
               <p className="text-[10px] text-amber-700" data-testid="text-draft-contractor-changed">
                 Contractor will be reassigned when you confirm.
