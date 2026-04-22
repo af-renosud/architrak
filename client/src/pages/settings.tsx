@@ -8,7 +8,8 @@ import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Zap, Sparkles, Crown, Gauge, DollarSign, Brain, Check, Upload, Trash2, Image, Building2, Scale, Layers, Plus, Pencil, Wand2, Loader2 } from "lucide-react";
+import { Zap, Sparkles, Crown, Gauge, DollarSign, Brain, Check, Upload, Trash2, Image, Building2, Scale, Layers, Plus, Pencil, Wand2, Loader2, RefreshCw, Users } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -258,7 +259,244 @@ export default function SettingsPage() {
 
         <TemplateAssetsSection />
         <LotCatalogSection />
+        <DevisRematchSection />
       </main>
+    </div>
+  );
+}
+
+interface RematchPreviewRow {
+  devisId: number;
+  devisCode: string | null;
+  devisNumber: string | null;
+  projectId: number;
+  projectName: string | null;
+  currentContractorId: number;
+  currentContractorName: string | null;
+  suggestedContractorId: number;
+  suggestedContractorName: string;
+  suggestedContractorOrphaned: boolean;
+  confidence: number;
+  matchedFields: Record<string, string>;
+  status: string;
+  projectArchived: boolean;
+  applicable: boolean;
+  blockedReason: string | null;
+}
+
+function DevisRematchSection() {
+  const { toast } = useToast();
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+
+  const { data, isFetching, refetch } = useQuery<{ rows: RematchPreviewRow[] }>({
+    queryKey: ["/api/admin/devis-rematch/preview"],
+  });
+
+  const rows = data?.rows ?? [];
+  const applicableRows = rows.filter(r => r.applicable);
+
+  const applyMutation = useMutation({
+    mutationFn: async (devisIds: number[]) => {
+      const res = await apiRequest("POST", "/api/admin/devis-rematch/apply", { devisIds });
+      return (await res.json()) as {
+        applied: Array<{ devisId: number; previousContractorId: number; newContractorId: number }>;
+        skipped: Array<{ devisId: number; reason: string }>;
+      };
+    },
+    onSuccess: (result) => {
+      const appliedCount = result.applied.length;
+      const skippedCount = result.skipped.length;
+      toast({
+        title: `Applied ${appliedCount} correction${appliedCount === 1 ? "" : "s"}`,
+        description: skippedCount > 0
+          ? `${skippedCount} skipped — see preview after refresh`
+          : "All selected devis updated",
+        variant: appliedCount === 0 ? "destructive" : undefined,
+      });
+      setSelected(new Set());
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/devis-rematch/preview"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/devis"] });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Apply failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const toggleOne = (id: number, applicable: boolean) => {
+    if (!applicable) return;
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    if (selected.size === applicableRows.length && applicableRows.length > 0) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(applicableRows.map(r => r.devisId)));
+    }
+  };
+
+  const allSelected = applicableRows.length > 0 && selected.size === applicableRows.length;
+
+  return (
+    <div className="mt-10">
+      <div className="mb-6 flex items-start justify-between gap-3">
+        <div>
+          <h2
+            className="text-[16px] font-black uppercase tracking-tight mb-1"
+            style={{ color: "#0B2545" }}
+            data-testid="text-devis-rematch-title"
+          >
+            Re-match Devis Contractors
+          </h2>
+          <p className="text-[11px] text-muted-foreground">
+            Re-runs the SIRET / name matcher against every devis using its already-stored extraction data.
+            No AI calls are made. Review and apply auto-corrections in bulk.
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => refetch()}
+          disabled={isFetching}
+          data-testid="button-rematch-refresh"
+        >
+          <RefreshCw size={12} className={cn("mr-1.5", isFetching && "animate-spin")} />
+          <span className="text-[10px] font-bold uppercase tracking-widest">
+            {isFetching ? "Scanning..." : "Refresh"}
+          </span>
+        </Button>
+      </div>
+
+      <LuxuryCard>
+        <div className="flex items-start gap-3 mb-5">
+          <div
+            className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"
+            style={{ backgroundColor: "rgba(11, 37, 69, 0.08)" }}
+          >
+            <Users size={14} style={{ color: "#0B2545" }} />
+          </div>
+          <div className="flex-1">
+            <h3 className="text-[12px] font-bold text-foreground mb-0.5">
+              Suggested corrections {rows.length > 0 ? `(${applicableRows.length} applicable, ${rows.length} total)` : ""}
+            </h3>
+            <p className="text-[10px] text-muted-foreground leading-relaxed">
+              Each applied row writes a manual-edit audit entry, exactly as if a user used the pencil on the devis.
+            </p>
+          </div>
+        </div>
+
+        {isFetching && rows.length === 0 ? (
+          <div className="space-y-2">
+            <Skeleton className="h-12 rounded-md" />
+            <Skeleton className="h-12 rounded-md" />
+            <Skeleton className="h-12 rounded-md" />
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="text-[11px] text-muted-foreground py-6 text-center" data-testid="text-rematch-empty">
+            No mismatches found. Every devis already matches what the current AI matcher would assign.
+          </div>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr className="text-left border-b border-[rgba(0,0,0,0.06)]">
+                    <th className="py-2 pr-2 w-8">
+                      <Checkbox
+                        checked={allSelected}
+                        onCheckedChange={toggleAll}
+                        disabled={applicableRows.length === 0}
+                        data-testid="checkbox-rematch-select-all"
+                      />
+                    </th>
+                    <th className="py-2 pr-2"><TechnicalLabel>Project</TechnicalLabel></th>
+                    <th className="py-2 pr-2"><TechnicalLabel>Devis</TechnicalLabel></th>
+                    <th className="py-2 pr-2"><TechnicalLabel>Current</TechnicalLabel></th>
+                    <th className="py-2 pr-2"><TechnicalLabel>Suggested</TechnicalLabel></th>
+                    <th className="py-2 pr-2"><TechnicalLabel>Confidence</TechnicalLabel></th>
+                    <th className="py-2 pr-2"><TechnicalLabel>Status</TechnicalLabel></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(r => (
+                    <tr
+                      key={r.devisId}
+                      className={cn(
+                        "border-b border-[rgba(0,0,0,0.04)]",
+                        !r.applicable && "opacity-60"
+                      )}
+                      data-testid={`row-rematch-${r.devisId}`}
+                    >
+                      <td className="py-2 pr-2">
+                        <Checkbox
+                          checked={selected.has(r.devisId)}
+                          onCheckedChange={() => toggleOne(r.devisId, r.applicable)}
+                          disabled={!r.applicable}
+                          data-testid={`checkbox-rematch-${r.devisId}`}
+                        />
+                      </td>
+                      <td className="py-2 pr-2 align-top">
+                        <div className="font-medium" data-testid={`text-rematch-project-${r.devisId}`}>
+                          {r.projectName ?? `#${r.projectId}`}
+                        </div>
+                      </td>
+                      <td className="py-2 pr-2 align-top">
+                        <div className="font-medium">{r.devisCode ?? `#${r.devisId}`}</div>
+                        {r.devisNumber && (
+                          <div className="text-[10px] text-muted-foreground">{r.devisNumber}</div>
+                        )}
+                      </td>
+                      <td className="py-2 pr-2 align-top text-rose-700" data-testid={`text-rematch-current-${r.devisId}`}>
+                        {r.currentContractorName ?? `#${r.currentContractorId}`}
+                      </td>
+                      <td className="py-2 pr-2 align-top text-emerald-700" data-testid={`text-rematch-suggested-${r.devisId}`}>
+                        {r.suggestedContractorName}
+                        {r.suggestedContractorOrphaned && (
+                          <span className="ml-1 text-[9px] text-amber-700">(orphaned)</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-2 align-top">{Math.round(r.confidence)}%</td>
+                      <td className="py-2 pr-2 align-top">
+                        {r.applicable ? (
+                          <span className="text-[10px] text-muted-foreground">{r.status}</span>
+                        ) : (
+                          <span className="text-[10px] text-amber-700" data-testid={`text-rematch-blocked-${r.devisId}`}>
+                            {r.blockedReason}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="mt-4 flex items-center justify-end gap-3">
+              <span className="text-[10px] text-muted-foreground">
+                {selected.size} selected
+              </span>
+              <Button
+                size="sm"
+                onClick={() => applyMutation.mutate(Array.from(selected))}
+                disabled={selected.size === 0 || applyMutation.isPending}
+                data-testid="button-rematch-apply"
+              >
+                {applyMutation.isPending ? (
+                  <Loader2 size={12} className="mr-1.5 animate-spin" />
+                ) : (
+                  <Check size={12} className="mr-1.5" />
+                )}
+                <span className="text-[10px] font-bold uppercase tracking-widest">
+                  Apply {selected.size > 0 ? `(${selected.size})` : ""}
+                </span>
+              </Button>
+            </div>
+          </>
+        )}
+      </LuxuryCard>
     </div>
   );
 }
