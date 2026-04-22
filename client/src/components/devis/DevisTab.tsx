@@ -12,7 +12,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff, ShieldCheck, ShieldAlert, ShieldX, Trash2, X, Tag, Settings as SettingsIcon, Wand2, Pencil } from "lucide-react";
+import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff, ShieldCheck, ShieldAlert, ShieldX, Trash2, X, Tag, Settings as SettingsIcon, Wand2, Pencil, UserCog } from "lucide-react";
 import { Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -901,14 +901,38 @@ function ConfidenceIndicator({ score }: { score: number }) {
   );
 }
 
+const CONTRACTOR_ADVISORY_FIELDS = new Set([
+  "contractor_identity_mismatch",
+  "contractor_siret_collision",
+  "unknown_contractor",
+  "contractorSiret",
+  "contractorName",
+]);
+
 function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = false }: DraftReviewPanelProps) {
   const { toast } = useToast();
   const { devisId, extraction, validation, devis } = data;
   const initialContractorId: number = devis.contractorId ?? extraction?.contractorId ?? 0;
   const [draftContractorId, setDraftContractorId] = useState<number>(initialContractorId);
+  const contractorSectionRef = useRef<HTMLDivElement>(null);
   const allWarnings: Array<{ field: string; expected: any; actual: any; message: string; severity: "error" | "warning" }> = validation?.warnings || [];
   const lotRefWarnings = allWarnings.filter((w) => w.field === "lotReferences");
-  const warnings = allWarnings.filter((w) => w.field !== "lotReferences");
+  const contractorAdvisories = allWarnings.filter((w) => CONTRACTOR_ADVISORY_FIELDS.has(w.field));
+  const warnings = allWarnings.filter(
+    (w) => w.field !== "lotReferences" && !CONTRACTOR_ADVISORY_FIELDS.has(w.field),
+  );
+
+  const focusContractorSelect = () => {
+    const section = contractorSectionRef.current;
+    if (!section) return;
+    section.scrollIntoView({ behavior: "smooth", block: "center" });
+    const trigger = section.querySelector<HTMLButtonElement>(
+      '[data-testid="select-draft-contractor"]',
+    );
+    if (trigger) {
+      window.setTimeout(() => trigger.focus(), 250);
+    }
+  };
   const confidenceScore: number = validation?.confidenceScore ?? 50;
 
   const [editValues, setEditValues] = useState({
@@ -1004,6 +1028,53 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
               isArchived={isArchived}
             />
           )}
+          {contractorAdvisories.length > 0 && (
+            <div
+              className="rounded-lg border-2 border-rose-400 bg-rose-50 dark:bg-rose-950/40 p-3 space-y-2.5"
+              data-testid={`banner-contractor-advisory-${devisId}`}
+            >
+              <div className="flex items-start gap-2">
+                <AlertTriangle size={16} className="text-rose-600 mt-0.5 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-rose-800 dark:text-rose-300">
+                    Verify contractor
+                  </p>
+                  <p className="text-[10px] mt-0.5 text-rose-800/90 dark:text-rose-300/90">
+                    The SIRET or company name on this document doesn't cleanly match a single
+                    known contractor. Please confirm the right contractor before saving.
+                  </p>
+                  <ul className="mt-1.5 space-y-1">
+                    {contractorAdvisories.map((w, i) => (
+                      <li
+                        key={i}
+                        className="text-[10px] text-rose-900/90 dark:text-rose-200/90"
+                        data-testid={`contractor-advisory-${devisId}-${i}`}
+                      >
+                        {w.message}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+              {!isArchived && (
+                <div className="pl-6">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 gap-1.5 border-rose-300 bg-white text-rose-800 hover:bg-rose-100 hover:text-rose-900"
+                    onClick={focusContractorSelect}
+                    data-testid={`button-choose-contractor-${devisId}`}
+                  >
+                    <UserCog size={12} />
+                    <span className="text-[10px] font-bold uppercase tracking-widest">
+                      Choose contractor
+                    </span>
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
           {warnings.length > 0 && (
             <div className="space-y-1.5" data-testid="section-validation-warnings">
               {warnings.map((w, i) => (
@@ -1028,7 +1099,7 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
             <AdvisoriesList subject={{ type: "devis", id: devisId }} />
           </div>
 
-          <div className="space-y-1.5">
+          <div className="space-y-1.5" ref={contractorSectionRef}>
             <TechnicalLabel>Contractor</TechnicalLabel>
             <ContractorSelect
               contractors={contractors}
