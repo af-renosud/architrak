@@ -10,6 +10,7 @@ import {
   avenants,
   devisCheckTokens,
 } from "@shared/schema";
+import { issueDevisCheckToken } from "../services/devis-checks";
 
 // Lifecycle-bound revoke: hits the real database to verify the SQL
 // predicate (sum(invoice HT) >= devis HT + approved PV − approved MV)
@@ -214,6 +215,36 @@ describe("devis-check token lifecycle (integration)", () => {
     expect(await storage.revokeDevisCheckTokenIfFullyInvoiced(dMv)).toBe(0);
     expect((await getToken(tMv)).revokedAt).toBeNull();
     await deleteDevis(dMv);
+  });
+
+  it("issueDevisCheckToken stamps expires_at at the 90-day idle ceiling", async () => {
+    const [d] = await db
+      .insert(devis)
+      .values({
+        projectId,
+        contractorId,
+        devisCode: `D-${SUFFIX}-iss-${Math.random().toString(36).slice(2, 6)}`,
+        descriptionFr: "issuance test",
+        amountHt: "100.00",
+        amountTtc: "100.00",
+      })
+      .returning({ id: devis.id });
+    const before = Date.now();
+    const issued = await issueDevisCheckToken({
+      devisId: d.id,
+      contractorId,
+      contractorEmail: "issuance@test.local",
+      createdByUserId: null,
+    });
+    const after = Date.now();
+    expect(issued.record.expiresAt).not.toBeNull();
+    const expiry = issued.record.expiresAt!.getTime();
+    const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
+    // Expiry must fall within the 90-day window from the call site, with a
+    // small tolerance for execution time.
+    expect(expiry).toBeGreaterThanOrEqual(before + NINETY_DAYS_MS - 1000);
+    expect(expiry).toBeLessThanOrEqual(after + NINETY_DAYS_MS + 1000);
+    await deleteDevis(d.id);
   });
 
   it("bulk sweep catches fully-invoiced devis missed by inline hooks", async () => {
