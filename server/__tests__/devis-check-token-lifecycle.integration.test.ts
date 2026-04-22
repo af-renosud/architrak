@@ -129,12 +129,12 @@ describe("devis-check token lifecycle (integration)", () => {
 
   afterAll(async () => {
     // Project cascade-deletes devis (and its invoices/avenants/tokens).
-    // Contractor has no cascade, so delete it last.
+    // Contractor has no cascade, so delete it last. We intentionally do
+    // NOT call pool.end() here — vitest's worker teardown closes the
+    // shared pool, and ending it here makes the suite brittle when run
+    // alongside other server-side tests that share the same pool.
     await db.delete(projects).where(eq(projects.id, projectId));
     await db.delete(contractors).where(eq(contractors.id, contractorId));
-    // Vitest hangs on the open pool unless we close it. Done in the last
-    // suite that uses the real pool.
-    await pool.end();
   });
 
   it("does NOT revoke when the devis is only partially invoiced", async () => {
