@@ -99,7 +99,7 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
         confidence: parsed.amountHt != null ? "high" : "low",
       },
       validation: {
-        isValid: validation.isValid && enrichedWarnings === validation.warnings,
+        isValid: !enrichedWarnings.some((w) => w.severity === "error"),
         warnings: enrichedWarnings,
         confidenceScore: validation.confidenceScore,
         correctedValues: validation.correctedValues,

@@ -1140,14 +1140,11 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
             data-testid="text-draft-tva-derived"
           >
             TVA = TTC − HT = {formatCurrency(
-              Math.max(
-                0,
-                Number(
-                  (
-                    parseFloat(editValues.amountTtc || "0") -
-                    parseFloat(editValues.amountHt || "0")
-                  ).toFixed(2),
-                ),
+              Number(
+                (
+                  parseFloat(editValues.amountTtc || "0") -
+                  parseFloat(editValues.amountHt || "0")
+                ).toFixed(2),
               ),
             )}
           </div>
@@ -2137,10 +2134,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
               </div>
               <div className="text-[10px] text-muted-foreground" data-testid="text-avenant-tva-derived">
                 TVA = TTC − HT = {formatCurrency(
-                  Math.max(
-                    0,
-                    Number((parseFloat(avenantForm.watch("amountTtc") || "0") - parseFloat(avenantForm.watch("amountHt") || "0")).toFixed(2)),
-                  ),
+                  Number((parseFloat(avenantForm.watch("amountTtc") || "0") - parseFloat(avenantForm.watch("amountHt") || "0")).toFixed(2)),
                 )}
               </div>
               <Button type="submit" className="w-full" disabled={createAvenantMutation.isPending} data-testid="button-submit-avenant">
