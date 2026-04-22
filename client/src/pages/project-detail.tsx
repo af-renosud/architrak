@@ -553,9 +553,9 @@ export default function ProjectDetail() {
     const previous = parseFloat(certForm.watch("previousPayments") || "0");
     const retenue = parseFloat(certForm.watch("retenueGarantie") || "0");
     const netHt = totalWorks + pvMv - previous - retenue;
-    const tva = netHt * 0.2;
+    // TVA-neutral: HT and TTC are independent inputs; TVA = TTC − HT.
+    const tva = parseFloat(certForm.watch("tvaAmount") || "0");
     certForm.setValue("netToPayHt", netHt.toFixed(2));
-    certForm.setValue("tvaAmount", tva.toFixed(2));
     certForm.setValue("netToPayTtc", (netHt + tva).toFixed(2));
   };
 
@@ -599,8 +599,8 @@ export default function ProjectDetail() {
       projectId: parseInt(projectId!), contractorId: 0, certificateRef: "",
       dateIssued: null, totalWorksHt: totalInvHt.toFixed(2), pvMvAdjustment: "0.00",
       previousPayments: "0.00", retenueGarantie: "0.00",
-      netToPayHt: totalInvHt.toFixed(2), tvaAmount: (totalInvHt * 0.2).toFixed(2),
-      netToPayTtc: (totalInvHt * 1.2).toFixed(2), status: "draft", notes: null,
+      netToPayHt: totalInvHt.toFixed(2), tvaAmount: "0.00",
+      netToPayTtc: totalInvHt.toFixed(2), status: "draft", notes: null,
     });
     setCertDialogOpen(true);
   };
@@ -1460,6 +1460,13 @@ export default function ProjectDetail() {
                         <FormItem>
                           <FormLabel><TechnicalLabel>Previous Payments</TechnicalLabel></FormLabel>
                           <FormControl><Input {...field} value={field.value ?? "0.00"} type="number" step="0.01" onBlur={() => recalcCert()} data-testid="input-cert-prev-tab" /></FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )} />
+                      <FormField control={certForm.control} name="tvaAmount" render={({ field }) => (
+                        <FormItem>
+                          <FormLabel><TechnicalLabel>TVA Amount</TechnicalLabel></FormLabel>
+                          <FormControl><Input {...field} value={field.value ?? "0.00"} type="number" step="0.01" onBlur={() => recalcCert()} data-testid="input-cert-tva-tab" /></FormControl>
                           <FormMessage />
                         </FormItem>
                       )} />

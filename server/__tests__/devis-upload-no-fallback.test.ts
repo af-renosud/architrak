@@ -58,7 +58,6 @@ describe("processDevisUpload — never auto-assigns an arbitrary contractor", ()
       contractorName: "Brand New Co",
       siret: "99999999900099",
       amountHt: 1000,
-      tvaRate: 20,
       amountTtc: 1200,
     });
     storageSpy.getContractors.mockResolvedValue([
@@ -84,7 +83,6 @@ describe("processDevisUpload — never auto-assigns an arbitrary contractor", ()
       documentType: "quotation",
       contractorName: "Wholly Unknown Vendor",
       amountHt: 500,
-      tvaRate: 20,
       amountTtc: 600,
     });
     storageSpy.getContractors.mockResolvedValue([
@@ -108,7 +106,6 @@ describe("processDevisUpload — never auto-assigns an arbitrary contractor", ()
       contractorName: "AT TRAVAUX",
       siret: "82046676100021",
       amountHt: 1000,
-      tvaRate: 20,
       amountTtc: 1200,
     });
     storageSpy.getContractors.mockResolvedValue([

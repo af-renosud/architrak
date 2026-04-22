@@ -39,15 +39,22 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
 
   // TVA-neutral: HT + TTC are the source of truth. tvaAmount is ALWAYS
   // derived as TTC − HT — we never persist an extracted tvaAmount that
-  // could disagree with stored HT/TTC. If only one of HT / TTC is present
-  // we default the missing side to the known value (effective 0% TVA) so
-  // the draft is never auto-grossed-up; the user fixes it from the confirm UI.
-  const htNum = effectiveHt != null
-    ? roundCurrency(effectiveHt)
-    : (effectiveTtc != null ? roundCurrency(effectiveTtc) : 0);
-  const ttcNum = effectiveTtc != null
-    ? roundCurrency(effectiveTtc)
-    : (effectiveHt != null ? roundCurrency(effectiveHt) : 0);
+  // could disagree with stored HT/TTC. If either HT or TTC is missing we
+  // surface a draft warning so the user must complete the pair manually
+  // in the confirm UI; we do NOT silently mirror or auto-gross-up.
+  const enrichedWarnings = [...validation.warnings];
+  if (effectiveHt == null || effectiveTtc == null) {
+    enrichedWarnings.push({
+      field: effectiveHt == null ? "amountHt" : "amountTtc",
+      expected: "non-null",
+      actual: undefined,
+      message:
+        "Both HT and TTC must be entered before confirming this invoice (TVA is derived as TTC − HT).",
+      severity: "error",
+    });
+  }
+  const htNum = effectiveHt != null ? roundCurrency(effectiveHt) : 0;
+  const ttcNum = effectiveTtc != null ? roundCurrency(effectiveTtc) : 0;
 
   const amountHt = String(htNum);
   const amountTtc = String(ttcNum);
@@ -66,13 +73,13 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
     datePaid: null,
     pdfPath: storageKey,
     notes: null,
-    validationWarnings: validation.warnings,
+    validationWarnings: enrichedWarnings,
     aiExtractedData: parsed,
     aiConfidence: validation.confidenceScore,
   });
 
   try {
-    await reconcileAdvisories({ invoiceId: invoice.id }, validation.warnings, "extractor");
+    await reconcileAdvisories({ invoiceId: invoice.id }, enrichedWarnings, "extractor");
   } catch (advErr) {
     console.warn(`[Invoice Upload] Failed to persist advisories:`, advErr);
   }
@@ -92,8 +99,8 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
         confidence: parsed.amountHt != null ? "high" : "low",
       },
       validation: {
-        isValid: validation.isValid,
-        warnings: validation.warnings,
+        isValid: validation.isValid && enrichedWarnings === validation.warnings,
+        warnings: enrichedWarnings,
         confidenceScore: validation.confidenceScore,
         correctedValues: validation.correctedValues,
       },

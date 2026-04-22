@@ -15,7 +15,6 @@ function makeContractor(overrides: Partial<Contractor> & { id: number; name: str
     address: null,
     email: null,
     phone: null,
-    defaultTvaRate: "20.00",
     notes: null,
     archidocId: null,
     archidocOrphanedAt: null,
