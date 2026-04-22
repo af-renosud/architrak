@@ -1135,6 +1135,23 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
             </div>
           </div>
 
+          <div
+            className="text-[10px] text-muted-foreground"
+            data-testid="text-draft-tva-derived"
+          >
+            TVA = TTC − HT = {formatCurrency(
+              Math.max(
+                0,
+                Number(
+                  (
+                    parseFloat(editValues.amountTtc || "0") -
+                    parseFloat(editValues.amountHt || "0")
+                  ).toFixed(2),
+                ),
+              ),
+            )}
+          </div>
+
           <div className="space-y-1">
             <TechnicalLabel>Date</TechnicalLabel>
             <Input
@@ -1647,16 +1664,6 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
   const [voidDialogOpen, setVoidDialogOpen] = useState(false);
   const [voidReason, setVoidReason] = useState("");
 
-  const recalcAvenantTtc = () => {
-    // TVA-neutral: derive TTC from the parent devis ratio (HT/TTC)
-    // when the user enters HT. If parent has no HT, fall back to TTC = HT.
-    const ht = parseFloat(avenantForm.watch("amountHt") || "0");
-    const parentHt = parseFloat(devis.amountHt) || 0;
-    const parentTtc = parseFloat(devis.amountTtc) || 0;
-    const ratio = parentHt > 0 ? parentTtc / parentHt : 1;
-    avenantForm.setValue("amountTtc", (ht * ratio).toFixed(2));
-  };
-
   const recalcLineTotal = () => {
     const qty = parseFloat(lineItemForm.watch("quantity") || "0");
     const price = parseFloat(lineItemForm.watch("unitPriceHt") || "0");
@@ -2116,17 +2123,25 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
                 <FormField control={avenantForm.control} name="amountHt" render={({ field }) => (
                   <FormItem>
                     <FormLabel><TechnicalLabel>Amount HT</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcAvenantTtc()} data-testid="input-avenant-ht" /></FormControl>
+                    <FormControl><Input {...field} type="number" step="0.01" data-testid="input-avenant-ht" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
                 <FormField control={avenantForm.control} name="amountTtc" render={({ field }) => (
                   <FormItem>
                     <FormLabel><TechnicalLabel>Amount TTC</TechnicalLabel></FormLabel>
-                    <FormControl><Input {...field} type="number" step="0.01" readOnly data-testid="input-avenant-ttc" /></FormControl>
+                    <FormControl><Input {...field} type="number" step="0.01" data-testid="input-avenant-ttc" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
+              </div>
+              <div className="text-[10px] text-muted-foreground" data-testid="text-avenant-tva-derived">
+                TVA = TTC − HT = {formatCurrency(
+                  Math.max(
+                    0,
+                    Number((parseFloat(avenantForm.watch("amountTtc") || "0") - parseFloat(avenantForm.watch("amountHt") || "0")).toFixed(2)),
+                  ),
+                )}
               </div>
               <Button type="submit" className="w-full" disabled={createAvenantMutation.isPending} data-testid="button-submit-avenant">
                 <span className="text-[9px] font-bold uppercase tracking-widest">
