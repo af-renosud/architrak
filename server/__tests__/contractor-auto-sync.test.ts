@@ -74,6 +74,27 @@ const { state, dbSpy, syncContractorsMock, isArchidocConfiguredMock } = vi.hoist
     const apply = () => {
       const bucket = bucketOf(table);
       if (tableNameOf(table) === "contractors") {
+        // Orphan detection issues an update whose payload is just
+        // { archidocOrphanedAt: <Date> } scoped by a notInArray() over the
+        // mirror's archidocIds. The fake db has no real WHERE engine, so
+        // simulate that scope here: only apply (and only record) the orphan
+        // update for contractor rows whose archidocId is NOT present in the
+        // current archidoc mirror.
+        const isOrphanFlagUpdate =
+          Object.keys(payload).length === 1 && "archidocOrphanedAt" in payload;
+        if (isOrphanFlagUpdate) {
+          const mirrorIds = new Set(
+            state.archidocContractors.map((m) => (m as { archidocId: string }).archidocId),
+          );
+          for (const row of bucket as Array<Record<string, unknown>>) {
+            const archidocId = row.archidocId as string | null | undefined;
+            if (archidocId && !mirrorIds.has(archidocId) && row.archidocOrphanedAt == null) {
+              state.updateContractorPayloads.push({ ...payload });
+              Object.assign(row, payload);
+            }
+          }
+          return;
+        }
         state.updateContractorPayloads.push({ ...payload });
       }
       // Tests are designed so at most one matching row exists.
@@ -177,7 +198,10 @@ function makeMirror(overrides: Partial<ArchidocContractor> = {}): ArchidocContra
       { name: "Jane Doe", jobTitle: "Manager", mobile: "+33 6 00 00 00 00", email: "jane@acme.example", isPrimary: true },
     ],
     archidocUpdatedAt: new Date("2026-04-01T00:00:00Z"),
-    syncedAt: new Date("2026-04-01T00:00:00Z"),
+    // Use a future-leaning syncedAt so the non-incremental "fresh mirror"
+    // filter (syncedAt >= syncStartedAt) keeps the row regardless of when the
+    // test happens to run.
+    syncedAt: new Date(Date.now() + 60_000),
     ...overrides,
   } as ArchidocContractor;
 }
@@ -312,6 +336,56 @@ describe("runContractorAutoSync", () => {
     // No contractors should have been touched.
     expect(state.contractors).toEqual([]);
     expect(state.updateContractorPayloads).toEqual([]);
+  });
+
+  it("writes a normalised SIRET on every update, even when the local row had none", async () => {
+    state.archidocContractors = [makeMirror({ siret: "820 466 761 00021" })];
+    state.contractors = [
+      {
+        id: 7,
+        name: "ACME BTP",
+        siret: null,
+        address: null,
+        email: null,
+        phone: null,
+        defaultTvaRate: "20.00",
+        notes: null,
+        archidocId: "ad-1",
+        contactName: null,
+        contactJobTitle: null,
+        contactMobile: null,
+        town: null,
+        postcode: null,
+        website: null,
+        insuranceStatus: null,
+        decennaleInsurer: null,
+        decennalePolicyNumber: null,
+        decennaleEndDate: null,
+        rcProInsurer: null,
+        rcProPolicyNumber: null,
+        rcProEndDate: null,
+        specialConditions: null,
+        createdAt: new Date("2026-01-01"),
+      } as Contractor,
+    ];
+
+    const result = await runContractorAutoSync({ incremental: false });
+
+    expect(result.error).toBeUndefined();
+    expect(result.updated).toBe(1);
+    expect(state.updateContractorPayloads).toHaveLength(1);
+    expect(state.updateContractorPayloads[0]).toMatchObject({ siret: "82046676100021" });
+    expect(state.contractors[0].siret).toBe("82046676100021");
+  });
+
+  it("coerces a malformed upstream SIRET to null instead of writing garbage", async () => {
+    state.archidocContractors = [makeMirror({ siret: "not-a-siret" })];
+
+    const result = await runContractorAutoSync({ incremental: false });
+
+    expect(result.error).toBeUndefined();
+    expect(result.created).toBe(1);
+    expect(state.contractors[0].siret).toBeNull();
   });
 
   it("returns early without writing a sync log when ArchiDoc is not configured", async () => {

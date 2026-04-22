@@ -4,8 +4,17 @@ import { archidocSyncLog, archidocContractors, contractors } from "@shared/schem
 import type { ArchidocContractor, InsertContractor } from "@shared/schema";
 import { syncContractors } from "./sync-service";
 import { isArchidocConfigured } from "./sync-client";
+import { normalizeSiret } from "../gmail/document-parser";
 
 export const CONTRACTOR_AUTO_SYNC_TYPE = "contractor_auto_import";
+
+// Only persist a SIRET if it normalises to the canonical 14-digit form.
+// Anything shorter/longer is unusable for the SIRET-first matcher and would
+// only contaminate the column, so we coerce it back to null.
+export function normaliseSiretForStorage(raw: string | null | undefined): string | null {
+  const digits = normalizeSiret(raw);
+  return digits.length === 14 ? digits : null;
+}
 
 function pickContactFields(mirror: ArchidocContractor) {
   const contacts = (mirror.contacts as any[]) || [];
@@ -23,7 +32,7 @@ function buildSyncedFields(mirror: ArchidocContractor): Omit<InsertContractor, "
   const contact = pickContactFields(mirror);
   return {
     name: mirror.name,
-    siret: mirror.siret ?? null,
+    siret: normaliseSiretForStorage(mirror.siret),
     address: [mirror.address1, mirror.address2].filter(Boolean).join(", ") || null,
     email: contact.email,
     phone: contact.phone,
