@@ -340,7 +340,10 @@ router.patch(
         const openCount = await storage.countOpenDevisChecks(id);
         if (openCount > 0) {
           return res.status(409).json({
-            message: "Cannot advance sign-off while contractor checks are open",
+            message:
+              openCount === 1
+                ? "Impossible d'envoyer le devis au client : 1 question contractant est encore ouverte."
+                : `Impossible d'envoyer le devis au client : ${openCount} questions contractant sont encore ouvertes.`,
             openChecks: openCount,
           });
         }

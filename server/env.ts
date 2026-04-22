@@ -126,6 +126,13 @@ const envSchema = z.object({
   // NODE_ENV !== "production" AND this flag set to a truthy string.
   ENABLE_DEV_LOGIN_FOR_E2E: booleanFlag(false),
 
+  // --- E2E fake Gmail client (NEVER enable in production) -------------
+  // When set to a truthy string AND NODE_ENV !== "production",
+  // server/gmail/client.ts returns an in-memory fake gmail client whose
+  // users.messages.send always succeeds. Lets browser tests exercise the
+  // bundled-send flow without hitting a real Gmail OAuth connection.
+  E2E_FAKE_GMAIL: booleanFlag(false),
+
   // --- Replit connector identity (Gmail OAuth bridge) ------------------
   REPLIT_CONNECTORS_HOSTNAME: optionalString(),
   REPL_IDENTITY: optionalString(),
@@ -167,7 +174,7 @@ if (!parsed.success) {
  * Exported for tests; called immediately below for the real boot path.
  */
 export function assertNoDevLoginBackdoorInProduction(
-  cfg: Pick<Env, "NODE_ENV" | "ENABLE_DEV_LOGIN_FOR_E2E">,
+  cfg: Pick<Env, "NODE_ENV" | "ENABLE_DEV_LOGIN_FOR_E2E" | "E2E_FAKE_GMAIL">,
   exit: (code: number) => never = process.exit as (code: number) => never,
   log: (msg: string) => void = (m) => console.error(m),
 ): void {
@@ -175,6 +182,13 @@ export function assertNoDevLoginBackdoorInProduction(
     log(
       "[env] Refusing to start: ENABLE_DEV_LOGIN_FOR_E2E must NOT be set when NODE_ENV=production. " +
         "Unset ENABLE_DEV_LOGIN_FOR_E2E (or set it to false) before redeploying.",
+    );
+    exit(1);
+  }
+  if (cfg.NODE_ENV === "production" && cfg.E2E_FAKE_GMAIL) {
+    log(
+      "[env] Refusing to start: E2E_FAKE_GMAIL must NOT be set when NODE_ENV=production. " +
+        "Unset E2E_FAKE_GMAIL (or set it to false) before redeploying.",
     );
     exit(1);
   }

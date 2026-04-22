@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, desc, asc, and, or, inArray, isNotNull, isNull, lte, gte, like, ilike, sql, type SQL } from "drizzle-orm";
+import { eq, ne, desc, asc, and, or, inArray, isNotNull, isNull, lte, gte, like, ilike, sql, type SQL } from "drizzle-orm";
 import {
   projects, contractors, lots, lotCatalog, marches, devis, devisLineItems,
   avenants, invoices, situations, situationLines, certificats, fees, feeEntries,
@@ -1432,11 +1432,22 @@ export class DatabaseStorage implements IStorage {
     // changed since the last dispatch ⇒ retry must be idempotent. A new
     // architect (or contractor) message bumps the max id ⇒ legitimate
     // follow-up dispatch ⇒ fresh send under a new dedupe key.
+    //
+    // System (audit) messages are EXCLUDED from the fingerprint: each
+    // dispatch writes one such row in every check thread, and counting
+    // them would defeat the dedupe (a second click — or any retry — would
+    // see a bumped fingerprint and queue another email even though the
+    // conversation hasn't actually moved).
     if (checkIds.length === 0) return 0;
     const rows = await db
       .select({ id: devisCheckMessages.id })
       .from(devisCheckMessages)
-      .where(inArray(devisCheckMessages.checkId, checkIds))
+      .where(
+        and(
+          inArray(devisCheckMessages.checkId, checkIds),
+          ne(devisCheckMessages.authorType, "system"),
+        ),
+      )
       .orderBy(desc(devisCheckMessages.id))
       .limit(1);
     return rows[0]?.id ?? 0;

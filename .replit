@@ -40,8 +40,11 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "npm run dev"
+args = "PUBLIC_BASE_URL=http://localhost:5000 E2E_FAKE_GMAIL=true npm run dev"
 waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
 
 [agent]
 integrations = ["javascript_database:1.0.0", "javascript_openai_ai_integrations:2.0.0", "google-mail:1.0.0", "javascript_object_storage:2.0.0"]

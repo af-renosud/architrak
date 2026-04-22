@@ -37,7 +37,33 @@ async function getAccessToken() {
   return accessToken;
 }
 
+function isFakeGmailEnabled(): boolean {
+  return env.NODE_ENV !== 'production' && !!env.E2E_FAKE_GMAIL;
+}
+
+let fakeCounter = 0;
+function buildFakeGmailClient() {
+  return {
+    users: {
+      messages: {
+        send: async (_args: unknown) => {
+          fakeCounter += 1;
+          return {
+            data: {
+              id: `fake-msg-${fakeCounter}`,
+              threadId: `fake-thread-${fakeCounter}`,
+            },
+          };
+        },
+      },
+    },
+  } as unknown as ReturnType<typeof google.gmail>;
+}
+
 export async function getUncachableGmailClient() {
+  if (isFakeGmailEnabled()) {
+    return buildFakeGmailClient();
+  }
   const accessToken = await getAccessToken();
   const oauth2Client = new google.auth.OAuth2();
   oauth2Client.setCredentials({ access_token: accessToken });
@@ -45,5 +71,6 @@ export async function getUncachableGmailClient() {
 }
 
 export function isGmailConfigured(): boolean {
+  if (isFakeGmailEnabled()) return true;
   return !!(env.REPLIT_CONNECTORS_HOSTNAME && (env.REPL_IDENTITY || env.WEB_REPL_RENEWAL));
 }
