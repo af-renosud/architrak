@@ -23,6 +23,7 @@ import webhooksRouter from "./webhooks";
 import exportRouter from "./export";
 import benchmarksRouter from "./benchmarks";
 import adminDevisRematchRouter from "./admin-devis-rematch";
+import adminInvoiceRematchRouter from "./admin-invoice-rematch";
 
 // IDOR / Tenancy assumption (single-tenant deployment):
 // ArchiTrak runs as a dedicated single-firm deployment for Renosud
@@ -76,6 +77,7 @@ export async function registerRoutes(
   app.use(exportRouter);
   app.use(benchmarksRouter);
   app.use(adminDevisRematchRouter);
+  app.use(adminInvoiceRematchRouter);
 
   return httpServer;
 }

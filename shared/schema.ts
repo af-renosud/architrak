@@ -893,3 +893,23 @@ export const insertDevisRefEditSchema = createInsertSchema(devisRefEdits).omit({
 });
 export type DevisRefEdit = typeof devisRefEdits.$inferSelect;
 export type InsertDevisRefEdit = z.infer<typeof insertDevisRefEditSchema>;
+
+export const invoiceRefEdits = pgTable("invoice_ref_edits", {
+  id: serial("id").primaryKey(),
+  invoiceId: integer("invoice_id").notNull().references(() => invoices.id, { onDelete: "cascade" }),
+  field: text("field").notNull(),
+  previousValue: text("previous_value"),
+  newValue: text("new_value"),
+  editedByUserId: integer("edited_by_user_id").references(() => users.id),
+  editedByEmail: text("edited_by_email"),
+  editedAt: timestamp("edited_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("invoice_ref_edits_invoice_id_idx").on(table.invoiceId),
+]);
+
+export const insertInvoiceRefEditSchema = createInsertSchema(invoiceRefEdits).omit({
+  id: true,
+  editedAt: true,
+});
+export type InvoiceRefEdit = typeof invoiceRefEdits.$inferSelect;
+export type InsertInvoiceRefEdit = z.infer<typeof insertInvoiceRefEditSchema>;

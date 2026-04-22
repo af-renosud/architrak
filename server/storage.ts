@@ -36,6 +36,8 @@ import {
   type BenchmarkItem, type InsertBenchmarkItem,
   devisRefEdits,
   type DevisRefEdit, type InsertDevisRefEdit,
+  invoiceRefEdits,
+  type InvoiceRefEdit, type InsertInvoiceRefEdit,
 } from "@shared/schema";
 
 export interface BenchmarkSearchFilters {
@@ -130,6 +132,8 @@ export interface IStorage {
   createInvoice(data: InsertInvoice): Promise<Invoice>;
   updateInvoice(id: number, data: Partial<InsertInvoice>): Promise<Invoice | undefined>;
   deleteInvoice(id: number): Promise<boolean>;
+  getInvoiceRefEdits(invoiceId: number): Promise<InvoiceRefEdit[]>;
+  createInvoiceRefEdit(data: InsertInvoiceRefEdit): Promise<InvoiceRefEdit>;
 
   getSituationsByDevis(devisId: number): Promise<Situation[]>;
   getSituation(id: number): Promise<Situation | undefined>;
@@ -543,6 +547,15 @@ export class DatabaseStorage implements IStorage {
   async deleteInvoice(id: number): Promise<boolean> {
     const result = await db.delete(invoices).where(eq(invoices.id, id)).returning();
     return result.length > 0;
+  }
+
+  async getInvoiceRefEdits(invoiceId: number): Promise<InvoiceRefEdit[]> {
+    return db.select().from(invoiceRefEdits).where(eq(invoiceRefEdits.invoiceId, invoiceId)).orderBy(desc(invoiceRefEdits.editedAt));
+  }
+
+  async createInvoiceRefEdit(data: InsertInvoiceRefEdit): Promise<InvoiceRefEdit> {
+    const [row] = await db.insert(invoiceRefEdits).values(data).returning();
+    return row;
   }
 
   async getSituationsByDevis(devisId: number): Promise<Situation[]> {
