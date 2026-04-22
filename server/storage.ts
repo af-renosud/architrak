@@ -933,6 +933,23 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createProjectCommunication(data: InsertProjectCommunication): Promise<ProjectCommunication> {
+    // Defense in depth against double-sends: if a row with this dedupeKey
+    // already exists (e.g. two parallel "Send" clicks both passed the
+    // pre-insert dedupe probe), the unique index on dedupe_key would raise
+    // a 23505. Use ON CONFLICT DO NOTHING and re-read the surviving row so
+    // both callers observe the same comm id and only one email is queued.
+    if (data.dedupeKey) {
+      const inserted = await db
+        .insert(projectCommunications)
+        .values(data)
+        .onConflictDoNothing({ target: projectCommunications.dedupeKey })
+        .returning();
+      if (inserted[0]) return inserted[0];
+      const existing = await this.getProjectCommunicationByDedupeKey(data.dedupeKey);
+      if (existing) return existing;
+      // Extremely unlikely (row deleted between conflict and re-read) — fall
+      // through to a plain insert which will surface the underlying issue.
+    }
     const [comm] = await db.insert(projectCommunications).values(data).returning();
     return comm;
   }

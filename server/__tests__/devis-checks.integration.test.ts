@@ -47,7 +47,12 @@ const { state, storageSpy } = vi.hoisted(() => {
     }),
     getMaxMessageIdForChecks: vi.fn(async (checkIds: number[]) => {
       if (checkIds.length === 0) return 0;
-      const ids = state.messages.filter((m) => checkIds.includes(m.checkId)).map((m) => m.id);
+      // Mirror the real implementation: system (audit) rows are excluded
+      // from the conversation-revision fingerprint so they cannot defeat
+      // the bundled-send dedupe key (see storage.getMaxMessageIdForChecks).
+      const ids = state.messages
+        .filter((m) => checkIds.includes(m.checkId) && m.authorType !== "system")
+        .map((m) => m.id);
       return ids.length === 0 ? 0 : Math.max(...ids);
     }),
     updateDevisCheck: vi.fn(async (id: number, data: any) => {
@@ -227,6 +232,45 @@ describe("Devis CHECKING — bundled-send route", () => {
     const body2 = await res2.json();
     expect(body2.reused).toBe(true);
     expect((sender.sendCommunication as any).mock.calls.length).toBe(callsBefore);
+  });
+
+  it("double-click: a second Send right after the first does not create a 2nd project_communications row and does not re-send the email — even though dispatch wrote per-check 'system' audit rows in between", async () => {
+    state.devis.push({ id: 21, projectId: 1, contractorId: 1, signOffStage: "received" });
+    state.contractors.push({ id: 1, name: "Acme", email: "a@e.com" });
+    state.projects.push({ id: 1, name: "P" });
+    state.checks.push({ id: 300, devisId: 21, status: "open", query: "Q1", lineItemId: null, origin: "general" });
+    state.checks.push({ id: 301, devisId: 21, status: "open", query: "Q2", lineItemId: null, origin: "general" });
+
+    const sender = await import("../communications/email-sender");
+
+    // First click: fresh dispatch, queues a new comm row and sends it.
+    const r1 = await fetch(`${baseUrl}/api/devis/21/checks/send`, { method: "POST" });
+    expect(r1.status).toBe(200);
+    const b1 = await r1.json();
+    expect(b1.reused).toBe(false);
+
+    // After dispatch, the route writes one 'system' audit message per
+    // check. Confirm that actually happened — this is the regression
+    // surface (system rows used to defeat the dedupe key).
+    expect(state.messages.filter((m) => m.authorType === "system")).toHaveLength(2);
+    const commsAfter1 = state.comms.filter((c) => c.dedupeKey.startsWith("devis-check-bundle:21:"));
+    expect(commsAfter1).toHaveLength(1);
+    const sendsAfter1 = (sender.sendCommunication as any).mock.calls.length;
+
+    // Second click: nothing has changed in the conversation (only system
+    // audit rows were added). Must short-circuit on the original sent row.
+    const r2 = await fetch(`${baseUrl}/api/devis/21/checks/send`, { method: "POST" });
+    expect(r2.status).toBe(200);
+    const b2 = await r2.json();
+    expect(b2.reused).toBe(true);
+    expect(b2.communicationId).toBe(b1.communicationId);
+
+    // Critical guarantees:
+    //   • exactly one project_communications row exists for this devis
+    //   • sendCommunication was NOT invoked again
+    const commsAfter2 = state.comms.filter((c) => c.dedupeKey.startsWith("devis-check-bundle:21:"));
+    expect(commsAfter2).toHaveLength(1);
+    expect((sender.sendCommunication as any).mock.calls.length).toBe(sendsAfter1);
   });
 
   it("retry path: prior FAILED bundle is reused, body is rewritten with fresh portal URL, and resend happens", async () => {
