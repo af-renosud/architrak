@@ -1292,27 +1292,14 @@ export class DatabaseStorage implements IStorage {
     query: string,
     userId: number | null,
   ): Promise<DevisCheck> {
-    const [existing] = await db
-      .select()
-      .from(devisChecks)
-      .where(
-        and(
-          eq(devisChecks.devisId, devisId),
-          eq(devisChecks.lineItemId, lineItemId),
-          eq(devisChecks.origin, "line_item"),
-        ),
-      );
-    if (existing) {
-      // If a conversation has started (any status beyond 'open'), do not
-      // overwrite the check or its history; just refresh the query text.
-      const [updated] = await db
-        .update(devisChecks)
-        .set({ query, updatedAt: new Date() })
-        .where(eq(devisChecks.id, existing.id))
-        .returning();
-      return updated;
-    }
-    const [created] = await db
+    // Atomic upsert keyed on the partial unique index
+    // `devis_checks_line_item_unique_idx` over (devisId, lineItemId)
+    // WHERE origin = 'line_item' AND lineItemId IS NOT NULL.
+    // Using ON CONFLICT DO UPDATE prevents the SELECT-then-INSERT race
+    // when an architect rapidly toggles a line item's flag (two concurrent
+    // PATCH requests would previously hit the unique-index violation and
+    // surface as a 500).
+    const [row] = await db
       .insert(devisChecks)
       .values({
         devisId,
@@ -1322,8 +1309,13 @@ export class DatabaseStorage implements IStorage {
         query,
         createdByUserId: userId ?? undefined,
       })
+      .onConflictDoUpdate({
+        target: [devisChecks.devisId, devisChecks.lineItemId],
+        targetWhere: sql`${devisChecks.origin} = 'line_item' AND ${devisChecks.lineItemId} IS NOT NULL`,
+        set: { query, updatedAt: new Date() },
+      })
       .returning();
-    return created;
+    return row;
   }
 
   async countOpenDevisChecks(devisId: number): Promise<number> {
