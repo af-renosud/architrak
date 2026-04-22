@@ -1216,22 +1216,137 @@ const CHECK_COLORS: Record<string, { bg: string; border: string; ring: string }>
   unchecked: { bg: "", border: "border-l-transparent", ring: "" },
 };
 
-function LineItemWithCheck({ li, onUpdate, disabled = false }: { li: DevisLineItem; onUpdate: (data: Record<string, string>) => void; disabled?: boolean }) {
+function LineItemWithCheck({ li, onUpdate, disabled = false }: { li: DevisLineItem; onUpdate: (data: Record<string, string>) => Promise<unknown> | unknown; disabled?: boolean }) {
+  const { toast } = useToast();
   const status = li.checkStatus || "unchecked";
   const notes = li.checkNotes || "";
   const colors = CHECK_COLORS[status] || CHECK_COLORS.unchecked;
   const [notesOpen, setNotesOpen] = useState(!!notes);
+  const [editingDesc, setEditingDesc] = useState(false);
+  const [draftDesc, setDraftDesc] = useState(li.description);
+  const [savingDesc, setSavingDesc] = useState(false);
+
+  const fireUpdate = (data: Record<string, string>) => {
+    void Promise.resolve(onUpdate(data)).catch(() => {});
+  };
 
   const toggleStatus = (newStatus: string) => {
     if (disabled) return;
-    onUpdate({ checkStatus: status === newStatus ? "unchecked" : newStatus });
+    fireUpdate({ checkStatus: status === newStatus ? "unchecked" : newStatus });
+  };
+
+  const enterDescEdit = () => {
+    if (disabled || savingDesc) return;
+    setDraftDesc(li.description);
+    setEditingDesc(true);
+  };
+
+  const cancelDescEdit = () => {
+    setDraftDesc(li.description);
+    setEditingDesc(false);
+  };
+
+  const saveDescEdit = async () => {
+    if (savingDesc) return;
+    const next = draftDesc.trim();
+    if (!next) {
+      cancelDescEdit();
+      return;
+    }
+    if (next === li.description) {
+      setEditingDesc(false);
+      return;
+    }
+    setSavingDesc(true);
+    try {
+      await Promise.resolve(onUpdate({ description: next }));
+      toast({ title: "Description updated" });
+      setEditingDesc(false);
+    } catch (err) {
+      setDraftDesc(li.description);
+      setEditingDesc(false);
+      toast({
+        title: "Couldn't update description",
+        description: err instanceof Error ? err.message : "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setSavingDesc(false);
+    }
   };
 
   return (
     <>
-      <tr className={`border-l-[3px] ${colors.border}`}>
-        <td className="py-1.5 px-2 text-[11px]">{li.lineNumber}</td>
-        <td className="py-1.5 px-2 text-[11px]">{li.description}</td>
+      <tr className={`border-l-[3px] ${colors.border} ${savingDesc ? "opacity-60" : ""}`}>
+        <td className="py-1.5 px-2 text-[11px] align-top">{li.lineNumber}</td>
+        <td className="py-1.5 px-2 text-[11px] align-top">
+          {editingDesc ? (
+            <div className="flex flex-col gap-1">
+              <Textarea
+                autoFocus
+                value={draftDesc}
+                onChange={(e) => setDraftDesc(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    cancelDescEdit();
+                  } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    saveDescEdit();
+                  }
+                }}
+                onBlur={() => { if (editingDesc) saveDescEdit(); }}
+                rows={2}
+                className="text-[11px] min-h-[44px] py-1.5"
+                disabled={savingDesc}
+                data-testid={`textarea-line-description-${li.id}`}
+              />
+              <div className="flex items-center gap-1">
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-6 px-2 text-[10px]"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={saveDescEdit}
+                  disabled={savingDesc}
+                  data-testid={`button-save-line-description-${li.id}`}
+                >
+                  {savingDesc ? <Loader2 size={10} className="animate-spin" /> : "Save"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-6 px-2 text-[10px]"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={cancelDescEdit}
+                  disabled={savingDesc}
+                  data-testid={`button-cancel-line-description-${li.id}`}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div
+              role={disabled ? undefined : "button"}
+              tabIndex={disabled ? -1 : 0}
+              onClick={enterDescEdit}
+              onKeyDown={(e) => {
+                if (disabled) return;
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  enterDescEdit();
+                }
+              }}
+              className={`whitespace-pre-wrap rounded px-1 -mx-1 outline-none ${disabled ? "" : "cursor-text hover:bg-[#c1a27b]/10 focus:ring-2 focus:ring-[#c1a27b]/40"}`}
+              title={disabled ? undefined : "Click to edit"}
+              data-testid={`cell-line-description-${li.id}`}
+            >
+              {li.description}
+            </div>
+          )}
+        </td>
         <td className="py-1.5 px-2 text-[11px] text-right">{li.quantity}</td>
         <td className="py-1.5 px-2 text-[11px] text-right">{li.unitPriceHt ? formatCurrency(parseFloat(li.unitPriceHt)) : "-"}</td>
         <td className="py-1.5 px-2 text-[11px] text-right font-medium">{formatCurrency(parseFloat(li.totalHt))}</td>
@@ -1244,7 +1359,7 @@ function LineItemWithCheck({ li, onUpdate, disabled = false }: { li: DevisLineIt
               min={0}
               max={100}
               step={5}
-              onBlur={(e) => { if (!disabled) onUpdate({ percentComplete: e.target.value }); }}
+              onBlur={(e) => { if (!disabled) fireUpdate({ percentComplete: e.target.value }); }}
               disabled={disabled}
               data-testid={`input-line-progress-${li.id}`}
             />
@@ -1300,7 +1415,7 @@ function LineItemWithCheck({ li, onUpdate, disabled = false }: { li: DevisLineIt
               onBlur={(e) => {
                 if (disabled) return;
                 if (e.target.value !== notes) {
-                  onUpdate({ checkNotes: e.target.value });
+                  fireUpdate({ checkNotes: e.target.value });
                 }
               }}
               disabled={disabled}
@@ -1863,7 +1978,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
                     <LineItemWithCheck
                       key={li.id}
                       li={li}
-                      onUpdate={(data) => updateLineItemMutation.mutate({ id: li.id, ...data })}
+                      onUpdate={(data) => updateLineItemMutation.mutateAsync({ id: li.id, ...data })}
                       disabled={isArchived}
                     />
                   ))}
