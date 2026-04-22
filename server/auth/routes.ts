@@ -76,7 +76,7 @@ export function registerAuthRoutes(app: Express) {
 
   if (env.NODE_ENV !== "production" && env.ENABLE_DEV_LOGIN_FOR_E2E) {
     console.warn(
-      "[auth] ⚠ DEV LOGIN ENABLED — POST /api/auth/dev-login will accept arbitrary emails. NEVER set ENABLE_DEV_LOGIN_FOR_E2E in production.",
+      "[auth] ⚠ DEV LOGIN ENABLED — POST /api/auth/dev-login will accept ARBITRARY email addresses (any domain, bypassing the production @renosud.com Google OAuth restriction). NEVER set ENABLE_DEV_LOGIN_FOR_E2E in production.",
     );
     app.post("/api/auth/dev-login", async (req: Request, res: Response) => {
       const email = typeof req.body?.email === "string" ? req.body.email.trim() : "";

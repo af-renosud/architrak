@@ -15,7 +15,12 @@ introduced in task #66 (`inline-edit-french-line-items.md`).
 ## Prerequisites
 - App running locally (`npm run dev`) with `NODE_ENV=development`.
 - Dev-only login endpoint enabled: `POST /api/auth/dev-login {email}`
-  (registered in `server/auth/routes.ts`, gated on `NODE_ENV !== "production"`).
+  (registered in `server/auth/routes.ts`, gated on **both** `NODE_ENV !== "production"`
+  **and** the explicit opt-in flag `ENABLE_DEV_LOGIN_FOR_E2E=1` (also accepts
+  `true`/`yes`/`on`); without that flag the route returns 404 even in development).
+  Set it for the test run, e.g. `ENABLE_DEV_LOGIN_FOR_E2E=1 npm run dev`.
+  NEVER enable this flag in any production environment — it bypasses the
+  @renosud.com Google OAuth domain restriction and accepts arbitrary emails.
 
 ## Test plan (paste into runTest as `testPlan`)
 
