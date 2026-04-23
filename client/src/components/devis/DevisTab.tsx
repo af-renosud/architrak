@@ -452,11 +452,11 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
               </div>
 
               {/* Slot: Totals — anchored hard right with navy left rule */}
-              <div className="pl-4 border-l-2 border-[#0B2545]/20 min-w-[9rem] text-right tabular-nums">
-                <span className="text-[14px] font-semibold text-foreground" data-testid={`text-devis-ttc-${d.id}`}>
+              <div className="pl-4 border-l-2 border-[#0B2545]/20 min-w-[10rem] text-right tabular-nums">
+                <div className="text-[18px] font-black tracking-tight leading-none text-[#0B2545]" data-testid={`text-devis-ttc-${d.id}`}>
                   {formatCurrency(parseFloat(d.amountTtc))}
-                </span>
-                <p className="text-[9px] text-muted-foreground">TTC</p>
+                </div>
+                <p className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground mt-1">TTC</p>
                 <span className="text-[10px] text-muted-foreground" data-testid={`text-devis-ht-${d.id}`}>
                   {formatCurrency(parseFloat(d.amountHt))} HT
                 </span>
