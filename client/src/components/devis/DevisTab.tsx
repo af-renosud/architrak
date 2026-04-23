@@ -1591,11 +1591,16 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
   );
 }
 
-const CHECK_COLORS: Record<string, { bg: string; border: string; ring: string }> = {
-  green: { bg: "bg-emerald-500", border: "border-l-emerald-500", ring: "ring-emerald-300" },
-  amber: { bg: "bg-amber-400", border: "border-l-amber-400", ring: "ring-amber-200" },
-  red: { bg: "bg-rose-500", border: "border-l-rose-500", ring: "ring-rose-300" },
-  unchecked: { bg: "", border: "border-l-transparent", ring: "" },
+const CHECK_COLORS: Record<string, { bg: string; border: string; ring: string; row: string }> = {
+  // `bg`/`ring` style the status PILL. `border` is the 3px coloured stripe on
+  // the left edge of the row. `row` is the subtle background wash applied to
+  // the whole <tr> so flagged lines pop at-a-glance — this matches the
+  // `rowTint` helper from the canvas-approved Variant B mockup
+  // (artifacts/mockup-sandbox/src/components/mockups/devis-checks/_shared.tsx).
+  green: { bg: "bg-emerald-500", border: "border-l-emerald-500", ring: "ring-emerald-300", row: "bg-emerald-50/30" },
+  amber: { bg: "bg-amber-400", border: "border-l-amber-400", ring: "ring-amber-200", row: "bg-amber-50/40" },
+  red: { bg: "bg-rose-500", border: "border-l-rose-500", ring: "ring-rose-300", row: "bg-rose-50/40" },
+  unchecked: { bg: "", border: "border-l-transparent", ring: "", row: "" },
 };
 
 function LineItemWithCheck({
@@ -1754,7 +1759,7 @@ function LineItemWithCheck({
 
   return (
     <>
-      <tr className={`border-l-[3px] ${colors.border} ${savingDesc ? "opacity-60" : ""}`}>
+      <tr className={`border-l-[3px] ${colors.border} ${colors.row} ${savingDesc ? "opacity-60" : ""}`}>
         <td className="py-1.5 px-2 text-[11px] align-top">{li.lineNumber}</td>
         <td className="py-1.5 px-2 text-[11px] align-top">
           {editingDesc ? (
@@ -3336,16 +3341,6 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
         </div>
       )}
 
-      {!isVoid && (
-        <ChecksPanel
-          devisId={devis.id}
-          projectId={projectId}
-          isArchived={isArchived}
-          contractorEmail={contractors.find((c) => c.id === devis.contractorId)?.email ?? null}
-          lineItems={lineItems ?? []}
-        />
-      )}
-
       <div className="flex items-center gap-1.5 py-2" data-testid={`stepper-signoff-${devis.id}`}>
         {SIGN_OFF_STAGES.map((stage, idx) => {
           const isCompleted = idx <= currentStageIndex && !isVoid;
@@ -3464,6 +3459,22 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
         }}
         onUpdateLineItem={(id, data) => updateLineItemMutation.mutateAsync({ id, ...data })}
       />
+
+      {/* Bottom-mirror digest of contractor questions sits BELOW the line-items
+          table (Variant B layout from the canvas). Architects flag rows red in
+          the table above, the popover seeds the question, and this panel
+          summarises what will go out in the next email round. Kept above the
+          sign-off stepper so checksLocked gating stays visually adjacent to
+          the gated SENT_TO_CLIENT button. */}
+      {!isVoid && (
+        <ChecksPanel
+          devisId={devis.id}
+          projectId={projectId}
+          isArchived={isArchived}
+          contractorEmail={contractors.find((c) => c.id === devis.contractorId)?.email ?? null}
+          lineItems={lineItems ?? []}
+        />
+      )}
 
       <Dialog open={voidDialogOpen} onOpenChange={setVoidDialogOpen}>
         <DialogContent className="max-w-sm">
