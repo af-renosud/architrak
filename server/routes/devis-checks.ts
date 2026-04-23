@@ -389,6 +389,15 @@ async function auditTokenAction(devisId: number, note: string) {
       }),
     ),
   );
+  // Fallback when there is no check thread to host the audit row (e.g. the
+  // architect rotates the link via "Copier le lien" before any question has
+  // been written). Without this we'd silently drop the audit trail for that
+  // edge case. Server logs aren't the strongest audit surface but they are
+  // consistent with the rest of the request log and grep-able by devisId.
+  if (checks.length === 0) {
+    // eslint-disable-next-line no-console
+    console.info(`[devis-check-token-audit] devis=${devisId} ${note}`);
+  }
 }
 
 function describeUser(user: { firstName?: string | null; lastName?: string | null; email: string } | null): string {
@@ -482,6 +491,59 @@ router.post(
     const user = (userId ? await storage.getUser(Number(userId)) : null) ?? null;
     await auditTokenAction(devisId, `Lien contractant révoqué par ${describeUser(user)}.`);
     res.json({ revoked: true });
+  },
+);
+
+/**
+ * Architect "Copier le lien" action: issue a fresh portal token and return the
+ * raw URL so the architect can paste it into WhatsApp / SMS / etc. when the
+ * email channel is not enough.
+ *
+ * IMPORTANT — this rotates the token. The hash-only storage means we cannot
+ * recover the raw value of an existing active token, so the only way to hand
+ * the architect a working URL is to issue a new one. The previous token (if
+ * any) is automatically revoked by `storage.createDevisCheckToken`. This is
+ * the same rotation behaviour `/checks/send` uses, and the frontend warns the
+ * user before triggering it.
+ *
+ * Audited as a system message in every unresolved check thread so the action
+ * is visible alongside the email-send audit trail.
+ */
+router.post(
+  "/api/devis/:devisId/check-token/issue-for-copy",
+  validateRequest({ params: devisIdParams }),
+  async (req, res) => {
+    const devisId = Number(req.params.devisId);
+    const userId = req.session?.userId ?? null;
+    const devis = await storage.getDevis(devisId);
+    if (!devis) return res.status(404).json({ message: "Devis introuvable" });
+    const contractor = await storage.getContractor(devis.contractorId);
+    if (!contractor) return res.status(404).json({ message: "Entreprise introuvable" });
+    if (!contractor.email) {
+      return res.status(409).json({ message: "L'entreprise n'a pas d'email enregistré" });
+    }
+    if (!env.PUBLIC_BASE_URL) {
+      return res.status(500).json({ message: "PUBLIC_BASE_URL is not configured" });
+    }
+
+    const issued = await issueDevisCheckToken({
+      devisId,
+      contractorId: contractor.id,
+      contractorEmail: contractor.email,
+      createdByUserId: userId,
+    });
+    const portalUrl = buildPortalUrl(env.PUBLIC_BASE_URL, issued.raw);
+
+    const user = (userId ? await storage.getUser(Number(userId)) : null) ?? null;
+    await auditTokenAction(
+      devisId,
+      `Lien contractant régénéré pour partage manuel par ${describeUser(user)}.`,
+    );
+
+    // Only return the URL — the TokenPanel re-fetches /check-token to refresh
+    // its createdAt/expiresAt display, so we don't need to echo metadata that
+    // would force the test mock to grow a `record` shape.
+    res.json({ portalUrl });
   },
 );
 

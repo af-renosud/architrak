@@ -16,7 +16,7 @@ import { Receipt, FilePlus2, ListOrdered, Languages } from "lucide-react";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff, ShieldCheck, ShieldAlert, ShieldX, Trash2, X, Tag, Settings as SettingsIcon, Wand2, Pencil, UserCog } from "lucide-react";
+import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff, ShieldCheck, ShieldAlert, ShieldX, Trash2, X, Tag, Settings as SettingsIcon, Wand2, Pencil, UserCog, Copy } from "lucide-react";
 import { Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -1953,6 +1953,7 @@ function LapsingTokenBanner({ devisId, isArchived }: { devisId: number; isArchiv
 
 function TokenPanel({ devisId, projectId, isArchived }: { devisId: number; projectId: string; isArchived: boolean }) {
   const { toast } = useToast();
+  const [copyConfirmOpen, setCopyConfirmOpen] = useState(false);
   const { data, isLoading } = useQuery<{ token: CheckTokenInfo | null }>({
     queryKey: ["/api/devis", devisId, "check-token"],
   });
@@ -1980,10 +1981,45 @@ function TokenPanel({ devisId, projectId, isArchived }: { devisId: number; proje
     onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
   });
 
+  // "Copier le lien" — issues a fresh token and copies the raw URL to the
+  // clipboard so the architect can share it via WhatsApp / SMS / etc. Always
+  // rotates: previous tokens cannot be recovered (hash-only storage), so the
+  // confirm dialog warns the user before invalidating any link already sent.
+  const copyMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/devis/${devisId}/check-token/issue-for-copy`, {});
+      return res.json() as Promise<{ portalUrl: string }>;
+    },
+    onSuccess: async (data) => {
+      try {
+        await navigator.clipboard.writeText(data.portalUrl);
+        toast({
+          title: "Lien copié",
+          description: "Le nouveau lien contractant est dans le presse-papiers.",
+        });
+      } catch {
+        // Clipboard write can fail in non-secure contexts or when the tab is
+        // not focused — surface the URL in the toast so the user can copy it
+        // manually rather than losing the freshly issued link.
+        toast({
+          title: "Lien généré (copie manuelle)",
+          description: data.portalUrl,
+        });
+      }
+      invalidate();
+      setCopyConfirmOpen(false);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      setCopyConfirmOpen(false);
+    },
+  });
+
   if (isLoading) return null;
   const token = data?.token ?? null;
   const isRevoked = !!token?.revokedAt;
   const isExpired = !!(token?.expiresAt && new Date(token.expiresAt).getTime() <= Date.now());
+  const hasActiveLink = !!token && !isRevoked && !isExpired;
   const stateLabel = !token
     ? "Aucun lien émis"
     : isRevoked
@@ -2010,36 +2046,80 @@ function TokenPanel({ devisId, projectId, isArchived }: { devisId: number; proje
             {stateLabel}
           </span>
         </div>
-        {token && !isRevoked && !isArchived && (
+        {!isArchived && (
           <div className="flex items-center gap-1.5">
-            {/* Prolonger only makes sense on a still-valid token. The backend
-                rejects extending an expired token with 409 (lapsed links must
-                be re-issued via Envoyer), so we hide the button to match. */}
-            {!isExpired && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-6 text-[9px] font-bold uppercase tracking-widest"
-                onClick={() => extendMutation.mutate()}
-                disabled={extendMutation.isPending}
-                data-testid={`button-extend-token-${devisId}`}
-              >
-                {extendMutation.isPending ? "…" : "Prolonger"}
-              </Button>
-            )}
+            {/* Copier le lien — always available so the architect can grab a
+                share URL even when no link has ever been emailed (e.g. to send
+                via WhatsApp before the email round). Always rotates the token
+                because raw values aren't recoverable from the hash, so we
+                confirm first to make the impact explicit. */}
             <Button
               variant="outline"
               size="sm"
-              className="h-6 text-[9px] font-bold uppercase tracking-widest border-rose-300 text-rose-700 hover:bg-rose-50"
-              onClick={() => revokeMutation.mutate()}
-              disabled={revokeMutation.isPending}
-              data-testid={`button-revoke-token-${devisId}`}
+              className="h-6 text-[9px] font-bold uppercase tracking-widest gap-1"
+              onClick={() => setCopyConfirmOpen(true)}
+              disabled={copyMutation.isPending}
+              data-testid={`button-copy-token-link-${devisId}`}
             >
-              {revokeMutation.isPending ? "…" : "Révoquer"}
+              <Copy size={10} />
+              {copyMutation.isPending ? "…" : "Copier le lien"}
             </Button>
+            {token && !isRevoked && (
+              <>
+                {/* Prolonger only makes sense on a still-valid token. The backend
+                    rejects extending an expired token with 409 (lapsed links must
+                    be re-issued via Envoyer), so we hide the button to match. */}
+                {!isExpired && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-6 text-[9px] font-bold uppercase tracking-widest"
+                    onClick={() => extendMutation.mutate()}
+                    disabled={extendMutation.isPending}
+                    data-testid={`button-extend-token-${devisId}`}
+                  >
+                    {extendMutation.isPending ? "…" : "Prolonger"}
+                  </Button>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-6 text-[9px] font-bold uppercase tracking-widest border-rose-300 text-rose-700 hover:bg-rose-50"
+                  onClick={() => revokeMutation.mutate()}
+                  disabled={revokeMutation.isPending}
+                  data-testid={`button-revoke-token-${devisId}`}
+                >
+                  {revokeMutation.isPending ? "…" : "Révoquer"}
+                </Button>
+              </>
+            )}
           </div>
         )}
       </div>
+      <AlertDialog open={copyConfirmOpen} onOpenChange={(o) => { if (!copyMutation.isPending) setCopyConfirmOpen(o); }}>
+        <AlertDialogContent data-testid={`dialog-confirm-copy-token-${devisId}`}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {hasActiveLink ? "Régénérer et copier le lien ?" : "Émettre un nouveau lien ?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {hasActiveLink
+                ? "Un nouveau lien sera généré et copié dans le presse-papiers. Le lien actif actuel cessera immédiatement de fonctionner — tout email déjà envoyé deviendra inopérant."
+                : "Un lien contractant sera généré et copié dans le presse-papiers. Vous pourrez ensuite le partager via WhatsApp, SMS ou tout autre canal."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid={`button-cancel-copy-token-${devisId}`}>Annuler</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => { e.preventDefault(); copyMutation.mutate(); }}
+              disabled={copyMutation.isPending}
+              data-testid={`button-confirm-copy-token-${devisId}`}
+            >
+              {copyMutation.isPending ? "Génération…" : hasActiveLink ? "Régénérer et copier" : "Émettre et copier"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       {token && (
         <div className="grid grid-cols-3 gap-2 text-[10px] text-slate-600">
           <div>

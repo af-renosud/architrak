@@ -130,6 +130,12 @@ vi.mock("../auth/middleware", () => ({ requireAuth: (_req: any, _res: any, next:
 vi.mock("../env", () => ({ env: { PUBLIC_BASE_URL: "https://example.test", NODE_ENV: "test", SESSION_SECRET: "x" } }));
 vi.mock("../services/devis-checks", () => ({
   issueDevisCheckToken: vi.fn(async (opts: any) => {
+    // Mirror storage.createDevisCheckToken: revoke any active token for this
+    // devis first so the partial-unique invariant is preserved and rotation
+    // semantics match production.
+    state.tokens
+      .filter((t) => t.devisId === opts.devisId && !t.revokedAt)
+      .forEach((t) => { t.revokedAt = new Date(); });
     const raw = `raw-${Math.random().toString(36).slice(2)}`;
     state.tokens.push({ id: ++state.nextId, devisId: opts.devisId, tokenHash: `hash:${raw}`, revokedAt: null });
     return { raw };
@@ -649,5 +655,79 @@ describe("Notifications inbox — contractor responses", () => {
     const body = await res.json();
     expect(body.count).toBe(0);
     expect(body.items).toEqual([]);
+  });
+});
+
+describe("Devis CHECKING — issue-for-copy route", () => {
+  beforeAll(async () => { await withApp(); });
+
+  it("issues a fresh token and returns the portal URL using PUBLIC_BASE_URL (not the request host)", async () => {
+    state.devis.push({ id: 60, projectId: 1, contractorId: 1, signOffStage: "received" });
+    state.contractors.push({ id: 1, name: "Acme", email: "a@e.com" });
+    state.projects.push({ id: 1, name: "P" });
+
+    const res = await fetch(`${baseUrl}/api/devis/60/check-token/issue-for-copy`, { method: "POST" });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.portalUrl).toMatch(/^https:\/\/example\.test\/p\/check\/raw-/);
+    // A token row was created and is the only active token for the devis.
+    const active = state.tokens.filter((t) => t.devisId === 60 && !t.revokedAt);
+    expect(active).toHaveLength(1);
+  });
+
+  it("rotates: when an active token already exists it is revoked and a new one is issued", async () => {
+    state.devis.push({ id: 61, projectId: 1, contractorId: 1, signOffStage: "received" });
+    state.contractors.push({ id: 1, name: "Acme", email: "a@e.com" });
+    state.projects.push({ id: 1, name: "P" });
+    // Pre-existing active token (would've been issued by an earlier email send).
+    const oldRaw = "old-raw-value";
+    state.tokens.push({ id: 7000, devisId: 61, tokenHash: `hash:${oldRaw}`, revokedAt: null });
+
+    const res = await fetch(`${baseUrl}/api/devis/61/check-token/issue-for-copy`, { method: "POST" });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // The old token must be revoked, exactly one new active token remains, and
+    // its raw value (encoded in the URL) is different from the old one.
+    const oldToken = state.tokens.find((t) => t.id === 7000)!;
+    expect(oldToken.revokedAt).toBeInstanceOf(Date);
+    const active = state.tokens.filter((t) => t.devisId === 61 && !t.revokedAt);
+    expect(active).toHaveLength(1);
+    expect(body.portalUrl).not.toContain(oldRaw);
+  });
+
+  it("returns 409 when the contractor has no email on file", async () => {
+    state.devis.push({ id: 62, projectId: 1, contractorId: 2, signOffStage: "received" });
+    state.contractors.push({ id: 2, name: "NoEmail", email: "" });
+    state.projects.push({ id: 1, name: "P" });
+
+    const res = await fetch(`${baseUrl}/api/devis/62/check-token/issue-for-copy`, { method: "POST" });
+    expect(res.status).toBe(409);
+    // No token must have been issued on the failing path.
+    expect(state.tokens.filter((t) => t.devisId === 62)).toHaveLength(0);
+  });
+
+  it("returns 404 when the devis does not exist", async () => {
+    const res = await fetch(`${baseUrl}/api/devis/9999/check-token/issue-for-copy`, { method: "POST" });
+    expect(res.status).toBe(404);
+  });
+
+  it("succeeds and falls back to a server log when there are no check threads to host the audit row", async () => {
+    state.devis.push({ id: 63, projectId: 1, contractorId: 1, signOffStage: "received" });
+    state.contractors.push({ id: 1, name: "Acme", email: "a@e.com" });
+    state.projects.push({ id: 1, name: "P" });
+    // Intentionally no checks for devis 63 — exercise the audit fallback.
+
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    try {
+      const res = await fetch(`${baseUrl}/api/devis/63/check-token/issue-for-copy`, { method: "POST" });
+      expect(res.status).toBe(200);
+      expect(state.tokens.filter((t) => t.devisId === 63 && !t.revokedAt)).toHaveLength(1);
+      const logged = infoSpy.mock.calls.some(
+        (c) => typeof c[0] === "string" && (c[0] as string).includes("[devis-check-token-audit] devis=63"),
+      );
+      expect(logged).toBe(true);
+    } finally {
+      infoSpy.mockRestore();
+    }
   });
 });
