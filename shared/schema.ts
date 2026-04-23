@@ -14,6 +14,8 @@ import {
   uniqueIndex,
   index,
   check,
+  doublePrecision,
+  bigint,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -590,6 +592,15 @@ export const webhookEvents = pgTable("webhook_events", {
   index("webhook_events_event_type_idx").on(table.eventType),
   index("webhook_events_processed_at_idx").on(table.processedAt),
 ]);
+
+// Token-bucket store for the Postgres-backed rate limiter
+// (server/middleware/rate-limit.ts). Declared here so the deploy schema diff
+// matches what the runtime middleware creates on demand.
+export const rateLimitBuckets = pgTable("rate_limit_buckets", {
+  key: text("key").primaryKey(),
+  tokens: doublePrecision("tokens").notNull(),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+});
 
 export const templateAssets = pgTable("template_assets", {
   id: serial("id").primaryKey(),
