@@ -263,6 +263,7 @@ export default function SettingsPage() {
         <LotCatalogSection />
         <DevisRematchSection />
         <InvoiceRematchSection />
+        <PageHintBackfillSection />
       </main>
     </div>
   );
@@ -730,6 +731,238 @@ function InvoiceRematchSection() {
               </Button>
             </div>
           </>
+        )}
+      </LuxuryCard>
+    </div>
+  );
+}
+
+interface BackfillStats {
+  devisId: number;
+  devisCode: string | null;
+  status:
+    | "skipped-no-pdf"
+    | "skipped-no-lines"
+    | "skipped-already-complete"
+    | "skipped-parse-failed"
+    | "skipped-no-extracted-lines"
+    | "updated"
+    | "no-new-hints";
+  lineItems: number;
+  alreadyHinted: number;
+  updated: number;
+  reason?: string;
+}
+
+interface PageHintCandidate {
+  devisId: number;
+  devisCode: string | null;
+  devisNumber: string | null;
+  projectId: number;
+  projectName: string | null;
+  totalLines: number;
+  missingHints: number;
+}
+
+interface PageHintStats {
+  totalDevisWithPdf: number;
+  devisMissingHints: number;
+  lineItemsMissingHints: number;
+  candidates: PageHintCandidate[];
+}
+
+function PageHintBackfillSection() {
+  const { toast } = useToast();
+  const [runningId, setRunningId] = useState<number | null>(null);
+  const [lastResultByDevis, setLastResultByDevis] = useState<Record<number, BackfillStats>>({});
+
+  const { data, isFetching, refetch } = useQuery<PageHintStats>({
+    queryKey: ["/api/admin/page-hint-backfill/stats"],
+  });
+
+  const candidates = data?.candidates ?? [];
+
+  const runMutation = useMutation({
+    mutationFn: async (devisId: number) => {
+      const res = await apiRequest("POST", "/api/admin/page-hint-backfill/run", { devisId });
+      return (await res.json()) as { stats: BackfillStats };
+    },
+    onMutate: (devisId: number) => {
+      setRunningId(devisId);
+    },
+    onSuccess: (result, devisId) => {
+      setLastResultByDevis((prev) => ({ ...prev, [devisId]: result.stats }));
+      const s = result.stats;
+      const tag = s.devisCode ?? `#${s.devisId}`;
+      if (s.status === "updated") {
+        toast({
+          title: `${tag}: ${s.updated} hint${s.updated === 1 ? "" : "s"} added`,
+          description: `${s.alreadyHinted} were already set, ${s.lineItems - s.alreadyHinted} were pending.`,
+        });
+      } else if (s.status === "no-new-hints") {
+        toast({
+          title: `${tag}: re-extracted but no usable hints`,
+          description: "The AI did not emit page hints for the pending lines.",
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: `${tag}: ${s.status}`,
+          description: s.reason ?? "Nothing to do.",
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/page-hint-backfill/stats"] });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Backfill failed", description: err.message, variant: "destructive" });
+    },
+    onSettled: () => {
+      setRunningId(null);
+    },
+  });
+
+  return (
+    <div className="mt-10">
+      <div className="mb-6 flex items-start justify-between gap-3">
+        <div>
+          <h2
+            className="text-[16px] font-black uppercase tracking-tight mb-1"
+            style={{ color: "#0B2545" }}
+            data-testid="text-page-hint-backfill-title"
+          >
+            Backfill PDF Page Hints
+          </h2>
+          <p className="text-[11px] text-muted-foreground">
+            Re-extracts the per-line PDF page hint used by the contractor portal's
+            "Voir page N" button. Triggers the same per-devis logic as the CLI script.
+            Only the page-hint column is patched — descriptions, totals and other fields are left alone.
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => refetch()}
+          disabled={isFetching}
+          data-testid="button-page-hint-refresh"
+        >
+          <RefreshCw size={12} className={cn("mr-1.5", isFetching && "animate-spin")} />
+          <span className="text-[10px] font-bold uppercase tracking-widest">
+            {isFetching ? "Scanning..." : "Refresh"}
+          </span>
+        </Button>
+      </div>
+
+      <LuxuryCard>
+        <div className="flex items-start gap-3 mb-5">
+          <div
+            className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"
+            style={{ backgroundColor: "rgba(11, 37, 69, 0.08)" }}
+          >
+            <FileText size={14} style={{ color: "#0B2545" }} />
+          </div>
+          <div className="flex-1">
+            <h3 className="text-[12px] font-bold text-foreground mb-0.5">
+              Coverage
+            </h3>
+            <p className="text-[10px] text-muted-foreground leading-relaxed">
+              {data
+                ? `${data.devisMissingHints} of ${data.totalDevisWithPdf} devis-with-PDF are missing at least one page hint (${data.lineItemsMissingHints} line item${data.lineItemsMissingHints === 1 ? "" : "s"} pending).`
+                : "Loading coverage statistics..."}
+            </p>
+          </div>
+        </div>
+
+        {isFetching && candidates.length === 0 ? (
+          <div className="space-y-2">
+            <Skeleton className="h-12 rounded-md" />
+            <Skeleton className="h-12 rounded-md" />
+            <Skeleton className="h-12 rounded-md" />
+          </div>
+        ) : candidates.length === 0 ? (
+          <div className="text-[11px] text-muted-foreground py-6 text-center" data-testid="text-page-hint-empty">
+            Every devis with a stored PDF already has page hints on every line item. Nothing to backfill.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr className="text-left border-b border-[rgba(0,0,0,0.06)]">
+                  <th className="py-2 pr-2"><TechnicalLabel>Project</TechnicalLabel></th>
+                  <th className="py-2 pr-2"><TechnicalLabel>Devis</TechnicalLabel></th>
+                  <th className="py-2 pr-2 text-right"><TechnicalLabel>Pending / Total</TechnicalLabel></th>
+                  <th className="py-2 pr-2"><TechnicalLabel>Last result</TechnicalLabel></th>
+                  <th className="py-2 pr-2 text-right"><TechnicalLabel>Action</TechnicalLabel></th>
+                </tr>
+              </thead>
+              <tbody>
+                {candidates.map((c) => {
+                  const last = lastResultByDevis[c.devisId];
+                  const isRunning = runningId === c.devisId && runMutation.isPending;
+                  return (
+                    <tr
+                      key={c.devisId}
+                      className="border-b border-[rgba(0,0,0,0.04)]"
+                      data-testid={`row-page-hint-${c.devisId}`}
+                    >
+                      <td className="py-2 pr-2 align-top">
+                        <div className="font-medium" data-testid={`text-page-hint-project-${c.devisId}`}>
+                          {c.projectName ?? `#${c.projectId}`}
+                        </div>
+                      </td>
+                      <td className="py-2 pr-2 align-top">
+                        <div className="font-medium">{c.devisCode ?? `#${c.devisId}`}</div>
+                        {c.devisNumber && (
+                          <div className="text-[10px] text-muted-foreground">{c.devisNumber}</div>
+                        )}
+                      </td>
+                      <td className="py-2 pr-2 align-top text-right" data-testid={`text-page-hint-pending-${c.devisId}`}>
+                        <span className="text-amber-700 font-medium">{c.missingHints}</span>
+                        <span className="text-muted-foreground"> / {c.totalLines}</span>
+                      </td>
+                      <td className="py-2 pr-2 align-top">
+                        {last ? (
+                          <span
+                            className={cn(
+                              "text-[10px]",
+                              last.status === "updated" && "text-emerald-700",
+                              last.status === "no-new-hints" && "text-amber-700",
+                              last.status.startsWith("skipped") && "text-muted-foreground",
+                            )}
+                            data-testid={`text-page-hint-last-${c.devisId}`}
+                          >
+                            {last.status === "updated"
+                              ? `+${last.updated} hint${last.updated === 1 ? "" : "s"}`
+                              : last.status}
+                            {last.reason ? ` — ${last.reason}` : ""}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-muted-foreground">—</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-2 align-top text-right">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => runMutation.mutate(c.devisId)}
+                          disabled={runMutation.isPending}
+                          data-testid={`button-page-hint-run-${c.devisId}`}
+                        >
+                          {isRunning ? (
+                            <Loader2 size={12} className="mr-1.5 animate-spin" />
+                          ) : (
+                            <Wand2 size={12} className="mr-1.5" />
+                          )}
+                          <span className="text-[10px] font-bold uppercase tracking-widest">
+                            {isRunning ? "Running..." : "Backfill"}
+                          </span>
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </LuxuryCard>
     </div>
