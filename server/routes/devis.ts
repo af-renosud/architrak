@@ -284,9 +284,11 @@ router.patch(
     const devisId = Number(req.params.id);
     const existing = await storage.getDevisTranslation(devisId);
     if (!existing) return res.status(404).json({ message: "No translation to update" });
-    if (existing.status === "finalised") {
-      return res.status(409).json({ message: "Translation is finalised and cannot be edited. Re-translate all to unlock." });
-    }
+    // NOTE: Edits are accepted even when the translation is "finalised" (approved).
+    // Architects asked for inline tweaks without having to re-translate everything;
+    // this is a low-risk content change, not a security-sensitive one. The approval
+    // metadata (approvedAt / approvedByEmail) is preserved untouched below.
+    const wasFinalised = existing.status === "finalised";
 
     const previousLines = (existing.lineTranslations as z.infer<typeof devisTranslationLineSchema>[] | null) || [];
     const previousByNum = new Map(previousLines.map((l) => [l.lineNumber, l]));
@@ -308,7 +310,9 @@ router.patch(
       lineTranslations: mergedLines,
       translatedPdfStorageKey: null,
       combinedPdfStorageKey: null,
-      status: "edited",
+      // Keep the approved/finalised state if it was already approved — only
+      // bump to "edited" when starting from a non-finalised state.
+      status: wasFinalised ? "finalised" : "edited",
     });
     res.json(updated);
   },

@@ -346,7 +346,7 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
         >
           <Lock className="h-3 w-3" />
           Approved {translation.approvedByEmail ? `by ${translation.approvedByEmail} ` : ""}
-          on {new Date(translation.approvedAt).toLocaleString("en-GB")}. Re-translate all to unlock.
+          on {new Date(translation.approvedAt).toLocaleString("en-GB")}. Edits stay editable — approval is preserved.
         </p>
       )}
 
@@ -365,7 +365,7 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
                   <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Document overview</div>
                   <Textarea
                     value={localHeader.summary || ""}
-                    readOnly={isFinalised}
+                    readOnly={false}
                     onChange={(e) => setLocalHeader({ ...(localHeader || {}), summary: e.target.value })}
                     onBlur={(e) => persistHeader({ summary: e.target.value })}
                     className="mt-1 min-h-[44px] text-sm bg-background"
@@ -378,7 +378,7 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
                   <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Plain-English note</div>
                   <Textarea
                     value={localHeader.descriptionExplanation || ""}
-                    readOnly={isFinalised}
+                    readOnly={false}
                     onChange={(e) => setLocalHeader({ ...(localHeader || {}), descriptionExplanation: e.target.value })}
                     onBlur={(e) => persistHeader({ descriptionExplanation: e.target.value })}
                     className="mt-1 min-h-[44px] text-xs bg-background"
@@ -417,7 +417,7 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
                       <div className="text-[10px] uppercase tracking-wider text-muted-foreground pt-1">English (literal)</div>
                       <Textarea
                         value={t?.translation ?? ""}
-                        readOnly={isFinalised}
+                        readOnly={false}
                         onChange={(e) => {
                           const newMap = new Map(localLines);
                           const cur = newMap.get(li.lineNumber);
@@ -441,7 +441,7 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
                           </div>
                           <Textarea
                             value={t?.explanation ?? ""}
-                            readOnly={isFinalised}
+                            readOnly={false}
                             onChange={(e) => {
                               const newMap = new Map(localLines);
                               const cur = newMap.get(li.lineNumber);
