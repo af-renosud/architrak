@@ -210,6 +210,26 @@ export default function ProjectDetail() {
     enabled: !!project,
   });
 
+  // The "Pièces jointes" tab competes for attention with the Devis and
+  // Factures tabs, but every uploaded devis/facture PDF gets duplicated
+  // into project_documents (see devis-upload.service / invoice-upload.service)
+  // so the tab is mostly noise. We split documents into:
+  //   - "duplicated": docs whose PDF is already viewable elsewhere
+  //     (devis + factures + situations). These are the noise.
+  //   - "orphan": everything else (avenant, plan, photo, other, unknown,
+  //     manual misc uploads). These are the docs that would be lost without
+  //     this tab.
+  // Tab badge counts orphans only, tab is hidden entirely when the project
+  // has zero attachments at all.
+  const DUPLICATE_DOC_TYPES = new Set(["quotation", "invoice", "situation"]);
+  const orphanDocs = (projectDocuments ?? []).filter(
+    (d) => !DUPLICATE_DOC_TYPES.has(d.documentType ?? "other"),
+  );
+  const orphanDocCount = orphanDocs.length;
+  const hasAnyDocs = (projectDocuments?.length ?? 0) > 0;
+  const [docFilter, setDocFilter] = useState<"orphans" | "all">("orphans");
+  const visibleDocs = docFilter === "orphans" ? orphanDocs : (projectDocuments ?? []);
+
   const { data: projectComms } = useQuery<ProjectCommunication[]>({
     queryKey: ["/api/projects", projectId, "communications"],
     enabled: !!project,
@@ -863,10 +883,12 @@ export default function ProjectDetail() {
               <Coins size={12} className="mr-1" />
               Honoraires
             </TabsTrigger>
-            <TabsTrigger value="documents" data-testid="tab-documents">
-              <FileText size={12} className="mr-1" />
-              Documents {projectDocuments && projectDocuments.length > 0 ? `(${projectDocuments.length})` : ""}
-            </TabsTrigger>
+            {hasAnyDocs && (
+              <TabsTrigger value="documents" data-testid="tab-documents">
+                <FileText size={12} className="mr-1" />
+                Pièces jointes{orphanDocCount > 0 ? ` (${orphanDocCount})` : ""}
+              </TabsTrigger>
+            )}
             <TabsTrigger value="communications" data-testid="tab-communications">
               <MessageSquare size={12} className="mr-1" />
               Communications {projectComms && projectComms.length > 0 ? `(${projectComms.length})` : ""}
@@ -1837,7 +1859,33 @@ export default function ProjectDetail() {
 
           <TabsContent value="documents">
             <div className="space-y-4">
-              <div className="flex items-center justify-end">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-1 rounded-full border border-border p-0.5" data-testid="group-doc-filter">
+                  <button
+                    type="button"
+                    onClick={() => setDocFilter("orphans")}
+                    className={`px-3 py-1 text-[9px] font-bold uppercase tracking-widest rounded-full transition-colors ${
+                      docFilter === "orphans"
+                        ? "bg-foreground text-background"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                    data-testid="button-doc-filter-orphans"
+                  >
+                    Hors devis &amp; factures ({orphanDocCount})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDocFilter("all")}
+                    className={`px-3 py-1 text-[9px] font-bold uppercase tracking-widest rounded-full transition-colors ${
+                      docFilter === "all"
+                        ? "bg-foreground text-background"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                    data-testid="button-doc-filter-all"
+                  >
+                    Tout afficher ({projectDocuments?.length ?? 0})
+                  </button>
+                </div>
                 <Button onClick={handleFileUpload} disabled={uploadDocMutation.isPending || isArchived} data-testid="button-upload-doc">
                   <Upload size={14} />
                   <span className="text-[9px] font-bold uppercase tracking-widest">
@@ -1845,9 +1893,14 @@ export default function ProjectDetail() {
                   </span>
                 </Button>
               </div>
-              {projectDocuments && projectDocuments.length > 0 ? (
-                <div className="space-y-2">
-                  {projectDocuments.map((doc) => (
+              {docFilter === "orphans" && orphanDocCount === 0 && (projectDocuments?.length ?? 0) > 0 && (
+                <p className="text-[10px] text-muted-foreground" data-testid="text-doc-filter-hint">
+                  Tous les documents de ce projet sont déjà visibles dans les onglets Devis et Factures. Cliquez sur « Tout afficher » pour les lister ici aussi.
+                </p>
+              )}
+              {visibleDocs.length > 0 ? (
+                <div className="space-y-2" data-testid="list-project-docs">
+                  {visibleDocs.map((doc) => (
                     <LuxuryCard key={doc.id} className="p-4" data-testid={`card-project-doc-${doc.id}`}>
                       <div className="flex items-center justify-between gap-3">
                         <div className="flex items-center gap-3 min-w-0">
