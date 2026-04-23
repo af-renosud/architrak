@@ -13,6 +13,7 @@ export default defineConfig({
       "server/**/__tests__/**/*.test.ts",
       "client/src/**/__tests__/**/*.test.ts",
       "client/src/**/__tests__/**/*.test.tsx",
+      "scripts/__tests__/**/*.test.mjs",
     ],
     exclude: ["node_modules", ".cache", "dist"],
   },

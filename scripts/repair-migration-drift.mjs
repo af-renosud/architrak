@@ -34,7 +34,7 @@ function resolveMigrationsFolder() {
   return candidates[0];
 }
 
-async function runPruneOrphans(drift, pool, apply) {
+export async function runPruneOrphans(drift, pool, apply) {
   const result = await drift.checkMigrationDrift();
 
   if (result.reason === "no-journal") {
@@ -100,7 +100,7 @@ async function runPruneOrphans(drift, pool, apply) {
   return 1;
 }
 
-async function runInsertMissing(drift, pool, apply) {
+export async function runInsertMissing(drift, pool, apply) {
   const result = await drift.checkMigrationDrift();
 
   if (result.reason === "no-journal") {
@@ -192,9 +192,15 @@ async function main() {
   return await runInsertMissing(drift, pool, apply);
 }
 
-main()
-  .then((code) => process.exit(code ?? 0))
-  .catch((e) => {
-    console.error(e);
-    process.exit(2);
-  });
+const isDirectRun =
+  import.meta.url === `file://${process.argv[1]}` ||
+  process.argv[1]?.endsWith("repair-migration-drift.mjs");
+
+if (isDirectRun) {
+  main()
+    .then((code) => process.exit(code ?? 0))
+    .catch((e) => {
+      console.error(e);
+      process.exit(2);
+    });
+}
