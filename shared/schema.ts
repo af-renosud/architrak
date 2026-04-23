@@ -157,6 +157,12 @@ export const devisLineItems = pgTable("devis_line_items", {
   percentComplete: numeric("percent_complete", { precision: 5, scale: 2 }).default("0.00"),
   checkStatus: text("check_status").notNull().default("unchecked"),
   checkNotes: text("check_notes"),
+  // 1-indexed PDF page where this line was extracted from. Nullable because
+  // (a) the upload-time AI may not reliably emit it, and (b) older line items
+  // pre-dating Task #111 carry no page hint. The contractor portal uses this
+  // to deep-link the embedded PDF viewer to the relevant page; absence simply
+  // suppresses the click-to-jump affordance for that question.
+  pdfPageHint: integer("pdf_page_hint"),
 }, (table) => [
   index("devis_line_items_devis_id_idx").on(table.devisId),
 ]);

@@ -68,6 +68,9 @@ export interface ParsedDocument {
     unit?: string;
     unitPrice?: number;
     total?: number;
+    /** 1-indexed PDF page number this line was extracted from. Best-effort
+     *  AI signal — coerced/validated downstream (Task #111). */
+    pageHint?: number;
   }>;
   rawText?: string;
 }
@@ -121,6 +124,7 @@ Extraction Rules:
 - If auto-liquidation applies, set tvaRate to 0 and autoLiquidation to true.
 - Dates in YYYY-MM-DD format.
 - For line items, extract description, quantity, unit (e.g. m2, m3, ml, u, forfait), unitPrice, and total for each visible line.
+- For each line item, also populate "pageHint": the 1-indexed page number of the PDF on which that line appears. Pages are provided to you as separate images in order — the first image is page 1, the second is page 2, and so on. If you cannot determine the page with confidence, omit pageHint for that line.
 - If a field is not visible on the document, omit it (do not guess).`;
 
 const USER_PROMPT = `Analyze this French construction document and extract the following fields:
@@ -145,7 +149,7 @@ const USER_PROMPT = `Analyze this French construction document and extract the f
 - paymentTerms: payment conditions text if visible (e.g., "30 jours fin de mois")
 - lotReferences: array of lot codes/references visible on the document (e.g., ["Lot 1", "Lot 7 - Electricite"])
 - description: brief description of the work/service
-- lineItems: array of line items, each with {description, quantity, unit, unitPrice, total}
+- lineItems: array of line items, each with {description, quantity, unit, unitPrice, total, pageHint}
 
 Return ONLY valid JSON, no markdown, no code blocks.`;
 
@@ -283,6 +287,11 @@ const EXTRACTION_SCHEMA: ResponseSchema = {
           total: {
             type: SchemaType.NUMBER,
             description: "Line total",
+            nullable: true,
+          },
+          pageHint: {
+            type: SchemaType.NUMBER,
+            description: "1-indexed PDF page number this line appears on (1 = first page). Omit if unknown.",
             nullable: true,
           },
         },

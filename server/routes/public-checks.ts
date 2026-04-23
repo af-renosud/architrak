@@ -23,6 +23,9 @@ export interface PortalDataPayload {
     lineDescription: string | null;
     lineNumber: number | null;
     totalHt: string | null;
+    /** 1-indexed PDF page where this question's devis line appears, if
+     *  known. Powers the click-to-jump-in-PDF affordance (Task #111). */
+    pdfPageHint: number | null;
     messages: Array<{
       id: number;
       authorType: string;
@@ -56,6 +59,7 @@ export async function buildPortalPayload(devis: Devis): Promise<PortalDataPayloa
           lineDescription: li?.description ?? null,
           lineNumber: li?.lineNumber ?? null,
           totalHt: li?.totalHt ?? null,
+          pdfPageHint: li?.pdfPageHint ?? null,
           messages: (await storage.listDevisCheckMessages(c.id)).map((m) => ({
             id: m.id,
             authorType: m.authorType,
@@ -321,6 +325,8 @@ export function renderPortalShell(opts:
   .check h3 { margin: 0 0 8px; font-size: 14px; color: #475569; font-weight: 600; }
   .line-badge { display: inline-block; background: #eef2ff; color: #3730a3; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 9999px; margin-right: 4px; }
   .line-amount { color: #64748b; font-weight: 500; font-size: 12px; margin-left: 4px; }
+  .pdf-jump { display: inline-block; margin-top: 8px; background: transparent; color: #1d4ed8; border: 1px solid #bfdbfe; padding: 4px 10px; font-size: 12px; font-weight: 500; border-radius: 4px; cursor: pointer; }
+  .pdf-jump:hover { background: #eff6ff; }
   .query { background: #fef3c7; border-left: 3px solid #f59e0b; padding: 8px 12px; margin: 0 0 12px; font-size: 14px; }
   .status { display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; padding: 2px 8px; border-radius: 9999px; margin-left: 8px; }
   .status-open, .status-awaiting_contractor { background: #fee2e2; color: #991b1b; }
@@ -433,10 +439,33 @@ function render(data) {
       : (PREVIEW_MODE && c.status !== "resolved"
         ? '<div style="margin-top:8px"><textarea disabled placeholder="Aperçu architecte — réponse désactivée" data-testid="textarea-reply-disabled-' + c.id + '"></textarea><div style="margin-top:8px"><button type="button" disabled data-testid="button-send-reply-disabled-' + c.id + '">Envoyer</button></div></div>'
         : '');
+    // Click-to-jump-in-PDF affordance (Task #111). Only rendered when the
+    // upload-time extractor captured a page hint AND the question is line-
+    // scoped. General questions and older line items without a hint stay
+    // non-interactive — no broken jump targets, no regressions.
+    const jumpButton = (c.pdfPageHint != null && c.pdfPageHint >= 1 && c.lineNumber != null)
+      ? '<button type="button" class="pdf-jump" data-jump-page="' + c.pdfPageHint + '" data-testid="button-jump-page-' + c.id + '">Voir page ' + c.pdfPageHint + '</button>'
+      : '';
     return '<section class="check" data-testid="check-' + c.id + '"><h3>' + head + '<span class="status status-' + c.status + '">' + (STATUS_LABELS[c.status] || c.status) + '</span></h3>'
       + '<p class="query">' + escapeHtml(c.query) + '</p>'
+      + jumpButton
       + '<div class="messages">' + msgs + '</div>' + replyForm + '</section>';
   }).join("");
+
+  // Wire the click-to-jump-in-PDF buttons. Reload the iframe with the
+  // standard "#page=N" URL fragment that Chrome, Safari and Firefox all
+  // honour in their built-in PDF viewers. We force a full src reset (not
+  // just hash mutation) because some browsers don't re-trigger page
+  // navigation on hash-only changes inside an iframe — see Task #111 plan.
+  root.querySelectorAll("button[data-jump-page]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const page = Number(btn.getAttribute("data-jump-page"));
+      if (!Number.isFinite(page) || page < 1) return;
+      const target = PDF_URL + "#page=" + page;
+      panel.classList.add("open");
+      frame.src = target;
+    });
+  });
 
   root.querySelectorAll("form[data-check]").forEach((f) => {
     f.addEventListener("submit", async (ev) => {

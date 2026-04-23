@@ -18,7 +18,7 @@ const { state, storageSpy } = vi.hoisted(() => {
     comms: [] as Comm[],
     tokens: [] as Token[],
     messages: [] as Array<{ id: number; checkId: number; authorType: string; body: string; channel: string }>,
-    lineItems: [] as Array<{ id: number; devisId: number; lineNumber: number; description: string; totalHt: string }>,
+    lineItems: [] as Array<{ id: number; devisId: number; lineNumber: number; description: string; totalHt: string; pdfPageHint: number | null }>,
   };
   const nid = () => ++state.nextId;
 
@@ -465,8 +465,8 @@ describe("Public portal — token revocation", () => {
     state.devis.push({ id: 52, projectId: 1, contractorId: 1, signOffStage: "received" });
     state.contractors.push({ id: 1, name: "Acme", email: "a@e.com" });
     state.projects.push({ id: 1, name: "P" });
-    state.lineItems.push({ id: 4001, devisId: 52, lineNumber: 4, description: "Fourniture chaudière", totalHt: "18500.00" });
-    state.lineItems.push({ id: 4002, devisId: 52, lineNumber: 7, description: "Robinetterie", totalHt: "320.50" });
+    state.lineItems.push({ id: 4001, devisId: 52, lineNumber: 4, description: "Fourniture chaudière", totalHt: "18500.00", pdfPageHint: 2 });
+    state.lineItems.push({ id: 4002, devisId: 52, lineNumber: 7, description: "Robinetterie", totalHt: "320.50", pdfPageHint: null });
     state.checks.push({ id: 20, devisId: 52, status: "awaiting_contractor", query: "Why 18500?", lineItemId: 4001, origin: "line_item" });
     state.checks.push({ id: 21, devisId: 52, status: "open", query: "Brand?", lineItemId: 4002, origin: "line_item" });
     state.checks.push({ id: 22, devisId: 52, status: "open", query: "General?", lineItemId: null, origin: "general" });
@@ -476,11 +476,13 @@ describe("Public portal — token revocation", () => {
     const res = await fetch(`${baseUrl}/p/check/${raw}/data`);
     expect(res.status).toBe(200);
     const body = await res.json();
-    type Check = { id: number; lineNumber: number | null; totalHt: string | null; lineDescription: string | null };
+    type Check = { id: number; lineNumber: number | null; totalHt: string | null; lineDescription: string | null; pdfPageHint: number | null };
     const byId = new Map<number, Check>((body.checks as Check[]).map((c) => [c.id, c]));
-    expect(byId.get(20)).toMatchObject({ lineNumber: 4, totalHt: "18500.00", lineDescription: "Fourniture chaudière" });
-    expect(byId.get(21)).toMatchObject({ lineNumber: 7, totalHt: "320.50", lineDescription: "Robinetterie" });
-    expect(byId.get(22)).toMatchObject({ lineNumber: null, totalHt: null, lineDescription: null });
+    expect(byId.get(20)).toMatchObject({ lineNumber: 4, totalHt: "18500.00", lineDescription: "Fourniture chaudière", pdfPageHint: 2 });
+    // Line item exists but has no captured page hint → portal degrades cleanly.
+    expect(byId.get(21)).toMatchObject({ lineNumber: 7, totalHt: "320.50", lineDescription: "Robinetterie", pdfPageHint: null });
+    // General questions (no line item) never carry a page hint.
+    expect(byId.get(22)).toMatchObject({ lineNumber: null, totalHt: null, lineDescription: null, pdfPageHint: null });
   });
 
   it("falls back to null line metadata when a check references a missing line item (Task #110 edge case)", async () => {
@@ -514,7 +516,7 @@ describe("Public portal — token revocation", () => {
     state.devis.push({ id: 53, projectId: 1, contractorId: 1, signOffStage: "received" });
     state.contractors.push({ id: 1, name: "Acme", email: "a@e.com" });
     state.projects.push({ id: 1, name: "P" });
-    state.lineItems.push({ id: 5001, devisId: 53, lineNumber: 4, description: "Fourniture chaudière", totalHt: "18500.00" });
+    state.lineItems.push({ id: 5001, devisId: 53, lineNumber: 4, description: "Fourniture chaudière", totalHt: "18500.00", pdfPageHint: 2 });
     state.checks.push({ id: 30, devisId: 53, status: "open", query: "Q-line", lineItemId: 5001, origin: "line_item" });
     state.checks.push({ id: 31, devisId: 53, status: "open", query: "Q-general", lineItemId: null, origin: "general" });
 

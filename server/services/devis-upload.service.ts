@@ -152,6 +152,14 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
   if (parsed.lineItems && parsed.lineItems.length > 0) {
     for (let i = 0; i < parsed.lineItems.length; i++) {
       const li = parsed.lineItems[i];
+      // Page hint is best-effort — the AI is asked to emit it but may omit
+      // or hallucinate. Coerce to a strict positive integer or null so the
+      // portal click-to-jump (Task #111) only fires on trustworthy values.
+      const rawPageHint: unknown = li.pageHint;
+      const pdfPageHint =
+        typeof rawPageHint === "number" && Number.isFinite(rawPageHint) && rawPageHint >= 1
+          ? Math.floor(rawPageHint)
+          : null;
       try {
         await storage.createDevisLineItem({
           devisId: devisRecord.id,
@@ -162,6 +170,7 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
           unitPriceHt: String(roundCurrency(li.unitPrice ?? 0)),
           totalHt: String(roundCurrency(li.total ?? 0)),
           percentComplete: "0",
+          pdfPageHint,
         });
         lineItemsCreated++;
       } catch (lineErr) {
