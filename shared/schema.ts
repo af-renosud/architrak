@@ -163,6 +163,14 @@ export const devisLineItems = pgTable("devis_line_items", {
   // to deep-link the embedded PDF viewer to the relevant page; absence simply
   // suppresses the click-to-jump affordance for that question.
   pdfPageHint: integer("pdf_page_hint"),
+  // Bounding box of the line on its PDF page, normalized to [0,1] of the
+  // page width / height (origin = top-left). Used by the pdf.js-based
+  // contractor portal viewer (Task #113) to draw a per-line highlight
+  // rectangle when the contractor clicks a question. Nullable: when absent
+  // the portal degrades to the page-level scroll behaviour from Task #111.
+  // Shape: { x: number, y: number, w: number, h: number } with each value
+  // in [0, 1].
+  pdfBbox: jsonb("pdf_bbox").$type<{ x: number; y: number; w: number; h: number } | null>(),
 }, (table) => [
   index("devis_line_items_devis_id_idx").on(table.devisId),
 ]);
@@ -778,7 +786,18 @@ export const insertDevisSchema = createInsertSchema(devis).omit({
   updatedAt: true,
 });
 
-export const insertDevisLineItemSchema = createInsertSchema(devisLineItems).omit({
+export const insertDevisLineItemSchema = createInsertSchema(devisLineItems, {
+  // Override the generic JSON shape drizzle-zod infers for jsonb columns
+  // with the narrowed bbox shape declared via .$type<>() on the column.
+  // Keeps InsertDevisLineItem assignable to drizzle's $inferInsert and
+  // forces Zod to validate the four required numeric coordinates.
+  pdfBbox: z.object({
+    x: z.number(),
+    y: z.number(),
+    w: z.number(),
+    h: z.number(),
+  }).nullable().optional(),
+}).omit({
   id: true,
 });
 

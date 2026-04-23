@@ -71,6 +71,11 @@ export interface ParsedDocument {
     /** 1-indexed PDF page number this line was extracted from. Best-effort
      *  AI signal — coerced/validated downstream (Task #111). */
     pageHint?: number;
+    /** Bounding box of the line on its PDF page, normalized to [0,1] of the
+     *  page width / height (origin = top-left). Best-effort AI signal —
+     *  coerced/validated downstream (Task #113). Powers the per-line
+     *  highlight rectangle in the contractor portal pdf.js viewer. */
+    bbox?: { x: number; y: number; w: number; h: number };
   }>;
   rawText?: string;
 }
@@ -125,6 +130,7 @@ Extraction Rules:
 - Dates in YYYY-MM-DD format.
 - For line items, extract description, quantity, unit (e.g. m2, m3, ml, u, forfait), unitPrice, and total for each visible line.
 - For each line item, also populate "pageHint": the 1-indexed page number of the PDF on which that line appears. Pages are provided to you as separate images in order — the first image is page 1, the second is page 2, and so on. If you cannot determine the page with confidence, omit pageHint for that line.
+- For each line item, also populate "bbox": the rectangle on the page image that visually contains that line's row in the table. Coordinates MUST be normalized to the [0, 1] range of the page image (x and w as a fraction of the image width; y and h as a fraction of the image height; origin at the top-left of the image). Make the box tight to the line row, including the description and the amount, but not neighbouring rows. If you cannot determine the box with confidence, omit bbox for that line — do not guess.
 - If a field is not visible on the document, omit it (do not guess).`;
 
 const USER_PROMPT = `Analyze this French construction document and extract the following fields:
@@ -149,7 +155,7 @@ const USER_PROMPT = `Analyze this French construction document and extract the f
 - paymentTerms: payment conditions text if visible (e.g., "30 jours fin de mois")
 - lotReferences: array of lot codes/references visible on the document (e.g., ["Lot 1", "Lot 7 - Electricite"])
 - description: brief description of the work/service
-- lineItems: array of line items, each with {description, quantity, unit, unitPrice, total, pageHint}
+- lineItems: array of line items, each with {description, quantity, unit, unitPrice, total, pageHint, bbox}
 
 Return ONLY valid JSON, no markdown, no code blocks.`;
 
@@ -293,6 +299,18 @@ const EXTRACTION_SCHEMA: ResponseSchema = {
             type: SchemaType.NUMBER,
             description: "1-indexed PDF page number this line appears on (1 = first page). Omit if unknown.",
             nullable: true,
+          },
+          bbox: {
+            type: SchemaType.OBJECT,
+            description: "Bounding box of this line on its page image. All four values normalized to [0,1] of the image dimensions, origin top-left. Omit if unknown.",
+            nullable: true,
+            properties: {
+              x: { type: SchemaType.NUMBER, description: "Left edge as a fraction of the page width (0..1)" },
+              y: { type: SchemaType.NUMBER, description: "Top edge as a fraction of the page height (0..1)" },
+              w: { type: SchemaType.NUMBER, description: "Width as a fraction of the page width (0..1)" },
+              h: { type: SchemaType.NUMBER, description: "Height as a fraction of the page height (0..1)" },
+            },
+            required: ["x", "y", "w", "h"],
           },
         },
         required: ["description"],

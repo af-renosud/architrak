@@ -14,6 +14,45 @@ interface UploadedFile {
   mimetype: string;
 }
 
+/**
+ * Coerce the AI-emitted bbox into a trustworthy normalized rectangle, or
+ * null if the input is missing/garbage. See callsite in processDevisUpload
+ * for the validation policy (Task #113).
+ *
+ * Exported for the unit test in devis-upload-page-hint.test.ts which now
+ * also covers the bbox path.
+ */
+export function coerceBbox(raw: unknown): { x: number; y: number; w: number; h: number } | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const x = r.x;
+  const y = r.y;
+  const w = r.w;
+  const h = r.h;
+  if (
+    typeof x !== "number" || !Number.isFinite(x) ||
+    typeof y !== "number" || !Number.isFinite(y) ||
+    typeof w !== "number" || !Number.isFinite(w) ||
+    typeof h !== "number" || !Number.isFinite(h)
+  ) {
+    return null;
+  }
+  // Reject negatives, zero-area boxes, and rectangles that escape the page.
+  // A small epsilon tolerates the AI rounding to e.g. 1.0001.
+  const EPS = 0.005;
+  if (x < 0 || y < 0 || w <= 0 || h <= 0) return null;
+  if (x > 1 + EPS || y > 1 + EPS || x + w > 1 + EPS || y + h > 1 + EPS) return null;
+  // Clamp the (possibly slightly-overflowing) values back into [0, 1] so
+  // the persisted shape is always a strict in-page rectangle.
+  const clamp = (n: number) => Math.min(1, Math.max(0, n));
+  const cx = clamp(x);
+  const cy = clamp(y);
+  const cw = clamp(Math.min(w, 1 - cx));
+  const ch = clamp(Math.min(h, 1 - cy));
+  if (cw <= 0 || ch <= 0) return null;
+  return { x: cx, y: cy, w: cw, h: ch };
+}
+
 export async function processDevisUpload(projectId: number, file: UploadedFile) {
   assertPdfMagic(file.buffer);
   const storageKey = await uploadDocument(projectId, file.originalname, file.buffer, file.mimetype);
@@ -160,6 +199,14 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
         typeof rawPageHint === "number" && Number.isFinite(rawPageHint) && rawPageHint >= 1
           ? Math.floor(rawPageHint)
           : null;
+      // Bounding box is best-effort too (Task #113) — the AI may emit
+      // garbage, partial, or off-page rectangles. We only persist a bbox if
+      // (a) every coordinate is a finite number, (b) all are within [0, 1],
+      // (c) the rectangle has positive area, and (d) it stays inside the
+      // page (x + w <= 1 and y + h <= 1 within a small tolerance). Anything
+      // else degrades to null so the portal falls back to page-level scroll
+      // rather than drawing a broken highlight.
+      const pdfBbox = coerceBbox(li.bbox);
       try {
         await storage.createDevisLineItem({
           devisId: devisRecord.id,
@@ -171,6 +218,7 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
           totalHt: String(roundCurrency(li.total ?? 0)),
           percentComplete: "0",
           pdfPageHint,
+          pdfBbox,
         });
         lineItemsCreated++;
       } catch (lineErr) {

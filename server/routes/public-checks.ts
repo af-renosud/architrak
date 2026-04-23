@@ -26,6 +26,10 @@ export interface PortalDataPayload {
     /** 1-indexed PDF page where this question's devis line appears, if
      *  known. Powers the click-to-jump-in-PDF affordance (Task #111). */
     pdfPageHint: number | null;
+    /** Bounding box of the line on its PDF page, normalized to [0, 1] of
+     *  the page. Powers the per-line highlight rectangle drawn by the
+     *  pdf.js portal viewer (Task #113). Null = page-level fallback. */
+    pdfBbox: { x: number; y: number; w: number; h: number } | null;
     messages: Array<{
       id: number;
       authorType: string;
@@ -60,6 +64,7 @@ export async function buildPortalPayload(devis: Devis): Promise<PortalDataPayloa
           lineNumber: li?.lineNumber ?? null,
           totalHt: li?.totalHt ?? null,
           pdfPageHint: li?.pdfPageHint ?? null,
+          pdfBbox: li?.pdfBbox ?? null,
           messages: (await storage.listDevisCheckMessages(c.id)).map((m) => ({
             id: m.id,
             authorType: m.authorType,
@@ -345,8 +350,20 @@ export function renderPortalShell(opts:
   .pdf-panel.open { display: flex; }
   .pdf-handle { padding: 8px 12px; background: #0f172a; color: #fff; cursor: move; user-select: none; border-radius: 8px 8px 0 0; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
   .pdf-handle button { background: transparent; padding: 2px 8px; }
-  .pdf-panel iframe { flex: 1; border: 0; border-radius: 0 0 8px 8px; }
-  .pdf-resize { position: absolute; bottom: 2px; right: 2px; width: 14px; height: 14px; cursor: nwse-resize; opacity: 0.5; }
+  .pdf-pages { flex: 1; overflow: auto; background: #475569; padding: 12px; border-radius: 0 0 8px 8px; }
+  .pdf-page { position: relative; margin: 0 auto 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.25); background: #fff; }
+  .pdf-page canvas { display: block; }
+  .pdf-overlay { position: absolute; inset: 0; pointer-events: none; }
+  /* Per-line highlight rectangle drawn on top of the canvas (Task #113).
+     The pulsing border + translucent yellow fill is intentionally loud so
+     contractors can spot the matching row instantly. */
+  .pdf-highlight { position: absolute; background: rgba(250, 204, 21, 0.30); border: 2px solid #f59e0b; border-radius: 2px; box-shadow: 0 0 0 4px rgba(250, 204, 21, 0.18); animation: pdfPulse 1.4s ease-in-out 0s 3; }
+  @keyframes pdfPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+  .pdf-fallback { flex: 1; border: 0; border-radius: 0 0 8px 8px; display: none; }
+  .pdf-fallback.shown { display: block; }
+  .pdf-pages.hidden { display: none; }
+  .pdf-loading { color: #e2e8f0; font-size: 13px; padding: 16px; text-align: center; }
+  .pdf-resize { position: absolute; bottom: 2px; right: 2px; width: 14px; height: 14px; cursor: nwse-resize; opacity: 0.5; z-index: 2; }
   .empty { color: #64748b; font-style: italic; padding: 24px; text-align: center; }
   .err { color: #b91c1c; font-size: 13px; margin-top: 6px; }
 </style>
@@ -365,7 +382,8 @@ ${isPreview ? `<div class="preview-banner" data-testid="banner-preview">Aperçu 
     <span>Devis — PDF</span>
     <button id="pdfClose" type="button" aria-label="Fermer">×</button>
   </div>
-  <iframe id="pdfFrame" title="Devis PDF" src="about:blank"></iframe>
+  <div class="pdf-pages" id="pdfPages" data-testid="pdf-pages"><div class="pdf-loading">Chargement du PDF…</div></div>
+  <iframe id="pdfFrame" class="pdf-fallback" title="Devis PDF" src="about:blank"></iframe>
   <div class="pdf-resize" id="pdfResize"></div>
 </div>
 
@@ -439,12 +457,18 @@ function render(data) {
       : (PREVIEW_MODE && c.status !== "resolved"
         ? '<div style="margin-top:8px"><textarea disabled placeholder="Aperçu architecte — réponse désactivée" data-testid="textarea-reply-disabled-' + c.id + '"></textarea><div style="margin-top:8px"><button type="button" disabled data-testid="button-send-reply-disabled-' + c.id + '">Envoyer</button></div></div>'
         : '');
-    // Click-to-jump-in-PDF affordance (Task #111). Only rendered when the
-    // upload-time extractor captured a page hint AND the question is line-
-    // scoped. General questions and older line items without a hint stay
-    // non-interactive — no broken jump targets, no regressions.
+    // Click-to-jump-in-PDF affordance (Task #111 + #113). Only rendered
+    // when the upload-time extractor captured a page hint AND the question
+    // is line-scoped. General questions and older line items without a
+    // hint stay non-interactive — no broken jump targets, no regressions.
+    // When a per-line bbox was captured (Task #113), it travels with the
+    // button as a JSON payload so the click handler can also draw the
+    // highlight rectangle on top of the rendered page. Bbox absent → the
+    // page-level scroll fallback from Task #111 is used.
     const jumpButton = (c.pdfPageHint != null && c.pdfPageHint >= 1 && c.lineNumber != null)
-      ? '<button type="button" class="pdf-jump" data-jump-page="' + c.pdfPageHint + '" data-testid="button-jump-page-' + c.id + '">Voir page ' + c.pdfPageHint + '</button>'
+      ? '<button type="button" class="pdf-jump" data-jump-page="' + c.pdfPageHint + '"'
+        + (c.pdfBbox ? ' data-jump-bbox="' + escapeHtml(JSON.stringify(c.pdfBbox)) + '"' : '')
+        + ' data-testid="button-jump-page-' + c.id + '">Voir page ' + c.pdfPageHint + '</button>'
       : '';
     return '<section class="check" data-testid="check-' + c.id + '"><h3>' + head + '<span class="status status-' + c.status + '">' + (STATUS_LABELS[c.status] || c.status) + '</span></h3>'
       + '<p class="query">' + escapeHtml(c.query) + '</p>'
@@ -452,18 +476,26 @@ function render(data) {
       + '<div class="messages">' + msgs + '</div>' + replyForm + '</section>';
   }).join("");
 
-  // Wire the click-to-jump-in-PDF buttons. Reload the iframe with the
-  // standard "#page=N" URL fragment that Chrome, Safari and Firefox all
-  // honour in their built-in PDF viewers. We force a full src reset (not
-  // just hash mutation) because some browsers don't re-trigger page
-  // navigation on hash-only changes inside an iframe — see Task #111 plan.
+  // Wire the click-to-jump-in-PDF buttons. Strategy (Task #113):
+  //   1. Open the floating PDF panel.
+  //   2. Try to drive the bundled pdf.js viewer: scroll to the page and
+  //      paint a highlight rectangle on top using the per-line bbox if
+  //      one was captured at extraction time.
+  //   3. If pdf.js failed to load (network blocked / CDN down), fall back
+  //      to the native browser PDF viewer in an iframe with the standard
+  //      "#page=N" URL fragment honoured by Chrome/Safari/Firefox — the
+  //      Task #111 behaviour, preserved.
   root.querySelectorAll("button[data-jump-page]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const page = Number(btn.getAttribute("data-jump-page"));
       if (!Number.isFinite(page) || page < 1) return;
-      const target = PDF_URL + "#page=" + page;
+      let bbox = null;
+      const rawBbox = btn.getAttribute("data-jump-bbox");
+      if (rawBbox) {
+        try { bbox = JSON.parse(rawBbox); } catch (_e) { bbox = null; }
+      }
       panel.classList.add("open");
-      frame.src = target;
+      jumpToPage(page, bbox);
     });
   });
 
@@ -503,6 +535,7 @@ loadData().then((d) => { if (d) render(d); });
 
 // Floating PDF panel — toggle, drag, resize.
 const panel = document.getElementById("pdfPanel");
+const pagesEl = document.getElementById("pdfPages");
 const frame = document.getElementById("pdfFrame");
 const toggle = document.getElementById("pdfToggle");
 const closeBtn = document.getElementById("pdfClose");
@@ -511,11 +544,139 @@ const resize = document.getElementById("pdfResize");
 
 toggle.addEventListener("click", () => {
   panel.classList.toggle("open");
-  if (panel.classList.contains("open") && frame.src === "about:blank") {
-    frame.src = PDF_URL;
+  if (panel.classList.contains("open")) {
+    // Lazy-load pdf.js the first time the panel opens. Failure (CDN
+    // blocked, offline) silently falls back to the native iframe viewer.
+    ensurePdfRendered().catch(() => switchToIframeFallback(null));
   }
 });
 closeBtn.addEventListener("click", () => panel.classList.remove("open"));
+
+// ---------- pdf.js viewer (Task #113) ----------
+// Loaded lazily from cdnjs the first time the contractor opens the PDF
+// panel or clicks a "Voir page N" button. The legacy 3.x UMD build is
+// chosen so we can keep the inline-vanilla-JS portal (no module loader,
+// no build step). If the load fails we degrade to the original Task #111
+// iframe + #page=N viewer rather than break the portal.
+const PDFJS_VERSION = "3.11.174";
+const PDFJS_BASE = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/" + PDFJS_VERSION;
+const PDF_RENDER_SCALE = 1.4;
+const pageWrappers = []; // [{ pageNumber, wrapper, overlay }]
+let pdfLoadPromise = null;
+let usingFallback = false;
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("Failed to load " + src));
+    document.head.appendChild(s);
+  });
+}
+
+async function ensurePdfRendered() {
+  if (usingFallback) return;
+  if (pdfLoadPromise) return pdfLoadPromise;
+  pdfLoadPromise = (async () => {
+    await loadScript(PDFJS_BASE + "/pdf.min.js");
+    const lib = window["pdfjsLib"];
+    if (!lib) throw new Error("pdf.js global not found");
+    lib.GlobalWorkerOptions.workerSrc = PDFJS_BASE + "/pdf.worker.min.js";
+    const doc = await lib.getDocument({ url: PDF_URL, withCredentials: true }).promise;
+    pagesEl.innerHTML = "";
+    for (let p = 1; p <= doc.numPages; p++) {
+      const page = await doc.getPage(p);
+      const viewport = page.getViewport({ scale: PDF_RENDER_SCALE });
+      const wrapper = document.createElement("div");
+      wrapper.className = "pdf-page";
+      wrapper.setAttribute("data-page", String(p));
+      wrapper.setAttribute("data-testid", "pdf-page-" + p);
+      wrapper.style.width = viewport.width + "px";
+      wrapper.style.height = viewport.height + "px";
+      const canvas = document.createElement("canvas");
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const overlay = document.createElement("div");
+      overlay.className = "pdf-overlay";
+      wrapper.appendChild(canvas);
+      wrapper.appendChild(overlay);
+      pagesEl.appendChild(wrapper);
+      pageWrappers.push({ pageNumber: p, wrapper, overlay });
+      await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+    }
+  })().catch((err) => {
+    pdfLoadPromise = null;
+    throw err;
+  });
+  return pdfLoadPromise;
+}
+
+function switchToIframeFallback(jumpPage) {
+  usingFallback = true;
+  pagesEl.classList.add("hidden");
+  frame.classList.add("shown");
+  const target = jumpPage != null ? PDF_URL + "#page=" + jumpPage : PDF_URL;
+  if (frame.src === "about:blank" || jumpPage != null) frame.src = target;
+}
+
+function clearHighlights() {
+  for (const pw of pageWrappers) pw.overlay.innerHTML = "";
+}
+
+function drawHighlight(wrapper, overlay, bbox) {
+  const rect = document.createElement("div");
+  rect.className = "pdf-highlight";
+  rect.setAttribute("data-testid", "pdf-highlight");
+  rect.style.left = (bbox.x * 100) + "%";
+  rect.style.top = (bbox.y * 100) + "%";
+  rect.style.width = (bbox.w * 100) + "%";
+  rect.style.height = (bbox.h * 100) + "%";
+  overlay.appendChild(rect);
+  // Center the highlight in the viewport rather than just snapping the
+  // page top — long pages would otherwise leave the row off-screen.
+  const wrapperRect = wrapper.getBoundingClientRect();
+  const scrollerRect = pagesEl.getBoundingClientRect();
+  const centerY = wrapperRect.top - scrollerRect.top + bbox.y * wrapper.offsetHeight + (bbox.h * wrapper.offsetHeight) / 2;
+  const offset = centerY - pagesEl.clientHeight / 2;
+  pagesEl.scrollTo({ top: pagesEl.scrollTop + offset, behavior: "smooth" });
+}
+
+async function jumpToPage(page, bbox) {
+  if (usingFallback) {
+    switchToIframeFallback(page);
+    return;
+  }
+  try {
+    await ensurePdfRendered();
+  } catch (_err) {
+    switchToIframeFallback(page);
+    return;
+  }
+  const target = pageWrappers[page - 1];
+  if (!target) return;
+  clearHighlights();
+  // Defensive shape/range check before drawing (Task #113 review item).
+  // Server-side coerceBbox is the primary guard, but a legacy or corrupt
+  // row could still slip through; an out-of-range rectangle would
+  // visually overflow the page or paint at wrong coords. On any anomaly
+  // we degrade silently to the page-level scroll fallback.
+  const isValidBbox = bbox
+    && typeof bbox === "object"
+    && typeof bbox.x === "number" && isFinite(bbox.x)
+    && typeof bbox.y === "number" && isFinite(bbox.y)
+    && typeof bbox.w === "number" && isFinite(bbox.w) && bbox.w > 0
+    && typeof bbox.h === "number" && isFinite(bbox.h) && bbox.h > 0
+    && bbox.x >= 0 && bbox.y >= 0
+    && bbox.x + bbox.w <= 1.0001
+    && bbox.y + bbox.h <= 1.0001;
+  if (isValidBbox) {
+    drawHighlight(target.wrapper, target.overlay, bbox);
+  } else {
+    // Page-level fallback (Task #111) — no (or unusable) bbox for this line.
+    target.wrapper.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
 
 let dragging = false, dragOffset = { x: 0, y: 0 };
 handle.addEventListener("mousedown", (e) => {

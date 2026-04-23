@@ -88,3 +88,51 @@ describe("processDevisUpload — pdfPageHint coercion (Task #111)", () => {
     expect(calls).toEqual([1, 3, null, null, null, null, 2, null, null]);
   });
 });
+
+describe("processDevisUpload — pdfBbox coercion (Task #113)", () => {
+  it("persists valid normalized bboxes and degrades invalid AI signals to null", async () => {
+    parseDocumentMock.mockResolvedValue({
+      documentType: "quotation",
+      contractorName: "Acme",
+      siret: "12345678900012",
+      amountHt: 5000,
+      amountTtc: 6000,
+      tvaAmount: 1000,
+      tvaRate: 20,
+      lineItems: [
+        // valid
+        { description: "Tight in-page rect", total: 1, pageHint: 1, bbox: { x: 0.1, y: 0.2, w: 0.7, h: 0.05 } },
+        // valid: AI rounded slightly above 1 — clamped, not rejected
+        { description: "Slight overflow clamped", total: 1, pageHint: 1, bbox: { x: 0.0, y: 0.95, w: 1.001, h: 0.04 } },
+        // missing
+        { description: "AI omitted bbox", total: 1, pageHint: 1 },
+        // null
+        { description: "AI emitted null", total: 1, pageHint: 1, bbox: null as unknown as { x: number; y: number; w: number; h: number } },
+        // partial / wrong shape
+        { description: "Missing field", total: 1, pageHint: 1, bbox: { x: 0.1, y: 0.2, w: 0.5 } as unknown as { x: number; y: number; w: number; h: number } },
+        // negative coord
+        { description: "Negative origin", total: 1, pageHint: 1, bbox: { x: -0.1, y: 0.2, w: 0.5, h: 0.1 } },
+        // zero area
+        { description: "Zero height", total: 1, pageHint: 1, bbox: { x: 0.1, y: 0.2, w: 0.5, h: 0 } },
+        // off-page (way outside epsilon)
+        { description: "Off-page", total: 1, pageHint: 1, bbox: { x: 0.5, y: 0.5, w: 0.9, h: 0.9 } },
+        // NaN inside
+        { description: "NaN", total: 1, pageHint: 1, bbox: { x: NaN, y: 0.2, w: 0.5, h: 0.1 } },
+        // wrong types
+        { description: "Strings", total: 1, pageHint: 1, bbox: { x: "0.1", y: 0.2, w: 0.5, h: 0.1 } as unknown as { x: number; y: number; w: number; h: number } },
+      ],
+    });
+
+    await processDevisUpload(7, mkFile());
+
+    expect(storageSpy.createDevisLineItem).toHaveBeenCalledTimes(10);
+    const calls = storageSpy.createDevisLineItem.mock.calls.map(
+      ([arg]: [{ pdfBbox: { x: number; y: number; w: number; h: number } | null }]) => arg.pdfBbox,
+    );
+    expect(calls[0]).toEqual({ x: 0.1, y: 0.2, w: 0.7, h: 0.05 });
+    // The slight-overflow case is clamped to (1 - x) so the box fits.
+    expect(calls[1]).toEqual({ x: 0, y: 0.95, w: 1, h: 0.04 });
+    // Everything else degrades to null.
+    expect(calls.slice(2)).toEqual([null, null, null, null, null, null, null, null]);
+  });
+});

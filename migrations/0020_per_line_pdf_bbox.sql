@@ -1,0 +1,1 @@
+ALTER TABLE "devis_line_items" ADD COLUMN "pdf_bbox" jsonb;
