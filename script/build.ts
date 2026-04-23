@@ -51,8 +51,34 @@ function checkSchemaDrift() {
   }
 }
 
+function checkMigrationDrift() {
+  console.log("checking applied-migrations drift against target database...");
+  const result = spawnSync(
+    "npx",
+    ["tsx", "scripts/check-migration-drift.mjs"],
+    {
+      stdio: "inherit",
+      env: process.env,
+    },
+  );
+  if (result.error) {
+    console.error(
+      "Failed to run scripts/check-migration-drift.mjs:",
+      result.error,
+    );
+    process.exit(1);
+  }
+  if (result.status !== 0) {
+    console.error(
+      `Migration drift check failed (exit code ${result.status}). Aborting build.`,
+    );
+    process.exit(result.status ?? 1);
+  }
+}
+
 async function buildAll() {
   checkSchemaDrift();
+  checkMigrationDrift();
 
   await rm("dist", { recursive: true, force: true });
 
