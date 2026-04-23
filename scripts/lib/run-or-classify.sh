@@ -38,6 +38,10 @@ run_or_classify() {
   set -e
 
   if [ "$exit_code" -eq 0 ]; then
+    # Task #130: a clean run resets this source's consecutive-failure
+    # counter so a future one-off blip never escalates to [escalated].
+    # Best-effort — never block the deploy on a counter-reset failure.
+    npx tsx scripts/post-merge-transient-alert.ts clear "${source_tag}" || true
     rm -f "$tmp_log"
     return 0
   fi
@@ -60,7 +64,11 @@ run_or_classify() {
   local alert_body
   alert_body="Maintenance script ${source_tag} exited ${exit_code} during post-merge.\n\nLast 50 log lines:\n$(tail -n 50 "$tmp_log")"
   # Best-effort dispatch; ignore failure (the alert helper itself logs).
-  npx tsx scripts/post-merge-transient-alert.ts "${source_tag}" "${alert_body}" || true
+  # Task #130: pass exit code so the dispatcher can persist it in the
+  # post_merge_transient_failures counter table. Subcommand `record`
+  # decides whether to flip the subject prefix from [transient] to
+  # [escalated] based on the source's consecutive-failure streak.
+  npx tsx scripts/post-merge-transient-alert.ts record "${source_tag}" "${exit_code}" "${alert_body}" || true
   rm -f "$tmp_log"
   return 0
 }

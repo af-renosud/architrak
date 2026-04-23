@@ -1134,3 +1134,26 @@ export const updateWishListItemSchema = insertWishListItemSchema.partial();
 export type WishListItem = typeof wishListItems.$inferSelect;
 export type InsertWishListItem = z.infer<typeof insertWishListItemSchema>;
 export type UpdateWishListItem = z.infer<typeof updateWishListItemSchema>;
+
+// Task #130 — counter table backing the escalation logic in
+// `scripts/post-merge-transient-alert.ts`. Each row tracks one
+// `source_tag` (e.g. "backfill-page-hints") that the post-merge
+// classifier (Task #126) tagged as a transient failure. Successful runs
+// reset the counter to zero; once `consecutive_failures` reaches
+// POST_MERGE_ESCALATE_AFTER (default 3) the next failure is reported
+// with subject prefix `[escalated]` instead of `[transient]` so the
+// on-call stops dismissing it as ignorable noise. Schema-error aborts
+// (exit 2 from run-or-classify) NEVER touch this table — they already
+// have their own loud-fail path.
+export const postMergeTransientFailures = pgTable("post_merge_transient_failures", {
+  sourceTag: text("source_tag").primaryKey(),
+  consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+  lastExitCode: integer("last_exit_code"),
+  lastFailureAt: timestamp("last_failure_at"),
+  lastClearedAt: timestamp("last_cleared_at"),
+  recentFailures: jsonb("recent_failures").notNull().default(sql`'[]'::jsonb`),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export type PostMergeTransientFailure =
+  typeof postMergeTransientFailures.$inferSelect;
