@@ -99,12 +99,11 @@ describe("startHealthzWatchdog", () => {
     expect(sendAlert).toHaveBeenCalledTimes(2);
   });
 
-  it("does not alert on a transient single failure followed by recovery", async () => {
+  it("alerts exactly once on a single failure even when followed by recovery (no double-alert on transition back to OK)", async () => {
     // Watchdog starts assuming healthy; first failure DOES alert.
-    // To represent "transient single failure followed by recovery"
-    // without an initial alert, we run one OK poll first to establish
-    // the baseline, then a single failure (alert), then recoveries
-    // (no further alerts) — and verify we only alerted ONCE.
+    // We run one OK poll to establish baseline, then a single failure
+    // (alert), then recoveries (must NOT produce a second alert when
+    // transitioning OK→FAIL→OK→OK→OK).
     const fetchImpl = makeFetchMock([
       { status: 200, body: "ok" },
       { status: 503, body: "blip" },
