@@ -14,6 +14,7 @@ export default defineConfig({
       "client/src/**/__tests__/**/*.test.ts",
       "client/src/**/__tests__/**/*.test.tsx",
       "scripts/__tests__/**/*.test.mjs",
+      "scripts/__tests__/**/*.test.ts",
     ],
     exclude: ["node_modules", ".cache", "dist"],
   },
