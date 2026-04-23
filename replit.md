@@ -11,8 +11,9 @@ ArchiTrak is a financial workflow management application designed for French arc
 ## System Architecture
 
 ### Operations Runbook
-- **Migrations**: generated via `npm run db:generate`; applied at deploy via `npx tsx scripts/run-migrations.mjs` (called from `scripts/post-merge.sh`). NEVER use `db:push` — this project has 21 hand-tracked SQL migrations and a `drizzle.__drizzle_migrations` tracker; `db:push` would corrupt the migration history.
+- **Migrations**: generated via `npm run db:generate`; applied at deploy via `npx tsx scripts/run-migrations.mjs` (called from `scripts/post-merge.sh`). NEVER use `db:push` — this project has 22 hand-tracked SQL migrations and a `drizzle.__drizzle_migrations` tracker; `db:push` would corrupt the migration history.
 - **Migration-replay gate (Task #124)**: canonical command is `bash scripts/check-migration-replay.sh`. Runs `npx vitest run server/__tests__/migration-replay.test.ts` with `STRICT_MIGRATION_REPLAY=1` and exits non-zero on any failure (including silent skips from missing DB privileges). Wired into `scripts/post-merge.sh` so a partial migration apply aborts the deploy. For local exploration, drop the env var and run the vitest directly.
+- **Deep healthcheck + post-deploy smoke gate (Task #125)**: `GET /healthz/deep` issues `SELECT * FROM <table> WHERE FALSE` against every Drizzle-modeled table (45 tables today) and returns 503 with `{table, error}` for each failure. Public, rate-limited at 30 req/min/caller. Cheap liveness probe is `GET /healthz`. After migrations apply, `scripts/post-merge.sh` invokes `npx tsx scripts/post-deploy-smoke.ts` which polls the deep endpoint for up to 60 s; on persistent failure it sends an operator alert and exits 1 to abort the deploy. Set `POST_DEPLOY_SMOKE=0` to skip on environments without a reachable `PUBLIC_BASE_URL`.
 - **Environment override**: set `REPLAY_ADMIN_DB=postgres` (or another DB the role can connect to) if the deploy role cannot CREATE DATABASE while connected to the main app DB.
 
 ### Tech Stack

@@ -35,3 +35,19 @@ if [ "$PAGE_HINT_BACKFILL_LIMIT" -gt 0 ] 2>/dev/null; then
 else
   echo "[post-merge] page-hint backfill skipped (PAGE_HINT_BACKFILL_LIMIT=$PAGE_HINT_BACKFILL_LIMIT)"
 fi
+
+# Post-deploy smoke gate (Task #125): poll /healthz/deep against the
+# freshly-deployed revision and fail the deploy if any modeled table
+# is broken (missing column, connectivity loss, etc.). This is the
+# enforceable equivalent of a platform-level traffic gate — exit 1
+# here aborts post-merge before downstream tooling marks the deploy
+# successful, and an operator alert is sent regardless.
+#
+# Set POST_DEPLOY_SMOKE=0 to skip (e.g. environments with no
+# reachable PUBLIC_BASE_URL such as local repls).
+POST_DEPLOY_SMOKE="${POST_DEPLOY_SMOKE:-1}"
+if [ "$POST_DEPLOY_SMOKE" = "1" ]; then
+  npx tsx scripts/post-deploy-smoke.ts
+else
+  echo "[post-merge] post-deploy smoke skipped (POST_DEPLOY_SMOKE=$POST_DEPLOY_SMOKE)"
+fi

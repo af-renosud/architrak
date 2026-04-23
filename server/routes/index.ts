@@ -27,6 +27,7 @@ import benchmarksRouter from "./benchmarks";
 import adminDevisRematchRouter from "./admin-devis-rematch";
 import adminInvoiceRematchRouter from "./admin-invoice-rematch";
 import adminPageHintBackfillRouter from "./admin-page-hint-backfill";
+import healthzRouter from "./healthz";
 
 // IDOR / Tenancy assumption (single-tenant deployment):
 // ArchiTrak runs as a dedicated single-firm deployment for Renosud
@@ -55,6 +56,12 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  // Health endpoints are mounted BEFORE `/api/*` rate limiting & auth so
+  // platform probes and the post-deploy smoke gate (Task #125) reach
+  // them unauthenticated. The deep probe has its own per-caller
+  // limiter inside the router.
+  app.use(healthzRouter);
+
   app.use("/api/webhooks", webhookLimiter);
   app.use(["/api/devis/:devisId/invoices/upload", "/api/projects/:projectId/devis/upload"], uploadLimiter);
   app.use("/api", apiLimiter);
