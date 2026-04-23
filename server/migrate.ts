@@ -148,8 +148,28 @@ export async function runMigrationsWith(opts: {
   const start = Date.now();
   console.log(`[migrate] applying migrations from ${migrationsFolder}`);
   await bootstrapBaselineIfNeeded(migrationsFolder, opts.pool, dbHandle);
+  // Schema-presence boot invariant (Task #136). MUST run BEFORE
+  // migrate() so we abort with a precise operator message when the
+  // tracker is behind the schema — otherwise drizzle's migrate() will
+  // re-execute non-idempotent SQL like 0019's `ADD COLUMN pdf_page_hint`
+  // (no IF NOT EXISTS) and crash with `column already exists`, masking
+  // the real drift cause. Note: this WILL fire on the rare first-time
+  // bootstrap path (bootstrapBaselineIfNeeded inserts only the baseline
+  // row when an existing-schema DB was previously db:push-ed) — the
+  // operator response is identical to a real drift incident: run
+  // scripts/reconcile-drizzle-tracker.ts to backfill the missing
+  // tracker rows, then redeploy.
+  const { assertSchemaMatchesTracker } = await import(
+    "./operations/schema-presence-check"
+  );
+  await assertSchemaMatchesTracker({ pool: opts.pool, migrationsFolder });
   await migrate(dbHandle, { migrationsFolder });
   await assertJournalMatchesTracker({ pool: opts.pool, migrationsFolder });
+  // Defense-in-depth: re-run the schema-presence check after migrate()
+  // so any drift introduced *during* the apply (e.g. partial failure
+  // between drizzle inserting the tracker row and the SQL committing)
+  // is caught before the boot returns "ready".
+  await assertSchemaMatchesTracker({ pool: opts.pool, migrationsFolder });
   console.log(`[migrate] done in ${Date.now() - start}ms`);
 }
 

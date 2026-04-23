@@ -45,6 +45,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as schema from "@shared/schema";
 import { runMigrationsWith } from "../migrate";
+import { assertSchemaMatchesTracker } from "../operations/schema-presence-check";
 
 const { Pool } = pg;
 
@@ -219,6 +220,22 @@ describe.skipIf(skipModule !== null)("migration replay + schema parity", () => {
       `journal entries: ${journalEntryCount}, applied (tracker rows): ${trackerCount} — silent partial-apply detected`,
     ).toBe(journalEntryCount);
   }, 120_000);
+
+  it("schema-presence invariant agrees with the tracker on the replayed database (Task #136)", async (testContext) => {
+    if (ctx.skipReason || !ctx.replayPool) {
+      testContext.skip();
+      return;
+    }
+    // After a clean replay, every journal entry has a tracker row and
+    // every artifact in MIGRATION_ARTIFACTS exists. The assertion
+    // throws on any drift; we just expect it not to throw here.
+    await expect(
+      assertSchemaMatchesTracker({
+        pool: ctx.replayPool,
+        migrationsFolder,
+      }),
+    ).resolves.toBeUndefined();
+  }, 60_000);
 
   it("every column declared in shared/schema.ts exists on the replayed database", async (testContext) => {
     if (ctx.skipReason || !ctx.replayPool) {
