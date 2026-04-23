@@ -88,6 +88,7 @@ const { state, storageSpy } = vi.hoisted(() => {
     updateDevisCheck: vi.fn(async (id: number, data: any) => {
       const r = state.checks.find((c) => c.id === id); if (!r) return undefined; Object.assign(r, data); return r;
     }),
+    getDevisCheck: vi.fn(async (id: number) => state.checks.find((c) => c.id === id)),
     createDevisCheck: vi.fn(async (data: any) => { const r = { id: nid(), ...data }; state.checks.push(r); return r; }),
     createDevisCheckMessage: vi.fn(async (data: any) => { const r = { id: nid(), ...data }; state.messages.push(r); return r; }),
     upsertLineItemCheck: vi.fn(async (devisId: number, lineItemId: number, query: string) => {
@@ -729,5 +730,51 @@ describe("Devis CHECKING — issue-for-copy route", () => {
     } finally {
       infoSpy.mockRestore();
     }
+  });
+});
+
+describe("PATCH /api/devis-checks/:checkId — editable draft query (variant B)", () => {
+  beforeAll(async () => { await withApp(); });
+
+  it("200: updates query text on an open draft", async () => {
+    state.checks.push({ id: 700, devisId: 70, status: "open", query: "Original?", lineItemId: null, origin: "general" });
+    const res = await fetch(`${baseUrl}/api/devis-checks/700`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "Updated, more specific?" }),
+    });
+    expect(res.status).toBe(200);
+    expect(state.checks.find((c) => c.id === 700)?.query).toBe("Updated, more specific?");
+  });
+
+  it("409: refuses to edit a check already sent to the contractor", async () => {
+    state.checks.push({ id: 701, devisId: 71, status: "awaiting_contractor", query: "Sent already", lineItemId: null, origin: "general" });
+    const res = await fetch(`${baseUrl}/api/devis-checks/701`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "Try to change post-send" }),
+    });
+    expect(res.status).toBe(409);
+    expect(state.checks.find((c) => c.id === 701)?.query).toBe("Sent already");
+  });
+
+  it("404: returns not found for missing checkId", async () => {
+    const res = await fetch(`${baseUrl}/api/devis-checks/99999`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "anything" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("trims whitespace from the saved query", async () => {
+    state.checks.push({ id: 702, devisId: 72, status: "open", query: "Original", lineItemId: null, origin: "general" });
+    const res = await fetch(`${baseUrl}/api/devis-checks/702`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "  Trimmed?  " }),
+    });
+    expect(res.status).toBe(200);
+    expect(state.checks.find((c) => c.id === 702)?.query).toBe("Trimmed?");
   });
 });

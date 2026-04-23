@@ -38,6 +38,22 @@ import {
 
 const router = Router();
 
+/**
+ * Render a numeric `totalHt` (stored as a Drizzle numeric → string like
+ * "18500.00") in fr-FR thousands/decimal form ("18 500,00") for embedding in
+ * the auto-suggested line-item check question. Falls back to the raw value if
+ * parsing fails so we never throw inside the line-item PATCH handler.
+ */
+function formatLineTotalForSuggestion(totalHt: string | null): string {
+  if (!totalHt) return "—";
+  const n = Number(totalHt);
+  if (!Number.isFinite(n)) return totalHt;
+  return new Intl.NumberFormat("fr-FR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(n);
+}
+
 const idParams = z.object({ id: z.coerce.number().int().positive() });
 const projectIdParams = z.object({ projectId: z.coerce.number().int().positive() });
 const devisIdParams = z.object({ devisId: z.coerce.number().int().positive() });
@@ -459,19 +475,41 @@ router.patch(
 
     // Auto-create / refresh a contractor check whenever the architect flags
     // a line item red or amber. Notes are optional — if the architect didn't
-    // capture a specific question yet, we open the check with a generic
-    // French placeholder so the sign-off gate engages immediately. The
-    // architect can refine the wording later via the message thread.
-    // Resolution is always manual: toggling back to green/unchecked does
-    // NOT auto-resolve a check that already started a conversation.
+    // capture a specific question yet, we open the check with a French
+    // suggestion derived from the line description + amount so the architect
+    // gets a usable starting point, refinable via the inline popover editor.
+    //
+    // Un-flagging behaviour (Variant B inline-popover graduation): if the
+    // architect toggles the line back to unchecked/green AND the open
+    // line-item check is still a pure draft (status='open' with no messages
+    // exchanged yet), drop it — matches the variant's mental model where
+    // un-clicking ✕ retracts the question. Once any message has been
+    // exchanged, resolution stays manual to avoid silently losing context.
     const becameFlagged = item.checkStatus === "red" || item.checkStatus === "amber";
+    const userId = req.session?.userId ? Number(req.session.userId) : null;
     if (becameFlagged) {
       const note = (item.checkNotes ?? "").trim();
+      const formattedTotal = formatLineTotalForSuggestion(item.totalHt);
       const query = note.length > 0
         ? note
-        : "Précisions demandées sur cette ligne — détails à venir.";
-      const userId = req.session?.userId ? Number(req.session.userId) : null;
+        : `Pouvez-vous préciser le détail de la ligne « ${item.description} » ? (montant ${formattedTotal} € HT)`;
       await storage.upsertLineItemCheck(item.devisId, lineItemId, query, userId);
+    } else {
+      // Un-flagged → retract any pure-draft line-item check.
+      const openChecks = await storage.listDevisChecks(item.devisId);
+      const draft = openChecks.find(
+        (c) => c.lineItemId === lineItemId && c.origin === "line_item" && c.status === "open",
+      );
+      if (draft) {
+        const messages = await storage.listDevisCheckMessages(draft.id);
+        if (messages.length === 0) {
+          await storage.updateDevisCheck(draft.id, {
+            status: "dropped",
+            resolvedAt: new Date(),
+            resolvedByUserId: userId ?? undefined,
+          });
+        }
+      }
     }
     res.json(item);
   },

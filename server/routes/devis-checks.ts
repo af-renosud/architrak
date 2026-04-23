@@ -28,6 +28,12 @@ const architectReplySchema = z.object({
   body: z.string().min(1).max(5000),
 }).strict();
 
+const updateCheckQuerySchema = z.object({
+  query: z.string().max(2000).transform((s) => s.trim()).refine((s) => s.length > 0, {
+    message: "La question ne peut pas être vide.",
+  }),
+}).strict();
+
 router.use(requireAuth);
 
 /**
@@ -144,6 +150,32 @@ router.post(
       createdByUserId: userId ?? undefined,
     });
     res.status(201).json(created);
+  },
+);
+
+/**
+ * Architect edits the question text of a still-draft check (status='open').
+ * Once the bundled email has gone out (status moves to 'awaiting_contractor'),
+ * the question text is frozen — editing it would silently change what the
+ * contractor sees vs what was emailed. To revise wording post-send, the
+ * architect must use the message thread instead. Returns 409 when the check
+ * is no longer a draft.
+ */
+router.patch(
+  "/api/devis-checks/:checkId",
+  validateRequest({ params: checkIdParams, body: updateCheckQuerySchema }),
+  async (req, res) => {
+    const checkId = Number(req.params.checkId);
+    const existing = await storage.getDevisCheck(checkId);
+    if (!existing) return res.status(404).json({ message: "Check not found" });
+    if (existing.status !== "open") {
+      return res.status(409).json({
+        message: "Cette question a déjà été envoyée à l'entreprise — modifiez-la via le fil de messages.",
+      });
+    }
+    const updated = await storage.updateDevisCheck(checkId, { query: req.body.query });
+    if (!updated) return res.status(404).json({ message: "Check not found" });
+    res.json(updated);
   },
 );
 

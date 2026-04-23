@@ -16,7 +16,7 @@ import { Receipt, FilePlus2, ListOrdered, Languages } from "lucide-react";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff, ShieldCheck, ShieldAlert, ShieldX, Trash2, X, Tag, Settings as SettingsIcon, Wand2, Pencil, UserCog, Copy } from "lucide-react";
+import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff, ShieldCheck, ShieldAlert, ShieldX, Trash2, X, Tag, Settings as SettingsIcon, Wand2, Pencil, UserCog, Copy, Send, MessageSquare } from "lucide-react";
 import { Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -1598,7 +1598,21 @@ const CHECK_COLORS: Record<string, { bg: string; border: string; ring: string }>
   unchecked: { bg: "", border: "border-l-transparent", ring: "" },
 };
 
-function LineItemWithCheck({ li, onUpdate, disabled = false }: { li: DevisLineItem; onUpdate: (data: Record<string, string>) => Promise<unknown> | unknown; disabled?: boolean }) {
+function LineItemWithCheck({
+  li,
+  onUpdate,
+  devisId,
+  openCheck,
+  onSaveCheckQuery,
+  disabled = false,
+}: {
+  li: DevisLineItem;
+  onUpdate: (data: Record<string, string>) => Promise<unknown> | unknown;
+  devisId: number;
+  openCheck: { id: number; query: string } | null;
+  onSaveCheckQuery: (checkId: number, query: string) => Promise<unknown>;
+  disabled?: boolean;
+}) {
   const { toast } = useToast();
   const status = li.checkStatus || "unchecked";
   const notes = li.checkNotes || "";
@@ -1608,13 +1622,94 @@ function LineItemWithCheck({ li, onUpdate, disabled = false }: { li: DevisLineIt
   const [draftDesc, setDraftDesc] = useState(li.description);
   const [savingDesc, setSavingDesc] = useState(false);
 
+  // Variant B inline-popover state. Opens when the architect clicks the red
+  // status button (after the line PATCH auto-creates the check server-side
+  // and we've refetched checks so `openCheck` populates), or when clicking
+  // the rose "QUESTION RÉDIGÉE" pill on a line that already has a draft.
+  const [popoverOpen, setPopoverOpen] = useState(false);
+  const [popoverDraft, setPopoverDraft] = useState("");
+  const [pendingOpenAfterFlag, setPendingOpenAfterFlag] = useState(false);
+  const [savingPopover, setSavingPopover] = useState(false);
+
+  // Once the just-toggled-red check arrives via refetch, seed the draft
+  // from the server's auto-suggested query and open the popover.
+  useEffect(() => {
+    if (pendingOpenAfterFlag && openCheck) {
+      setPopoverDraft(openCheck.query);
+      setPopoverOpen(true);
+      setPendingOpenAfterFlag(false);
+    }
+  }, [pendingOpenAfterFlag, openCheck]);
+
+  // Esc closes the popover.
+  useEffect(() => {
+    if (!popoverOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setPopoverOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [popoverOpen]);
+
   const fireUpdate = (data: Record<string, string>) => {
     void Promise.resolve(onUpdate(data)).catch(() => {});
   };
 
-  const toggleStatus = (newStatus: string) => {
+  const toggleStatus = async (newStatus: string) => {
     if (disabled) return;
-    fireUpdate({ checkStatus: status === newStatus ? "unchecked" : newStatus });
+    const next = status === newStatus ? "unchecked" : newStatus;
+    try {
+      await Promise.resolve(onUpdate({ checkStatus: next }));
+      // Always refetch checks: the backend may upsert an open draft on red,
+      // drop a message-less draft on unchecked/green, or leave checks intact
+      // on amber. Invalidating universally keeps the bottom-mirror digest,
+      // CTA count, and "QUESTION RÉDIGÉE" pill in sync regardless of which
+      // direction the toggle went.
+      await queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "checks"] });
+      if (next === "red") {
+        // Once `openCheck` populates from the refetch, the effect below
+        // seeds the draft from the server's auto-suggested query and opens
+        // the popover.
+        setPendingOpenAfterFlag(true);
+      } else {
+        setPopoverOpen(false);
+        setPopoverDraft("");
+      }
+    } catch {
+      // Mutation already toasts via parent; nothing to do here.
+    }
+  };
+
+  const openExistingPopover = () => {
+    if (!openCheck) return;
+    setPopoverDraft(openCheck.query);
+    setPopoverOpen(true);
+  };
+
+  const cancelPopover = () => {
+    setPopoverOpen(false);
+    setPopoverDraft("");
+  };
+
+  const savePopover = async () => {
+    if (!openCheck || savingPopover) return;
+    const next = popoverDraft.trim();
+    if (!next) {
+      cancelPopover();
+      return;
+    }
+    setSavingPopover(true);
+    try {
+      await onSaveCheckQuery(openCheck.id, next);
+      setPopoverOpen(false);
+      setPopoverDraft("");
+    } catch (err) {
+      toast({
+        title: "Impossible d'enregistrer la question",
+        description: err instanceof Error ? err.message : "Veuillez réessayer.",
+        variant: "destructive",
+      });
+    } finally {
+      setSavingPopover(false);
+    }
   };
 
   const enterDescEdit = () => {
@@ -1725,14 +1820,88 @@ function LineItemWithCheck({ li, onUpdate, disabled = false }: { li: DevisLineIt
               title={disabled ? undefined : "Click to edit"}
               data-testid={`cell-line-description-${li.id}`}
             >
-              {li.description}
+              <div className="flex items-center gap-2 flex-wrap">
+                <span>{li.description}</span>
+                {openCheck && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); openExistingPopover(); }}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 text-[9px] font-bold uppercase tracking-widest hover:bg-rose-200"
+                    title={openCheck.query}
+                    data-testid={`badge-question-redigee-${li.id}`}
+                  >
+                    <MessageSquare size={9} /> Question rédigée
+                  </button>
+                )}
+              </div>
             </div>
           )}
         </td>
         <td className="py-1.5 px-2 text-[11px] text-right">{li.quantity}</td>
         <td className="py-1.5 px-2 text-[11px] text-right">{li.unitPriceHt ? formatCurrency(parseFloat(li.unitPriceHt)) : "-"}</td>
         <td className="py-1.5 px-2 text-[11px] text-right font-medium">{formatCurrency(parseFloat(li.totalHt))}</td>
-        <td className="py-1.5 px-2">
+        <td className="py-1.5 px-2 relative">
+          {popoverOpen && openCheck && (
+            <div
+              className="absolute right-2 top-9 z-30 w-[380px] rounded-xl border-2 border-rose-300 bg-white shadow-xl p-3 text-left"
+              data-testid={`popover-check-editor-${li.id}`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[9px] font-bold uppercase tracking-widest text-rose-700">Question à l'entreprise</span>
+                <button
+                  type="button"
+                  className="text-rose-400 hover:text-rose-600"
+                  onClick={cancelPopover}
+                  aria-label="Fermer"
+                  data-testid={`button-popover-close-${li.id}`}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-500 mb-1.5">
+                Ligne {li.lineNumber} · {formatCurrency(parseFloat(li.totalHt))} HT
+              </p>
+              <Textarea
+                autoFocus
+                value={popoverDraft}
+                onChange={(e) => setPopoverDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    void savePopover();
+                  }
+                }}
+                rows={3}
+                className="text-[11px] min-h-[68px]"
+                disabled={savingPopover}
+                data-testid={`textarea-popover-query-${li.id}`}
+              />
+              <div className="flex items-center justify-end gap-1.5 mt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2.5 text-[10px]"
+                  onClick={cancelPopover}
+                  disabled={savingPopover}
+                  data-testid={`button-popover-cancel-${li.id}`}
+                >
+                  Annuler
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-7 px-2.5 text-[10px] bg-rose-600 hover:bg-rose-700 text-white"
+                  onClick={savePopover}
+                  disabled={savingPopover || !popoverDraft.trim()}
+                  data-testid={`button-popover-save-${li.id}`}
+                >
+                  {savingPopover ? <Loader2 size={10} className="animate-spin" /> : "Enregistrer"}
+                </Button>
+              </div>
+            </div>
+          )}
           <div className="flex items-center justify-end gap-1">
             <Input
               type="number"
@@ -2202,10 +2371,21 @@ function PortalPreviewSheet({
   );
 }
 
-function ChecksPanel({ devisId, projectId, isArchived }: { devisId: number; projectId: string; isArchived: boolean }) {
+function ChecksPanel({
+  devisId,
+  projectId,
+  isArchived,
+  contractorEmail,
+  lineItems,
+}: {
+  devisId: number;
+  projectId: string;
+  isArchived: boolean;
+  contractorEmail: string | null;
+  lineItems: DevisLineItem[];
+}) {
   const { toast } = useToast();
   const [replyDrafts, setReplyDrafts] = useState<Record<number, string>>({});
-  const [generalQuery, setGeneralQuery] = useState("");
   const [previewOpen, setPreviewOpen] = useState(false);
 
   const { data: checks = [], isLoading } = useQuery<CheckWithMessages[]>({
@@ -2217,17 +2397,39 @@ function ChecksPanel({ devisId, projectId, isArchived }: { devisId: number; proj
     queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis-checks", "open-counts"] });
   };
 
+  // Variant B models a single editable general question. Multiple historical
+  // general checks may exist (older or post-conversation), but only ONE 'open'
+  // general draft is editable in the bottom mirror at a time. We persist the
+  // textarea by debounced blur: PATCH if a draft already exists, POST to
+  // create one if not, drop it if cleared.
+  const openGeneralCheck = checks.find((c) => c.status === "open" && c.origin === "general") ?? null;
+  const [generalDraft, setGeneralDraft] = useState<string>(openGeneralCheck?.query ?? "");
+  const [generalDirty, setGeneralDirty] = useState(false);
+  // Resync the editor when the server's open general check changes (e.g.
+  // after send → status becomes awaiting_contractor → openGeneralCheck flips
+  // to null → editor should clear). Skip while user is mid-edit.
+  useEffect(() => {
+    if (!generalDirty) {
+      setGeneralDraft(openGeneralCheck?.query ?? "");
+    }
+  }, [openGeneralCheck?.id, openGeneralCheck?.query, generalDirty]);
+
   const createGeneralMutation = useMutation({
     mutationFn: async (query: string) => {
       const res = await apiRequest("POST", `/api/devis/${devisId}/checks`, { query });
       return res.json();
     },
-    onSuccess: () => {
-      setGeneralQuery("");
-      invalidate();
-      toast({ title: "Question ajoutée" });
-    },
+    onSuccess: () => { invalidate(); setGeneralDirty(false); },
     onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  const updateGeneralMutation = useMutation({
+    mutationFn: async ({ checkId, query }: { checkId: number; query: string }) => {
+      const res = await apiRequest("PATCH", `/api/devis-checks/${checkId}`, { query });
+      return res.json();
+    },
+    onSuccess: () => { invalidate(); setGeneralDirty(false); },
+    onError: (error: Error) => toast({ title: "Impossible d'enregistrer la question", description: error.message, variant: "destructive" }),
   });
 
   const sendMutation = useMutation({
@@ -2276,161 +2478,265 @@ function ChecksPanel({ devisId, projectId, isArchived }: { devisId: number; proj
   });
 
   if (isLoading) return null;
-  const visible = checks.filter((c) => c.status !== "dropped");
-  const tokenPanel = <TokenPanel devisId={devisId} projectId={projectId} isArchived={isArchived} />;
 
-  const openCount = checks.filter((c) => c.status === "open" || c.status === "awaiting_architect" || c.status === "awaiting_contractor").length;
+  // Variant B partitions checks into the "drafts going out next" set
+  // (status='open' — included in the bottom-mirror digest) and the
+  // "post-send conversations" set (awaiting_*/resolved — rendered as
+  // chronological cards beneath the mirror). 'dropped' is hidden entirely.
+  const openLineChecks = checks.filter((c) => c.status === "open" && c.origin === "line_item");
+  const conversationChecks = checks.filter((c) => c.status === "awaiting_contractor" || c.status === "awaiting_architect" || c.status === "resolved");
+  // Drafts shown in the bottom-mirror digest = strictly status='open'.
+  const openCount = openLineChecks.length + (openGeneralCheck ? 1 : 0);
   // Sendable mirrors the backend bundle filter: every unresolved check
-  // participates in a follow-up email round, including those already in
-  // awaiting_contractor (architect's follow-up message moves the check there
-  // but the round still needs to go out).
-  const sendableCount = openCount;
+  // participates in a follow-up email round, including awaiting_contractor
+  // (which the architect's follow-up message still needs to push back out)
+  // and awaiting_architect (renotification scenarios). Computing this from
+  // 'open' alone would silently disable the CTA for follow-up rounds.
+  const sendableCount = checks.filter((c) => c.status === "open" || c.status === "awaiting_contractor" || c.status === "awaiting_architect").length;
+
+  const lineByItemId = new Map<number, DevisLineItem>();
+  for (const li of lineItems) lineByItemId.set(li.id, li);
+
+  // Persist the general-question textarea on blur. Empty + existing draft →
+  // drop the check. Non-empty + no draft → create. Non-empty + existing draft →
+  // PATCH only if changed.
+  const commitGeneralDraft = () => {
+    const trimmed = generalDraft.trim();
+    if (openGeneralCheck) {
+      if (!trimmed) {
+        dropMutation.mutate(openGeneralCheck.id);
+      } else if (trimmed !== openGeneralCheck.query) {
+        updateGeneralMutation.mutate({ checkId: openGeneralCheck.id, query: trimmed });
+      } else {
+        setGeneralDirty(false);
+      }
+    } else if (trimmed) {
+      createGeneralMutation.mutate(trimmed);
+    } else {
+      setGeneralDirty(false);
+    }
+  };
 
   return (
     <div className="space-y-3">
       <LapsingTokenBanner devisId={devisId} isArchived={isArchived} />
-      <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-3 space-y-3" data-testid={`section-checks-${devisId}`}>
-      {tokenPanel}
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div className="flex items-center gap-2">
-          {openCount > 0 && (
-            <span className="px-2 py-0.5 rounded-full bg-amber-500 text-white text-[9px] font-bold uppercase tracking-widest">CHECKING</span>
-          )}
-          <span className="text-[11px] font-semibold text-amber-900" data-testid={`text-open-checks-count-${devisId}`}>
-            {openCount === 0 ? "Aucune question en cours" : `${openCount} question(s) en cours`}
-          </span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 text-[9px] font-bold uppercase tracking-widest gap-1"
-                  disabled={openCount === 0}
-                  onClick={() => setPreviewOpen(true)}
-                  data-testid={`button-preview-portal-${devisId}`}
-                >
-                  <Eye size={12} />
-                  Aperçu côté entreprise
-                </Button>
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="top" className="text-[11px]">
-              {openCount === 0
-                ? "Ajoutez une question pour prévisualiser le portail"
-                : "Voir exactement ce que l'entreprise verra (lecture seule)"}
-            </TooltipContent>
-          </Tooltip>
-          <Button
-            size="sm"
-            className="h-7 text-[9px] font-bold uppercase tracking-widest"
-            disabled={isArchived || sendableCount === 0 || sendMutation.isPending}
-            onClick={() => sendMutation.mutate()}
-            data-testid={`button-send-checks-${devisId}`}
-          >
-            {sendMutation.isPending ? "Envoi…" : `Envoyer à l'entreprise (${sendableCount})`}
-          </Button>
-        </div>
-      </div>
+      <TokenPanel devisId={devisId} projectId={projectId} isArchived={isArchived} />
       <PortalPreviewSheet devisId={devisId} open={previewOpen} onOpenChange={setPreviewOpen} />
 
-      {!isArchived && (
-        <div className="flex items-start gap-2" data-testid={`section-add-general-check-${devisId}`}>
-          <Textarea
-            className="text-[11px] min-h-[36px] flex-1 bg-white"
-            placeholder="Ajouter une question générale (non liée à une ligne)…"
-            value={generalQuery}
-            onChange={(e) => setGeneralQuery(e.target.value)}
-            data-testid={`textarea-general-check-${devisId}`}
-          />
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-9 text-[9px] font-bold uppercase tracking-widest"
-            disabled={!generalQuery.trim() || createGeneralMutation.isPending}
-            onClick={() => createGeneralMutation.mutate(generalQuery.trim())}
-            data-testid={`button-add-general-check-${devisId}`}
-          >
-            {createGeneralMutation.isPending ? "…" : "Ajouter"}
-          </Button>
-        </div>
-      )}
-
-      <div className="space-y-2">
-        {visible.map((c) => (
-          <div key={c.id} className="rounded-lg border border-amber-200 bg-white p-2.5 space-y-2" data-testid={`check-${c.id}`}>
-            <div className="flex items-start justify-between gap-2">
-              <p className="text-[12px] text-slate-800 flex-1">{c.query}</p>
-              <span className={`px-2 py-0.5 rounded-full border text-[9px] font-bold uppercase tracking-wide ${CHECK_STATUS_COLOR[c.status] || "bg-slate-100"}`} data-testid={`status-check-${c.id}`}>
-                {CHECK_STATUS_LABEL[c.status] || c.status}
+      {/* Bottom mirror — variant B "Inline composer + bottom mirror".
+          Navy-bordered card showing the architect exactly what will be
+          packaged and sent to the contractor in the next email round. */}
+      <div
+        className="rounded-xl border-2 p-3 space-y-3 bg-white"
+        style={{ borderColor: "#0B2545" }}
+        data-testid={`section-checks-${devisId}`}
+      >
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2">
+            {openCount > 0 ? (
+              <span
+                className="px-2 py-0.5 rounded-full text-white text-[9px] font-bold uppercase tracking-widest"
+                style={{ backgroundColor: "#0B2545" }}
+                data-testid={`pill-pret-a-envoyer-${devisId}`}
+              >
+                Prêt à envoyer
               </span>
-            </div>
-            {c.messages.length > 0 && (
-              <div className="space-y-1 max-h-48 overflow-y-auto">
-                {c.messages.map((m) => (
-                  <div key={m.id} className={`text-[11px] rounded p-1.5 ${m.authorType === "contractor" ? "bg-emerald-50 border border-emerald-200" : "bg-slate-50 border border-slate-200"}`}>
-                    <div className="text-[9px] font-semibold text-slate-500 mb-0.5">{m.authorType === "contractor" ? (m.authorName || "Entreprise") : "Vous"}</div>
-                    <div className="whitespace-pre-wrap">{m.body}</div>
-                  </div>
-                ))}
-              </div>
+            ) : (
+              <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[9px] font-bold uppercase tracking-widest">
+                Aucune question en cours
+              </span>
             )}
-            {c.status !== "resolved" && !isArchived && (
-              <div className="flex flex-col gap-1.5">
-                <Textarea
-                  className="text-[11px] min-h-[50px]"
-                  placeholder="Ajouter un message…"
-                  value={replyDrafts[c.id] ?? ""}
-                  onChange={(e) => setReplyDrafts((p) => ({ ...p, [c.id]: e.target.value }))}
-                  data-testid={`textarea-architect-reply-${c.id}`}
-                />
-                <div className="flex items-center justify-between gap-1.5">
+            <h3
+              className="text-[12px] font-bold uppercase tracking-widest"
+              style={{ color: "#0B2545" }}
+              data-testid={`heading-checks-${devisId}`}
+            >
+              Communications avec l'entreprise
+            </h3>
+            <span className="text-[11px] font-semibold text-slate-600" data-testid={`text-open-checks-count-${devisId}`}>
+              {openCount === 0 ? "" : `· ${openCount} question(s)`}
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
                   <Button
-                    variant="ghost"
+                    variant="outline"
                     size="sm"
-                    className="h-6 text-[9px] text-slate-500 hover:text-rose-600"
-                    onClick={() => dropMutation.mutate(c.id)}
-                    disabled={dropMutation.isPending}
-                    data-testid={`button-drop-check-${c.id}`}
+                    className="h-7 text-[9px] font-bold uppercase tracking-widest gap-1"
+                    disabled={openCount === 0}
+                    onClick={() => setPreviewOpen(true)}
+                    data-testid={`button-preview-portal-${devisId}`}
                   >
-                    Abandonner
+                    <Eye size={12} />
+                    Aperçu côté entreprise
                   </Button>
-                  <div className="flex items-center gap-1.5">
-                    {c.status === "awaiting_architect" && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-6 text-[9px] border-emerald-300 text-emerald-700 hover:bg-emerald-50"
-                        onClick={() => resolveMutation.mutate(c.id)}
-                        disabled={resolveMutation.isPending}
-                        data-testid={`button-resolve-check-${c.id}`}
-                      >
-                        Clôturer
-                      </Button>
-                    )}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="text-[11px]">
+                {openCount === 0
+                  ? "Ajoutez une question pour prévisualiser le portail"
+                  : "Voir exactement ce que l'entreprise verra (lecture seule)"}
+              </TooltipContent>
+            </Tooltip>
+            <Button
+              size="sm"
+              className="h-7 text-[9px] font-bold uppercase tracking-widest gap-1 text-white"
+              style={{ backgroundColor: "#0B2545" }}
+              disabled={isArchived || sendableCount === 0 || sendMutation.isPending}
+              onClick={() => sendMutation.mutate()}
+              data-testid={`button-send-checks-${devisId}`}
+            >
+              <Send size={11} />
+              {sendMutation.isPending ? "Envoi…" : `Envoyer à l'entreprise (${sendableCount})`}
+            </Button>
+          </div>
+        </div>
+
+        {openCount > 0 && (
+          <p className="text-[10px] text-slate-500" data-testid={`text-send-target-${devisId}`}>
+            Voici ce qui partira à{" "}
+            <span className="font-semibold text-slate-700">
+              {contractorEmail || "(adresse entreprise manquante)"}
+            </span>
+            {" "}:
+          </p>
+        )}
+
+        {/* Line questions — rose bullets (variant B style). Read-only digest
+            of each draft; the editable composer lives inline next to the
+            line item itself (see LineItemWithCheck popover). */}
+        {openLineChecks.length > 0 && (
+          <ul className="space-y-1.5" data-testid={`list-open-line-checks-${devisId}`}>
+            {openLineChecks.map((c) => {
+              const li = c.lineItemId != null ? lineByItemId.get(c.lineItemId) : undefined;
+              const lineLabel = li ? `Ligne ${li.lineNumber} · ${li.description.slice(0, 40)}${li.description.length > 40 ? "…" : ""}` : "Ligne supprimée";
+              return (
+                <li key={c.id} className="flex items-start gap-2 text-[11px]" data-testid={`mirror-line-check-${c.id}`}>
+                  <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[9px] font-bold uppercase tracking-widest text-rose-700">{lineLabel}</div>
+                    <div className="text-slate-700 whitespace-pre-wrap">{c.query}</div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        {/* General question — single editable textarea. PATCH if existing
+            open draft, POST to create, drop if cleared. */}
+        {!isArchived && (
+          <div className="flex items-start gap-2" data-testid={`section-general-check-${devisId}`}>
+            <span className="mt-2.5 w-1.5 h-1.5 rounded-full bg-slate-400 shrink-0" />
+            <div className="flex-1">
+              <div className="text-[9px] font-bold uppercase tracking-widest text-slate-500 mb-0.5">
+                Question générale (non liée à une ligne)
+              </div>
+              <Textarea
+                className="text-[11px] min-h-[36px] bg-white"
+                placeholder="Ajouter une question générale…"
+                value={generalDraft}
+                onChange={(e) => { setGeneralDraft(e.target.value); setGeneralDirty(true); }}
+                onBlur={commitGeneralDraft}
+                disabled={createGeneralMutation.isPending || updateGeneralMutation.isPending}
+                data-testid={`textarea-general-check-${devisId}`}
+              />
+            </div>
+          </div>
+        )}
+        {isArchived && openGeneralCheck && (
+          <div className="flex items-start gap-2 text-[11px]" data-testid={`mirror-general-check-${openGeneralCheck.id}`}>
+            <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-slate-400 shrink-0" />
+            <div className="flex-1">
+              <div className="text-[9px] font-bold uppercase tracking-widest text-slate-500">Question générale</div>
+              <div className="text-slate-700 whitespace-pre-wrap">{openGeneralCheck.query}</div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Conversation threads — checks already sent to (or replied by) the
+          contractor. Less visually prominent than the bottom mirror; this is
+          where ongoing back-and-forth lives. */}
+      {conversationChecks.length > 0 && (
+        <div className="space-y-2" data-testid={`section-conversations-${devisId}`}>
+          <div className="text-[9px] font-bold uppercase tracking-widest text-slate-500 px-1">
+            Conversations en cours
+          </div>
+          {conversationChecks.map((c) => (
+            <div key={c.id} className="rounded-lg border border-slate-200 bg-white p-2.5 space-y-2" data-testid={`check-${c.id}`}>
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-[12px] text-slate-800 flex-1">{c.query}</p>
+                <span className={`px-2 py-0.5 rounded-full border text-[9px] font-bold uppercase tracking-wide ${CHECK_STATUS_COLOR[c.status] || "bg-slate-100"}`} data-testid={`status-check-${c.id}`}>
+                  {CHECK_STATUS_LABEL[c.status] || c.status}
+                </span>
+              </div>
+              {c.messages.length > 0 && (
+                <div className="space-y-1 max-h-48 overflow-y-auto">
+                  {c.messages.map((m) => (
+                    <div key={m.id} className={`text-[11px] rounded p-1.5 ${m.authorType === "contractor" ? "bg-emerald-50 border border-emerald-200" : "bg-slate-50 border border-slate-200"}`}>
+                      <div className="text-[9px] font-semibold text-slate-500 mb-0.5">{m.authorType === "contractor" ? (m.authorName || "Entreprise") : "Vous"}</div>
+                      <div className="whitespace-pre-wrap">{m.body}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {c.status !== "resolved" && !isArchived && (
+                <div className="flex flex-col gap-1.5">
+                  <Textarea
+                    className="text-[11px] min-h-[50px]"
+                    placeholder="Ajouter un message…"
+                    value={replyDrafts[c.id] ?? ""}
+                    onChange={(e) => setReplyDrafts((p) => ({ ...p, [c.id]: e.target.value }))}
+                    data-testid={`textarea-architect-reply-${c.id}`}
+                  />
+                  <div className="flex items-center justify-between gap-1.5">
                     <Button
+                      variant="ghost"
                       size="sm"
-                      className="h-6 text-[9px]"
-                      onClick={() => {
-                        const body = (replyDrafts[c.id] ?? "").trim();
-                        if (!body) return;
-                        replyMutation.mutate({ checkId: c.id, body });
-                      }}
-                      disabled={!((replyDrafts[c.id] ?? "").trim()) || replyMutation.isPending}
-                      data-testid={`button-architect-reply-${c.id}`}
+                      className="h-6 text-[9px] text-slate-500 hover:text-rose-600"
+                      onClick={() => dropMutation.mutate(c.id)}
+                      disabled={dropMutation.isPending}
+                      data-testid={`button-drop-check-${c.id}`}
                     >
-                      Répondre
+                      Abandonner
                     </Button>
+                    <div className="flex items-center gap-1.5">
+                      {c.status === "awaiting_architect" && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-6 text-[9px] border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                          onClick={() => resolveMutation.mutate(c.id)}
+                          disabled={resolveMutation.isPending}
+                          data-testid={`button-resolve-check-${c.id}`}
+                        >
+                          Clôturer
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        className="h-6 text-[9px]"
+                        onClick={() => {
+                          const body = (replyDrafts[c.id] ?? "").trim();
+                          if (!body) return;
+                          replyMutation.mutate({ checkId: c.id, body });
+                        }}
+                        disabled={!((replyDrafts[c.id] ?? "").trim()) || replyMutation.isPending}
+                        data-testid={`button-architect-reply-${c.id}`}
+                      >
+                        Répondre
+                      </Button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-      </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -2467,6 +2773,33 @@ function DevisDetailTabs({
     queryKey: ["/api/devis", devis.id, "translation"],
   });
   const translationStatus = translation?.status ?? "missing";
+
+  // Fetch open checks once at this level so each LineItemWithCheck can render
+  // its rose "Question rédigée" pill and pre-seed the inline-popover editor
+  // with the server's auto-suggested text. Single query + per-row Map lookup
+  // avoids N requests when there are many flagged lines.
+  const { data: checksForLines = [] } = useQuery<CheckWithMessages[]>({
+    queryKey: ["/api/devis", devis.id, "checks"],
+  });
+  const openLineCheckMap = new Map<number, { id: number; query: string }>();
+  for (const c of checksForLines) {
+    if (c.status === "open" && c.origin === "line_item" && c.lineItemId != null) {
+      openLineCheckMap.set(c.lineItemId, { id: c.id, query: c.query });
+    }
+  }
+
+  // PATCH the editable draft text from the inline popover. 409 (already sent
+  // to contractor) and 404 (drop race) surface as toasts; the row component
+  // handles user-facing errors.
+  const saveCheckQueryMutation = useMutation({
+    mutationFn: async ({ checkId, query }: { checkId: number; query: string }) => {
+      const res = await apiRequest("PATCH", `/api/devis-checks/${checkId}`, { query });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id, "checks"] });
+    },
+  });
 
   const defaultTab = isModeB ? "lines" : "avenants";
 
@@ -2542,6 +2875,9 @@ function DevisDetailTabs({
                     <LineItemWithCheck
                       key={li.id}
                       li={li}
+                      devisId={devis.id}
+                      openCheck={openLineCheckMap.get(li.id) ?? null}
+                      onSaveCheckQuery={(checkId, query) => saveCheckQueryMutation.mutateAsync({ checkId, query })}
                       onUpdate={(data) => onUpdateLineItem(li.id, data)}
                       disabled={isArchived}
                     />
@@ -3000,7 +3336,15 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
         </div>
       )}
 
-      {!isVoid && <ChecksPanel devisId={devis.id} projectId={projectId} isArchived={isArchived} />}
+      {!isVoid && (
+        <ChecksPanel
+          devisId={devis.id}
+          projectId={projectId}
+          isArchived={isArchived}
+          contractorEmail={contractors.find((c) => c.id === devis.contractorId)?.email ?? null}
+          lineItems={lineItems ?? []}
+        />
+      )}
 
       <div className="flex items-center gap-1.5 py-2" data-testid={`stepper-signoff-${devis.id}`}>
         {SIGN_OFF_STAGES.map((stage, idx) => {
