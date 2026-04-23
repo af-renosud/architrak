@@ -22,7 +22,6 @@
  * Exit codes:
  *   0  healthy within the polling window
  *   1  unhealthy / timeout (operator alert sent)
- *   2  configuration error (no URL resolvable, programmer error)
  */
 
 import { sendOperatorAlert } from "../server/operations/operator-alerts";
@@ -55,24 +54,20 @@ async function probe(url: string): Promise<ProbeAttempt> {
   }
 }
 
-function resolveUrl(): string | null {
+function resolveUrl(): string {
+  // Always resolves: env vars are preferred but a localhost fallback
+  // keeps ad-hoc developer runs convenient. Production deploys set
+  // PUBLIC_BASE_URL via the workflow command, so the fallback only
+  // matters for local invocation against `npm run dev`.
   const base =
     process.env.SMOKE_BASE_URL ||
     process.env.PUBLIC_BASE_URL ||
     "http://localhost:5000";
-  if (!base) return null;
   return `${base.replace(/\/$/, "")}/healthz/deep`;
 }
 
 export async function runSmoke(): Promise<number> {
   const url = resolveUrl();
-  if (!url) {
-    console.error(
-      "[post-deploy-smoke] no probe URL — set PUBLIC_BASE_URL or SMOKE_BASE_URL",
-    );
-    return 2;
-  }
-
   console.log(`[post-deploy-smoke] polling ${url} (timeout ${POLL_TIMEOUT_MS}ms)`);
 
   const deadline = Date.now() + POLL_TIMEOUT_MS;

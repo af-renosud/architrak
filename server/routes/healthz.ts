@@ -119,9 +119,18 @@ router.get(
       // Surface failures in the deploy log via the existing error
       // channel so on-call sees them next to other application errors
       // rather than buried in a 503 body alone.
+      // Log via the same `[error-handler]` prefix used by the
+      // express error middleware so deploy-log greps that watch for
+      // application errors also catch deep-health degradations.
+      // The `healthz-deep` discriminator stays in the message so the
+      // source is unambiguous.
+      for (const failure of result.failures) {
+        console.error(
+          `[error-handler] healthz-deep: table=${failure.table} error=${failure.error}`,
+        );
+      }
       console.error(
-        `[healthz-deep] degraded: ${result.failures.length}/${result.checked} table(s) failed`,
-        result.failures,
+        `[error-handler] healthz-deep: degraded — ${result.failures.length}/${result.checked} table(s) failed`,
       );
       res.status(503).json(result);
       return;

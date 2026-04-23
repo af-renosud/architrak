@@ -89,25 +89,26 @@ describe("post-deploy-smoke", () => {
     expect(alert.body).toContain("ECONNREFUSED");
   });
 
-  it("returns 2 when no probe URL is resolvable", async () => {
+  it("falls back to http://localhost:5000 when no env vars are set", async () => {
+    // Documents the resolution precedence: SMOKE_BASE_URL ->
+    // PUBLIC_BASE_URL -> localhost. With both env vars cleared the
+    // script must still resolve a URL (no exit-2 branch any more —
+    // the localhost fallback always satisfies callers; production
+    // deploys set PUBLIC_BASE_URL so the fallback only matters for
+    // ad-hoc local runs).
     process.env.SMOKE_BASE_URL = "";
     process.env.PUBLIC_BASE_URL = "";
-    // Stub the default to undefined too by patching after import below.
-    // We can't easily make the script's hard-coded localhost fallback
-    // disappear, so this test verifies the error branch by clearing
-    // both env vars and asserting the script still picks the
-    // localhost default — i.e. exit 2 only fires for an explicit
-    // empty resolution. Restore state and skip the assertion if the
-    // default kicks in (documented behaviour).
-    const runSmoke = await loadRunSmoke();
     fetchMock.mockResolvedValueOnce({
       status: 200,
       text: async () => "ok",
     });
+    const runSmoke = await loadRunSmoke();
     const code = await runSmoke();
-    // With the localhost default, the probe succeeds against the mock
-    // — so we assert the documented behaviour rather than exit 2.
     expect(code).toBe(0);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:5000/healthz/deep",
+      expect.anything(),
+    );
     process.env.SMOKE_BASE_URL = "http://test.invalid";
   });
 });
