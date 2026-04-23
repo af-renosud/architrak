@@ -276,13 +276,21 @@ router.post(
     });
     const portalUrl = buildPortalUrl(baseUrl, issued.raw);
 
-    // Pull line descriptions for nicer email body.
+    // Pull full line items so the email/portal can show the devis line
+    // position + HT amount alongside the description, not just the bundle
+    // order. This is what lets the contractor cross-reference each question
+    // against a specific line on their devis PDF (see Task #110).
     const lineItems = await storage.getDevisLineItems(devisId);
-    const lineMap = new Map(lineItems.map((li) => [li.id, li.description]));
-    const summaries = sendable.map((c) => ({
-      query: c.query,
-      lineDescription: c.lineItemId ? lineMap.get(c.lineItemId) ?? null : null,
-    }));
+    const lineMap = new Map(lineItems.map((li) => [li.id, li]));
+    const summaries = sendable.map((c) => {
+      const li = c.lineItemId ? lineMap.get(c.lineItemId) ?? null : null;
+      return {
+        query: c.query,
+        lineDescription: li?.description ?? null,
+        lineNumber: li?.lineNumber ?? null,
+        totalHt: li?.totalHt ?? null,
+      };
+    });
 
     const { communicationId, alreadySent: queueAlreadySent, refreshedBody, refreshedSubject } =
       await queueDevisCheckBundle({

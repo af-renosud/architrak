@@ -18,6 +18,7 @@ const { state, storageSpy } = vi.hoisted(() => {
     comms: [] as Comm[],
     tokens: [] as Token[],
     messages: [] as Array<{ id: number; checkId: number; authorType: string; body: string; channel: string }>,
+    lineItems: [] as Array<{ id: number; devisId: number; lineNumber: number; description: string; totalHt: string }>,
   };
   const nid = () => ++state.nextId;
 
@@ -25,7 +26,7 @@ const { state, storageSpy } = vi.hoisted(() => {
     getDevis: vi.fn(async (id: number) => state.devis.find((d) => d.id === id)),
     getContractor: vi.fn(async (id: number) => state.contractors.find((c) => c.id === id)),
     getProject: vi.fn(async (id: number) => state.projects.find((p) => p.id === id)),
-    getDevisLineItems: vi.fn(async () => []),
+    getDevisLineItems: vi.fn(async (_devisId: number) => state.lineItems.filter((li) => li.devisId === _devisId)),
     listDevisChecks: vi.fn(async (devisId: number) => state.checks.filter((c) => c.devisId === devisId)),
     listDevisCheckMessages: vi.fn(async (checkId: number) => state.messages.filter((m) => m.checkId === checkId)),
     countOpenDevisChecks: vi.fn(async (devisId: number) =>
@@ -108,6 +109,16 @@ vi.mock("../services/devis-checks", () => ({
   hashToken: (raw: string) => `hash:${raw}`,
   computeTokenExpiry: () => new Date("2099-01-01T00:00:00Z"),
   isTokenExpired: (t: { expiresAt: Date | null }) => !!t.expiresAt && t.expiresAt.getTime() <= Date.now(),
+  // Mirror the real resolver so the /p/check/:token/* routes can authenticate
+  // through the storage stub. Token validity == hash present + not revoked +
+  // not expired. The real impl in server/services/devis-checks.ts is identical.
+  resolveDevisCheckToken: vi.fn(async (raw: string) => {
+    const t = state.tokens.find((x) => x.tokenHash === `hash:${raw}`);
+    if (!t) return { ok: false, reason: "missing" } as const;
+    if (t.revokedAt) return { ok: false, reason: "revoked" } as const;
+    if (t.expiresAt && t.expiresAt.getTime() <= Date.now()) return { ok: false, reason: "expired" } as const;
+    return { ok: true, token: t } as const;
+  }),
 }));
 vi.mock("../communications/email-sender", () => ({
   queueDevisCheckBundle: vi.fn(async (opts: any) => {
@@ -142,6 +153,7 @@ beforeAll(async () => {
 beforeEach(() => {
   state.nextId = 1; state.devis.length = 0; state.contractors.length = 0; state.projects.length = 0;
   state.checks.length = 0; state.comms.length = 0; state.tokens.length = 0; state.messages.length = 0;
+  state.lineItems.length = 0;
   vi.clearAllMocks();
 });
 
@@ -447,6 +459,76 @@ describe("Public portal — token revocation", () => {
 
     const retry = await fetch(`${baseUrl}/api/devis/63/check-token/revoke`, { method: "POST" });
     expect(retry.status).toBe(409);
+  });
+
+  it("portal payload exposes lineNumber + totalHt per check (cross-reference data, Task #110)", async () => {
+    state.devis.push({ id: 52, projectId: 1, contractorId: 1, signOffStage: "received" });
+    state.contractors.push({ id: 1, name: "Acme", email: "a@e.com" });
+    state.projects.push({ id: 1, name: "P" });
+    state.lineItems.push({ id: 4001, devisId: 52, lineNumber: 4, description: "Fourniture chaudière", totalHt: "18500.00" });
+    state.lineItems.push({ id: 4002, devisId: 52, lineNumber: 7, description: "Robinetterie", totalHt: "320.50" });
+    state.checks.push({ id: 20, devisId: 52, status: "awaiting_contractor", query: "Why 18500?", lineItemId: 4001, origin: "line_item" });
+    state.checks.push({ id: 21, devisId: 52, status: "open", query: "Brand?", lineItemId: 4002, origin: "line_item" });
+    state.checks.push({ id: 22, devisId: 52, status: "open", query: "General?", lineItemId: null, origin: "general" });
+    const raw = "rawvalid3".padEnd(40, "Z");
+    state.tokens.push({ id: 8889, devisId: 52, tokenHash: `hash:${raw}`, revokedAt: null });
+
+    const res = await fetch(`${baseUrl}/p/check/${raw}/data`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    type Check = { id: number; lineNumber: number | null; totalHt: string | null; lineDescription: string | null };
+    const byId = new Map<number, Check>((body.checks as Check[]).map((c) => [c.id, c]));
+    expect(byId.get(20)).toMatchObject({ lineNumber: 4, totalHt: "18500.00", lineDescription: "Fourniture chaudière" });
+    expect(byId.get(21)).toMatchObject({ lineNumber: 7, totalHt: "320.50", lineDescription: "Robinetterie" });
+    expect(byId.get(22)).toMatchObject({ lineNumber: null, totalHt: null, lineDescription: null });
+  });
+
+  it("falls back to null line metadata when a check references a missing line item (Task #110 edge case)", async () => {
+    state.devis.push({ id: 54, projectId: 1, contractorId: 1, signOffStage: "received" });
+    state.contractors.push({ id: 1, name: "Acme", email: "a@e.com" });
+    state.projects.push({ id: 1, name: "P" });
+    // Note: NO matching line item is inserted for lineItemId 9999 — simulates
+    // the line being deleted/renumbered after the check was created.
+    state.checks.push({ id: 40, devisId: 54, status: "open", query: "Orphan?", lineItemId: 9999, origin: "line_item" });
+    const raw = "rawvalid4".padEnd(40, "Z");
+    state.tokens.push({ id: 9001, devisId: 54, tokenHash: `hash:${raw}`, revokedAt: null });
+
+    // Portal /data must not crash and must surface null line metadata.
+    const res = await fetch(`${baseUrl}/p/check/${raw}/data`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const orphan = (body.checks as Array<{ id: number; lineNumber: number | null; totalHt: string | null; lineDescription: string | null }>)
+      .find((c) => c.id === 40);
+    expect(orphan).toMatchObject({ lineNumber: null, totalHt: null, lineDescription: null });
+
+    // Send route must also degrade cleanly.
+    const sender = await import("../communications/email-sender");
+    const sendRes = await fetch(`${baseUrl}/api/devis/54/checks/send`, { method: "POST" });
+    expect(sendRes.status).toBe(200);
+    const opts = (sender.queueDevisCheckBundle as any).mock.calls.at(-1)[0];
+    const summary = opts.checkSummaries[0];
+    expect(summary).toMatchObject({ query: "Orphan?", lineNumber: null, totalHt: null, lineDescription: null });
+  });
+
+  it("send route forwards lineNumber + totalHt to the bundle queue (cross-reference data, Task #110)", async () => {
+    state.devis.push({ id: 53, projectId: 1, contractorId: 1, signOffStage: "received" });
+    state.contractors.push({ id: 1, name: "Acme", email: "a@e.com" });
+    state.projects.push({ id: 1, name: "P" });
+    state.lineItems.push({ id: 5001, devisId: 53, lineNumber: 4, description: "Fourniture chaudière", totalHt: "18500.00" });
+    state.checks.push({ id: 30, devisId: 53, status: "open", query: "Q-line", lineItemId: 5001, origin: "line_item" });
+    state.checks.push({ id: 31, devisId: 53, status: "open", query: "Q-general", lineItemId: null, origin: "general" });
+
+    const sender = await import("../communications/email-sender");
+    const res = await fetch(`${baseUrl}/api/devis/53/checks/send`, { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(sender.queueDevisCheckBundle).toHaveBeenCalledTimes(1);
+    const opts = (sender.queueDevisCheckBundle as any).mock.calls[0][0];
+    const summaries = opts.checkSummaries as Array<{ query: string; lineNumber: number | null; totalHt: string | null }>;
+    expect(summaries).toHaveLength(2);
+    const line = summaries.find((s) => s.query === "Q-line");
+    const general = summaries.find((s) => s.query === "Q-general");
+    expect(line).toMatchObject({ lineNumber: 4, totalHt: "18500.00" });
+    expect(general).toMatchObject({ lineNumber: null, totalHt: null });
   });
 
   it("hides resolved checks from the contractor (only open queries are surfaced)", async () => {

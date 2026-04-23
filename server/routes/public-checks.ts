@@ -21,6 +21,8 @@ export interface PortalDataPayload {
     status: string;
     query: string;
     lineDescription: string | null;
+    lineNumber: number | null;
+    totalHt: string | null;
     messages: Array<{
       id: number;
       authorType: string;
@@ -40,24 +42,29 @@ export async function buildPortalPayload(devis: Devis): Promise<PortalDataPayloa
   const contractor = await storage.getContractor(devis.contractorId);
   const checks = await storage.listDevisChecks(devis.id);
   const lineItems = await storage.getDevisLineItems(devis.id);
-  const lineMap = new Map(lineItems.map((li) => [li.id, li.description]));
+  const lineMap = new Map(lineItems.map((li) => [li.id, li]));
 
   const enriched = await Promise.all(
     checks
       .filter((c: DevisCheck) => c.status !== "dropped" && c.status !== "resolved")
-      .map(async (c: DevisCheck) => ({
-        id: c.id,
-        status: c.status,
-        query: c.query,
-        lineDescription: c.lineItemId ? lineMap.get(c.lineItemId) ?? null : null,
-        messages: (await storage.listDevisCheckMessages(c.id)).map((m) => ({
-          id: m.id,
-          authorType: m.authorType,
-          authorName: m.authorName,
-          body: m.body,
-          createdAt: m.createdAt,
-        })),
-      })),
+      .map(async (c: DevisCheck) => {
+        const li = c.lineItemId ? lineMap.get(c.lineItemId) ?? null : null;
+        return {
+          id: c.id,
+          status: c.status,
+          query: c.query,
+          lineDescription: li?.description ?? null,
+          lineNumber: li?.lineNumber ?? null,
+          totalHt: li?.totalHt ?? null,
+          messages: (await storage.listDevisCheckMessages(c.id)).map((m) => ({
+            id: m.id,
+            authorType: m.authorType,
+            authorName: m.authorName,
+            body: m.body,
+            createdAt: m.createdAt,
+          })),
+        };
+      }),
   );
 
   return {
@@ -312,6 +319,8 @@ export function renderPortalShell(opts:
   main { max-width: 880px; margin: 0 auto; padding: 24px; padding-bottom: 80px; }
   .check { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 16px; padding: 16px; }
   .check h3 { margin: 0 0 8px; font-size: 14px; color: #475569; font-weight: 600; }
+  .line-badge { display: inline-block; background: #eef2ff; color: #3730a3; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 9999px; margin-right: 4px; }
+  .line-amount { color: #64748b; font-weight: 500; font-size: 12px; margin-left: 4px; }
   .query { background: #fef3c7; border-left: 3px solid #f59e0b; padding: 8px 12px; margin: 0 0 12px; font-size: 14px; }
   .status { display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; padding: 2px 8px; border-radius: 9999px; margin-left: 8px; }
   .status-open, .status-awaiting_contractor { background: #fee2e2; color: #991b1b; }
@@ -396,7 +405,21 @@ function render(data) {
     return;
   }
   root.innerHTML = data.checks.map((c) => {
-    const head = c.lineDescription ? "Ligne : " + escapeHtml(c.lineDescription) : "Question générale";
+    // Cross-reference each question to the actual devis line position + HT
+    // amount so the contractor can locate it on their devis PDF (Task #110).
+    let head;
+    if (c.lineNumber != null && c.lineDescription) {
+      const amount = (c.totalHt != null && Number.isFinite(Number(c.totalHt)))
+        ? new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(c.totalHt))
+        : null;
+      const badge = '<span class="line-badge" data-testid="badge-line-' + c.id + '">Ligne ' + c.lineNumber + '</span>';
+      const amountTail = amount ? ' <span class="line-amount">(' + escapeHtml(amount) + ' \u20AC HT)</span>' : '';
+      head = badge + ' ' + escapeHtml(c.lineDescription) + amountTail;
+    } else if (c.lineDescription) {
+      head = "Ligne : " + escapeHtml(c.lineDescription);
+    } else {
+      head = "Question générale";
+    }
     const msgs = c.messages.map((m) => {
       const author = m.authorType === "contractor" ? (m.authorName || "Vous") : "Renosud";
       return '<div class="msg msg-' + m.authorType + '"><div class="msg-meta">' + escapeHtml(author) + '</div>' + escapeHtml(m.body) + '</div>';

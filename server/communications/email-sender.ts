@@ -143,6 +143,33 @@ export async function sendCommunication(
 }
 
 /**
+ * Format a single check's head line for the bundled email body. Exported so
+ * unit tests can assert the French formatting without spinning up storage.
+ *
+ * Line-scoped questions render as `Ligne {n} — {description} ({amount} € HT)`
+ * so the contractor can correlate against the actual line position on their
+ * devis PDF (the bundle order on its own is not enough — see Task #110).
+ * General questions render as `Question générale` with no line prefix.
+ */
+export function formatCheckHead(c: {
+  lineDescription: string | null;
+  lineNumber: number | null;
+  totalHt: string | null;
+}): string {
+  if (c.lineNumber == null || !c.lineDescription) return "Question générale";
+  const amount = formatHtAmount(c.totalHt);
+  const tail = amount ? ` (${amount} € HT)` : "";
+  return `Ligne ${c.lineNumber} — ${c.lineDescription}${tail}`;
+}
+
+function formatHtAmount(raw: string | null): string | null {
+  if (raw == null) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+}
+
+/**
  * Bundled French "questions sur le devis" email to a single contractor.
  * Idempotent via `dedupeKey` on `project_communications` — if a queued/sent
  * row with the same key exists, we re-use it (no duplicate Gmail send).
@@ -155,7 +182,12 @@ export async function queueDevisCheckBundle(opts: {
   devisId: number;
   portalUrl: string;
   dedupeKey: string;
-  checkSummaries: Array<{ query: string; lineDescription: string | null }>;
+  checkSummaries: Array<{
+    query: string;
+    lineDescription: string | null;
+    lineNumber: number | null;
+    totalHt: string | null;
+  }>;
 }): Promise<{
   communicationId: number;
   alreadySent: boolean;
@@ -173,8 +205,8 @@ export async function queueDevisCheckBundle(opts: {
   const subject = `Questions sur le devis ${refLabel} — ${project.name}`;
 
   const itemLines = opts.checkSummaries
-    .map((c, i) => {
-      const head = c.lineDescription ? `${i + 1}. ${c.lineDescription}` : `${i + 1}. Question générale`;
+    .map((c) => {
+      const head = formatCheckHead(c);
       return `${head}\n   → ${c.query}`;
     })
     .join("\n\n");
