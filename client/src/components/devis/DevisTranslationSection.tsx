@@ -121,6 +121,26 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
     return lineItems.slice().sort((a, b) => a.lineNumber - b.lineNumber);
   }, [lineItems]);
 
+  // PERSISTENCE CONTRACT — DO NOT REINTRODUCE A LOCAL-STATE DEDUP CHECK HERE.
+  //
+  // History: an earlier dedup guard short-circuited persist when the incoming
+  // patch matched `localLines` / `localHeader`. That sounds reasonable but
+  // is fundamentally broken: the textarea's own `onChange` writes the new
+  // value into `localLines` BEFORE `onBlur` fires `persistLine`, so by the
+  // time we got here `current.translation === patch.translation` was always
+  // true and we silently skipped the PATCH. Every typed edit was lost on
+  // refetch / page reload. (See README of the devis-checks rework.)
+  //
+  // Persisting on every blur is safe and cheap:
+  //   * Blur fires once per focus exit (not per keystroke), so the request
+  //     volume is bounded by user pacing, not typing speed.
+  //   * The server route is idempotent — when the value is unchanged from
+  //     server state it leaves `edited` untouched (see
+  //     server/routes/__tests__/devis-translation-routes.test.ts:199).
+  //
+  // If you ever need to re-add a "skip no-op blur" optimisation, compare
+  // against the SERVER snapshot (`translation.lineTranslations` /
+  // `translation.headerTranslated`), never against the local edit buffer.
   const persistLine = (lineNumber: number, originalDescription: string, patch: Partial<DevisTranslationLine>) => {
     const current = localLines.get(lineNumber);
     const next: DevisTranslationLine = {
@@ -131,13 +151,6 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
       ...patch,
       edited: true,
     };
-    if (
-      current &&
-      current.translation === next.translation &&
-      (current.explanation ?? null) === (next.explanation ?? null)
-    ) {
-      return;
-    }
     const newMap = new Map(localLines);
     newMap.set(lineNumber, next);
     setLocalLines(newMap);
@@ -146,14 +159,6 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
 
   const persistHeader = (patch: Partial<DevisTranslationHeader>) => {
     const next: DevisTranslationHeader = { ...(localHeader || {}), ...patch };
-    if (
-      localHeader &&
-      (localHeader.summary ?? null) === (next.summary ?? null) &&
-      (localHeader.description ?? null) === (next.description ?? null) &&
-      (localHeader.descriptionExplanation ?? null) === (next.descriptionExplanation ?? null)
-    ) {
-      return;
-    }
     setLocalHeader(next);
     patchMutation.mutate({ header: next });
   };
