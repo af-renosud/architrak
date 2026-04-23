@@ -138,15 +138,22 @@
     {
       "idx": 19,
       "version": "7",
-      "when": 1776965162234,
+      "when": 1777411300000,
       "tag": "0019_numerous_drax",
       "breakpoints": true
     },
     {
       "idx": 20,
       "version": "7",
-      "when": 1776965864686,
+      "when": 1777411400000,
       "tag": "0020_per_line_pdf_bbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1777411500000,
+      "tag": "0021_reapply_pdf_page_hint_and_bbox",
       "breakpoints": true
     }
   ]
