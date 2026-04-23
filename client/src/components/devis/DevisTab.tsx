@@ -10,7 +10,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Receipt, FilePlus2 } from "lucide-react";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Receipt, FilePlus2, ListOrdered, Languages } from "lucide-react";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -2239,6 +2240,200 @@ function ChecksPanel({ devisId, projectId, isArchived }: { devisId: number; proj
   );
 }
 
+function DevisDetailTabs({
+  devis,
+  lineItems,
+  translationLineItems,
+  avenants,
+  invoices,
+  isArchived,
+  onOpenAvenantDialog,
+  onOpenInvoiceUpload,
+  onAddLineItem,
+  onUpdateLineItem,
+}: {
+  devis: Devis;
+  lineItems: DevisLineItem[] | undefined;
+  translationLineItems: DevisLineItem[] | undefined;
+  avenants: Avenant[] | undefined;
+  invoices: Invoice[] | undefined;
+  isArchived: boolean;
+  onOpenAvenantDialog: () => void;
+  onOpenInvoiceUpload: () => void;
+  onAddLineItem: () => void;
+  onUpdateLineItem: (id: number, data: Record<string, string>) => Promise<unknown>;
+}) {
+  const isModeB = devis.invoicingMode === "mode_b";
+  const lineCount = lineItems?.length ?? 0;
+  const avenantCount = avenants?.length ?? 0;
+  const invoiceCount = invoices?.length ?? 0;
+
+  const { data: translation } = useQuery<{ status: string }>({
+    queryKey: ["/api/devis", devis.id, "translation"],
+  });
+  const translationStatus = translation?.status ?? "missing";
+
+  const defaultTab = isModeB ? "lines" : "avenants";
+
+  return (
+    <Tabs defaultValue={defaultTab} className="rounded-2xl border border-[#0B2545]/15 bg-white/60 overflow-hidden" data-testid={`tabs-devis-detail-${devis.id}`}>
+      <TabsList className="w-full justify-start rounded-none border-b border-black/5 bg-[#0B2545]/[0.03] px-2 h-auto p-0">
+        {isModeB && (
+          <TabsTrigger
+            value="lines"
+            className="gap-2 px-3 py-2.5 text-[11px] font-bold uppercase tracking-widest text-muted-foreground data-[state=active]:text-[#0B2545] data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-[#0B2545] rounded-none"
+            data-testid={`tab-lines-${devis.id}`}
+          >
+            <ListOrdered size={13} />
+            Line Items
+            <span className="text-[9px] px-1.5 py-0.5 rounded bg-neutral-200 text-neutral-700 data-[state=active]:bg-[#0B2545] data-[state=active]:text-white">{lineCount}</span>
+          </TabsTrigger>
+        )}
+        <TabsTrigger
+          value="translation"
+          className="gap-2 px-3 py-2.5 text-[11px] font-bold uppercase tracking-widest text-muted-foreground data-[state=active]:text-[#0B2545] data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-[#0B2545] rounded-none"
+          data-testid={`tab-translation-${devis.id}`}
+        >
+          <Languages size={13} />
+          Translation
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-neutral-200 text-neutral-700">{translationStatus.toUpperCase()}</span>
+        </TabsTrigger>
+        <TabsTrigger
+          value="avenants"
+          className="gap-2 px-3 py-2.5 text-[11px] font-bold uppercase tracking-widest text-muted-foreground data-[state=active]:text-[#0B2545] data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-[#0B2545] rounded-none"
+          data-testid={`tab-avenants-${devis.id}`}
+        >
+          <FilePlus2 size={13} />
+          Avenants
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-neutral-200 text-neutral-700">{avenantCount}</span>
+        </TabsTrigger>
+        <TabsTrigger
+          value="invoices"
+          className="gap-2 px-3 py-2.5 text-[11px] font-bold uppercase tracking-widest text-muted-foreground data-[state=active]:text-[#0B2545] data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-[#0B2545] rounded-none"
+          data-testid={`tab-invoices-${devis.id}`}
+        >
+          <Receipt size={13} />
+          Invoices
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-neutral-200 text-neutral-700">{invoiceCount}</span>
+        </TabsTrigger>
+      </TabsList>
+
+      {isModeB && (
+        <TabsContent value="lines" className="p-4 mt-0">
+          <div className="flex items-center justify-between mb-2">
+            <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
+              Devis Line Items ({lineCount})
+            </h4>
+            <Button variant="outline" size="sm" onClick={onAddLineItem} disabled={isArchived} data-testid={`button-add-line-${devis.id}`}>
+              <Plus size={12} />
+              <span className="text-[8px] font-bold uppercase tracking-widest">Line Item</span>
+            </Button>
+          </div>
+          {lineItems && lineItems.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr className="border-b border-[rgba(0,0,0,0.08)]">
+                    <th className="text-left py-1 px-2 font-black uppercase tracking-widest text-[8px]">#</th>
+                    <th className="text-left py-1 px-2 font-black uppercase tracking-widest text-[8px]">Description</th>
+                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Qty</th>
+                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Unit Price</th>
+                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Total HT</th>
+                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Progress %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lineItems.map((li) => (
+                    <LineItemWithCheck
+                      key={li.id}
+                      li={li}
+                      onUpdate={(data) => onUpdateLineItem(li.id, data)}
+                      disabled={isArchived}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-[11px] text-muted-foreground text-center py-4">No line items yet.</p>
+          )}
+        </TabsContent>
+      )}
+
+      <TabsContent value="translation" className="p-4 mt-0">
+        <DevisTranslationSection
+          devisId={devis.id}
+          devisCode={devis.devisCode}
+          lineItems={translationLineItems ?? []}
+        />
+      </TabsContent>
+
+      <TabsContent value="avenants" className="p-4 mt-0">
+        <div className="flex items-center justify-between mb-2">
+          <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
+            Avenants ({avenantCount})
+          </h4>
+          <Button variant="outline" size="sm" onClick={onOpenAvenantDialog} disabled={isArchived} data-testid={`button-add-avenant-${devis.id}`}>
+            <Plus size={12} />
+            <span className="text-[8px] font-bold uppercase tracking-widest">Avenant</span>
+          </Button>
+        </div>
+        {avenants && avenants.length > 0 ? (
+          <div className="space-y-2">
+            {avenants.map((a) => (
+              <div key={a.id} className="flex items-center justify-between p-2 rounded-xl border border-[rgba(0,0,0,0.06)] bg-white/30" data-testid={`row-avenant-${a.id}`}>
+                <div className="flex items-center gap-2">
+                  {a.type === "pv" ? <ArrowUpRight size={12} className="text-emerald-600" /> : <ArrowDownRight size={12} className="text-rose-500" />}
+                  <span className="text-[11px]">{a.descriptionFr}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={`text-[12px] font-semibold ${a.type === "pv" ? "text-emerald-600" : "text-rose-500"}`}>
+                    {a.type === "pv" ? "+" : "-"}{formatCurrency(parseFloat(a.amountHt))}
+                  </span>
+                  <StatusBadge status={a.status} />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[11px] text-muted-foreground text-center py-2">No avenants.</p>
+        )}
+      </TabsContent>
+
+      <TabsContent value="invoices" className="p-4 mt-0">
+        <div className="flex items-center justify-between mb-2">
+          <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
+            Invoices ({invoiceCount})
+          </h4>
+          <Button variant="outline" size="sm" onClick={onOpenInvoiceUpload} disabled={isArchived} data-testid={`button-upload-invoice-${devis.id}`}>
+            <Upload size={12} />
+            <span className="text-[8px] font-bold uppercase tracking-widest">Upload Invoice</span>
+          </Button>
+        </div>
+        {invoices && invoices.length > 0 ? (
+          <div className="space-y-2">
+            {invoices.map((inv) => (
+              <div key={inv.id} className="flex items-center justify-between p-2 rounded-xl border border-[rgba(0,0,0,0.06)] bg-white/30" data-testid={`row-invoice-${inv.id}`}>
+                <div className="flex items-center gap-2">
+                  <FileText size={12} className="text-muted-foreground" />
+                  <span className="text-[11px]">Invoice #{inv.invoiceNumber}</span>
+                  {inv.certificateNumber && <TechnicalLabel>Cert: {inv.certificateNumber}</TechnicalLabel>}
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[12px] font-semibold text-foreground">{formatCurrency(parseFloat(inv.amountHt))}</span>
+                  <StatusBadge status={inv.status} />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[11px] text-muted-foreground text-center py-2">No invoices.</p>
+        )}
+      </TabsContent>
+    </Tabs>
+  );
+}
+
 function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = false, onOpenInvoiceUpload, onOpenAvenantDialog }: { devis: Devis; projectId: string; contractors: Contractor[]; lots: Lot[]; isArchived?: boolean; onOpenInvoiceUpload: () => void; onOpenAvenantDialog: () => void }) {
   const { toast } = useToast();
   const [lineItemDialogOpen, setLineItemDialogOpen] = useState(false);
@@ -2715,115 +2910,21 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
         <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} />
       </div>
 
-      {devis.invoicingMode === "mode_b" && (
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
-              Devis Line Items ({lineItems?.length ?? 0})
-            </h4>
-            <Button variant="outline" size="sm" onClick={() => {
-              lineItemForm.reset({ devisId: devis.id, lineNumber: (lineItems?.length ?? 0) + 1, description: "", quantity: "1", unit: "u", unitPriceHt: "0.00", totalHt: "0.00", percentComplete: "0" });
-              setLineItemDialogOpen(true);
-            }} disabled={isArchived} data-testid={`button-add-line-${devis.id}`}>
-              <Plus size={12} />
-              <span className="text-[8px] font-bold uppercase tracking-widest">Line Item</span>
-            </Button>
-          </div>
-          {lineItems && lineItems.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-[11px]">
-                <thead>
-                  <tr className="border-b border-[rgba(0,0,0,0.08)]">
-                    <th className="text-left py-1 px-2 font-black uppercase tracking-widest text-[8px]">#</th>
-                    <th className="text-left py-1 px-2 font-black uppercase tracking-widest text-[8px]">Description</th>
-                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Qty</th>
-                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Unit Price</th>
-                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Total HT</th>
-                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Progress %</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {lineItems.map((li) => (
-                    <LineItemWithCheck
-                      key={li.id}
-                      li={li}
-                      onUpdate={(data) => updateLineItemMutation.mutateAsync({ id: li.id, ...data })}
-                      disabled={isArchived}
-                    />
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <p className="text-[11px] text-muted-foreground text-center py-4">No line items yet.</p>
-          )}
-        </div>
-      )}
-
-      <DevisTranslationSection
-        devisId={devis.id}
-        devisCode={devis.devisCode}
-        lineItems={translationLineItems ?? []}
+      <DevisDetailTabs
+        devis={devis}
+        lineItems={lineItems}
+        translationLineItems={translationLineItems}
+        avenants={avenants}
+        invoices={invoices}
+        isArchived={isArchived}
+        onOpenAvenantDialog={onOpenAvenantDialog}
+        onOpenInvoiceUpload={onOpenInvoiceUpload}
+        onAddLineItem={() => {
+          lineItemForm.reset({ devisId: devis.id, lineNumber: (lineItems?.length ?? 0) + 1, description: "", quantity: "1", unit: "u", unitPriceHt: "0.00", totalHt: "0.00", percentComplete: "0" });
+          setLineItemDialogOpen(true);
+        }}
+        onUpdateLineItem={(id, data) => updateLineItemMutation.mutateAsync({ id, ...data })}
       />
-
-      <div className="flex items-center justify-between">
-        <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
-          Avenants ({avenants?.length ?? 0})
-        </h4>
-        <Button variant="outline" size="sm" onClick={onOpenAvenantDialog} disabled={isArchived} data-testid={`button-add-avenant-${devis.id}`}>
-          <Plus size={12} />
-          <span className="text-[8px] font-bold uppercase tracking-widest">Avenant</span>
-        </Button>
-      </div>
-      {avenants && avenants.length > 0 ? (
-        <div className="space-y-2">
-          {avenants.map((a) => (
-            <div key={a.id} className="flex items-center justify-between p-2 rounded-xl border border-[rgba(0,0,0,0.06)] bg-white/30" data-testid={`row-avenant-${a.id}`}>
-              <div className="flex items-center gap-2">
-                {a.type === "pv" ? <ArrowUpRight size={12} className="text-emerald-600" /> : <ArrowDownRight size={12} className="text-rose-500" />}
-                <span className="text-[11px]">{a.descriptionFr}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className={`text-[12px] font-semibold ${a.type === "pv" ? "text-emerald-600" : "text-rose-500"}`}>
-                  {a.type === "pv" ? "+" : "-"}{formatCurrency(parseFloat(a.amountHt))}
-                </span>
-                <StatusBadge status={a.status} />
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p className="text-[11px] text-muted-foreground text-center py-2">No avenants.</p>
-      )}
-
-      <div className="flex items-center justify-between">
-        <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
-          Invoices ({invoices?.length ?? 0})
-        </h4>
-        <Button variant="outline" size="sm" onClick={onOpenInvoiceUpload} disabled={isArchived} data-testid={`button-upload-invoice-${devis.id}`}>
-          <Upload size={12} />
-          <span className="text-[8px] font-bold uppercase tracking-widest">Upload Invoice</span>
-        </Button>
-      </div>
-      {invoices && invoices.length > 0 ? (
-        <div className="space-y-2">
-          {invoices.map((inv) => (
-            <div key={inv.id} className="flex items-center justify-between p-2 rounded-xl border border-[rgba(0,0,0,0.06)] bg-white/30" data-testid={`row-invoice-${inv.id}`}>
-              <div className="flex items-center gap-2">
-                <FileText size={12} className="text-muted-foreground" />
-                <span className="text-[11px]">Invoice #{inv.invoiceNumber}</span>
-                {inv.certificateNumber && <TechnicalLabel>Cert: {inv.certificateNumber}</TechnicalLabel>}
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-[12px] font-semibold text-foreground">{formatCurrency(parseFloat(inv.amountHt))}</span>
-                <StatusBadge status={inv.status} />
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p className="text-[11px] text-muted-foreground text-center py-2">No invoices.</p>
-      )}
 
       <Dialog open={voidDialogOpen} onOpenChange={setVoidDialogOpen}>
         <DialogContent className="max-w-sm">
