@@ -8,7 +8,6 @@ import {
   Coins,
   Settings,
   HelpCircle,
-  Bell,
   Search,
   Mail,
   MessageSquare,
@@ -18,6 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/use-auth";
+import { NotificationBell } from "./NotificationBell";
 import logoPath from "@assets/Generated_Image_February_28__2026_-_3_59PM.jpg-removebg-previe_1772291017667.png";
 
 const navItems = [
@@ -38,7 +38,6 @@ const bottomNavItems = [
 
 const toolButtons = [
   { icon: Search, label: "Search", bg: "bg-rose-50 dark:bg-rose-950/30" },
-  { icon: Bell, label: "Notifications", bg: "bg-amber-50 dark:bg-amber-950/30" },
   { icon: HelpCircle, label: "Help", bg: "bg-emerald-50 dark:bg-emerald-950/30" },
 ];
 
@@ -145,24 +144,41 @@ export function Sidebar() {
 
       <div className="px-4 pb-4">
         <div className="grid grid-cols-3 gap-2" data-testid="nav-tools">
-          {toolButtons.map((tool) => (
-            <Tooltip key={tool.label}>
-              <TooltipTrigger asChild>
-                <button
-                  className={cn(
-                    "flex items-center justify-center p-2 rounded-xl transition-colors",
-                    tool.bg
-                  )}
-                  data-testid={`button-tool-${tool.label.toLowerCase()}`}
-                >
-                  <tool.icon size={14} strokeWidth={1.5} className="text-[#34312D]" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="top">
-                <span className="text-xs">{tool.label}</span>
-              </TooltipContent>
-            </Tooltip>
-          ))}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                className={cn(
+                  "flex items-center justify-center p-2 rounded-xl transition-colors",
+                  "bg-rose-50 dark:bg-rose-950/30",
+                )}
+                data-testid="button-tool-search"
+              >
+                <Search size={14} strokeWidth={1.5} className="text-[#34312D]" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              <span className="text-xs">Search</span>
+            </TooltipContent>
+          </Tooltip>
+
+          <NotificationBell />
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                className={cn(
+                  "flex items-center justify-center p-2 rounded-xl transition-colors",
+                  "bg-emerald-50 dark:bg-emerald-950/30",
+                )}
+                data-testid="button-tool-help"
+              >
+                <HelpCircle size={14} strokeWidth={1.5} className="text-[#34312D]" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              <span className="text-xs">Help</span>
+            </TooltipContent>
+          </Tooltip>
         </div>
       </div>
 

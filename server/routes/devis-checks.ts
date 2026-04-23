@@ -31,6 +31,21 @@ const architectReplySchema = z.object({
 router.use(requireAuth);
 
 /**
+ * Global inbox of contractor responses awaiting the architect's attention,
+ * across every project. Powers the sidebar Bell badge + dropdown. The
+ * "unread" set is defined as every check currently in `awaiting_architect`
+ * status — flipping the check out of that status (architect replies or
+ * resolves) clears it from the inbox.
+ */
+router.get("/api/notifications/contractor-responses", async (_req, res) => {
+  const [count, items] = await Promise.all([
+    storage.countAwaitingArchitectInbox(),
+    storage.listAwaitingArchitectInbox(50),
+  ]);
+  res.json({ count, items });
+});
+
+/**
  * Bulk open-checks counts for every devis in a project. Powers the CHECKING
  * badge shown on collapsed devis rows in the project view.
  */

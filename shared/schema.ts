@@ -894,6 +894,20 @@ export const insertDevisCheckTokenSchema = createInsertSchema(devisCheckTokens).
 export type DevisCheck = typeof devisChecks.$inferSelect;
 export type InsertDevisCheck = z.infer<typeof insertDevisCheckSchema>;
 export type DevisCheckMessage = typeof devisCheckMessages.$inferSelect;
+
+export type InboxContractorResponseRow = {
+  checkId: number;
+  checkQuery: string;
+  checkUpdatedAt: Date;
+  devisId: number;
+  devisCode: string | null;
+  projectId: number;
+  projectName: string;
+  contractorName: string | null;
+  latestMessageBody: string | null;
+  latestMessageAt: Date | null;
+  latestMessageAuthor: string | null;
+};
 export type InsertDevisCheckMessage = z.infer<typeof insertDevisCheckMessageSchema>;
 export type DevisCheckToken = typeof devisCheckTokens.$inferSelect;
 export type InsertDevisCheckToken = z.infer<typeof insertDevisCheckTokenSchema>;

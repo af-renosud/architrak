@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Link, useParams } from "wouter";
+import { Link, useParams, useSearch } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useForm } from "react-hook-form";
@@ -139,6 +139,18 @@ type EntryFormValues = z.infer<typeof entryFormSchema>;
 export default function ProjectDetail() {
   const params = useParams<{ id: string }>();
   const projectId = params.id;
+  const search = useSearch();
+  const searchParams = new URLSearchParams(search);
+  const deepLinkDevisId = (() => {
+    const raw = searchParams.get("devis");
+    const n = raw ? Number(raw) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : null;
+  })();
+  const deepLinkCheckId = (() => {
+    const raw = searchParams.get("check");
+    const n = raw ? Number(raw) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : null;
+  })();
   const { toast } = useToast();
 
   const [certDialogOpen, setCertDialogOpen] = useState(false);
@@ -851,7 +863,7 @@ export default function ProjectDetail() {
           </DialogContent>
         </Dialog>
 
-        <Tabs defaultValue="resume" data-testid="tabs-project-detail">
+        <Tabs defaultValue={deepLinkDevisId ? "devis" : "resume"} data-testid="tabs-project-detail">
           <TabsList className="flex-wrap">
             <TabsTrigger value="resume" data-testid="tab-resume">
               <BarChart3 size={12} className="mr-1" />
@@ -1029,6 +1041,8 @@ export default function ProjectDetail() {
               contractors={contractors ?? []}
               lots={lotsList ?? []}
               isArchived={isArchived}
+              initialExpandedDevisId={deepLinkDevisId}
+              initialFocusedCheckId={deepLinkCheckId}
             />
           </TabsContent>
 

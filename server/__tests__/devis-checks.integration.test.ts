@@ -28,6 +28,35 @@ const { state, storageSpy } = vi.hoisted(() => {
     getProject: vi.fn(async (id: number) => state.projects.find((p) => p.id === id)),
     getDevisLineItems: vi.fn(async (_devisId: number) => state.lineItems.filter((li) => li.devisId === _devisId)),
     listDevisChecks: vi.fn(async (devisId: number) => state.checks.filter((c) => c.devisId === devisId)),
+    countAwaitingArchitectInbox: vi.fn(async () =>
+      state.checks.filter((c) => c.status === "awaiting_architect").length,
+    ),
+    listAwaitingArchitectInbox: vi.fn(async (limit: number) => {
+      const awaiting = state.checks.filter((c) => c.status === "awaiting_architect");
+      const enriched = awaiting.map((c) => {
+        const d = state.devis.find((x) => x.id === c.devisId);
+        const p = d ? state.projects.find((x) => x.id === d.projectId) : undefined;
+        const ct = d ? state.contractors.find((x) => x.id === d.contractorId) : undefined;
+        const msgs = state.messages
+          .filter((m) => m.checkId === c.id && m.authorType === "contractor")
+          .sort((a, b) => b.id - a.id);
+        const latest = msgs[0];
+        return {
+          checkId: c.id,
+          checkQuery: c.query,
+          checkUpdatedAt: new Date(),
+          devisId: c.devisId,
+          devisCode: d ? `D-${d.id}` : null,
+          projectId: d?.projectId ?? 0,
+          projectName: p?.name ?? "P",
+          contractorName: ct?.name ?? null,
+          latestMessageBody: latest?.body ?? null,
+          latestMessageAt: latest ? new Date() : null,
+          latestMessageAuthor: null,
+        };
+      });
+      return enriched.slice(0, limit);
+    }),
     listDevisCheckMessages: vi.fn(async (checkId: number) => state.messages.filter((m) => m.checkId === checkId)),
     countOpenDevisChecks: vi.fn(async (devisId: number) =>
       state.checks.filter((c) => c.devisId === devisId && (c.status === "open" || c.status === "awaiting_contractor" || c.status === "awaiting_architect")).length,
@@ -548,5 +577,75 @@ describe("Public portal — token revocation", () => {
     const body = await res.json();
     const ids = (body.checks as Array<{ id: number; query: string }>).map((c) => c.query);
     expect(ids).toEqual(["OPEN-Q"]);
+  });
+});
+
+describe("Notifications inbox — contractor responses", () => {
+  beforeAll(async () => { await withApp(); });
+
+  it("returns only checks in awaiting_architect status with the latest contractor message", async () => {
+    state.projects.push({ id: 90, name: "Maison Dupont" });
+    state.contractors.push({ id: 91, name: "Plomberie Martin", email: "m@e.com" });
+    state.devis.push({ id: 92, projectId: 90, contractorId: 91, signOffStage: "received" });
+    state.checks.push(
+      { id: 700, devisId: 92, status: "awaiting_architect", query: "Q1", lineItemId: null, origin: "general" },
+      { id: 701, devisId: 92, status: "awaiting_contractor", query: "Q2", lineItemId: null, origin: "general" },
+      { id: 702, devisId: 92, status: "resolved", query: "Q3", lineItemId: null, origin: "general" },
+    );
+    state.messages.push(
+      { id: 800, checkId: 700, authorType: "contractor", body: "Voici ma réponse", channel: "portal" },
+      { id: 801, checkId: 700, authorType: "architect", body: "Merci", channel: "portal" },
+    );
+
+    const res = await fetch(`${baseUrl}/api/notifications/contractor-responses`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.count).toBe(1);
+    expect(body.items).toHaveLength(1);
+    const item = body.items[0];
+    expect(item.checkId).toBe(700);
+    expect(item.devisId).toBe(92);
+    expect(item.projectId).toBe(90);
+    expect(item.projectName).toBe("Maison Dupont");
+    expect(item.contractorName).toBe("Plomberie Martin");
+    expect(item.latestMessageBody).toBe("Voici ma réponse");
+  });
+
+  it("reports the true total awaiting count even when items list is paginated", async () => {
+    state.projects.push({ id: 80, name: "Big" });
+    state.contractors.push({ id: 81, name: "C", email: "c@e.com" });
+    state.devis.push({ id: 82, projectId: 80, contractorId: 81, signOffStage: "received" });
+    for (let i = 0; i < 75; i++) {
+      state.checks.push({
+        id: 1000 + i,
+        devisId: 82,
+        status: "awaiting_architect",
+        query: `Q${i}`,
+        lineItemId: null,
+        origin: "general",
+      });
+    }
+
+    const res = await fetch(`${baseUrl}/api/notifications/contractor-responses`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.count).toBe(75);
+    expect(body.items.length).toBeLessThanOrEqual(50);
+  });
+
+  it("returns an empty list when no checks are awaiting the architect", async () => {
+    state.projects.push({ id: 95, name: "Empty" });
+    state.contractors.push({ id: 96, name: "X", email: "x@e.com" });
+    state.devis.push({ id: 97, projectId: 95, contractorId: 96, signOffStage: "received" });
+    state.checks.push(
+      { id: 750, devisId: 97, status: "open", query: "Q", lineItemId: null, origin: "general" },
+      { id: 751, devisId: 97, status: "resolved", query: "Q", lineItemId: null, origin: "general" },
+    );
+
+    const res = await fetch(`${baseUrl}/api/notifications/contractor-responses`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.count).toBe(0);
+    expect(body.items).toEqual([]);
   });
 });

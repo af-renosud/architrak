@@ -9,7 +9,7 @@ import {
   benchmarkDocuments, benchmarkItems, benchmarkTags, benchmarkItemTags,
   devisChecks, devisCheckMessages, devisCheckTokens,
   type DevisCheck, type InsertDevisCheck,
-  type DevisCheckMessage, type InsertDevisCheckMessage,
+  type DevisCheckMessage, type InsertDevisCheckMessage, type InboxContractorResponseRow,
   type DevisCheckToken, type InsertDevisCheckToken,
   type Project, type InsertProject,
   type User, type InsertUser,
@@ -268,6 +268,8 @@ export interface IStorage {
   countOpenDevisChecks(devisId: number): Promise<number>;
   isDevisChecking(devisId: number): Promise<boolean>;
   listDevisCheckMessages(checkId: number): Promise<DevisCheckMessage[]>;
+  listAwaitingArchitectInbox(limit: number): Promise<InboxContractorResponseRow[]>;
+  countAwaitingArchitectInbox(): Promise<number>;
   createDevisCheckMessage(data: InsertDevisCheckMessage): Promise<DevisCheckMessage>;
   getActiveDevisCheckToken(devisId: number): Promise<DevisCheckToken | undefined>;
   getLatestDevisCheckToken(devisId: number): Promise<DevisCheckToken | undefined>;
@@ -1388,6 +1390,72 @@ export class DatabaseStorage implements IStorage {
       .from(devisCheckMessages)
       .where(eq(devisCheckMessages.checkId, checkId))
       .orderBy(asc(devisCheckMessages.createdAt));
+  }
+
+  async listAwaitingArchitectInbox(limit: number): Promise<InboxContractorResponseRow[]> {
+    const safeLimit = Math.max(1, Math.min(200, Math.floor(limit) || 50));
+    const rows = await db
+      .select({
+        checkId: devisChecks.id,
+        checkQuery: devisChecks.query,
+        checkUpdatedAt: devisChecks.updatedAt,
+        devisId: devis.id,
+        devisCode: devis.devisCode,
+        projectId: devis.projectId,
+        projectName: projects.name,
+        contractorName: contractors.name,
+      })
+      .from(devisChecks)
+      .innerJoin(devis, eq(devis.id, devisChecks.devisId))
+      .innerJoin(projects, eq(projects.id, devis.projectId))
+      .leftJoin(contractors, eq(contractors.id, devis.contractorId))
+      .where(eq(devisChecks.status, "awaiting_architect"))
+      .orderBy(desc(devisChecks.updatedAt))
+      .limit(safeLimit);
+
+    if (rows.length === 0) return [];
+
+    const checkIds = rows.map((r) => r.checkId);
+    const latestMessages = await db
+      .select()
+      .from(devisCheckMessages)
+      .where(
+        and(
+          inArray(devisCheckMessages.checkId, checkIds),
+          eq(devisCheckMessages.authorType, "contractor"),
+        ),
+      )
+      .orderBy(desc(devisCheckMessages.createdAt));
+
+    const latestByCheckId = new Map<number, typeof latestMessages[number]>();
+    for (const m of latestMessages) {
+      if (!latestByCheckId.has(m.checkId)) latestByCheckId.set(m.checkId, m);
+    }
+
+    return rows.map((r) => {
+      const msg = latestByCheckId.get(r.checkId);
+      return {
+        checkId: r.checkId,
+        checkQuery: r.checkQuery,
+        checkUpdatedAt: r.checkUpdatedAt,
+        devisId: r.devisId,
+        devisCode: r.devisCode,
+        projectId: r.projectId,
+        projectName: r.projectName,
+        contractorName: r.contractorName,
+        latestMessageBody: msg?.body ?? null,
+        latestMessageAt: msg?.createdAt ?? null,
+        latestMessageAuthor: msg?.authorName ?? msg?.authorEmail ?? null,
+      };
+    });
+  }
+
+  async countAwaitingArchitectInbox(): Promise<number> {
+    const [row] = await db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(devisChecks)
+      .where(eq(devisChecks.status, "awaiting_architect"));
+    return row?.value ?? 0;
   }
 
   async createDevisCheckMessage(data: InsertDevisCheckMessage): Promise<DevisCheckMessage> {

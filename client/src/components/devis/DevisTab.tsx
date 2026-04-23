@@ -491,11 +491,50 @@ interface DevisTabProps {
   contractors: Contractor[];
   lots: Lot[];
   isArchived?: boolean;
+  initialExpandedDevisId?: number | null;
+  initialFocusedCheckId?: number | null;
 }
 
-export function DevisTab({ projectId, contractors, lots, isArchived = false }: DevisTabProps) {
+export function DevisTab({
+  projectId,
+  contractors,
+  lots,
+  isArchived = false,
+  initialExpandedDevisId = null,
+  initialFocusedCheckId = null,
+}: DevisTabProps) {
   const { toast } = useToast();
-  const [expandedDevis, setExpandedDevis] = useState<number | null>(null);
+  const [expandedDevis, setExpandedDevis] = useState<number | null>(initialExpandedDevisId);
+
+  useEffect(() => {
+    if (initialExpandedDevisId) setExpandedDevis(initialExpandedDevisId);
+  }, [initialExpandedDevisId]);
+
+  useEffect(() => {
+    if (!initialFocusedCheckId) return;
+    let cancelled = false;
+    let attempts = 0;
+    const tryScroll = () => {
+      if (cancelled) return;
+      const el = document.querySelector(
+        `[data-testid="check-${initialFocusedCheckId}"]`,
+      );
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        (el as HTMLElement).classList.add("ring-2", "ring-amber-400");
+        window.setTimeout(() => {
+          (el as HTMLElement).classList.remove("ring-2", "ring-amber-400");
+        }, 2500);
+        return;
+      }
+      attempts += 1;
+      if (attempts < 25) window.setTimeout(tryScroll, 200);
+    };
+    tryScroll();
+    return () => {
+      cancelled = true;
+    };
+  }, [initialFocusedCheckId, initialExpandedDevisId]);
   const [uploading, setUploading] = useState(false);
   const [showVoid, setShowVoid] = useState(false);
   const [draftReviewData, setDraftReviewData] = useState<{
