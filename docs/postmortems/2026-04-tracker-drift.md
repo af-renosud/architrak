@@ -7,6 +7,20 @@
 
 ---
 
+## Evidence sources
+
+This investigation worked from the artifacts available in this repository, not from a live production log dump. Each conclusion below cites the specific evidence it rests on:
+
+- **The future-dated `when` values**: directly readable from `migrations/meta/_journal.json` today; reproducible with `node -e "JSON.parse(require('fs').readFileSync('migrations/meta/_journal.json','utf8')).entries.filter(e=>e.when>Date.now()).forEach(e=>console.log(e.tag,e.when,new Date(e.when).toISOString()))"`. Output: 0010_contractors_siret_check, 0019_numerous_drax, 0020_per_line_pdf_bbox, 0021_reapply_pdf_page_hint_and_bbox, 0022_post_merge_transient_failures.
+- **drizzle's `when > max(applied.created_at)` filter behaviour**: documented in commit `b00eef0` (Task #123) which traced the same mechanism for the 2026-04-23 incident. That commit's message reproduces the issue locally and names the filter as the silent-skip cause: *"Drizzle's migrator filters journal entries by `when > max(applied.created_at)`, so 0019 (1776965162234), 0020 (1776965864686), and any subsequent migration with a `when` smaller than 1777411200000 was silently considered 'already applied' and never executed"*.
+- **The 8-row prod gap**: stated in the task description (`drizzle.__drizzle_migrations` had 15 rows while the schema was fully forward through migration 0022). 23 (journal) − 15 (tracker) = 8.
+- **The 8 specific missing tags**: derived by sorting the journal by `idx` and listing entries 0011 through 0018 (post-0010 / pre-future-dated). All eight have `when` values in the 1776845835037–1776903265561 range (2026-04-22 / 2026-04-23), all strictly less than 0010's 1777411200000 high-water mark.
+- **The repository's only DELETE-from-tracker code path**: identified by ripgrepping `DELETE FROM drizzle.__drizzle_migrations` across `scripts/`. Single match: `scripts/repair-migration-drift.mjs` line 80, behind the `--prune-orphans --apply` flag pair.
+- **`scripts/run-migrations.mjs` is a 2-line wrapper**: file content is verbatim `import("../server/migrate.ts").then(m => m.runMigrations()).then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); });`. There is no transactional split between SQL apply and tracker insert — that ordering happens inside `drizzle-orm`'s migrator, which is vendored and uses a single transaction per migration.
+- **No backup/restore tooling in the repository**: no `pg_restore`, `pg_dump`, or backup-script files exist under `scripts/` or anywhere else in the tree (verified by ripgrep). Production backup/restore is handled by the platform layer outside the repo, and the platform-level snapshot would be all-or-nothing on the `drizzle` schema, not selective on 8 rows.
+
+If a future post-mortem reviewer wants log-level corroboration (specific deploy IDs, the exact boot when 0010 first landed in the tracker, the timestamp drizzle emitted for the silent skip), the production deployment-log fetcher can be queried with regex `(?i)(\\[migrate\\]|drizzle|already exists|partial apply)` against the relevant 2026-04 deploy windows.
+
 ## Timeline
 
 - **2026-04-17 → 2026-04-23**: Migrations 0000–0018 generated with normal `when` timestamps (`Date.now()` at generation time, all within hours of one another).
