@@ -1,0 +1,12 @@
+:root {
+  --navy: #0B2545;
+  --gold: #c1a27b;
+  --muted-fg: #71717a;
+  --card-border: rgba(0, 0, 0, 0.05);
+  --page-bg: #f5f6f7;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+body, .devis-detail-shell {
+  font-family: var(--font-sans);
+}
