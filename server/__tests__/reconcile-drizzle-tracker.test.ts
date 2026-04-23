@@ -227,6 +227,52 @@ describe.skipIf(skipModule !== null)("reconcile-drizzle-tracker", () => {
     expect(result.trackerCountAfter).toBe(journal.entries.length);
   }, 30_000);
 
+  it("bootstraps drizzle.__drizzle_migrations when the tracker table is missing entirely", async (t) => {
+    if (ctx.skipReason || !ctx.replayPool) {
+      t.skip();
+      return;
+    }
+    // Simulate the partial-restore drift shape: schema is fully forward
+    // but the entire `drizzle` schema (and therefore the tracker table)
+    // is gone. Reconciler must create it inside the apply transaction
+    // and land every journal entry.
+    await ctx.replayPool.query(`DROP SCHEMA IF EXISTS "drizzle" CASCADE`);
+
+    // Dry-run path must NOT create anything.
+    const dry = await reconcileTracker({
+      pool: ctx.replayPool,
+      migrationsFolder,
+      apply: false,
+      log: () => {},
+    });
+    expect(dry.applied).toBe(false);
+    expect(dry.trackerCountBefore).toBe(0);
+    expect(dry.toInsert.length).toBe(journal.entries.length);
+
+    const stillMissing = await ctx.replayPool.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.tables
+          WHERE table_schema = 'drizzle' AND table_name = '__drizzle_migrations'
+       ) AS exists`,
+    );
+    expect(stillMissing.rows[0]?.exists).toBe(false);
+
+    // Apply path must bootstrap + reconcile + pass post-condition.
+    const applied = await reconcileTracker({
+      pool: ctx.replayPool,
+      migrationsFolder,
+      apply: true,
+      log: () => {},
+    });
+    expect(applied.applied).toBe(true);
+    expect(applied.trackerCountAfter).toBe(journal.entries.length);
+
+    const after = await ctx.replayPool.query<{ c: string }>(
+      `SELECT COUNT(*)::text AS c FROM drizzle.__drizzle_migrations`,
+    );
+    expect(Number(after.rows[0]?.c ?? "0")).toBe(journal.entries.length);
+  }, 60_000);
+
   it("refuses to reconcile when a journal entry's SQL file is missing", async (t) => {
     if (ctx.skipReason || !ctx.replayPool) {
       t.skip();

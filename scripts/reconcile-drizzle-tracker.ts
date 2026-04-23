@@ -247,6 +247,23 @@ export async function reconcileTracker(
     await client.query("BEGIN");
     let trackerCountAfter = trackerCountBefore;
     try {
+      if (!trackerTableExists) {
+        // Bootstrap path: tracker table is absent (e.g. partial restore
+        // that excluded the drizzle schema). Create the schema + table
+        // inside the same transaction as the inserts so a failure of
+        // either rolls back the whole thing. Shape matches drizzle's
+        // own definition (id serial PK, hash text NOT NULL, created_at
+        // bigint) — see node_modules/drizzle-orm/pg-core/dialect.js.
+        await client.query(`CREATE SCHEMA IF NOT EXISTS "drizzle"`);
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS "drizzle"."__drizzle_migrations" (
+            id SERIAL PRIMARY KEY,
+            hash text NOT NULL,
+            created_at bigint
+          )
+        `);
+        log(`[reconcile] bootstrapped drizzle.__drizzle_migrations table.`);
+      }
       for (const p of toInsert) {
         await client.query(
           `INSERT INTO drizzle.__drizzle_migrations ("hash", "created_at") VALUES ($1, $2)`,
