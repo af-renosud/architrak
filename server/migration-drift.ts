@@ -11,7 +11,13 @@ export interface JournalEntry {
 
 export interface DriftResult {
   ok: boolean;
-  reason?: "no-tracker" | "no-journal" | "in-sync" | "drift" | "check-failed";
+  reason?:
+    | "no-tracker"
+    | "no-journal"
+    | "in-sync"
+    | "tail-pending"
+    | "drift"
+    | "check-failed";
   journalCount: number;
   appliedCount: number;
   missingFromDb: JournalEntry[];
@@ -89,10 +95,38 @@ export async function checkMigrationDrift(): Promise<DriftResult> {
     .filter(w => !journalWhens.has(w))
     .map(w => ({ created_at: w }));
 
-  const ok = missingFromDb.length === 0 && orphanInDb.length === 0;
+  // "Tail-pending": the database is behind the journal by a contiguous tail
+  // (e.g. journal idx 0..18, db has 0..14, missing = [15,16,17,18]). This is
+  // the *normal* pre-deploy state when a release ships new migrations — the
+  // app's runMigrations() call at startup will apply them. We must NOT treat
+  // it as drift, otherwise the publish-time check deadlocks: every release
+  // that introduces migrations would be blocked because prod is one step
+  // behind by definition.
+  //
+  // True drift (which we still block on) is either:
+  //   - orphan rows in the tracker (db has rows the journal doesn't know about)
+  //   - interleaved gaps (db has 0015 but is missing 0014) — corruption
+  const sortedJournal = [...journal].sort((a, b) => a.idx - b.idx);
+  let tailPending = false;
+  if (orphanInDb.length === 0 && missingFromDb.length > 0) {
+    const firstMissingPos = sortedJournal.findIndex(
+      e => !appliedWhens.has(e.when),
+    );
+    // Every entry from firstMissingPos onward must also be missing — i.e. the
+    // applied set is a strict prefix of the journal. If anything after that
+    // boundary IS applied, we have an interleaved gap, which is real drift.
+    tailPending =
+      firstMissingPos >= 0 &&
+      sortedJournal
+        .slice(firstMissingPos)
+        .every(e => !appliedWhens.has(e.when));
+  }
+
+  const inSync = missingFromDb.length === 0 && orphanInDb.length === 0;
+  const ok = inSync || tailPending;
   return {
     ok,
-    reason: ok ? "in-sync" : "drift",
+    reason: inSync ? "in-sync" : tailPending ? "tail-pending" : "drift",
     journalCount: journal.length,
     appliedCount: applied.rows.length,
     missingFromDb,
@@ -126,6 +160,12 @@ export async function reportMigrationDrift(): Promise<DriftResult> {
     if (result.reason === "in-sync") {
       console.log(
         `[migrate:drift] OK — ${result.journalCount} journal entries match ${result.appliedCount} applied rows`,
+      );
+    } else if (result.reason === "tail-pending") {
+      const pending = result.missingFromDb.map(e => e.tag).join(", ");
+      console.log(
+        `[migrate:drift] OK — ${result.appliedCount}/${result.journalCount} applied; ` +
+          `${result.missingFromDb.length} pending migration(s) will be applied on startup: ${pending}`,
       );
     } else if (result.reason === "no-tracker") {
       console.log(
