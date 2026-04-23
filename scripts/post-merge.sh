@@ -2,6 +2,15 @@
 set -e
 npm install
 npx tsx scripts/run-migrations.mjs
+
+# Pre-deploy gate (Task #124): independently replay every migration
+# against a throwaway database and verify tracker == journal AND every
+# Drizzle-declared column exists. Catches the silent partial-apply
+# class of bug (the original pdf_page_hint incident on 2026-04-23)
+# before any deploy artefact is built. Exits non-zero on failure so
+# the post-merge run aborts.
+bash scripts/check-migration-replay.sh
+
 # Idempotent backfill of contractor identifiers (SIRET today, others later) from
 # the ArchiDoc mirror. Safe to re-run on every deploy; keeps newly-added
 # identifier columns in sync without manual operator action.

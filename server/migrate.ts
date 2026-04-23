@@ -1,12 +1,14 @@
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { sql } from "drizzle-orm";
+import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "path";
+import type pg from "pg";
 import { fileURLToPath } from "url";
-import { db, pool } from "./db";
+import { db as defaultDb, pool as defaultPool } from "./db";
 
-function resolveMigrationsFolder(): string {
+export function resolveMigrationsFolder(): string {
   const fromEnv = process.env.MIGRATIONS_FOLDER;
   if (fromEnv) return fromEnv;
 
@@ -36,7 +38,11 @@ function resolveMigrationsFolder(): string {
  * re-create existing tables. Safe because the baseline was generated FROM the
  * live schema.
  */
-async function bootstrapBaselineIfNeeded(migrationsFolder: string): Promise<void> {
+async function bootstrapBaselineIfNeeded(
+  migrationsFolder: string,
+  pool: pg.Pool,
+  db: NodePgDatabase<Record<string, never>> | NodePgDatabase<Record<string, unknown>>,
+): Promise<void> {
   const tracker = await pool.query<{ reg: string | null }>(
     `SELECT to_regclass('drizzle.__drizzle_migrations')::text AS reg`,
   );
@@ -88,11 +94,29 @@ async function bootstrapBaselineIfNeeded(migrationsFolder: string): Promise<void
   );
 }
 
-export async function runMigrations(): Promise<void> {
-  const migrationsFolder = resolveMigrationsFolder();
+/**
+ * Run migrations against a specific database. Extracted from
+ * {@link runMigrations} so callers (e.g. the migration-replay test)
+ * can target a throwaway database without overriding `DATABASE_URL`
+ * at process scope.
+ *
+ * The default `runMigrations()` delegates here against the
+ * application's main pool/db.
+ */
+export async function runMigrationsWith(opts: {
+  pool: pg.Pool;
+  db?: NodePgDatabase<Record<string, never>> | NodePgDatabase<Record<string, unknown>>;
+  migrationsFolder?: string;
+}): Promise<void> {
+  const migrationsFolder = opts.migrationsFolder ?? resolveMigrationsFolder();
+  const dbHandle = opts.db ?? drizzle(opts.pool);
   const start = Date.now();
   console.log(`[migrate] applying migrations from ${migrationsFolder}`);
-  await bootstrapBaselineIfNeeded(migrationsFolder);
-  await migrate(db, { migrationsFolder });
+  await bootstrapBaselineIfNeeded(migrationsFolder, opts.pool, dbHandle);
+  await migrate(dbHandle, { migrationsFolder });
   console.log(`[migrate] done in ${Date.now() - start}ms`);
+}
+
+export async function runMigrations(): Promise<void> {
+  await runMigrationsWith({ pool: defaultPool, db: defaultDb });
 }

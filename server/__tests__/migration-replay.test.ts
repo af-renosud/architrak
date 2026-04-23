@@ -2,11 +2,13 @@
  * Migration replay + schema parity gate (Task #124).
  *
  * Provisions a throwaway Postgres database (using the same server as
- * DATABASE_URL points at), replays every migration from `migrations/`
- * against it, and asserts:
+ * DATABASE_URL points at), replays every migration in `migrations/`
+ * against it via the project's own `runMigrationsWith` entrypoint
+ * (the same code path used at deploy boot — see server/migrate.ts),
+ * and asserts:
  *
  *   1. The number of rows in `drizzle.__drizzle_migrations` after
- *      `migrate()` returns equals the number of entries in
+ *      `runMigrationsWith()` returns equals the number of entries in
  *      `migrations/meta/_journal.json`. This catches the silent
  *      partial-apply class of bug that produced the pdf_page_hint
  *      production incident on 2026-04-23 — `migrate()` claimed `done`
@@ -18,26 +20,31 @@
  *      exist` if any modeled column is absent, naming the offending
  *      column in the error.
  *
- * The whole suite is auto-discovered by vitest (matches the existing
- * `server/__tests__/**\/*.test.ts` include glob in vitest.config.ts) —
- * no package.json wiring required.
+ * The suite is auto-discovered by vitest (matches the existing
+ * `server/__tests__/**\/*.test.ts` include glob in vitest.config.ts)
+ * and is also invoked explicitly by `scripts/check-migration-replay.sh`
+ * which `scripts/post-merge.sh` runs as a hard pre-deploy gate.
  *
- * The suite is skipped when DATABASE_URL is unset (e.g. on
- * environments without a Postgres). When the database server denies
- * CREATE DATABASE, the suite is also skipped with a one-line warning
- * so it doesn't block local runs on managed services that lock the
- * permission down — the same gate must then be enforced by the
- * boot-time assertion (Task #123) and by CI's own ephemeral PG.
+ * Skip behaviour:
+ *   - DATABASE_URL unset → describe.skipIf at module scope. (In this
+ *     codebase DATABASE_URL is required by server/env.ts so this path
+ *     is unreachable at deploy time; pg-mem is not used as a
+ *     fallback because Drizzle migrations rely on Postgres-specific
+ *     features pg-mem does not implement, e.g. partial unique
+ *     indexes with WHERE clauses on devis_check_tokens.)
+ *   - Server denies CREATE DATABASE → testContext.skip() inside each
+ *     it() so the runner reports a real skipped state. The boot-time
+ *     assertion (Task #123) remains the authoritative gate when this
+ *     happens.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import pg from "pg";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { getTableConfig, type PgTable } from "drizzle-orm/pg-core";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as schema from "@shared/schema";
+import { runMigrationsWith } from "../migrate";
 
 const { Pool } = pg;
 
@@ -48,8 +55,10 @@ const migrationsFolder = path.resolve(here, "..", "..", "migrations");
 
 const journalPath = path.join(migrationsFolder, "meta", "_journal.json");
 const journal = fs.existsSync(journalPath)
-  ? JSON.parse(fs.readFileSync(journalPath, "utf-8"))
-  : { entries: [] };
+  ? (JSON.parse(fs.readFileSync(journalPath, "utf-8")) as {
+      entries?: Array<{ tag: string; when: number }>;
+    })
+  : { entries: [] as Array<{ tag: string; when: number }> };
 const journalEntryCount: number = journal.entries?.length ?? 0;
 
 function buildAdminUrl(databaseUrl: string): string {
@@ -64,11 +73,15 @@ function buildReplayUrl(databaseUrl: string, dbName: string): string {
   return u.toString();
 }
 
+function errMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
 /**
  * Discover every PgTable instance exported from shared/schema.ts.
- * We try `getTableConfig` on each export and skip values that aren't
- * tables — this is more robust than brand-checks against drizzle
- * internals.
+ * Robust against drizzle internals: try `getTableConfig` on each
+ * export and skip values that aren't tables.
  */
 function discoverTables(): PgTable[] {
   const tables: PgTable[] = [];
@@ -85,22 +98,17 @@ function discoverTables(): PgTable[] {
 }
 
 interface ReplayContext {
-  adminPool: pg.Pool;
-  replayPool: pg.Pool;
-  replayDbName: string;
+  adminPool?: pg.Pool;
+  replayPool?: pg.Pool;
+  replayDbName?: string;
   skipReason: string | null;
 }
 
-const ctx: ReplayContext = {
-  adminPool: null as unknown as pg.Pool,
-  replayPool: null as unknown as pg.Pool,
-  replayDbName: "",
-  skipReason: null,
-};
+const ctx: ReplayContext = { skipReason: null };
 
-const skipReason = !DATABASE_URL ? "DATABASE_URL is not set" : null;
+const skipModule = !DATABASE_URL ? "DATABASE_URL is not set" : null;
 
-describe.skipIf(skipReason !== null)("migration replay + schema parity", () => {
+describe.skipIf(skipModule !== null)("migration replay + schema parity", () => {
   beforeAll(async () => {
     if (!DATABASE_URL) return;
     ctx.adminPool = new Pool({
@@ -113,11 +121,11 @@ describe.skipIf(skipReason !== null)("migration replay + schema parity", () => {
     ctx.replayDbName = `migration_replay_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
     try {
       await ctx.adminPool.query(`CREATE DATABASE "${ctx.replayDbName}"`);
-    } catch (e: any) {
-      ctx.skipReason = `cannot CREATE DATABASE on this server: ${e?.message ?? e}`;
+    } catch (err) {
+      ctx.skipReason = `cannot CREATE DATABASE on this server: ${errMessage(err)}`;
       // eslint-disable-next-line no-console
       console.warn(
-        `[migration-replay] SKIPPED — ${ctx.skipReason}. The boot-time assertion (Task #123) and CI's own ephemeral PG remain authoritative.`,
+        `[migration-replay] SKIPPED — ${ctx.skipReason}. The boot-time assertion (Task #123) remains authoritative.`,
       );
       return;
     }
@@ -131,10 +139,12 @@ describe.skipIf(skipReason !== null)("migration replay + schema parity", () => {
   }, 60_000);
 
   afterAll(async () => {
-    try {
-      await ctx.replayPool?.end();
-    } catch {
-      // ignore
+    if (ctx.replayPool) {
+      try {
+        await ctx.replayPool.end();
+      } catch {
+        // ignore
+      }
     }
     if (ctx.adminPool) {
       try {
@@ -147,25 +157,26 @@ describe.skipIf(skipReason !== null)("migration replay + schema parity", () => {
           );
           await ctx.adminPool.query(`DROP DATABASE IF EXISTS "${ctx.replayDbName}"`);
         }
-      } catch (e) {
+      } catch (err) {
         // eslint-disable-next-line no-console
-        console.warn(`[migration-replay] cleanup warning: ${(e as Error).message}`);
+        console.warn(`[migration-replay] cleanup warning: ${errMessage(err)}`);
       } finally {
         await ctx.adminPool.end();
       }
     }
   }, 30_000);
 
-  it("replays every migration and the tracker row count equals the journal entry count", async (testContext) => {
-    if (ctx.skipReason) {
+  it("replays every migration via runMigrationsWith and the tracker row count equals the journal entry count", async (testContext) => {
+    if (ctx.skipReason || !ctx.replayPool) {
       testContext.skip();
       return;
     }
     expect(journalEntryCount).toBeGreaterThan(0);
-    expect(ctx.replayPool, "replay pool was not initialised").toBeDefined();
 
-    const replayDb = drizzle(ctx.replayPool);
-    await migrate(replayDb, { migrationsFolder });
+    await runMigrationsWith({
+      pool: ctx.replayPool,
+      migrationsFolder,
+    });
 
     const tracker = await ctx.replayPool.query<{ c: string }>(
       `SELECT COUNT(*)::text AS c FROM drizzle.__drizzle_migrations`,
@@ -179,24 +190,21 @@ describe.skipIf(skipReason !== null)("migration replay + schema parity", () => {
   }, 120_000);
 
   it("every column declared in shared/schema.ts exists on the replayed database", async (testContext) => {
-    if (ctx.skipReason) {
+    if (ctx.skipReason || !ctx.replayPool) {
       testContext.skip();
       return;
     }
-    expect(ctx.replayPool, "replay pool was not initialised").toBeDefined();
 
     const tables = discoverTables();
     expect(
       tables.length,
-      "expected to discover >30 Drizzle tables in shared/schema.ts; got " + tables.length,
+      `expected to discover >30 Drizzle tables in shared/schema.ts; got ${tables.length}`,
     ).toBeGreaterThan(30);
 
     const failures: Array<{ table: string; error: string }> = [];
 
     for (const table of tables) {
       const cfg = getTableConfig(table);
-      // Skip tables in non-public schemas (we don't probe drizzle's
-      // own bookkeeping schema, etc.).
       if (cfg.schema && cfg.schema !== "public") continue;
       if (cfg.columns.length === 0) continue;
 
@@ -204,10 +212,10 @@ describe.skipIf(skipReason !== null)("migration replay + schema parity", () => {
       const sql = `SELECT ${colList} FROM "${cfg.name}" LIMIT 0`;
       try {
         await ctx.replayPool.query(sql);
-      } catch (e) {
+      } catch (err) {
         failures.push({
           table: cfg.name,
-          error: (e as Error)?.message ?? String(e),
+          error: errMessage(err),
         });
       }
     }
