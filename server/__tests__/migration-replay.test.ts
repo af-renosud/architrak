@@ -106,7 +106,18 @@ interface ReplayContext {
 
 const ctx: ReplayContext = { skipReason: null };
 
-const skipModule = !DATABASE_URL ? "DATABASE_URL is not set" : null;
+const STRICT = process.env.STRICT_MIGRATION_REPLAY === "1";
+const skipModule =
+  !DATABASE_URL && !STRICT ? "DATABASE_URL is not set" : null;
+
+if (!DATABASE_URL && STRICT) {
+  // STRICT mode (set by scripts/check-migration-replay.sh in the
+  // post-merge gate) — refuse to silently skip when the environment
+  // can't actually run the gate.
+  throw new Error(
+    "[migration-replay] STRICT_MIGRATION_REPLAY=1 but DATABASE_URL is not set — cannot run pre-deploy gate",
+  );
+}
 
 describe.skipIf(skipModule !== null)("migration replay + schema parity", () => {
   beforeAll(async () => {
@@ -123,9 +134,17 @@ describe.skipIf(skipModule !== null)("migration replay + schema parity", () => {
       await ctx.adminPool.query(`CREATE DATABASE "${ctx.replayDbName}"`);
     } catch (err) {
       ctx.skipReason = `cannot CREATE DATABASE on this server: ${errMessage(err)}`;
+      if (STRICT) {
+        // Hard-fail in the post-merge gate so privilege/config drift
+        // can't silently disable the check. Surface the underlying
+        // error so the operator can fix the permission immediately.
+        throw new Error(
+          `[migration-replay] STRICT mode: ${ctx.skipReason}. Grant CREATE DATABASE on the deploy DB role or run this gate against an admin-capable Postgres.`,
+        );
+      }
       // eslint-disable-next-line no-console
       console.warn(
-        `[migration-replay] SKIPPED — ${ctx.skipReason}. The boot-time assertion (Task #123) remains authoritative.`,
+        `[migration-replay] SKIPPED — ${ctx.skipReason}. The boot-time assertion (Task #123) remains authoritative for this environment.`,
       );
       return;
     }
