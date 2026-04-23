@@ -4,8 +4,73 @@ import { storage } from "../storage";
 import { validateRequest } from "../middleware/validate";
 import { rateLimit } from "../middleware/rate-limit";
 import { hashToken, resolveDevisCheckToken, computeTokenExpiry } from "../services/devis-checks";
-import type { DevisCheckToken } from "@shared/schema";
+import type { DevisCheckToken, Devis, DevisCheck } from "@shared/schema";
 import { getDocumentStream } from "../storage/object-storage";
+
+/**
+ * Shape returned by both the live (token-authed) and preview (architect-authed)
+ * portal data endpoints. Keeping the contract identical lets the shared
+ * `renderPortalShell` render either mode without branching its data handling.
+ */
+export interface PortalDataPayload {
+  devis: { ref: string; description: string | null; hasPdf: boolean };
+  project: { name: string } | null;
+  contractor: { name: string } | null;
+  checks: Array<{
+    id: number;
+    status: string;
+    query: string;
+    lineDescription: string | null;
+    messages: Array<{
+      id: number;
+      authorType: string;
+      authorName: string | null;
+      body: string;
+      createdAt: Date | string;
+    }>;
+  }>;
+}
+
+/**
+ * Build the portal payload for a devis. Shared by the live token portal and
+ * the architect's preview endpoint so both render identical content.
+ */
+export async function buildPortalPayload(devis: Devis): Promise<PortalDataPayload | null> {
+  const project = await storage.getProject(devis.projectId);
+  const contractor = await storage.getContractor(devis.contractorId);
+  const checks = await storage.listDevisChecks(devis.id);
+  const lineItems = await storage.getDevisLineItems(devis.id);
+  const lineMap = new Map(lineItems.map((li) => [li.id, li.description]));
+
+  const enriched = await Promise.all(
+    checks
+      .filter((c: DevisCheck) => c.status !== "dropped" && c.status !== "resolved")
+      .map(async (c: DevisCheck) => ({
+        id: c.id,
+        status: c.status,
+        query: c.query,
+        lineDescription: c.lineItemId ? lineMap.get(c.lineItemId) ?? null : null,
+        messages: (await storage.listDevisCheckMessages(c.id)).map((m) => ({
+          id: m.id,
+          authorType: m.authorType,
+          authorName: m.authorName,
+          body: m.body,
+          createdAt: m.createdAt,
+        })),
+      })),
+  );
+
+  return {
+    devis: {
+      ref: devis.devisNumber || devis.devisCode,
+      description: devis.descriptionFr,
+      hasPdf: !!devis.pdfStorageKey,
+    },
+    project: project ? { name: project.name } : null,
+    contractor: contractor ? { name: contractor.name } : null,
+    checks: enriched,
+  };
+}
 
 const router = Router();
 
@@ -82,7 +147,7 @@ router.get("/p/check/:token", portalReadIpLimiter, portalReadTokenLimiter, valid
     }
     return;
   }
-  res.type("html").send(renderPortalShell(tokenFromReq(req)));
+  res.type("html").send(renderPortalShell({ mode: "live", token: tokenFromReq(req) }));
 });
 
 /** JSON state for the portal (devis ref + checks + messages). */
@@ -104,43 +169,15 @@ router.get(
 
     const devis = await storage.getDevis(t.devisId);
     if (!devis) return res.status(404).json({ message: "Devis introuvable" });
-    const project = await storage.getProject(devis.projectId);
-    const contractor = await storage.getContractor(t.contractorId);
-    const checks = await storage.listDevisChecks(t.devisId);
-    const lineItems = await storage.getDevisLineItems(t.devisId);
-    const lineMap = new Map(lineItems.map((li) => [li.id, li.description]));
-
-    // Show only OPEN queries to the contractor. Resolved/dropped checks
-     // are hidden because the workflow is "answer outstanding questions";
-    // historical resolved items would be noise in the contractor view.
-    const enriched = await Promise.all(
-      checks
-        .filter((c) => c.status !== "dropped" && c.status !== "resolved")
-        .map(async (c) => ({
-          id: c.id,
-          status: c.status,
-          query: c.query,
-          lineDescription: c.lineItemId ? lineMap.get(c.lineItemId) ?? null : null,
-          messages: (await storage.listDevisCheckMessages(c.id)).map((m) => ({
-            id: m.id,
-            authorType: m.authorType,
-            authorName: m.authorName,
-            body: m.body,
-            createdAt: m.createdAt,
-          })),
-        })),
-    );
-
-    res.json({
-      devis: {
-        ref: devis.devisNumber || devis.devisCode,
-        description: devis.descriptionFr,
-        hasPdf: !!devis.pdfStorageKey,
-      },
-      project: project ? { name: project.name } : null,
-      contractor: contractor ? { name: contractor.name } : null,
-      checks: enriched,
-    });
+    // Override the contractor lookup to use the token's contractorId, which
+    // may differ from devis.contractorId if the contractor was rotated after
+    // the token was issued. The token is the source of truth for the live
+    // portal session.
+    const payload = await buildPortalPayload(devis);
+    if (!payload) return res.status(404).json({ message: "Devis introuvable" });
+    const tokenContractor = await storage.getContractor(t.contractorId);
+    if (tokenContractor) payload.contractor = { name: tokenContractor.name };
+    res.json(payload);
   },
 );
 
@@ -235,7 +272,27 @@ p{margin:8px 0}
 </body></html>`;
 }
 
-function renderPortalShell(token: string): string {
+/**
+ * Render the portal HTML shell. Two modes share the same template:
+ *   • live: token-authed contractor portal (writes enabled).
+ *   • preview: architect-authed read-only preview, served inside an iframe in
+ *     the architect UI. Reply forms are suppressed and a banner identifies it
+ *     as a preview so an architect can never confuse it with the real link.
+ */
+export function renderPortalShell(opts:
+  | { mode: "live"; token: string }
+  | { mode: "preview"; devisId: number }
+): string {
+  const isPreview = opts.mode === "preview";
+  const dataUrl = opts.mode === "preview"
+    ? `/api/devis/${opts.devisId}/checks/portal-preview/data`
+    : `/p/check/${encodeURIComponent(opts.token)}/data`;
+  const pdfUrl = opts.mode === "preview"
+    ? `/api/devis/${opts.devisId}/checks/portal-preview/pdf`
+    : `/p/check/${encodeURIComponent(opts.token)}/pdf`;
+  const messagesUrl = opts.mode === "preview"
+    ? null
+    : `/p/check/${encodeURIComponent(opts.token)}/messages`;
   // Inline single-page app — vanilla JS, no build step, French only.
   // The PDF viewer is a draggable, resizable floating panel; defaults to
   // bottom-right and can be toggled with a button.
@@ -244,10 +301,11 @@ function renderPortalShell(token: string): string {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Espace contractant — Renosud</title>
+<title>${isPreview ? "Aperçu architecte — " : ""}Espace contractant — Renosud</title>
 <style>
   :root { color-scheme: light; }
   body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
+  .preview-banner { background: #fef3c7; color: #78350f; border-bottom: 2px solid #f59e0b; padding: 8px 16px; font-size: 12px; font-weight: 600; text-align: center; letter-spacing: 0.02em; }
   header { background: #0f172a; color: #fff; padding: 16px 24px; }
   header h1 { margin: 0; font-size: 18px; font-weight: 600; }
   header .meta { font-size: 13px; opacity: 0.8; margin-top: 4px; }
@@ -278,7 +336,8 @@ function renderPortalShell(token: string): string {
   .err { color: #b91c1c; font-size: 13px; margin-top: 6px; }
 </style>
 </head>
-<body>
+<body${isPreview ? ` data-preview="1"` : ""}>
+${isPreview ? `<div class="preview-banner" data-testid="banner-preview">Aperçu architecte — les réponses ne seront pas envoyées.</div>` : ""}
 <header>
   <h1>Espace contractant — Renosud</h1>
   <div class="meta" id="meta">Chargement…</div>
@@ -296,7 +355,10 @@ function renderPortalShell(token: string): string {
 </div>
 
 <script>
-const TOKEN = ${JSON.stringify(token)};
+const DATA_URL = ${JSON.stringify(dataUrl)};
+const PDF_URL = ${JSON.stringify(pdfUrl)};
+const MESSAGES_URL = ${messagesUrl === null ? "null" : JSON.stringify(messagesUrl)};
+const PREVIEW_MODE = ${isPreview ? "true" : "false"};
 const STATUS_LABELS = {
   open: "Ouvert",
   awaiting_contractor: "À votre tour",
@@ -305,7 +367,7 @@ const STATUS_LABELS = {
 };
 
 async function loadData() {
-  const r = await fetch("/p/check/" + encodeURIComponent(TOKEN) + "/data");
+  const r = await fetch(DATA_URL);
   if (r.status === 410) {
     const j = await r.json().catch(() => ({}));
     document.getElementById("root").innerHTML =
@@ -339,10 +401,12 @@ function render(data) {
       const author = m.authorType === "contractor" ? (m.authorName || "Vous") : "Renosud";
       return '<div class="msg msg-' + m.authorType + '"><div class="msg-meta">' + escapeHtml(author) + '</div>' + escapeHtml(m.body) + '</div>';
     }).join("");
-    const canReply = c.status !== "resolved";
+    const canReply = c.status !== "resolved" && !PREVIEW_MODE;
     const replyForm = canReply
       ? '<form data-check="' + c.id + '"><textarea required maxlength="5000" data-testid="textarea-reply-' + c.id + '" placeholder="Votre réponse…"></textarea><div style="margin-top:8px;display:flex;gap:8px;align-items:center;"><button type="submit" data-testid="button-send-reply-' + c.id + '">Envoyer</button><span class="err" data-err="' + c.id + '"></span></div></form>'
-      : '';
+      : (PREVIEW_MODE && c.status !== "resolved"
+        ? '<div style="margin-top:8px"><textarea disabled placeholder="Aperçu architecte — réponse désactivée" data-testid="textarea-reply-disabled-' + c.id + '"></textarea><div style="margin-top:8px"><button type="button" disabled data-testid="button-send-reply-disabled-' + c.id + '">Envoyer</button></div></div>'
+        : '');
     return '<section class="check" data-testid="check-' + c.id + '"><h3>' + head + '<span class="status status-' + c.status + '">' + (STATUS_LABELS[c.status] || c.status) + '</span></h3>'
       + '<p class="query">' + escapeHtml(c.query) + '</p>'
       + '<div class="messages">' + msgs + '</div>' + replyForm + '</section>';
@@ -358,7 +422,8 @@ function render(data) {
       errEl.textContent = "";
       btn.disabled = true;
       try {
-        const r = await fetch("/p/check/" + encodeURIComponent(TOKEN) + "/messages", {
+        if (!MESSAGES_URL) throw new Error("Aperçu — envoi désactivé");
+        const r = await fetch(MESSAGES_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ checkId, body: ta.value }),
@@ -392,7 +457,7 @@ const resize = document.getElementById("pdfResize");
 toggle.addEventListener("click", () => {
   panel.classList.toggle("open");
   if (panel.classList.contains("open") && frame.src === "about:blank") {
-    frame.src = "/p/check/" + encodeURIComponent(TOKEN) + "/pdf";
+    frame.src = PDF_URL;
   }
 });
 closeBtn.addEventListener("click", () => panel.classList.remove("open"));

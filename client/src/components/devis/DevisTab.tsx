@@ -11,6 +11,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Receipt, FilePlus2, ListOrdered, Languages } from "lucide-react";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -2033,10 +2034,60 @@ function TokenPanel({ devisId, projectId, isArchived }: { devisId: number; proje
   );
 }
 
+/**
+ * Read-only iframe of the contractor portal, served from the architect-authed
+ * `/api/devis/:id/checks/portal-preview/shell` endpoint. Lets the architect
+ * see exactly what the contractor will see in the magic-link portal before
+ * clicking "Envoyer". Side-effect-free: no token issued, no statuses changed.
+ */
+function PortalPreviewSheet({
+  devisId,
+  open,
+  onOpenChange,
+}: {
+  devisId: number;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  // Cache-bust per opening so the iframe always reloads with the latest
+  // questions/messages — without this, opening the sheet twice in a row
+  // would show stale data after the architect edited a check in between.
+  const [nonce, setNonce] = useState(0);
+  useEffect(() => {
+    if (open) setNonce(Date.now());
+  }, [open]);
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent
+        side="right"
+        className="w-[60vw] sm:max-w-none p-0 flex flex-col"
+        data-testid={`sheet-portal-preview-${devisId}`}
+      >
+        <SheetHeader className="px-4 py-3 border-b border-border bg-amber-50">
+          <SheetTitle className="text-sm font-bold uppercase tracking-widest text-amber-900">
+            Aperçu côté entreprise
+          </SheetTitle>
+          <SheetDescription className="text-[11px] text-amber-800">
+            Lecture seule — aucune réponse n'est envoyée et aucun statut ne change.
+          </SheetDescription>
+        </SheetHeader>
+        <iframe
+          key={nonce}
+          src={`/api/devis/${devisId}/checks/portal-preview/shell?t=${nonce}`}
+          title="Aperçu portail entreprise"
+          className="flex-1 w-full border-0 bg-white"
+          data-testid={`iframe-portal-preview-${devisId}`}
+        />
+      </SheetContent>
+    </Sheet>
+  );
+}
+
 function ChecksPanel({ devisId, projectId, isArchived }: { devisId: number; projectId: string; isArchived: boolean }) {
   const { toast } = useToast();
   const [replyDrafts, setReplyDrafts] = useState<Record<number, string>>({});
   const [generalQuery, setGeneralQuery] = useState("");
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   const { data: checks = [], isLoading } = useQuery<CheckWithMessages[]>({
     queryKey: ["/api/devis", devisId, "checks"],
@@ -2130,16 +2181,41 @@ function ChecksPanel({ devisId, projectId, isArchived }: { devisId: number; proj
             {openCount === 0 ? "Aucune question en cours" : `${openCount} question(s) en cours`}
           </span>
         </div>
-        <Button
-          size="sm"
-          className="h-7 text-[9px] font-bold uppercase tracking-widest"
-          disabled={isArchived || sendableCount === 0 || sendMutation.isPending}
-          onClick={() => sendMutation.mutate()}
-          data-testid={`button-send-checks-${devisId}`}
-        >
-          {sendMutation.isPending ? "Envoi…" : `Envoyer à l'entreprise (${sendableCount})`}
-        </Button>
+        <div className="flex items-center gap-1.5">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-[9px] font-bold uppercase tracking-widest gap-1"
+                  disabled={openCount === 0}
+                  onClick={() => setPreviewOpen(true)}
+                  data-testid={`button-preview-portal-${devisId}`}
+                >
+                  <Eye size={12} />
+                  Aperçu côté entreprise
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-[11px]">
+              {openCount === 0
+                ? "Ajoutez une question pour prévisualiser le portail"
+                : "Voir exactement ce que l'entreprise verra (lecture seule)"}
+            </TooltipContent>
+          </Tooltip>
+          <Button
+            size="sm"
+            className="h-7 text-[9px] font-bold uppercase tracking-widest"
+            disabled={isArchived || sendableCount === 0 || sendMutation.isPending}
+            onClick={() => sendMutation.mutate()}
+            data-testid={`button-send-checks-${devisId}`}
+          >
+            {sendMutation.isPending ? "Envoi…" : `Envoyer à l'entreprise (${sendableCount})`}
+          </Button>
+        </div>
       </div>
+      <PortalPreviewSheet devisId={devisId} open={previewOpen} onOpenChange={setPreviewOpen} />
 
       {!isArchived && (
         <div className="flex items-start gap-2" data-testid={`section-add-general-check-${devisId}`}>

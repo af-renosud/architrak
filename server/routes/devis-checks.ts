@@ -6,6 +6,8 @@ import { validateRequest } from "../middleware/validate";
 import { issueDevisCheckToken, buildPortalUrl, computeTokenExpiry, isTokenExpired } from "../services/devis-checks";
 import { queueDevisCheckBundle, sendCommunication } from "../communications/email-sender";
 import { env } from "../env";
+import { buildPortalPayload, renderPortalShell } from "./public-checks";
+import { getDocumentStream } from "../storage/object-storage";
 
 const router = Router();
 
@@ -53,6 +55,59 @@ router.get(
       checks.map(async (c) => ({ ...c, messages: await storage.listDevisCheckMessages(c.id) })),
     );
     res.json(withMessages);
+  },
+);
+
+/**
+ * Architect "preview as contractor" — read-only mirror of the contractor
+ * portal HTML shell. Served from the architect-authed surface so it can be
+ * iframed in the devis card without exposing a public URL. Crucially this
+ * path NEVER issues a token, NEVER touches `lastUsedAt`, and NEVER mutates a
+ * check status — guaranteeing the preview is side-effect-free.
+ */
+router.get(
+  "/api/devis/:devisId/checks/portal-preview/shell",
+  validateRequest({ params: devisIdParams }),
+  async (req, res) => {
+    const devisId = Number(req.params.devisId);
+    const devis = await storage.getDevis(devisId);
+    if (!devis) return res.status(404).type("html").send("Devis introuvable");
+    res.type("html").send(renderPortalShell({ mode: "preview", devisId }));
+  },
+);
+
+/** JSON payload for the preview portal — same shape as /p/check/:token/data. */
+router.get(
+  "/api/devis/:devisId/checks/portal-preview/data",
+  validateRequest({ params: devisIdParams }),
+  async (req, res) => {
+    const devisId = Number(req.params.devisId);
+    const devis = await storage.getDevis(devisId);
+    if (!devis) return res.status(404).json({ message: "Devis introuvable" });
+    const payload = await buildPortalPayload(devis);
+    if (!payload) return res.status(404).json({ message: "Devis introuvable" });
+    res.json(payload);
+  },
+);
+
+/** PDF stream for the preview portal — same content as /p/check/:token/pdf. */
+router.get(
+  "/api/devis/:devisId/checks/portal-preview/pdf",
+  validateRequest({ params: devisIdParams }),
+  async (req, res) => {
+    const devisId = Number(req.params.devisId);
+    const devis = await storage.getDevis(devisId);
+    if (!devis?.pdfStorageKey) return res.status(404).json({ message: "PDF indisponible" });
+    try {
+      const doc = await getDocumentStream(devis.pdfStorageKey);
+      res.setHeader("Content-Type", doc.contentType || "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="devis-${devis.devisCode}.pdf"`);
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      doc.stream.pipe(res);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Erreur lecture PDF";
+      res.status(500).json({ message: msg });
+    }
   },
 );
 
