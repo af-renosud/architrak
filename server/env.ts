@@ -145,6 +145,18 @@ const envSchema = z.object({
   REPLIT_CONNECTORS_HOSTNAME: optionalString(),
   REPL_IDENTITY: optionalString(),
   WEB_REPL_RENEWAL: optionalString(),
+
+  // --- Operator alerts (post-deploy maintenance scripts) ---------------
+  // Recipient for operational alerts emitted by post-deploy maintenance
+  // jobs (e.g. the page-hint backfill). Unset = alerts only land in the
+  // deploy log, never in an inbox. Set to a comma-separated list of
+  // addresses to opt in. The Gmail "From" is the connected account.
+  OPERATOR_ALERT_EMAIL: optionalString(),
+
+  // --- Deploy / replit identifiers (best-effort context for alerts) ----
+  REPL_ID: optionalString(),
+  REPL_SLUG: optionalString(),
+  REPLIT_DEPLOYMENT_ID: optionalString(),
 });
 
 export type Env = z.infer<typeof envSchema>;

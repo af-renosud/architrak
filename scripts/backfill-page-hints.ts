@@ -3,6 +3,9 @@ import { eq, and, isNull, isNotNull, asc } from "drizzle-orm";
 import { devis, devisLineItems } from "@shared/schema";
 import { getDocumentBuffer } from "../server/storage/object-storage";
 import { parseDocument } from "../server/gmail/document-parser";
+import { sendOperatorAlert } from "../server/operations/operator-alerts";
+
+const ALERT_SOURCE = "backfill-page-hints";
 
 // Backfill `devis_line_items.pdf_page_hint` for older devis uploaded before
 // Task #111 introduced click-to-jump. The script re-runs the AI extractor's
@@ -142,8 +145,21 @@ export async function backfillOne(devisId: number, dryRun: boolean): Promise<Dev
   };
 }
 
-async function main() {
-  const opts = parseArgs(process.argv.slice(2));
+export interface RunSummary {
+  examined: number;
+  updated: number;
+  noNewHints: number;
+  alreadyComplete: number;
+  noPdf: number;
+  noLines: number;
+  parseFailed: number;
+  noExtractedLines: number;
+  totalLineItemsUpdated: number;
+  elapsedMs: number;
+  dryRun: boolean;
+}
+
+export async function runBackfill(opts: CliOptions): Promise<RunSummary> {
   const startedAt = Date.now();
   console.log(
     `[backfill-page-hints] starting dryRun=${opts.dryRun} devisId=${opts.devisId ?? "all"} limit=${opts.limit ?? "none"}`,
@@ -207,6 +223,106 @@ async function main() {
       `noExtractedLines=${summary["skipped-no-extracted-lines"]} ` +
       `totalLineItemsUpdated=${totalLinesUpdated}${opts.dryRun ? " (dry-run, nothing written)" : ""}`,
   );
+
+  return {
+    examined: candidates.length,
+    updated: summary.updated,
+    noNewHints: summary["no-new-hints"],
+    alreadyComplete: summary["skipped-already-complete"],
+    noPdf: summary["skipped-no-pdf"],
+    noLines: summary["skipped-no-lines"],
+    parseFailed: summary["skipped-parse-failed"],
+    noExtractedLines: summary["skipped-no-extracted-lines"],
+    totalLineItemsUpdated: totalLinesUpdated,
+    elapsedMs,
+    dryRun: opts.dryRun,
+  };
+}
+
+export function buildPartialFailureAlertBody(summary: RunSummary): string {
+  return [
+    `The post-deploy page-hint backfill completed but reported parse failures.`,
+    ``,
+    `Devis examined: ${summary.examined}`,
+    `Parse failed:   ${summary.parseFailed}`,
+    `Updated:        ${summary.updated} (line items written: ${summary.totalLineItemsUpdated})`,
+    `No new hints:   ${summary.noNewHints}`,
+    `Already done:   ${summary.alreadyComplete}`,
+    `No PDF:         ${summary.noPdf}`,
+    `No lines:       ${summary.noLines}`,
+    `No extracted:   ${summary.noExtractedLines}`,
+    `Elapsed:        ${summary.elapsedMs}ms${summary.dryRun ? " (dry-run)" : ""}`,
+    ``,
+    `Search the deploy log for "[backfill-page-hints]" lines tagged ` +
+      `"skipped-parse-failed" to see the offending devis ids and reasons. ` +
+      `The script is idempotent — re-run once the underlying issue (AI quota, ` +
+      `parser regression, missing PDF) is resolved.`,
+  ].join("\n");
+}
+
+export function buildFatalAlertBody(err: unknown, opts: CliOptions): string {
+  const reason = err instanceof Error ? (err.stack || err.message) : String(err);
+  return [
+    `The post-deploy page-hint backfill exited non-zero before completing.`,
+    ``,
+    `Invocation: dryRun=${opts.dryRun} devisId=${opts.devisId ?? "all"} limit=${opts.limit ?? "none"}`,
+    ``,
+    `Error:`,
+    reason,
+    ``,
+    `The deploy itself was not aborted (post-merge.sh swallows the non-zero ` +
+      `exit). Re-run \`tsx scripts/backfill-page-hints.ts\` once the root ` +
+      `cause is fixed; the script is idempotent.`,
+  ].join("\n");
+}
+
+async function main() {
+  // Wrap argv parsing too so a malformed CLI invocation also lands in the
+  // operator inbox (any non-zero exit ⇒ an alert, matching the task's
+  // "deploy log is the only signal otherwise" framing).
+  let opts: CliOptions;
+  try {
+    opts = parseArgs(process.argv.slice(2));
+  } catch (err) {
+    await sendOperatorAlert({
+      source: ALERT_SOURCE,
+      subject: `page-hint backfill FAILED to start (bad arguments)`,
+      body: buildFatalAlertBody(err, { dryRun: false, devisId: null, limit: null }),
+    }).catch((alertErr) => {
+      console.error(
+        `[backfill-page-hints] suppressed operator-alert failure during arg-parse path:`,
+        alertErr,
+      );
+    });
+    throw err;
+  }
+
+  let summary: RunSummary;
+  try {
+    summary = await runBackfill(opts);
+  } catch (err) {
+    // Best-effort alert before re-throwing so post-merge.sh still sees the
+    // non-zero exit and surfaces it via its `|| echo ...` guard.
+    await sendOperatorAlert({
+      source: ALERT_SOURCE,
+      subject: `page-hint backfill FAILED to complete`,
+      body: buildFatalAlertBody(err, opts),
+    }).catch((alertErr) => {
+      console.error(
+        `[backfill-page-hints] suppressed operator-alert failure during fatal path:`,
+        alertErr,
+      );
+    });
+    throw err;
+  }
+
+  if (summary.parseFailed > 0) {
+    await sendOperatorAlert({
+      source: ALERT_SOURCE,
+      subject: `page-hint backfill reported ${summary.parseFailed} parse failure(s)`,
+      body: buildPartialFailureAlertBody(summary),
+    });
+  }
 }
 
 // Auto-run only when invoked directly via `tsx scripts/backfill-page-hints.ts`,

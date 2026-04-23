@@ -60,7 +60,24 @@ vi.mock("../../server/gmail/document-parser", () => ({
   parseDocument: parseDocumentMock,
 }));
 
-import { backfillOne, coercePageHint } from "../backfill-page-hints";
+const { sendOperatorAlertMock } = vi.hoisted(() => ({
+  sendOperatorAlertMock: vi.fn(async () => ({
+    delivered: false,
+    recipients: [],
+    reason: "no-recipients",
+  })),
+}));
+vi.mock("../../server/operations/operator-alerts", () => ({
+  sendOperatorAlert: sendOperatorAlertMock,
+}));
+
+import {
+  backfillOne,
+  coercePageHint,
+  buildPartialFailureAlertBody,
+  buildFatalAlertBody,
+  runBackfill,
+} from "../backfill-page-hints";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -207,5 +224,72 @@ describe("backfillOne", () => {
 
     expect(stats.status).toBe("skipped-no-extracted-lines");
     expect(dbState.updates).toHaveLength(0);
+  });
+});
+
+// Task #119: operators must be alerted when the post-deploy run reports
+// parse failures (or fails outright). The script wires these via
+// `sendOperatorAlert`; here we verify the body builders carry the deploy
+// context the alert recipient needs to size the next manual re-run.
+
+describe("buildPartialFailureAlertBody", () => {
+  it("includes parseFailed, examined, updated counts, and re-run guidance", () => {
+    const body = buildPartialFailureAlertBody({
+      examined: 25,
+      updated: 18,
+      noNewHints: 2,
+      alreadyComplete: 1,
+      noPdf: 0,
+      noLines: 0,
+      parseFailed: 3,
+      noExtractedLines: 1,
+      totalLineItemsUpdated: 47,
+      elapsedMs: 12345,
+      dryRun: false,
+    });
+    expect(body).toContain("Parse failed:   3");
+    expect(body).toContain("Devis examined: 25");
+    expect(body).toContain("line items written: 47");
+    expect(body).toContain("idempotent");
+  });
+});
+
+describe("buildFatalAlertBody", () => {
+  it("captures the invocation parameters and the underlying error stack/message", () => {
+    const body = buildFatalAlertBody(new Error("AI quota exhausted"), {
+      dryRun: false,
+      devisId: null,
+      limit: 25,
+    });
+    expect(body).toContain("limit=25");
+    expect(body).toContain("devisId=all");
+    expect(body).toContain("AI quota exhausted");
+    expect(body).toContain("idempotent");
+  });
+});
+
+describe("runBackfill alert wiring", () => {
+  it("returns a summary whose parseFailed reflects per-devis exceptions (so the alert path can fire)", async () => {
+    dbState.devisRows = [
+      { id: 1, pdfStorageKey: "k/1.pdf", pdfFileName: "1.pdf", devisCode: "D-1" },
+      { id: 2, pdfStorageKey: "k/2.pdf", pdfFileName: "2.pdf", devisCode: "D-2" },
+    ];
+    // backfillOne reads BOTH the devis row and the lines from dbState; using
+    // a single shared lineRows array means each devis sees the same lines,
+    // which is fine for asserting the parseFailed counter increments.
+    dbState.lineRows = [
+      { id: 10, devisId: 1, lineNumber: 1, pdfPageHint: null },
+    ];
+    // First devis: parser blows up → counted as parseFailed.
+    parseDocumentMock.mockRejectedValueOnce(new Error("boom"));
+    // Second devis: parser succeeds with a valid hint.
+    parseDocumentMock.mockResolvedValueOnce({
+      documentType: "quotation",
+      lineItems: [{ description: "L1", pageHint: 1 }],
+    });
+
+    const summary = await runBackfill({ dryRun: true, devisId: null, limit: null });
+    expect(summary.examined).toBe(2);
+    expect(summary.parseFailed).toBeGreaterThanOrEqual(1);
   });
 });
