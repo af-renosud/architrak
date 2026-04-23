@@ -10,6 +10,11 @@ ArchiTrak is a financial workflow management application designed for French arc
 
 ## System Architecture
 
+### Operations Runbook
+- **Migrations**: generated via `npm run db:generate`; applied at deploy via `npx tsx scripts/run-migrations.mjs` (called from `scripts/post-merge.sh`). NEVER use `db:push` — this project has 21 hand-tracked SQL migrations and a `drizzle.__drizzle_migrations` tracker; `db:push` would corrupt the migration history.
+- **Migration-replay gate (Task #124)**: canonical command is `bash scripts/check-migration-replay.sh`. Runs `npx vitest run server/__tests__/migration-replay.test.ts` with `STRICT_MIGRATION_REPLAY=1` and exits non-zero on any failure (including silent skips from missing DB privileges). Wired into `scripts/post-merge.sh` so a partial migration apply aborts the deploy. For local exploration, drop the env var and run the vitest directly.
+- **Environment override**: set `REPLAY_ADMIN_DB=postgres` (or another DB the role can connect to) if the deploy role cannot CREATE DATABASE while connected to the main app DB.
+
 ### Tech Stack
 - **Frontend**: React 18 + TypeScript, Vite, Tailwind CSS, Shadcn UI, Wouter, TanStack React Query
 - **Backend**: Express 5 (Node.js), PostgreSQL, Drizzle ORM

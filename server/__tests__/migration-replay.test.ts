@@ -61,9 +61,21 @@ const journal = fs.existsSync(journalPath)
   : { entries: [] as Array<{ tag: string; when: number }> };
 const journalEntryCount: number = journal.entries?.length ?? 0;
 
+/**
+ * The "admin" connection is just any database we can connect to in
+ * order to issue CREATE / DROP DATABASE for the throwaway replay DB
+ * (Postgres forbids those statements against the database you're
+ * currently connected to). We default to the same database
+ * DATABASE_URL already points at — that's the most portable choice
+ * because we know the role can connect there. Operators who run a
+ * stricter setup can override via REPLAY_ADMIN_DB (e.g. "postgres",
+ * "template1") if their main DB role can't issue CREATE DATABASE.
+ */
 function buildAdminUrl(databaseUrl: string): string {
+  const override = process.env.REPLAY_ADMIN_DB;
+  if (!override) return databaseUrl;
   const u = new URL(databaseUrl);
-  u.pathname = "/postgres";
+  u.pathname = `/${override}`;
   return u.toString();
 }
 
