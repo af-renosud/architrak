@@ -6,6 +6,7 @@ import { roundCurrency } from "../../shared/financial-utils";
 import { reconcileAdvisories } from "./advisory-reconciler";
 import { assertPdfMagic } from "../middleware/upload";
 import { triggerDevisTranslation } from "./devis-translation";
+import { toSentenceCase } from "../lib/sentence-case";
 
 interface UploadedFile {
   originalname: string;
@@ -125,7 +126,7 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
     devisCode: parsed.reference || file.originalname.replace(/\.pdf$/i, ""),
     devisNumber: parsed.devisNumber || parsed.reference || null,
     ref2: null,
-    descriptionFr: parsed.description || parsed.contractorName || file.originalname,
+    descriptionFr: toSentenceCase(parsed.description || parsed.contractorName || file.originalname) as string,
     descriptionUk: null,
     amountHt,
     amountTtc,
@@ -155,7 +156,7 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
         await storage.createDevisLineItem({
           devisId: devisRecord.id,
           lineNumber: i + 1,
-          description: li.description || `Line ${i + 1}`,
+          description: toSentenceCase(li.description || `Line ${i + 1}`) as string,
           quantity: String(li.quantity ?? 1),
           unit: "u",
           unitPriceHt: String(roundCurrency(li.unitPrice ?? 0)),

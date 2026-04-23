@@ -26,6 +26,7 @@ import {
 } from "../services/advisory-reconciler";
 import { validateRequest } from "../middleware/validate";
 import { translateDevis, retranslateSingleLine, triggerDevisTranslation } from "../services/devis-translation";
+import { normalizeDevisText, normalizeLineItemText, toSentenceCase } from "../lib/sentence-case";
 import {
   generateDevisTranslationPdf,
   generateCombinedPdf,
@@ -71,7 +72,7 @@ router.post(
   "/api/projects/:projectId/devis",
   validateRequest({ params: projectIdParams, body: createDevisBodySchema }),
   async (req, res) => {
-    const d = await storage.createDevis({ ...req.body, projectId: Number(req.params.projectId) });
+    const d = await storage.createDevis({ ...normalizeDevisText({ ...req.body }), projectId: Number(req.params.projectId) });
     res.status(201).json(d);
   },
 );
@@ -378,7 +379,7 @@ router.patch(
       prevContractor = (await storage.getContractor(before.contractorId)) ?? null;
     }
 
-    const d = await storage.updateDevis(id, req.body);
+    const d = await storage.updateDevis(id, normalizeDevisText({ ...req.body }));
     if (!d) return res.status(404).json({ message: "Devis not found" });
     // Lifecycle-bound auto-revoke: if this edit lowered the contracted HT
     // (or otherwise pushed the devis to fully-invoiced), retire the active
@@ -438,7 +439,7 @@ router.post(
   "/api/devis/:devisId/line-items",
   validateRequest({ params: devisIdParams, body: createLineItemBodySchema }),
   async (req, res) => {
-    const item = await storage.createDevisLineItem({ ...req.body, devisId: Number(req.params.devisId) });
+    const item = await storage.createDevisLineItem({ ...normalizeLineItemText({ ...req.body }), devisId: Number(req.params.devisId) });
     res.status(201).json(item);
   },
 );
@@ -449,7 +450,7 @@ router.patch(
   validateRequest({ params: idParams, body: updateLineItemSchema }),
   async (req, res) => {
     const lineItemId = Number(req.params.id);
-    const item = await storage.updateDevisLineItem(lineItemId, req.body);
+    const item = await storage.updateDevisLineItem(lineItemId, normalizeLineItemText({ ...req.body }));
     if (!item) return res.status(404).json({ message: "Line item not found" });
 
     // Auto-create / refresh a contractor check whenever the architect flags
@@ -491,7 +492,7 @@ router.post(
   validateRequest({ params: devisIdParams, body: createAvenantBodySchema }),
   async (req, res) => {
     const devisId = Number(req.params.devisId);
-    const av = await storage.createAvenant({ ...req.body, devisId });
+    const av = await storage.createAvenant({ ...normalizeDevisText({ ...req.body }), devisId });
     // Approved PV/MV avenants change the adjusted contracted HT used by the
     // fully-invoiced predicate. Cheap no-op when the avenant is still draft
     // or doesn't tip the devis past its invoiced total.
@@ -504,7 +505,7 @@ router.patch(
   "/api/avenants/:id",
   validateRequest({ params: idParams, body: updateAvenantSchema }),
   async (req, res) => {
-    const av = await storage.updateAvenant(Number(req.params.id), req.body);
+    const av = await storage.updateAvenant(Number(req.params.id), normalizeDevisText({ ...req.body }));
     if (!av) return res.status(404).json({ message: "Avenant not found" });
     await storage.revokeDevisCheckTokenIfFullyInvoiced(av.devisId);
     res.json(av);
@@ -530,7 +531,7 @@ router.post(
       if (corrections.amountTtc != null) updates.amountTtc = String(roundCurrency(corrections.amountTtc));
       if (corrections.devisCode != null) updates.devisCode = corrections.devisCode;
       if (corrections.devisNumber != null) updates.devisNumber = corrections.devisNumber;
-      if (corrections.descriptionFr != null) updates.descriptionFr = corrections.descriptionFr;
+      if (corrections.descriptionFr != null) updates.descriptionFr = toSentenceCase(corrections.descriptionFr);
       if (corrections.dateSent != null) updates.dateSent = corrections.dateSent;
 
       let nextWarnings = (devis.validationWarnings as ValidationWarning[] | null) ?? [];
