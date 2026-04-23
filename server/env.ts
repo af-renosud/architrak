@@ -216,4 +216,30 @@ export function assertNoDevLoginBackdoorInProduction(
 
 assertNoDevLoginBackdoorInProduction(parsed.data);
 
+/**
+ * Boot-time WARN (Task #126): if we're in production and the
+ * operator-alert recipient list is unset, every alert from the
+ * post-deploy maintenance scripts (page-hint backfill, contractor
+ * backfill, post-deploy smoke gate, /healthz watchdog, ...) will
+ * land in stderr only — invisible to anyone not tailing logs. The
+ * 2026-04-23 incident took ~30 extra minutes to surface for exactly
+ * this reason. This WARN is informational (not fatal) because the
+ * variable is genuinely optional for non-production environments.
+ *
+ * Exported for tests; called immediately below for the real boot path.
+ */
+export function warnIfOperatorAlertEmailMissingInProduction(
+  cfg: Pick<Env, "NODE_ENV" | "OPERATOR_ALERT_EMAIL">,
+  log: (msg: string) => void = (m) => console.warn(m),
+): void {
+  if (cfg.NODE_ENV === "production" && !cfg.OPERATOR_ALERT_EMAIL) {
+    log(
+      "[env] WARN — OPERATOR_ALERT_EMAIL not configured; operator alerts will only appear in stderr. " +
+        "Set this env var (comma-separated for multiple addressees) so post-deploy alerts reach an inbox.",
+    );
+  }
+}
+
+warnIfOperatorAlertEmailMissingInProduction(parsed.data);
+
 export const env: Readonly<Env> = Object.freeze(parsed.data);

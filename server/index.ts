@@ -20,6 +20,7 @@ import { env } from "./env";
 import { errorHandler } from "./middleware/error-handler";
 import { runMigrations } from "./migrate";
 import { reportMigrationDrift } from "./migration-drift";
+import { startHealthzWatchdog } from "./operations/healthz-watchdog";
 
 const app = express();
 const httpServer = createServer(app);
@@ -146,6 +147,20 @@ app.use((req, res, next) => {
   startScheduler(60 * 60 * 1000);
   startContractorAutoSyncScheduler(60 * 60 * 1000);
   startDevisCheckTokenCleanup(6 * 60 * 60 * 1000);
+
+  // Runtime watchdog (Task #126): poll /healthz/deep every 5 min and
+  // alert on the OK→FAIL transition. Skipped unless we are in
+  // production AND the operator-alert recipient list is configured —
+  // dev / CI runs would just produce log noise. The watchdog fetches
+  // its own port over loopback so it shares the readiness contract
+  // with the platform's external probes.
+  if (env.NODE_ENV === "production" && env.OPERATOR_ALERT_EMAIL) {
+    startHealthzWatchdog({
+      url: `http://127.0.0.1:${env.PORT}/healthz/deep`,
+      intervalMs: 5 * 60 * 1000,
+    });
+    console.log("[healthz-watchdog] started (5min interval)");
+  }
 
   seedBenchmarkTags(SEED_BENCHMARK_TAGS).catch(err => {
     console.warn("[Benchmark] tag seed failed:", (err as Error).message);

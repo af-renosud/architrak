@@ -11,10 +11,21 @@ npx tsx scripts/run-migrations.mjs
 # the post-merge run aborts.
 bash scripts/check-migration-replay.sh
 
+# Task #126: classify-or-fail wrapper for the maintenance scripts
+# below. Replaces the previous `... || echo "swallowed"` pattern that
+# converted every non-zero exit (including the column-does-not-exist
+# error from the 2026-04-23 incident) into a benign log line. The
+# wrapper exits 2 on schema errors (column-not-exist fingerprint) so
+# the deploy aborts; AI / ArchiDoc / network transients still let the
+# deploy proceed but fire a tagged operator alert.
+# shellcheck source=lib/run-or-classify.sh
+source "$(dirname "$0")/lib/run-or-classify.sh"
+
 # Idempotent backfill of contractor identifiers (SIRET today, others later) from
 # the ArchiDoc mirror. Safe to re-run on every deploy; keeps newly-added
 # identifier columns in sync without manual operator action.
-npx tsx scripts/backfill-contractor-identifiers.ts
+run_or_classify "backfill-contractor-identifiers" \
+  npx tsx scripts/backfill-contractor-identifiers.ts
 
 # Opportunistic backfill of `devis_line_items.pdf_page_hint` for older devis
 # that pre-date Task #111's click-to-jump. Each devis processed re-invokes the
@@ -26,12 +37,14 @@ npx tsx scripts/backfill-contractor-identifiers.ts
 # bulk pass out-of-band).
 PAGE_HINT_BACKFILL_LIMIT="${PAGE_HINT_BACKFILL_LIMIT:-25}"
 if [ "$PAGE_HINT_BACKFILL_LIMIT" -gt 0 ] 2>/dev/null; then
-  # Never abort the deploy if the AI parser is rate-limited or transiently
-  # unavailable — the next deploy / scheduled run will pick up where this one
-  # left off (the script is fully idempotent). Failures are still surfaced via
-  # the `[backfill-page-hints]` log lines for operator visibility.
-  npx tsx scripts/backfill-page-hints.ts --limit "$PAGE_HINT_BACKFILL_LIMIT" \
-    || echo "[post-merge] page-hint backfill exited non-zero — continuing deploy; will retry next cycle"
+  # Task #126: replaced the previous `|| echo` swallow with the
+  # classify-or-fail wrapper. Schema errors (column-not-exist) abort
+  # the deploy via exit 2; AI / ArchiDoc / network transients still
+  # continue the deploy but ship a `[transient]`-tagged operator
+  # alert so on-call sees the regression even when nobody is tailing
+  # the deploy log.
+  run_or_classify "backfill-page-hints" \
+    npx tsx scripts/backfill-page-hints.ts --limit "$PAGE_HINT_BACKFILL_LIMIT"
 else
   echo "[post-merge] page-hint backfill skipped (PAGE_HINT_BACKFILL_LIMIT=$PAGE_HINT_BACKFILL_LIMIT)"
 fi
