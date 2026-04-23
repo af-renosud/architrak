@@ -18,6 +18,7 @@ import EmailDocuments from "@/pages/email-documents";
 import Communications from "@/pages/communications";
 import SettingsPage from "@/pages/settings";
 import CostBenchmarks from "@/pages/cost-benchmarks";
+import AdminTransientFailures from "@/pages/admin-transient-failures";
 import { Loader2 } from "lucide-react";
 
 function Router() {
@@ -35,6 +36,7 @@ function Router() {
       <Route path="/communications" component={Communications} />
       <Route path="/benchmarks" component={CostBenchmarks} />
       <Route path="/settings" component={SettingsPage} />
+      <Route path="/admin/ops/transient-failures" component={AdminTransientFailures} />
       <Route component={NotFound} />
     </Switch>
   );
