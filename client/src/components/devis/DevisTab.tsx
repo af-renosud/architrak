@@ -331,45 +331,26 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
             </div>
           </div>
           <TooltipProvider delayDuration={200}>
-            <div className="flex items-center gap-2 min-[900px]:gap-3 flex-wrap justify-end">
-              {/* Slot: PDF */}
-              <div className="min-[900px]:w-[7rem] flex justify-end empty:hidden">
-                {d.pdfStorageKey ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 px-3 gap-1.5 border-[#0B2545]/20 text-[#0B2545] hover:bg-[#0B2545]/5"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      window.open(`/api/devis/${d.id}/pdf`, "_blank");
-                    }}
-                    data-testid={`button-view-pdf-${d.id}`}
-                  >
-                    <FileText size={12} />
-                    <span className="text-[9px] font-bold uppercase tracking-widest">View PDF</span>
-                  </Button>
-                ) : null}
-              </div>
-              {/* Slot: Totals */}
-              <div className="min-[900px]:w-[9rem] text-right">
-                <span className="text-[14px] font-semibold text-foreground" data-testid={`text-devis-ttc-${d.id}`}>
-                  {formatCurrency(parseFloat(d.amountTtc))}
-                </span>
-                <p className="text-[9px] text-muted-foreground">TTC</p>
-                <span className="text-[10px] text-muted-foreground" data-testid={`text-devis-ht-${d.id}`}>
-                  {formatCurrency(parseFloat(d.amountHt))} HT
-                </span>
-              </div>
-              {/* Slot: Mode */}
-              <div className="min-[900px]:w-[3.75rem]">
-                <TechnicalLabel>{d.invoicingMode === "mode_a" ? "Mode A" : "Mode B"}</TechnicalLabel>
-              </div>
-              {/* Slot: Advisory */}
-              <div className="min-[900px]:w-[1.75rem] flex justify-center empty:hidden">
-                <AdvisoryBadge subject={{ type: "devis", id: d.id }} />
-              </div>
-              {/* Slot: Checking */}
-              <div className="min-[900px]:w-[5.5rem] flex justify-center empty:hidden">
+            <div className="flex items-center gap-3 flex-wrap justify-end">
+              {/* Compact toolbar: status + mode + advisory + actions, with hairline dividers */}
+              <div className="flex items-center gap-2 min-[900px]:gap-2.5">
+                <StatusBadge status={d.status} />
+
+                <span className="hidden min-[900px]:block h-4 w-px bg-border" aria-hidden />
+
+                <div className="hidden min-[900px]:flex items-center gap-1.5">
+                  <TechnicalLabel>Mode</TechnicalLabel>
+                  <span className="text-[11px] font-semibold text-foreground">
+                    {d.invoicingMode === "mode_a" ? "A" : "B"}
+                  </span>
+                </div>
+
+                <span className="hidden min-[900px]:block h-4 w-px bg-border empty:hidden" aria-hidden />
+
+                <div className="empty:hidden">
+                  <AdvisoryBadge subject={{ type: "devis", id: d.id }} />
+                </div>
+
                 {openChecks > 0 ? (
                   <span
                     className="px-2 py-0.5 rounded-full bg-amber-500 text-white text-[9px] font-bold uppercase tracking-widest"
@@ -379,74 +360,106 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
                     Checking · {openChecks}
                   </span>
                 ) : null}
-              </div>
-              {/* Slot: Quick actions (Facture / Avenant) */}
-              <div className="min-[900px]:w-[10.5rem] flex justify-center gap-1.5 empty:hidden">
-                {!isVoid ? (
-                  <>
+
+                <span className="hidden min-[900px]:block h-4 w-px bg-border" aria-hidden />
+
+                {/* Icon-only action cluster */}
+                <div className="flex items-center gap-1">
+                  {d.pdfStorageKey ? (
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
                           variant="outline"
-                          size="sm"
-                          className="h-7 px-2.5 gap-1.5"
-                          disabled={isArchived}
+                          size="icon"
+                          className="h-8 w-8 border-[#0B2545]/20 text-[#0B2545] hover:bg-[#0B2545]/5"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setInvoiceOpen(true);
+                            window.open(`/api/devis/${d.id}/pdf`, "_blank");
                           }}
-                          data-testid={`button-quick-upload-invoice-${d.id}`}
+                          data-testid={`button-view-pdf-${d.id}`}
+                          aria-label="View PDF"
                         >
-                          <Receipt size={12} />
-                          <span className="text-[9px] font-bold uppercase tracking-widest">Facture</span>
+                          <FileText size={13} />
                         </Button>
                       </TooltipTrigger>
-                      <TooltipContent side="top" className="text-[10px]">Téléverser une facture</TooltipContent>
+                      <TooltipContent side="top" className="text-[10px]">View PDF</TooltipContent>
                     </Tooltip>
+                  ) : null}
+                  {!isVoid ? (
+                    <>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            className="h-8 w-8"
+                            disabled={isArchived}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setInvoiceOpen(true);
+                            }}
+                            data-testid={`button-quick-upload-invoice-${d.id}`}
+                            aria-label="Téléverser une facture"
+                          >
+                            <Receipt size={13} />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="text-[10px]">Téléverser une facture</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            className="h-8 w-8"
+                            disabled={isArchived}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setAvenantOpen(true);
+                            }}
+                            data-testid={`button-quick-add-avenant-${d.id}`}
+                            aria-label="Ajouter un avenant"
+                          >
+                            <FilePlus2 size={13} />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="text-[10px]">Ajouter un avenant</TooltipContent>
+                      </Tooltip>
+                    </>
+                  ) : null}
+                  {d.status === "draft" ? (
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
                           variant="outline"
-                          size="sm"
-                          className="h-7 px-2.5 gap-1.5"
-                          disabled={isArchived}
+                          size="icon"
+                          className="h-8 w-8"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setAvenantOpen(true);
+                            onReviewDraft(d);
                           }}
-                          data-testid={`button-quick-add-avenant-${d.id}`}
+                          disabled={isArchived}
+                          data-testid={`button-review-draft-${d.id}`}
+                          aria-label="Review draft"
                         >
-                          <FilePlus2 size={12} />
-                          <span className="text-[9px] font-bold uppercase tracking-widest">Avenant</span>
+                          <ShieldAlert size={13} />
                         </Button>
                       </TooltipTrigger>
-                      <TooltipContent side="top" className="text-[10px]">Ajouter un avenant</TooltipContent>
+                      <TooltipContent side="top" className="text-[10px]">Review draft</TooltipContent>
                     </Tooltip>
-                  </>
-                ) : null}
+                  ) : null}
+                </div>
               </div>
-              {/* Slot: Status */}
-              <div className="min-[900px]:w-[4.75rem] flex justify-center">
-                <StatusBadge status={d.status} />
-              </div>
-              {/* Slot: Review */}
-              <div className="min-[900px]:w-[5rem] flex justify-center empty:hidden">
-                {d.status === "draft" ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="gap-1.5"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onReviewDraft(d);
-                    }}
-                    disabled={isArchived}
-                    data-testid={`button-review-draft-${d.id}`}
-                  >
-                    <ShieldAlert size={12} />
-                    <span className="text-[9px] font-bold uppercase tracking-widest">Review</span>
-                  </Button>
-                ) : null}
+
+              {/* Slot: Totals — anchored hard right with navy left rule */}
+              <div className="pl-4 border-l-2 border-[#0B2545]/20 min-w-[9rem] text-right tabular-nums">
+                <span className="text-[14px] font-semibold text-foreground" data-testid={`text-devis-ttc-${d.id}`}>
+                  {formatCurrency(parseFloat(d.amountTtc))}
+                </span>
+                <p className="text-[9px] text-muted-foreground">TTC</p>
+                <span className="text-[10px] text-muted-foreground" data-testid={`text-devis-ht-${d.id}`}>
+                  {formatCurrency(parseFloat(d.amountHt))} HT
+                </span>
               </div>
             </div>
           </TooltipProvider>
