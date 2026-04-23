@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Send, MessageSquare, X, Check } from "lucide-react";
 import {
   PageShell, CardHeader, INITIAL_LINES, type Line, type LineStatus,
@@ -17,7 +17,6 @@ export function InlinePopover() {
   const [openPopoverFor, setOpenPopoverFor] = useState<number | null>(null);
   const [draft, setDraft] = useState<string>("");
   const [generalQuery, setGeneralQuery] = useState("Pouvez-vous confirmer le délai global du chantier ?");
-  const redBtnRefs = useRef<Record<number, HTMLButtonElement | null>>({});
 
   const setStatus = (n: number, s: LineStatus) => {
     setLines((prev) => prev.map((l) => (l.n === n ? { ...l, status: s } : l)));
@@ -112,7 +111,6 @@ export function InlinePopover() {
                       <StatusButtons
                         status={li.status}
                         onChange={(s) => setStatus(li.n, s)}
-                        redRef={(el) => { redBtnRefs.current[li.n] = el; }}
                       />
                       {openPopoverFor === li.n && (
                         <div className="absolute right-2 top-7 z-20 w-[380px] rounded-xl border-2 border-rose-300 bg-white shadow-xl p-3 text-left">
