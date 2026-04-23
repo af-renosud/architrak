@@ -415,9 +415,12 @@ function render(data) {
       const badge = '<span class="line-badge" data-testid="badge-line-' + c.id + '">Ligne ' + c.lineNumber + '</span>';
       const amountTail = amount ? ' <span class="line-amount">(' + escapeHtml(amount) + ' \u20AC HT)</span>' : '';
       head = badge + ' ' + escapeHtml(c.lineDescription) + amountTail;
-    } else if (c.lineDescription) {
-      head = "Ligne : " + escapeHtml(c.lineDescription);
     } else {
+      // No authoritative line number → treat as a general question. We
+      // intentionally do NOT render "Ligne : description" without a number,
+      // because the line number IS the cross-reference contractors use to
+      // locate the question on their devis PDF (Task #110 semantics, kept
+      // consistent with the email body formatter formatCheckHead).
       head = "Question générale";
     }
     const msgs = c.messages.map((m) => {
