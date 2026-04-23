@@ -19,6 +19,7 @@ import { pool } from "./db";
 import { env } from "./env";
 import { errorHandler } from "./middleware/error-handler";
 import { runMigrations } from "./migrate";
+import { reportMigrationDrift } from "./migration-drift";
 
 const app = express();
 const httpServer = createServer(app);
@@ -103,6 +104,10 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  if (process.env.SKIP_MIGRATION_DRIFT_CHECK !== "true") {
+    await reportMigrationDrift();
+  }
+
   if (process.env.RUN_MIGRATIONS_ON_START !== "false") {
     try {
       await runMigrations();
