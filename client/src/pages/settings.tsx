@@ -1,5 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Sidebar } from "@/components/layout/Sidebar";
@@ -771,16 +771,144 @@ interface PageHintStats {
   candidates: PageHintCandidate[];
 }
 
+interface BulkProgress {
+  processed: number;
+  total: number;
+  updatedDevis: number;
+  skippedDevis: number;
+  failedDevis: number;
+  totalLineItemsUpdated: number;
+  currentLabel?: string;
+  done: boolean;
+  aborted: boolean;
+  error?: string;
+}
+
 function PageHintBackfillSection() {
   const { toast } = useToast();
   const [runningId, setRunningId] = useState<number | null>(null);
   const [lastResultByDevis, setLastResultByDevis] = useState<Record<number, BackfillStats>>({});
+  const [bulkProgress, setBulkProgress] = useState<BulkProgress | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   const { data, isFetching, refetch } = useQuery<PageHintStats>({
     queryKey: ["/api/admin/page-hint-backfill/stats"],
   });
 
   const candidates = data?.candidates ?? [];
+  const bulkRunning = bulkProgress != null && !bulkProgress.done && bulkProgress.error == null;
+
+  useEffect(() => {
+    return () => {
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
+    };
+  }, []);
+
+  const startBulk = () => {
+    if (bulkRunning) return;
+    if (candidates.length === 0) return;
+    setLastResultByDevis({});
+    setBulkProgress({
+      processed: 0,
+      total: candidates.length,
+      updatedDevis: 0,
+      skippedDevis: 0,
+      failedDevis: 0,
+      totalLineItemsUpdated: 0,
+      done: false,
+      aborted: false,
+    });
+
+    const es = new EventSource("/api/admin/page-hint-backfill/run-all", {
+      withCredentials: true,
+    });
+    eventSourceRef.current = es;
+
+    es.addEventListener("start", (ev) => {
+      const data = JSON.parse((ev as MessageEvent).data) as { total: number };
+      setBulkProgress((prev) =>
+        prev ? { ...prev, total: data.total } : prev,
+      );
+    });
+
+    es.addEventListener("progress", (ev) => {
+      const payload = JSON.parse((ev as MessageEvent).data) as {
+        processed: number;
+        total: number;
+        updatedDevis: number;
+        skippedDevis: number;
+        failedDevis: number;
+        totalLineItemsUpdated: number;
+        stats: BackfillStats;
+        candidate: { devisId: number; devisCode: string | null; projectName: string | null };
+      };
+      setLastResultByDevis((prev) => ({ ...prev, [payload.stats.devisId]: payload.stats }));
+      const label =
+        payload.candidate.devisCode ??
+        payload.candidate.projectName ??
+        `#${payload.candidate.devisId}`;
+      setBulkProgress({
+        processed: payload.processed,
+        total: payload.total,
+        updatedDevis: payload.updatedDevis,
+        skippedDevis: payload.skippedDevis,
+        failedDevis: payload.failedDevis,
+        totalLineItemsUpdated: payload.totalLineItemsUpdated,
+        currentLabel: label,
+        done: false,
+        aborted: false,
+      });
+    });
+
+    es.addEventListener("done", (ev) => {
+      const payload = JSON.parse((ev as MessageEvent).data) as {
+        processed: number;
+        total: number;
+        updatedDevis: number;
+        skippedDevis: number;
+        failedDevis: number;
+        totalLineItemsUpdated: number;
+        aborted: boolean;
+      };
+      setBulkProgress({ ...payload, done: true, currentLabel: undefined });
+      es.close();
+      eventSourceRef.current = null;
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/page-hint-backfill/stats"] });
+      toast({
+        title: payload.aborted ? "Backfill stopped" : "Backfill all complete",
+        description: `${payload.processed}/${payload.total} processed · ${payload.updatedDevis} updated · ${payload.skippedDevis} skipped · ${payload.failedDevis} failed · ${payload.totalLineItemsUpdated} line items patched.`,
+      });
+    });
+
+    es.addEventListener("error", (ev) => {
+      const isMessage = (ev as MessageEvent).data != null;
+      let message = "Stream interrupted before completion.";
+      if (isMessage) {
+        try {
+          const payload = JSON.parse((ev as MessageEvent).data) as { message?: string };
+          message = payload.message ?? message;
+        } catch {
+          // not JSON — fall back to default message
+        }
+      }
+      setBulkProgress((prev) =>
+        prev ? { ...prev, done: true, error: message } : prev,
+      );
+      es.close();
+      eventSourceRef.current = null;
+      toast({ title: "Backfill all failed", description: message, variant: "destructive" });
+    });
+  };
+
+  const stopBulk = () => {
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
+    setBulkProgress((prev) =>
+      prev ? { ...prev, done: true, aborted: true, currentLabel: undefined } : prev,
+    );
+    queryClient.invalidateQueries({ queryKey: ["/api/admin/page-hint-backfill/stats"] });
+  };
 
   const runMutation = useMutation({
     mutationFn: async (devisId: number) => {
@@ -838,19 +966,109 @@ function PageHintBackfillSection() {
             Only the page-hint column is patched — descriptions, totals and other fields are left alone.
           </p>
         </div>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => refetch()}
-          disabled={isFetching}
-          data-testid="button-page-hint-refresh"
-        >
-          <RefreshCw size={12} className={cn("mr-1.5", isFetching && "animate-spin")} />
-          <span className="text-[10px] font-bold uppercase tracking-widest">
-            {isFetching ? "Scanning..." : "Refresh"}
-          </span>
-        </Button>
+        <div className="flex items-center gap-2 shrink-0">
+          {bulkRunning ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={stopBulk}
+              data-testid="button-page-hint-bulk-stop"
+            >
+              <span className="text-[10px] font-bold uppercase tracking-widest">Stop</span>
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={startBulk}
+              disabled={candidates.length === 0 || isFetching}
+              data-testid="button-page-hint-bulk-run"
+            >
+              <Wand2 size={12} className="mr-1.5" />
+              <span className="text-[10px] font-bold uppercase tracking-widest">
+                {`Backfill all (${candidates.length})`}
+              </span>
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => refetch()}
+            disabled={isFetching || bulkRunning}
+            data-testid="button-page-hint-refresh"
+          >
+            <RefreshCw size={12} className={cn("mr-1.5", isFetching && "animate-spin")} />
+            <span className="text-[10px] font-bold uppercase tracking-widest">
+              {isFetching ? "Scanning..." : "Refresh"}
+            </span>
+          </Button>
+        </div>
       </div>
+
+      {bulkProgress && (
+        <div
+          className="mb-4 rounded-md border border-[rgba(0,0,0,0.08)] bg-[rgba(11,37,69,0.03)] px-4 py-3"
+          data-testid="bulk-page-hint-progress"
+        >
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <div className="text-[11px] font-bold text-foreground">
+              {bulkProgress.error
+                ? "Bulk backfill failed"
+                : bulkProgress.done
+                  ? bulkProgress.aborted
+                    ? "Bulk backfill stopped"
+                    : "Bulk backfill complete"
+                  : "Bulk backfill in progress"}
+            </div>
+            <div
+              className="text-[10px] text-muted-foreground tabular-nums"
+              data-testid="text-page-hint-bulk-counter"
+            >
+              {bulkProgress.processed} / {bulkProgress.total}
+            </div>
+          </div>
+          <div className="h-1.5 rounded-full bg-[rgba(0,0,0,0.06)] overflow-hidden">
+            <div
+              className="h-full bg-[#0B2545] transition-all"
+              style={{
+                width: `${
+                  bulkProgress.total > 0
+                    ? Math.min(
+                        100,
+                        Math.round((bulkProgress.processed / bulkProgress.total) * 100),
+                      )
+                    : 0
+                }%`,
+              }}
+              data-testid="bar-page-hint-bulk-progress"
+            />
+          </div>
+          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-muted-foreground">
+            <span data-testid="text-page-hint-bulk-updated">
+              <span className="text-emerald-700 font-medium">{bulkProgress.updatedDevis}</span> updated
+            </span>
+            <span data-testid="text-page-hint-bulk-skipped">
+              <span className="text-foreground font-medium">{bulkProgress.skippedDevis}</span> skipped
+            </span>
+            <span data-testid="text-page-hint-bulk-failed">
+              <span className="text-rose-700 font-medium">{bulkProgress.failedDevis}</span> failed
+            </span>
+            <span data-testid="text-page-hint-bulk-lines">
+              <span className="text-foreground font-medium">{bulkProgress.totalLineItemsUpdated}</span> line items patched
+            </span>
+            {bulkProgress.currentLabel && !bulkProgress.done && (
+              <span data-testid="text-page-hint-bulk-current">
+                Currently: {bulkProgress.currentLabel}
+              </span>
+            )}
+            {bulkProgress.error && (
+              <span className="text-rose-700" data-testid="text-page-hint-bulk-error">
+                {bulkProgress.error}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       <LuxuryCard>
         <div className="flex items-start gap-3 mb-5">
@@ -944,7 +1162,7 @@ function PageHintBackfillSection() {
                           size="sm"
                           variant="outline"
                           onClick={() => runMutation.mutate(c.devisId)}
-                          disabled={runMutation.isPending}
+                          disabled={runMutation.isPending || bulkRunning}
                           data-testid={`button-page-hint-run-${c.devisId}`}
                         >
                           {isRunning ? (

@@ -121,4 +121,106 @@ router.post(
   },
 );
 
+// Streams progress as Server-Sent Events. The handler iterates the same
+// candidate list that powers the table (devis with at least one missing
+// hint) and runs `backfillOne` sequentially against each — keeping
+// behaviour identical to clicking the per-row button N times. A sequential
+// loop (rather than parallel fan-out) is intentional: `parseDocument`
+// re-invokes the AI extractor, and we want to stay well within the
+// per-minute quota that the upload pipeline already shares.
+router.get("/api/admin/page-hint-backfill/run-all", requireAuth, async (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  const send = (event: string, payload: unknown) => {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  let aborted = false;
+  req.on("close", () => {
+    aborted = true;
+  });
+
+  try {
+    const stats = await computeStats();
+    const candidates = stats.candidates;
+    send("start", {
+      total: candidates.length,
+      lineItemsMissingHints: stats.lineItemsMissingHints,
+    });
+
+    let processed = 0;
+    let updatedDevis = 0;
+    let skippedDevis = 0;
+    let failedDevis = 0;
+    let totalLineItemsUpdated = 0;
+
+    for (const candidate of candidates) {
+      if (aborted) break;
+      let result: DevisStats;
+      let errorMessage: string | null = null;
+      try {
+        result = await backfillOne(candidate.devisId, false);
+      } catch (err) {
+        errorMessage = err instanceof Error ? err.message : String(err);
+        result = {
+          devisId: candidate.devisId,
+          devisCode: candidate.devisCode,
+          status: "skipped-parse-failed",
+          lineItems: candidate.totalLines,
+          alreadyHinted: candidate.totalLines - candidate.missingHints,
+          updated: 0,
+          reason: errorMessage,
+        };
+        failedDevis++;
+      }
+
+      processed++;
+      if (errorMessage == null) {
+        if (result.status === "updated") {
+          updatedDevis++;
+          totalLineItemsUpdated += result.updated;
+        } else {
+          skippedDevis++;
+        }
+      }
+
+      send("progress", {
+        processed,
+        total: candidates.length,
+        updatedDevis,
+        skippedDevis,
+        failedDevis,
+        totalLineItemsUpdated,
+        stats: result,
+        error: errorMessage,
+        candidate: {
+          devisId: candidate.devisId,
+          devisCode: candidate.devisCode,
+          projectName: candidate.projectName,
+        },
+      });
+    }
+
+    send("done", {
+      processed,
+      total: candidates.length,
+      updatedDevis,
+      skippedDevis,
+      failedDevis,
+      totalLineItemsUpdated,
+      aborted,
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    send("error", { message: `Bulk backfill failed: ${message}` });
+  } finally {
+    res.end();
+  }
+});
+
 export default router;
