@@ -217,6 +217,18 @@ export async function reconcileTracker(
     }
 
     if (toInsert.length === 0) {
+      // Defensive: even when every journal hash is present, the
+      // tracker row count should still equal the journal length. A
+      // mismatch here means the tracker has duplicate rows for the
+      // same hash (drizzle.__drizzle_migrations has no UNIQUE on
+      // hash), which would silently break the same count invariant
+      // the post-write check enforces. Fail loud rather than reporting
+      // "in sync".
+      if (trackerCountBefore !== planned.length) {
+        throw new Error(
+          `[reconcile] every journal hash is present in the tracker but row count (${trackerCountBefore}) does not equal journal length (${planned.length}). The tracker likely contains duplicate rows for the same hash; investigate before re-running.`,
+        );
+      }
       log(`[reconcile] tracker already in sync — nothing to do.`);
       return {
         applied: false,
