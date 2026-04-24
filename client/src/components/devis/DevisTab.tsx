@@ -2520,34 +2520,11 @@ function ChecksPanel({
                     className="h-7 text-[9px] font-bold uppercase tracking-widest gap-1"
                     disabled={openCount === 0}
                     onClick={() => {
-                      // Open the architect's read-only preview of the
-                      // contractor portal in a new browser tab. The portal's
-                      // floating, draggable PDF panel is designed for a full
-                      // browser window; embedding it in an iframe (the prior
-                      // approach) let the user drag the panel past the iframe
-                      // edge with no way to recover. The preview shell itself
-                      // already renders the gold "Aperçu architecte" banner
-                      // and disables the contractor reply textareas, so a new
-                      // tab is safe — and matches what the contractor will
-                      // actually see.
-                      const win = window.open(
+                      window.open(
                         `/api/devis/${devisId}/checks/portal-preview/shell`,
                         "_blank",
                         "noopener,noreferrer",
                       );
-                      // Surface a clear French message if the browser's
-                      // popup blocker swallowed the open. Direct user clicks
-                      // shouldn't normally trigger this, but strict browser
-                      // configurations can — without the toast the click
-                      // would silently do nothing.
-                      if (!win) {
-                        toast({
-                          title: "Aperçu bloqué par le navigateur",
-                          description:
-                            "Autorisez les pop-ups pour ce site puis réessayez.",
-                          variant: "destructive",
-                        });
-                      }
                     }}
                     data-testid={`button-preview-portal-${devisId}`}
                   >
