@@ -34,7 +34,17 @@ const updateCheckQuerySchema = z.object({
   }),
 }).strict();
 
-router.use(requireAuth);
+// NOTE: do NOT add `router.use(requireAuth)` here. This router is mounted
+// at the application root (`app.use(devisChecksRouter)` in routes/index.ts),
+// so a router-level middleware with no path prefix runs for EVERY request
+// the app receives — including `/`, `/index.html`, `/favicon.png`, and the
+// rest of the static frontend — and short-circuits them with a 401 before
+// they can fall through to `serveStatic`. Production crash 2026-04-24:
+// every URL returned `{"message":"Authentication required"}` and the SPA
+// never loaded. Auth for every route in this file is already enforced by
+// the `/api` perimeter gate in `server/index.ts` (all routes here are
+// under `/api/...`), so per-router auth is redundant. Add per-route
+// `requireAuth` if you ever introduce a non-`/api` route in this file.
 
 /**
  * Global inbox of contractor responses awaiting the architect's attention,
