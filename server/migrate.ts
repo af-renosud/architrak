@@ -170,6 +170,16 @@ export async function runMigrationsWith(opts: {
   // between drizzle inserting the tracker row and the SQL committing)
   // is caught before the boot returns "ready".
   await assertSchemaMatchesTracker({ pool: opts.pool, migrationsFolder });
+  // Database identity guard (Task #137). Runs LAST in the boot path
+  // so the previous shape-based checks have already validated the
+  // schema and tracker — by the time we get here, the only remaining
+  // "is this the right database?" question is identity, which the
+  // sentinel row + URL host fingerprint answer. Catches the trap
+  // surfaced by ArchiDoc Task #294.
+  const { assertDatabaseIdentity } = await import(
+    "./operations/database-identity-check"
+  );
+  await assertDatabaseIdentity({ pool: opts.pool, source: "boot" });
   console.log(`[migrate] done in ${Date.now() - start}ms`);
 }
 

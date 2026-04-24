@@ -186,6 +186,21 @@ async function main() {
   const drift = await import("../server/migration-drift.ts");
   const { pool } = await import("../server/db.ts");
 
+  // Database identity guard (Task #137). Required ONLY before
+  // destructive writes — dry-run inspection is safe against any DB.
+  // Refuses to --apply when the sentinel disagrees with the URL
+  // fingerprint, closing the trap surfaced by ArchiDoc Task #294.
+  if (apply) {
+    const { assertDatabaseIdentity } = await import(
+      "../server/operations/database-identity-check.ts"
+    );
+    await assertDatabaseIdentity({
+      pool,
+      databaseUrl: process.env.DATABASE_URL,
+      source: "repair",
+    });
+  }
+
   if (pruneOrphans) {
     return await runPruneOrphans(drift, pool, apply);
   }

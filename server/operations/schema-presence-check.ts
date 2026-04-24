@@ -78,6 +78,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0020_per_line_pdf_bbox", artifact: { kind: "column", table: "devis_line_items", column: "pdf_bbox" } },
   { tag: "0021_reapply_pdf_page_hint_and_bbox", artifact: { kind: "data_only", reason: "Idempotent re-apply of 0019/0020 columns; same artifacts as those entries" } },
   { tag: "0022_post_merge_transient_failures", artifact: { kind: "table", table: "post_merge_transient_failures" } },
+  { tag: "0023_database_identity", artifact: { kind: "table", table: "__database_identity" } },
 ];
 
 interface JournalFile {

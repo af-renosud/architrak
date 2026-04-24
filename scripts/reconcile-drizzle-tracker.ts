@@ -348,7 +348,20 @@ if (isMain) {
     connectionTimeoutMillis: 10000,
   });
 
-  reconcileTracker({ pool, migrationsFolder, apply })
+  // Database identity guard (Task #137). Required ONLY before
+  // destructive writes — dry-run inspection is safe against any DB.
+  // Refuses to --apply when the sentinel disagrees with the URL
+  // fingerprint (e.g. someone exported PROD_DATABASE_URL into the
+  // shell while reaching for a dev fix). Runs the same assertion
+  // the boot path uses, so the operator gets one consistent runbook.
+  const guardPromise = apply
+    ? import("../server/operations/database-identity-check").then(({ assertDatabaseIdentity }) =>
+        assertDatabaseIdentity({ pool, databaseUrl, source: "reconcile" }),
+      )
+    : Promise.resolve();
+
+  guardPromise
+    .then(() => reconcileTracker({ pool, migrationsFolder, apply }))
     .then(async (result) => {
       await pool.end();
       if (!apply && result.toInsert.length > 0) {
