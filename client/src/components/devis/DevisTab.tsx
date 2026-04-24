@@ -11,7 +11,6 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Receipt, FilePlus2, ListOrdered, Languages } from "lucide-react";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -2327,55 +2326,6 @@ function TokenPanel({ devisId, projectId, isArchived }: { devisId: number; proje
   );
 }
 
-/**
- * Read-only iframe of the contractor portal, served from the architect-authed
- * `/api/devis/:id/checks/portal-preview/shell` endpoint. Lets the architect
- * see exactly what the contractor will see in the magic-link portal before
- * clicking "Envoyer". Side-effect-free: no token issued, no statuses changed.
- */
-function PortalPreviewSheet({
-  devisId,
-  open,
-  onOpenChange,
-}: {
-  devisId: number;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  // Cache-bust per opening so the iframe always reloads with the latest
-  // questions/messages — without this, opening the sheet twice in a row
-  // would show stale data after the architect edited a check in between.
-  const [nonce, setNonce] = useState(0);
-  useEffect(() => {
-    if (open) setNonce(Date.now());
-  }, [open]);
-  return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        side="right"
-        className="w-[60vw] sm:max-w-none p-0 flex flex-col"
-        data-testid={`sheet-portal-preview-${devisId}`}
-      >
-        <SheetHeader className="px-4 py-3 border-b border-border bg-amber-50">
-          <SheetTitle className="text-sm font-bold uppercase tracking-widest text-amber-900">
-            Aperçu côté entreprise
-          </SheetTitle>
-          <SheetDescription className="text-[11px] text-amber-800">
-            Lecture seule — aucune réponse n'est envoyée et aucun statut ne change.
-          </SheetDescription>
-        </SheetHeader>
-        <iframe
-          key={nonce}
-          src={`/api/devis/${devisId}/checks/portal-preview/shell?t=${nonce}`}
-          title="Aperçu portail entreprise"
-          className="flex-1 w-full border-0 bg-white"
-          data-testid={`iframe-portal-preview-${devisId}`}
-        />
-      </SheetContent>
-    </Sheet>
-  );
-}
-
 function ChecksPanel({
   devisId,
   projectId,
@@ -2391,7 +2341,6 @@ function ChecksPanel({
 }) {
   const { toast } = useToast();
   const [replyDrafts, setReplyDrafts] = useState<Record<number, string>>({});
-  const [previewOpen, setPreviewOpen] = useState(false);
 
   const { data: checks = [], isLoading } = useQuery<CheckWithMessages[]>({
     queryKey: ["/api/devis", devisId, "checks"],
@@ -2526,7 +2475,6 @@ function ChecksPanel({
     <div className="space-y-3">
       <LapsingTokenBanner devisId={devisId} isArchived={isArchived} />
       <TokenPanel devisId={devisId} projectId={projectId} isArchived={isArchived} />
-      <PortalPreviewSheet devisId={devisId} open={previewOpen} onOpenChange={setPreviewOpen} />
 
       {/* Bottom mirror — variant B "Inline composer + bottom mirror".
           Navy-bordered card showing the architect exactly what will be
@@ -2571,7 +2519,36 @@ function ChecksPanel({
                     size="sm"
                     className="h-7 text-[9px] font-bold uppercase tracking-widest gap-1"
                     disabled={openCount === 0}
-                    onClick={() => setPreviewOpen(true)}
+                    onClick={() => {
+                      // Open the architect's read-only preview of the
+                      // contractor portal in a new browser tab. The portal's
+                      // floating, draggable PDF panel is designed for a full
+                      // browser window; embedding it in an iframe (the prior
+                      // approach) let the user drag the panel past the iframe
+                      // edge with no way to recover. The preview shell itself
+                      // already renders the gold "Aperçu architecte" banner
+                      // and disables the contractor reply textareas, so a new
+                      // tab is safe — and matches what the contractor will
+                      // actually see.
+                      const win = window.open(
+                        `/api/devis/${devisId}/checks/portal-preview/shell`,
+                        "_blank",
+                        "noopener,noreferrer",
+                      );
+                      // Surface a clear French message if the browser's
+                      // popup blocker swallowed the open. Direct user clicks
+                      // shouldn't normally trigger this, but strict browser
+                      // configurations can — without the toast the click
+                      // would silently do nothing.
+                      if (!win) {
+                        toast({
+                          title: "Aperçu bloqué par le navigateur",
+                          description:
+                            "Autorisez les pop-ups pour ce site puis réessayez.",
+                          variant: "destructive",
+                        });
+                      }
+                    }}
                     data-testid={`button-preview-portal-${devisId}`}
                   >
                     <Eye size={12} />
