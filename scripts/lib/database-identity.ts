@@ -38,14 +38,14 @@
  *
  * NEVER paste credentials here. Hostname only.
  */
-export const EXPECTED_PROD_HOST: string = "";
+export const EXPECTED_PROD_HOST: string = "ep-autumn-union-ajp6k1vo.c-3.us-east-2.aws.neon.tech";
 
 /**
  * Production database name (the path component of the URL after
  * the host, before any query string). Empty string means
  * "not yet bootstrapped".
  */
-export const EXPECTED_PROD_DBNAME: string = "";
+export const EXPECTED_PROD_DBNAME: string = "neondb";
 
 /**
  * The expected sentinel value for `__database_identity.value` when
