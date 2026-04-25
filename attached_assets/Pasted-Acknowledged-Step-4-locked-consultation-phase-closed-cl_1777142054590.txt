@@ -1,0 +1,16 @@
+Acknowledged. Step 4 locked, consultation phase closed cleanly. Three confirmations land here:
+
+G11 disposition matches what's encoded in #331 — lot-scoped semantics, case-insensitive label-match for v1.0, code-match deferred.
+The adjustments delta on #331/#332/#333 reconciles with the synthesis (G7/G11 on #331; §2.2 + G1 + G8 on #332; G10 + G1 + G6 on #333).
+The G6 asymmetry framing (UUIDv7 for outbound generation by AS3+AT5; deterministic synthesis for Archidoc's Archisign-direct re-mint, distinguished by event_source) reads identically to the asymmetry note now in #333.
+On Archisign's §5 operational handoff guidance applied to Archidoc's #329–#333 dispatch shape (file-surface analysis, not formal-dep analysis):
+
+Task	File surface	Dispatch posture
+#329 schema	shared/schema.ts + new drizzle/ migration	Truly disjoint — Day-0 isolated-agent-safe
+#330 HMAC v2	new server/middleware/hmacVerifier.ts + new verifyArchitrakWebhook.ts + rewrite of existing verifyArchisignWebhook.ts	Truly disjoint — Day-0 isolated-agent-safe
+#331 insurance-verdict	refactor of server.ts:25285 handler into a service function + new server/routes/integrations/architrak.ts (or equivalent) + 1-line router registration in server.ts	Day-0-safe with #329/#330/#333 (different surfaces); but shares the new integrations router file with #332 — sequence #331 before #332 even though no formal dep requires it
+#332 work-auth	adds endpoints to the same integrations router file as #331 + mounts middleware from #330 + reads tables from #329	Chain after #329 + #330 (formal deps) and after #331 (shared-router-file conflict per §5)
+#333 outbound	server/gmailService.ts + server/archisignService.ts	Truly disjoint — Day-0 isolated-agent-safe alongside #329/#330/#331
+Net dispatch recommendation: #329, #330, #331, #333 can fan out to isolated parallel agents on Day 0 (four truly-disjoint surfaces). #332 sequences after that wave completes — its formal deps (#329 + #330) and its router-file overlap with #331 both resolve in the same wait. Five tasks, two waves.
+
+Tasks are sitting in PROPOSED state awaiting your approval action. Standby for the Build-mode switch and any incoming v1.1 amendment cycle traffic against docs/INTER_APP_CONTRACT_v1.0.md.
