@@ -1,0 +1,51 @@
+Both asks have clean answers. Let me address G11 first (substantive), then state the adjustments delta and apply it.
+
+G11 — intendedWorkLot semantics: lot-scoped when provided; project-scoped fallback when absent
+Rationale (4 reasons, weighted):
+
+French construction insurance is intrinsically lot-scoped. Décennale (10-year structural guarantee) and RC Pro policies enumerate garanties tied to specific work categories — a contractor's Décennale for "Gros œuvre" does not extend to "Plomberie". Treating the insurance gate as advisory at the integration boundary would discard precisely the dimension that determines real-world risk for architects.
+
+Archidoc's existing /api/contractors/:id/validate-for-project handler already considers lot-coverage rules when the calling context provides them; AD2 (#331) is a thin wrapper over that handler. Lot-scoped behaviour is a natural extension of code already shipped, not a new computation.
+
+Field naming signals intent. intendedWorkLot (vs. auditMetadata.intendedWorkLot or intendedWorkLotForAuditOnly) reads as a verdict input, not a logging field.
+
+Architrak's devis-by-lot model identifies the lot in the vast majority of calls — so lot-scoped is the path that exercises the security boundary at maximum strength with zero operational cost on AT3's side.
+
+Semantics (locked into #331):
+
+intendedWorkLot	Verdict computation
+Provided	AND(contractor assigned to project, all required policies active atnow(), at least one valid policy'scoverage_scopematchesintendedWorkLot). Mismatch → 200 { canProceed: false, reason: "Contractor's insurance does not cover lot \"<intendedWorkLot>\"" } (overridable per §1.3).
+Absent	Falls back to existing project-scoped logic (any active policy whose coverage_scope intersects any project lot). Preserves callers that don't yet know the lot at gate time.
+Sub-question for AT3 finalisation (does NOT block G11 closure; raise as plain coordination if it matters): contract types intendedWorkLot as string. Archidoc's lots have both a stable code ("01", "02") and a French label ("Gros œuvre"). Recommendation — pick one of:
+
+Label-match (case-insensitive, default for v1.0) — works without a shared taxonomy ceremony; acceptable for the lot-name set in use today.
+Code-match — requires both apps agree the canonical lot-code taxonomy is identical. Cleaner long-term; defer to v1.1 amendment if AT3 wants to coordinate the taxonomy.
+#331 will implement label-match (case-insensitive) by default unless AT3 specifies otherwise in their reply.
+
+Adjustments delta — 3 of 5 tasks touched, 2 untouched
+Task	Status	Change
+#329 (AD1, schema)	No adjustment	No gap disposition touches it.
+#330 (AD4, HMAC v2 verifier)	No adjustment	No gap touches it; §2.4 phasing already encoded.
+#331 (AD2, insurance-verdict)	Delta	(a) Encode G11 lot-scoped semantics. (b) Pin G7 — Archidoc emits literal 503 on transient errors; AT3's "treat all 5xx uniformly" is the receiver-side robustness pair.
+#332 (AD3, work-auth)	Delta	(a) §2.2 timing annotation. (b) G1 — tests load fixtures from Architrak's docs/wire-fixtures/. (c) G8 — note that the eventType-absent default is defensive code only; AT5 always emits explicit field.
+#333 (AD5, outbound)	Delta	(a) G10 — assert Gmail header presence and lower-case form in test. (b) G1 — re-mint client tests load Archisign-side fixtures from the same docs/wire-fixtures/ location. (c) G6 acknowledgement — Archisign-direct breach path uses deterministic synthesis (idempotent on re-mint retries), distinct from AT5's UUIDv7 outbound generation; no change to algorithm but document the asymmetry.
+Applying the deltas now to plan files and task descriptions in parallel.
+
+
+9 actions
+Now syncing the updated plan files to the task descriptions in parallel.
+
+
+Drafting closing message confirmation
+Both items closed.
+
+G11 disposition — intendedWorkLot is lot-scoped when provided, project-scoped fallback when absent (case-insensitive label-match for v1.0; code-match deferred to v1.1 if AT3 wants a shared taxonomy ceremony). Now encoded explicitly in #331's plan.
+
+Adjustments to #329–#333 — delta applied across the three affected tasks; #329 (schema) and #330 (HMAC v2) untouched as flagged. Specifically:
+
+#331 absorbs G11 (lot-scoped semantics) and G7 (literal-503 emit + AT3 receiver-side any-5xx tolerance — pair complete on both sides).
+#332 absorbs the §2.2 timing annotation (code Week 3, AD3↔AT4 live-integration test end-of-Week-3), G1 (fixtures load from docs/wire-fixtures/ in Architrak repo), and G8 (eventType-absent default is defensive code only — AT5 always emits explicit field).
+#333 absorbs G10 (Gmail header lower-case assertion pinned), G1 (Archisign-side fixtures referenced from same shared location), and G6 (asymmetry note — AT5 outbound generation uses UUIDv7 per Architrak's commitment; Archidoc's Archisign-direct path uses deterministic synthesis from ${incidentRef}:${envelopeId} because re-mint retries must collapse to the same row, distinguished by event_source column).
+G13 acknowledgement — Architrak's hard commitment in §3.3 (no Archidoc-callable endpoints under v1.0; any future endpoint triggers v1.1 amendment) is recorded on Archidoc's side. No code or task implication for v1.0; appreciated as a clean closure on a category that could otherwise expand silently.
+
+From Archidoc's standpoint, the synthesis is now fully aligned with #329–#333 and can flip from Draft to Locked once Archisign confirms the Architrak AT-task list and declares reverse-deps on AS3/AS4/AS5. Standby for any further Architrak or Archisign coordination; no further Archidoc planning artefacts pending.

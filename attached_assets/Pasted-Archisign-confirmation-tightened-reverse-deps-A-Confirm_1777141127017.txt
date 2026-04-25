@@ -1,0 +1,45 @@
+Archisign — confirmation + tightened reverse-deps
+§A. Confirmation on Architrak AT1–AT5
+Confirmed acceptable. The AT-task list aligns cleanly with the wire surface Archisign is committing to. Two specific call-outs worth recording:
+
+AT4 born-v2 verifier framing is correct. Architrak's "no parallel to AD4" reading of the HMAC v2 asymmetry is exactly right — the §2.4 dual-verify-then-cutover ceremony exists only because Archidoc has a pre-existing channel to migrate gently. Architrak's /api/webhooks/archisign channel is born v2-only, so AT4's verifier is one-shot.
+AT5 housing the §3.8 vs §5.3.2 distinction (G4) is the right home. The risk is highest at the point where Architrak is receiving a §3.8 410 body and emitting a §5.3.2 downstream payload in the same request lifecycle — that's AT5's territory. Pinning the downstream payload against a §5.3.2 fixture (rather than copying §3.8's body verbatim) closes the gap I was most worried about.
+One micro-observation, not a request: AT3's "mirror+live+override+audit decision tree" with override-on-network-timeout per G7 means AT3 can complete its own E2E earlier than I'd assumed (mirror provides the fallback when AD2 isn't yet live in the test env). That softens the AT3↔AD2 ordering constraint slightly — AT3 can ship to dev with mirror-only and still exercise the full decision tree minus the live-verdict happy path. Doesn't change Week 3 critical path, just gives AT3 some slack.
+
+§B. Tightened Archisign §C task table — reverse-deps declared
+Replacing my prior §C with the cross-app-specific dependents Architrak asked for. Each entry names the specific AT/AD task that consumes the surface, not just the app.
+
+Archisign task	Title	Cross-app deps	Cross-app dependents
+AS1	Schema foundation for v1.0 wire contract	None	None — purely internal
+AS2	API key, rate-limit, and v2 HMAC middleware	None	AD4 P1 (verifier needs the v2 emission to baseline against — AS2 ships the WebhookSignature module; AS3 turns dual-emit on)
+AS3	Wire events, payloads, and idempotent dispatch	None	AT4 (full — inbound 7-event verifier + handlers + dedup against webhook_events_in + lifecycle transitions per §1.2); AT2 (E2E only — query-thread integration via envelope.queried / envelope.query_resolved per §2.1; AT2 code lands Week 1 with stub, wire E2E moves to Week 3); AD4 P1 (dual-emit traffic for Archidoc to baseline against per §2.4 P1 row)
+AS4	Endpoints: pdfFetchUrl, /send idempotency, /signed-pdf-url re-mint	None	AT4 (envelope two-step orchestration: client for /create, idempotent /send, resend-on-expiry with accessToken refresh per G3); AT5 (/signed-pdf-url consumed by re-mint client + 410 retention_breach body parsing pinned against §3.8 fixture); AD5 (#333) re-mint client E2E (live exercise per §3.5.3); AD5 (#333) re-mint client 410 retention_breach branch E2E (live exercise per §3.8)
+AS5	Background jobs: expiresAt sweeper + annual integrity check	None	AT4 (envelope.expired reception → §1.2 transition sent_to_client → approved_for_signing); AT5 (envelope.retention_breach reception → downstream re-notify to Archidoc with §5.3.2 payload); AD3 (#332) signed_pdf_retention_breach variant E2E (full upstream chain required: AS5 emits → AT5 forwards → AD3 receives)
+This supersedes my §C from 2026-04-25. Net additions vs prior:
+
+AS3 gained AT2 (E2E-only) — picked up from your §2.1 refinement
+AS3, AS4, AS5 rows now name specific AT/AD task IDs and the variant (e.g. AD3 polymorphic-on-eventType signed_pdf_retention_breach variant) rather than just app names
+AS4 dropped AT3 from the dependents list — AT3 is insurance gate orchestration (deps on AD2, not AS4); the envelope orchestration consumer is AT4. My prior table conflated them
+§C. Acknowledgements on synthesis
+§2.1 AT2 hidden dep on AS3: accepted; reflected in §B above. Doesn't change critical path; AT2 ships Week 1 with stub, wire E2E in Week 3.
+§2.2 AD3 code-landing vs integration: accepted; the "code lands Week 3; live integration end-of-Week-3 happy-path window" annotation is the right disambiguation. No Archisign-side action.
+§A.4 critical-path adopted as-is + §A.3 HMAC v2 timeline adopted as-is: noted with thanks. The Week 0 P0 step (AS2 deploy without enabling) is on Archisign's calendar; AS3's ARCHISIGN_WEBHOOK_V2_TENANTS env var goes in during AS2 land.
+G1–G6 + G16 explicit Architrak commitments: all confirmed compatible with Archisign's task plans. Specific cross-checks:
+G1 (shared fixtures at docs/wire-fixtures/ in Architrak repo): Archisign's AS3 unit-style buildEventPayload fixture comparison will reference the canonical identityVerification fixture from there once it exists. AS3 plan currently says "exported buildEventPayload pure function the codebase can sanity-check" — happy to upgrade that to "asserts byte-equal against docs/wire-fixtures/identity-verification.json" once Architrak's AT1 stubs the path. No re-proposal needed; minor plan-doc tweak at AS3 implementation time.
+G2 (5-min pdfFetchUrl floor enforced in AT4): matches AS4's 60s server-side fetch budget with comfortable margin. No Archisign change.
+G3 (accessToken refresh-on-resend): matches AS4 §3.5.4 implementation. AS4 returns the rotated signers in the /send 200 body explicitly so AT4 has the data it needs.
+G4 (§5.3.2 downstream pinned, not §3.8 body): matches AS4's §3.8 410 emission shape exactly.
+G5 (expiresAt floor ≥ now()+1min): matches AS4's validation. Confirmed.
+G6 (UUIDv7 in shared test envs): AS3's eventId generator will use UUIDv7 to align — minor implementation detail, no plan change needed.
+G16: the contents at line 120 are truncated; assuming this is one of the v1.1-deferred items per §3.3. If it surfaces an Archisign action item I'll respond on it then.
+G7 (5xx discipline at AD2 + network-timeout-as-overridable): Architrak-internal; no Archisign coupling.
+G8 (always-emit eventType): Architrak-internal AT5 commitment; no Archisign coupling.
+G9 operational ack on webhookUrl immutability: correct. AS3's emission code reads envelopes.webhookUrl recorded at create time and never re-reads from any registry.
+G10 Gmail header case-insensitivity: Archidoc/Architrak boundary; no Archisign coupling.
+G11 intendedWorkLot semantics: correctly routed back to Archidoc as a pre-AT3 question. No Archisign opinion required.
+§D. Standing by
+Pending Archidoc's G11 disposition, the Step 4 breakdown closes from Archisign's side. The five Archisign tasks (AS1 schema foundation, AS2 middleware, AS3 events/dispatch, AS4 endpoints, AS5 jobs) remain in Drafts state with the dependency chain AS1 → AS2 → {AS3, AS4} → AS5 already declared, ready for approval whenever you want Archisign to start landing code on the Day 0 → Week 5 schedule.
+
+If at approval time you'd like to fan tasks across multiple agents in parallel rather than land sequentially on the main branch, the dependency declarations enforce correct ordering either way — but note that AS3 and AS4 both touch routes.ts and NotificationService.ts, so true parallel execution by isolated task agents would generate merge conflicts. The cleanest fan-out is AS1 alone → AS2 alone → then either AS3 + AS4 sequential or AS3 + AS4 in two consecutive isolated agents (not parallel) → AS5. Sequential on the main branch avoids the merge problem entirely. Your call when you trigger approval.
+
+No code or schema changes have been made — this remains a planning artefact only.
