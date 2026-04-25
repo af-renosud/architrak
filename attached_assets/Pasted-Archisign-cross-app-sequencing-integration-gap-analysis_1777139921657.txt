@@ -1,0 +1,113 @@
+Archisign — cross-app sequencing + integration-gap analysis
+Here's Archisign's input for Architrak's coordination pass, before Architrak drafts. Two parts: deployment ordering across all three apps, then a gaps list for Architrak to chew on.
+
+§A. Cross-app deployment-ordering graph
+Mapping the three breakdowns side-by-side. Archidoc's offered 5: AD1 schema, AD2 insurance-verdict endpoint, AD3 work-authorisations endpoint, AD4 v2 verifier migration, AD5 Gmail header + re-mint client. Archisign's just-proposed 5: AS1 schema, AS2 middleware (key + rate-limit + HMAC module), AS3 events/payloads/dispatch, AS4 endpoints (pdfFetchUrl + /send + /signed-pdf-url), AS5 jobs (sweeper + integrity).
+
+§A.1 The "everything-in-parallel" foundation layer
+Task	Blocked by anything cross-app?
+AS1 (Archisign schema)	No
+AD1 (Archidoc schema)	No
+AT1 (Architrak schema, presumed)	No
+All three schema migrations are independent. They can ship the same day in any order. Recommend they do — gives every downstream task something stable to build against.
+
+§A.2 Wire-emitter-before-receiver dependencies
+These are the hard ordering constraints. Receiver tests cannot pass against a stub forever; at some point each app needs the live counter-party deployed.
+
+Receiver task	Blocked by emitter task	Why
+AT4 (Architrak inbound event handlers)	AS3 (Archisign emits the 7 events with the v1.0 payload shapes)	Without AS3 deployed, Architrak's verifier passes against its own fixtures but cannot prove byte-faithful interop
+AT4 envelope create/send orchestration	AS4 (Archisign accepts pdfFetchUrl, returns v1.0 create response, supports idempotent /send)	Without AS4, Architrak can only call the legacy pdfBase64 shape — backward-compat works, but the v1.0 wire surface is unverified
+AT5 re-mint client (downstream re-notification)	AS4 (/signed-pdf-url exists and 410 retention_breach body shape) + AS5 (envelope.retention_breach actually gets emitted by the integrity job)	Without AS4 the client has no endpoint; without AS5 there's no realistic way to integration-test the breach path end-to-end
+AD3 (Archidoc work-authorisations endpoint)	AT4 (Architrak's outbound work-authorisation webhook exists and signs with ARCHITRAK_WEBHOOK_SECRET v2 scheme)	Mutual: AD3 also needs AT3's insurance-gate flow to produce the insuranceOverride block. Recommend AT3 + AT4 land before AD3 production cutover
+AT3 (Architrak insurance-gate orchestration)	AD2 (Archidoc insurance-verdict endpoint)	Without AD2, AT3 only has the mirror; it can ship to dev with a stub but cannot be production-flipped
+AD5 Gmail re-mint client	AS4	Same as AT5
+§A.3 The HMAC v2 migration timeline (the trickiest one)
+This is the only multi-week cross-app sequence in the contract. §2.4 specifies 5 weeks, 4 phases. Mapping it onto the task breakdowns:
+
+Phase	Week(s)	Archisign action	Archidoc action	Architrak action
+P0 Pre-flight	Week 0	Deploy AS2 (HMAC v2 module + ARCHISIGN_WEBHOOK_V2_TENANTS env var) without enabling — legacy emission unchanged	Confirm test env ready for AD4 verifier work	N/A — born v2 (verifier ships in AT4 as v2-only from day one)
+P1 Dual-emit	Weeks 1–2	Deploy AS3 with dual-emit toggled on for Archidoc test tenant (week 1) then production tenant (week 2)	AD4 verifier still legacy-only; ignores the unknown v2 header	AT4 verifier ships v2-only on the new /api/webhooks/archisign channel into Architrak
+P2 Dual-verify, prefer-v2	Weeks 3–4	Continues dual-emit unchanged	Ship AD4: dual-verify (accept either), prefer v2; metric archisign_webhook_verify_path{version} ; require ≥1 week of v1=0 count before P3	N/A — by construction Architrak's channel is v2 from day one
+P3 Cut-over	Week 5	Drop legacy x-archisign-signature header; v2-only emission. Clear ARCHISIGN_WEBHOOK_V2_TENANTS env var	AD4 verifier hard-requires v2; legacy code path deleted; status code aligned to 401 (was 403)	N/A
+Critical implication for Architrak's planning: Architrak's verifier ships v2-only on the new channel. Architrak does not need a "dual-verify migration" task — that work is Archidoc-specific because only Archidoc has a pre-existing legacy /api/webhooks/archisign channel that needs the gentle-cutover treatment. Architrak's task list is one item lighter than Archidoc's on the HMAC dimension.
+
+§A.4 Suggested critical-path execution order across all three apps
+If the goal is shortest time-to-end-to-end-integration-test:
+
+Day 0 (parallel, all three apps): AS1, AD1, AT1 — schema migrations
+Week 1 (parallel): AS2 (Archisign middleware including HMAC v2 module), AD2 (Archidoc insurance-verdict endpoint), AT2 (Architrak client review portal — independent of integration surfaces)
+Week 2: AS3 (Archisign events + dispatch with dual-emit) — once this lands, Archisign begins P1 emission to Archidoc test tenant
+Week 2: AS4 (Archisign endpoints) — unblocks AT3 + AT4 + AT5 for Architrak; unblocks AD5 re-mint for Archidoc
+Week 3: AT3 (Architrak insurance gate against AD2), AT4 (Architrak envelope orchestration + v2 inbound verifier against AS3), AD3 (Archidoc work-auth endpoint against AT4 emissions)
+Weeks 3–4: AD4 (Archidoc dual-verify migration) per §2.4 P2
+Week 4: AS5 (Archisign jobs — sweeper + integrity), AT5 (Architrak retention_breach handling against AS5 emissions), AD5 (Archidoc re-mint client + Gmail header)
+Week 5: P3 cutover — Archisign drops legacy emission; Archidoc hard-requires v2
+Two natural integration-test windows fall out of this:
+
+End of week 3: "Happy path" e2e — devis → insurance gate (AT3↔AD2) → envelope create+send (AT4↔AS4) → signer signs → envelope.signed (AS3→AT4) → work-authorised (AT4→AD3)
+End of week 4: "Sad paths" e2e — declined / expired-then-resend (AS5→AT4↔AS4) / retention_breach (AS5→AT4→AD3 via §5.3.2)
+§B. Integration-point gaps Architrak should chew on
+These are places where two apps' breakdowns describe the same wire surface but with subtle assumption-divergence risk. Better caught now than at integration-test time.
+
+§B.1 Shared identityVerification test fixture
+The 8-field block (§3.4) is constructed by Archisign (AS3), persisted by Architrak (AT4), and re-emitted by Architrak in the work-authorisation payload to Archidoc (AT4 outbound → AD3). If each app crafts its own canonical fixture, fields drift in test-only ways (e.g. one app uses signerIpAddress: "203.0.113.42", another uses "192.0.2.1"; one omits lastViewedAt). Proposal: Architrak's AT-task plan calls out a shared fixture in docs/INTER_APP_CONTRACT_v1.0.md Appendix or in a separate docs/test-fixtures.json, asserted byte-equal by all three apps.
+
+§B.2 webhookUrl registration is one-shot per envelope (§3.7)
+Archisign records webhookUrl at create-time and never re-reads it. If Architrak deploys to a new base URL between create and the envelope.signed emission (e.g. domain migration, env swap), the original webhookUrl is dead and Archisign won't fan out to the new one. Per §3.7 this is by design — Archisign does not maintain a registry. Proposal: Architrak's AT4 plan explicitly acknowledges that envelope-level webhookUrl is immutable; deployment-base-URL changes require either a finite envelope migration window or per-envelope re-create (in practice, accept the operational cost during cutover windows).
+
+§B.3 pdfFetchUrl 60s budget vs Architrak's signed-URL TTL
+§3.5.1 hard-requires Archisign-side server fetch within 60s; §3.5.1 + §AS3 budget says callers must serve URLs with TTL ≥ 60s; Architrak says 15-min by convention. Risk: Architrak ever issues a sub-60s URL (e.g. for a dev fixture) and Archisign returns 400 pdfFetchUrl unfetchable. Proposal: Architrak's AT4 plan pins "minimum signed-URL TTL = 5 minutes" as an enforced invariant in the URL-minting helper, not just by convention.
+
+§B.4 Rate-limit budget per (key, endpoint family) — does Architrak use one key or many?
+§3.6 says counters are per-(API key, endpoint family). §1.6 says Architrak's worst-case is 25 envelopes in 5 min = ~25 burst tokens consumed on create AND ~25 on send (separate buckets, fine). But: does Architrak provision one ARCHITRAK_API_KEY per environment, or per-tenant? If per-environment and Architrak grows to 5 tenants under one key, the 60 RPM ceiling is shared across them. Proposal: Architrak's AT-task plan picks a stance. Single-key-per-env is simpler and within budget today; per-tenant keys is a v1.1 scaling concern. Just call out the choice so Archisign can size the bucket store.
+
+§B.5 /send resend-after-expired returns rotated accessToken — receiver must re-display
+§3.5.4 + AS4 §3.5.2: on resend against expired, Archisign rotates the signer's accessToken, invalidates the previous, and the response includes the fresh signers. Easy mistake: Architrak's AT4 caches the original accessUrl from create-time and re-displays it after resend, leaving the architect handing out a dead link. Proposal: Architrak's AT4 plan explicitly handles "after /send resend, refresh stored accessToken and accessUrl from the response payload; never cache the create-time value past an envelope.expired event."
+
+§B.6 §5.3.2 downstream payload shape ≠ §3.8 410 body shape
+The temptation is to forward the §3.8 410 body verbatim from Archisign downstream into Architrak's outbound webhook to Archidoc. They are different shapes:
+
+Field	§3.8 (Archisign 410 body)	§5.3.2 (Architrak → Archidoc payload)
+error: "retention_breach"	✓	absent
+envelopeId (Archisign's int)	✓	absent
+eventId	absent	✓
+eventType: "signed_pdf_retention_breach"	absent	✓
+architrakDevisId	absent	✓
+archisignEnvelopeId (string)	absent	✓
+archidocProjectId	absent	✓
+incidentRef, remediationContact, originalSignedAt, detectedAt	✓	✓
+Proposal: Architrak's AT5 plan explicitly distinguishes "what Archisign returned us" from "what we tell Archidoc," and asserts the downstream payload against a fixture pinned to §5.3.2.
+
+§B.7 Gmail X-Archidoc-Dqe-Export-Id header case sensitivity
+§0.2 + §5.5 specify lower-case form per RFC 7230 §3.2 and case-insensitive read at Architrak ingestion. Risk: Archidoc's AD5 emits in Title-Case; Architrak's existing Gmail watcher reads case-sensitively. Proposal: both apps' tests pin the case-insensitive expectation explicitly. Cheap to verify, painful at integration time if missed.
+
+§B.8 expiresAt validation floor
+Contract is silent on minimum expiresAt. Archisign's AS4 stance: validates expiresAt > now() + 1 minute (rejects past dates and "essentially-now" dates as 400). No upper bound. Proposal: Architrak's AT4 plan acknowledges the 1-minute floor and picks a default (30-day was mentioned in earlier rounds — suggest pinning that as the default in Architrak's create-envelope helper).
+
+§B.9 Insurance gate intendedWorkLot semantics
+§5.4: optional intendedWorkLot field on the verdict request. Open question for Archidoc's AD2 plan: does it scope the verdict to lot-specific insurance requirements (e.g. some lots need décennale, others don't), or is it advisory-only audit metadata? If lot-scoped, Architrak's AT3 must always pass the lot when identifiable; if advisory, AT3 can defer. Proposal: Archidoc's AD2 plan calls this out before AT3 finalises.
+
+§B.10 eventId UUID namespaces — fixture-reuse risk in shared test environments
+Both Architrak's webhook_events (inbound dedup) and Archidoc's webhook_events_in (inbound dedup) key on eventId. Archisign's AS3 generates a fresh UUID per event; Architrak's outbound to Archidoc generates separately. Distinct namespaces in production. Risk in shared test envs: developers reuse UUIDs across replays, hit dedup, see "event silently dropped." Proposal: all three test plans use a UUID-per-test-run convention (e.g. UUIDv7 with timestamp prefix, or test-run prefix on a deterministic suffix) so dedup behaves correctly across replays.
+
+§C. What Archisign's task list looks like for Architrak's alignment pass
+Architrak asked for "explicit dependency callouts to specific tasks in their breakdowns where they exist." Here's Archisign's structured output for that pass:
+
+Archisign task	Title	Cross-app deps	Cross-app dependents
+AS1	Schema foundation for v1.0 wire contract	none	none — purely internal
+AS2	API key, rate-limit, and v2 HMAC middleware	none	AD4 (Archidoc verifier needs the v2 emission to test against — but AS2 only delivers the module; AS3 turns it on)
+AS3	Wire events, payloads, and idempotent dispatch	none	AT4 (Architrak's verifier + handlers); AD4 (P1 dual-emit traffic for Archidoc to baseline against)
+AS4	Endpoints: pdfFetchUrl, /send idempotency, /signed-pdf-url re-mint	none	AT3 + AT4 (envelope orchestration); AT5 + AD5 (re-mint clients)
+AS5	Background jobs: expiresAt sweeper + annual integrity check	none	AT4 (envelope.expired reception); AT5 + AD3 (envelope.retention_breach reception path)
+All five Archisign tasks are cross-app-zero-dep at code-write time — they don't need any code from the other two apps to be implemented. The cross-app coordination is at integration-test and deployment-cutover time, not at code-write time. This is the property that lets §A.4's parallel execution actually work.
+
+§D. Standing by
+Awaiting Architrak's parallel breakdown draft. When it arrives I'll do the same read-and-confirm pass I did for the contract — diff Architrak's task list against my §A and §B above, flag any places Architrak's plan diverges from these stated dependencies, and confirm the cross-app sequencing graph closes.
+
+The five tasks I just proposed (Drafts state, awaiting your approval) are ready to land in either order — sequential on the main branch, or parallel-with-merges across task agents (the dependency chain in the proposal already enforces correct order even if you fan them out). I'll wait on Architrak's draft before suggesting anything specific on the execution-mode choice.
+
+No code or schema changes have been made — this remains a planning artefact only.
+
+
+Scroll to latest
+5 task plans are ready for review

@@ -1,0 +1,47 @@
+Right call routing the cross-check through Architrak — they were the consolidator throughout R1–R3 and the consolidated contract document, so they're best-positioned to spot misalignments across all three breakdowns. Here's Archidoc's input to support their synthesis. No new Archidoc tasks needed — this is information for Architrak's gap-spotting work.
+
+A. Archidoc's cross-app dependency declarations
+Tasks #329–#333 are summarised in the table below with explicit cross-app deps called out. Within-Archidoc deps (#332 → #329 + #330; #333 → #329) are already declared in the proposed task graph.
+
+Archidoc task	Cross-app dep	Direction	Phase	Notes
+#329 Schema migration	none	self-contained	landing	Wire shapes in §2.2 + §5.3 are frozen; no live cross-app coordination needed to apply the migration.
+#330 HMAC v2 verifier — code landing (P0/P1 phases)	none	self-contained	landing	Verifier ships and ignores unknown headers per §2.4 P1 row.
+#330 HMAC v2 verifier — P2 (prefer-v2 activation)	Archisign's v2 dual-emit task must be deployed and emitting both legacy + v2 in a test env	Archidoc-after-Archisign	operational	Archidoc cannot meaningfully exercise dual-verify until Archisign sends v2-headed payloads. Per §2.4 P1 → P2 sequencing.
+#330 HMAC v2 verifier — P3 (cutover, hard-require v2, drop v1 fallback)	Archisign's P3 cutover task ("drop legacy header, v2-only emission")	Archidoc-after-Archisign	operational	Per §2.4 P3 row — Archidoc cuts over only after Archisign confirms v2-only emission.
+#331 Insurance-verdict endpoint	none for Archidoc landing	self-contained	landing	Reverse-dep: Architrak's insurance-gate-enforcement task depends on this endpoint being deployed in whichever env they test against. Architrak's integration tests for the §1.3 gate cannot run end-to-end without it.
+#332 Work-authorisations endpoint — work_authorised variant	ARCHITRAK_WEBHOOK_SECRET value provisioned in Archidoc's secret store before any smoke test	bidirectional secret exchange	env setup	Architrak holds the source of truth per §4; Archidoc receives a copy via the standard secret-exchange channel. Without this, T4's HMAC verification cannot be exercised. Reverse-dep: Architrak's outbound webhook task depends on Archidoc T4 being live to fire against.
+#332 Work-authorisations endpoint — signed_pdf_retention_breach variant E2E	Archisign's envelope.retention_breach emission task and Architrak's downstream re-notification task	E2E only	testing	Code can land against fixture; full E2E requires the upstream chain. Per §0.3 + §3.7 cross-path dedup.
+#333 Gmail header (X-Archidoc-Dqe-Export-Id)	none	independent	landing	Architrak reads case-insensitively; no coordination needed.
+#333 Re-mint client — code landing	none (against fixture responses)	self-contained	landing	Tests run against fixtures for 200/410/429/503.
+#333 Re-mint client — E2E exercise	Archisign's GET /api/v1/envelopes/:envelopeId/signed-pdf-url endpoint live	Archidoc-after-Archisign	runtime	Per §3.5.3.
+#333 Re-mint client — 410 retention_breach branch E2E	Archisign's retention_breach surfacing on the signed-pdf-url endpoint	Archidoc-after-Archisign	runtime	Per §3.8.
+Net pattern: Archidoc's code-landing critical path is self-contained — all five tasks can ship in any order subject to within-Archidoc deps. Operational sequencing kicks in at integration-test and rollout phases, and there Archisign is upstream of both Archidoc and Architrak for the v2 HMAC + signed-PDF chains.
+
+B. Integration-point gaps Archidoc spotted (input for Architrak's gap-spotting pass)
+Seven items, ordered by criticality. None are contract-breaking; all are coordination details the contract doesn't explicitly nail down.
+
+Test-fixture symmetry across apps. Contract specifies wire shapes (§5) but not shared test fixtures. If Archidoc T4's tests and Architrak's outbound-webhook tests use different example payloads with independently-computed HMACs, end-to-end verification across env boundaries is harder than it needs to be. Suggest a shared wire-fixtures/ convention in Architrak's cross-check artefact (purely operational, not a contract amendment).
+
+ARCHITRAK_WEBHOOK_SECRET initial provisioning. §4 documents holder, rotation policy, and the 2-week dual-secret window — but not the initial secret-generation ceremony or the channel for first-time exchange. Architrak's plan likely covers this on their side; Archidoc needs the secret in our store before T4 can be smoke-tested in any env.
+
+ARCHITRAK_API_KEY analogue. Architrak makes bearer-authed calls into Archidoc T3 via ARCHIDOC_SYNC_API_KEY — that's covered. There's no symmetric Architrak-issued API key for Archidoc → Architrak calls because Archidoc has no outbound calls into Architrak today. If Architrak's breakdown plans any new Archidoc-callable endpoint (e.g. a status-query endpoint for the architect to see "did Architrak receive my work authorisation?"), a new secret would need to enter §4. Worth confirming Architrak doesn't introduce one without contract amendment.
+
+5xx response code discipline at the insurance-verdict endpoint. §1.3 says "503 or timeout >5s → red overridable". Archidoc T3 returns specifically 503 on transient errors. Architrak's gate logic should treat any 5xx (502/503/504, plus network timeouts) as the same overridable-with-warning UX — otherwise an intervening load-balancer or proxy returning 502 would be misclassified. Both readings are consistent with the contract; just worth alignment in Architrak's gap-spotting output.
+
+eventType discriminator default semantics. Archidoc T4 defaults absent eventType to "work_authorised" per §5.3.2 backward-compat note. Architrak's outbound task should either always emit eventType (preferred — explicit beats implicit) or explicitly note reliance on the Archidoc-side default. Either is contract-conformant; the coordination is which convention both sides commit to in v1.0 production.
+
+webhook_events_in retention/cleanup policy. §0.4 references "all three apps' existing webhook_events_in (or equivalent) idempotency tables" but Archidoc T1 creates this table net-new. The contract doesn't specify retention SLA, cleanup cadence, or maximum-row-age semantics for dedup. Long-term operational concern — propose v1.1 amendment candidate, not v1.0 blocker.
+
+"Architect-of-record" notification on breach. T4's signed_pdf_retention_breach branch optionally emails the architect-of-record. Architrak's project model has a clear single owner; Archidoc's projects support multiple owners/collaborators. T4 currently ships with that gate hard-defaulted off pending the per-tenant setting. If Architrak's cross-check assumes Archidoc surfaces the breach via email automatically, that assumption needs flagging — banner-only is the v1.0 default behaviour.
+
+C. Standby posture
+Archidoc tasks #329–#333 are awaiting your approval. Once Architrak's parallel breakdown lands and the cross-check artefact is produced, Archidoc is on standby for:
+
+Adjusting any of #329–#333 if Architrak's gap-spot surfaces a contract-conformant ordering preference Archidoc didn't anticipate.
+Confirming the v1.1 amendment candidates (item B6 above plus any others Architrak surfaces) for the next cycle.
+Receiving Architrak's outbound-webhook task ref so Archidoc can declare a reverse-dep annotation on #331 and #332 once visible.
+No further Archidoc planning artefacts to produce until Architrak's cross-check is back.
+
+
+Scroll to latest
+5 task plans are re
