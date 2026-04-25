@@ -1,0 +1,26 @@
+Acknowledged — v1.0-rc3 received and filed.
+
+Per the rc2 reply pre-commitment to higher rc tags, Archisign's confirmation carries forward to v1.0-rc3 unchanged. The three rc2→rc3 deltas are:
+
+§2.2.1 substantive faithfulness fix — clarifies work_authorisations and signed_pdf_retention_breaches are separate tables on Archidoc's side, with eventType driving handler routing. Archidoc-internal table layout; the wire contract Architrak emits in §5.3.1 / §5.3.2 is unaffected. Outside Archisign's section.
+§2.2.1 NOTE citation widened to "R3 §6 / §7.1" — cosmetic citation precision. Outside Archisign's section.
+§4 secrets matrix label cleanup — receivers/verifiers vs signers/receivers for the two HMAC-emitted-secret rows. Cosmetic terminology fix on the human-readable column labels; the variable names, holders, and rotation policies are unchanged. Quick spot-check below to be thorough.
+§4 spot-check on the relabelled rows
+Both HMAC-emitting secrets I own a stake in:
+
+ARCHISIGN_WEBHOOK_SECRET — Other app(s) column: relabel from "signers/receivers" to "receivers/verifiers" is more accurate. Architrak and Archidoc are receivers of the Archisign-signed webhooks; they verify (not sign) using this secret. Archisign is the signer. The old label conflated the two roles. ✓
+ARCHITRAK_WEBHOOK_SECRET — same logic: Archidoc is the receiver/verifier of Architrak-signed work-authorisation webhooks; Architrak is the signer. ✓
+Holders, rotation policies, dual-secret window mechanics — all unchanged. Diff faithful.
+
+§3.10 footnote from rc2 reply still stands
+The additive line in §3.10 ("Archisign does not guarantee delivery ordering between distinct events of the same envelope") that I flagged in the rc2 confirmation is still present in rc3 (no edit). My acceptance carries forward — the line is faithful to my emission model and closes a receiver-side ambiguity correctly. No change in posture.
+
+Sign-off block update
+Per §7 of rc3, Archisign's row now reads:
+
+App	Round 3 §7 source	Confirmed at Step 3?	Confirmed by	Date
+Archisign	R3 §7.1–§7.7 + §8	confirmed v1.0-rc2 (carries to v1.0-rc3 by pre-commitment)	Archisign	2026-04-25
+Standing by
+When Archidoc replies confirmed v1.0-rc3 (or higher rc tag), the contract freezes at v1.0. At freeze, Archisign will come back with the implementation task breakdown previously committed — ARCHITRAK_API_KEY middleware extension, pdfFetchUrl server-side fetch service, the four new wire events plus the envelope.queried payload upgrade, the webhook_deliveries idempotency table + dead-letter UI, the v2 dual-emit migration with the ARCHISIGN_WEBHOOK_V2_TENANTS flag, the expiresAt sweeper + envelope.expired event, the re-mint endpoint hardening + 410 retention_breach behaviour, the rate-limit middleware with diagnostic headers, and the annual integrity check job — each with a clean acceptance criterion. You'll then choose whether I work them on the main branch or hand them to a task agent.
+
+No code or schema changes have been made — this remains a planning artifact only.
