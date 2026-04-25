@@ -1,0 +1,40 @@
+Acknowledged — Archisign is in receipt of the locked live-insurance-gate decision and Architrak's four-step plan. Brief confirmation only, no new round, per the Step 1 framing.
+
+What Archisign confirms
+1. Live-gate decision (Step 1) — noted, no impact on Archisign's spec.
+Per Archisign R2 §S1, the insurance gate is a no-op for us: we do not call Archidoc, we do not see the verdict, and the insuranceOverride block round-trips through us as opaque metadata only. The decision unblocks Architrak and Archidoc; nothing in Archisign's R3 §7 contribution moves.
+
+2. Consolidated draft assembly (Step 2) — Architrak owns the pen, Archisign supplies §3 source.
+Architrak transcribes from Archisign R3 §7 (event taxonomy + identityVerification block + retention SLA + retention_breach error code + rate limits + create/send/re-mint orchestration + v2 HMAC wire spec) into the consolidated doc's §3, plus my rows from R3 §8 into §4. No new content needed from Archisign at draft time.
+
+3. Sanity-check pass (Step 3) — committed.
+When Architrak distributes the consolidated draft, Archisign will reply on the framed read-and-confirm question:
+
+"Does §3 (envelope-and-event taxonomy + retention SLA + rate limits + orchestration + HMAC scheme) and your rows in §4 (secrets matrix) faithfully reflect your R3 §7? Reply confirmed or call out any transcription error."
+
+Specifically:
+
+I will diff §3 against my R3 §7.1 (seven-event taxonomy table + common envelope + per-event fields), §7.2 (eight-field identityVerification block), §7.3 (10-yr retention SLA + 410 retention_breach body shape), §7.4 (rate limits + diagnostic 429 body + X-RateLimit-Remaining header), §7.5 (the three endpoint contracts), §7.6 (v2 HMAC wire spec), and §7.7 (v2 migration timeline endorsement).
+I will diff §4 rows against my R3 §8 (ARCHIDOC_API_KEY, ARCHITRAK_API_KEY, ARCHISIGN_WEBHOOK_SECRET, ARCHISIGN_WEBHOOK_V2_TENANTS, ARCHISIGN_BASE_URL).
+If transcription is faithful, I reply confirmed — one word, plus the version tag of the consolidated doc.
+If I spot a transcription error, I quote the exact line and propose the correction. I will not introduce any new design content; that would be a Round 4 attempt and is out of scope per Step 3.
+I will also sanity-check Architrak's Section 5 (frozen wire payloads, "every webhook event + every endpoint request/response shape, in one place") for any drift from §3 — same read-and-confirm posture.
+4. Implementation task breakdown (Step 4) — committed for after freeze.
+Once both Archidoc and Archisign reply confirmed and the contract is frozen at v1.0, Archisign will produce its implementation task list as previously committed — covering the ARCHITRAK_API_KEY middleware extension, the pdfFetchUrl server-side fetch service, the four new wire events (envelope.declined, envelope.expired, envelope.query_resolved, envelope.retention_breach) plus the envelope.queried-payload upgrade, the webhook_deliveries idempotency table + dead-letter UI, the v2 signature scheme + dual-emit migration with the ARCHISIGN_WEBHOOK_V2_TENANTS flag, the expiresAt sweeper + envelope.expired event, the re-mint endpoint hardening + 410 retention_breach behaviour, the rate-limit middleware with diagnostic headers, and the annual integrity check job. Each task with a clean acceptance criterion. You then choose whether I work them on the main branch or hand them to a task agent.
+
+Two small notes for Architrak's Step 2 draft
+Not new design — just transcription-aid pointers so the consolidated doc is internally consistent without a back-and-forth:
+
+Cross-path dedup rule (Archisign R3 §4) belongs in §3 (under Archisign's section), not §1 or §2. It's an Archisign emission rule that determines receiver behaviour for all seven events, not just retention_breach. Suggest a short subsection §3.x titled "Webhook emission rule — single delivery to create-time webhookUrl" so future contributors don't re-litigate it.
+Insurance-override field forwarding is unchanged for Archisign — the insuranceOverride block (with the two new liveVerdictHttpStatus / liveVerdictCanProceed fields per Architrak R2 §3 / §8.3) is carried in Architrak's outbound work-authorisation webhook to Archidoc; Archisign never sees it. So §3 shouldn't mention it; §1 (Architrak) and §2 (Archidoc) carry the full block. Just flagging so it doesn't accidentally appear under Archisign's section.
+Standing by
+Archisign is on the bench until the consolidated draft arrives in Step 3. No code or schema changes have been made — this remains a planning artifact only. Will reply with confirmed (or a precise transcription correction) on receipt.
+
+
+Scroll to latest
+
+Ask questions, plan your work…
+
+
+
+Power
