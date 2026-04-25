@@ -1,0 +1,63 @@
+Archisign — Step 3 read-and-confirm response
+confirmed v1.0-rc2
+Diff complete. All transcription faithful against R3 §7.1–§7.7 and §8. One additive line flagged transparently below — it does not change the wire contract; it documents an inherent property of Archisign's emission model, so I'm accepting rather than asking for a correction.
+
+§3 diff results
+§3 subsection	Source in my R3	Match?
+§3.1 — Seven canonical events (names, triggers, lifecycle ordering note)	§7.1 event taxonomy table	✓ verbatim
+§3.2 — Common envelope payload (eventId, event, envelopeId, externalRef, metadata, occurredAt) + event-vs-eventType disambiguator	§7.1 common-envelope code block	✓ verbatim
+§3.3 — Per-event additional fields (all 7 events)	§7.1 per-event field list	✓ verbatim — including the declinedBy string-discriminator shape, the query_resolved 4-field attribution block, and the signedPdfFetchUrl/signedPdfFetchUrlExpiresAt pair on envelope.signed
+§3.4 — identityVerification 8-field block, single object not array	§7.2 frozen schema	✓ verbatim — all 8 field names, types, enum value "otp_email"
+§3.5.1–§3.5.3 — Three endpoint contracts (request/response/error codes)	§7.5	✓ verbatim — including pdfFetchUrl 60s server-side fetch budget, 25 MiB → 413, 200-on-resend-against-{sent,viewed,queried}, 409-on-{signed,declined,expired,void}, 15-min signed-URL TTL
+§3.5.4 — Resend-on-expiry semantics	§AS3 / Architrak AT11	✓ verbatim
+§3.6 — Rate limits (60 RPM / burst 30 / 5,000 day, per (key, endpoint family), three families: create/send/read)	§7.4	✓ verbatim
+§3.6.1 — 429 body shape	§5 (Architrak peak answer, diagnostic detail commitment)	✓ verbatim — Retry-After header, X-RateLimit-Remaining header, body fields error/retryAfter/limit/currentUsage/ceiling, limit enum sustained/burst/daily. The Retry-After header value matching retryAfter body field is preserved as I committed
+§3.6.2 — X-RateLimit-Remaining on every 200	§5 commitment	✓ verbatim
+§3.6.3 — Soft alarm at 80%, contact via remediationContact	§5 / R2 §3.4	✓ verbatim
+§3.7 — Webhook emission rule (single delivery to create-time webhookUrl, applies to all 7 events, "parallel not shared" footnote referenced)	§4 cross-path dedup	✓ verbatim — including the explicit Devis-vs-non-Devis routing consequences and the future-contributor warning
+§3.8 — 10-year retention SLA + 410 retention_breach body	§7.3	✓ verbatim — body fields error/envelopeId/originalSignedAt/detectedAt/incidentRef/remediationContact, the 410-not-404 legal distinction, "definitive and indefinite, no caches, no half-states, no surprise resurrections"
+§3.9 — v2 HMAC wire spec	§7.6	✓ verbatim — algorithm, signed material ${X-Archisign-Timestamp}.${rawBody}, headers, ±5min replay, 401 on all signature errors, 1 MiB → 413
+§3.9.1 — Reference verifier pseudo-code with length-guard before timingSafeEqual	§6 (algorithm match)	✓ verbatim — including the explicit "length guard before timingSafeEqual is a hard contract requirement, not stylistic" — Archidoc R3 §7.4 pseudo-code transcribed correctly
+§4 diff results — Archisign-owned secret rows
+Variable	My R3 §8 row	Doc §4 row	Match?
+ARCHIDOC_API_KEY	Holder=Archisign; Other=Archidoc(caller); rotation=comma-sep list per R2 §3.5, Archisign-initiated, out-of-band distribution, revocation independent of ARCHITRAK_API_KEY	identical	✓
+ARCHITRAK_API_KEY	Holder=Archisign; Other=Architrak(caller); same pattern, independent of ARCHIDOC_API_KEY	identical	✓
+ARCHISIGN_WEBHOOK_SECRET	Holder=Archisign(single value distributed); Other=Archidoc+Architrak; 2-week dual-secret window, comma-sep on receiver during window	identical	✓
+ARCHISIGN_WEBHOOK_V2_TENANTS	Holder=Archisign; Other=none (internal); per-tenant flag for v2 dual-emit P1; cleared at P3; "not a secret per se — flag value, no rotation"	identical including the flag-not-secret caveat	✓
+ARCHISIGN_BASE_URL	Holder=Archisign(publishes); Other=Archidoc+Architrak(callers); per-env, no rotation	identical	✓
+§5.2 sanity-check — envelope.signed exemplar
+The fully-instantiated envelope.signed example (lines 611–634):
+
+Common envelope: eventId, event: "envelope.signed", envelopeId: 5678 (integer), externalRef, metadata, occurredAt — ✓ matches §3.2
+Per-event: signedAt, signedPdfFetchUrl, signedPdfFetchUrlExpiresAt — ✓ matches §3.3
+identityVerification: single object (the comment "note: identityVerification is a single object, not an array" is correctly preserved); 8 fields in order; method: "otp_email"; consistent timestamps (otpIssuedAt < otpVerifiedAt < lastViewedAt < signedAt) — ✓ matches §3.4
+The example's signedAt field appearing both at top-level and inside identityVerification is intentional and faithful: top-level signedAt is the envelope-completion timestamp; identityVerification.signedAt is the signer-action timestamp from the 8-field block. They are the same instant in this exemplar, which is the common case but not contractually required to be equal.
+The other six event payloads in §3.3 are presented in the canonical jsonc form with placeholder values; spot-checked all six against §7.1 — faithful.
+
+One additive line flagged transparently — §3.10
+§3.10 ("Event payload size and ordering"):
+
+"Archisign does not guarantee delivery ordering between distinct events of the same envelope (e.g. envelope.queried and envelope.query_resolved may be observed out-of-order under retry); receivers must use occurredAt for ordering and eventId for dedup."
+
+This sentence does not appear verbatim in my R3 §7.1–§7.7. It is, however, a faithful inference from my committed retry/dead-letter behaviour (R2 §S6 / §3.3 — webhook_deliveries idempotency table, retries with stable eventId). Any system with retries cannot guarantee inter-event ordering without a sequencing layer Archisign does not provide.
+
+I am accepting this addition rather than asking for a correction, because:
+
+It does not change the wire contract — it documents an inherent property of the emission model.
+Receivers using occurredAt for ordering and eventId for dedup is the correct receiver behaviour given (1); leaving ordering unspecified would create downstream bugs at integration-test time.
+The 1 MiB payload-size cap in the same subsection is consistent with my §3.9 1 MiB body cap (now applied to outbound emissions as well, symmetrically — fine).
+If Architrak prefers to move §3.10 into the §0.4 "pre-existing artefacts that the contract relies on but does not redefine" framing or attach it as an annotation under §3.7 instead of a numbered subsection, that's editorial — the wire contract is unaffected either way. No correction requested.
+
+Other §3 spot-checks worth noting (no corrections)
+§3 boundary annotation about insuranceOverride: faithful transcription of the pointer I supplied in my Step 1 acknowledgement. The annotation correctly states Archisign never sees insuranceOverride. ✓
+§3 annotation about hmac-verifier file naming divergence (kebab-case / camelCase / WebhookSignature.ts): matches my R3 §6 three-files-one-algorithm position. ✓
+§3.7's "future contributors should not assume Archisign fans out across receivers": matches my R3 §4 / §10-flag-1 framing. ✓
+§3.5.1 pdfFetchUrl budget: "Architrak/Archidoc must serve a signed URL with TTL ≥ 60s (Architrak uses 15-min TTL by convention, comfortably above the budget)" — accurate restatement of the §AS3 budget; the implementation guidance for callers is helpful. ✓
+Sign-off
+Per §7 of the contract, Archisign's row reads:
+
+App	Round 3 §7 source	Confirmed at Step 3?	Confirmed by	Date
+Archisign	R3 §7.1–§7.7 + §8	confirmed v1.0-rc2	Archisign	2026-04-25
+When Archidoc replies confirmed v1.0-rc2 (or higher rc tag), the contract freezes at v1.0. At that point — per Step 4 — Archisign will come back with its concrete implementation task breakdown for the workflow (the ARCHITRAK_API_KEY middleware extension, the pdfFetchUrl server-side fetch service, the four new wire events plus the envelope.queried payload upgrade, the webhook_deliveries idempotency table + dead-letter UI, the v2 dual-emit migration with the ARCHISIGN_WEBHOOK_V2_TENANTS flag, the expiresAt sweeper + envelope.expired event, the re-mint endpoint hardening + 410 retention_breach behaviour, the rate-limit middleware with diagnostic headers, and the annual integrity check job), each with a clean acceptance criterion, for you to either run on the main branch or hand to a task agent.
+
+No code or schema changes have been made — this remains a planning artifact only.

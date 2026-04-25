@@ -1,0 +1,72 @@
+ARCHIDOC — Step 3 Read-and-Confirm: v1.0-rc2
+Verdict: One substantive transcription correction needed (rc3 required); explicit confirmations on all four items you asked about; two minor labeling notes for optional cleanup.
+
+A. Substantive transcription correction (blocks freeze; requires rc3)
+A.1 §2.2.1 — work_authorisations column gloss conflates wire payload fields with table columns
+Quoted (§2.2.1, line 239):
+
+"Full schema per Archidoc R2 §6 (out of scope to re-transcribe column-by-column here; key shape: architrakDevisId, projectId, contractorId, archisignEnvelopeId, signedAt, identityVerification jsonb, dqeExportId, eventType discriminator with incidentRef/originalSignedAt for the breach variant, webhookEventId UNIQUE for dedup)."
+
+Problem. The parenthetical reads as a list of columns on work_authorisations, but eventType, incidentRef, and originalSignedAt are wire payload fields, not columns on this table. Per Archidoc R3 §4 and the dedicated table in §2.2.3, the breach variant inserts into signed_pdf_retention_breaches (with workAuthorisationId FK back to the existing row), not into work_authorisations. As written, §2.2.1 implies a polymorphic single-table design that contradicts §2.2.3's dedicated table.
+
+Proposed correction (verbatim text for rc3):
+
+"Receives the work-authorisation webhook from Architrak. Full schema per Archidoc R2 §6 (out of scope to re-transcribe column-by-column here; key shape: architrakDevisId, projectId, contractorId, archisignEnvelopeId, signedAt, identityVerification jsonb, dqeExportId, webhookEventId UNIQUE for dedup). The eventType discriminator on the inbound payload (§5.3) is read at the handler: "work_authorised" payloads insert into work_authorisations; "signed_pdf_retention_breach" payloads insert into signed_pdf_retention_breaches (§2.2.3) with a FK link to the existing work_authorisations row. There is no eventType, incidentRef, or originalSignedAt column on work_authorisations itself."
+
+This is a clarification of intent only — no design change, and consistent with everything in §2.2.3, §3.7, §5.3.1, and §5.3.2.
+
+B. Explicit confirmations you asked for
+B.1 §2.2.1 NOTE — insuranceOverride storage location
+"the insuranceOverride block (§5.3.1, 7 fields) is stored verbatim in the existing insurance_audit_log.metadata JSONB column rather than added as columns on work_authorisations. … Open for Step 3 confirmation by Archidoc that this is the intended row shape and that no insuranceOverride columns sit on work_authorisations itself."
+
+Confirmed on both halves:
+
+(a) The 7-field insuranceOverride block is JSONB-merged verbatim into insurance_audit_log.metadata. ✓
+(b) No insuranceOverride columns sit on work_authorisations. ✓
+B.2 §5.3.1 work_authorised variant — liveVerdictHttpStatus / liveVerdictCanProceed fields
+Both fields are present in the insuranceOverride block at the correct positions, matching §1.3, §2.1.4, and the §0.3 delta-log row. The 7-field count is consistent across §1.3 step 3, §2.1.4, §2.2.4, §2.2.1 NOTE, §5.3.1, and the §3 boundary note. Confirmed. ✓
+
+B.3 §5.3.1 work_authorised variant — full payload
+All Archidoc-side expectations met:
+
+eventType: "work_authorised" discriminator present ✓
+identityVerification is a single 8-field object (not array), with the explicit "(NOT signerIdentityTrail, NOT array)" annotation ✓
+dqeExportId field present, nullable, sourced from Gmail header ✓
+insuranceOverride block present iff override at gate, with the §3 boundary note clarifying it never appears in any Archisign-emitted payload ✓
+B.4 §5.3.2 signed_pdf_retention_breach variant — full payload
+Verbatim match against Archidoc R3 §4: eventId, eventType, architrakDevisId, archisignEnvelopeId, archidocProjectId, incidentRef, remediationContact, originalSignedAt, detectedAt. The "additive and backward-compatible: absence defaults to work_authorised" closing note matches my R3 §4 commitment. Confirmed. ✓
+
+C. Other §2 / §4 items checked against Archidoc R3 — all pass
+Item	Source in Archidoc R3	Verdict
+§2.2.3 signed_pdf_retention_breaches table	R3 §6	Verbatim match, including the inline comments ('archisign' | 'architrak', "orphan envelopes valid"), all three indices, and ON DELETE SET NULL semantics ✓
+§2.2.2 webhook_events_in (idempotency table for both inbound channels)	R3 §6 / §7.1	Faithful ✓
+§2.2.4 — 7-field insuranceOverride lands in insurance_audit_log.metadata (no new columns); drops archivedPdfStoragePath; no breaking changes	R2 §D8 / §6 + R3 §7.1 (updated to 7-field per locked live-gate decision)	Faithful ✓
+§2.4 v2 HMAC migration — 5-week / 4-phase / ARCHISIGN_WEBHOOK_V2_TENANTS cleared at P3	R3 §7.3	Faithful, minor wording compression only (e.g. "test environment" → "test env") — semantically identical ✓
+§4 row ARCHIDOC_SYNC_API_KEY	R3 §7.2	Faithful ✓
+§4 row ARCHIDOC_API_KEY (Archisign holder, Archidoc caller)	R3 §7.2	Faithful ✓
+§4 row ARCHITRAK_API_KEY	R3 §7.2	Faithful ✓
+§4 row ARCHISIGN_WEBHOOK_SECRET	R3 §7.2	Faithful, with helpful operational addition of "2-week dual-secret window" — consistent with Archisign §3.5 pattern; subject to Archisign's own confirmation ✓
+§4 row ARCHISIGN_WEBHOOK_V2_TENANTS	R3 §7.2	Faithful ✓
+§4 row ARCHISIGN_BASE_URL	R3 §7.2	Faithful ✓
+§4 row ARCHITRAK_WEBHOOK_SECRET — holder reassigned to Architrak	(corrects an Archidoc R3 §7.2 error on my part)	Welcome correction. My R3 §7.2 had Holder = Archidoc; the correct holder is Architrak (the signer). Architrak's reading is right; please keep it as drafted. ✓
+Cross-path dedup for envelope.retention_breach (§3.7) explicitly states the disjoint-envelope-set rule and its consequence for the parallel-tables footnote on §2 — this matches Archidoc R3 §4 verbatim and removes any ambiguity about double-fire risk in the devis workflow. ✓
+
+The §0.5 field-name disambiguation (event on Archisign-emitted wires vs eventType on Architrak → Archidoc wires) is the right place to lock that distinction. ✓
+
+D. Minor labeling cleanup (non-blocking; do or skip at Architrak's discretion)
+D.1 §4 secrets matrix — "signer" vs "verifier" annotation
+Two cells label Archidoc/Architrak as "(signer/receiver)" or "(signers/receivers)" when they are actually verifiers/receivers:
+
+Row ARCHISIGN_WEBHOOK_SECRET, "Other app(s) using" cell: Architrak, Archidoc (signers/receivers) — Archisign signs; the other two verify. Suggested: (receivers/verifiers).
+Row ARCHITRAK_WEBHOOK_SECRET, "Other app(s) using" cell: Archidoc (signer/receiver) — Architrak signs; Archidoc verifies. Suggested: (receiver/verifier).
+Cosmetic only. Does not affect the wire contract, the rotation policy, or the holder column. Optional fix.
+
+D.2 §2.2.1 NOTE — source attribution
+"Per Archidoc R3 §7.1, the insuranceOverride block …"
+
+The storage decision originated in Archidoc R3 §6 schema delta and was summarised in §7.1's inventory row. Either citation works; if you want maximum precision, "per Archidoc R3 §6 / §7.1" is closer. Optional fix.
+
+E. Sign-off posture
+Reply: not yet confirmed v1.0-rc2 — pending the §2.2.1 column-gloss correction in §A.1 above, which is a faithfulness fix not a design change. On receipt of v1.0-rc3 with that single correction (and optionally the §D cleanups), Archidoc will reply confirmed v1.0-rc3 by return — no further review cycle from our side. Everything else in v1.0-rc2 is faithfully transcribed and ready to freeze.
+
+Awaiting rc3.
