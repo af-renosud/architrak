@@ -3,7 +3,7 @@
 ## Overview
 ArchiTrak is a financial workflow management application designed for French architectural firms (maîtres d'œuvre). Its primary purpose is to manage the complete financial lifecycle of construction projects, from initial contracts (Marché) and quotations (Devis) through variations (Avenant), progress claims (Situation de Travaux), and architect-verified payment instructions (Certificat de Paiement), up to fee tracking. The application integrates with ArchiDoc for project and contractor management and features AI-powered extraction of financial data from PDF attachments in Gmail. The business vision is to streamline financial operations for architectural firms, improving accuracy and efficiency in project billing and financial oversight.
 
-- **Devis sign-off integration contract** — see `docs/INTER_APP_CONTRACT_v1.0-rc2.md` for the frozen-pending-review three-app integration contract (Architrak ↔ Archidoc ↔ Archisign).
+- **Devis sign-off integration contract** — current revision: `docs/INTER_APP_CONTRACT_v1.0-rc3.md` (pending Archidoc confirmation; Archisign already confirmed). Prior revision `docs/INTER_APP_CONTRACT_v1.0-rc2.md` retained for history. Three-app integration contract (Architrak ↔ Archidoc ↔ Archisign).
 
 ## User Preferences
 - French domain terms kept (Devis, Avenant, Marché, Certificat, Honoraires, Lot, Situation, Retenue de Garantie, PV/MV, TVA, SIRET). All other UI in English.
