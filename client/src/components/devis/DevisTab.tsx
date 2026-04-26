@@ -2639,6 +2639,291 @@ function ClientPortalPanel({
   );
 }
 
+// =============================================================================
+// Insurance gate panel (AT3, contract §1.3 + §2.1.4)
+// =============================================================================
+
+type InsuranceVerdictWire = {
+  arm:
+    | "live_ok"
+    | "live_blocked"
+    | "live_not_found"
+    | "live_auth_error"
+    | "live_transient"
+    | "mirror_ok"
+    | "mirror_blocked"
+    | "mirror_unknown";
+  proceed: boolean;
+  overridable: boolean;
+  reason: string;
+  liveVerdictHttpStatus: number;
+  liveVerdictCanProceed: boolean | null;
+  liveVerdictResponse: unknown | null;
+  mirrorStatus: string;
+  mirrorSyncedAt: string;
+  liveAttempted: boolean;
+};
+
+type InsuranceOverrideWire = {
+  id: number;
+  devisId: number;
+  userId: number;
+  overrideReason: string;
+  mirrorStatusAtOverride: string;
+  mirrorSyncedAtAtOverride: string;
+  liveVerdictHttpStatus: number;
+  liveVerdictCanProceed: boolean | null;
+  liveVerdictResponse: unknown | null;
+  overriddenByUserEmail: string;
+  createdAt: string;
+};
+
+function InsurancePanel({
+  devisId,
+  isArchived,
+}: {
+  devisId: number;
+  isArchived: boolean;
+}) {
+  const { toast } = useToast();
+  const [overrideOpen, setOverrideOpen] = useState(false);
+  const [reasonDraft, setReasonDraft] = useState("");
+  const [reasonErr, setReasonErr] = useState<string | null>(null);
+
+  const verdictQuery = useQuery<InsuranceVerdictWire>({
+    queryKey: ["/api/devis", devisId, "insurance-verdict"],
+  });
+
+  const overridesQuery = useQuery<InsuranceOverrideWire[]>({
+    queryKey: ["/api/devis", devisId, "insurance-overrides"],
+  });
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "insurance-verdict"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "insurance-overrides"] });
+  };
+
+  const overrideMutation = useMutation({
+    mutationFn: async () => {
+      const v = verdictQuery.data;
+      if (!v) throw new Error("Verdict indisponible");
+      const res = await apiRequest("POST", `/api/devis/${devisId}/insurance-overrides`, {
+        overrideReason: reasonDraft.trim(),
+        liveVerdictHttpStatus: v.liveVerdictHttpStatus,
+        liveVerdictCanProceed: v.liveVerdictCanProceed,
+        liveVerdictResponse: v.liveVerdictResponse,
+        mirrorStatusAtOverride: v.mirrorStatus,
+        mirrorSyncedAtAtOverride: v.mirrorSyncedAt,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Override enregistré", description: "Le devis peut maintenant être envoyé au client." });
+      setOverrideOpen(false);
+      setReasonDraft("");
+      invalidate();
+    },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  const refreshMutation = useMutation({
+    mutationFn: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "insurance-verdict"] });
+      // Wait for the refetch to land so the button visibly hands back control.
+      await queryClient.refetchQueries({ queryKey: ["/api/devis", devisId, "insurance-verdict"] });
+      return null;
+    },
+  });
+
+  const verdict = verdictQuery.data;
+  const overrides = overridesQuery.data ?? [];
+  const latestOverride = overrides[0] ?? null;
+
+  function openOverride() {
+    setReasonDraft("");
+    setReasonErr(null);
+    setOverrideOpen(true);
+  }
+
+  function submitOverride() {
+    const r = reasonDraft.trim();
+    if (r.length < 10) {
+      setReasonErr("Le motif doit comporter au moins 10 caractères.");
+      return;
+    }
+    setReasonErr(null);
+    overrideMutation.mutate();
+  }
+
+  const tone =
+    !verdict
+      ? { color: "bg-slate-100 text-slate-600 border-slate-300", label: "—" }
+      : verdict.proceed
+        ? { color: "bg-emerald-50 text-emerald-700 border-emerald-200", label: "OK" }
+        : verdict.overridable
+          ? { color: "bg-amber-50 text-amber-700 border-amber-200", label: "Override possible" }
+          : { color: "bg-rose-50 text-rose-700 border-rose-200", label: "Bloqué" };
+
+  return (
+    <div
+      className="rounded-lg border border-slate-200 bg-white p-2.5 space-y-2"
+      data-testid={`section-insurance-panel-${devisId}`}
+    >
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
+          <ShieldCheck size={12} className="text-slate-500" />
+          <span className="text-[11px] font-semibold text-slate-700">Assurance contractant</span>
+          <span
+            className={`px-2 py-0.5 rounded-full border text-[9px] font-bold uppercase tracking-wide ${tone.color}`}
+            data-testid={`status-insurance-verdict-${devisId}`}
+          >
+            {verdictQuery.isLoading ? "…" : tone.label}
+          </span>
+          {latestOverride && (
+            <span
+              className="px-2 py-0.5 rounded-full border text-[9px] font-bold uppercase tracking-wide bg-slate-100 text-slate-700 border-slate-300"
+              data-testid={`status-insurance-override-${devisId}`}
+              title={`Override par ${latestOverride.overriddenByUserEmail} le ${formatDateTime(latestOverride.createdAt)}`}
+            >
+              Override actif
+            </span>
+          )}
+        </div>
+        {!isArchived && (
+          <div className="flex items-center gap-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 text-[9px] font-bold uppercase tracking-widest gap-1"
+              onClick={() => refreshMutation.mutate()}
+              disabled={refreshMutation.isPending || verdictQuery.isFetching}
+              data-testid={`button-refresh-insurance-verdict-${devisId}`}
+            >
+              {refreshMutation.isPending || verdictQuery.isFetching ? "…" : "Vérifier"}
+            </Button>
+            {verdict && verdict.overridable && !latestOverride && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 text-[9px] font-bold uppercase tracking-widest gap-1 border-amber-300 text-amber-800 hover:bg-amber-50"
+                onClick={openOverride}
+                data-testid={`button-open-insurance-override-${devisId}`}
+              >
+                <ShieldAlert size={10} />
+                Forcer (override)
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {verdict && (
+        <div className="grid grid-cols-3 gap-2 text-[10px] text-slate-600">
+          <div>
+            <div className="text-slate-400 uppercase tracking-wide text-[9px]">Verdict</div>
+            <div data-testid={`text-insurance-verdict-reason-${devisId}`}>{verdict.reason}</div>
+          </div>
+          <div>
+            <div className="text-slate-400 uppercase tracking-wide text-[9px]">Live HTTP</div>
+            <div data-testid={`text-insurance-live-status-${devisId}`}>
+              {verdict.liveAttempted
+                ? `${verdict.liveVerdictHttpStatus || "—"}${
+                    verdict.liveVerdictCanProceed === null ? "" : verdict.liveVerdictCanProceed ? " · OK" : " · refus"
+                  }`
+                : "non tenté"}
+            </div>
+          </div>
+          <div>
+            <div className="text-slate-400 uppercase tracking-wide text-[9px]">Mirror</div>
+            <div data-testid={`text-insurance-mirror-status-${devisId}`}>{verdict.mirrorStatus}</div>
+          </div>
+        </div>
+      )}
+
+      {latestOverride && (
+        <div className="rounded border border-slate-200 bg-slate-50 p-2 text-[10px] text-slate-600 space-y-1">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-slate-700">Override</span>
+            <span data-testid={`text-insurance-override-author-${devisId}`}>
+              {latestOverride.overriddenByUserEmail}
+            </span>
+            <span className="text-slate-400">·</span>
+            <span data-testid={`text-insurance-override-time-${devisId}`}>
+              {formatDateTime(latestOverride.createdAt)}
+            </span>
+          </div>
+          <div data-testid={`text-insurance-override-reason-${devisId}`}>{latestOverride.overrideReason}</div>
+        </div>
+      )}
+
+      <Dialog open={overrideOpen} onOpenChange={setOverrideOpen}>
+        <DialogContent className="max-w-lg" data-testid={`dialog-insurance-override-${devisId}`}>
+          <DialogHeader>
+            <DialogTitle>Forcer l'envoi malgré le verdict d'assurance</DialogTitle>
+            <DialogDescription>
+              Cet override sera enregistré au journal d'audit (immuable) avec l'instantané du verdict en cours et
+              transmis tel quel au moment de la signature à Archidoc.
+            </DialogDescription>
+          </DialogHeader>
+          {verdict && (
+            <div className="space-y-2 text-[11px] text-slate-600">
+              <div className="rounded border border-slate-200 bg-slate-50 p-2 space-y-1">
+                <div className="flex justify-between gap-2">
+                  <span className="text-slate-400 uppercase tracking-wide text-[9px]">Verdict live</span>
+                  <span>
+                    HTTP {verdict.liveVerdictHttpStatus} ·{" "}
+                    {verdict.liveVerdictCanProceed === null
+                      ? "—"
+                      : verdict.liveVerdictCanProceed
+                        ? "OK"
+                        : "refus"}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-slate-400 uppercase tracking-wide text-[9px]">Mirror local</span>
+                  <span>
+                    {verdict.mirrorStatus} · {formatDateTime(verdict.mirrorSyncedAt)}
+                  </span>
+                </div>
+                <div className="text-slate-700">{verdict.reason}</div>
+              </div>
+              <label className="block">
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-700">
+                  Motif d'override (obligatoire, ≥ 10 caractères)
+                </span>
+                <Textarea
+                  value={reasonDraft}
+                  onChange={(e) => setReasonDraft(e.target.value)}
+                  rows={4}
+                  placeholder="Ex. Contractant pré-validé hors workflow, attestation reçue ce matin par e-mail."
+                  data-testid={`input-insurance-override-reason-${devisId}`}
+                />
+                {reasonErr && <div className="text-rose-600 text-[10px] mt-1">{reasonErr}</div>}
+              </label>
+            </div>
+          )}
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              onClick={() => setOverrideOpen(false)}
+              data-testid={`button-cancel-insurance-override-${devisId}`}
+            >
+              Annuler
+            </Button>
+            <Button
+              onClick={submitOverride}
+              disabled={overrideMutation.isPending}
+              data-testid={`button-submit-insurance-override-${devisId}`}
+            >
+              {overrideMutation.isPending ? "…" : "Enregistrer l'override"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
 function ChecksPanel({
   devisId,
   projectId,
@@ -2789,6 +3074,7 @@ function ChecksPanel({
       <LapsingTokenBanner devisId={devisId} isArchived={isArchived} />
       <TokenPanel devisId={devisId} projectId={projectId} isArchived={isArchived} />
       <ClientPortalPanel devisId={devisId} projectId={projectId} isArchived={isArchived} />
+      <InsurancePanel devisId={devisId} isArchived={isArchived} />
 
       {/* Bottom mirror — variant B "Inline composer + bottom mirror".
           Navy-bordered card showing the architect exactly what will be

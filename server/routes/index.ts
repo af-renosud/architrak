@@ -11,6 +11,7 @@ import wishListRouter from "./wishlist";
 import devisRouter from "./devis";
 import devisChecksRouter from "./devis-checks";
 import clientChecksRouter from "./client-checks";
+import insuranceGateRouter from "./insurance-gate";
 import invoicesRouter from "./invoices";
 import situationsRouter from "./situations";
 import certificatsRouter from "./certificats";
@@ -77,6 +78,7 @@ export async function registerRoutes(
   app.use(devisRouter);
   app.use(devisChecksRouter);
   app.use(clientChecksRouter);
+  app.use(insuranceGateRouter);
   app.use(invoicesRouter);
   app.use(situationsRouter);
   app.use(certificatsRouter);

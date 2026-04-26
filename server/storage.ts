@@ -15,6 +15,8 @@ import {
   type ClientCheck, type InsertClientCheck,
   type ClientCheckMessage, type InsertClientCheckMessage,
   type ClientCheckToken, type InsertClientCheckToken,
+  insuranceOverrides,
+  type InsuranceOverride, type InsertInsuranceOverride,
   type Project, type InsertProject,
   type User, type InsertUser,
   type Contractor, type InsertContractor,
@@ -326,6 +328,10 @@ export interface IStorage {
   countSentDevisCheckBundles(devisId: number): Promise<number>;
   getMaxMessageIdForChecks(checkIds: number[]): Promise<number>;
   countOpenDevisChecksForProject(projectId: number): Promise<Record<number, number>>;
+  // Insurance gate (AT3, contract §1.3 / §2.1.4)
+  createInsuranceOverride(data: InsertInsuranceOverride): Promise<InsuranceOverride>;
+  listInsuranceOverridesForDevis(devisId: number): Promise<InsuranceOverride[]>;
+  getLatestInsuranceOverrideForDevis(devisId: number): Promise<InsuranceOverride | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1870,6 +1876,30 @@ export class DatabaseStorage implements IStorage {
     }
     const [created] = await db.insert(users).values(data).returning();
     return created;
+  }
+
+  // -- Insurance overrides (AT3, contract §1.3 / §2.1.4) -------------------
+  async createInsuranceOverride(data: InsertInsuranceOverride): Promise<InsuranceOverride> {
+    const [row] = await db.insert(insuranceOverrides).values(data).returning();
+    return row;
+  }
+
+  async listInsuranceOverridesForDevis(devisId: number): Promise<InsuranceOverride[]> {
+    return db
+      .select()
+      .from(insuranceOverrides)
+      .where(eq(insuranceOverrides.devisId, devisId))
+      .orderBy(desc(insuranceOverrides.createdAt));
+  }
+
+  async getLatestInsuranceOverrideForDevis(devisId: number): Promise<InsuranceOverride | undefined> {
+    const [row] = await db
+      .select()
+      .from(insuranceOverrides)
+      .where(eq(insuranceOverrides.devisId, devisId))
+      .orderBy(desc(insuranceOverrides.createdAt))
+      .limit(1);
+    return row;
   }
 }
 

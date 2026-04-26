@@ -19,6 +19,7 @@ import { validateExtraction, type ValidationWarning } from "../services/extracti
 import { checkLotReferencesAgainstCatalog } from "../services/lot-reference-validator";
 import type { ParsedDocument } from "../gmail/document-parser";
 import { roundCurrency } from "../../shared/financial-utils";
+import { evaluateInsuranceGate } from "../services/insurance-verdict";
 import {
   reconcileAdvisories,
   getAdvisoriesForDevis,
@@ -367,6 +368,46 @@ router.patch(
                 : `Impossible d'envoyer le devis au client : ${openCount} questions contractant sont encore ouvertes.`,
             openChecks: openCount,
           });
+        }
+
+        // INSURANCE gate (AT3, contract §1.3): block any transition
+        // that crosses into `sent_to_client` (or beyond) — including
+        // direct jumps from earlier stages — unless the live verdict
+        // is green (200 + canProceed:true) OR an override row exists
+        // in `insurance_overrides`. The 4-arm decision tree (live-OK
+        // / live-blocked / live-not-found / mirror-fallback) and the
+        // 5s budget live in `evaluateInsuranceGate`. We deliberately
+        // do NOT condition on the prior stage so the gate cannot be
+        // bypassed by skipping `approved_for_signing`.
+        const decision = await evaluateInsuranceGate(id);
+        if (!("error" in decision) && !decision.proceed) {
+          // Stale-override guard: an override only authorises the
+          // send when the CURRENT verdict is still in an overridable
+          // arm. If the situation has since drifted to a non-
+          // overridable arm (e.g. live_not_found after contractor
+          // reassignment), the prior override row no longer applies
+          // and the gate stays closed.
+          const existingOverride = decision.overridable
+            ? await storage.getLatestInsuranceOverrideForDevis(id)
+            : null;
+          if (!existingOverride) {
+            return res.status(409).json({
+              message: "Impossible d'envoyer le devis au client : verdict d'assurance défavorable.",
+              code: "insurance_gate",
+              decision: {
+                arm: decision.arm,
+                proceed: decision.proceed,
+                overridable: decision.overridable,
+                reason: decision.reason,
+                liveVerdictHttpStatus: decision.liveVerdictHttpStatus,
+                liveVerdictCanProceed: decision.liveVerdictCanProceed,
+                liveVerdictResponse: decision.liveVerdictResponse,
+                mirrorStatus: decision.mirrorStatus,
+                mirrorSyncedAt: decision.mirrorSyncedAt.toISOString(),
+                liveAttempted: decision.liveAttempted,
+              },
+            });
+          }
         }
       }
     }
