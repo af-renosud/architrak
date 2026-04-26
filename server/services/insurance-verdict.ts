@@ -5,29 +5,39 @@
  * contractors/:contractorId/insurance-verdict` endpoint per
  * `docs/INTER_APP_CONTRACT_v1.0.md` §1.3 (frozen 2026-04-25).
  *
- * Four-arm decision tree (per `docs/STEP4_IMPLEMENTATION_BREAKDOWN.md` §1.1
- * AT3 row + §3.1 G7):
+ * Decision-tree arms returned by `evaluateInsuranceGate`:
  *
- *   1. live_ok        — 200 + canProceed:true                 → proceed
- *   2. live_blocked   — 200 + canProceed:false                → red, overridable
- *   3. mirror_*       — live unreachable (503, config gap,    → fall through to mirror-only
- *                       missing archidocId, network)              evaluation; mirror's verdict
- *                                                                determines proceed/overridable
- *   4. live_not_found — 404                                   → red, NON-overridable (data fix)
+ *   live_ok          — 200 + canProceed:true                  → proceed
+ *   live_blocked     — 200 + canProceed:false                 → red, overridable
+ *   live_not_found   — 404                                    → red, NON-overridable
+ *                                                               (data fix required)
+ *   live_auth_error  — 401 after a single retry               → red, NON-overridable
+ *                                                               (ops must rotate
+ *                                                               ARCHIDOC_SYNC_API_KEY)
+ *   live_transient   — 503, network error, timeout, other 5xx → red, overridable
+ *                                                               (per §1.3 outcome
+ *                                                               table; mirror is
+ *                                                               surfaced as context
+ *                                                               only, not used as
+ *                                                               source of truth)
+ *   mirror_ok        — live not attempted (no live possible)  → proceed iff mirror
+ *                                                               is green-equivalent
+ *   mirror_blocked   — live not attempted (no live possible)  → red, overridable
  *
- * Differentiated error handling per task §3.5:
- *   - 401 → retry once with the (re-read) `ARCHIDOC_SYNC_API_KEY`. If still
- *           401, surface as `live_auth_error` (overridable per G7 uniform
- *           treatment of non-2xx-non-404 response classes that aren't 503).
- *   - 503 → log as receiver-config-gap (do NOT rotate keys), fall through
- *           to MIRROR-ONLY FALLBACK (architect-blocking 5s budget already
- *           consumed, do not stack mirror eval on top of a hung TCP).
- *   - other 5xx + network/timeout → uniform overridable per G7.
+ * Per §1.3 ¶5 the cached mirror is advisory only — when a live attempt
+ * occurred, mirror status is surfaced to the architect as context but
+ * does NOT decide proceed/overridable. The mirror_* arms are reached
+ * solely when the env is missing `ARCHIDOC_BASE_URL` /
+ * `ARCHIDOC_SYNC_API_KEY` or the row is missing the archidoc IDs
+ * needed to even attempt the call (dev/staging convenience path).
  *
- * Per §1.4 exception, the TOTAL call budget for the insurance verdict is
- * 5 seconds (architect-blocking UX), not 10s × 3. We split this as
- * 2.5s + 2.5s across the at-most-two attempts so the worst-case total
- * stays inside budget even on the 401-retry branch.
+ * Per §1.4 exception, the TOTAL call budget is 5 seconds (architect-
+ * blocking UX), not 10s × 3. We split this as 2.5s + 2.5s across the
+ * at-most-two attempts so the worst-case total stays inside budget
+ * even on the 401-retry branch. The 401-retry exists to absorb
+ * transient rejection (clock skew / replica lag) — it is NOT a
+ * runtime secret-rotation path: `env` is frozen at boot, so a rotated
+ * key only takes effect after a deploy/restart.
  *
  * `intendedWorkLot` per G11 closure: lot's case-insensitive label
  * (descriptionFr) when the devis carries a lot; field omitted otherwise
