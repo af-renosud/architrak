@@ -1006,6 +1006,8 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     archidocClients: null,
     lastSyncedAt: null,
     archivedAt: null,
+    clientContactName: null,
+    clientContactEmail: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -1071,6 +1073,10 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     validationWarnings: null,
     aiExtractedData: null,
     aiConfidence: null,
+    archidocDqeExportId: null,
+    archisignEnvelopeId: null,
+    identityVerification: null,
+    signedPdfFetchUrlSnapshot: null,
     createdAt: now,
     updatedAt: now,
   };

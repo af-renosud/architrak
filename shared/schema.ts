@@ -20,6 +20,119 @@ import {
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
+// =============================================================================
+// Devis sign-off contract — shared enums and embedded-jsonb shapes (AT1)
+// Sourced from `docs/INTER_APP_CONTRACT_v1.0.md` (frozen 2026-04-25).
+// Tables that consume these constants are defined further down in this file.
+// =============================================================================
+
+/**
+ * Canonical 9-value `signOffStage` enum per contract §1.1. The DB column is a
+ * plain `text` (no DB-level CHECK by convention with the rest of this schema);
+ * application-level transition guards live in `server/routes/devis.ts`
+ * (`STAGE_ORDER`) and AT2/AT4 extend that table to cover the new stages.
+ *
+ *   - `received`, `checked_internal`, `approved_for_signing`,
+ *     `sent_to_client`, `client_signed_off`, `void` — pre-existing
+ *   - `client_review_in_progress`, `client_agreed`, `client_rejected` — new
+ *
+ * Terminal stages: `client_rejected`, `void`, `client_signed_off` (the latter
+ * is logically terminal but still receives `envelope.retention_breach` events
+ * without changing stage; see §1.2).
+ */
+export const SIGN_OFF_STAGES = [
+  "received",
+  "checked_internal",
+  "client_review_in_progress",
+  "client_agreed",
+  "client_rejected",
+  "approved_for_signing",
+  "sent_to_client",
+  "client_signed_off",
+  "void",
+] as const;
+export type SignOffStage = (typeof SIGN_OFF_STAGES)[number];
+
+/**
+ * `identityVerification` 8-field block embedded in `envelope.signed`
+ * payloads (contract §3.4). Persisted verbatim into a single jsonb column on
+ * `devis.identity_verification` and re-emitted verbatim onto the outbound
+ * work-authorisation webhook to Archidoc (§5.3.1). Must NOT be flattened.
+ */
+export const identityVerificationSchema = z.object({
+  method: z.literal("otp_email"),
+  otpIssuedAt: z.string(),
+  otpVerifiedAt: z.string(),
+  signerIpAddress: z.string(),
+  signerUserAgent: z.string(),
+  lastViewedAt: z.string(),
+  signedAt: z.string(),
+  authenticationId: z.string(),
+});
+export type IdentityVerification = z.infer<typeof identityVerificationSchema>;
+
+/**
+ * Client-check origin sources (§2.1.1). `architrak_internal` covers checks
+ * raised by the architect from the admin UI; `archisign_query` covers checks
+ * mirrored from `envelope.queried` webhook events.
+ */
+export const CLIENT_CHECK_ORIGIN_SOURCES = [
+  "architrak_internal",
+  "archisign_query",
+] as const;
+export type ClientCheckOriginSource = (typeof CLIENT_CHECK_ORIGIN_SOURCES)[number];
+
+/** Client-check status enum (§2.1.1). */
+export const CLIENT_CHECK_STATUSES = ["open", "resolved", "cancelled"] as const;
+export type ClientCheckStatus = (typeof CLIENT_CHECK_STATUSES)[number];
+
+/**
+ * `query_resolved` resolver source (§3.3 + §2.1.1). Captures whether the
+ * resolution came from Architrak's UI, the Archisign admin UI, or some
+ * external channel (eg phone call) recorded by an architect.
+ */
+export const CLIENT_CHECK_RESOLVER_SOURCES = [
+  "architrak_internal",
+  "archisign_admin_ui",
+  "external",
+] as const;
+export type ClientCheckResolverSource = (typeof CLIENT_CHECK_RESOLVER_SOURCES)[number];
+
+/** `query_resolved` resolver actor (§3.3 + §2.1.1). */
+export const CLIENT_CHECK_RESOLVER_ACTORS = ["architect", "system"] as const;
+export type ClientCheckResolverActor = (typeof CLIENT_CHECK_RESOLVER_ACTORS)[number];
+
+/**
+ * Outbound webhook-delivery state (`webhook_deliveries_out`, §2.1.6).
+ * `pending` covers both not-yet-attempted and in-retry rows; `succeeded`
+ * is terminal-success; `dead_lettered` is terminal-failure surfaced in the
+ * admin retry UI per §1.4.
+ */
+export const WEBHOOK_DELIVERY_STATES = [
+  "pending",
+  "succeeded",
+  "dead_lettered",
+] as const;
+export type WebhookDeliveryState = (typeof WEBHOOK_DELIVERY_STATES)[number];
+
+/**
+ * Outbound work-authorisation webhook eventType discriminator (§5.3 / §0.5).
+ * AT5 always emits the explicit field per Architrak commitment G8.
+ */
+export const WORK_AUTHORISATION_EVENT_TYPES = [
+  "work_authorised",
+  "signed_pdf_retention_breach",
+] as const;
+export type WorkAuthorisationEventType = (typeof WORK_AUTHORISATION_EVENT_TYPES)[number];
+
+/**
+ * Inbound webhook source for `webhook_events_in` dedup (AT1 step 2 decision).
+ * Today only Archisign emits to Architrak; the column is shaped to support
+ * additional inbound sources in future without a migration.
+ */
+export const INBOUND_WEBHOOK_SOURCES = ["archisign"] as const;
+export type InboundWebhookSource = (typeof INBOUND_WEBHOOK_SOURCES)[number];
+
 export const projects = pgTable("projects", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
@@ -37,6 +150,13 @@ export const projects = pgTable("projects", {
   archidocClients: jsonb("archidoc_clients"),
   lastSyncedAt: timestamp("last_synced_at"),
   archivedAt: timestamp("archived_at"),
+  // Devis sign-off contract additions (AT1, contract §2.1.8).
+  // Single client contact for the sign-off workflow. Source of truth is
+  // Archidoc when a client contact is present (mirrored via the
+  // `/api/integrations/archidoc/projects` sync poll, §5.5); local edit
+  // is the fallback for projects whose Archidoc record carries no contact.
+  clientContactName: text("client_contact_name"),
+  clientContactEmail: text("client_contact_email"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
@@ -128,6 +248,11 @@ export const devis = pgTable("devis", {
   amountTtc: numeric("amount_ttc", { precision: 12, scale: 2 }).notNull(),
   invoicingMode: text("invoicing_mode").notNull().default("mode_a"),
   status: text("status").notNull().default("pending"),
+  // sign_off_stage: see SIGN_OFF_STAGES tuple below for the canonical
+  // 9-value v1.0-contract enum (`docs/INTER_APP_CONTRACT_v1.0.md` §1.1).
+  // No DB-level CHECK constraint by convention with the rest of this
+  // schema — application-level transition guards live in
+  // server/routes/devis.ts (STAGE_ORDER) and AT2/AT4 extend that table.
   signOffStage: text("sign_off_stage").notNull().default("received"),
   voidReason: text("void_reason"),
   dateSent: date("date_sent"),
@@ -138,11 +263,32 @@ export const devis = pgTable("devis", {
   validationWarnings: jsonb("validation_warnings"),
   aiExtractedData: jsonb("ai_extracted_data"),
   aiConfidence: integer("ai_confidence"),
+  // Devis sign-off contract additions (AT1, contract §2.1.7).
+  // archidocDqeExportId — read from Gmail header `x-archidoc-dqe-export-id`
+  // (case-insensitive form per RFC 7230 §3.2 / contract §0.2). Echoed onto
+  // the work-authorisation webhook to Archidoc as `dqeExportId` (§5.3.1).
+  archidocDqeExportId: text("archidoc_dqe_export_id"),
+  // archisignEnvelopeId — opaque integer-as-string returned by Archisign
+  // `/create`; persisted on transition to `sent_to_client` (§1.2).
+  archisignEnvelopeId: text("archisign_envelope_id"),
+  // identityVerification — verbatim 8-field block from `envelope.signed`
+  // payload (§3.4); persisted as a SINGLE jsonb object (not an array)
+  // and never flattened. AT5 echoes this verbatim onto the outbound
+  // work-authorisation webhook (§5.3.1). Stored as generic jsonb to
+  // match the existing schema convention for `validation_warnings` /
+  // `ai_extracted_data`; consumers parse with `identityVerificationSchema`.
+  identityVerification: jsonb("identity_verification"),
+  // signedPdfFetchUrlSnapshot — convenience snapshot of the URL delivered
+  // with `envelope.signed`. The URL TTL is 15 minutes; once expired,
+  // receivers must re-mint via `GET /api/v1/envelopes/:id/signed-pdf-url`
+  // (§3.5.3). The snapshot is therefore advisory only.
+  signedPdfFetchUrlSnapshot: text("signed_pdf_fetch_url_snapshot"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   index("devis_project_id_idx").on(table.projectId),
   index("devis_contractor_id_idx").on(table.contractorId),
+  index("devis_archisign_envelope_id_idx").on(table.archisignEnvelopeId),
 ]);
 
 export const devisLineItems = pgTable("devis_line_items", {
@@ -1092,6 +1238,315 @@ export const insertInvoiceRefEditSchema = createInsertSchema(invoiceRefEdits).om
 });
 export type InvoiceRefEdit = typeof invoiceRefEdits.$inferSelect;
 export type InsertInvoiceRefEdit = z.infer<typeof insertInvoiceRefEditSchema>;
+
+// =============================================================================
+// Devis sign-off contract — table definitions (AT1, contract §2.1.1–§2.1.9)
+// All seven tables are created in migration 0024_devis_signoff_workflow.sql.
+// The downstream tasks (AT2 storage / AT3 outbound / AT4 receiver / AT5 emit)
+// build their CRUD operations on top of these models.
+// =============================================================================
+
+/**
+ * client_checks — devis-scoped check items raised against a client during
+ * the sign-off review window (§2.1.1). Mirrors the existing `devis_checks`
+ * shape so AT2's storage layer can reuse the messaging conventions, but
+ * adds the `originSource` discriminator (`architrak_internal` for checks
+ * raised in-app, `archisign_query` for checks mirrored from the
+ * `envelope.queried` webhook).
+ */
+export const clientChecks = pgTable("client_checks", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("open"),
+  queryText: text("query_text").notNull(),
+  originSource: text("origin_source").notNull(),
+  // Stable Archisign event id for the originating `envelope.queried` event
+  // when originSource = 'archisign_query'. NULL otherwise. Used by AT4 to
+  // reconcile retries against an already-mirrored check.
+  archisignQueryEventId: text("archisign_query_event_id"),
+  // Resolver provenance fields populated when status transitions to
+  // `resolved` per §3.3 + §2.1.1.
+  resolvedBySource: text("resolved_by_source"),
+  resolvedByUserEmail: text("resolved_by_user_email"),
+  resolvedByActor: text("resolved_by_actor"),
+  resolutionNote: text("resolution_note"),
+  openedAt: timestamp("opened_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  createdByUserId: integer("created_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("client_checks_devis_id_idx").on(table.devisId),
+  index("client_checks_status_idx").on(table.status),
+  index("client_checks_archisign_query_event_id_idx").on(table.archisignQueryEventId),
+  check("client_checks_status_check", sql`${table.status} IN ('open', 'resolved', 'cancelled')`),
+  check("client_checks_origin_source_check", sql`${table.originSource} IN ('architrak_internal', 'archisign_query')`),
+  check(
+    "client_checks_resolved_by_source_check",
+    sql`${table.resolvedBySource} IS NULL OR ${table.resolvedBySource} IN ('architrak_internal', 'archisign_admin_ui', 'external')`,
+  ),
+  check(
+    "client_checks_resolved_by_actor_check",
+    sql`${table.resolvedByActor} IS NULL OR ${table.resolvedByActor} IN ('architect', 'system')`,
+  ),
+]);
+
+export const insertClientCheckSchema = createInsertSchema(clientChecks, {
+  status: z.enum(CLIENT_CHECK_STATUSES).optional(),
+  originSource: z.enum(CLIENT_CHECK_ORIGIN_SOURCES),
+  resolvedBySource: z.enum(CLIENT_CHECK_RESOLVER_SOURCES).nullable().optional(),
+  resolvedByActor: z.enum(CLIENT_CHECK_RESOLVER_ACTORS).nullable().optional(),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type ClientCheck = typeof clientChecks.$inferSelect;
+export type InsertClientCheck = z.infer<typeof insertClientCheckSchema>;
+
+/**
+ * client_check_messages — chronological thread attached to a client_check
+ * (§2.1.2). Mirrors `devis_check_messages` shape; the new `archisign`
+ * channel value covers messages mirrored from Archisign envelope events.
+ */
+export const clientCheckMessages = pgTable("client_check_messages", {
+  id: serial("id").primaryKey(),
+  checkId: integer("check_id").notNull().references(() => clientChecks.id, { onDelete: "cascade" }),
+  authorType: text("author_type").notNull(),
+  authorUserId: integer("author_user_id").references(() => users.id),
+  authorEmail: text("author_email"),
+  authorName: text("author_name"),
+  body: text("body").notNull(),
+  channel: text("channel").notNull().default("portal"),
+  emailMessageId: text("email_message_id"),
+  emailThreadId: text("email_thread_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("client_check_messages_check_id_idx").on(table.checkId),
+  check(
+    "client_check_messages_author_type_check",
+    sql`${table.authorType} IN ('architect', 'client', 'system')`,
+  ),
+  check(
+    "client_check_messages_channel_check",
+    sql`${table.channel} IN ('portal', 'email', 'system', 'archisign')`,
+  ),
+]);
+
+export const insertClientCheckMessageSchema = createInsertSchema(clientCheckMessages, {
+  authorType: z.enum(["architect", "client", "system"]),
+  channel: z.enum(["portal", "email", "system", "archisign"]).optional(),
+}).omit({
+  id: true,
+  createdAt: true,
+});
+export type ClientCheckMessage = typeof clientCheckMessages.$inferSelect;
+export type InsertClientCheckMessage = z.infer<typeof insertClientCheckMessageSchema>;
+
+/**
+ * client_check_tokens — short-lived single-use tokens for client portal
+ * access (§2.1.3). The plaintext token is never persisted; only its
+ * SHA-256 hash. A partial unique index (`one active per devis`) enforces
+ * the "single live invitation" invariant from §1.2.
+ */
+export const clientCheckTokens = pgTable("client_check_tokens", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull(),
+  clientEmail: text("client_email").notNull(),
+  clientName: text("client_name"),
+  createdByUserId: integer("created_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+}, (table) => [
+  uniqueIndex("client_check_tokens_token_hash_idx").on(table.tokenHash),
+  index("client_check_tokens_devis_id_idx").on(table.devisId),
+  uniqueIndex("client_check_tokens_one_active_idx")
+    .on(table.devisId)
+    .where(sql`${table.revokedAt} IS NULL`),
+]);
+
+export const insertClientCheckTokenSchema = createInsertSchema(clientCheckTokens).omit({
+  id: true,
+  createdAt: true,
+  revokedAt: true,
+  lastUsedAt: true,
+});
+export type ClientCheckToken = typeof clientCheckTokens.$inferSelect;
+export type InsertClientCheckToken = z.infer<typeof insertClientCheckTokenSchema>;
+
+/**
+ * insurance_overrides — captured at the moment an architect manually
+ * overrides a contractor-insurance non-affirmative result to proceed with
+ * `approved_for_signing` (§2.1.4 + §1.3). Stores the verbatim override
+ * reason, the mirror-state at override time, and the live verdict response
+ * for compliance audit. NEVER mutated post-insert (each override is a new
+ * row).
+ */
+export const insuranceOverrides = pgTable("insurance_overrides", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
+  userId: integer("user_id").notNull().references(() => users.id),
+  overrideReason: text("override_reason").notNull(),
+  mirrorStatusAtOverride: text("mirror_status_at_override").notNull(),
+  mirrorSyncedAtAtOverride: timestamp("mirror_synced_at_at_override", { withTimezone: true }).notNull(),
+  liveVerdictHttpStatus: integer("live_verdict_http_status").notNull(),
+  liveVerdictCanProceed: boolean("live_verdict_can_proceed"),
+  liveVerdictResponse: jsonb("live_verdict_response"),
+  // Email is recorded alongside userId so the historical audit row stays
+  // resolvable even if the user is later deleted/anonymised. Per contract
+  // §1.3 the override block on the outbound webhook quotes this field
+  // verbatim as `overriddenByUserEmail`.
+  overriddenByUserEmail: text("overridden_by_user_email").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("insurance_overrides_devis_id_idx").on(table.devisId),
+  index("insurance_overrides_user_id_idx").on(table.userId),
+]);
+
+export const insertInsuranceOverrideSchema = createInsertSchema(insuranceOverrides).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsuranceOverride = typeof insuranceOverrides.$inferSelect;
+export type InsertInsuranceOverride = z.infer<typeof insertInsuranceOverrideSchema>;
+
+/**
+ * signed_pdf_retention_breaches — records `envelope.retention_breach`
+ * notifications received from Archisign after the 30-day retention window
+ * has expired (§2.1.5 + §3.7). Parallel to (NOT shared with) Archidoc's
+ * table per contract §2 footnote: disjoint envelope sets, no shared rows.
+ * The `event_source` discriminator stays for parity with Archidoc's row
+ * shape even though only `archisign` is meaningful on the Architrak side.
+ */
+export const signedPdfRetentionBreaches = pgTable("signed_pdf_retention_breaches", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
+  archisignEnvelopeId: text("archisign_envelope_id").notNull(),
+  eventSource: text("event_source").notNull().default("archisign"),
+  originalSignedAt: timestamp("original_signed_at", { withTimezone: true }).notNull(),
+  detectedAt: timestamp("detected_at", { withTimezone: true }).notNull(),
+  incidentRef: text("incident_ref").notNull(),
+  remediationContact: text("remediation_contact").notNull(),
+  receivedAt: timestamp("received_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+  acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+  acknowledgedByUserId: integer("acknowledged_by_user_id").references(() => users.id),
+}, (table) => [
+  index("signed_pdf_retention_breaches_devis_id_idx").on(table.devisId),
+  index("signed_pdf_retention_breaches_envelope_idx").on(table.archisignEnvelopeId),
+  // Race-safety: even if AT4's webhook_events_in dedup ever fails open, we
+  // still cannot get duplicate breach rows for the same (envelope, incident).
+  uniqueIndex("signed_pdf_retention_breaches_envelope_incident_unique")
+    .on(table.archisignEnvelopeId, table.incidentRef),
+  check(
+    "signed_pdf_retention_breaches_event_source_check",
+    sql`${table.eventSource} IN ('archisign')`,
+  ),
+]);
+
+export const insertSignedPdfRetentionBreachSchema = createInsertSchema(signedPdfRetentionBreaches).omit({
+  id: true,
+  receivedAt: true,
+  acknowledgedAt: true,
+  acknowledgedByUserId: true,
+});
+export type SignedPdfRetentionBreach = typeof signedPdfRetentionBreaches.$inferSelect;
+export type InsertSignedPdfRetentionBreach = z.infer<typeof insertSignedPdfRetentionBreachSchema>;
+
+/**
+ * webhook_deliveries_out — outbound webhook-attempt log (§2.1.6). One row
+ * per logical event (UNIQUE on `eventId`) with an at-least-once semantic
+ * driven by the AT5 retry sweeper. The unique index supports the
+ * INSERT-ON-CONFLICT-DO-NOTHING claim pattern: callers re-emitting the
+ * same event MUST observe the existing row and not enqueue a duplicate.
+ *
+ * State machine (`webhook_deliveries_out_state_check`):
+ *   pending  -> succeeded | dead_lettered
+ *   pending  -> pending     (counter bump on retry)
+ */
+export const webhookDeliveriesOut = pgTable("webhook_deliveries_out", {
+  id: serial("id").primaryKey(),
+  // Stable UUIDv7 — survives all retries; the receiver dedups on this.
+  eventId: text("event_id").notNull(),
+  eventType: text("event_type").notNull(),
+  targetUrl: text("target_url").notNull(),
+  payload: jsonb("payload").notNull(),
+  state: text("state").notNull().default("pending"),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+  lastErrorBody: text("last_error_body"),
+  // nextAttemptAt drives the retry sweeper's WHERE clause. NULL means
+  // "ready immediately" (initial enqueue) or "no future attempt" (terminal).
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+  succeededAt: timestamp("succeeded_at", { withTimezone: true }),
+  deadLetteredAt: timestamp("dead_lettered_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  uniqueIndex("webhook_deliveries_out_event_id_unique").on(table.eventId),
+  index("webhook_deliveries_out_state_idx").on(table.state),
+  index("webhook_deliveries_out_state_next_attempt_idx").on(table.state, table.nextAttemptAt),
+  index("webhook_deliveries_out_event_type_idx").on(table.eventType),
+  check(
+    "webhook_deliveries_out_state_check",
+    sql`${table.state} IN ('pending', 'succeeded', 'dead_lettered')`,
+  ),
+  check(
+    "webhook_deliveries_out_event_type_check",
+    sql`${table.eventType} IN ('work_authorised', 'signed_pdf_retention_breach')`,
+  ),
+]);
+
+export const insertWebhookDeliveryOutSchema = createInsertSchema(webhookDeliveriesOut, {
+  state: z.enum(WEBHOOK_DELIVERY_STATES).optional(),
+  eventType: z.enum(WORK_AUTHORISATION_EVENT_TYPES),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  attemptCount: true,
+  lastAttemptAt: true,
+  lastErrorBody: true,
+  succeededAt: true,
+  deadLetteredAt: true,
+});
+export type WebhookDeliveryOut = typeof webhookDeliveriesOut.$inferSelect;
+export type InsertWebhookDeliveryOut = z.infer<typeof insertWebhookDeliveryOutSchema>;
+
+/**
+ * webhook_events_in — inbound webhook-dedup log (§2.1.9). UNIQUE on
+ * `(source, event_id)` so AT4's receivers can use the dedup-via-violation
+ * pattern: insert-first, on unique-violation short-circuit to
+ * `200 {deduplicated:true}` per §1.5.
+ *
+ * Distinct from the pre-existing generic `webhook_events` table: that one
+ * was never namespaced by source, and the contract reserves the
+ * canonical `webhook_events_in` name for the v1.0 receiver path. Cleanup /
+ * retention of this table (G14) is deferred to v1.1.
+ */
+export const webhookEventsIn = pgTable("webhook_events_in", {
+  id: serial("id").primaryKey(),
+  source: text("source").notNull(),
+  eventId: text("event_id").notNull(),
+  eventType: text("event_type").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  receivedAt: timestamp("received_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  uniqueIndex("webhook_events_in_source_event_id_unique").on(table.source, table.eventId),
+  index("webhook_events_in_received_at_idx").on(table.receivedAt),
+  check("webhook_events_in_source_check", sql`${table.source} IN ('archisign')`),
+]);
+
+export const insertWebhookEventInSchema = createInsertSchema(webhookEventsIn, {
+  source: z.enum(INBOUND_WEBHOOK_SOURCES),
+}).omit({
+  id: true,
+  receivedAt: true,
+});
+export type WebhookEventIn = typeof webhookEventsIn.$inferSelect;
+export type InsertWebhookEventIn = z.infer<typeof insertWebhookEventInSchema>;
 
 export const WISH_LIST_TYPES = ["feature", "bug"] as const;
 export const WISH_LIST_STATUSES = ["open", "in_progress", "done", "wontfix"] as const;
