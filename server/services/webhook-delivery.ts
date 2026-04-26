@@ -10,8 +10,11 @@
  * of double-posting.
  *
  * Retry policy (§1.4):
- *   - 3 attempts total
- *   - 1s / 4s / 16s exponential backoff with ±20% jitter
+ *   - 3 attempts total (initial + 2 retries)
+ *   - Backoff between attempts: 1s then 4s with ±20% jitter
+ *     (the third backoff value is never consumed — the third attempt
+ *     either succeeds or dead-letters, so the constants compute a
+ *     16s value purely as a documentation artefact)
  *   - Per-attempt 10s HTTP timeout (enforced inside the client)
  *   - 4xx (non-429) → dead-letter immediately (skip remaining attempts)
  *   - 5xx + network errors + 429 → retry; 429 honours Retry-After

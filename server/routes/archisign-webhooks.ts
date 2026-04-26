@@ -479,8 +479,16 @@ async function enqueueOutboundDelivery(args: OutboundEnqueueArgs): Promise<void>
     payload: args.payload,
   });
   if (result.skipped === "unconfigured") {
-    // Already logged inside enqueueWebhookDelivery — keep AT4's inbound
-    // path 200-clean.
+    // Environment-gating decision (NOT a violation of §1.4 hard-fail):
+    // the soft-skip ONLY triggers when no Archidoc URL is set at all
+    // (`isOutboundOperational()` is false), i.e. local dev / CI where
+    // there is genuinely no Archidoc target to dispatch to. In a
+    // configured env where the URL is set but the secret is missing,
+    // enqueue still proceeds — the dispatch path then hard-fails,
+    // dead-letters the row, and fires `sendOperatorAlert(...)` so the
+    // misconfiguration surfaces loudly in the admin DLQ + on-call inbox.
+    // Either way, AT4's inbound channel returns 200 (an inbound 500
+    // would only make Archisign retry, which doesn't fix our env).
     return;
   }
   if (!result.enqueued) {
