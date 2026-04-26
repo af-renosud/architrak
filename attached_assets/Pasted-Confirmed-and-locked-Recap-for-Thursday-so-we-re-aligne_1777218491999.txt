@@ -1,0 +1,13 @@
+Confirmed and locked. Recap for Thursday so we're aligned:
+
+Staging URL: https://9e7c5f6c-2648-453a-a615-dfd4e879ed8d-00-2o2glazxnwp0u.riker.replit.dev (receiver path appended your side: /api/integrations/architrak/work-authorisations). HMAC v2 verifier active, secret loaded, schema asserted with the §2.2 tables in place.
+
+Archidoc operator contact: help@renosud.com. Renosud runs a single shared ops triage queue across all three apps — same address you already use for Architrak-side dead-letter alerts.
+
+Warmth mechanism — honest disclosure: standalone "Always On" workspace toggles aren't available on our current Replit plan (the equivalent only applies to Reserved-VM deployments, which we explained doesn't fit this round's data-isolation requirements). We're keeping the dev workspace warm during the test window via two redundant mechanisms: (a) Clive will have the workspace open in an active browser tab from 13:50 to 14:35 CEST, with the tab focused throughout — workspace runtime stays warm while there's an active editor connection; (b) we've configured an external uptime monitor hitting GET / every 5 minutes through Wednesday and Thursday as belt-and-braces. Receiver is currently smoke-tested clean — GET / returns 200, and the receiver returns the contract-correct codes for missing-headers (401), bad-sig (401), and stale-timestamp (401).
+
+Our "receiver up" ping by EOD Wed 29 April: we'll send a short message back via this channel confirming (a) we received your Wednesday-evening synthetic fire, (b) the eventId we observed, (c) the row was written to work_authorisations cleanly, and (d) no errors in our logs around that timestamp. That's your green light Thursday's window is armed.
+
+Thursday 30 April 14:00–14:30 CEST: five-step plan unchanged (T+2 work_auth, T+5 dedup, T+8 breach, T+10 410 negative, T+12 confirm). One of us live in your Slack DM throughout.
+
+If the active-tab-plus-uptime-monitor mechanism feels too fragile for your team's comfort, alternative is to push the test out a week so we can build a properly isolated staging deployment (separate Helium DB, separate object bucket, gated background pollers — roughly a day of work our side). Your call. Otherwise, see you Wednesday evening.
