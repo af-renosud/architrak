@@ -1,0 +1,10 @@
+{
+  "event": "envelope.signed",
+  "eventId": "01900000-0000-7000-8000-000000000006",
+  "timestamp": "2026-04-25T14:30:00Z",
+  "envelopeId": "100001",
+  "signedAt": "2026-04-25T14:30:00Z",
+  "signedPdfFetchUrl": "https://archisign.example/api/v1/envelopes/100001/signed-pdf-url?token=abc123",
+  "signedPdfFetchUrlExpiresAt": "2026-04-25T14:45:00Z",
+  "identityVerification": {}
+}

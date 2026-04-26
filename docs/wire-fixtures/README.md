@@ -21,11 +21,18 @@ fixture.
 - Opaque ids (envelope ids, event ids, http_status codes) use the
   contract's documented shapes; do NOT invent new id shapes.
 
-## Inventory (AT1 placeholder set)
+## Inventory
 
-| Filename                       | Contract section | Status     | Fully populated by |
-|:-------------------------------|:-----------------|:-----------|:-------------------|
-| `identity-verification.json`   | §3.4             | **empty stub** (`{}`) | AT5 — emits this shape inside the `work_authorised` payload (§3.6); AT5's golden test will pin the exact byte layout |
+| Filename                              | Contract section | Status     | Fully populated by |
+|:--------------------------------------|:-----------------|:-----------|:-------------------|
+| `identity-verification.json`          | §3.4             | **empty stub** (`{}`) | AT5 — emits this shape inside the `work_authorised` payload (§3.6); AT5's golden test will pin the exact byte layout |
+| `envelope-sent.json`                  | §3.1 / §3.2      | populated  | AT4 — inbound webhook receiver |
+| `envelope-queried.json`               | §3.1 / §3.2      | populated  | AT4 — inbound webhook receiver |
+| `envelope-query_resolved.json`        | §3.1 / §3.3      | populated  | AT4 — inbound webhook receiver (4-field attribution) |
+| `envelope-declined.json`              | §3.1 / §3.2      | populated  | AT4 — inbound webhook receiver |
+| `envelope-expired.json`               | §3.1 / §3.2      | populated  | AT4 — inbound webhook receiver |
+| `envelope-signed.json`                | §3.1 / §3.4      | populated  | AT4 — inbound webhook receiver (`identityVerification` is `{}` until AT5 pins it) |
+| `envelope-retention_breach.json`      | §3.1 / §3.7      | populated  | AT4 — inbound webhook receiver (downstream re-notify is AT5) |
 
 The empty-stub convention: an unpopulated fixture is `{}` (a literal
 empty JSON object with a trailing newline), NOT a skeleton with field

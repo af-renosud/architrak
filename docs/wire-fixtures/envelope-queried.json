@@ -1,0 +1,10 @@
+{
+  "event": "envelope.queried",
+  "eventId": "01900000-0000-7000-8000-000000000002",
+  "timestamp": "2026-04-25T11:15:00Z",
+  "envelopeId": "100001",
+  "queryEventId": "q-01900000-0000-7000-8000-000000000abc",
+  "queryText": "Le montant de la ligne 4 doit être révisé.",
+  "raisedAt": "2026-04-25T11:15:00Z",
+  "signerEmail": "client@example.com"
+}

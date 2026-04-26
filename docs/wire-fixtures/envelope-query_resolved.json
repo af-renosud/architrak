@@ -1,0 +1,12 @@
+{
+  "event": "envelope.query_resolved",
+  "eventId": "01900000-0000-7000-8000-000000000003",
+  "timestamp": "2026-04-25T12:30:00Z",
+  "envelopeId": "100001",
+  "queryEventId": "q-01900000-0000-7000-8000-000000000abc",
+  "resolvedAt": "2026-04-25T12:30:00Z",
+  "resolverSource": "archisign_admin_ui",
+  "resolverEmail": "admin@archisign.example",
+  "resolverActor": "architect",
+  "resolutionNote": "Ligne 4 corrigée hors-plateforme."
+}

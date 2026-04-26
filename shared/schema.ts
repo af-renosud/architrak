@@ -283,6 +283,23 @@ export const devis = pgTable("devis", {
   // receivers must re-mint via `GET /api/v1/envelopes/:id/signed-pdf-url`
   // (§3.5.3). The snapshot is therefore advisory only.
   signedPdfFetchUrlSnapshot: text("signed_pdf_fetch_url_snapshot"),
+  // AT4 envelope-tracking columns (contract §3.5.1 / §1.2). All nullable;
+  // populated on transition to `sent_to_client` and updated by the inbound
+  // 7-event receiver. accessUrl is the ONLY persisted URL — it comes from
+  // /create's response and is never re-read from /send (§3.5.4 / G3).
+  // archisignAccessUrlInvalidatedAt is set on `envelope.expired` to
+  // soft-invalidate the stored URL while preserving it for audit (§1.2).
+  archisignAccessUrl: text("archisign_access_url"),
+  archisignAccessUrlInvalidatedAt: timestamp("archisign_access_url_invalidated_at", { withTimezone: true }),
+  // archisignEnvelopeStatus — last-seen state from inbound webhooks.
+  // Receiver whitelists: sent | viewed | queried | signed | declined | expired.
+  // Distinct from devis.signOffStage (which reflects Architrak workflow);
+  // both are updated atomically in webhook handlers.
+  archisignEnvelopeStatus: text("archisign_envelope_status"),
+  archisignEnvelopeExpiresAt: timestamp("archisign_envelope_expires_at", { withTimezone: true }),
+  // archisignOtpDestination — masked phone/email shown in /create response
+  // (§3.5.1). Persisted for UI display only; not used for auth.
+  archisignOtpDestination: text("archisign_otp_destination"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [

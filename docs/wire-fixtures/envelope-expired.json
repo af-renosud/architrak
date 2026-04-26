@@ -1,0 +1,7 @@
+{
+  "event": "envelope.expired",
+  "eventId": "01900000-0000-7000-8000-000000000005",
+  "timestamp": "2026-05-25T10:00:01Z",
+  "envelopeId": "100001",
+  "expiredAt": "2026-05-25T10:00:00Z"
+}

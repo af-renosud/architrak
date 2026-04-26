@@ -1,0 +1,9 @@
+{
+  "event": "envelope.declined",
+  "eventId": "01900000-0000-7000-8000-000000000004",
+  "timestamp": "2026-04-25T13:00:00Z",
+  "envelopeId": "100001",
+  "declinedAt": "2026-04-25T13:00:00Z",
+  "declineReason": "Le client souhaite renégocier le périmètre.",
+  "declinedBy": "client@example.com"
+}

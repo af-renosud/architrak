@@ -2924,6 +2924,191 @@ function InsurancePanel({
   );
 }
 
+/**
+ * AT4 Signing panel — orchestrates the §1.2 transition
+ * `approved_for_signing → sent_to_client` via the Archisign envelope flow.
+ *
+ * Visible at every stage from `approved_for_signing` onwards so the
+ * architect can see envelope status, the access URL the client will use,
+ * the OTP delivery target, and the envelope's expiry.
+ *
+ * The "Send to signer" button is only enabled when signOffStage is
+ * exactly `approved_for_signing`. Once an envelope exists we show a
+ * status badge instead. Soft-invalidated access URLs (after expiry) are
+ * rendered struck-through with a "resend supported in a future update"
+ * note — the resend-after-expiry orchestration is intentionally out of
+ * scope for AT4 itself.
+ */
+function SigningPanel({
+  devisId,
+  isArchived,
+}: {
+  devisId: number;
+  isArchived: boolean;
+}) {
+  const { toast } = useToast();
+  const devisQuery = useQuery<Devis>({
+    queryKey: ["/api/devis", devisId],
+  });
+
+  const sendMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/devis/${devisId}/send-to-signer`);
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Envoyé à la signature",
+        description: "L'enveloppe Archisign a été créée et envoyée au signataire.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/devis"] });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Erreur d'envoi", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const d = devisQuery.data as (Devis & {
+    archisignEnvelopeId?: string | null;
+    archisignAccessUrl?: string | null;
+    archisignAccessUrlInvalidatedAt?: string | null;
+    archisignEnvelopeStatus?: string | null;
+    archisignEnvelopeExpiresAt?: string | null;
+    archisignOtpDestination?: string | null;
+  }) | undefined;
+
+  if (devisQuery.isLoading || !d) {
+    return (
+      <LuxuryCard className="p-3" data-testid={`panel-signing-${devisId}`}>
+        <Skeleton className="h-5 w-40 mb-2" />
+        <Skeleton className="h-4 w-full" />
+      </LuxuryCard>
+    );
+  }
+
+  // Hide the panel entirely until the devis has been approved for
+  // signing — earlier stages have nothing meaningful to show.
+  const stage = d.signOffStage as string | null | undefined;
+  const stagesShowingPanel = new Set([
+    "approved_for_signing",
+    "sent_to_client",
+    "client_signed_off",
+    "void",
+  ]);
+  if (!stage || !stagesShowingPanel.has(stage)) return null;
+
+  const envelopeStatus = d.archisignEnvelopeStatus ?? null;
+  const accessUrl = d.archisignAccessUrl ?? null;
+  const accessUrlInvalidated = Boolean(d.archisignAccessUrlInvalidatedAt);
+  const expiresAt = d.archisignEnvelopeExpiresAt ? new Date(d.archisignEnvelopeExpiresAt) : null;
+  const otpDestination = d.archisignOtpDestination ?? null;
+
+  const canSend = stage === "approved_for_signing" && !d.archisignEnvelopeId && !isArchived;
+
+  const statusLabel: Record<string, { label: string; tone: "default" | "secondary" | "destructive" }> = {
+    sent: { label: "Envoyée", tone: "default" },
+    viewed: { label: "Consultée", tone: "default" },
+    queried: { label: "Question ouverte", tone: "secondary" },
+    signed: { label: "Signée", tone: "default" },
+    declined: { label: "Refusée", tone: "destructive" },
+    expired: { label: "Expirée", tone: "destructive" },
+  };
+  const badge = envelopeStatus ? statusLabel[envelopeStatus] ?? { label: envelopeStatus, tone: "secondary" as const } : null;
+
+  return (
+    <LuxuryCard className="p-3 space-y-3" data-testid={`panel-signing-${devisId}`}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Send className="h-4 w-4 text-[#0B2545]" />
+          <TechnicalLabel className="text-sm">Signature électronique</TechnicalLabel>
+          {badge && (
+            <Badge
+              variant={badge.tone === "destructive" ? "destructive" : badge.tone === "secondary" ? "secondary" : "default"}
+              data-testid={`badge-archisign-status-${devisId}`}
+            >
+              {badge.label}
+            </Badge>
+          )}
+        </div>
+        {canSend && (
+          <Button
+            size="sm"
+            onClick={() => sendMutation.mutate()}
+            disabled={sendMutation.isPending}
+            data-testid={`button-send-to-signer-${devisId}`}
+          >
+            {sendMutation.isPending ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                Envoi…
+              </>
+            ) : (
+              <>
+                <Send className="h-4 w-4 mr-1.5" />
+                Envoyer à la signature
+              </>
+            )}
+          </Button>
+        )}
+      </div>
+
+      {!d.archisignEnvelopeId && stage === "approved_for_signing" && (
+        <p className="text-xs text-muted-foreground" data-testid={`text-signing-empty-${devisId}`}>
+          Aucune enveloppe Archisign créée. Le client recevra un lien de signature après envoi.
+        </p>
+      )}
+
+      {d.archisignEnvelopeId && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+          <div>
+            <span className="font-semibold text-muted-foreground">Lien client :</span>{" "}
+            {accessUrl ? (
+              <a
+                href={accessUrl}
+                target="_blank"
+                rel="noreferrer noopener"
+                className={
+                  accessUrlInvalidated
+                    ? "line-through text-muted-foreground"
+                    : "text-[#0B2545] underline hover:no-underline inline-flex items-center gap-1"
+                }
+                data-testid={`link-archisign-access-${devisId}`}
+              >
+                Ouvrir
+                {!accessUrlInvalidated && <ExternalLink className="h-3 w-3" />}
+              </a>
+            ) : (
+              <span className="text-muted-foreground">—</span>
+            )}
+            {accessUrlInvalidated && (
+              <div className="mt-1 text-[11px] text-amber-700">
+                Lien expiré — la fonction de renvoi sera disponible dans une prochaine mise à jour.
+              </div>
+            )}
+          </div>
+          <div>
+            <span className="font-semibold text-muted-foreground">Destination OTP :</span>{" "}
+            <span data-testid={`text-archisign-otp-${devisId}`}>{otpDestination ?? "—"}</span>
+          </div>
+          <div>
+            <span className="font-semibold text-muted-foreground">Expire le :</span>{" "}
+            <span data-testid={`text-archisign-expires-${devisId}`}>
+              {expiresAt ? expiresAt.toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
+            </span>
+          </div>
+          <div>
+            <span className="font-semibold text-muted-foreground">Enveloppe :</span>{" "}
+            <span className="font-mono text-[11px]" data-testid={`text-archisign-envelope-${devisId}`}>
+              {d.archisignEnvelopeId}
+            </span>
+          </div>
+        </div>
+      )}
+    </LuxuryCard>
+  );
+}
+
 function ChecksPanel({
   devisId,
   projectId,
@@ -3075,6 +3260,7 @@ function ChecksPanel({
       <TokenPanel devisId={devisId} projectId={projectId} isArchived={isArchived} />
       <ClientPortalPanel devisId={devisId} projectId={projectId} isArchived={isArchived} />
       <InsurancePanel devisId={devisId} isArchived={isArchived} />
+      <SigningPanel devisId={devisId} isArchived={isArchived} />
 
       {/* Bottom mirror — variant B "Inline composer + bottom mirror".
           Navy-bordered card showing the architect exactly what will be

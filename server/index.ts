@@ -127,7 +127,13 @@ app.use((req, res, next) => {
   app.use(publicClientChecksRouter);
 
   app.use("/api", (req, res, next) => {
-    const publicPaths = ["/auth/login", "/auth/callback", "/auth/logout", "/auth/user", "/webhooks/archidoc"];
+    const publicPaths = ["/auth/login", "/auth/callback", "/auth/logout", "/auth/user", "/webhooks/archidoc", "/webhooks/archisign"];
+    // Public devis-PDF download (signed-token auth) — Archisign fetches
+    // server-side from a different origin, so it cannot present a session
+    // cookie. The token verifier is the auth wall.
+    if (req.path.startsWith("/public/devis-pdf/")) {
+      return next();
+    }
     if (env.NODE_ENV !== "production" && env.ENABLE_DEV_LOGIN_FOR_E2E) {
       publicPaths.push("/auth/dev-login");
     }

@@ -1,0 +1,8 @@
+{
+  "event": "envelope.sent",
+  "eventId": "01900000-0000-7000-8000-000000000001",
+  "timestamp": "2026-04-25T10:00:00Z",
+  "envelopeId": "100001",
+  "sentAt": "2026-04-25T10:00:00Z",
+  "signerEmail": "client@example.com"
+}

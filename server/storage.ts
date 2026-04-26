@@ -17,6 +17,9 @@ import {
   type ClientCheckToken, type InsertClientCheckToken,
   insuranceOverrides,
   type InsuranceOverride, type InsertInsuranceOverride,
+  webhookEventsIn, signedPdfRetentionBreaches,
+  type WebhookEventIn, type InsertWebhookEventIn,
+  type SignedPdfRetentionBreach, type InsertSignedPdfRetentionBreach,
   type Project, type InsertProject,
   type User, type InsertUser,
   type Contractor, type InsertContractor,
@@ -332,6 +335,24 @@ export interface IStorage {
   createInsuranceOverride(data: InsertInsuranceOverride): Promise<InsuranceOverride>;
   listInsuranceOverridesForDevis(devisId: number): Promise<InsuranceOverride[]>;
   getLatestInsuranceOverrideForDevis(devisId: number): Promise<InsuranceOverride | undefined>;
+
+  // -- Archisign envelope tracking + inbound webhook (AT4) -----------------
+  // claimWebhookEventIn returns true if the row was newly inserted, false
+  // if a duplicate `(source, event_id)` already existed. Receivers MUST
+  // check this BEFORE running any side-effecting handler, so duplicate
+  // deliveries from Archisign collapse to 200 {deduplicated:true} per §1.5.
+  claimWebhookEventIn(data: InsertWebhookEventIn): Promise<boolean>;
+  // Lookup by Archisign envelope id — used by every webhook handler to
+  // resolve the affected devis. Returns undefined if no devis owns this
+  // envelope (handler responds 410 per §1.5: "non-retryable from sender").
+  getDevisByArchisignEnvelopeId(envelopeId: string): Promise<Devis | undefined>;
+  // Persist a `signed_pdf_retention_breach` row. Idempotent on
+  // `(archisign_envelope_id, incident_ref)` per the unique index — caller
+  // can replay the handler safely; downstream re-notify (AT5) is gated on
+  // a fresh insert returning a row.
+  recordSignedPdfRetentionBreach(
+    data: InsertSignedPdfRetentionBreach,
+  ): Promise<SignedPdfRetentionBreach | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1900,6 +1921,47 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(insuranceOverrides.createdAt))
       .limit(1);
     return row;
+  }
+
+  // -- Archisign envelope tracking + inbound webhook (AT4) -----------------
+
+  async claimWebhookEventIn(data: InsertWebhookEventIn): Promise<boolean> {
+    // INSERT ... ON CONFLICT DO NOTHING returning the row when newly
+    // inserted; absence of a row means the dedup index won — caller
+    // short-circuits to 200 {deduplicated:true}.
+    const rows = await db
+      .insert(webhookEventsIn)
+      .values(data)
+      .onConflictDoNothing({ target: [webhookEventsIn.source, webhookEventsIn.eventId] })
+      .returning({ id: webhookEventsIn.id });
+    return rows.length > 0;
+  }
+
+  async getDevisByArchisignEnvelopeId(envelopeId: string): Promise<Devis | undefined> {
+    const [row] = await db
+      .select()
+      .from(devis)
+      .where(eq(devis.archisignEnvelopeId, envelopeId))
+      .limit(1);
+    return row;
+  }
+
+  async recordSignedPdfRetentionBreach(
+    data: InsertSignedPdfRetentionBreach,
+  ): Promise<SignedPdfRetentionBreach | undefined> {
+    // Race-safety: even if claimWebhookEventIn already deduped, the
+    // (envelope_id, incident_ref) UNIQUE index belt-and-braces against
+    // double-insertion if a future caller path bypasses the inbound
+    // dedup. Returning undefined on conflict lets AT5 know "this breach
+    // was already recorded — don't re-fire the downstream notify".
+    const rows = await db
+      .insert(signedPdfRetentionBreaches)
+      .values(data)
+      .onConflictDoNothing({
+        target: [signedPdfRetentionBreaches.archisignEnvelopeId, signedPdfRetentionBreaches.incidentRef],
+      })
+      .returning();
+    return rows[0];
   }
 }
 

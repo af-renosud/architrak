@@ -99,6 +99,15 @@ const envSchema = z.object({
   ARCHIDOC_WEBHOOK_SECRET: optionalString(),
   ARCHIDOC_POLLING_ENABLED: booleanFlag(false),
 
+  // --- Archisign envelope orchestration + webhook (AT4) ----------------
+  // ARCHISIGN_API_KEY is a CSV of one or more keys to support overlapping
+  // rotation windows (§3.6); the FIRST entry is used for new outbound
+  // calls. ARCHISIGN_WEBHOOK_SECRET is the shared HMAC v2 secret for the
+  // inbound /api/webhooks/archisign channel — born v2-only (§2.4 P0).
+  ARCHISIGN_BASE_URL: optionalUrl(),
+  ARCHISIGN_API_KEY: optionalString(),
+  ARCHISIGN_WEBHOOK_SECRET: optionalString(),
+
   // --- Object storage (feature-scoped) ---------------------------------
   DEFAULT_OBJECT_STORAGE_BUCKET_ID: optionalString(),
   PRIVATE_OBJECT_DIR: optionalString(),

@@ -1,0 +1,10 @@
+{
+  "event": "envelope.retention_breach",
+  "eventId": "01900000-0000-7000-8000-000000000007",
+  "timestamp": "2036-04-26T03:00:00Z",
+  "envelopeId": "100001",
+  "originalSignedAt": "2026-04-25T14:30:00Z",
+  "detectedAt": "2036-04-26T03:00:00Z",
+  "incidentRef": "RB-2036-0001",
+  "remediationContact": "retention-ops@archisign.example"
+}
