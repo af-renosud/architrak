@@ -1,0 +1,32 @@
+Draft reply to Architrak:
+
+Subject: Re: Architrak ↔ Archidoc — outbound webhook (AT5 / INTER_APP_CONTRACT_v1.0 §5.3) ready for integration
+
+Thanks — our receiver is live on main and matches the contract. Item-by-item:
+
+1. Endpoint URL. Confirmed at the contract default: ${ARCHIDOC_BASE_URL}/api/integrations/architrak/work-authorisations. No override needed. We'll send you both base URLs (staging + production) in the same secure-channel exchange as item 2 below — they're separate Replit deployments with distinct hostnames.
+
+2. Shared HMAC secret. We read it as ARCHITRAK_WEBHOOK_SECRET on our side (one-shot; no key rotation overlap in v1.0). Per §3.9.1 our verifier computes sha256(${timestampMs}.${rawBody}) over the unmodified raw bytes (route-level express.raw parser ahead of the verifier), tolerates the optional sha256= prefix, enforces the ±5-min skew window, and uses length-guarded timingSafeEqual. Send via Bitwarden/1Password share or equivalent — please send the staging secret first; we'll wire it, run our internal smoke, then swap to production once we co-ordinate the live test slot. Body cap on the receiver is 1 MiB → 413 (matches §3.9).
+
+3. Receiver readiness — confirmations:
+
+a) HMAC verified before processing. ✅ Confirmed. verifyArchitrakWebhook middleware mounts ahead of the handler; missing secret → 503, missing/stale/mismatch headers → 401, all uniformly. Born v2 (no v1 fallback).
+b) Idempotent on eventId, replay returns 200 {"deduplicated": true}. ✅ Confirmed byte-for-byte. We INSERT every event into webhook_events_in (event_id UNIQUE) as the first action; UNIQUE-violation short-circuits to exactly 200 {"deduplicated": true} with zero side effects.
+c) Retry-After on 429. Caveat: our inbound receiver has no rate limit today (your declared peak of 25-in-30-min sits well within our headroom, per §1.6), so we won't emit 429 in normal operation. If we ever need to throttle, we'll emit 429 + Retry-After: <seconds> per §3.6 — flagged as a P1 enhancement we can ship as soon as you need it. For transient receiver-side failures (DB blip, etc.) we 500 without Retry-After, which engages your standard 1s/3s/10s backoff per §1.4 — that's the contract path.
+d) Both variants on the same endpoint, discriminated by explicit eventType. ✅ Confirmed. Zod discriminated-union: "work_authorised" (default when absent, per §5.3.2 backward-compat) and "signed_pdf_retention_breach". 4xx with Zod issues on shape errors.
+e) originalSignedAt as authoritative correlation key, byte-equality. Divergence — needs alignment. Our retention-breach handler currently correlates the prior work_authorised by archisignEnvelopeId (indexed FK column on work_authorisations), and stores originalSignedAt verbatim into the breach row but does not perform byte-equality against the prior signedAt. Reasoning: we round-trip signedAt through PG's timestamp column on the work_authorised insert, so byte-equality on the stored value is not preserved (Z vs +00:00, sub-second precision, etc.). Two ways to align — your call:
+Option A (status quo): envelope-ID is the join key; originalSignedAt is treated as audit metadata. Our 410-on-unknown-envelope behaviour already covers the only real correlation failure mode (envelope IDs are unique and not reissued by Archisign per §3.7). Nothing to change either side.
+Option B (strict byte-equality): we add a signed_at_wire text column on work_authorisations storing your ISO string verbatim, and reject the breach with 4xx on byte-mismatch against the looked-up row. Small additive schema change on our side, no change on yours. ~half-day.
+We've defaulted to Option A; happy to ship Option B if you want defence-in-depth against an envelope-ID confusion mode we haven't anticipated.
+4. Operator contact. [TEAM TO FILL IN — e.g. ops@archidoc.fr or a Slack channel email-bridge address.] Once you give us your equivalent, we'll mirror it both ways so dead-letter alerts page the right humans on both sides.
+
+Please paste the wire fixtures inline — saves us the round-trip to grant repo access. Once items 1–4 are settled and the staging secret is in our manager, we're good for the 15-min co-ordinated test slot. Suggest end-of-week or early next week.
+
+Thanks,
+Archidoc team
+
+Notes for you on the one divergence (item 3e):
+
+I think Option A is the right call — archisignEnvelopeId is genuinely the natural correlation key (it's the FK linkage in our schema and Archisign's emission rule §3.7 guarantees envelope IDs aren't reissued), and the byte-equality ask reads more like a "trust this field" guarantee than a prescriptive lookup mandate. Option B costs us a small schema migration and an extra Zod check for a defensive layer that protects against an Archisign bug that has never happened.
+
+But it's a defensible disagreement either way — Architrak may have a reason for asking that isn't obvious from the email. Worth letting them choose.
