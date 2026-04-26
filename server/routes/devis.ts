@@ -374,22 +374,44 @@ router.patch(
         // that crosses into `sent_to_client` (or beyond) — including
         // direct jumps from earlier stages — unless the live verdict
         // is green (200 + canProceed:true) OR an override row exists
-        // in `insurance_overrides`. The 4-arm decision tree (live-OK
-        // / live-blocked / live-not-found / mirror-fallback) and the
-        // 5s budget live in `evaluateInsuranceGate`. We deliberately
-        // do NOT condition on the prior stage so the gate cannot be
-        // bypassed by skipping `approved_for_signing`.
-        const decision = await evaluateInsuranceGate(id);
+        // in `insurance_overrides`. We deliberately do NOT condition
+        // on the prior stage so the gate cannot be bypassed by
+        // skipping `approved_for_signing`. We ALSO evaluate against
+        // the effective post-mutation contractor/lot from the same
+        // PATCH body, so a combined `contractorId + signOffStage`
+        // change cannot validate against the stale persisted row.
+        const ctxOverrides: { contractorId?: number; lotId?: number | null } = {};
+        let contractorOrLotMutating = false;
+        if (Object.prototype.hasOwnProperty.call(req.body, "contractorId")) {
+          const raw = req.body.contractorId;
+          const n = typeof raw === "number" ? raw : Number(raw);
+          if (Number.isFinite(n) && n > 0) {
+            ctxOverrides.contractorId = n;
+            contractorOrLotMutating = contractorOrLotMutating || n !== before.contractorId;
+          }
+        }
+        if (Object.prototype.hasOwnProperty.call(req.body, "lotId")) {
+          const raw = req.body.lotId;
+          const next: number | null =
+            raw === null || raw === undefined || raw === ""
+              ? null
+              : Number.isFinite(Number(raw))
+                ? Number(raw)
+                : null;
+          ctxOverrides.lotId = next;
+          contractorOrLotMutating = contractorOrLotMutating || next !== before.lotId;
+        }
+        const decision = await evaluateInsuranceGate(id, ctxOverrides);
         if (!("error" in decision) && !decision.proceed) {
           // Stale-override guard: an override only authorises the
           // send when the CURRENT verdict is still in an overridable
-          // arm. If the situation has since drifted to a non-
-          // overridable arm (e.g. live_not_found after contractor
-          // reassignment), the prior override row no longer applies
-          // and the gate stays closed.
-          const existingOverride = decision.overridable
-            ? await storage.getLatestInsuranceOverrideForDevis(id)
-            : null;
+          // arm AND the contractor/lot are NOT being changed in the
+          // same PATCH (a contractor/lot change invalidates the
+          // verdict snapshot the override was minted against).
+          const existingOverride =
+            decision.overridable && !contractorOrLotMutating
+              ? await storage.getLatestInsuranceOverrideForDevis(id)
+              : null;
           if (!existingOverride) {
             return res.status(409).json({
               message: "Impossible d'envoyer le devis au client : verdict d'assurance défavorable.",

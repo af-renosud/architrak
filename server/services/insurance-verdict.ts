@@ -127,11 +127,13 @@ export async function callLiveInsuranceVerdict(params: CallParams): Promise<Live
       budgetController.signal.addEventListener("abort", onAbort);
       const attemptTimer = setTimeout(() => attemptController.abort(), PER_ATTEMPT_TIMEOUT_MS);
       try {
-        // env.ARCHIDOC_SYNC_API_KEY re-read in case the secrets store
-        // mutated under us between attempts (per task §3.5 401-retry
-        // semantics). In current Architrak runtime the env-cache is
-        // process-lifetime, so this is best-effort — production secret
-        // rotation requires a deploy/restart.
+        // The single 401-retry exists to absorb a transient rejection
+        // (e.g. clock skew on the receiver, brief replica lag). It is
+        // NOT a runtime secret-rotation path: `env` is frozen at boot
+        // (`server/env.ts`), so a rotated key only takes effect after
+        // a deploy/restart. If both attempts return 401 we surface
+        // `live_auth_error` (non-overridable) so ops sees the failure
+        // and rotates rather than the architect silently overriding.
         const apiKey = env.ARCHIDOC_SYNC_API_KEY!;
         const result = await callOnce(params, apiKey, baseUrl, attemptController.signal);
         return result;
@@ -299,23 +301,36 @@ function evaluateMirror(snapshot: MirrorSnapshot): { ok: boolean; reason: string
  * Top-level gate evaluator used by both `GET /api/devis/:id/insurance-verdict`
  * (UI freshness check) and the PATCH lifecycle handler at
  * `approved_for_signing → sent_to_client`.
+ *
+ * `overrideContext` lets the PATCH handler pass the *effective post-
+ * mutation* contractor/lot (when the same PATCH also reassigns the
+ * contractor or the lot). Without this the gate would validate against
+ * the stale persisted row and could be bypassed by a combined
+ * `contractorId + signOffStage:sent_to_client` PATCH.
  */
-export async function evaluateInsuranceGate(devisId: number): Promise<GateDecision | { error: "devis_not_found" }> {
+export async function evaluateInsuranceGate(
+  devisId: number,
+  overrideContext?: { contractorId?: number; lotId?: number | null },
+): Promise<GateDecision | { error: "devis_not_found" }> {
   const devis = await storage.getDevis(devisId);
   if (!devis) return { error: "devis_not_found" };
+  const effectiveContractorId =
+    overrideContext?.contractorId !== undefined ? overrideContext.contractorId : devis.contractorId;
+  const effectiveLotId =
+    overrideContext?.lotId !== undefined ? overrideContext.lotId : devis.lotId;
   const project = await storage.getProject(devis.projectId);
-  const contractor = await storage.getContractor(devis.contractorId);
+  const contractor = await storage.getContractor(effectiveContractorId);
   let intendedWorkLotLabel: string | null = null;
   let lotNumber: string | null = null;
-  if (devis.lotId !== null && devis.lotId !== undefined) {
-    const lot = await storage.getLot(devis.lotId);
+  if (effectiveLotId !== null && effectiveLotId !== undefined) {
+    const lot = await storage.getLot(effectiveLotId);
     if (lot) {
       intendedWorkLotLabel = lot.descriptionFr ?? null;
       lotNumber = lot.lotNumber ?? null;
     }
   }
 
-  const mirror = await buildMirrorSnapshot(devis.contractorId, project?.archidocId ?? null, lotNumber);
+  const mirror = await buildMirrorSnapshot(effectiveContractorId, project?.archidocId ?? null, lotNumber);
   const baseSnapshot = {
     mirrorStatus: mirror.status || "(unknown)",
     mirrorSyncedAt: mirror.syncedAt,
@@ -376,16 +391,17 @@ export async function evaluateInsuranceGate(devisId: number): Promise<GateDecisi
         liveAttempted,
       };
     case "auth_error":
-      // Per G7: non-503 5xx-class failures (and 401 after the single
-      // retry) are uniformly overridable. We surface a distinct reason
-      // copy so the architect can see this was an auth error rather
-      // than a contractor-data problem.
+      // 401 after the single retry is an OPS/auth failure on our side
+      // (rotated/expired ARCHIDOC_SYNC_API_KEY), not a coverage
+      // decision. We surface it as NON-overridable so it cannot be
+      // silently bypassed from the architect UI — the right action is
+      // to rotate the key and re-evaluate, not to override.
       return {
         arm: "live_auth_error",
         proceed: false,
-        overridable: true,
+        overridable: false,
         reason:
-          "Live Archidoc : authentification refusée (401). Vérifier ARCHIDOC_SYNC_API_KEY puis ré-essayer ; override possible avec motif.",
+          "Live Archidoc : authentification refusée (401). Faire renouveler ARCHIDOC_SYNC_API_KEY côté ops avant de pouvoir continuer.",
         liveVerdictHttpStatus: 401,
         liveVerdictCanProceed: null,
         liveVerdictResponse: live.body,
