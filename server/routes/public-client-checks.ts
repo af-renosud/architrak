@@ -519,6 +519,7 @@ router.get(
       res.setHeader("Content-Type", doc.contentType || "application/pdf");
       res.setHeader("Content-Disposition", `inline; filename="devis-${devis.devisCode}.pdf"`);
       res.setHeader("X-Content-Type-Options", "nosniff");
+      await touchToken(t);
       doc.stream.pipe(res);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Erreur lecture PDF";
