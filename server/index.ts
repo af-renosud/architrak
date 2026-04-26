@@ -162,6 +162,14 @@ app.use((req, res, next) => {
   startContractorAutoSyncScheduler(60 * 60 * 1000);
   startDevisCheckTokenCleanup(6 * 60 * 60 * 1000);
 
+  // AT5 (Task #153): outbound webhook delivery sweeper. Drains
+  // `webhook_deliveries_out` rows whose next_attempt_at is due. The
+  // sweeper is idempotent and safe to start in dev — it will simply
+  // find nothing to do when ARCHITRAK_WEBHOOK_SECRET is unset (the
+  // enqueue path soft-skips, so no rows accumulate).
+  const { startWebhookDeliverySweeper } = await import("./services/webhook-delivery");
+  startWebhookDeliverySweeper();
+
   // Runtime watchdog (Task #126): poll /healthz/deep every 5 min and
   // alert on the OK→FAIL transition. Skipped unless we are in
   // production AND the operator-alert recipient list is configured —

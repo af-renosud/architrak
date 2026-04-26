@@ -108,6 +108,17 @@ const envSchema = z.object({
   ARCHISIGN_API_KEY: optionalString(),
   ARCHISIGN_WEBHOOK_SECRET: optionalString(),
 
+  // --- Architrak outbound webhook to Archidoc (AT5) --------------------
+  // ARCHITRAK_WEBHOOK_SECRET is the shared HMAC v2 secret AT5 uses to
+  // sign outbound deliveries to Archidoc's /work-authorisations endpoint
+  // (single key per environment per G16). Hard-fail at send time if
+  // unset — AT5 never falls through to unsigned traffic.
+  // ARCHIDOC_WORK_AUTH_URL overrides the default
+  //   `${ARCHIDOC_BASE_URL}/api/integrations/architrak/work-authorisations`
+  // (covers test envs where the path differs).
+  ARCHITRAK_WEBHOOK_SECRET: optionalString(),
+  ARCHIDOC_WORK_AUTH_URL: optionalUrl(),
+
   // --- Object storage (feature-scoped) ---------------------------------
   DEFAULT_OBJECT_STORAGE_BUCKET_ID: optionalString(),
   PRIVATE_OBJECT_DIR: optionalString(),

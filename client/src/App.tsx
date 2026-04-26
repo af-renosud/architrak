@@ -19,6 +19,7 @@ import Communications from "@/pages/communications";
 import SettingsPage from "@/pages/settings";
 import CostBenchmarks from "@/pages/cost-benchmarks";
 import AdminTransientFailures from "@/pages/admin-transient-failures";
+import AdminWebhookDlq from "@/pages/admin-webhook-dlq";
 import { Loader2 } from "lucide-react";
 
 function Router() {
@@ -37,6 +38,7 @@ function Router() {
       <Route path="/benchmarks" component={CostBenchmarks} />
       <Route path="/settings" component={SettingsPage} />
       <Route path="/admin/ops/transient-failures" component={AdminTransientFailures} />
+      <Route path="/admin/ops/webhook-dlq" component={AdminWebhookDlq} />
       <Route component={NotFound} />
     </Switch>
   );

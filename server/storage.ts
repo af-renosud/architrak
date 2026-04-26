@@ -17,9 +17,11 @@ import {
   type ClientCheckToken, type InsertClientCheckToken,
   insuranceOverrides,
   type InsuranceOverride, type InsertInsuranceOverride,
-  webhookEventsIn, signedPdfRetentionBreaches,
+  webhookEventsIn, signedPdfRetentionBreaches, webhookDeliveriesOut,
   type WebhookEventIn, type InsertWebhookEventIn,
   type SignedPdfRetentionBreach, type InsertSignedPdfRetentionBreach,
+  type WebhookDeliveryOut, type InsertWebhookDeliveryOut,
+  WEBHOOK_DELIVERY_STATES, type WebhookDeliveryState,
   type Project, type InsertProject,
   type User, type InsertUser,
   type Contractor, type InsertContractor,
@@ -353,6 +355,41 @@ export interface IStorage {
   recordSignedPdfRetentionBreach(
     data: InsertSignedPdfRetentionBreach,
   ): Promise<SignedPdfRetentionBreach | undefined>;
+
+  // -- Outbound webhook deliveries (AT5, §2.1.6) ---------------------------
+  // Race-safe enqueue: INSERT ... ON CONFLICT (event_id) DO NOTHING. When
+  // the unique violation hits, returns the existing row so the caller can
+  // distinguish "I won the claim" (act + dispatch) from "another worker /
+  // a redelivery already enqueued it" (no-op).
+  claimWebhookDeliveryOut(
+    data: InsertWebhookDeliveryOut,
+  ): Promise<{ row: WebhookDeliveryOut; created: boolean }>;
+  getWebhookDeliveryOutById(id: number): Promise<WebhookDeliveryOut | undefined>;
+  listWebhookDeliveriesOut(filter?: {
+    state?: WebhookDeliveryState;
+    limit?: number;
+    offset?: number;
+  }): Promise<WebhookDeliveryOut[]>;
+  // List rows whose state=pending and (next_attempt_at IS NULL OR
+  // next_attempt_at <= now()). Drives the retry sweeper.
+  listDueWebhookDeliveries(limit: number): Promise<WebhookDeliveryOut[]>;
+  // Record one attempt outcome. Caller is responsible for computing
+  // nextAttemptAt and the destination state.
+  updateWebhookDeliveryAttempt(
+    id: number,
+    patch: {
+      state: WebhookDeliveryState;
+      attemptCount: number;
+      lastAttemptAt: Date;
+      lastErrorBody?: string | null;
+      nextAttemptAt?: Date | null;
+      succeededAt?: Date | null;
+      deadLetteredAt?: Date | null;
+    },
+  ): Promise<WebhookDeliveryOut | undefined>;
+  // Admin manual retry: clear terminal flags + arm for immediate attempt.
+  // Preserves event_id (G6: receivers dedup on it).
+  resetWebhookDeliveryForRetry(id: number): Promise<WebhookDeliveryOut | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1962,6 +1999,125 @@ export class DatabaseStorage implements IStorage {
       })
       .returning();
     return rows[0];
+  }
+
+  // -- Outbound webhook deliveries (AT5) -----------------------------------
+
+  async claimWebhookDeliveryOut(
+    data: InsertWebhookDeliveryOut,
+  ): Promise<{ row: WebhookDeliveryOut; created: boolean }> {
+    // INSERT ... ON CONFLICT (event_id) DO NOTHING returning the inserted
+    // row when we won the race; otherwise SELECT the existing row so the
+    // caller observes the original eventType/payload (G6: eventId stable).
+    const inserted = await db
+      .insert(webhookDeliveriesOut)
+      .values(data)
+      .onConflictDoNothing({ target: webhookDeliveriesOut.eventId })
+      .returning();
+    if (inserted[0]) {
+      return { row: inserted[0], created: true };
+    }
+    const [existing] = await db
+      .select()
+      .from(webhookDeliveriesOut)
+      .where(eq(webhookDeliveriesOut.eventId, data.eventId))
+      .limit(1);
+    if (!existing) {
+      // Should not happen — INSERT failed without a conflict row available.
+      throw new Error(`claimWebhookDeliveryOut: race lost but no existing row for eventId=${data.eventId}`);
+    }
+    return { row: existing, created: false };
+  }
+
+  async getWebhookDeliveryOutById(id: number): Promise<WebhookDeliveryOut | undefined> {
+    const [row] = await db
+      .select()
+      .from(webhookDeliveriesOut)
+      .where(eq(webhookDeliveriesOut.id, id))
+      .limit(1);
+    return row;
+  }
+
+  async listWebhookDeliveriesOut(filter?: {
+    state?: WebhookDeliveryState;
+    limit?: number;
+    offset?: number;
+  }): Promise<WebhookDeliveryOut[]> {
+    const limit = Math.min(Math.max(filter?.limit ?? 100, 1), 500);
+    const offset = Math.max(filter?.offset ?? 0, 0);
+    const baseQuery = db.select().from(webhookDeliveriesOut);
+    const filtered = filter?.state
+      ? baseQuery.where(eq(webhookDeliveriesOut.state, filter.state))
+      : baseQuery;
+    return filtered
+      .orderBy(desc(webhookDeliveriesOut.updatedAt))
+      .limit(limit)
+      .offset(offset);
+  }
+
+  async listDueWebhookDeliveries(limit: number): Promise<WebhookDeliveryOut[]> {
+    const cap = Math.min(Math.max(limit, 1), 100);
+    return db
+      .select()
+      .from(webhookDeliveriesOut)
+      .where(
+        and(
+          eq(webhookDeliveriesOut.state, "pending"),
+          or(
+            isNull(webhookDeliveriesOut.nextAttemptAt),
+            lte(webhookDeliveriesOut.nextAttemptAt, sql`CURRENT_TIMESTAMP`),
+          ),
+        ),
+      )
+      .orderBy(asc(webhookDeliveriesOut.createdAt))
+      .limit(cap);
+  }
+
+  async updateWebhookDeliveryAttempt(
+    id: number,
+    patch: {
+      state: WebhookDeliveryState;
+      attemptCount: number;
+      lastAttemptAt: Date;
+      lastErrorBody?: string | null;
+      nextAttemptAt?: Date | null;
+      succeededAt?: Date | null;
+      deadLetteredAt?: Date | null;
+    },
+  ): Promise<WebhookDeliveryOut | undefined> {
+    const [row] = await db
+      .update(webhookDeliveriesOut)
+      .set({
+        state: patch.state,
+        attemptCount: patch.attemptCount,
+        lastAttemptAt: patch.lastAttemptAt,
+        lastErrorBody: patch.lastErrorBody ?? null,
+        nextAttemptAt: patch.nextAttemptAt ?? null,
+        succeededAt: patch.succeededAt ?? null,
+        deadLetteredAt: patch.deadLetteredAt ?? null,
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(eq(webhookDeliveriesOut.id, id))
+      .returning();
+    return row;
+  }
+
+  async resetWebhookDeliveryForRetry(id: number): Promise<WebhookDeliveryOut | undefined> {
+    // Admin one-click retry: state→pending, clear terminal flags, arm
+    // for immediate attempt (next_attempt_at=NULL). Preserves event_id
+    // and attempt_count so admins can see the cumulative attempt history.
+    const [row] = await db
+      .update(webhookDeliveriesOut)
+      .set({
+        state: "pending",
+        nextAttemptAt: null,
+        deadLetteredAt: null,
+        succeededAt: null,
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(eq(webhookDeliveriesOut.id, id))
+      .returning();
+    return row;
   }
 }
 

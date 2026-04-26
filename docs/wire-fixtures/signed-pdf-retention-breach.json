@@ -1,0 +1,11 @@
+{
+  "eventId": "01900000-0000-7000-8000-000000000011",
+  "eventType": "signed_pdf_retention_breach",
+  "architrakDevisId": 1234,
+  "archisignEnvelopeId": "5678",
+  "archidocProjectId": "abc-123",
+  "incidentRef": "INC-2036-04-26-0001",
+  "remediationContact": "vault-ops@archisign.fr",
+  "originalSignedAt": "2026-04-25T10:30:00Z",
+  "detectedAt": "2036-04-26T03:00:00Z"
+}

@@ -25,14 +25,16 @@ fixture.
 
 | Filename                              | Contract section | Status     | Fully populated by |
 |:--------------------------------------|:-----------------|:-----------|:-------------------|
-| `identity-verification.json`          | §3.4             | **empty stub** (`{}`) | AT5 — emits this shape inside the `work_authorised` payload (§3.6); AT5's golden test will pin the exact byte layout |
+| `identity-verification.json`          | §3.4             | populated  | AT5 — emitted verbatim inside the `work_authorised` payload (§5.3.1); pinned 2026-04-26 with the AT5 ship |
 | `envelope-sent.json`                  | §3.1 / §3.2      | populated  | AT4 — inbound webhook receiver |
 | `envelope-queried.json`               | §3.1 / §3.2      | populated  | AT4 — inbound webhook receiver |
 | `envelope-query_resolved.json`        | §3.1 / §3.3      | populated  | AT4 — inbound webhook receiver (4-field attribution) |
 | `envelope-declined.json`              | §3.1 / §3.2      | populated  | AT4 — inbound webhook receiver |
 | `envelope-expired.json`               | §3.1 / §3.2      | populated  | AT4 — inbound webhook receiver |
-| `envelope-signed.json`                | §3.1 / §3.4      | populated  | AT4 — inbound webhook receiver (`identityVerification` is `{}` until AT5 pins it) |
+| `envelope-signed.json`                | §3.1 / §3.4      | populated  | AT4 — inbound webhook receiver (mirrors `identity-verification.json` once AT5 pinned it) |
 | `envelope-retention_breach.json`      | §3.1 / §3.7      | populated  | AT4 — inbound webhook receiver (downstream re-notify is AT5) |
+| `work-authorised.json`                | §5.3.1           | populated  | AT5 — Architrak → Archidoc outbound (default `eventType` variant) |
+| `signed-pdf-retention-breach.json`    | §5.3.2           | populated  | AT5 — Architrak → Archidoc outbound (discriminated `eventType` variant; **`originalSignedAt` mirrors the upstream Archisign value verbatim — never substituted with receipt time**) |
 
 The empty-stub convention: an unpopulated fixture is `{}` (a literal
 empty JSON object with a trailing newline), NOT a skeleton with field

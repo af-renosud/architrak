@@ -32,8 +32,11 @@ import { z } from "zod";
 import { storage } from "../storage";
 import { verifyArchisignWebhook } from "../middleware/archisign-webhook-auth";
 import { db } from "../db";
-import { devis, clientChecks, type InsertDevis, type InsertClientCheck, type InsertWebhookEventIn, type InsertSignedPdfRetentionBreach } from "@shared/schema";
+import { devis, clientChecks, type InsertDevis, type InsertClientCheck, type InsertWebhookEventIn, type InsertSignedPdfRetentionBreach, type Devis, type Project } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
+import { uuidv7 } from "../lib/uuidv7";
+import { enqueueWebhookDelivery } from "../services/webhook-delivery";
+import type { OutboundEventType } from "../services/archidoc-webhook-client";
 
 const router = Router();
 
@@ -275,20 +278,40 @@ async function handleExpired(p: ExpiredPayload): Promise<HandlerResult> {
 async function handleSigned(p: SignedPayload): Promise<HandlerResult> {
   // §1.2: sent_to_client → client_signed_off. Persist
   // identityVerification (8-field block) verbatim and the
-  // signedPdfFetchUrl snapshot. AT5 fires the outbound work-
-  // authorisation webhook from here once it ships — for now the
-  // transition itself is what AT4 owns.
+  // signedPdfFetchUrl snapshot, then enqueue the outbound
+  // work_authorised delivery to Archidoc (AT5, §5.3.1).
+  //
+  // The transition is gated on signOffStage to keep the outbound
+  // enqueue idempotent against AT4's own webhook redeliveries: a
+  // duplicate `envelope.signed` after we've already moved the devis
+  // returns 200 without re-firing the webhook (the inbound dedup row
+  // already covers the wire-side dup; this guards against the
+  // re-entry ordering where a row was deleted from `webhook_events_in`
+  // out-of-band — defensive for a rare admin-edit case).
   const d = await storage.getDevisByArchisignEnvelopeId(p.envelopeId);
   if (!d) {
     return { status: 410, body: { message: "Unknown envelope", envelopeId: p.envelopeId } };
   }
-  const update: Partial<InsertDevis> = {
-    signOffStage: "client_signed_off",
-    archisignEnvelopeStatus: "signed",
-    identityVerification: p.identityVerification,
-    signedPdfFetchUrlSnapshot: p.signedPdfFetchUrl,
-  };
-  await storage.updateDevis(d.id, update);
+  const isFreshTransition = d.signOffStage !== "client_signed_off";
+  if (isFreshTransition) {
+    const update: Partial<InsertDevis> = {
+      signOffStage: "client_signed_off",
+      archisignEnvelopeStatus: "signed",
+      identityVerification: p.identityVerification,
+      signedPdfFetchUrlSnapshot: p.signedPdfFetchUrl,
+    };
+    await storage.updateDevis(d.id, update);
+  }
+
+  // Enqueue the §5.3.1 work_authorised delivery. We only enqueue on
+  // the fresh transition — a no-op duplicate would have its eventId
+  // collide with the existing row anyway, but skipping the build path
+  // saves an unnecessary lookup on every retry.
+  if (isFreshTransition) {
+    const reloaded = await storage.getDevis(d.id);
+    await enqueueWorkAuthorised(reloaded ?? d, p);
+  }
+
   return { status: 200, body: { ok: true, devisId: d.id, transition: "client_signed_off" } };
 }
 
@@ -311,16 +334,155 @@ async function handleRetentionBreach(p: RetentionBreachPayload): Promise<Handler
     remediationContact: p.remediationContact,
   };
   const inserted = await storage.recordSignedPdfRetentionBreach(breach);
+  // AT5: only fire the downstream notify on a fresh insert. The
+  // (envelope_id, incident_ref) UNIQUE index makes
+  // `recordSignedPdfRetentionBreach` return undefined on dup; we MUST
+  // skip the enqueue in that case so a redelivered Archisign webhook
+  // doesn't double-notify Archidoc. (Receiver-side dedup on eventId
+  // also collapses dupes to 200, but skipping locally is cleaner.)
+  if (inserted) {
+    await enqueueRetentionBreach(d, p);
+  }
   return {
     status: 200,
     body: {
       ok: true,
       devisId: d.id,
       breachRecorded: Boolean(inserted),
-      // AT5 will read this same response and decide whether to fire the
-      // downstream re-notify based on `breachRecorded`.
     },
   };
+}
+
+// --- Outbound enqueue helpers (AT5, §5.3) -------------------------------
+
+/**
+ * Build §5.3.1 work_authorised payload and enqueue a delivery row.
+ * Logs and swallows failures — the inbound Archisign webhook MUST 200
+ * once the local transition is persisted, even if the outbound surface
+ * is down. Failed enqueues land in the DLQ for admin retry.
+ */
+async function enqueueWorkAuthorised(d: Devis, p: SignedPayload): Promise<void> {
+  try {
+    const project = await storage.getProject(d.projectId);
+    const contractor = d.contractorId ? await storage.getContractor(d.contractorId) : undefined;
+    const archidocProjectId = pickArchidocProjectId(project);
+
+    // §5.3.1 omits insuranceOverride entirely when no override exists
+    // (Archidoc treats absent as "no override on file"). Include only
+    // when a row is present.
+    const override = await storage.getLatestInsuranceOverrideForDevis(d.id);
+
+    const eventId = uuidv7();
+    const payload: { eventId: string; eventType: OutboundEventType } & Record<string, unknown> = {
+      eventId,
+      eventType: "work_authorised",
+      architrakDevisId: d.id,
+      projectId: d.projectId,
+      archidocProjectId,
+      contractorId: d.contractorId,
+      contractorArchidocId: contractor?.archidocId ?? null,
+      archisignEnvelopeId: p.envelopeId,
+      signedAt: p.signedAt,
+      identityVerification: p.identityVerification,
+      dqeExportId: d.archidocDqeExportId ?? null,
+    };
+    if (override) {
+      payload.insuranceOverride = {
+        overriddenAt: override.createdAt instanceof Date
+          ? override.createdAt.toISOString()
+          : String(override.createdAt),
+        overriddenByUserEmail: override.overriddenByUserEmail,
+        reason: override.overrideReason,
+      };
+    }
+
+    await enqueueOutboundDelivery({
+      eventId,
+      eventType: "work_authorised",
+      payload,
+      logContext: `devisId=${d.id} envelopeId=${p.envelopeId}`,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[ArchisignWebhook] Failed to enqueue work_authorised for devisId=${d.id} envelopeId=${p.envelopeId}: ${message}`,
+    );
+  }
+}
+
+/**
+ * Build §5.3.2 signed_pdf_retention_breach payload and enqueue. The
+ * authoritative `originalSignedAt` is preserved verbatim from the
+ * inbound payload — Archidoc relies on byte-equality with the prior
+ * work_authorised.signedAt to correlate the breach.
+ */
+async function enqueueRetentionBreach(d: Devis, p: RetentionBreachPayload): Promise<void> {
+  try {
+    const project = await storage.getProject(d.projectId);
+    const archidocProjectId = pickArchidocProjectId(project);
+    const eventId = uuidv7();
+    const payload: { eventId: string; eventType: OutboundEventType } & Record<string, unknown> = {
+      eventId,
+      eventType: "signed_pdf_retention_breach",
+      architrakDevisId: d.id,
+      projectId: d.projectId,
+      archidocProjectId,
+      archisignEnvelopeId: p.envelopeId,
+      // Verbatim preservation: take from the inbound payload (string
+      // ISO-8601 as-received), NOT a re-formatted Date round-trip.
+      originalSignedAt: p.originalSignedAt,
+      detectedAt: p.detectedAt,
+      incidentRef: p.incidentRef,
+      remediationContact: p.remediationContact,
+    };
+    await enqueueOutboundDelivery({
+      eventId,
+      eventType: "signed_pdf_retention_breach",
+      payload,
+      logContext: `devisId=${d.id} envelopeId=${p.envelopeId} incidentRef=${p.incidentRef}`,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[ArchisignWebhook] Failed to enqueue signed_pdf_retention_breach for devisId=${d.id} envelopeId=${p.envelopeId}: ${message}`,
+    );
+  }
+}
+
+interface OutboundEnqueueArgs {
+  eventId: string;
+  eventType: OutboundEventType;
+  payload: { eventId: string; eventType: OutboundEventType } & Record<string, unknown>;
+  logContext: string;
+}
+
+async function enqueueOutboundDelivery(args: OutboundEnqueueArgs): Promise<void> {
+  const result = await enqueueWebhookDelivery({
+    eventId: args.eventId,
+    eventType: args.eventType,
+    payload: args.payload,
+  });
+  if (result.skipped === "unconfigured") {
+    // Already logged inside enqueueWebhookDelivery — keep AT4's inbound
+    // path 200-clean.
+    return;
+  }
+  if (!result.enqueued) {
+    console.log(
+      `[ArchisignWebhook] Outbound ${args.eventType} eventId=${args.eventId} ${args.logContext} already enqueued (idempotent no-op)`,
+    );
+  }
+}
+
+/**
+ * §5.3 lets `archidocProjectId` be omitted when the upstream project
+ * isn't yet linked to an Archidoc mirror; emit null in that case so
+ * Archidoc's parser can branch deterministically on `=== null` vs
+ * `=== undefined` (we always include the field).
+ */
+function pickArchidocProjectId(project: Project | undefined): string | null {
+  if (!project) return null;
+  return project.archidocId ?? null;
 }
 
 // --- Route handler ------------------------------------------------------

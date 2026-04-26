@@ -1,0 +1,30 @@
+{
+  "eventId": "01900000-0000-7000-8000-000000000010",
+  "eventType": "work_authorised",
+  "architrakDevisId": 456,
+  "projectId": 789,
+  "archidocProjectId": "abc-123",
+  "contractorId": 1011,
+  "archisignEnvelopeId": "1234567890",
+  "signedAt": "2026-04-25T10:30:00Z",
+  "identityVerification": {
+    "method": "otp_email",
+    "otpIssuedAt": "2026-04-25T10:25:00Z",
+    "otpVerifiedAt": "2026-04-25T10:26:00Z",
+    "signerIpAddress": "203.0.113.42",
+    "signerUserAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+    "lastViewedAt": "2026-04-25T10:29:00Z",
+    "signedAt": "2026-04-25T10:30:00Z",
+    "authenticationId": "auth_abc123"
+  },
+  "dqeExportId": "DQE-2026-001",
+  "insuranceOverride": {
+    "overrideReason": "Insurance certificate received by post, not yet uploaded",
+    "mirrorStatusAtOverride": "expired",
+    "mirrorSyncedAtAtOverride": "2026-04-20T08:00:00Z",
+    "liveVerdictHttpStatus": 200,
+    "liveVerdictCanProceed": false,
+    "liveVerdictResponse": { "canProceed": false, "reason": "Decennale expired 2026-03-01" },
+    "overriddenByUserEmail": "architect@firm.fr"
+  }
+}
