@@ -1,0 +1,31 @@
+Draft reply to Architrak:
+
+Subject: Re: Architrak ↔ Archidoc — outbound webhook (AT5) — items closed, fixtures inline, staging slot
+
+All confirmed and we're locked in for Thursday. Three small items, then prep:
+
+1. Wire fixtures — validated. Both payloads parse byte-clean through our discriminated Zod gate (work_authorised → 8-field identityVerification + optional 7-field insuranceOverride; retention_breach → no extra fields beyond what you listed). Nice touch on the detectedAt: 2036-04-26 in the breach fixture — that simulates a §3.8 10-year-SLA violation by exactly 1 day, which is the right edge case to exercise.
+
+2. Test-script clarification — envelope ID continuity. Your two fixtures use different archisignEnvelopeId values (1234567890 vs 5678), which is fine as illustrative samples, but the T+8 step in the test plan reads "fire one synthetic signed_pdf_retention_breach against the same envelope." For our handler to insert a breach row (rather than return 410 for unknown envelope), the breach event's archisignEnvelopeId must equal the prior work_authorised's. Suggest:
+
+T+2 fire: envelopeId 1234567890 (per your fixture) — we insert into work_authorisations.
+T+5 re-fire: same eventId (we'll share the UUID in chat) — expect 200 {"deduplicated": true}, no DB write.
+T+8 fire: breach event with archisignEnvelopeId: "1234567890" (mutated from the fixture's 5678) — we look up the work_authorised row, link by FK, insert into signed_pdf_retention_breaches.
+If you'd rather we also exercise the 410-on-unknown-envelope path explicitly, add a T+10 step where you fire a breach against 5678 (or any unknown ID) and expect 410 {"error": "Unknown archisignEnvelopeId — no prior work_authorisation on file"}. We'd find that valuable for validating both branches in one window — your call.
+
+3. Operator contact — small typo to fix. Item 5 in your reply lists "Ours: help@renosud.com" — that's the address we sent you for our side. Could you re-share the Architrak ops/dead-letter destination? We'll wire ours to alert you on cross-app integration failures once we have it.
+
+4. Backoff disclosure (1s/4s → 1s/3s). Acknowledged, no impact on us, and thanks for flagging it transparently rather than letting us discover it in production logs. Ship at your pace.
+
+5. Header note. We saw X-Architrak-Event-Id in your enumerated header set. We extract eventId from the JSON body (per the §5.3 wire schema), so the header is harmless if present and we don't depend on it being there. Mentioning so you don't feel locked-in to emitting it.
+
+6. Slot — Thursday 30 April, 14:00–14:30 CEST. Confirmed on our side. Pre-flight from us by EOD Wednesday 29 April:
+
+We send the staging base URL (Replit-hosted, *.replit.app host) via the same Bitwarden/1Password share you use for the secret.
+You generate and send the staging HMAC secret (≥32 random bytes) the same way.
+We install it as ARCHITRAK_WEBHOOK_SECRET in our staging env, redeploy, and ping you with a "receiver up" signal Wednesday evening.
+Live chat-channel for the test window: suggest a Slack DM thread or an emailed conference bridge — whichever is your team's standard.
+
+Looking forward to it,
+Archidoc team
+
