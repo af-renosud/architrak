@@ -41,7 +41,7 @@ export interface ClientPortalDataPayload {
    *  unchanged. */
   lineItems: Array<{
     id: number;
-    lineNumber: string | null;
+    lineNumber: number | null;
     description: string | null;
     quantity: string | null;
     unit: string | null;
@@ -214,7 +214,7 @@ export async function buildClientPortalPayload(
       description: li.description ?? null,
       quantity: li.quantity ?? null,
       unit: li.unit ?? null,
-      unitPrice: li.unitPrice ?? null,
+      unitPrice: li.unitPriceHt ?? null,
       totalHt: li.totalHt ?? null,
     })),
     agreed,
