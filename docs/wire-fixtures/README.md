@@ -25,12 +25,22 @@ fixture.
 
 | Filename                       | Contract section | Status     | Fully populated by |
 |:-------------------------------|:-----------------|:-----------|:-------------------|
-| `identity-verification.json`   | §3.4             | placeholder | AT5 (emit path tests will pin the exact byte layout) |
+| `identity-verification.json`   | §3.4             | **empty stub** (`{}`) | AT5 — emits this shape inside the `work_authorised` payload (§3.6); AT5's golden test will pin the exact byte layout |
+
+The empty-stub convention: an unpopulated fixture is `{}` (a literal
+empty JSON object with a trailing newline), NOT a skeleton with field
+names and `null` values, and NOT a JSON file with comment markers. The
+"complete example" rule above applies only to fixtures that have been
+**populated** by their owning task. Reviewers can therefore tell at a
+glance whether a fixture is still a placeholder or has been pinned.
 
 Subsequent tasks (AT3 outbound webhook payloads, AT4 inbound webhook
-payloads) MUST add their own fixtures here as the first step of their
-implementation, BEFORE writing any serialiser/parser code, so the
-fixture is the single source of truth and the code is forced to match.
+payloads, AT5 outbound work_authorised + retention_breach payloads) MUST
+add their own fixtures here as the first step of their implementation,
+BEFORE writing any serialiser/parser code, so the fixture is the single
+source of truth and the code is forced to match. AT5 also replaces the
+`identity-verification.json` empty stub with a complete example in the
+same change.
 
 ## Why fixtures and not schemas alone
 
