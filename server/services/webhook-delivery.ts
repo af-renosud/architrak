@@ -11,10 +11,10 @@
  *
  * Retry policy (§1.4):
  *   - 3 attempts total (initial + 2 retries)
- *   - Backoff between attempts: 1s then 4s with ±20% jitter
+ *   - Backoff between attempts: 1s then 3s with ±20% jitter
  *     (the third backoff value is never consumed — the third attempt
  *     either succeeds or dead-letters, so the constants compute a
- *     16s value purely as a documentation artefact)
+ *     9s value purely as a documentation artefact)
  *   - Per-attempt 10s HTTP timeout (enforced inside the client)
  *   - 4xx (non-429) → dead-letter immediately (skip remaining attempts)
  *   - 5xx + network errors + 429 → retry; 429 honours Retry-After
@@ -76,7 +76,7 @@ async function notifyPermanentDeliveryFailure(
 
 export const MAX_ATTEMPTS = 3;
 const BACKOFF_BASE_MS = 1_000;
-const BACKOFF_FACTOR = 4;
+const BACKOFF_FACTOR = 3;
 const JITTER_PCT = 0.2;
 const SWEEPER_INTERVAL_MS = 30_000;
 const SWEEPER_BATCH = 25;
@@ -286,7 +286,7 @@ export function computeBackoffMs(attempt: number, retryAfterMs?: number): number
   if (typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
     return retryAfterMs;
   }
-  // 1st failure → 1s, 2nd → 4s. (Third attempt would be the dead-letter
+  // 1st failure → 1s, 2nd → 3s. (Third attempt would be the dead-letter
   // boundary so the third backoff value is never used.)
   const exp = BACKOFF_BASE_MS * Math.pow(BACKOFF_FACTOR, Math.max(0, attempt - 1));
   const jitter = (Math.random() * 2 - 1) * JITTER_PCT * exp;
