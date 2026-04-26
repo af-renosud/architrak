@@ -52,7 +52,7 @@ async function notifyPermanentDeliveryFailure(
     const kind = err instanceof ArchidocWebhookConfigError ? "config-error" : "payload-too-large";
     await sendOperatorAlert({
       source: "webhook-delivery",
-      subject: `Outbound webhook dead-lettered (${kind}): ${row.eventType} eventId=${row.eventId}`,
+      subject: `[ARCHITRAK] Outbound webhook dead-lettered (${kind}): ${row.eventType} eventId=${row.eventId}`,
       body: [
         `An outbound Architrak → Archidoc webhook was dead-lettered on a permanent failure.`,
         ``,
