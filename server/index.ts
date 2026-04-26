@@ -33,15 +33,11 @@ declare module "http" {
 }
 
 // Archisign webhook MUST be byte-exact for HMAC v2 verification (§3.9.1).
-// We mount express.raw on its path BEFORE express.json so the body stream
-// is consumed by raw — express.json then sees req._body=true and skips.
-// At the route handler `req.body` is the Buffer that the verifier hashes
-// verbatim. Any other route falls through to the JSON parser below.
-app.use(
-  "/api/webhooks/archisign",
-  express.raw({ type: "application/json", limit: "1mb" }),
-);
-
+// The raw-body parser is mounted route-level inside
+// `server/routes/archisign-webhooks.ts` (path `/api/webhooks/archisign`)
+// so it is co-located with the verifier and cannot be silently bypassed
+// by ordering changes here. The express.json `verify` callback below
+// captures `req.rawBody` for any other webhook needing a verbatim copy.
 app.use(
   express.json({
     verify: (req, _res, buf) => {
