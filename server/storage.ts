@@ -365,6 +365,11 @@ export interface IStorage {
     data: InsertWebhookDeliveryOut,
   ): Promise<{ row: WebhookDeliveryOut; created: boolean }>;
   getWebhookDeliveryOutById(id: number): Promise<WebhookDeliveryOut | undefined>;
+  // Lookup by the wire-level eventId (UUIDv7). Used by the AT5 smoke
+  // CLI (scripts/at5-smoke.ts) to read row state after a fire and to
+  // resolve the persisted payload for the dedup re-POST scenario.
+  // Backed by the unique index on event_id.
+  getWebhookDeliveryOutByEventId(eventId: string): Promise<WebhookDeliveryOut | undefined>;
   listWebhookDeliveriesOut(filter?: {
     state?: WebhookDeliveryState;
     limit?: number;
@@ -2034,6 +2039,17 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(webhookDeliveriesOut)
       .where(eq(webhookDeliveriesOut.id, id))
+      .limit(1);
+    return row;
+  }
+
+  async getWebhookDeliveryOutByEventId(
+    eventId: string,
+  ): Promise<WebhookDeliveryOut | undefined> {
+    const [row] = await db
+      .select()
+      .from(webhookDeliveriesOut)
+      .where(eq(webhookDeliveriesOut.eventId, eventId))
       .limit(1);
     return row;
   }
