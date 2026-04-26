@@ -3004,23 +3004,25 @@ function SigningPanel({
   const expiresAt = d.archisignEnvelopeExpiresAt ? new Date(d.archisignEnvelopeExpiresAt) : null;
   const otpDestination = d.archisignOtpDestination ?? null;
 
-  // Gate logic:
-  //  • Stage must be `approved_for_signing` and the devis must not be archived.
-  //  • The button must remain available for the RESUME path: the
-  //    POST /api/devis/:id/send-to-signer endpoint persists
-  //    archisignEnvelopeId immediately after Archisign /create, BEFORE /send
-  //    is called. If /send fails (network blip, 5xx, etc.), the devis is
-  //    left with envelopeId set but stage still `approved_for_signing`. The
-  //    endpoint is idempotent and resumes by re-calling /send, so the
-  //    architect MUST be able to click the button again — gating only on
-  //    `!archisignEnvelopeId` would dead-end this recovery path.
-  //  • Resend-after-expiry is OUT of scope for AT4 (per Task #152 brief).
-  //    Per §1.2 the backend correctly transitions expired envelopes back to
-  //    `approved_for_signing`, but the UI suppresses the CTA whenever the
-  //    prior accessUrl is marked invalidated so the architect cannot trigger
-  //    a fresh /create+/send before the AT5 resend flow ships.
-  const canSend =
-    stage === "approved_for_signing" && !isArchived && !accessUrlInvalidated;
+  // Gate logic — the CTA is available whenever the devis is in
+  // `approved_for_signing` and not archived. This single condition naturally
+  // covers all three reachable scenarios:
+  //
+  //   (a) FIRST SEND: no envelopeId, no accessUrl → /create + /send.
+  //   (b) RESUME after a /send failure: POST /api/devis/:id/send-to-signer
+  //       persists archisignEnvelopeId immediately after /create and BEFORE
+  //       /send. If /send fails, the devis stays at stage
+  //       `approved_for_signing` with envelopeId set; the endpoint is
+  //       idempotent and resumes by re-calling /send. Gating on
+  //       `!archisignEnvelopeId` would dead-end this recovery path.
+  //   (c) POST-EXPIRY: handleExpired (§1.2) transitions the devis back to
+  //       `approved_for_signing` and clears archisignEnvelopeId, so a click
+  //       fires a fresh /create+/send. The historical accessUrl is kept
+  //       struck-through alongside an "Lien expiré" note for audit context;
+  //       AT4's brief excludes any *additional* resend-after-expiry
+  //       orchestration (no new endpoints, no reminders), so the CTA
+  //       reappearing IS the entire post-expiry surface.
+  const canSend = stage === "approved_for_signing" && !isArchived;
   const isResume = canSend && !!d.archisignEnvelopeId;
 
   const statusLabel: Record<string, { label: string; tone: "default" | "secondary" | "destructive" }> = {
