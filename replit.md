@@ -1,10 +1,7 @@
 # ArchiTrak — French Architecture Financial Management
 
 ## Overview
-ArchiTrak is a financial workflow management application designed for French architectural firms (maîtres d'œuvre). Its primary purpose is to manage the complete financial lifecycle of construction projects, from initial contracts (Marché) and quotations (Devis) through variations (Avenant), progress claims (Situation de Travaux), and architect-verified payment instructions (Certificat de Paiement), up to fee tracking. The application integrates with ArchiDoc for project and contractor management and features AI-powered extraction of financial data from PDF attachments in Gmail. The business vision is to streamline financial operations for architectural firms, improving accuracy and efficiency in project billing and financial oversight.
-
-- **Devis sign-off integration contract** — frozen at v1.0 (2026-04-25): `docs/INTER_APP_CONTRACT_v1.0.md`. All three apps confirmed (Architrak, Archidoc, Archisign). Prior release candidates `docs/INTER_APP_CONTRACT_v1.0-rc2.md` and `docs/INTER_APP_CONTRACT_v1.0-rc3.md` retained for history. Subsequent changes require a v1.1 amendment cycle — no in-place edits to v1.0.
-- **Devis sign-off Step-4 implementation breakdown** — locked at 2026-04-25: `docs/STEP4_IMPLEMENTATION_BREAKDOWN.md` consolidates all three apps' task breakdowns (AT1–AT5, AD1–AD5, AS1–AS5), the cross-app sequencing graph, all 16 dispositioned integration gaps (G11 closed lot-scoped per Archidoc + label-match per Architrak; AS3/AS4/AS5 reverse-deps tightened per Archisign), and implementation-phase handoff notes. Subsequent changes follow the v1.1 amendment cycle against the v1.0 contract.
+ArchiTrak is a financial workflow management application for French architectural firms (maîtres d'œuvre). It manages the complete financial lifecycle of construction projects, from initial contracts and quotations through variations, progress claims, and architect-verified payment instructions, up to fee tracking. The application integrates with ArchiDoc for project and contractor management and features AI-powered extraction of financial data from PDF attachments in Gmail. The business vision is to streamline financial operations for architectural firms, improving accuracy and efficiency in project billing and financial oversight.
 
 ## User Preferences
 - French domain terms kept (Devis, Avenant, Marché, Certificat, Honoraires, Lot, Situation, Retenue de Garantie, PV/MV, TVA, SIRET). All other UI in English.
@@ -14,67 +11,64 @@ ArchiTrak is a financial workflow management application designed for French arc
 ## System Architecture
 
 ### Operations Runbook
-- **Migrations**: generated via `npm run db:generate`; applied at deploy via `npx tsx scripts/run-migrations.mjs` (called from `scripts/post-merge.sh`). NEVER use `db:push` — this project has 24 hand-tracked SQL migrations and a `drizzle.__drizzle_migrations` tracker; `db:push` would corrupt the migration history.
-- **Migration-replay gate (Task #124)**: canonical command is `bash scripts/check-migration-replay.sh`. Runs `npx vitest run server/__tests__/migration-replay.test.ts` with `STRICT_MIGRATION_REPLAY=1` and exits non-zero on any failure (including silent skips from missing DB privileges). Wired into `scripts/post-merge.sh` so a partial migration apply aborts the deploy. For local exploration, drop the env var and run the vitest directly.
-- **Deep healthcheck + post-deploy smoke gate (Task #125)**: `GET /healthz/deep` issues `SELECT * FROM <table> WHERE FALSE` against every Drizzle-modeled table (45 tables today) and returns 503 with `{table, error}` for each failure. Public, rate-limited at 30 req/min/caller. Cheap liveness probe is `GET /healthz`. After migrations apply, `scripts/post-merge.sh` invokes `npx tsx scripts/post-deploy-smoke.ts` which polls the deep endpoint for up to 60 s; on persistent failure it sends an operator alert and exits 1 to abort the deploy. Set `POST_DEPLOY_SMOKE=0` to skip on environments without a reachable `PUBLIC_BASE_URL`.
-- **Post-merge schema-error classifier + runtime watchdog (Task #126)**: `scripts/lib/run-or-classify.sh` wraps every post-merge maintenance script (contractor-identifier backfill, page-hint backfill). On non-zero exit it greps the last 50 log lines for `column "..." does not exist` — match → exit 2 (deploy aborts); no match → fire-and-forget operator alert with subject prefix `[transient]` and exit 0 so flaky external dependencies don't block the merge. In-process: `server/operations/healthz-watchdog.ts` polls `/healthz/deep` every 5 minutes when `NODE_ENV=production` AND `OPERATOR_ALERT_EMAIL` is set, alerting exactly once per failure window (re-armed on first successful poll).
-- **Repeat-transient escalation (Task #130)**: every `[transient]` alert from #126 is also recorded in `post_merge_transient_failures` (one row per source tag). The classifier's success path clears the counter for that source. Once a source has failed transiently on `POST_MERGE_ESCALATE_AFTER` consecutive deploys (default 3), the NEXT failure (counter > threshold, e.g. the 4th in a row at default) ships with subject prefix `[escalated]` and a body listing the N prior failure timestamps so the on-call stops dismissing it as ignorable. Escalation is visibility-only — schema errors keep their existing exit-2 abort path, and DB failures while persisting the counter degrade gracefully to a plain `[transient]` alert.
-- **`OPERATOR_ALERT_EMAIL`**: REQUIRED in production. Comma-separated list of recipients for operator alerts (post-deploy backfills, smoke-gate failures, /healthz watchdog). When unset in production, `server/env.ts` logs a single `[env] WARN — OPERATOR_ALERT_EMAIL not configured` line at boot and the runtime watchdog skips itself entirely. Optional in dev/CI.
-- **Environment override**: set `REPLAY_ADMIN_DB=postgres` (or another DB the role can connect to) if the deploy role cannot CREATE DATABASE while connected to the main app DB.
-- **Database identity guard (Task #137)**: `server/operations/database-identity-check.ts` runs at startup as the LAST step of `runMigrationsWith` (after the post-migrate `assertSchemaMatchesTracker`). Closes the trap surfaced by ArchiDoc Task #294: every existing safety check (count #123, schema-presence #136, deep healthz #125, db-push host blocklist) only validates the SHAPE of the database — they all happily run against the wrong DB if its schema happens to match. The guard answers the orthogonal question "is this the right database?" via two layers: (1) **host fingerprint** in `scripts/lib/database-identity.ts` exporting `EXPECTED_PROD_HOST` + `EXPECTED_PROD_DBNAME`, compared against the URL of `DATABASE_URL`; (2) **identity sentinel row** — migration `0023_database_identity` creates `__database_identity (id text primary key, value text not null, created_at timestamptz)`, the boot check auto-seeds `id='name'` with `architrak-prod` or `architrak-dev` based on URL fingerprint comparison on first boot, and on every subsequent boot SELECTs the row and refuses to start if the value disagrees with what the URL fingerprint expects. **Bootstrap runbook**: `EXPECTED_PROD_HOST` ships as `""` so the very first deploy doesn't break — Layer 2 (sentinel row) activates immediately, Layer 1 (host comparison) stays dormant with a one-line WARN at boot until the operator runs `node scripts/print-database-host.mjs` (with `PROD_DATABASE_URL` in scope; the script prints ONLY the hostname + dbname, never credentials), pastes the values into `scripts/lib/database-identity.ts`, and redeploys. Both destructive scripts (`scripts/reconcile-drizzle-tracker.ts --apply`, `scripts/repair-migration-drift.mjs --apply`) call the same assertion before writing, so an operator who exports `PROD_DATABASE_URL` into a shell while reaching for a dev fix gets the same precise runbook message as the boot path. Integration test in `server/__tests__/database-identity-check.test.ts` exercises auto-seed, match, mismatch (sentinel says prod + URL doesn't), and table-missing failure modes against a throwaway DB.
-- **Schema-presence boot invariant (Task #136)**: `server/operations/schema-presence-check.ts` runs at startup immediately after `assertJournalMatchesTracker` (#123) and walks the journal in tracker order, asserting one well-chosen schema artifact (table or column) per migration agrees with the tracker — present when the tracker has the matching hash, absent when it doesn't. Catches the inverse-of-2026-04-23 drift this week's incident exposed: schema fully forward, tracker behind. The count check (#123) only throws AFTER drizzle's `migrate()` has crashed mid-batch on `column already exists`; this check refuses to start the boot at all and names the offending migration tag plus the missing/extra artifact (e.g. `[migrate] FATAL — schema drift: 0019_numerous_drax claims applied (tracker has a row with created_at=...) but column public.devis_line_items.pdf_page_hint is missing`). Also fires when a column was manually `DROP`-ed without removing the tracker row. The artifact list is data-driven (one entry per journal tag in `MIGRATION_ARTIFACTS`); pure-data migrations (0007/0010/0011/0017) and the idempotent re-apply (0021) are tagged `data_only` and skip the artifact probe. Adding a new migration MUST add a row to `MIGRATION_ARTIFACTS` — the assertion throws upfront if the journal contains an uncovered tag. The migration-replay test (#124) calls the same assertion against the throwaway DB so CI catches drift before deploy. **Operator response when it fires**: run `scripts/reconcile-drizzle-tracker.ts` (Task #135) to re-add missing tracker rows, or restore the dropped column from the relevant migration's SQL, then redeploy. **Matching strategy ADR**: the check identifies "did this migration apply?" by comparing journal `when` to tracker `created_at` rather than by sha256 hash. Drizzle's `migrator.cjs` writes `created_at = folderMillis = entry.when`, which is the journal's immutable identifier. Hash-based matching would false-positive whenever a migration .sql is edited post-application (idempotency tweaks, comment fixes, line-ending normalisation) — the dev DB exhibits exactly this for `0001_regular_leo`. Trade-off: the check will NOT detect the rare corruption mode where a tracker row has the correct `created_at` but a wrong hash; if that becomes a real concern, layer a non-fatal hash-consistency warning on top rather than reverting the matching strategy.
-- **Post-mortem — April 2026 tracker drift (Task #137)**: see `docs/postmortems/2026-04-tracker-drift.md`. Both the 2026-04-23 partial-apply incident and this week's "tracker behind a fully-forward schema" recurrence trace to the same root cause: 5 entries in `migrations/meta/_journal.json` have future-dated `when` values (timestamped 2026-04-28), and drizzle's migrator filters by `when > max(applied.created_at)`. Once a future-dated entry's `created_at` becomes the high-water mark in `drizzle.__drizzle_migrations`, every later migration with a normal timestamp is silently skipped. The 8-row prod gap is exactly the count of post-0010 / pre-future-dated migrations (0011–0018). Tasks #135 (reconcile) and #136 (boot invariant) close the *detection and recovery* loop; the *prevention-at-source* control (refuse to generate future-dated `when` values) is filed as a follow-up.
-- **Tracker reconciliation script (Task #135)**: `scripts/reconcile-drizzle-tracker.ts` recovers from "tracker behind, schema fully forward" drift — the inverse of the 2026-04-23 partial-apply incident. Symptom: deploy crash-loops with `column/table/index "..." already exists` and `SELECT COUNT(*) FROM drizzle.__drizzle_migrations` is less than the number of entries in `migrations/meta/_journal.json`. Recovery: `DATABASE_URL=<prod> npx tsx scripts/reconcile-drizzle-tracker.ts` (dry-run, prints the diff and the per-row hash + created_at it would insert), eyeball the plan, then re-run with `--apply` to commit the missing rows in a single transaction. The script is idempotent (second run reports "tracker already in sync"), refuses to proceed if the tracker contains any hash not present in the journal, and never touches schema or migration .sql files. After applying, redeploy — `[migrate] applying migrations` should report zero pending and the boot-time `assertJournalMatchesTracker` invariant should pass.
+- **Migrations**: Generated via `npm run db:generate`, applied at deploy via `npx tsx scripts/run-migrations.mjs`. Direct `db:push` is prohibited due to hand-tracked SQL migrations.
+- **Migration-replay gate**: `bash scripts/check-migration-replay.sh` ensures migration consistency.
+- **Deep healthcheck + post-deploy smoke gate**: `GET /healthz/deep` verifies database table integrity, with a post-deploy smoke test polling for up to 60 seconds.
+- **Post-merge schema-error classifier + runtime watchdog**: Classifies post-merge script failures to distinguish schema errors (deploy abort) from transient issues (operator alert). A runtime watchdog polls `/healthz/deep` in production for continuous monitoring.
+- **Repeat-transient escalation**: Escalates recurring transient failures to prevent them from being dismissed.
+- **Database identity guard**: Verifies the application is connected to the correct database using host fingerprinting and a sentinel row, preventing accidental operation on incorrect databases.
+- **Schema-presence boot invariant**: Checks for schema drift at startup, ensuring the database schema matches the migration tracker before the application fully boots.
+- **Tracker reconciliation script**: Provides a recovery mechanism for `drizzle.__drizzle_migrations` tracker drift, allowing operators to resync the tracker with the actual schema.
 
 ### Tech Stack
-- **Frontend**: React 18 + TypeScript, Vite, Tailwind CSS, Shadcn UI, Wouter, TanStack React Query
-- **Backend**: Express 5 (Node.js), PostgreSQL, Drizzle ORM
-- **Integrations**: ArchiDoc API, Gmail API, OpenAI, Object Storage
-- **Design System**: Archidoc "Architectural Luxury" (Navy primary, Inter font, luxury cards with rounded corners and subtle shadows)
+- **Frontend**: React 18, TypeScript, Vite, Tailwind CSS, Shadcn UI, Wouter, TanStack React Query.
+- **Backend**: Express 5 (Node.js), PostgreSQL, Drizzle ORM.
+- **Integrations**: ArchiDoc API, Gmail API, OpenAI, Object Storage.
+- **Design System**: Archidoc "Architectural Luxury" (Navy primary, Inter font, luxury cards).
 
 ### Core Financial Concepts
-- **Three Buckets**: Contracted, Certified, Reste à Réaliser
-- **Two Invoicing Modes**: Mode A (simple tick-off) and Mode B (percentage completion per line item)
-- **Retenue de Garantie**: 5% holdback
-- **PV/MV**: Variation orders adjusting contract value
-- **Fee Types**: Works percentage, Conception, Planning
-- **Commission Workflow**: Invoice upload → approval → auto-calculation of commission → fee entry
-- **Commission Rate**: Project-specific `feePercentage`
-- **Dashboard Layout**: Gmail status bar, per-project rows with four counter boxes (Devis, Signed, Factures, Agent)
+- **Three Buckets**: Contracted, Certified, Reste à Réaliser.
+- **Two Invoicing Modes**: Mode A (tick-off) and Mode B (percentage completion).
+- **Retenue de Garantie**: 5% holdback.
+- **PV/MV**: Variation orders.
+- **Fee Types**: Works percentage, Conception, Planning.
+- **Commission Workflow**: Invoice upload → approval → auto-calculation → fee entry.
+- **Commission Rate**: Project-specific `feePercentage`.
+- **Dashboard Layout**: Gmail status bar, per-project rows with counters for Devis, Signed, Factures, Agent.
 
 ### Technical Implementations
-- **Database Schema**: 30+ tables covering core financial data (projects, contractors, lots, marches, devis, avenants, invoices, situations, certificats, fees, fee_entries), ArchiDoc mirrors, and document/communication tracking. AT1 (Task #149, migration 0024) added the devis sign-off contract foundation: `client_checks` / `client_check_messages` / `client_check_tokens` (devis-scoped client portal), `insurance_overrides` (manual override audit), `signed_pdf_retention_breaches` (Archisign 30-day-retention notifications), `webhook_deliveries_out` (outbound retry log) and `webhook_events_in` (inbound dedup log) plus four new devis columns (`archidocDqeExportId`, `archisignEnvelopeId`, `identityVerification` jsonb, `signedPdfFetchUrlSnapshot`) and two new project columns (`clientContactName`, `clientContactEmail`). Wire fixtures for cross-app payloads live under `docs/wire-fixtures/`.
-- **AI Extraction Layer**: Uses Google Gemini (Expert-Comptable BTP prompt) for structured JSON extraction from PDFs, with `extraction-validator.ts` for financial validation and confidence scoring.
-- **Certificat de Paiement Generation**: HTML to PDF conversion via DocRaptor (PrinceXML engine), adhering to ARCHIDOC design system with detailed financial annexes. Auto-sequential numbering per project.
-- **ArchiDoc Sync**: Event-driven webhook (HMAC-secured) for project and contractor data synchronization, with polling as a fallback.
-- **Authentication**: Google Workspace OAuth 2.0 with domain restriction (`@renosud.com`), PostgreSQL session store, robust security measures. A dev-only `POST /api/auth/dev-login` endpoint is registered ONLY when `NODE_ENV !== "production"` AND `ENABLE_DEV_LOGIN_FOR_E2E=true`; it is used by Playwright browser tests in `tests/browser/`. Run them with `npx playwright test` (config in `playwright.config.ts`).
-- **Error Handling**: Global error handler prevents stack trace leakage; all API routes use Zod for payload validation.
-- **Rate Limiting**: Token-bucket algorithm with pluggable store (in-memory or Postgres-backed).
-- **Rounding Policy**: Strict 2-decimal rounding (`roundCurrency`) for all financial calculations.
-- **Document Storage**: PDFs and other documents are stored in object storage.
-- **API Structure**: Domain-driven routing (`/api/projects`, `/api/contractors`, `/api/devis`, etc.) for CRUD operations and specialized financial workflows.
-- **Fee Tracking**: Advanced fee tracking with `phase` (conception/chantier/aor) and by-phase summaries.
-- **Executive Dashboard**: Burn-up charts showing contract and certified value history over time.
-- **Bulk Export**: Generates ZIP archives of project financial documents from object storage.
+- **Database Schema**: Extensive schema covering financial data, ArchiDoc mirrors, and document/communication tracking. Includes tables for client checks, insurance overrides, and webhook logging.
+- **Client review portal**: A public, token-authenticated portal for clients to review and approve/reject devis, with PDF viewing and messaging functionality.
+- **AI Extraction Layer**: Uses Google Gemini with a specialized prompt for structured JSON extraction from financial PDFs, including validation and confidence scoring.
+- **Certificat de Paiement Generation**: HTML to PDF conversion via DocRaptor, adhering to the ARCHIDOC design system with auto-sequential numbering.
+- **ArchiDoc Sync**: Event-driven webhook and polling for project and contractor data synchronization.
+- **Authentication**: Google Workspace OAuth 2.0 with domain restriction, PostgreSQL session store, and a dev-only login for E2E testing.
+- **Error Handling**: Global error handler and Zod for API payload validation.
+- **Rate Limiting**: Token-bucket algorithm.
+- **Rounding Policy**: Strict 2-decimal rounding for all financial calculations.
+- **Document Storage**: Object storage for PDFs and other documents.
+- **API Structure**: Domain-driven routing for CRUD and financial workflows.
+- **Fee Tracking**: Advanced fee tracking by phase.
+- **Executive Dashboard**: Burn-up charts for contract and certified value.
+- **Bulk Export**: Generates ZIP archives of financial documents.
 
 ### Devis-Check Portal Token Lifecycle
-- Contractor portal tokens (`devis_check_tokens`) are tied to the devis invoicing lifecycle, not just a fixed TTL.
-- Primary trigger: a token is auto-revoked when its devis is "fully invoiced" — `sum(invoices.amount_ht) >= devis.amount_ht + approved PV − approved MV`. The check runs inline after every invoice create/update/delete/confirm, after every devis update/confirm, and after every avenant create/update.
-- Safety net: a periodic cleanup job (`server/services/devis-check-token-cleanup.ts`) sweeps both expired tokens (idle ceiling) and fully-invoiced devis, in case any mutation path is missed.
-- Idle ceiling: `DEVIS_CHECK_TOKEN_TTL_DAYS` (default 90) caps how long a token can sit idle on a never-completed devis. Set to 0 to disable.
+- Tokens are automatically revoked when their associated devis is "fully invoiced."
+- A periodic cleanup job sweeps expired and fully-invoiced devis tokens.
+- An idle ceiling limits how long an uncompleted devis token can remain active.
 
 ### Core Development Protocols
-- **Zero-Tolerance TypeScript**: No `any`, `@ts-ignore`, `@ts-expect-error`. Unknown types must be Zod-parsed.
-- **Environment Variables**: Zod-validated fail-fast exports from `server/env.ts` only.
-- **API Perimeter Validation**: Strict Zod schemas via `validateRequest` middleware for all HTTP inputs.
-- **Database Mutations**: Drizzle versioned migrations (`db:generate`, `db:migrate`).
-- **Error Handling**: No stack traces or raw database errors to clients; all exceptions handled by `server/middleware/error-handler.ts`.
+- **Zero-Tolerance TypeScript**: No `any`, `@ts-ignore`, `@ts-expect-error`.
+- **Environment Variables**: Zod-validated fail-fast exports.
+- **API Perimeter Validation**: Strict Zod schemas via `validateRequest` middleware.
+- **Database Mutations**: Drizzle versioned migrations.
+- **Error Handling**: No stack traces or raw database errors to clients.
 
 ## External Dependencies
 - **ArchiDoc API**: For project and contractor data synchronization.
-- **Google Gemini API**: For AI-powered document parsing and financial data extraction from PDFs.
-- **DocRaptor API**: For high-fidelity HTML to PDF conversion (PrinceXML engine) of Certificats de Paiement.
+- **Google Gemini API**: For AI-powered document parsing and financial data extraction.
+- **DocRaptor API**: For high-fidelity HTML to PDF conversion.
 - **Google OAuth 2.0**: For user authentication and authorization.
 - **Gmail API**: For monitoring incoming emails and extracting PDF attachments.
-- **PostgreSQL**: Primary database for all application data and session storage.
-- **Object Storage**: For storing uploaded and generated PDF documents and other files.
+- **PostgreSQL**: Primary database.
+- **Object Storage**: For storing documents.

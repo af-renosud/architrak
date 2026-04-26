@@ -10,6 +10,7 @@ import lotCatalogRouter from "./lot-catalog";
 import wishListRouter from "./wishlist";
 import devisRouter from "./devis";
 import devisChecksRouter from "./devis-checks";
+import clientChecksRouter from "./client-checks";
 import invoicesRouter from "./invoices";
 import situationsRouter from "./situations";
 import certificatsRouter from "./certificats";
@@ -75,6 +76,7 @@ export async function registerRoutes(
   app.use(wishListRouter);
   app.use(devisRouter);
   app.use(devisChecksRouter);
+  app.use(clientChecksRouter);
   app.use(invoicesRouter);
   app.use(situationsRouter);
   app.use(certificatsRouter);

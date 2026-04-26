@@ -8,9 +8,13 @@ import {
   aiModelSettings, templateAssets, users, devisTranslations, wishListItems,
   benchmarkDocuments, benchmarkItems, benchmarkTags, benchmarkItemTags,
   devisChecks, devisCheckMessages, devisCheckTokens,
+  clientChecks, clientCheckMessages, clientCheckTokens,
   type DevisCheck, type InsertDevisCheck,
   type DevisCheckMessage, type InsertDevisCheckMessage, type InboxContractorResponseRow,
   type DevisCheckToken, type InsertDevisCheckToken,
+  type ClientCheck, type InsertClientCheck,
+  type ClientCheckMessage, type InsertClientCheckMessage,
+  type ClientCheckToken, type InsertClientCheckToken,
   type Project, type InsertProject,
   type User, type InsertUser,
   type Contractor, type InsertContractor,
@@ -296,6 +300,27 @@ export interface IStorage {
    * Returns 1 if a token was revoked, 0 otherwise.
    */
   revokeDevisCheckTokenIfFullyInvoiced(devisId: number, now?: Date): Promise<number>;
+
+  // --- AT2 client review portal (mirror of devis-check methods, scoped to ---
+  // --- the client_check_* tables). Lifecycle helpers like the           ---
+  // --- "fully invoiced" auto-revoke are intentionally NOT mirrored — the ---
+  // --- client portal lifecycle is governed by Archisign envelope state, ---
+  // --- not invoicing progress.                                           ---
+  listClientChecks(devisId: number): Promise<ClientCheck[]>;
+  getClientCheck(id: number): Promise<ClientCheck | undefined>;
+  createClientCheck(data: InsertClientCheck): Promise<ClientCheck>;
+  updateClientCheck(id: number, data: Partial<InsertClientCheck> & { resolvedAt?: Date | null }): Promise<ClientCheck | undefined>;
+  listClientCheckMessages(checkId: number): Promise<ClientCheckMessage[]>;
+  createClientCheckMessage(data: InsertClientCheckMessage): Promise<ClientCheckMessage>;
+  getActiveClientCheckToken(devisId: number): Promise<ClientCheckToken | undefined>;
+  getLatestClientCheckToken(devisId: number): Promise<ClientCheckToken | undefined>;
+  createClientCheckToken(data: InsertClientCheckToken): Promise<ClientCheckToken>;
+  revokeClientCheckTokensForDevis(devisId: number): Promise<void>;
+  getClientCheckTokenByHash(hash: string): Promise<ClientCheckToken | undefined>;
+  touchClientCheckTokenUsed(id: number, expiresAt: Date | null): Promise<void>;
+  extendClientCheckTokenExpiry(id: number, expiresAt: Date | null): Promise<ClientCheckToken | undefined>;
+  revokeClientCheckTokenById(id: number): Promise<ClientCheckToken | undefined>;
+  revokeExpiredClientCheckTokens(now?: Date): Promise<number>;
   getProjectCommunicationByDedupeKey(key: string): Promise<ProjectCommunication | undefined>;
   getLatestSentDevisCheckBundle(devisId: number): Promise<ProjectCommunication | undefined>;
   countSentDevisCheckBundles(devisId: number): Promise<number>;
@@ -1592,6 +1617,153 @@ export class DatabaseStorage implements IStorage {
     now: Date = new Date(),
   ): Promise<number> {
     return this.revokeFullyInvoicedTokensQuery(now, devisId);
+  }
+
+  // ----------------------------------------------------------------------
+  // AT2 client review portal storage methods.
+  // Mirror the devis-check counterparts above; kept verbatim-similar so
+  // future contract changes apply mechanically to both portals.
+  // ----------------------------------------------------------------------
+
+  async listClientChecks(devisId: number): Promise<ClientCheck[]> {
+    return db
+      .select()
+      .from(clientChecks)
+      .where(eq(clientChecks.devisId, devisId))
+      .orderBy(asc(clientChecks.createdAt));
+  }
+
+  async getClientCheck(id: number): Promise<ClientCheck | undefined> {
+    const [c] = await db.select().from(clientChecks).where(eq(clientChecks.id, id));
+    return c;
+  }
+
+  async createClientCheck(data: InsertClientCheck): Promise<ClientCheck> {
+    const [created] = await db.insert(clientChecks).values(data).returning();
+    return created;
+  }
+
+  async updateClientCheck(
+    id: number,
+    data: Partial<InsertClientCheck> & { resolvedAt?: Date | null },
+  ): Promise<ClientCheck | undefined> {
+    const [updated] = await db
+      .update(clientChecks)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(clientChecks.id, id))
+      .returning();
+    return updated;
+  }
+
+  async listClientCheckMessages(checkId: number): Promise<ClientCheckMessage[]> {
+    return db
+      .select()
+      .from(clientCheckMessages)
+      .where(eq(clientCheckMessages.checkId, checkId))
+      .orderBy(asc(clientCheckMessages.createdAt));
+  }
+
+  async createClientCheckMessage(data: InsertClientCheckMessage): Promise<ClientCheckMessage> {
+    const [created] = await db.insert(clientCheckMessages).values(data).returning();
+    return created;
+  }
+
+  async getActiveClientCheckToken(devisId: number): Promise<ClientCheckToken | undefined> {
+    const [t] = await db
+      .select()
+      .from(clientCheckTokens)
+      .where(and(eq(clientCheckTokens.devisId, devisId), isNull(clientCheckTokens.revokedAt)))
+      .limit(1);
+    return t;
+  }
+
+  async getLatestClientCheckToken(devisId: number): Promise<ClientCheckToken | undefined> {
+    const [t] = await db
+      .select()
+      .from(clientCheckTokens)
+      .where(eq(clientCheckTokens.devisId, devisId))
+      .orderBy(desc(clientCheckTokens.createdAt))
+      .limit(1);
+    return t;
+  }
+
+  async createClientCheckToken(data: InsertClientCheckToken): Promise<ClientCheckToken> {
+    // Revoke any existing active row first to satisfy the partial unique
+    // index `client_check_tokens_one_active_idx`. Critically this also
+    // covers expired-but-not-yet-revoked rows that the cleanup sweep has
+    // not gotten to yet — the AT1 footgun the architect flagged for the
+    // contractor portal applies verbatim here.
+    //
+    // Wrapped in a transaction with a per-devis advisory lock so two
+    // concurrent issue requests (e.g. double-click) don't race the revoke +
+    // insert and trip the partial unique index — the loser would otherwise
+    // surface as a 500. A simple row-level lock on the existing active row
+    // is NOT enough: when no active row exists yet, both transactions would
+    // see "nothing to update" and proceed to two concurrent INSERTs that
+    // both target the partial unique index. `pg_advisory_xact_lock` gives
+    // us a per-devis mutex that exists regardless of whether a row is
+    // present, automatically released on commit/rollback.
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${data.devisId}::bigint)`);
+      await tx
+        .update(clientCheckTokens)
+        .set({ revokedAt: new Date() })
+        .where(and(eq(clientCheckTokens.devisId, data.devisId), isNull(clientCheckTokens.revokedAt)));
+      const [created] = await tx.insert(clientCheckTokens).values(data).returning();
+      return created;
+    });
+  }
+
+  async revokeClientCheckTokensForDevis(devisId: number): Promise<void> {
+    await db
+      .update(clientCheckTokens)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(clientCheckTokens.devisId, devisId), isNull(clientCheckTokens.revokedAt)));
+  }
+
+  async getClientCheckTokenByHash(hash: string): Promise<ClientCheckToken | undefined> {
+    const [t] = await db.select().from(clientCheckTokens).where(eq(clientCheckTokens.tokenHash, hash));
+    return t;
+  }
+
+  async touchClientCheckTokenUsed(id: number, expiresAt: Date | null): Promise<void> {
+    await db
+      .update(clientCheckTokens)
+      .set({ lastUsedAt: new Date(), expiresAt })
+      .where(eq(clientCheckTokens.id, id));
+  }
+
+  async extendClientCheckTokenExpiry(id: number, expiresAt: Date | null): Promise<ClientCheckToken | undefined> {
+    const [row] = await db
+      .update(clientCheckTokens)
+      .set({ expiresAt })
+      .where(and(eq(clientCheckTokens.id, id), isNull(clientCheckTokens.revokedAt)))
+      .returning();
+    return row;
+  }
+
+  async revokeClientCheckTokenById(id: number): Promise<ClientCheckToken | undefined> {
+    const [row] = await db
+      .update(clientCheckTokens)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(clientCheckTokens.id, id), isNull(clientCheckTokens.revokedAt)))
+      .returning();
+    return row;
+  }
+
+  async revokeExpiredClientCheckTokens(now: Date = new Date()): Promise<number> {
+    const rows = await db
+      .update(clientCheckTokens)
+      .set({ revokedAt: now })
+      .where(
+        and(
+          isNull(clientCheckTokens.revokedAt),
+          isNotNull(clientCheckTokens.expiresAt),
+          lte(clientCheckTokens.expiresAt, now),
+        ),
+      )
+      .returning({ id: clientCheckTokens.id });
+    return rows.length;
   }
 
   async getLatestSentDevisCheckBundle(devisId: number): Promise<ProjectCommunication | undefined> {

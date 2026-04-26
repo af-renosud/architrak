@@ -2326,6 +2326,319 @@ function TokenPanel({ devisId, projectId, isArchived }: { devisId: number; proje
   );
 }
 
+/**
+ * AT2 client review portal panel — counterpart to TokenPanel for the
+ * client side. The architect uses this to issue/rotate the client portal
+ * token and obtain a shareable URL (copied to the clipboard) that they can
+ * forward to the client by their preferred channel. v1 deliberately does
+ * NOT auto-send an email; outbound webhooks are AT5 scope.
+ */
+type ClientCheckTokenInfo = {
+  id: number;
+  clientEmail: string;
+  clientName: string | null;
+  createdAt: string | Date | null;
+  lastUsedAt: string | Date | null;
+  expiresAt: string | Date | null;
+  revokedAt: string | Date | null;
+};
+
+type ProjectClientContact = {
+  id: number;
+  clientName: string;
+  clientContactName: string | null;
+  clientContactEmail: string | null;
+};
+
+function ClientPortalPanel({
+  devisId,
+  projectId,
+  isArchived,
+}: {
+  devisId: number;
+  projectId: string;
+  isArchived: boolean;
+}) {
+  const { toast } = useToast();
+  const [issueOpen, setIssueOpen] = useState(false);
+  const [emailDraft, setEmailDraft] = useState("");
+  const [nameDraft, setNameDraft] = useState("");
+  const [emailErr, setEmailErr] = useState<string | null>(null);
+
+  const { data, isLoading } = useQuery<{ token: ClientCheckTokenInfo | null }>({
+    queryKey: ["/api/devis", devisId, "client-check-token"],
+  });
+
+  // Project lookup just to seed the dialog defaults from the AT1 sign-off
+  // contact fields. Cached centrally so this doesn't fan out per-devis on
+  // pages that already query the project.
+  const { data: project } = useQuery<ProjectClientContact>({
+    queryKey: ["/api/projects", projectId],
+  });
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "client-check-token"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "client-checks"] });
+  };
+
+  const issueMutation = useMutation({
+    mutationFn: async (payload: { clientEmail: string; clientName?: string }) => {
+      const res = await apiRequest(
+        "POST",
+        `/api/devis/${devisId}/client-check-token/issue`,
+        payload,
+      );
+      return res.json() as Promise<{ portalUrl: string; clientEmail: string; clientName: string | null }>;
+    },
+    onSuccess: async (resp) => {
+      try {
+        await navigator.clipboard.writeText(resp.portalUrl);
+        toast({
+          title: "Lien client copié",
+          description: `Le lien pour ${resp.clientName ? resp.clientName + " " : ""}<${resp.clientEmail}> est dans le presse-papiers.`,
+        });
+      } catch {
+        toast({
+          title: "Lien client généré (copie manuelle)",
+          description: resp.portalUrl,
+        });
+      }
+      invalidate();
+      setIssueOpen(false);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const extendMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/devis/${devisId}/client-check-token/extend`, {});
+      return res.json();
+    },
+    onSuccess: () => { invalidate(); toast({ title: "Lien client prolongé" }); },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  const revokeMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/devis/${devisId}/client-check-token/revoke`, {});
+      return res.json();
+    },
+    onSuccess: () => { invalidate(); toast({ title: "Lien client révoqué" }); },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  if (isLoading) return null;
+  const token = data?.token ?? null;
+  const isRevoked = !!token?.revokedAt;
+  const isExpired = !!(token?.expiresAt && new Date(token.expiresAt).getTime() <= Date.now());
+  const hasActiveLink = !!token && !isRevoked && !isExpired;
+  const stateLabel = !token
+    ? "Aucun lien émis"
+    : isRevoked
+      ? "Révoqué"
+      : isExpired
+        ? "Expiré"
+        : "Actif";
+  const stateColor = !token || isRevoked || isExpired
+    ? "bg-slate-100 text-slate-600 border-slate-300"
+    : "bg-emerald-50 text-emerald-700 border-emerald-200";
+
+  function openIssueDialog() {
+    setEmailDraft(token?.clientEmail ?? project?.clientContactEmail ?? "");
+    setNameDraft(token?.clientName ?? project?.clientContactName ?? project?.clientName ?? "");
+    setEmailErr(null);
+    setIssueOpen(true);
+  }
+
+  function submitIssue() {
+    const email = emailDraft.trim();
+    const name = nameDraft.trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      setEmailErr("Adresse e-mail invalide");
+      return;
+    }
+    setEmailErr(null);
+    issueMutation.mutate({ clientEmail: email, clientName: name || undefined });
+  }
+
+  return (
+    <div
+      className="rounded-lg border border-slate-200 bg-white p-2.5 space-y-2"
+      data-testid={`section-client-portal-panel-${devisId}`}
+    >
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] font-semibold text-slate-700">Lien client</span>
+          <span
+            className={`px-2 py-0.5 rounded-full border text-[9px] font-bold uppercase tracking-wide ${stateColor}`}
+            data-testid={`status-client-token-${devisId}`}
+          >
+            {stateLabel}
+          </span>
+        </div>
+        {!isArchived && (
+          <div className="flex items-center gap-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 text-[9px] font-bold uppercase tracking-widest gap-1"
+              onClick={() => {
+                window.open(
+                  `/api/devis/${devisId}/client-checks/portal-preview/shell`,
+                  "_blank",
+                  "noopener,noreferrer",
+                );
+              }}
+              data-testid={`button-preview-client-portal-${devisId}`}
+            >
+              <Eye size={10} />
+              Aperçu côté client
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 text-[9px] font-bold uppercase tracking-widest gap-1"
+              onClick={openIssueDialog}
+              disabled={issueMutation.isPending}
+              data-testid={`button-send-to-client-${devisId}`}
+            >
+              <Send size={10} />
+              {issueMutation.isPending ? "…" : "Envoyer au client"}
+            </Button>
+            {token && !isRevoked && !isExpired && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 text-[9px] font-bold uppercase tracking-widest"
+                onClick={() => extendMutation.mutate()}
+                disabled={extendMutation.isPending}
+                data-testid={`button-extend-client-token-${devisId}`}
+              >
+                {extendMutation.isPending ? "…" : "Prolonger"}
+              </Button>
+            )}
+            {token && !isRevoked && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 text-[9px] font-bold uppercase tracking-widest border-rose-300 text-rose-700 hover:bg-rose-50"
+                onClick={() => revokeMutation.mutate()}
+                disabled={revokeMutation.isPending}
+                data-testid={`button-revoke-client-token-${devisId}`}
+              >
+                {revokeMutation.isPending ? "…" : "Révoquer"}
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {token && (
+        <div className="grid grid-cols-3 gap-2 text-[10px] text-slate-600">
+          <div>
+            <div className="text-slate-400 uppercase tracking-wide text-[9px]">Destinataire</div>
+            <div data-testid={`text-client-token-recipient-${devisId}`}>
+              {token.clientName ? `${token.clientName} ` : ""}&lt;{token.clientEmail}&gt;
+            </div>
+          </div>
+          <div>
+            <div className="text-slate-400 uppercase tracking-wide text-[9px]">Dernier accès</div>
+            <div data-testid={`text-client-token-last-used-${devisId}`}>{formatDateTime(token.lastUsedAt)}</div>
+          </div>
+          <div>
+            <div className="text-slate-400 uppercase tracking-wide text-[9px]">
+              {isRevoked ? "Révoqué" : "Expire"}
+            </div>
+            <div data-testid={`text-client-token-expires-${devisId}`}>
+              {isRevoked
+                ? formatDateTime(token.revokedAt)
+                : token.expiresAt
+                  ? formatDateTime(token.expiresAt)
+                  : "Jamais"}
+            </div>
+          </div>
+        </div>
+      )}
+      {!token && (
+        <p className="text-[10px] text-slate-500" data-testid={`text-no-client-token-${devisId}`}>
+          Aucun lien client n'a encore été émis pour ce devis. Cliquez sur « Envoyer au client » pour générer un lien à partager (e-mail / WhatsApp / SMS).
+        </p>
+      )}
+
+      <Dialog open={issueOpen} onOpenChange={(o) => { if (!issueMutation.isPending) setIssueOpen(o); }}>
+        <DialogContent data-testid={`dialog-send-to-client-${devisId}`}>
+          <DialogHeader>
+            <DialogTitle>
+              {hasActiveLink ? "Régénérer et copier le lien client" : "Émettre un lien pour le client"}
+            </DialogTitle>
+            <DialogDescription>
+              {hasActiveLink
+                ? "Un nouveau lien sera généré et copié dans le presse-papiers. Le lien actif actuel cessera immédiatement de fonctionner."
+                : "Renseignez l'adresse e-mail du client. Le lien sera copié dans votre presse-papiers — vous pourrez le partager via votre canal préféré (e-mail, WhatsApp, SMS)."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                Adresse e-mail du client
+              </label>
+              <Input
+                type="email"
+                value={emailDraft}
+                onChange={(e) => setEmailDraft(e.target.value)}
+                placeholder="client@exemple.fr"
+                data-testid={`input-client-email-${devisId}`}
+                disabled={issueMutation.isPending}
+                autoFocus
+              />
+              {emailErr && (
+                <p className="text-[10px] text-rose-700" data-testid={`text-client-email-error-${devisId}`}>
+                  {emailErr}
+                </p>
+              )}
+            </div>
+            <div className="space-y-1">
+              <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                Nom du client (optionnel)
+              </label>
+              <Input
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                placeholder="Mme / M. Dupont"
+                data-testid={`input-client-name-${devisId}`}
+                disabled={issueMutation.isPending}
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              onClick={() => setIssueOpen(false)}
+              disabled={issueMutation.isPending}
+              data-testid={`button-cancel-send-to-client-${devisId}`}
+            >
+              Annuler
+            </Button>
+            <Button
+              onClick={submitIssue}
+              disabled={issueMutation.isPending}
+              data-testid={`button-confirm-send-to-client-${devisId}`}
+            >
+              {issueMutation.isPending
+                ? "Génération…"
+                : hasActiveLink
+                  ? "Régénérer et copier"
+                  : "Émettre et copier"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
 function ChecksPanel({
   devisId,
   projectId,
@@ -2475,6 +2788,7 @@ function ChecksPanel({
     <div className="space-y-3">
       <LapsingTokenBanner devisId={devisId} isArchived={isArchived} />
       <TokenPanel devisId={devisId} projectId={projectId} isArchived={isArchived} />
+      <ClientPortalPanel devisId={devisId} projectId={projectId} isArchived={isArchived} />
 
       {/* Bottom mirror — variant B "Inline composer + bottom mirror".
           Navy-bordered card showing the architect exactly what will be
