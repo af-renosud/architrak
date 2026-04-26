@@ -25,14 +25,51 @@
 
 import type { WebhookDeliveryOut } from "@shared/schema";
 import { storage } from "../storage";
+import { sendOperatorAlert } from "../operations/operator-alerts";
 import {
   ArchidocWebhookConfigError,
   ArchidocWebhookPayloadTooLargeError,
-  isOutboundDeliveryConfigured,
+  isOutboundOperational,
   postWorkAuthorisation,
   type DeliveryOutcome,
   type OutboundEventType,
 } from "./archidoc-webhook-client";
+
+/**
+ * Best-effort operator alert for permanent dispatch failures (config
+ * errors / oversized payloads). Never throws — failure to alert MUST
+ * NOT mask the underlying delivery failure.
+ */
+async function notifyPermanentDeliveryFailure(
+  row: WebhookDeliveryOut,
+  attempt: number,
+  err: ArchidocWebhookConfigError | ArchidocWebhookPayloadTooLargeError,
+): Promise<void> {
+  try {
+    const kind = err instanceof ArchidocWebhookConfigError ? "config-error" : "payload-too-large";
+    await sendOperatorAlert({
+      source: "webhook-delivery",
+      subject: `Outbound webhook dead-lettered (${kind}): ${row.eventType} eventId=${row.eventId}`,
+      body: [
+        `An outbound Architrak → Archidoc webhook was dead-lettered on a permanent failure.`,
+        ``,
+        `eventId       : ${row.eventId}`,
+        `eventType     : ${row.eventType}`,
+        `targetUrl     : ${row.targetUrl || "(unresolved)"}`,
+        `attempt       : ${attempt} of ${MAX_ATTEMPTS}`,
+        `failureKind   : ${kind}`,
+        `failureDetail : ${err.message}`,
+        ``,
+        kind === "config-error"
+          ? `Action: verify ARCHITRAK_WEBHOOK_SECRET (and ARCHIDOC_BASE_URL / ARCHIDOC_WORK_AUTH_URL) are set in production. Use the admin DLQ at /admin/ops/webhook-dlq to retry once corrected.`
+          : `Action: investigate the payload that exceeded the 1 MiB cap (likely a defect in the AT5 payload builder). Use the admin DLQ at /admin/ops/webhook-dlq to inspect.`,
+      ].join("\n"),
+    });
+  } catch (alertErr) {
+    const msg = alertErr instanceof Error ? alertErr.message : String(alertErr);
+    console.error(`[WebhookDelivery] Operator alert failed (non-fatal): ${msg}`);
+  }
+}
 
 export const MAX_ATTEMPTS = 3;
 const BACKOFF_BASE_MS = 1_000;
@@ -70,17 +107,22 @@ export interface EnqueueResult {
  * tracking; the boolean `enqueued` is false when an existing row
  * (same eventId) was observed instead of inserted.
  *
- * Soft-fail when ARCHITRAK_WEBHOOK_SECRET / ARCHIDOC_BASE_URL are
- * unset: we don't insert a DLQ row that we know we cannot dispatch.
- * AT4's inbound handler logs and returns 200 in that case (the
- * Architrak operator's job is to provision the env var; an inbound
- * 500 would only make Archisign retry, which doesn't help us here).
+ * Gating policy (per AT5 §1.4 hard-fail requirement):
+ *   - If `isOutboundOperational()` is false (no ARCHIDOC URL set at
+ *     all), we soft-skip with a warning. This is the local-dev path
+ *     where there is genuinely no Archidoc target to talk to.
+ *   - If operational but the secret is missing, we still ENQUEUE the
+ *     row. The dispatch path will throw ArchidocWebhookConfigError,
+ *     which dead-letters the row + fires an operator alert. This makes
+ *     the misconfiguration loudly visible in the admin DLQ instead of
+ *     being silently swallowed.
  */
 export async function enqueueWebhookDelivery(args: EnqueueArgs): Promise<EnqueueResult> {
-  if (!isOutboundDeliveryConfigured()) {
+  if (!isOutboundOperational()) {
     console.warn(
-      `[WebhookDelivery] Outbound surface not configured — skipping enqueue eventId=${args.eventId} eventType=${args.eventType}. ` +
-        `Set ARCHITRAK_WEBHOOK_SECRET and ARCHIDOC_BASE_URL (or ARCHIDOC_WORK_AUTH_URL) to enable.`,
+      `[WebhookDelivery] Outbound surface not operational (no ARCHIDOC_WORK_AUTH_URL or ARCHIDOC_BASE_URL) — ` +
+        `skipping enqueue eventId=${args.eventId} eventType=${args.eventType}. ` +
+        `This is expected in local dev; production must set the URL.`,
     );
     // Synthesise a sentinel return — no row is inserted, caller should
     // not consult delivery.* fields when skipped is set.
@@ -105,36 +147,12 @@ export async function enqueueWebhookDelivery(args: EnqueueArgs): Promise<Enqueue
 
   // Resolve the target URL once at enqueue time (we record it so admin
   // retries hit the SAME endpoint even if env changed in between).
-  let targetUrl: string;
-  try {
-    const { getWorkAuthorisationUrl } = await import("./archidoc-webhook-client");
-    targetUrl = args.targetUrl ?? getWorkAuthorisationUrl();
-  } catch (err) {
-    if (err instanceof ArchidocWebhookConfigError) {
-      console.warn(`[WebhookDelivery] URL resolution failed for eventId=${args.eventId}: ${err.message}`);
-      return {
-        delivery: {
-          id: 0,
-          eventId: args.eventId,
-          eventType: args.eventType,
-          targetUrl: "",
-          payload: args.payload,
-          state: "pending",
-          attemptCount: 0,
-          lastAttemptAt: null,
-          lastErrorBody: null,
-          nextAttemptAt: null,
-          succeededAt: null,
-          deadLetteredAt: null,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-        enqueued: false,
-        skipped: "unconfigured",
-      };
-    }
-    throw err;
-  }
+  // URL resolution only needs ARCHIDOC_WORK_AUTH_URL or ARCHIDOC_BASE_URL,
+  // which `isOutboundOperational()` already verified — so this should
+  // not throw on the operational path. Defensive: if it does (e.g.
+  // race with env reload), let the throw bubble; AT4 catches.
+  const { getWorkAuthorisationUrl } = await import("./archidoc-webhook-client");
+  const targetUrl = args.targetUrl ?? getWorkAuthorisationUrl();
 
   const claim = await storage.claimWebhookDeliveryOut({
     eventId: args.eventId,
@@ -191,7 +209,7 @@ export async function attemptDelivery(deliveryId: number): Promise<WebhookDelive
       console.error(
         `[WebhookDelivery] Permanent failure id=${deliveryId} eventId=${row.eventId} eventType=${row.eventType}: ${message}`,
       );
-      return storage.updateWebhookDeliveryAttempt(deliveryId, {
+      const updated = await storage.updateWebhookDeliveryAttempt(deliveryId, {
         state: "dead_lettered",
         attemptCount: attempt,
         lastAttemptAt: now,
@@ -199,6 +217,13 @@ export async function attemptDelivery(deliveryId: number): Promise<WebhookDelive
         nextAttemptAt: null,
         deadLetteredAt: now,
       });
+      // Operator alert: hard-fail config errors (ARCHITRAK_WEBHOOK_SECRET
+      // missing, etc.) are deployment-level misconfigurations the on-call
+      // engineer must learn about immediately. Oversized-payload errors
+      // are application bugs and equally worth paging on. Best-effort:
+      // sendOperatorAlert never throws.
+      void notifyPermanentDeliveryFailure(row, attempt, err);
+      return updated;
     }
     // Unknown — treat as transient if we still have attempts left.
     const message = err instanceof Error ? err.message : String(err);

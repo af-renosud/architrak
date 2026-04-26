@@ -373,6 +373,10 @@ async function enqueueWorkAuthorised(d: Devis, p: SignedPayload): Promise<void> 
     const override = await storage.getLatestInsuranceOverrideForDevis(d.id);
 
     const eventId = uuidv7();
+    // §5.3.1 fixture-pinned shape — contractor is loaded only so the
+    // log message can include human context if a future debug path
+    // wants it; the payload itself echoes only contract-listed fields.
+    void contractor;
     const payload: { eventId: string; eventType: OutboundEventType } & Record<string, unknown> = {
       eventId,
       eventType: "work_authorised",
@@ -380,19 +384,28 @@ async function enqueueWorkAuthorised(d: Devis, p: SignedPayload): Promise<void> 
       projectId: d.projectId,
       archidocProjectId,
       contractorId: d.contractorId,
-      contractorArchidocId: contractor?.archidocId ?? null,
       archisignEnvelopeId: p.envelopeId,
       signedAt: p.signedAt,
       identityVerification: p.identityVerification,
       dqeExportId: d.archidocDqeExportId ?? null,
     };
     if (override) {
+      // §5.3.1 insuranceOverride block: full AT3 audit row echoed
+      // verbatim (mirror status snapshot, live-verdict response, the
+      // overriding user's email). All seven fields are NOT NULL on the
+      // insurance_overrides table, so we don't need null-coalescing
+      // here — but cast `liveVerdictResponse` from `unknown` to make
+      // the JSON-serialisable contract explicit.
       payload.insuranceOverride = {
-        overriddenAt: override.createdAt instanceof Date
-          ? override.createdAt.toISOString()
-          : String(override.createdAt),
+        overrideReason: override.overrideReason,
+        mirrorStatusAtOverride: override.mirrorStatusAtOverride,
+        mirrorSyncedAtAtOverride: override.mirrorSyncedAtAtOverride instanceof Date
+          ? override.mirrorSyncedAtAtOverride.toISOString()
+          : String(override.mirrorSyncedAtAtOverride),
+        liveVerdictHttpStatus: override.liveVerdictHttpStatus,
+        liveVerdictCanProceed: override.liveVerdictCanProceed,
+        liveVerdictResponse: override.liveVerdictResponse,
         overriddenByUserEmail: override.overriddenByUserEmail,
-        reason: override.overrideReason,
       };
     }
 
@@ -421,19 +434,22 @@ async function enqueueRetentionBreach(d: Devis, p: RetentionBreachPayload): Prom
     const project = await storage.getProject(d.projectId);
     const archidocProjectId = pickArchidocProjectId(project);
     const eventId = uuidv7();
+    // §5.3.2 fixture-pinned shape — `projectId` is intentionally NOT
+    // emitted on the breach payload (the receiver correlates by
+    // `architrakDevisId` + `archisignEnvelopeId` + `originalSignedAt`).
+    void d.projectId;
     const payload: { eventId: string; eventType: OutboundEventType } & Record<string, unknown> = {
       eventId,
       eventType: "signed_pdf_retention_breach",
       architrakDevisId: d.id,
-      projectId: d.projectId,
-      archidocProjectId,
       archisignEnvelopeId: p.envelopeId,
+      archidocProjectId,
+      incidentRef: p.incidentRef,
+      remediationContact: p.remediationContact,
       // Verbatim preservation: take from the inbound payload (string
       // ISO-8601 as-received), NOT a re-formatted Date round-trip.
       originalSignedAt: p.originalSignedAt,
       detectedAt: p.detectedAt,
-      incidentRef: p.incidentRef,
-      remediationContact: p.remediationContact,
     };
     await enqueueOutboundDelivery({
       eventId,

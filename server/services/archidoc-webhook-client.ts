@@ -92,15 +92,28 @@ export function requireArchitrakWebhookSecret(): string {
 }
 
 /**
- * Returns true when the outbound surface is configured at all (secret +
- * a base URL). Used by AT4 webhook handlers to decide whether to
- * enqueue (best-effort) vs no-op (dev env without Archidoc target).
- * Does NOT throw — the throw is reserved for the actual send path so
- * misconfiguration surfaces as a dead-letter row, not a 500 on AT4's
- * inbound channel.
+ * Returns true when the outbound surface is fully configured (secret +
+ * a base URL). Used by tests and self-checks; NOT used by AT4 to gate
+ * enqueue — see `isOutboundOperational` for that decision.
  */
 export function isOutboundDeliveryConfigured(): boolean {
   return Boolean(env.ARCHITRAK_WEBHOOK_SECRET && (env.ARCHIDOC_WORK_AUTH_URL || env.ARCHIDOC_BASE_URL));
+}
+
+/**
+ * Returns true when the env is "operational" — i.e. an Archidoc target
+ * URL is set, so this deployment is EXPECTED to dispatch outbound
+ * webhooks. The secret may still be unset; in that case enqueue MUST
+ * proceed so the missing-secret failure surfaces in the admin DLQ +
+ * operator-alerts channel rather than being silently swallowed.
+ *
+ * AT4's inbound handlers consult this to differentiate:
+ *   - operational + secret missing  → enqueue (will hard-fail+ops-alert)
+ *   - operational + secret present  → enqueue (normal dispatch)
+ *   - not operational               → soft-skip (true dev environment)
+ */
+export function isOutboundOperational(): boolean {
+  return Boolean(env.ARCHIDOC_WORK_AUTH_URL || env.ARCHIDOC_BASE_URL);
 }
 
 /**
