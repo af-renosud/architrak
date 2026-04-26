@@ -3004,7 +3004,24 @@ function SigningPanel({
   const expiresAt = d.archisignEnvelopeExpiresAt ? new Date(d.archisignEnvelopeExpiresAt) : null;
   const otpDestination = d.archisignOtpDestination ?? null;
 
-  const canSend = stage === "approved_for_signing" && !d.archisignEnvelopeId && !isArchived;
+  // Gate logic:
+  //  • Stage must be `approved_for_signing` and the devis must not be archived.
+  //  • The button must remain available for the RESUME path: the
+  //    POST /api/devis/:id/send-to-signer endpoint persists
+  //    archisignEnvelopeId immediately after Archisign /create, BEFORE /send
+  //    is called. If /send fails (network blip, 5xx, etc.), the devis is
+  //    left with envelopeId set but stage still `approved_for_signing`. The
+  //    endpoint is idempotent and resumes by re-calling /send, so the
+  //    architect MUST be able to click the button again — gating only on
+  //    `!archisignEnvelopeId` would dead-end this recovery path.
+  //  • Resend-after-expiry is OUT of scope for AT4 (per Task #152 brief).
+  //    Per §1.2 the backend correctly transitions expired envelopes back to
+  //    `approved_for_signing`, but the UI suppresses the CTA whenever the
+  //    prior accessUrl is marked invalidated so the architect cannot trigger
+  //    a fresh /create+/send before the AT5 resend flow ships.
+  const canSend =
+    stage === "approved_for_signing" && !isArchived && !accessUrlInvalidated;
+  const isResume = canSend && !!d.archisignEnvelopeId;
 
   const statusLabel: Record<string, { label: string; tone: "default" | "secondary" | "destructive" }> = {
     sent: { label: "Envoyée", tone: "default" },
@@ -3041,12 +3058,12 @@ function SigningPanel({
             {sendMutation.isPending ? (
               <>
                 <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-                Envoi…
+                {isResume ? "Reprise…" : "Envoi…"}
               </>
             ) : (
               <>
                 <Send className="h-4 w-4 mr-1.5" />
-                Envoyer à la signature
+                {isResume ? "Réessayer l'envoi" : "Envoyer à la signature"}
               </>
             )}
           </Button>
