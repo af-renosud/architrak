@@ -9,16 +9,27 @@
  *
  * Algorithm (byte-identical across all three apps per §3.10):
  *   sig = "sha256=" + hmac_sha256(secret, `${timestamp}.${rawBody}`)
- * where rawBody is the bytes of the request body exactly as received.
+ * where:
+ *   - timestamp  is the unix-ms digit string from X-Archisign-Timestamp,
+ *                used VERBATIM in the signed input (no normalisation)
+ *   - rawBody    is the request body bytes exactly as received
+ *
+ * The route registers `express.raw({ type: 'application/json', limit: '1mb' })`
+ * so `req.body` is a Buffer at the time this verifier runs. After a
+ * successful verification we JSON.parse the buffer and replace `req.body`
+ * with the parsed object so downstream handlers can read it normally.
  *
  * Verifier outcomes:
  *   - secret unset                        → 503 (config error, not auth error)
- *   - body > 1 MiB                        → 413 (defensive cap)
+ *   - body > 1 MiB (express.raw 413)      → 413 (handled by express.raw)
+ *   - missing/non-Buffer req.body         → 401
  *   - missing X-Archisign-Signature       → 401
  *   - missing X-Archisign-Timestamp       → 401
+ *   - timestamp not unix-ms digit string  → 401
  *   - timestamp outside ±5min skew        → 401
+ *   - signature missing sha256= prefix    → 401 (strict v2)
  *   - signature mismatch                  → 401
- *   - rawBody not captured                → 500 (server bug)
+ *   - body fails JSON.parse post-verify   → 400
  *
  * The 401 status applies uniformly to ALL signature/timestamp failures so
  * Archisign's retry logic does not engage on auth issues (§1.5: "401 on
@@ -30,7 +41,10 @@ import crypto from "crypto";
 import { env } from "../env";
 
 const TIMESTAMP_TOLERANCE_MS = 5 * 60 * 1000;
-const MAX_BODY_BYTES = 1 * 1024 * 1024;
+// Lower bound of acceptable unix-ms values. Anything below this (e.g. a
+// stray unix-seconds value) gets rejected as malformed before we even
+// compute skew. 10^12 ms ≈ 2001-09-09; well below any realistic clock.
+const MIN_UNIX_MS = 1_000_000_000_000;
 
 export function verifyArchisignWebhook(req: Request, res: Response, next: NextFunction) {
   const secret = env.ARCHISIGN_WEBHOOK_SECRET;
@@ -39,15 +53,12 @@ export function verifyArchisignWebhook(req: Request, res: Response, next: NextFu
     return res.status(503).json({ message: "Archisign webhook secret not configured" });
   }
 
-  const rawBody = (req as any).rawBody as Buffer | undefined;
-  if (!rawBody || !(rawBody instanceof Buffer)) {
-    console.error("[ArchisignWebhook] Raw body buffer not captured — express.json verify callback may be misconfigured");
-    return res.status(500).json({ message: "Server configuration error: raw body unavailable" });
-  }
-
-  if (rawBody.length > MAX_BODY_BYTES) {
-    console.warn(`[ArchisignWebhook] Body ${rawBody.length}B exceeds ${MAX_BODY_BYTES}B cap — returning 413`);
-    return res.status(413).json({ message: "Webhook payload too large" });
+  // express.raw() leaves the raw bytes on req.body. Empty-body requests
+  // surface as `{}` (Express oddity) — guard against both.
+  const rawBody = req.body;
+  if (!rawBody || !Buffer.isBuffer(rawBody)) {
+    console.warn("[ArchisignWebhook] req.body is not a Buffer — express.raw() not mounted on this route?");
+    return res.status(401).json({ message: "Missing webhook body" });
   }
 
   const sigHeader = req.headers["x-archisign-signature"];
@@ -64,11 +75,16 @@ export function verifyArchisignWebhook(req: Request, res: Response, next: NextFu
     return res.status(401).json({ message: "Missing webhook timestamp" });
   }
 
-  // Timestamp format: ISO 8601 (the contract is symmetric — any parseable
-  // form gets normalised to ms; we accept ISO since that's what §3.9.1
-  // specifies). Reject ±5min outside skew.
-  const tsMs = Date.parse(timestamp);
-  if (!Number.isFinite(tsMs)) {
+  // Timestamp format: unix-ms digit string. Strict — must be all digits
+  // (no ISO, no decimals, no whitespace). The exact string is what gets
+  // signed, so any normalisation here would diverge from the sender's
+  // signed input.
+  if (!/^\d{13,}$/.test(timestamp)) {
+    console.warn(`[ArchisignWebhook] X-Archisign-Timestamp ${timestamp} is not a unix-ms digit string — 401`);
+    return res.status(401).json({ message: "Invalid webhook timestamp" });
+  }
+  const tsMs = Number(timestamp);
+  if (!Number.isFinite(tsMs) || tsMs < MIN_UNIX_MS) {
     console.warn(`[ArchisignWebhook] Unparseable X-Archisign-Timestamp ${timestamp} — 401`);
     return res.status(401).json({ message: "Invalid webhook timestamp" });
   }
@@ -78,17 +94,14 @@ export function verifyArchisignWebhook(req: Request, res: Response, next: NextFu
     return res.status(401).json({ message: "Webhook timestamp outside acceptable window" });
   }
 
-  // Parse signature header — accept either bare hex or `sha256=<hex>` form
-  // since the contract example shows the prefixed form but the algorithm
-  // is unambiguous (only sha256 is defined in v2). Symmetric across apps
-  // per §3.9.1: prefixed form is the canonical one.
-  let providedHex = signature;
-  if (signature.startsWith("sha256=")) {
-    providedHex = signature.slice("sha256=".length);
-  } else {
+  // Strict v2: signature MUST carry the `sha256=` prefix. No bare-hex
+  // tolerance — keeps the verifier born-strict so a misconfigured sender
+  // fails loudly during integration rather than silently sliding by.
+  if (!signature.startsWith("sha256=")) {
     console.warn(`[ArchisignWebhook] Signature missing sha256= prefix — 401 (strict v2)`);
     return res.status(401).json({ message: "Malformed webhook signature" });
   }
+  const providedHex = signature.slice("sha256=".length);
   if (!/^[0-9a-fA-F]{64}$/.test(providedHex)) {
     console.warn(`[ArchisignWebhook] Signature is not 64 hex chars — 401`);
     return res.status(401).json({ message: "Malformed webhook signature" });
@@ -109,5 +122,18 @@ export function verifyArchisignWebhook(req: Request, res: Response, next: NextFu
     return res.status(401).json({ message: "Invalid webhook signature" });
   }
 
+  // Stash the raw bytes in case a downstream handler needs them, then
+  // parse the JSON and replace req.body so handlers see the parsed
+  // object as they would behind a regular express.json() mount.
+  (req as Request & { rawBody?: Buffer }).rawBody = rawBody;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawBody.toString("utf8"));
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.warn(`[ArchisignWebhook] Body failed JSON.parse post-verify — 400: ${detail}`);
+    return res.status(400).json({ message: "Webhook body is not valid JSON" });
+  }
+  req.body = parsed;
   next();
 }

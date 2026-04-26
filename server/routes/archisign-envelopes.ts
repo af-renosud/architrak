@@ -25,6 +25,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { storage } from "../storage";
+import type { InsertDevis } from "@shared/schema";
 import { requireAuth } from "../auth/middleware";
 import { validateRequest } from "../middleware/validate";
 import {
@@ -206,14 +207,15 @@ router.post(
       // Persist BEFORE /send so a /send failure does not orphan the
       // envelopeId. The accessUrl from /create is the ONLY persisted
       // URL (G3 / §3.5.4) — we never re-read /send for URL data.
-      await storage.updateDevis(devisId, {
+      const persistCreate: Partial<InsertDevis> = {
         archisignEnvelopeId: createResp.envelopeId,
         archisignAccessUrl: createResp.accessUrl,
         archisignAccessUrlInvalidatedAt: null,
         archisignOtpDestination: createResp.otpDestination,
         archisignEnvelopeExpiresAt: createResp.expiresAt ? new Date(createResp.expiresAt) : null,
         archisignEnvelopeStatus: "sent",
-      } as any);
+      };
+      await storage.updateDevis(devisId, persistCreate);
       envelopeId = createResp.envelopeId;
       accessUrl = createResp.accessUrl;
       otpDestination = createResp.otpDestination;
@@ -252,9 +254,10 @@ router.post(
     // archisignEnvelopeStatus on subsequent events.
     let updated;
     try {
-      updated = await storage.updateDevis(devisId, {
+      const stageUpdate: Partial<InsertDevis> = {
         signOffStage: "sent_to_client",
-      } as any);
+      };
+      updated = await storage.updateDevis(devisId, stageUpdate);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       console.error(`[Archisign] stage advance failed for devis ${devisId}:`, detail);

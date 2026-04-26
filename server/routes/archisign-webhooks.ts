@@ -26,16 +26,22 @@
  * payload).
  */
 
-import { Router, type Request, type Response } from "express";
+import express, { Router, type Request, type Response } from "express";
 import crypto from "crypto";
 import { z } from "zod";
 import { storage } from "../storage";
 import { verifyArchisignWebhook } from "../middleware/archisign-webhook-auth";
 import { db } from "../db";
-import { devis, clientChecks } from "@shared/schema";
+import { devis, clientChecks, type InsertDevis, type InsertClientCheck, type InsertWebhookEventIn, type InsertSignedPdfRetentionBreach } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 
 const router = Router();
+
+// 1 MiB cap matches the contract §3.9.1 defensive ceiling — express.raw
+// returns 413 automatically once exceeded so the verifier never has to
+// re-check it. `type: 'application/json'` keeps non-JSON bodies out of
+// the buffer (they'd flow on as undefined, then fail the verifier).
+const archisignRawJson = express.raw({ type: "application/json", limit: "1mb" });
 
 // --- Common envelope shape (§3.2) ---------------------------------------
 //
@@ -154,9 +160,10 @@ async function handleSent(p: SentPayload): Promise<HandlerResult> {
   if (!d) {
     return { status: 410, body: { message: "Unknown envelope", envelopeId: p.envelopeId } };
   }
-  await storage.updateDevis(d.id, {
+  const update: Partial<InsertDevis> = {
     archisignEnvelopeStatus: "sent",
-  } as any);
+  };
+  await storage.updateDevis(d.id, update);
   return { status: 200, body: { ok: true, devisId: d.id, transition: "sent" } };
 }
 
@@ -170,17 +177,19 @@ async function handleQueried(p: QueriedPayload): Promise<HandlerResult> {
   if (!d) {
     return { status: 410, body: { message: "Unknown envelope", envelopeId: p.envelopeId } };
   }
-  await storage.updateDevis(d.id, { archisignEnvelopeStatus: "queried" } as any);
+  const statusUpdate: Partial<InsertDevis> = { archisignEnvelopeStatus: "queried" };
+  await storage.updateDevis(d.id, statusUpdate);
   // Mirror as a client_checks row. openedAt = the Archisign-emitted
   // raisedAt timestamp (verbatim per §1.2).
-  await storage.createClientCheck({
+  const newCheck: InsertClientCheck = {
     devisId: d.id,
     status: "open",
     queryText: p.queryText,
     originSource: "archisign_query",
     archisignQueryEventId: p.queryEventId,
     openedAt: new Date(p.raisedAt),
-  } as any);
+  };
+  await storage.createClientCheck(newCheck);
   return { status: 200, body: { ok: true, devisId: d.id } };
 }
 
@@ -192,7 +201,8 @@ async function handleQueryResolved(p: QueryResolvedPayload): Promise<HandlerResu
   if (!d) {
     return { status: 410, body: { message: "Unknown envelope", envelopeId: p.envelopeId } };
   }
-  await storage.updateDevis(d.id, { archisignEnvelopeStatus: "sent" } as any);
+  const statusUpdate: Partial<InsertDevis> = { archisignEnvelopeStatus: "sent" };
+  await storage.updateDevis(d.id, statusUpdate);
   // Find the matching open check. If none exists we return 200 anyway
   // — Archisign considers the resolved event delivered.
   const [match] = await db
@@ -204,14 +214,15 @@ async function handleQueryResolved(p: QueryResolvedPayload): Promise<HandlerResu
     ))
     .limit(1);
   if (match && match.status === "open") {
-    await storage.updateClientCheck(match.id, {
+    const checkUpdate: Partial<InsertClientCheck> & { resolvedAt?: Date | null } = {
       status: "resolved",
       resolvedAt: new Date(p.resolvedAt),
       resolvedBySource: p.resolverSource,
       resolvedByUserEmail: p.resolverEmail ?? null,
       resolvedByActor: p.resolverActor,
       resolutionNote: p.resolutionNote ?? null,
-    } as any);
+    };
+    await storage.updateClientCheck(match.id, checkUpdate);
   }
   return { status: 200, body: { ok: true, devisId: d.id, matched: Boolean(match) } };
 }
@@ -222,30 +233,42 @@ async function handleDeclined(p: DeclinedPayload): Promise<HandlerResult> {
   if (!d) {
     return { status: 410, body: { message: "Unknown envelope", envelopeId: p.envelopeId } };
   }
-  await storage.updateDevis(d.id, {
+  const update: Partial<InsertDevis> = {
     signOffStage: "void",
     voidReason: p.declineReason,
     archisignEnvelopeStatus: "declined",
-  } as any);
+  };
+  await storage.updateDevis(d.id, update);
   return { status: 200, body: { ok: true, devisId: d.id, transition: "void" } };
 }
 
 async function handleExpired(p: ExpiredPayload): Promise<HandlerResult> {
-  // §1.2: sent_to_client → approved_for_signing. Soft-invalidate the
-  // stored accessUrl (we keep the value for audit but set the
-  // invalidatedAt timestamp; the UI shows it crossed-out per
-  // scratchpad). Resend-after-expiry orchestration is out of scope
-  // for AT4 itself; the architect just sees the action become
-  // available again.
+  // §1.2: sent_to_client → approved_for_signing.
+  //
+  // Recovery mechanics: the architect must be able to start fresh after
+  // an expiry, which means firing a NEW /create call (not a /send retry
+  // against the dead envelopeId). To make both sides of the contract
+  // honour that we:
+  //   - clear archisignEnvelopeId so send-to-signer's resume guard
+  //     (`if (envelopeId) skip /create`) does not fire
+  //   - clear OTP destination + envelope expiry (no longer meaningful)
+  //   - keep the prior accessUrl for audit, marked invalidated via
+  //     archisignAccessUrlInvalidatedAt so the UI can render it crossed-out
+  // Resend-after-expiry orchestration itself is out of scope for AT4 —
+  // architect just sees the "Send to signer" CTA become live again.
   const d = await storage.getDevisByArchisignEnvelopeId(p.envelopeId);
   if (!d) {
     return { status: 410, body: { message: "Unknown envelope", envelopeId: p.envelopeId } };
   }
-  await storage.updateDevis(d.id, {
+  const update: Partial<InsertDevis> = {
     signOffStage: "approved_for_signing",
     archisignEnvelopeStatus: "expired",
+    archisignEnvelopeId: null,
+    archisignOtpDestination: null,
+    archisignEnvelopeExpiresAt: null,
     archisignAccessUrlInvalidatedAt: new Date(p.expiredAt),
-  } as any);
+  };
+  await storage.updateDevis(d.id, update);
   return { status: 200, body: { ok: true, devisId: d.id, transition: "approved_for_signing" } };
 }
 
@@ -259,12 +282,13 @@ async function handleSigned(p: SignedPayload): Promise<HandlerResult> {
   if (!d) {
     return { status: 410, body: { message: "Unknown envelope", envelopeId: p.envelopeId } };
   }
-  await storage.updateDevis(d.id, {
+  const update: Partial<InsertDevis> = {
     signOffStage: "client_signed_off",
     archisignEnvelopeStatus: "signed",
     identityVerification: p.identityVerification,
     signedPdfFetchUrlSnapshot: p.signedPdfFetchUrl,
-  } as any);
+  };
+  await storage.updateDevis(d.id, update);
   return { status: 200, body: { ok: true, devisId: d.id, transition: "client_signed_off" } };
 }
 
@@ -277,7 +301,7 @@ async function handleRetentionBreach(p: RetentionBreachPayload): Promise<Handler
   if (!d) {
     return { status: 410, body: { message: "Unknown envelope", envelopeId: p.envelopeId } };
   }
-  const inserted = await storage.recordSignedPdfRetentionBreach({
+  const breach: InsertSignedPdfRetentionBreach = {
     devisId: d.id,
     archisignEnvelopeId: p.envelopeId,
     eventSource: "archisign",
@@ -285,7 +309,8 @@ async function handleRetentionBreach(p: RetentionBreachPayload): Promise<Handler
     detectedAt: new Date(p.detectedAt),
     incidentRef: p.incidentRef,
     remediationContact: p.remediationContact,
-  } as any);
+  };
+  const inserted = await storage.recordSignedPdfRetentionBreach(breach);
   return {
     status: 200,
     body: {
@@ -300,7 +325,11 @@ async function handleRetentionBreach(p: RetentionBreachPayload): Promise<Handler
 
 // --- Route handler ------------------------------------------------------
 
-router.post("/api/webhooks/archisign", verifyArchisignWebhook, async (req: Request, res: Response) => {
+router.post(
+  "/api/webhooks/archisign",
+  archisignRawJson,
+  verifyArchisignWebhook,
+  async (req: Request, res: Response) => {
   // Parse the common envelope first so we can dedup BEFORE running any
   // event-specific schema (cheap pre-check). If parsing fails we return
   // 400 — Archisign treats 4xx as non-retryable per §1.5, which matches
@@ -316,16 +345,20 @@ router.post("/api/webhooks/archisign", verifyArchisignWebhook, async (req: Reque
 
   // Dedup-first. Hash the raw body for the `payload_hash` column so we
   // can investigate any future "different payload, same eventId"
-  // anomalies without storing the full body.
-  const rawBody = (req as any).rawBody as Buffer;
-  const payloadHash = crypto.createHash("sha256").update(rawBody).digest("hex");
+  // anomalies without storing the full body. The verifier stashed the
+  // raw bytes on req.rawBody after a successful HMAC check.
+  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+  const payloadHash = rawBody
+    ? crypto.createHash("sha256").update(rawBody).digest("hex")
+    : crypto.createHash("sha256").update(JSON.stringify(req.body)).digest("hex");
 
-  const claimed = await storage.claimWebhookEventIn({
+  const dedupRow: InsertWebhookEventIn = {
     source: "archisign",
     eventId,
     eventType: event,
     payloadHash,
-  } as any);
+  };
+  const claimed = await storage.claimWebhookEventIn(dedupRow);
   if (!claimed) {
     return res.status(200).json({ deduplicated: true, eventId, event });
   }

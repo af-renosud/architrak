@@ -3053,13 +3053,22 @@ function SigningPanel({
         )}
       </div>
 
-      {!d.archisignEnvelopeId && stage === "approved_for_signing" && (
+      {!d.archisignEnvelopeId && !accessUrl && stage === "approved_for_signing" && (
         <p className="text-xs text-muted-foreground" data-testid={`text-signing-empty-${devisId}`}>
           Aucune enveloppe Archisign créée. Le client recevra un lien de signature après envoi.
         </p>
       )}
 
-      {d.archisignEnvelopeId && (
+      {/*
+        Render the URL/envelope details block whenever EITHER an envelope is
+        currently active OR a historical accessUrl is preserved. After an
+        envelope.expired webhook, archisignEnvelopeId is nulled (so the
+        Send-to-signer CTA re-arms) but archisignAccessUrl + invalidatedAt
+        remain so the architect still sees the crossed-out link with the
+        expiry note. Without this OR-gate, the historical link would
+        disappear silently and the architect would lose context.
+      */}
+      {(d.archisignEnvelopeId || accessUrl) && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
           <div>
             <span className="font-semibold text-muted-foreground">Lien client :</span>{" "}
@@ -3082,7 +3091,10 @@ function SigningPanel({
               <span className="text-muted-foreground">—</span>
             )}
             {accessUrlInvalidated && (
-              <div className="mt-1 text-[11px] text-amber-700">
+              <div
+                className="mt-1 text-[11px] text-amber-700"
+                data-testid={`text-archisign-expired-note-${devisId}`}
+              >
                 Lien expiré — la fonction de renvoi sera disponible dans une prochaine mise à jour.
               </div>
             )}
@@ -3099,8 +3111,11 @@ function SigningPanel({
           </div>
           <div>
             <span className="font-semibold text-muted-foreground">Enveloppe :</span>{" "}
-            <span className="font-mono text-[11px]" data-testid={`text-archisign-envelope-${devisId}`}>
-              {d.archisignEnvelopeId}
+            <span
+              className="font-mono text-[11px]"
+              data-testid={`text-archisign-envelope-${devisId}`}
+            >
+              {d.archisignEnvelopeId ?? "—"}
             </span>
           </div>
         </div>
