@@ -1,0 +1,127 @@
+Switched to Build mode. Five tasks approved. Plan: dispatch #329/#330/#331/#333 in parallel via local subagents (truly disjoint file surfaces), wait for all, then run #332 serially (overlaps server.ts + new integrations router file with #331; formal deps on #329 + #330).
+
+First, doing fast discovery on the real codebase shape so subagent briefs are accurate, in parallel.
+
+
+2 actions
+Batch discovery — read the actual code surfaces in parallel.
+
+
+4 actions
+Good — codebase shape is clearer. Now verify archisignService.ts actually exists and find the validate-for-project handler + Gmail service path.
+
+
+4 actions
+Critical intel: middleware path & migration runner discipline are strict here. One more quick discovery batch, then I'll dispatch.
+
+
+2 actions
+Final intel locked in. Key findings:
+
+esignEnvelopes exists at shared/schema.ts:3496 but no archivedPdfStoragePath column — schema task's "drop column" step is a no-op (just verify and skip).
+Validate-for-project handler is 78 lines (server.ts:25285-25362) — clean refactor target.
+archisignService.ts already has getArchiSignBaseUrl() + inline errMsg() helper — re-mint method follows existing pattern.
+Webhook route at server.ts:41394 needs raw-body access for HMAC; will add route-level express.raw() rather than touching global parser config.
+Routes registered via register*Routes(app) pattern at server.ts ~line 2920 — new registerIntegrationsArchitrakRoutes(app) follows the same convention.
+Writing a session plan and dispatching wave 1 (#329, #330, #331, #333) in parallel via async subagents.
+
+
+Proposed plan
+
+Planning parallel task execution
+Dispatching wave 1 — all four file-disjoint tasks in parallel.
+
+
+5 actions
+All four subagents launched. Waiting for the wave to complete before running T5 (work-authorisations endpoint, which depends on outputs from all three of T1, T2, T3).
+
+
+3 actions
+All four wave-1 subagents completed. Key notes before launching T5:
+
+T1 used migration 0041_* not 0017_* — my discovery's ls output was truncated; the journal actually has 40 migrations on disk. The hand-authored SQL is correct given a pre-existing snapshot lineage issue.
+T4 edited server.ts at the DQE bulk-send call site — outside the file scope I gave it. This could collide with T3's server.ts edits. Need to verify both edits coexist cleanly.
+Migration must be applied to dev DB before T5 can use the new tables.
+Verifying state, applying the migration, and restarting the workflow in parallel before dispatching T5.
+
+
+2 actions
+Git index is locked. Bypassing git, just verify file presence directly.
+
+
+2 actions
+All wave-1 deliverables verified clean. Now applying the migration to dev DB and checking dev-server health in parallel.
+
+
+3 actions
+Migration applied successfully (42 ledger rows, all good). Now dispatching T5 (work-authorisations endpoint) — sole remaining task, runs synchronously since nothing else is queued.
+
+
+3 actions
+All 5 tasks done. Now restart the dev server to load the new code, then run code review across the entire diff.
+
+
+4 actions
+Dev server restarted cleanly: [SCHEMA-ASSERT] OK — 187 tables / 2549 columns verified (exactly +3 from before — workAuthorisations, webhookEventsIn, signedPdfRetentionBreaches all picked up), webhook + integration routes mounted, no errors.
+
+Now running code review across the full diff per project policy.
+
+
+5 actions
+Architect found 3 MEDIUM-severity contract gaps. Verifying each against the source files before fixing.
+
+
+3 actions
+All 3 architect findings confirmed in source. Applying fixes in parallel:
+
+Fix 1: '10mb' → '1mb' in both webhook routes (Contract §3.9 caps body at 1 MiB → 413)
+Fix 2: gate v1 fallback on v2.reason === 'mismatch' only (which guarantees timestamp was present and within skew, preserving replay protection)
+Fix 3: lot-only matching for intendedWorkLot (remove the contractor trade taxonomy bleed-through)
+
+5 actions
+The lot-only fix made contractorTrades and inArray imports unused. Cleaning those up, then restarting to verify everything is clean.
+
+
+7 actions
+Server restarted cleanly (SCHEMA-ASSERT OK — 187 tables / 2549 columns). All 3 architect findings are fixed. Doing a final type-check sweep on the touched files to confirm no regressions, then summarising.
+
+
+2 actions
+All five tasks are complete and the dev server is running cleanly with the new schema and routes loaded. Summary of what landed:
+
+#329 — Schema migration
+
+Three new tables added to shared/schema.ts: workAuthorisations, webhookEventsIn, signedPdfRetentionBreaches (all with the contract-specified UNIQUE constraints, foreign keys with ON DELETE SET NULL, and the three required retention-breach indices).
+Migration drizzle/0041_devis_signoff_tables.sql applied to the dev database; schema check now reports 187 tables / 2549 columns (+3 from before).
+Frozen contract copied to docs/INTER_APP_CONTRACT_v1.0.md as the in-tree source of truth.
+#330 — HMAC v2 verifier
+
+New shared helper server/middleware/hmacVerifier.ts byte-identical to the contract's reference implementation.
+verifyArchisignWebhook.ts rewritten — all four documented defects fixed (missing-secret now hard-fails 503, mismatch returns 401 not 403, reads raw bytes, ±5 min skew enforced).
+New symmetric verifyArchitrakWebhook.ts (no v1 fallback — born v2).
+Webhook route mount updated with a route-level raw-body parser so the verifier sees the bytes Archisign signed.
+#331 — Insurance-verdict endpoint
+
+New service computeInsuranceVerdict() is now the single source of truth used by both the architect-facing /validate-for-project route (response shape preserved byte-identically) and the new integration-facing endpoint behind requireSyncApiKey.
+All four contract outcomes mapped correctly (green/red → 200, unassigned → 404, transient → 503), audit row written on every call.
+#333 — Outbound additions
+
+Gmail bulk-send path now stamps the watched DQE-extract email with the lower-case x-archidoc-dqe-export-id header keyed to the audit row's PK.
+New archisignService.getSignedPdfUrl() re-mint client with the full status matrix: 200 returns the URL, 404/429/503 throw typed errors, 410 records a retention-breach row idempotently and never retries.
+#332 — Work-authorisations endpoint
+
+Single endpoint accepts both work_authorised and signed_pdf_retention_breach event types behind raw-body + Architrak HMAC verifier.
+Idempotency-first: every request first attempts webhook_events_in insert; UNIQUE-violation short-circuits to 200 {deduplicated:true} with zero side effects.
+Both branches insert the right rows and append to projects.auditLog; retention-breach 410s when the referenced envelope is unknown.
+Code-review fixes applied
+The architect's review caught three medium-severity contract gaps that I fixed before declaring done:
+
+Webhook body limits tightened from 10 MB to 1 MiB on both inbound routes (matches Contract §3.9 → 413 cap).
+The v1 dual-verify fallback is now gated on v2.reason === 'mismatch', which guarantees the timestamp header was present and within the ±5 min window before any v1 acceptance — closing a replay-protection bypass when the legacy secret is set.
+The G11 lot-scoped match now consults only the lots this contractor is actually assigned to in projects.lotContractors, not the broader contractor-trade taxonomy — eliminating a false-positive path where trade tags could gate-pass non-lot-scoped work.
+Smoke checks confirm the endpoints respond as expected: the work-auth route hard-fails 503 when ARCHITRAK_WEBHOOK_SECRET isn't set, and the verdict route returns 401 without the sync API key.
+
+Two things to note for operations before this goes live:
+
+ARCHITRAK_WEBHOOK_SECRET and ARCHIDOC_SYNC_API_KEY need to be set in the deploy environment for the new endpoints to function (I left them unset in dev so you can confirm the hard-fail behavior; want me to wire them up via the secrets system?).
+Migration 0041 will need to apply on the production database at next publish — it's idempotent (CREATE TABLE IF NOT EXISTS) and the journal entry is in place, so the deploy migration runner will pick it up automatically.

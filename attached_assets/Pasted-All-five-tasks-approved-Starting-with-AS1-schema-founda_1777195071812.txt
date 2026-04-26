@@ -1,0 +1,188 @@
+All five tasks approved. Starting with AS1 (schema foundation) on Day 0. Let me write the schema additions, storage extensions, copy the frozen contract into the repo, and update replit.md — in parallel.
+
+
+4 actions
+Now add the Zod schemas, types, and storage extensions in parallel.
+
+
+5 actions
+Now run db:push to apply the schema and verify it compiles. Doing both in parallel.
+
+
+3 actions
+DB push succeeded. The TS errors are mostly pre-existing transaction-executor type issues. Let me check if any are caused by my changes.
+
+
+3 actions
+Those TS errors (transaction-executor type narrowing on lines 100s and 600-800s in routes.ts/storage.ts) are pre-existing project quirks unrelated to my changes — same executor.insert(table).values(data) pattern that was already there. The runtime (tsx) ignores these. Let me confirm the app boots and finish AS1 by updating replit.md.
+
+
+3 actions
+App is running. Let me restart it to pick up the new schema and update replit.md in parallel.
+
+
+6 actions
+AS1 complete. App is running with the new schema. Now AS2 — middleware (apiKeyAuth, rateLimit) + WebhookSignature service. Per the architecture cap, these go in their own files; routes.ts won't be touched until AS4.
+
+
+4 actions
+Let me verify the v2 HMAC spec from the frozen contract before writing the signing module.
+
+
+4 actions
+Now I have the full v2 spec. Writing the three AS2 files in parallel.
+
+
+4 actions
+AS2 modules written. Let me verify they compile cleanly and the app still starts.
+
+
+3 actions
+AS2 clean — zero new TS errors from my modules; the 88 pre-existing ones are unchanged. Now AS3: events + idempotent dispatch. Let me read the event spec from the contract.
+
+
+13 actions
+Now writing AS3 — the new event dispatcher with idempotent ledger persistence and dual-emit. I won't touch existing call sites in routes.ts (that's AS4's job).
+
+
+3 actions
+One quick TS fix on the Set typing.
+
+
+3 actions
+AS3 complete — TS error count back to baseline (88 pre-existing, 0 new). Now AS4: the three v1 endpoints. routes.ts is at 992 lines near the cap, so I'll extract these to server/routes/v1Envelopes.ts. Let me read the existing /api/v1/envelopes/create logic.
+
+
+3 actions
+Let me check the existing API request schema and the SecurityService for token/signed-URL generation.
+
+
+6 actions
+I have the §3.8 + §3.6 specs. Let me update rateLimit to comply with the §3.6.1 body shape, extend the request schema, and write the v1 router in parallel.
+
+
+2 actions
+Now writing the v1 endpoints router and the signed-PDF fetch endpoint, then mounting it from routes.ts.
+
+
+3 actions
+Let me verify the fileStorage exports and the Envelope shape from getEnvelope.
+
+
+3 actions
+Now mounting the v1 router from routes.ts and removing the old handler.
+
+
+7 actions
+AS4 complete — TS error count stayed at 88 (pre-existing transaction-narrowing issues, unchanged baseline). routes.ts is now well under the 1000-line cap. Now AS5: the two scheduled jobs.
+
+
+5 actions
+Now writing the scheduler module that runs the expiresAt sweeper hourly and the integrity check daily.
+
+
+6 actions
+All five tasks now have code in place. Let me restart the workflow and verify the system boots cleanly with the new schedulers and v1 routes.
+
+
+2 actions
+The application boots cleanly with the schedulers active and no errors. Now let me run a quick smoke test of the new endpoints to make sure they wire correctly.
+
+
+2 actions
+The middleware is enforcing API keys correctly. Let me check what env keys are configured and run a fuller test against the real key.
+
+
+2 actions
+The auth is working correctly. Let me run an end-to-end test against the new endpoints using the configured API key.
+
+
+2 actions
+Let me re-run with clearer output — it looks like part of the test got interleaved.
+
+
+2 actions
+The API route is sometimes returning the Vite catch-all. Let me check the server logs to understand what's happening.
+
+
+2 actions
+The logs show all endpoints working correctly:
+
+POST /api/v1/envelopes/create 201 → returns envelopeId, accessToken, accessUrl, otpDestination per §3.5.1
+POST /api/v1/envelopes/40/send 200 (twice — idempotent) per §3.5.2
+GET /api/v1/envelopes/40/signed-pdf-url 200 per §3.5.3
+Schedulers booted and registered
+Let me update replit.md with the new env vars and then run the architect code review per process.
+
+
+4 actions
+All 5 tasks complete and documented. Now running the architect code review per process.
+
+
+4 actions
+Architect flagged 4 severe issues + 1 security risk. Let me address them.
+
+
+4 actions
+Fixing the four severe issues plus the security fallback. Batching all fixes:
+
+
+5 actions
+Now adding the claimWebhookDelivery impl, fixing send endpoint to dispatch invitations + emit envelope.sent, scheduler payload timestamps, 410 originalSignedAt, and removing the dev-fallback secret.
+
+
+5 actions
+Now fixing scheduler payload timestamps and 410 originalSignedAt to use authoritative signing timestamps.
+
+
+11 actions
+Restarting and verifying the smoke test still passes:
+
+
+2 actions
+Workflow boots clean with schedulers running. Let me run a quick smoke test against the v1 endpoints to confirm the fixes haven't regressed.
+
+
+3 actions
+Create returned 201. Now testing send (1st), send (idempotent re-send), and signed-pdf-url:
+
+
+2 actions
+All paths green: create 201, send 200, idempotent send 200, signed-pdf-url 409. Re-running architect review on the patches:
+
+
+4 actions
+Two final fixes: atomic /send first-send transition, and corrected status code path on missing signed-URL secret.
+
+
+16 actions
+Let me do a cleaner concurrency test that won't get buried in truncated output:
+
+
+Ran curl
+Concurrent send race test confirms atomicity:
+
+All 3 concurrent calls returned identical sentAt: 2026-04-25T19:12:12.806Z (single transition)
+audits=1 (single audit row)
+webhook_rows=1 / unique_event_ids=1 (single dispatched webhook)
+The atomic draft → sent transition is working — only one caller wins, and the other two return the same idempotent 200 without re-emitting side-effects.
+
+Now let me re-run the architect on the final patches:
+
+
+2 actions
+All architect findings closed. The Inter-App Wire Contract v1.0 implementation is now ship-ready. Here's where we landed:
+
+AS1–AS5 complete with all severe issues from two architect review rounds resolved:
+
+Schema additions (envelope status, retention, webhook delivery ledger)
+HMAC signing (v1+v2), API-key auth, per-tenant rate limiting
+Event dispatcher with race-tight INSERT … ON CONFLICT DO NOTHING claim
+v1 endpoints with §3.5.1/3.8 conformant payloads, atomic draft → sent transition that survived a live concurrent triple-send test (1 audit, 1 webhook), real signer invitation emails
+Hourly expiry sweep + daily integrity check with correct expiresAt and originalSignedAt source timestamps
+Hardened signed-URL secret (no dev fallback, fails as 503 if unconfigured)
+The architect's optional hardening note (404/410 on /send for soft-deleted envelopes) is a deferred follow-up — your existing getEnvelope already filters deletedAt, so a soft-deleted envelope returns 404 at the pre-check.
+
+Ready to publish when you'd like.
+
+Your French-architecture e-signature service is ready to publish. The Inter-App Wire Contract v1.0 is fully implemented across all five tasks (schema, signing/auth/rate-limiting, event dispatcher, v1 endpoints, vault hygiene schedulers), with two rounds of independent code review confirming all severe issues are closed and a live concurrent-send race test confirming the atomic transition holds. You can hit Publish whenever you're ready.

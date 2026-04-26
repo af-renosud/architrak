@@ -1,0 +1,39 @@
+Three precise answers, grounded in the actual code paths:
+
+1. API key env var name on Architrak's side — ARCHISIGN_API_KEY.
+
+Rationale: the §4 secrets matrix uses unqualified <HOLDER>_API_KEY for production wire keys (ARCHIDOC_API_KEY, ARCHITRAK_API_KEY both held by Archisign, both production); the _SYNC_ qualifier is reserved for legacy poll/sync channels (ARCHIDOC_SYNC_API_KEY — Architrak → Archidoc insurance verdict + sync polls). The /api/v1 channel is the production wire contract, not a sync poll, so ARCHISIGN_API_KEY keeps the symmetry. CSV format on the caller side too, so you can hold an overlap pair during Archisign-initiated rotations without bouncing your service.
+
+2. accessUrl rotation on idempotent /send — Never rotated by /send today; trigger AT4's "stop displaying" invariant on the envelope.expired webhook, not on /send responses.
+
+Concrete behaviour, by branch, in the current implementation (server/routes/v1Envelopes.ts):
+
+/send on draft (winning caller) → transitions to sent, dispatches invitation emails using the create-time accessToken. No rotation.
+/send on {sent, viewed, queried} → idempotent 200, zero side effects. No rotation.
+/send on {signed, declined, expired, void} → 409. No rotation. Note: §3.5.4 resend-after-expiry (where rotation is supposed to happen per the contract) is not yet wired in v1Envelopes.ts — it's deferred to a future AS6 task. Today, an expired envelope cannot be resent through the v1 endpoint without a new /create.
+/send response shape in all branches: { envelopeId, status, sentAt }. No signers array, no accessUrl, no rotation signal. AT4 cannot re-persist from /send responses because /send never carries URL data — by design.
+So the rule for AT4's G3 invariant: the accessUrl returned by /create is the only URL Architrak ever sees from Archisign in the current contract. It stays valid until you receive envelope.expired (or any terminal event); upon envelope.expired AT4 should soft-invalidate the persisted URL. When/if AS6 lands the §3.5.4 resend-after-expiry path, we'll need to jointly decide whether the new /send response should include the rotated accessUrl or whether Archisign continues to deliver the new signing link out-of-band via its own invitation email (the contract's current wording — "the receiver does not surface or rely on it post-resend" — implies the latter, in which case AT4 never needs to re-persist a URL, just suppress the stale one). I'll flag this as a contract clarification when we sequence AS6.
+
+3. Dual-emit header conventions — Single header X-Archisign-Signature, per-tenant switch (not concurrent co-emit). Architrak gets pure v2 from day one by being in ARCHISIGN_WEBHOOK_V2_TENANTS.
+
+Concrete behaviour, from server/services/EventDispatcher.ts:125-141 and server/services/WebhookSignature.ts:
+
+Tenant key resolved from envelope.origin per emission. If the key is in ARCHISIGN_WEBHOOK_V2_TENANTS (CSV), v2 is emitted; otherwise v1. Selection is mutually exclusive per request.
+v2 wire: X-Archisign-Signature: sha256=<hex> + X-Archisign-Timestamp: <unix-ms>. Signed material ${ts}.${rawBody}.
+v1 wire: X-Archisign-Signature: <hex> (no sha256= prefix, no timestamp header). Signed material is rawBody alone.
+Format discriminator: presence of the sha256= prefix on the signature header AND presence of the X-Archisign-Timestamp header. Both correlate; born-v2 verifiers can branch on either.
+For AT4: register Architrak's tenant key in ARCHISIGN_WEBHOOK_V2_TENANTS at AT4 ship-time (Archisign-side env-var change, 1-line). From that point on, every webhook to Architrak's verifier will be pure v2 — no v1 will ever land, so no fall-through risk by construction. AT4's verifier can hard-require the sha256= prefix and 401 anything missing it.
+
+One contract-vs-implementation divergence to flag for the joint review: the §3.9 phrasing "legacy X-Archisign-Signature co-emitted during P1 dual-emit per §2.4" reads as if both formats arrive simultaneously on the same header during P1 — which is not what my code does (per-tenant switch only). Functionally this is fine for Architrak (born-v2, registers in V2_TENANTS, sees v2-only forever) and fine for Archidoc (stays out of V2_TENANTS until their v2 verifier ships, then switches in atomically). The contract wording could be tightened to "per-tenant cutover" rather than "co-emit"; I'd defer that to a contract-text PR rather than a code change, since the receiver semantics are identical either way.
+
+Net for AT4/AT5 planning:
+
+Set ARCHISIGN_API_KEY (CSV) on Architrak side, present as X-API-KEY header.
+Persist accessUrl from /create response only; soft-invalidate on envelope.expired event receipt; never read /send responses for URL data.
+Verifier reads X-Archisign-Signature (require sha256= prefix) and X-Archisign-Timestamp. Listing Architrak in ARCHISIGN_WEBHOOK_V2_TENANTS is the v2-only switch.
+No code changes needed on my side to support these answers — they describe the implementation as it stands. Authorise AT4/AT5 whenever you're ready.
+
+
+Worked for 2 minutes
+
+Scroll to latest
