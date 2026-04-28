@@ -1,0 +1,39 @@
+Subject: Re: Architrak ↔ Archidoc — receiver URL update before Friday
+
+Quick update before Friday's synthetic.
+
+We've completed our production deployment of the receiver and want to propose moving you off the dev workspace URL onto our production URL for both Friday's synthetic and Saturday's live test. The new endpoint is bigger, warmer, and on dedicated infrastructure (Reserved VM, no suspend behaviour).
+
+Proposed new URL:
+
+https://archiouvro.com/api/integrations/architrak/work-authorisations
+
+Scheme, host, path components in case you want to byte-check on your side:
+
+Scheme: https
+Host: archiouvro.com
+Path: /api/integrations/architrak/work-authorisations (British -isation, plural, lowercase, hyphenated — same spelling as before)
+No port, no query string, no fragment, no trailing slash
+Things that stay the same:
+
+HMAC-SHA256 signing algorithm — unchanged (${timestamp}.${rawBody} over your secret, hex, sha256= prefix tolerated, ±5 min skew)
+Webhook secret — unchanged, no key rotation needed on either side
+Contract semantics — identical: 200 {accepted:true, kind} on new event, 200 {deduplicated:true} on replay, 401 on missing/stale/bad-sig, 400 on missing eventId or malformed JSON
+Data isolation — production database is separate from our dev database, same isolation property you previously endorsed
+Things that improve:
+
+24/7 warm hosting (Reserved VM), no need for an active IDE on our side, no UptimeRobot dependency for the test
+Custom domain, certificate-stable
+Production runs the SQLSTATE-23505 dedup fix we shipped earlier this week, validated end-to-end — confirmed via 7-case smoke test passing
+The old dev URL (9e7c5f6c-...riker.replit.dev/api/integrations/architrak/work-authorisations) will remain up as a fallback through Saturday but is no longer our preferred target.
+
+Action requested before Friday EOD CEST:
+
+Confirm byte-match against your records as before
+Update ARCHIDOC_BASE_URL on your orchestrator to the new URL
+Send a short ack so we know we're aligned
+If the timing is too tight to switch before Friday's synthetic, that's fine — keep firing at the dev URL for the synthetic, switch ahead of Saturday. The dev URL has the same fix and same secret, so either path works. We'd just prefer prod for Saturday's live test if you can swing it.
+
+Thanks — see you Friday.
+
+— Clive
