@@ -1,0 +1,42 @@
+Subject: Re: Architrak ↔ Archidoc — Friday synthetic — row did NOT land, root cause identified, accepting Saturday morning re-fire
+
+Thanks for the precise correlation handles. Both questions answered directly:
+
+Q1 — Did the row actually land?
+
+No. Confirmed via SELECT count(*) FROM work_authorisations WHERE webhook_event_id = '019de47b-56a8-79f4-98d6-4677d1dbdc69' → 0. Total work_authorisations count is also 0. Your "post-commit-path bug" hypothesis would have been the kinder explanation, but the 500 on attempt 1 was a real persistence failure, not a benign post-commit throw.
+
+Note: webhook_events_in does have a row for your eventId (id=1781ae7b-0bd1-4d51-a6e7-cb9b36c50047, received_at=2026-05-01 16:59:41.987274 UTC). That's our dedup ledger — the 200 {"deduplicated": true} on attempt 2 came from a 23505 unique-violation on this row, not from a successful work-auth insert. The dedup signal was a false positive on our side. Your orchestrator did exactly what §1.4 says to do (treat dedup as success); the bug is that our receiver returned dedup-success for an underlying write that never landed.
+
+Q2 — Server log at the two timestamps?
+
+Attempt 1 (16:59:41Z):
+
+[Architrak Work-Auth] Handler error: Failed query: insert into "work_authorisations" ("id", "webhook_event_id", "architrak_devis_id", "project_id", "archidoc_project_id", "contractor_id", "archisign_envelope_id", "signed_at", "identity_verification", "dqe_export_id", "received_at") values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, default)
+params: ab0340b3-309c-48e8-a934-e8bcc5973919, 019de47b-56a8-79f4-98d6-4677d1dbdc69, 456, 789, abc-123, 1011, 1234567890, 2026-04-25T10:30:00.000Z, {…identityVerification…}, DQE-2026-001
+
+Attempt 2 (17:00:11Z):
+
+[Architrak Work-Auth] Deduplicated eventId: 019de47b-56a8-79f4-98d6-4677d1dbdc69
+
+The drizzle wrapper unfortunately swallows the SQLSTATE / message in its toString() so the actual Postgres error doesn't make it to our logs verbatim — that's a logging gap we'll close. But from the schema we can identify the cause unambiguously:
+
+Root cause: FK violation SQLSTATE 23503 on work_authorisations.archidoc_project_id → projects(id). Our staging DB only mirrors real projects from prod and has no row with id = "abc-123". The fixture's synthetic archidocProjectId couldn't satisfy the FK, the insert failed, and because we don't wrap the webhook_events_in insert and the work_authorisations insert in a single transaction, the dedup row stayed committed and false-deduped your retry.
+
+Two bugs on our side, in order of severity:
+
+Lost-write under retry (severe, contract-violating). When work-auth fails, the dedup row should roll back so retries actually re-attempt the insert. Fix is to wrap both inserts in db.transaction(...). Has been silently broken since at least your 2026-04-26 smoke runs (we have two webhook_events_in rows from that date with no corresponding work_authorisations rows — same failure pattern, same root cause). Apologies — we owed you a heads-up on those at the time and didn't catch it.
+
+Logging gap (minor). The Architrak Work-Auth handler error logger should emit SQLSTATE + Postgres message verbatim, not just drizzle's failed-query+params summary. Will fix in the same PR.
+
+Both fixes will ship before any further synthetics. Won't change anything contractually (§5.3 / G1–G8 unaffected) — purely receiver-side hardening.
+
+Saturday morning plan — accepted with one fixture clarification.
+
+Per §5.3.1 archidocProjectId is documented as optional. For Saturday's fresh eventId, please send archidocProjectId: null (omit the field or send explicit null — both are spec-compliant). That bypasses the FK without us needing to seed a synthetic project, and keeps the test on the fixture's worst-case path. The other synthetic IDs (projectId: 789, contractorId: 1011) are not currently FK-enforced on our side, so they'll pass through.
+
+If you'd prefer to keep archidocProjectId populated for full §5.3.1 coverage, we can give you a real project id from staging (read-only mirror of prod) — just let us know and we'll share one in this thread.
+
+Standing down for tonight. Fresh eventId Saturday morning works. Confirm a window time when convenient and we'll re-mint the receiver-up ping.
+
+— Archidoc team
