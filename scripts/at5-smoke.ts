@@ -4,10 +4,17 @@
  * round-trip windows (Fri 1 May synthetic warm-up + Sat 2 May live test).
  *
  * Usage:
- *   tsx scripts/at5-smoke.ts work-auth [--envelope-id <id>] [--event-id <uuid>]
+ *   tsx scripts/at5-smoke.ts work-auth [--envelope-id <id>] [--event-id <uuid>] [--archidoc-project-id <value|null>]
  *   tsx scripts/at5-smoke.ts breach    --envelope-id <id> [--event-id <uuid>]
  *   tsx scripts/at5-smoke.ts dedup     --event-id <existing-uuid>
  *   tsx scripts/at5-smoke.ts status    --event-id <uuid>
+ *
+ * --archidoc-project-id overrides the fixture's archidocProjectId for the
+ * fire. Pass the literal string `null` to send JSON null (Archidoc treats
+ * the field as optional per §5.3.1). Pass any other string to send that
+ * value verbatim — e.g. `abc-123` to deliberately trigger a 23503 FK
+ * violation on Archidoc's staging projects table for dead-letter
+ * verification.
  *
  * Modes:
  *   work-auth  Production-realistic — enqueue + immediate dispatch via
@@ -59,6 +66,9 @@ interface ParsedArgs {
   command: string;
   envelopeId?: string;
   eventId?: string;
+  // undefined = use fixture value; null = override to JSON null;
+  // string = override to that exact string value.
+  archidocProjectId?: string | null;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -81,6 +91,12 @@ function parseArgs(argv: string[]): ParsedArgs {
       if (!value) printUsageAndExit("--event-id requires a value");
       out.eventId = value;
       i++;
+    } else if (flag === "--archidoc-project-id") {
+      if (value === undefined || value === "") {
+        printUsageAndExit("--archidoc-project-id requires a value (use the literal string `null` to send JSON null)");
+      }
+      out.archidocProjectId = value === "null" ? null : value;
+      i++;
     } else if (flag === "--help" || flag === "-h") {
       printUsageAndExit();
     } else {
@@ -95,7 +111,7 @@ function printUsageAndExit(error?: string): never {
   console.error(
     [
       "Usage:",
-      "  tsx scripts/at5-smoke.ts work-auth [--envelope-id <id>] [--event-id <uuid>]",
+      "  tsx scripts/at5-smoke.ts work-auth [--envelope-id <id>] [--event-id <uuid>] [--archidoc-project-id <value|null>]",
       "  tsx scripts/at5-smoke.ts breach    --envelope-id <id> [--event-id <uuid>]",
       "  tsx scripts/at5-smoke.ts dedup     --event-id <existing-uuid>",
       "  tsx scripts/at5-smoke.ts status    --event-id <uuid>",
@@ -137,7 +153,11 @@ function preflight(): void {
  * eventId / envelopeId overrides. The rest of the fixture is preserved
  * byte-for-byte so Archidoc receives a contract-§5.3.1-compliant body.
  */
-function buildWorkAuthorisedPayload(opts: { eventId: string; envelopeId?: string }): {
+function buildWorkAuthorisedPayload(opts: {
+  eventId: string;
+  envelopeId?: string;
+  archidocProjectId?: string | null;
+}): {
   eventId: string;
   eventType: OutboundEventType;
 } & Record<string, unknown> {
@@ -146,6 +166,13 @@ function buildWorkAuthorisedPayload(opts: { eventId: string; envelopeId?: string
   fixture.eventType = "work_authorised";
   if (opts.envelopeId !== undefined) {
     fixture.archisignEnvelopeId = opts.envelopeId;
+  }
+  // archidocProjectId override: undefined preserves fixture value; null sends
+  // JSON null; any string is sent verbatim. JSON null is contract-compliant
+  // per §5.3.1 and is the supported shape for synthetic test fires when the
+  // receiver's projects table doesn't have a matching row.
+  if (opts.archidocProjectId !== undefined) {
+    fixture.archidocProjectId = opts.archidocProjectId;
   }
   return fixture as { eventId: string; eventType: OutboundEventType } & Record<string, unknown>;
 }
@@ -172,8 +199,12 @@ async function runWorkAuth(args: ParsedArgs): Promise<void> {
   const payload = buildWorkAuthorisedPayload({
     eventId,
     envelopeId: args.envelopeId,
+    archidocProjectId: args.archidocProjectId,
   });
-  banner(`work-auth eventId=${eventId} envelopeId=${payload.archisignEnvelopeId}`);
+  banner(
+    `work-auth eventId=${eventId} envelopeId=${payload.archisignEnvelopeId} ` +
+      `archidocProjectId=${JSON.stringify(payload.archidocProjectId)}`,
+  );
   console.log(`[fire] enqueue + immediate dispatch via orchestrator`);
   const result = await enqueueWebhookDelivery({
     eventId,
