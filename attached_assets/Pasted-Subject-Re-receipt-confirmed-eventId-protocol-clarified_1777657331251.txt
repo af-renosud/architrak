@@ -1,0 +1,42 @@
+Subject: Re: receipt confirmed, eventId protocol clarified, accepting bonus 422 fire — breach endpoint confirmed, expanded sequence locked in
+
+Hi Architrak team,
+
+Thanks for the reciprocal housekeeping verification — closing that loop cleanly is a relief on our side too.
+
+Answering your question on breach endpoint coverage
+Confirmed: the signed_pdf_retention_breach endpoint shares the same code path as work_authorised, including the transaction wrap and the 23503→422 classification. The handler dispatches on eventType inside the transaction, so both branches pay the same atomicity tax and benefit from the same rollback semantics.
+
+To back that up empirically (not just by code reading), we ran a full dry-run of your proposed 6-step sequence against staging tonight using fresh UUIDv4s as eventId stand-ins. All six steps behaved as your matrix expects:
+
+Step	Scenario	Expected	Actual
+T+0	work-auth, envelope=1234567890, projectId=null	200 work_authorised	200 ✓ (88ms cold-start)
+T+5	same eventId replay	200 deduplicated	200 ✓ (10ms)
+T+8	breach, envelope=1234567890	200 breach	200 ✓ (27ms) — breach correctly FK-linked to T+0's work_authorisations.id
+T+10	breach, envelope=5678 (no prior work_auth)	410 unknown envelope	410 ✓ (5ms) — Phase-1 lookup, no dedup row written
+T+15	work-auth, archidocProjectId="abc-123" (FK violator)	422 sqlstate=23503	422 ✓ (8ms) — dedup row rolled back
+T+15r	(our internal) same eventId, projectId=null	200 (proves rollback)	200 ✓ (9ms) — confirms no stranded dedup row
+DB state after the dry-run matched expectations exactly: 3 rows in webhook_events_in (T+0, T+8, T+15-retry), 2 in work_authorisations, 1 in signed_pdf_retention_breaches correctly bound to T+0 via work_authorisation_id. Then dropped to clean baseline (0/0/0) for Saturday.
+
+So yes, we're taking up your bonus offer at T+15 — it's a high-value validation for both sides.
+
+eventId post-fire relay protocol — accepted
+That's a clean answer. We agree: pre-committing to a literal eventId would require a test seam that pollutes your production minting code, which is exactly the kind of "load-bearing test hook" both contracts (yours §4.2, ours §2.1) explicitly disallow. Post-fire relay within ~10s is operationally identical from our observability standpoint — we'll grep our logs for the [Architrak Work-Auth] ... lines bracketing your relay timestamp and confirm match.
+
+Suggested format for the relay (only if useful):
+
+T+0  fired 14:00:0X.XXX CEST  eventId=<uuid>
+T+5  fired 14:05:0X.XXX CEST  eventId=<same uuid>  --event-id flag
+T+8  fired 14:08:0X.XXX CEST  eventId=<uuid>
+...
+
+We'll mirror with our receive timestamps + HTTP status in the post-fire confirmation.
+
+Saturday window confirmed
+Window: 14:00–14:30 CEST Sat 2 May 2026
+Our receiver-up ping at 13:50 CEST with byte-check protocol (HMAC compute on a known fixture, you verify our digest matches)
+Sequence: your 6 steps as listed
+Fixture: archidocProjectId: null, archisignEnvelopeId: 1234567890, all other fields per docs/wire-fixtures/work-authorised.json
+We'll be on this thread at 13:50 CEST.
+
+— Archidoc team
