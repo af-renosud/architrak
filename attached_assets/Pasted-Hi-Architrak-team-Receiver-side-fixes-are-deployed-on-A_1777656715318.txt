@@ -1,0 +1,74 @@
+Hi Architrak team,
+
+Receiver-side fixes are deployed on Archidoc staging. Both items you asked for are bundled, plus the housekeeping investigation is closed.
+
+1. What we shipped
+Single transaction wrap (your request a): The dedup-insert into webhook_events_in and the entity-insert into work_authorisations (or signed_pdf_retention_breaches) now run inside a single db.transaction(...). A failed entity write rolls back the dedup row, so a subsequent retry from your orchestrator with the same eventId is not false-deduplicated — it goes through the full pipeline. This honors §1.4: dedup is committed only when the entity persists.
+
+FK violation classification (your request b): SQLSTATE 23503 (foreign-key violation) is now mapped to HTTP 422 with a structured response body:
+
+{
+  "error": "Payload references an entity unknown to this server",
+  "sqlstate": "23503",
+  "hint": "Verify projectId / archidocProjectId / contractorId resolves on the receiver side"
+}
+
+Per §1.5 your orchestrator should dead-letter on 422 rather than feed the retry sweeper.
+
+Bonus (caused by the same root cause): validation moved before dedup. Zod-rejected payloads now return 400 without touching the dedup ledger. This was the actual cause of the 2026-04-26 stranded rows — see §2 below.
+
+Logger enriched. The previous [Architrak Work-Auth] Handler error: <drizzle failed-query summary> line swallowed SQLSTATE entirely (which is why our 19:00 CEST diagnosis required a manual schema dive). It now emits:
+
+{
+  "eventId": "...",
+  "eventType": "...",
+  "sqlstate": "23503",
+  "message": "...",
+  "stack": "..."
+}
+
+Phase-1 lookup failures (pre-transaction) get the same structured log line, just tagged Phase-1 lookup error (pre-transaction).
+
+2. Housekeeping conclusion — 2026-04-26 stranded rows
+The two rows in webhook_events_in from 2026-04-26 were:
+
+smoke-test-2026-04-26-10ecf1ea-2da6-43ee-b70e-40dd88b8834c (16:08:16 UTC)
+smoke-test-2026-04-26-c0bec685-7065-4f5c-a8ef-186a1708053c (16:10:38 UTC)
+Both carried minimal {eventId, eventType} payloads with valid HMAC signatures and no other fields. Investigation:
+
+No row in your webhook_deliveries_out before 2026-05-01.
+No smoke-test-* script in our repository or git history.
+Payloads structurally too minimal to be your orchestrator's wire format.
+Conclusion: these were our internal HMAC plumbing tests, not Architrak orchestrator fires. Their eventId namespace doesn't collide with yours (UUID7 vs smoke-test-…). The reason they stranded in webhook_events_in is the same lost-write bug: payload validation 400'd, but the dedup row was already committed by the prior statement. The fix in §1 prevents this class of poisoning entirely going forward.
+
+Action taken: all stranded rows deleted. Current state:
+
+webhook_events_in     : 0 rows
+work_authorisations   : 0 rows
+signed_pdf_retention_breaches : 0 rows
+
+Saturday starts truly clean.
+
+3. Verification
+Five end-to-end synthetic fires against the new code:
+
+#	Scenario	Expected	Actual
+a	Malformed payload (missing contractorId)	400, no dedup row	400 ✓, no dedup ✓
+b	FK-violating archidocProjectId="abc-123"	422 + sqlstate=23503	422 ✓, dedup rolled back ✓
+b'	Same eventId re-fired with archidocProjectId=null	200 (proves rollback)	200 ✓, both rows committed ✓
+c	Happy path, archidocProjectId=null	200	200 ✓
+d	Replay of (c) with same eventId	200 deduplicated	200 ✓, no second row ✓
+Plus 20 route-level integration tests green, including dedicated rollback assertions for both transactional branches.
+
+4. Saturday 2 May 14:00 CEST
+Confirmed receiver-side ready. Your fixture with archidocProjectId: null is the supported shape — no row in our projects table required for the work-authorisation to commit. We'll send a receiver-up ping by 13:50 CEST Saturday morning.
+
+The two eventIds you'll fire (please confirm):
+
+T+0: <your-eventId-1>
+T+5 retry: <your-eventId-1> (same — testing dedup)
+If you also want to throw a 422-class fire (intentionally unresolvable archidocProjectId) to verify the new dead-letter behavior on your side, we're happy to receive it.
+
+Standing by.
+
+— Archidoc team
