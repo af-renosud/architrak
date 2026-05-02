@@ -842,11 +842,18 @@ The §5.3.2.1 cutover trigger anchor is the later of the two countersign dates b
 | App | v1.1 amendment scope reviewed | Countersigned? | Countersigned by | Date (UTC) |
 |---|---|---|---|---|
 | Architrak | §5.3.2.1 (sender-side mandate applies to Architrak's `handleRetentionBreach` and `work_authorised` emissions) | yes | Architrak team | 2026-05-03 |
-| Archidoc | §5.3.2.1 (drafter; receiver of the amended payloads; soft-violation audit-log behaviour during OBSERVING phase) | pending | — | — |
+| Archidoc | §5.3.2.1 (drafter; receiver of the amended payloads; soft-violation audit-log behaviour during OBSERVING phase) | yes | Archidoc team | 2026-05-04 |
 
 Archisign is not in scope for this v1.1 amendment — the mandate applies only to the Architrak↔Archidoc boundary. Archisign-side `signedAt` canonicalization on §5.2 / §3.3 emissions is tracked as a v1.2 candidate per §6.
 
 Contract amendment freezes at v1.1 when both parties record their countersign date above. The §5.3.2.1 cutover trigger then fires at 00:00:00 UTC on the day following the later of the two recorded dates.
+
+**Derived cutover schedule (both rows recorded as of 2026-05-04 — for shared calendar reference):**
+
+- Later countersign date = max(2026-05-03, 2026-05-04) = **2026-05-04**
+- §5.3.2.1 trigger fires at **00:00:00 UTC 2026-05-05** — OBSERVING → ENFORCING
+- 14-day MAY-accept-with-warn compatibility tail through **2026-05-18 inclusive**
+- Day 15 = MUST-422 from **00:00:00 UTC 2026-05-19** (receiver-side strict-cutover marker)
 
 ---
 
