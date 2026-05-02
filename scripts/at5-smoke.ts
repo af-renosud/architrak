@@ -5,16 +5,18 @@
  *
  * Usage:
  *   tsx scripts/at5-smoke.ts work-auth [--envelope-id <id>] [--event-id <uuid>] [--archidoc-project-id <value|null>]
- *   tsx scripts/at5-smoke.ts breach    --envelope-id <id> [--event-id <uuid>]
+ *   tsx scripts/at5-smoke.ts breach    --envelope-id <id> [--event-id <uuid>] [--archidoc-project-id <value|null>]
  *   tsx scripts/at5-smoke.ts dedup     --event-id <existing-uuid>
  *   tsx scripts/at5-smoke.ts status    --event-id <uuid>
  *
  * --archidoc-project-id overrides the fixture's archidocProjectId for the
- * fire. Pass the literal string `null` to send JSON null (Archidoc treats
- * the field as optional per §5.3.1). Pass any other string to send that
- * value verbatim — e.g. `abc-123` to deliberately trigger a 23503 FK
- * violation on Archidoc's staging projects table for dead-letter
- * verification.
+ * fire (applies to both work-auth and breach modes — both fixtures carry
+ * the canonical §5.3.x example value "abc-123" which does not resolve on
+ * Archidoc's dev workspace projects table). Pass the literal string `null`
+ * to send JSON null (Archidoc treats the field as optional per §5.3.1 /
+ * §5.3.2). Pass any other string to send that value verbatim — e.g.
+ * `abc-123` to deliberately trigger a 23503 FK violation on Archidoc's
+ * staging projects table for dead-letter verification.
  *
  * Modes:
  *   work-auth  Production-realistic — enqueue + immediate dispatch via
@@ -112,7 +114,7 @@ function printUsageAndExit(error?: string): never {
     [
       "Usage:",
       "  tsx scripts/at5-smoke.ts work-auth [--envelope-id <id>] [--event-id <uuid>] [--archidoc-project-id <value|null>]",
-      "  tsx scripts/at5-smoke.ts breach    --envelope-id <id> [--event-id <uuid>]",
+      "  tsx scripts/at5-smoke.ts breach    --envelope-id <id> [--event-id <uuid>] [--archidoc-project-id <value|null>]",
       "  tsx scripts/at5-smoke.ts dedup     --event-id <existing-uuid>",
       "  tsx scripts/at5-smoke.ts status    --event-id <uuid>",
       "",
@@ -182,8 +184,17 @@ function buildWorkAuthorisedPayload(opts: {
  * `originalSignedAt` is preserved verbatim from the fixture — Archidoc
  * correlates breaches against the prior work_authorised by byte-equality
  * on this field per §5.3.2.
+ *
+ * archidocProjectId override: undefined preserves fixture value; null sends
+ * JSON null; any string is sent verbatim. JSON null is contract-compliant
+ * per §5.3.2 and is the supported shape for synthetic test fires when the
+ * receiver's projects table doesn't have a matching row.
  */
-function buildRetentionBreachPayload(opts: { eventId: string; envelopeId: string }): {
+function buildRetentionBreachPayload(opts: {
+  eventId: string;
+  envelopeId: string;
+  archidocProjectId?: string | null;
+}): {
   eventId: string;
   eventType: OutboundEventType;
 } & Record<string, unknown> {
@@ -191,6 +202,9 @@ function buildRetentionBreachPayload(opts: { eventId: string; envelopeId: string
   fixture.eventId = opts.eventId;
   fixture.eventType = "signed_pdf_retention_breach";
   fixture.archisignEnvelopeId = opts.envelopeId;
+  if (opts.archidocProjectId !== undefined) {
+    fixture.archidocProjectId = opts.archidocProjectId;
+  }
   return fixture as { eventId: string; eventType: OutboundEventType } & Record<string, unknown>;
 }
 
@@ -228,8 +242,12 @@ async function runBreach(args: ParsedArgs): Promise<void> {
   const payload = buildRetentionBreachPayload({
     eventId,
     envelopeId: args.envelopeId,
+    archidocProjectId: args.archidocProjectId,
   });
-  banner(`breach eventId=${eventId} envelopeId=${args.envelopeId}`);
+  banner(
+    `breach eventId=${eventId} envelopeId=${args.envelopeId} ` +
+      `archidocProjectId=${JSON.stringify(payload.archidocProjectId)}`,
+  );
   console.log(`[fire] enqueue + immediate dispatch via orchestrator`);
   const result = await enqueueWebhookDelivery({
     eventId,
