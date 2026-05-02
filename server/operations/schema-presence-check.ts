@@ -80,6 +80,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0022_post_merge_transient_failures", artifact: { kind: "table", table: "post_merge_transient_failures" } },
   { tag: "0023_database_identity", artifact: { kind: "table", table: "__database_identity" } },
   { tag: "0024_devis_signoff_workflow", artifact: { kind: "table", table: "client_checks" } },
+  { tag: "0025_archisign_envelope_tracking", artifact: { kind: "column", table: "devis", column: "archisign_access_url" } },
 ];
 
 interface JournalFile {
