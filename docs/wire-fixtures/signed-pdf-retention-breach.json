@@ -6,6 +6,6 @@
   "archidocProjectId": "abc-123",
   "incidentRef": "INC-2036-04-26-0001",
   "remediationContact": "vault-ops@archisign.fr",
-  "originalSignedAt": "2026-04-25T10:30:00Z",
+  "originalSignedAt": "2026-04-25T10:30:00.000Z",
   "detectedAt": "2036-04-26T03:00:00Z"
 }
