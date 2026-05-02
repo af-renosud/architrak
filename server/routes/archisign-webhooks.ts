@@ -35,6 +35,7 @@ import { db } from "../db";
 import { devis, clientChecks, type InsertDevis, type InsertClientCheck, type InsertWebhookEventIn, type InsertSignedPdfRetentionBreach, type Devis, type Project } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 import { uuidv7 } from "../lib/uuidv7";
+import { canonicalizeTimestamp } from "../lib/canonical-timestamp";
 import { enqueueWebhookDelivery } from "../services/webhook-delivery";
 import type { OutboundEventType } from "../services/archidoc-webhook-client";
 
@@ -377,6 +378,37 @@ async function enqueueWorkAuthorised(d: Devis, p: SignedPayload): Promise<void> 
     // log message can include human context if a future debug path
     // wants it; the payload itself echoes only contract-listed fields.
     void contractor;
+    // §5.3.2.1 (v1.1) sender-side canonicalization at the relay
+    // boundary: the upstream Archisign body may carry the seconds-only
+    // `...Z` form, but Archidoc's byte-equality correlation rule
+    // requires the `.SSSZ` form on the §5.3.1 work_authorised → §5.3.2
+    // breach round-trip. We canonicalize both the top-level `signedAt`
+    // and the `identityVerification.signedAt` subfield (the two §5.3.1
+    // fields enumerated in the §5.3.2.1 conformance table). Other
+    // identityVerification timestamp fields (otpIssuedAt, otpVerifiedAt,
+    // lastViewedAt) are out of §5.3.2.1 scope — they don't participate
+    // in the byte-equality rule — and we leave them verbatim.
+    //
+    // Strict precondition on `identityVerification.signedAt`: §5.3.2.1
+    // mandates this field MUST be emitted in canonical form, so a
+    // missing or non-string value is a contract violation we surface
+    // immediately rather than silently relaying. The signedSchema only
+    // pins identityVerification as `z.record(z.unknown())` (relaxed by
+    // design — AT4 stores the 8-field block verbatim as jsonb), so the
+    // assertion lives here at the AT5 emission boundary where the
+    // mandate actually applies. The throw is captured by the catch
+    // block below and emitted with a `[CanonicalizationError]` marker
+    // for log-grep visibility.
+    const inboundIvSignedAt = (p.identityVerification as Record<string, unknown>).signedAt;
+    if (typeof inboundIvSignedAt !== "string") {
+      throw new Error(
+        `[CanonicalizationError] identityVerification.signedAt is missing or not a string ` +
+          `(received ${JSON.stringify(inboundIvSignedAt)}); §5.3.2.1 mandates this field MUST ` +
+          `be emitted on §5.3.1 work_authorised in canonical .SSSZ form.`,
+      );
+    }
+    const canonicalIdentityVerification: Record<string, unknown> = { ...p.identityVerification };
+    canonicalIdentityVerification.signedAt = canonicalizeTimestamp(inboundIvSignedAt);
     const payload: { eventId: string; eventType: OutboundEventType } & Record<string, unknown> = {
       eventId,
       eventType: "work_authorised",
@@ -385,8 +417,8 @@ async function enqueueWorkAuthorised(d: Devis, p: SignedPayload): Promise<void> 
       archidocProjectId,
       contractorId: d.contractorId,
       archisignEnvelopeId: p.envelopeId,
-      signedAt: p.signedAt,
-      identityVerification: p.identityVerification,
+      signedAt: canonicalizeTimestamp(p.signedAt),
+      identityVerification: canonicalIdentityVerification,
       dqeExportId: d.archidocDqeExportId ?? null,
     };
     if (override) {
@@ -425,9 +457,12 @@ async function enqueueWorkAuthorised(d: Devis, p: SignedPayload): Promise<void> 
 
 /**
  * Build §5.3.2 signed_pdf_retention_breach payload and enqueue. The
- * authoritative `originalSignedAt` is preserved verbatim from the
- * inbound payload — Archidoc relies on byte-equality with the prior
- * work_authorised.signedAt to correlate the breach.
+ * authoritative `originalSignedAt` is canonicalized at the relay
+ * boundary per §5.3.2.1 (v1.1) — Archidoc relies on byte-equality with
+ * the prior `work_authorised.signedAt` (which we also canonicalized
+ * before emission, and which Postgres `timestamptz` then stored in the
+ * same `.SSSZ` form). The instant is preserved; only the wire
+ * representation is normalised.
  */
 async function enqueueRetentionBreach(d: Devis, p: RetentionBreachPayload): Promise<void> {
   try {
@@ -446,9 +481,16 @@ async function enqueueRetentionBreach(d: Devis, p: RetentionBreachPayload): Prom
       archidocProjectId,
       incidentRef: p.incidentRef,
       remediationContact: p.remediationContact,
-      // Verbatim preservation: take from the inbound payload (string
-      // ISO-8601 as-received), NOT a re-formatted Date round-trip.
-      originalSignedAt: p.originalSignedAt,
+      // §5.3.2.1 (v1.1) sender-side canonicalization: emit the
+      // `.SSSZ` form regardless of whether the inbound Archisign body
+      // carried the seconds-only `...Z` shape. This is the third of
+      // the three fields enumerated in the §5.3.2.1 conformance table,
+      // and the exact field that triggered the 2026-05-02 joint live
+      // E2E test postmortem (Architrak's `...Z` vs Archidoc's
+      // Postgres-normalised `...000Z`). `detectedAt` is NOT in §5.3.2.1
+      // scope — it does not participate in the byte-equality rule —
+      // and we relay it verbatim.
+      originalSignedAt: canonicalizeTimestamp(p.originalSignedAt),
       detectedAt: p.detectedAt,
     };
     await enqueueOutboundDelivery({

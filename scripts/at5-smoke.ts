@@ -181,9 +181,13 @@ function buildWorkAuthorisedPayload(opts: {
 
 /**
  * Build a signed_pdf_retention_breach payload from the fixture. The
- * `originalSignedAt` is preserved verbatim from the fixture — Archidoc
- * correlates breaches against the prior work_authorised by byte-equality
- * on this field per §5.3.2.
+ * fixture's `originalSignedAt` is already in the §5.3.2.1 (v1.1)
+ * canonical `.SSSZ` form — Archidoc correlates breaches against the
+ * prior work_authorised by byte-equality on this field per §5.3.2, and
+ * the v1.1 amendment mandates the `.SSSZ` wire form. The production
+ * relay path (`enqueueRetentionBreach` in archisign-webhooks.ts) also
+ * canonicalizes via `canonicalizeTimestamp` so a non-canonical inbound
+ * Archisign body would still emit canonical downstream.
  *
  * archidocProjectId override: undefined preserves fixture value; null sends
  * JSON null; any string is sent verbatim. JSON null is contract-compliant

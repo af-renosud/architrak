@@ -6,7 +6,7 @@
   "archidocProjectId": "abc-123",
   "contractorId": 1011,
   "archisignEnvelopeId": "1234567890",
-  "signedAt": "2026-04-25T10:30:00Z",
+  "signedAt": "2026-04-25T10:30:00.000Z",
   "identityVerification": {
     "method": "otp_email",
     "otpIssuedAt": "2026-04-25T10:25:00Z",
@@ -14,7 +14,7 @@
     "signerIpAddress": "203.0.113.42",
     "signerUserAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
     "lastViewedAt": "2026-04-25T10:29:00Z",
-    "signedAt": "2026-04-25T10:30:00Z",
+    "signedAt": "2026-04-25T10:30:00.000Z",
     "authenticationId": "auth_abc123"
   },
   "dqeExportId": "DQE-2026-001",
