@@ -1,0 +1,50 @@
+Subject: Re: T+breach-success — 7/7 GREEN. Test closed. Plus your postmortem flag.
+
+Architrak team,
+
+Test result: 7/7 contract paths validated. Cleared green for prod cutover discussion.
+
+Last fire receipt:
+
+Receive stamp	14:31:00.172 CEST (your fire 14:30:59.659 → +513ms wire)
+Wire response	200 ✓
+breach_id	5c39d104-16d9-4b5b-b0a2-b4f4eb9e4fdc
+FK to T+0 work_auth	70d3d2c0-aa9e-4044-90ee-1e16a23d6ea1 ✓
+Phase-1 envelope lookup	resolved (hit T+0 row) ✓
+Phase-2 FK on archidocProjectId	resolved to "DIARMID MASSEY" ✓
+TX commit	both rows committed ✓
+§5.3.2 byte-equality	wa.signed_at == breach.original_signed_at (both "2026-04-25T10:30:00.000Z") ✓
+Soft violation in audit log	none ✓
+On your postmortem signal — the timestamp normalization gap
+Captured. This is a real §5.3.2 spec gap and it needs an addendum. Concrete:
+
+We sent "signedAt": "2026-04-25T10:30:00Z" at T+0 (no millis)
+Postgres timestamptz column normalized that to 2026-04-25T10:30:00.000Z on insert
+Your breach builder sent "originalSignedAt": "2026-04-25T10:30:00Z" initially → byte comparison would have failed against our stored form
+You manually fixed it to ...10:30:00.000Z before firing → byte comparison passed
+The current §5.3.2 wire spec doesn't pin a canonical ISO-8601 form for the millisecond field. Two viable resolutions, either fine with us:
+
+Sender-side normalization — spec mandates senders emit .SSS always, even when .000. Cleanest, no receiver-side work, matches what your patched fixture now does.
+Receiver-side canonicalization-before-compare — spec mandates receivers normalize both sides to a canonical form (e.g., always .SSS) before applying the byte-equality rule. More forgiving for legacy senders.
+Soft preference for (1) — fewer moving parts, and it's already the de-facto behavior of every JSON serializer that round-trips a Postgres timestamptz. Happy to draft a §5.3.2 addendum patch (PR-style diff) tomorrow if you want a concrete proposal to react to.
+
+Final receiver-side state
+webhook_events_in              : 2 rows (T+0 success, T+breach-success)
+work_authorisations            : 1 row  (T+0)
+signed_pdf_retention_breaches  : 1 row  (T+breach-success, FK-linked to T+0)
+HMAC verifications             : 7 (one per inbound, all v2 path)
+Failed/rolled-back inbounds    : 4 (T+5 dedup, T+8 422, T+10 410, T+15-mystery×2)
+Stranded state                 : zero
+
+Our open follow-ups (Archidoc-internal)
+For transparency, three items going on our backlog:
+
+Audit-log non-fatal warning at T+0 (insurance_audit_log insert failure, caught as non-fatal — investigate root cause)
+webhook_events_in.processed_at not populated on success path (column added but route doesn't set it)
+Mystery 019de89e-... fires × 2 — your investigation, but we'll cross-reference if you find it was genuine orchestrator activity vs something else
+Yours to confirm
+If you concur on 7/7 close, we're done. Thanks for the disciplined fire schedule, the announce-before-fire after T+10, and the postmortem candor on the timestamp issue — exactly the kind of contract-test partner posture that makes prod cutovers boring.
+
+Standing by for your formal sign-off and the §5.3.2 normalization decision.
+
+— Archidoc team
