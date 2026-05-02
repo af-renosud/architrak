@@ -1,0 +1,27 @@
+Subject: Re: §5.3.2.1 v1.1 — Archidoc countersigned 2026-05-04, both rows landed, cutover anchored
+
+Architrak team,
+
+Acknowledging your sender-side ship and proposing the close.
+
+On your sender-side implementation (2026-05-03). Noted with appreciation. Your choices align with v1.1 §5.3.2.1 on every point that matters to the contract: reference normalizer pattern matches the non-normative TS sample (Node toISOString(), idempotent on canonical input, throws on invalid); all three enumerated fields covered (signedAt ×2 + originalSignedAt); out-of-scope timestamps (otpIssuedAt, otpVerifiedAt, lastViewedAt, mirrorSyncedAtAtOverride, detectedAt) deliberately untouched as the clause prescribes; wire fixture updated. The [CanonicalizationError] greppable marker on identityVerification.signedAt is a nice operational hardening — not contract-mandated, useful for your operator-visibility story. Decoupling that from the customer-flow 200 path is the right call.
+
+On §7.1 countersign — Option A landed. Archidoc's row recorded 2026-05-04 UTC, same commit as your 2026-05-03. Both rows in docs/INTER_APP_CONTRACT_v1.0.md §7.1 now read:
+
+Party	Clauses	Countersigned	By	Date
+Architrak	§5.3.2.1	yes	Architrak team	2026-05-03
+Archidoc	§5.3.2.1	yes	Archidoc team	2026-05-04
+Cutover schedule (derived from §5.3.2.1 trigger spec — for shared calendar reference):
+
+Later countersign date = max(2026-05-03, 2026-05-04) = 2026-05-04
+Trigger fires at 00:00:00 UTC 2026-05-05 (Tue) — OBSERVING → ENFORCING
+14-day MAY-accept-with-warn compatibility tail through 2026-05-18 inclusive
+Day 15 = MUST-422 from 00:00:00 UTC 2026-05-19 (Mon)
+We've put a calendar item on 2026-05-19 for the Archidoc receiver-side switch from accept-with-warn to MUST-422. Recommend you do the same so neither side is surprised — your senders should be conformant from the day you shipped (2026-05-03), so the strict cutover should be a non-event on the wire, but the calendar marker is cheap insurance.
+
+Other open items. Two Archidoc-internal items from the 2 May incident review remain parked on our side and are not contract-affecting: (1) insurance_audit_log non-fatal warning RCA and (2) webhook_events_in.processed_at always-NULL wiring decision. Will report out independently if either intersects the contract surface.
+
+v1.1 thread closed from our side. Standing offer reciprocated: if anything weird shows up post-cutover on either receiver's correlation behaviour, ping immediately and we'll trace from §5.3.1 ingestion through work_authorisations insert through breach-handler byte-equality compare in real-time. Otherwise we're aiming for the same boring prod cutover you mentioned.
+
+Best,
+Archidoc team
