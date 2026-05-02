@@ -1,4 +1,8 @@
-# DEVIS SIGN-OFF WORKFLOW — INTER-APP CONTRACT v1.0
+> **AMENDED v1.1 AS OF 2026-05-03** — single substantive amendment to v1.0-rc3: §5.3.2.1 added (canonical ISO-8601 timestamp form mandated for `signedAt` / `originalSignedAt` on the Architrak↔Archidoc boundary, motivated by the 2026-05-02 joint live E2E webhook test). Three example payloads updated in §5.3.1 / §5.3.2 to model the canonical form. Title bumped from v1.0-rc3 → v1.1. New §7.1 sign-off block tracks the v1.1 amendment countersign dates and anchors the §5.3.2.1 cutover trigger. All other content is byte-identical to v1.0-rc3 frozen below.
+>
+> **Filename note:** this file remains named `INTER_APP_CONTRACT_v1.0.md` for stability of downstream references (route handlers, test fixtures, the joint live-test thread `.local/architrak_messages_2026_05_02.md`). Treat the filename as a historical artifact; the authoritative version marker is the title below.
+
+# DEVIS SIGN-OFF WORKFLOW — INTER-APP CONTRACT v1.1
 
 **Status:** **FROZEN at v1.0 as of 2026-04-25.** All three apps have confirmed (Architrak self-attested as drafter; Archisign `confirmed v1.0-rc2` with explicit pre-commitment to higher rc tags; Archidoc `confirmed v1.0-rc3`). v1.0 is byte-identical to v1.0-rc3 except for this status block, the §7 sign-off table, and the file header/footer rc-tag cleanup. See §7 sign-off block for full confirmation record.
 **Drafted by:** Architrak, transcribing from the three Round-3 §7 contributions.
@@ -8,6 +12,8 @@
 **Changes from rc1:** 15 transcription corrections applied across §1, §2, §3, §5 — all are wire-spec faithfulness fixes against the R3 source materials, no design changes.
 
 **Changes from rc2:** One substantive faithfulness fix at §2.2.1 (clarifying that `work_authorisations` and `signed_pdf_retention_breaches` are separate tables — the `eventType` discriminator drives routing at the handler, per Archidoc Step 3 §A.1) plus two cosmetic fixes (§2.2.1 NOTE citation widened to "R3 §6 / §7.1" per §D.2; §4 secrets matrix labels relabelled `receivers/verifiers` vs `signers/receivers` for the two HMAC-emitted-secret rows per §D.1). All applied per Archidoc Step 3 review. No design changes.
+
+**Changes from v1.0-rc3 → v1.1 (2026-05-03):** One substantive design addition: §5.3.2.1 (canonical ISO-8601 timestamp form mandate) per joint Architrak/Archidoc decision following the 2026-05-02 live E2E webhook test. Senders MUST emit `signedAt` (top-level + `identityVerification.signedAt`) and `originalSignedAt` in `YYYY-MM-DDTHH:MM:SS.SSSZ` form, even when the millisecond component is zero. Motivating incident: pre-fire fixture patch on the T+breach-success path where Architrak's `originalSignedAt: "...Z"` did not byte-equal Archidoc's stored `signedAt: "...000Z"` (Postgres `timestamptz` insert-time normalization). Receiver-side canonicalization rejected as inviting silent format drift; sender-side `.SSS`-always mandate adopted. Three example payloads in §5.3.1 / §5.3.2 updated to model the canonical form; no other §1–§5 content modified.
 
 ---
 
@@ -652,7 +658,7 @@ Discriminator field: **`eventType`** (not `event` — see §0.5).
   "archidocProjectId": "abc-123",         // mirror of Archidoc's project id
   "contractorId": 1011,
   "archisignEnvelopeId": "1234567890",
-  "signedAt": "2026-04-25T10:30:00Z",
+  "signedAt": "2026-04-25T10:30:00.000Z",   // canonical .SSS form per §5.3.2.1 (v1.1)
   "identityVerification": {                // 8-field object per §3.4 (NOT signerIdentityTrail, NOT array)
     "method": "otp_email",
     "otpIssuedAt": "2026-04-25T10:25:00Z",
@@ -660,7 +666,7 @@ Discriminator field: **`eventType`** (not `event` — see §0.5).
     "signerIpAddress": "203.0.113.42",
     "signerUserAgent": "Mozilla/5.0 ...",
     "lastViewedAt": "2026-04-25T10:29:00Z",
-    "signedAt": "2026-04-25T10:30:00Z",
+    "signedAt": "2026-04-25T10:30:00.000Z",   // canonical .SSS form per §5.3.2.1 (v1.1)
     "authenticationId": "auth_abc123"
   },
   "dqeExportId": "DQE-2026-001",          // nullable; from Gmail header at ingestion
@@ -689,12 +695,91 @@ Fired when Architrak receives `envelope.retention_breach` for a devis whose `wor
   "archidocProjectId": "abc-123",          // from Architrak's project mirror
   "incidentRef": "INC-2036-04-26-0001",
   "remediationContact": "vault-ops@archisign.fr",
-  "originalSignedAt": "2026-04-25T10:30:00Z",
+  "originalSignedAt": "2026-04-25T10:30:00.000Z",   // canonical .SSS form per §5.3.2.1 (v1.1) — MUST byte-equal the work_authorisations.signedAt stored at T+0
   "detectedAt": "2036-04-26T03:00:00Z"
 }
 ```
 
 The `eventType` field is **additive and backward-compatible**: absence on Archidoc's side defaults to `"work_authorised"`.
+
+#### §5.3.2.1 Canonical ISO-8601 timestamp form (MUST clause — added v1.1)
+
+For the byte-equality correlation rule between §5.3.1 `signedAt` (stored at the receiver as `work_authorisations.signed_at`) and §5.3.2 `originalSignedAt` (compared at breach time to locate the prior work-authorisation row's authoritative sign timestamp) to be a reliable string equality across heterogeneous storage layers, senders MUST emit the following timestamp fields in canonical ISO-8601 form with explicit millisecond component (`.SSS`), even when the millisecond value is zero:
+
+- `signedAt` (top-level) in §5.3.1 `work_authorised` payloads
+- `signedAt` (inside `identityVerification`) in §5.3.1 `work_authorised` payloads
+- `originalSignedAt` in §5.3.2 `signed_pdf_retention_breach` payloads
+
+Canonical form: `YYYY-MM-DDTHH:MM:SS.SSSZ`
+
+| Form | Example | Conformant? |
+|---|---|---|
+| Canonical | `2026-04-25T10:30:00.000Z` | ✓ MUST emit |
+| Seconds-only | `2026-04-25T10:30:00Z` | ✗ MUST NOT emit |
+| Truncated millis | `2026-04-25T10:30:00.0Z` or `.00Z` | ✗ MUST NOT emit |
+| Offset form | `2026-04-25T10:30:00.000+00:00` | ✗ MUST NOT emit (use literal `Z`) |
+| Sub-millisecond precision | `2026-04-25T10:30:00.123456Z` | ✗ MUST NOT emit (truncate to ms) |
+
+**Rationale.** Receiver storage layers (notably Postgres `timestamptz`) normalize a seconds-only wire value `...:00Z` to `...:00.000Z` on insert. A sender that emits the seconds-only form on the §5.3.1 work-authorised path stores the canonical form at the receiver; that same sender then later emits the seconds-only form on the §5.3.2 breach path; the receiver's byte-equality check (`work_authorisations.signed_at == signed_pdf_retention_breaches.original_signed_at`) fails despite logical equality. Mandating the canonical form at the wire boundary keeps the equality rule a simple byte-comparison and eliminates a class of normalization-drift bugs that are expensive to diagnose in production. Receiver-side canonicalization-before-compare was considered and rejected: it invites silent format drift across receiver implementations and pushes the spec ambiguity downstream rather than closing it.
+
+**Cutover trigger.** This clause has two operating phases — OBSERVING (default) and ENFORCING. The trigger that flips OBSERVING → ENFORCING is deterministic: 00:00:00 UTC on the day following the later of the two §7.1 v1.1 countersign dates (Architrak and Archidoc). Both parties MUST record their countersign date (UTC) in §7.1 below upon acceptance of this v1.1 amendment; until both are recorded, this clause remains OBSERVING indefinitely.
+
+**Receiver behaviour by phase.**
+
+| Phase | Receiver behaviour on non-conformant input |
+|---|---|
+| OBSERVING (before trigger) | SHOULD log a soft violation in the audit log (level `warn`, type `non_canonical_timestamp`, fields `field_name`, `received_value`, `canonical_value`). MUST NOT 4xx the request. The byte-equality rule remains the diagnostic, not a hard validation. |
+| ENFORCING (on/after trigger) | MAY accept-with-warn (continuing the OBSERVING behaviour) for a bounded 14-day compatibility tail starting at the trigger instant. On day 15 and after, receivers MUST return `422 Unprocessable Entity` with body `{ "error": "non_canonical_timestamp", "field": "<fieldname>", "received": "<value>", "expected_pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$" }`. The 14-day tail is to absorb in-flight retries from senders that ship the canonicalization patch concurrently with the cutover. |
+| All phases | Receivers MUST NOT silently coerce non-conformant input to canonical form. Coercion masks the exact class of normalization-drift bug this clause exists to surface. |
+
+**Architrak relay note.** When Architrak relays an upstream Archisign-supplied `signedAt` (per §5.2 / §3.3) into a downstream §5.3.1 emission, Architrak MUST canonicalize the value at the relay boundary if Archisign emitted a non-canonical form. Archisign-side canonicalization is recommended but out of scope for v1.1 (would require a separate Archisign sign-off; tracked as a v1.2 candidate in §6).
+
+**Reference normalizer (sender-side, non-normative).**
+
+```ts
+// Canonicalize an ISO-8601 timestamp to the v1.1 wire form.
+// Accepts: "...Z", "...+00:00", "...000+00:00", "...123456Z", Date objects.
+// Returns: "YYYY-MM-DDTHH:MM:SS.SSSZ" (always 3 millisecond digits, always literal Z).
+// Throws on invalid input — non-conformant senders fail fast at emission.
+function canonicalizeTimestamp(input: string | Date): string {
+  const d = typeof input === "string" ? new Date(input) : input;
+  if (Number.isNaN(d.getTime())) {
+    throw new Error(`canonicalizeTimestamp: invalid input ${JSON.stringify(input)}`);
+  }
+  return d.toISOString(); // Node's toISOString() always emits the .SSSZ form
+}
+```
+
+**Worked example (motivating incident, 2026-05-02 joint live E2E test).**
+
+```jsonc
+// T+0 — Architrak emits work_authorised (conformant under v1.1):
+{
+  "eventType": "work_authorised",
+  "archisignEnvelopeId": "1234567890",
+  "signedAt": "2026-04-25T10:30:00.000Z",   // .SSS form, mandated v1.1
+  "identityVerification": {
+    "signedAt": "2026-04-25T10:30:00.000Z", // .SSS form, mandated v1.1
+    /* ...other 7 fields per §3.4... */
+  },
+  /* ...other §5.3.1 fields... */
+}
+// Receiver stores (Postgres timestamptz round-trip is now a no-op):
+// work_authorisations.signed_at = '2026-04-25T10:30:00.000Z'
+
+// T+breach-success — Architrak emits signed_pdf_retention_breach (conformant under v1.1):
+{
+  "eventType": "signed_pdf_retention_breach",
+  "archisignEnvelopeId": "1234567890",
+  "originalSignedAt": "2026-04-25T10:30:00.000Z",   // byte-equal to T+0's stored signed_at ✓
+  /* ...other §5.3.2 fields... */
+}
+// Receiver byte-equality check at breach handler (§5.3.2 correlation rule):
+// work_authorisations.signed_at == signed_pdf_retention_breaches.original_signed_at
+// '2026-04-25T10:30:00.000Z' == '2026-04-25T10:30:00.000Z' → PASS ✓
+```
+
+**Motivating incident summary.** Joint live E2E webhook test, 2026-05-02 14:00–14:30 CEST, T+breach-success fire (eventId `019de8ab-b24a-7600-8068-5b457a4d5d79`). Architrak's breach fixture initially emitted `originalSignedAt: "2026-04-25T10:30:00Z"`; Archidoc's stored `signed_at` (from T+0, eventId `019de890-691c-...`, work_authorisation_id `70d3d2c0-aa9e-4044-90ee-1e16a23d6ea1`) had been canonicalized by Postgres `timestamptz` insert to `"2026-04-25T10:30:00.000Z"`. Pre-fire fixture patch by Architrak (`...Z` → `...000Z`) resolved the immediate test, which closed at 7/7 contract paths validated plus G6 bonus path (DLQ admin-retry preserving eventId across attempts) — see joint sign-off thread 2026-05-02 14:30 CEST. This §5.3.2.1 clause closes the spec gap that the pre-fire patch papered over.
 
 ### §5.4 Architrak → Archidoc — insurance verdict request
 
@@ -728,7 +813,15 @@ These pre-date this contract. Their continued operation is a precondition; their
 
 ## §6 Open items intentionally deferred to v2 of the contract
 
-None today. The contract is complete and consistent at v1.0. This section is a placeholder for future amendments. Any new design content raised at Step 3 review must be queued here rather than modifying §1–§5.
+**v1.1 amendments (logged here per §6 placeholder convention):**
+
+- 2026-05-03 — §5.3.2.1 canonical ISO-8601 timestamp form mandate (sender-side `.SSS`-always for `signedAt` and `originalSignedAt` on the Architrak↔Archidoc boundary). Motivating incident: 2026-05-02 joint live E2E webhook test, T+breach-success fixture pre-fire patch. Decision-of-record: sender-side normalization preferred over receiver-side canonicalization-before-compare. Cutover trigger is anchored to §7.1 dual countersign + 1 day + 14-day compatibility tail (deterministic; no "date TBD"). See §5.3.2.1 for full clause text and §7.1 for the sign-off status.
+
+**v1.2 candidates (deferred):**
+
+- Archisign-side `signedAt` canonicalization on §5.2 / §3.3 webhook emissions (would let Architrak skip the relay-boundary canonicalization mandated by §5.3.2.1's "Architrak relay note"). Requires Archisign sign-off; not blocking for v1.1.
+
+**v2 deferrals:** None today beyond v1.2 candidates above. The contract remains complete and consistent at v1.1. Any new design content raised at Step 3 review must be queued here rather than modifying §1–§5.
 
 ---
 
@@ -742,6 +835,19 @@ None today. The contract is complete and consistent at v1.0. This section is a p
 
 **Contract is frozen at v1.0 as of 2026-04-25.** All three apps have confirmed; no further review cycles. Subsequent changes require a v1.1 (or later) versioned amendment proposal through the same R1 → R2 → R3 → Step 3 read-and-confirm protocol — no in-place edits to v1.0.
 
+### §7.1 v1.1 amendment sign-off (added 2026-05-03)
+
+The §5.3.2.1 cutover trigger anchor is the later of the two countersign dates below. Both MUST be recorded in `YYYY-MM-DD` UTC form upon acceptance of this v1.1 amendment.
+
+| App | v1.1 amendment scope reviewed | Countersigned? | Countersigned by | Date (UTC) |
+|---|---|---|---|---|
+| Architrak | §5.3.2.1 (sender-side mandate applies to Architrak's `handleRetentionBreach` and `work_authorised` emissions) | yes | Architrak team | 2026-05-03 |
+| Archidoc | §5.3.2.1 (drafter; receiver of the amended payloads; soft-violation audit-log behaviour during OBSERVING phase) | pending | — | — |
+
+Archisign is not in scope for this v1.1 amendment — the mandate applies only to the Architrak↔Archidoc boundary. Archisign-side `signedAt` canonicalization on §5.2 / §3.3 emissions is tracked as a v1.2 candidate per §6.
+
+Contract amendment freezes at v1.1 when both parties record their countersign date above. The §5.3.2.1 cutover trigger then fires at 00:00:00 UTC on the day following the later of the two recorded dates.
+
 ---
 
-## End of consolidated contract v1.0 (FROZEN 2026-04-25)
+## End of consolidated contract v1.1 (amends v1.0-rc3 — see top preamble for the v1.1 amendment frame and §7.1 for sign-off status)
