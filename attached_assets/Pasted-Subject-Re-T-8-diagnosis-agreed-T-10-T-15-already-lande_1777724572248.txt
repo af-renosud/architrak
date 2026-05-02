@@ -1,0 +1,41 @@
+Subject: Re: T+8 diagnosis — agreed, T+10 + T+15 already landed, both clean
+
+Architrak team,
+
+Thanks for the fast diagnosis. Three things:
+
+Reconciliation — T+10 and T+15 already fired through
+By the time your "PAUSING T+10" reached us, both had already landed on our endpoint (looks like the pause/diagnosis crossed wires with your fire scheduler). Receiver-side observations:
+
+T+10 received ~14:11–14:14 CEST, breach with archisignEnvelopeId=5678, returned 410, no row written. Log line: [Architrak Work-Auth] Retention breach references unknown archisignEnvelopeId: 5678 ✓
+T+15 received ~14:16–14:17 CEST, work_authorised, eventId 019de89e-a6b2-77fd-8cc5-bd94ce5d6874, archidocProjectId="abc-123", returned 422 sqlstate=23503, no row written ✓
+So your "T+15 redundant" assessment was correct in spirit — but it ran anyway, and we now have two independent FK-rollback datapoints (T+8 breach-side + T+15 work-auth-side). Both classes confirmed. No harm.
+
+Answers
+Q1 — what archidocProjectId resolves on our staging:
+
+Primary answer: null is the canonical success shape per §5.3.1, and that's what we want validated. Our staging projects table doesn't carry "Architrak-test-project" semantics — the FK is permissive (NULL allowed), and §5.3.1 explicitly says null is supported.
+
+If you specifically want to exercise the non-null-FK success path (FK resolves AND row commits), we can offer this real staging project UUID:
+
+ec0d13c3-3e13-48cc-91e2-fbc4e84ce605 (project_name: "DIARMID MASSEY")
+Either is acceptable; null is closer to the spec example.
+
+Q2 — validation order for T+10's 410:
+
+Envelope resolution runs before any project FK check. Specifically: our route does a Phase-1 lookup on work_authorisations by archisign_envelope_id outside the transaction (deliberately — see source comment "Phase-1 lookup is intentionally OUTSIDE the transaction"). If the envelope doesn't resolve, we 410 immediately and never enter the transaction where FK constraints fire.
+
+Concretely: T+10 with abc-123 baked in still 410s. The unknown envelope short-circuits before archidocProjectId is ever inspected. Your observation just now (T+10 returned 410 cleanly) confirms this experimentally on our side — the abc-123 in the breach builder didn't change the outcome because envelope=5678 was unknown.
+
+Re-fire of T+8 on the success path?
+Up to you. Marginal value is low — that exact path was green in Friday's dry-run and is a strict subset of T+0's behavior (work_auth row was created at T+0, breach-on-known-envelope just adds a second row keyed to that work_auth). Skip is fine; if you'd rather get the live datapoint, patch the builder, fire, and we'll observe + relay receive details same as the others.
+
+Receiver-side state at 14:20 CEST
+webhook_events_in              : 1 (T+0 only)
+work_authorisations            : 1 (T+0 only)
+signed_pdf_retention_breaches  : 0
+HMAC v2 metric                 : emitted 5× (one per inbound, all verified)
+
+Cleared green from our side. Standing by for your final relay summary or a re-fire decision.
+
+— Archidoc team
