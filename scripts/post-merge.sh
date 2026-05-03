@@ -3,6 +3,15 @@ set -e
 npm install
 npx tsx scripts/run-migrations.mjs
 
+# Pre-deploy gate (Task #163): catch unjournaled migration files
+# (orphan .sql on disk) and journal entries with no matching file
+# *before* the replay check runs. The 2026-04-26 archisign incident
+# left 0025_archisign_envelope_tracking.sql off the journal for 6
+# days; the replay check eventually flagged the resulting column gap,
+# but its error surfaced as a downstream column-not-exist failure.
+# Running this first gives a clear, actionable orphan diagnostic.
+bash scripts/check-journal-orphans.sh
+
 # Pre-deploy gate (Task #124): independently replay every migration
 # against a throwaway database and verify tracker == journal AND every
 # Drizzle-declared column exists. Catches the silent partial-apply
