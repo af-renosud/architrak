@@ -48,6 +48,8 @@ interface ArchidocStatus {
   siretIssueCount?: number;
   sourceBaseUrl?: string | null;
   sourceHost?: string | null;
+  hostMisconfigured?: boolean;
+  nodeEnv?: "development" | "production" | "test";
 }
 
 function formatCurrency(value: number): string {
@@ -164,6 +166,29 @@ export default function Projects() {
   return (
     <AppLayout>
       <div className="space-y-8">
+        {archidocStatus?.hostMisconfigured && (
+          <div
+            role="alert"
+            className="flex items-start gap-3 rounded-xl border-2 border-red-500 bg-red-50 px-4 py-3"
+            data-testid="banner-archidoc-host-misconfigured"
+          >
+            <AlertTriangle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="text-[12px] font-bold uppercase tracking-wider text-red-800">
+                Archidoc backend misconfigured
+              </p>
+              <p className="text-[11px] text-red-900">
+                This deployed app ({archidocStatus.nodeEnv ?? "production"}) is connected to{" "}
+                <span className="font-mono font-semibold" data-testid="text-misconfigured-host">
+                  {archidocStatus.sourceHost ?? "an unknown host"}
+                </span>
+                , which looks like a dev or staging backend. The project list below may be wrong.
+                Update the <span className="font-mono">ARCHIDOC_BASE_URL</span> deployment secret
+                to the production Archidoc host and redeploy.
+              </p>
+            </div>
+          </div>
+        )}
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <h1 className="text-[22px] font-light uppercase tracking-tight text-foreground" data-testid="text-page-title">
             Projects

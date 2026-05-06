@@ -4,7 +4,7 @@ import { storage } from "../storage";
 import { isArchidocConfigured, checkConnection } from "../archidoc/sync-client";
 import { fullSync, incrementalSync, getLastSyncStatus, getCurrentSourceBaseUrl } from "../archidoc/sync-service";
 import { trackProject, refreshProject } from "../archidoc/import-service";
-import { env as envCfg } from "../env";
+import { env as envCfg, detectMisconfiguredArchidocBaseUrl } from "../env";
 import { validateRequest } from "../middleware/validate";
 
 const router = Router();
@@ -57,6 +57,16 @@ router.get("/api/archidoc/status", async (_req, res) => {
       siretIssueCount: siretIssues.length,
       sourceBaseUrl,
       sourceHost,
+      // Task #165: surface a server-evaluated "this prod app is wired
+      // to a dev backend" verdict so the Projects page can render a
+      // non-dismissible banner. Predicate is shared with the boot WARN
+      // in env.ts (single source of truth).
+      hostMisconfigured:
+        detectMisconfiguredArchidocBaseUrl({
+          NODE_ENV: envCfg.NODE_ENV,
+          ARCHIDOC_BASE_URL: envCfg.ARCHIDOC_BASE_URL,
+        }) !== null,
+      nodeEnv: envCfg.NODE_ENV,
       webhookEnabled: true,
       webhookSecretConfigured: !!envCfg.ARCHIDOC_WEBHOOK_SECRET,
       pollingEnabled: envCfg.ARCHIDOC_POLLING_ENABLED,

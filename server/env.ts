@@ -262,4 +262,65 @@ export function warnIfOperatorAlertEmailMissingInProduction(
 
 warnIfOperatorAlertEmailMissingInProduction(parsed.data);
 
+/**
+ * Boot-time WARN (Task #165): if NODE_ENV=production but
+ * ARCHIDOC_BASE_URL points at a host that is clearly a dev or staging
+ * backend (replit.dev preview hosts, localhost, *.staging.*, etc.),
+ * the deployed app will silently mirror the wrong project list. Task
+ * #164 surfaced the source host on the API + dialog, but a banner-less
+ * misconfig sat in prod for ~a week before anyone opened the dialog.
+ * Logging a WARN at boot makes the mistake impossible to miss in the
+ * deploy console; the runtime banner (Projects page) covers the case
+ * where nobody is tailing logs.
+ *
+ * Returns the offending host (string) when misconfigured, otherwise
+ * null. Pure function — exported so the API surface and tests can
+ * reuse the exact same predicate.
+ */
+export function detectMisconfiguredArchidocBaseUrl(
+  cfg: Pick<Env, "NODE_ENV" | "ARCHIDOC_BASE_URL">,
+): string | null {
+  if (cfg.NODE_ENV !== "production") return null;
+  if (!cfg.ARCHIDOC_BASE_URL) return null;
+  let host: string;
+  try {
+    host = new URL(cfg.ARCHIDOC_BASE_URL).host.toLowerCase();
+  } catch {
+    return null;
+  }
+  // Dev/staging signals. `replit.dev` covers Replit preview hostnames
+  // (the actual root cause of the 2026-04 incident). The other entries
+  // are belt-and-braces for common non-prod patterns.
+  const devSignals = [
+    "replit.dev",
+    "localhost",
+    "127.0.0.1",
+    "0.0.0.0",
+    ".local",
+    "staging.",
+    ".staging.",
+    "-staging.",
+  ];
+  for (const signal of devSignals) {
+    if (host.includes(signal)) return host;
+  }
+  return null;
+}
+
+export function warnIfArchidocBaseUrlMisconfigured(
+  cfg: Pick<Env, "NODE_ENV" | "ARCHIDOC_BASE_URL">,
+  log: (msg: string) => void = (m) => console.warn(m),
+): void {
+  const offendingHost = detectMisconfiguredArchidocBaseUrl(cfg);
+  if (offendingHost) {
+    log(
+      `[env] WARN — NODE_ENV=production but ARCHIDOC_BASE_URL host "${offendingHost}" looks like a dev/staging backend. ` +
+        "The deployed app will mirror the WRONG Archidoc project list. " +
+        "Update ARCHIDOC_BASE_URL to the production Archidoc host before serving traffic.",
+    );
+  }
+}
+
+warnIfArchidocBaseUrlMisconfigured(parsed.data);
+
 export const env: Readonly<Env> = Object.freeze(parsed.data);
