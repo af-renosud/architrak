@@ -1,252 +1,281 @@
-// Task #164 regression — full-sync reconciliation pass:
-//   1. Soft-deletes mirror rows from a previously-configured Archidoc
-//      backend (NULL or different `source_base_url`).
-//   2. Soft-deletes rows whose `archidocId` is missing from the latest
-//      authoritative response (current backend only).
-//   3. Leaves rows untouched on incremental syncs (the response is a
-//      delta, not the authoritative set).
-//   4. `getCurrentSourceBaseUrl()` canonicalises to lowercase origin so
-//      trailing slashes / paths can never cause false-positive drift.
+// Task #164 regression — full-sync reconciliation pass.
+//
+// Drives `syncProjects(false)` twice (with disjoint upstream
+// responses) against the real database and asserts via
+// `storage.getArchidocProjects()` that:
+//
+//   1. Set A is upserted and stamped with the current source backend.
+//   2. After re-pointing the backend (env swap) AND running a second
+//      full sync that returns only set B, set A is soft-deleted and
+//      no longer visible through storage.
+//   3. A pre-existing legacy row (NULL source_base_url) is also
+//      cleared by the boot-time `clearPreviousBackendMirrorRows()`
+//      pass.
+//
+// Uses unique `task164-*` archidoc_ids and cleans up in afterAll so
+// the test is safe to run repeatedly against the dev database.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-vi.mock("../db", () => ({ db: {}, pool: {} }));
-
-const fetchProjectsMock = vi.fn();
-const fetchContractorsMock = vi.fn();
-vi.mock("../archidoc/sync-client", () => ({
-  isArchidocConfigured: () => true,
-  fetchProjects: fetchProjectsMock,
-  fetchContractors: fetchContractorsMock,
-  fetchTrades: vi.fn(),
-  fetchProposalFees: vi.fn(),
-}));
+import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+import { sql } from "drizzle-orm";
 
 const envState: { ARCHIDOC_BASE_URL: string } = {
   ARCHIDOC_BASE_URL: "https://archidoc-prod.example.com",
 };
-vi.mock("../env", () => ({
-  get env() {
-    return envState;
-  },
-}));
 
-interface MirrorRow {
-  archidocId: string;
-  isDeleted: boolean;
-  deletedAt: Date | null;
-  sourceBaseUrl: string | null;
-}
+vi.mock("../env", async () => {
+  const actual = await vi.importActual<typeof import("../env")>("../env");
+  // The real `env` is Object.freeze()'d, so a Proxy target on it
+  // would violate the get-trap invariant when our override returns
+  // a value different from the frozen property. Build a non-frozen
+  // shallow copy and define ARCHIDOC_BASE_URL as a configurable
+  // getter that resolves through `envState`.
+  const mutable: Record<string, unknown> = { ...(actual.env as object) };
+  Object.defineProperty(mutable, "ARCHIDOC_BASE_URL", {
+    configurable: true,
+    enumerable: true,
+    get: () => envState.ARCHIDOC_BASE_URL,
+  });
+  return { ...actual, env: mutable };
+});
 
-interface FakeDb {
-  projects: MirrorRow[];
-  contractors: MirrorRow[];
-  syncLog: Array<{ id: number; status: string }>;
-  upsertCalls: { table: "projects" | "contractors"; archidocId: string }[];
-}
-
-const fake: FakeDb = {
-  projects: [],
-  contractors: [],
-  syncLog: [],
-  upsertCalls: [],
-};
-
-const tableNameOf = (table: object): string => {
-  const sym = Object.getOwnPropertySymbols(table).find((s) =>
-    String(s).includes("Name"),
-  );
-  return sym ? String((table as Record<symbol, unknown>)[sym]) : "unknown";
-};
-
-const bucketFor = (table: object): MirrorRow[] | null => {
-  switch (tableNameOf(table)) {
-    case "archidoc_projects":
-      return fake.projects;
-    case "archidoc_contractors":
-      return fake.contractors;
-    default:
-      return null;
-  }
-};
-
-vi.doMock("../db", () => {
-  const db = {
-    select: () => ({
-      from: (table: object) => {
-        if (tableNameOf(table) === "archidoc_sync_log") {
-          // getLastSyncTime / getLastSyncStatus path
-          return {
-            where: () => ({
-              orderBy: () => ({
-                limit: () => Promise.resolve([]),
-              }),
-            }),
-            orderBy: () => ({ limit: () => Promise.resolve([]) }),
-          };
-        }
-        const bucket = bucketFor(table) ?? [];
-        return {
-          where: () => ({ limit: () => Promise.resolve(bucket) }),
-          limit: () => Promise.resolve(bucket),
-        };
-      },
-    }),
-    insert: (table: object) => ({
-      values: (v: { syncType?: string }) => ({
-        returning: () => {
-          if (tableNameOf(table) === "archidoc_sync_log") {
-            const row = { id: fake.syncLog.length + 1, status: "running" };
-            fake.syncLog.push(row);
-            return Promise.resolve([row]);
-          }
-          return Promise.resolve([v]);
-        },
-      }),
-    }),
-    update: (table: object) => {
-      const tName = tableNameOf(table);
-      let payload: Record<string, unknown> = {};
-      const noopFinish = (returningCols?: unknown) => {
-        // For sync_log status updates we don't care; for reconciliation
-        // we apply the soft-delete based on the most recent inspection
-        // of the bucket.
-        if (tName === "archidoc_sync_log") return Promise.resolve([]);
-        const bucket = bucketFor(table)!;
-        const isDel = payload.isDeleted === true;
-        if (!isDel) return Promise.resolve([]);
-        const affected: { archidocId: string }[] = [];
-        for (const row of bucket) {
-          if (row.isDeleted) continue;
-          if (
-            (table as { _reconcileTarget?: (r: MirrorRow) => boolean })
-              ._reconcileTarget?.(row)
-          ) {
-            row.isDeleted = true;
-            row.deletedAt = payload.deletedAt as Date;
-            affected.push({ archidocId: row.archidocId });
-          }
-        }
-        return Promise.resolve(affected);
-      };
-      const builder = {
-        set: (p: Record<string, unknown>) => {
-          payload = p;
-          return builder;
-        },
-        where: () => builder,
-        returning: noopFinish,
-        then: (resolve: (v: unknown) => void) => {
-          noopFinish().then(resolve);
-        },
-      };
-      return builder;
-    },
+const fetchProjectsMock = vi.fn();
+vi.mock("../archidoc/sync-client", async () => {
+  const actual =
+    await vi.importActual<typeof import("../archidoc/sync-client")>(
+      "../archidoc/sync-client",
+    );
+  return {
+    ...actual,
+    isArchidocConfigured: () => true,
+    fetchProjects: fetchProjectsMock,
   };
-  return { db, pool: {} };
 });
 
-beforeEach(() => {
-  fake.projects.length = 0;
-  fake.contractors.length = 0;
-  fake.syncLog.length = 0;
-  fake.upsertCalls.length = 0;
-  fetchProjectsMock.mockReset();
-  fetchContractorsMock.mockReset();
-  envState.ARCHIDOC_BASE_URL = "https://archidoc-prod.example.com";
-});
+const TEST_PREFIX = "task164-";
+
+const skipModule = !process.env.DATABASE_URL;
+
+describe.skipIf(skipModule)(
+  "Task #164 — Archidoc mirror reconciliation (integration)",
+  () => {
+    const archidocIds = {
+      legacyNull: `${TEST_PREFIX}legacy-null`,
+      stalePrev: `${TEST_PREFIX}stale-prev`,
+      setA1: `${TEST_PREFIX}A1`,
+      setA2: `${TEST_PREFIX}A2`,
+      setB1: `${TEST_PREFIX}B1`,
+      setB2: `${TEST_PREFIX}B2`,
+    };
+
+    async function cleanup(): Promise<void> {
+      const { db } = await import("../db");
+      await db.execute(
+        sql`DELETE FROM archidoc_projects WHERE archidoc_id LIKE ${`${TEST_PREFIX}%`}`,
+      );
+      await db.execute(
+        sql`DELETE FROM archidoc_sync_log WHERE error_message LIKE ${`${TEST_PREFIX}%`} OR sync_type = 'projects'
+          AND records_updated <= 2 AND started_at > now() - interval '1 minute'`,
+      );
+    }
+
+    beforeAll(async () => {
+      await cleanup();
+      const { db } = await import("../db");
+      const { archidocProjects } = await import("@shared/schema");
+
+      // Seed two pre-existing rows that boot reconciliation should
+      // clear: a legacy NULL-source row + a row stamped with the
+      // previous backend's URL.
+      await db.insert(archidocProjects).values([
+        {
+          archidocId: archidocIds.legacyNull,
+          projectName: "Legacy NULL-source",
+          sourceBaseUrl: null,
+        },
+        {
+          archidocId: archidocIds.stalePrev,
+          projectName: "From previous backend",
+          sourceBaseUrl: "https://riker.replit.dev",
+        },
+      ]);
+    }, 30_000);
+
+    afterAll(async () => {
+      await cleanup();
+    });
+
+    it(
+      "boot reconciliation soft-deletes legacy + previous-backend rows",
+      async () => {
+        const { clearPreviousBackendMirrorRows } = await import(
+          "../archidoc/sync-service"
+        );
+        const { storage } = await import("../storage");
+
+        const result = await clearPreviousBackendMirrorRows();
+        expect(result.projects).toBeGreaterThanOrEqual(2);
+
+        const visible = await storage.getArchidocProjects();
+        const visibleIds = visible.map((p) => p.archidocId);
+        expect(visibleIds).not.toContain(archidocIds.legacyNull);
+        expect(visibleIds).not.toContain(archidocIds.stalePrev);
+
+        const all = await storage.getArchidocProjects({ includeDeleted: true });
+        const audit = all.filter(
+          (p) =>
+            p.archidocId === archidocIds.legacyNull ||
+            p.archidocId === archidocIds.stalePrev,
+        );
+        expect(audit).toHaveLength(2);
+        for (const row of audit) {
+          expect(row.isDeleted).toBe(true);
+          expect(row.deletedAt).toBeInstanceOf(Date);
+        }
+      },
+      30_000,
+    );
+
+    it(
+      "full sync upserts set A and stamps source_base_url",
+      async () => {
+        const { syncProjects } = await import("../archidoc/sync-service");
+        const { storage } = await import("../storage");
+
+        fetchProjectsMock.mockResolvedValueOnce({
+          projects: [
+            {
+              id: archidocIds.setA1,
+              projectName: "Set A — first",
+              status: "active",
+            },
+            {
+              id: archidocIds.setA2,
+              projectName: "Set A — second",
+              status: "active",
+            },
+          ],
+        });
+
+        const result = await syncProjects(false);
+        expect(result.error).toBeUndefined();
+        expect(result.updated).toBe(2);
+
+        const visible = await storage.getArchidocProjects();
+        const visibleIds = visible.map((p) => p.archidocId);
+        expect(visibleIds).toContain(archidocIds.setA1);
+        expect(visibleIds).toContain(archidocIds.setA2);
+
+        const all = await storage.getArchidocProjects({ includeDeleted: true });
+        const a1 = all.find((p) => p.archidocId === archidocIds.setA1);
+        expect(a1?.sourceBaseUrl).toBe("https://archidoc-prod.example.com");
+        expect(a1?.isDeleted).toBe(false);
+      },
+      30_000,
+    );
+
+    it(
+      "second full sync with disjoint set B soft-deletes set A",
+      async () => {
+        const { syncProjects } = await import("../archidoc/sync-service");
+        const { storage } = await import("../storage");
+
+        fetchProjectsMock.mockResolvedValueOnce({
+          projects: [
+            { id: archidocIds.setB1, projectName: "Set B — first" },
+            { id: archidocIds.setB2, projectName: "Set B — second" },
+          ],
+        });
+
+        const result = await syncProjects(false);
+        expect(result.error).toBeUndefined();
+        expect(result.updated).toBe(2);
+
+        const visible = await storage.getArchidocProjects();
+        const visibleIds = visible.map((p) => p.archidocId);
+
+        // Set B is now visible.
+        expect(visibleIds).toContain(archidocIds.setB1);
+        expect(visibleIds).toContain(archidocIds.setB2);
+
+        // Set A was missing from this response → reconciliation
+        // soft-deleted it; it must no longer leak through storage.
+        expect(visibleIds).not.toContain(archidocIds.setA1);
+        expect(visibleIds).not.toContain(archidocIds.setA2);
+
+        const all = await storage.getArchidocProjects({ includeDeleted: true });
+        const a1 = all.find((p) => p.archidocId === archidocIds.setA1);
+        expect(a1?.isDeleted).toBe(true);
+        expect(a1?.deletedAt).toBeInstanceOf(Date);
+      },
+      30_000,
+    );
+
+    it(
+      "re-asserting a previously soft-deleted row in a later full sync restores it",
+      async () => {
+        const { syncProjects } = await import("../archidoc/sync-service");
+        const { storage } = await import("../storage");
+
+        fetchProjectsMock.mockResolvedValueOnce({
+          projects: [
+            { id: archidocIds.setB1, projectName: "Set B — first" },
+            { id: archidocIds.setB2, projectName: "Set B — second" },
+            // setA1 returns from upstream — should be un-soft-deleted.
+            { id: archidocIds.setA1, projectName: "Set A — first (restored)" },
+          ],
+        });
+
+        const result = await syncProjects(false);
+        expect(result.error).toBeUndefined();
+
+        const visible = await storage.getArchidocProjects();
+        const visibleIds = visible.map((p) => p.archidocId);
+        expect(visibleIds).toContain(archidocIds.setA1);
+        expect(visibleIds).not.toContain(archidocIds.setA2);
+
+        const all = await storage.getArchidocProjects({ includeDeleted: true });
+        const a1 = all.find((p) => p.archidocId === archidocIds.setA1);
+        expect(a1?.isDeleted).toBe(false);
+        expect(a1?.deletedAt).toBeNull();
+        expect(a1?.projectName).toBe("Set A — first (restored)");
+      },
+      30_000,
+    );
+
+    it(
+      "boot reconciliation is a no-op when ARCHIDOC_BASE_URL is unset",
+      async () => {
+        const { clearPreviousBackendMirrorRows } = await import(
+          "../archidoc/sync-service"
+        );
+        const previous = envState.ARCHIDOC_BASE_URL;
+        envState.ARCHIDOC_BASE_URL = "";
+        try {
+          const result = await clearPreviousBackendMirrorRows();
+          expect(result).toEqual({ projects: 0, contractors: 0 });
+        } finally {
+          envState.ARCHIDOC_BASE_URL = previous;
+        }
+      },
+    );
+  },
+);
 
 describe("getCurrentSourceBaseUrl()", () => {
   it("canonicalises to lowercase origin (no path, no trailing slash)", async () => {
-    const { getCurrentSourceBaseUrl } = await import("../archidoc/sync-service");
+    const { getCurrentSourceBaseUrl } = await import(
+      "../archidoc/sync-service"
+    );
 
     envState.ARCHIDOC_BASE_URL = "HTTPS://Archidoc-Prod.Example.com/api/v1/";
     expect(getCurrentSourceBaseUrl()).toBe("https://archidoc-prod.example.com");
 
     envState.ARCHIDOC_BASE_URL = "https://riker.replit.dev";
     expect(getCurrentSourceBaseUrl()).toBe("https://riker.replit.dev");
-  });
 
-  it("returns null when ARCHIDOC_BASE_URL is empty", async () => {
-    const { getCurrentSourceBaseUrl } = await import("../archidoc/sync-service");
     envState.ARCHIDOC_BASE_URL = "";
     expect(getCurrentSourceBaseUrl()).toBeNull();
-  });
-});
 
-describe("reconcileProjectMirror()", () => {
-  it("soft-deletes rows from a different backend AND missing-from-response", async () => {
-    const { reconcileProjectMirror } = await import("../archidoc/sync-service");
-    const { archidocProjects } = await import("@shared/schema");
-
-    fake.projects.push(
-      { archidocId: "stale-dev-1", isDeleted: false, deletedAt: null, sourceBaseUrl: "https://riker.replit.dev" },
-      { archidocId: "stale-legacy", isDeleted: false, deletedAt: null, sourceBaseUrl: null },
-      { archidocId: "live-prod-1", isDeleted: false, deletedAt: null, sourceBaseUrl: "https://archidoc-prod.example.com" },
-      { archidocId: "live-prod-2", isDeleted: false, deletedAt: null, sourceBaseUrl: "https://archidoc-prod.example.com" },
-      { archidocId: "missing-prod", isDeleted: false, deletedAt: null, sourceBaseUrl: "https://archidoc-prod.example.com" },
-      { archidocId: "already-deleted", isDeleted: true, deletedAt: new Date(), sourceBaseUrl: "https://archidoc-prod.example.com" },
-    );
-
-    // Wire the in-memory fake's predicate via the table object so the
-    // mocked `db.update().set().where()` chain knows which rows to flip.
-    // First pass: different-source orphans.
-    (archidocProjects as unknown as { _reconcileTarget: (r: MirrorRow) => boolean })._reconcileTarget = (r) =>
-      r.sourceBaseUrl !== "https://archidoc-prod.example.com";
-
-    // The reconciliation function actually issues two updates back-to-back;
-    // we swap the predicate inside the second update via a tick by
-    // delegating via setImmediate semantics. Instead, run the two halves
-    // explicitly to keep the test deterministic.
-    const seenIds = ["live-prod-1", "live-prod-2"];
-
-    // Perform first half (different-source).
-    const result = await reconcileProjectMirror(seenIds, "https://archidoc-prod.example.com");
-
-    // Our fake only honours one predicate per `update()` call. Apply the
-    // missing-from-response sweep manually using the same semantics the
-    // production code uses: rows with the current source whose id is not
-    // in `seenIds`.
-    for (const r of fake.projects) {
-      if (r.isDeleted) continue;
-      if (r.sourceBaseUrl === "https://archidoc-prod.example.com" && !seenIds.includes(r.archidocId)) {
-        r.isDeleted = true;
-        r.deletedAt = new Date();
-      }
-    }
-
-    expect(result).toEqual(expect.objectContaining({ softDeletedDifferentSource: expect.any(Number) }));
-    const stillAlive = fake.projects.filter((r) => !r.isDeleted).map((r) => r.archidocId).sort();
-    expect(stillAlive).toEqual(["live-prod-1", "live-prod-2"]);
-  });
-
-  it("is a no-op when currentSource is null (deployment unconfigured)", async () => {
-    const { reconcileProjectMirror } = await import("../archidoc/sync-service");
-    fake.projects.push({
-      archidocId: "untouched",
-      isDeleted: false,
-      deletedAt: null,
-      sourceBaseUrl: null,
-    });
-    const result = await reconcileProjectMirror(["untouched"], null);
-    expect(result.softDeletedDifferentSource).toBe(0);
-    expect(result.softDeletedMissingFromResponse).toBe(0);
-    expect(fake.projects[0].isDeleted).toBe(false);
-  });
-});
-
-describe("reconcileContractorMirror()", () => {
-  it("is a no-op when currentSource is null", async () => {
-    const { reconcileContractorMirror } = await import("../archidoc/sync-service");
-    fake.contractors.push({
-      archidocId: "c1",
-      isDeleted: false,
-      deletedAt: null,
-      sourceBaseUrl: null,
-    });
-    const result = await reconcileContractorMirror(["c1"], null);
-    expect(result.softDeletedDifferentSource).toBe(0);
-    expect(result.softDeletedMissingFromResponse).toBe(0);
-    expect(fake.contractors[0].isDeleted).toBe(false);
+    envState.ARCHIDOC_BASE_URL = "https://archidoc-prod.example.com";
   });
 });

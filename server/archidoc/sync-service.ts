@@ -269,6 +269,67 @@ export interface ReconciliationResult {
   softDeletedMissingFromResponse: number;
 }
 
+// Boot-time reconciliation — soft-deletes mirror rows whose
+// `source_base_url` does not match the currently-configured backend
+// (or is NULL because they predate the column). MUST be called from
+// the server boot path BEFORE schedulers/webhooks open so a backend
+// swap performed via deployment-secret change cannot leave a stale
+// mirror visible until the next full sync runs (~1h cadence).
+//
+// Unlike the full-sync reconciliation pass, this function never
+// considers "missing from response" — there is no response at boot.
+// It is therefore safe to invoke even when the upstream API is down.
+//
+// No-op when ARCHIDOC_BASE_URL is unset (we have no current source
+// to compare against — preserve every mirror row to avoid wiping the
+// table on accidental config-loss).
+export async function clearPreviousBackendMirrorRows(): Promise<{
+  projects: number;
+  contractors: number;
+}> {
+  const currentSource = getCurrentSourceBaseUrl();
+  if (!currentSource) {
+    return { projects: 0, contractors: 0 };
+  }
+  const now = new Date();
+
+  const projectOrphans = await db
+    .update(archidocProjects)
+    .set({ isDeleted: true, deletedAt: now })
+    .where(
+      and(
+        eq(archidocProjects.isDeleted, false),
+        or(
+          isNull(archidocProjects.sourceBaseUrl),
+          ne(archidocProjects.sourceBaseUrl, currentSource),
+        ),
+      ),
+    )
+    .returning({ archidocId: archidocProjects.archidocId });
+
+  const contractorOrphans = await db
+    .update(archidocContractors)
+    .set({ isDeleted: true, deletedAt: now })
+    .where(
+      and(
+        eq(archidocContractors.isDeleted, false),
+        or(
+          isNull(archidocContractors.sourceBaseUrl),
+          ne(archidocContractors.sourceBaseUrl, currentSource),
+        ),
+      ),
+    )
+    .returning({ archidocId: archidocContractors.archidocId });
+
+  if (projectOrphans.length > 0 || contractorOrphans.length > 0) {
+    console.log(
+      `[ArchiDoc Sync] Boot reconciliation cleared previous-backend mirror rows: ${projectOrphans.length} projects, ${contractorOrphans.length} contractors (current source: ${currentSource})`,
+    );
+  }
+
+  return { projects: projectOrphans.length, contractors: contractorOrphans.length };
+}
+
 export async function reconcileProjectMirror(
   seenIds: string[],
   currentSource: string | null,

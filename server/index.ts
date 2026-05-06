@@ -10,6 +10,7 @@ import { startPolling } from "./gmail/monitor";
 import { startScheduler } from "./communications/payment-scheduler";
 import { startDevisCheckTokenCleanup } from "./services/devis-check-token-cleanup";
 import { startContractorAutoSyncScheduler } from "./archidoc/contractor-auto-sync";
+import { clearPreviousBackendMirrorRows } from "./archidoc/sync-service";
 import { seedBenchmarkTags } from "./services/benchmark-ingest.service";
 import { SEED_BENCHMARK_TAGS } from "./services/benchmark-tags";
 import { registerAuthRoutes } from "./auth/routes";
@@ -151,6 +152,19 @@ app.use((req, res, next) => {
 
   registerObjectStorageRoutes(app);
   await registerRoutes(httpServer, app);
+
+  // Boot-time backend-swap reconciliation (Task #164). MUST run
+  // BEFORE the contractor-auto-sync scheduler and the webhook
+  // listeners come online, otherwise a stale dev/legacy mirror row
+  // could be re-imported into the canonical contractors table by the
+  // first auto-sync tick — or surface in the New-Project dialog —
+  // before the next hourly full sync re-stamps source_base_url.
+  // Soft-skipped when ARCHIDOC_BASE_URL is unset (dev / CI).
+  try {
+    await clearPreviousBackendMirrorRows();
+  } catch (err) {
+    console.error("[ArchiDoc] Boot reconciliation failed (continuing):", err);
+  }
 
   if (env.ARCHIDOC_POLLING_ENABLED) {
     startPolling(15 * 60 * 1000);
