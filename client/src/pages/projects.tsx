@@ -46,6 +46,8 @@ interface ArchidocStatus {
   mirroredContractors: number;
   trackedProjects: number;
   siretIssueCount?: number;
+  sourceBaseUrl?: string | null;
+  sourceHost?: string | null;
 }
 
 function formatCurrency(value: number): string {
@@ -230,8 +232,13 @@ export default function Projects() {
                     </div>
 
                     {archidocStatus?.lastSync && (
-                      <p className="text-[10px] text-muted-foreground">
+                      <p className="text-[10px] text-muted-foreground" data-testid="text-archidoc-last-synced">
                         Last synced: {new Date(archidocStatus.lastSync).toLocaleString()}
+                      </p>
+                    )}
+                    {archidocStatus?.sourceHost && (
+                      <p className="text-[10px] text-muted-foreground" data-testid="text-archidoc-source-host">
+                        Source: <span className="font-mono">{archidocStatus.sourceHost}</span>
                       </p>
                     )}
 

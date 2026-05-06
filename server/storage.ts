@@ -185,11 +185,11 @@ export interface IStorage {
   getContractorByArchidocId(archidocId: string): Promise<Contractor | undefined>;
   getTrackedArchidocProjectIds(): Promise<string[]>;
 
-  getArchidocProjects(): Promise<ArchidocProject[]>;
+  getArchidocProjects(options?: { includeDeleted?: boolean }): Promise<ArchidocProject[]>;
   getArchidocProject(archidocId: string): Promise<ArchidocProject | undefined>;
   upsertArchidocProject(data: Omit<ArchidocProject, "syncedAt">): Promise<ArchidocProject>;
 
-  getArchidocContractors(): Promise<ArchidocContractor[]>;
+  getArchidocContractors(options?: { includeDeleted?: boolean }): Promise<ArchidocContractor[]>;
   getArchidocContractor(archidocId: string): Promise<ArchidocContractor | undefined>;
   upsertArchidocContractor(data: Omit<ArchidocContractor, "syncedAt">): Promise<ArchidocContractor>;
 
@@ -849,8 +849,15 @@ export class DatabaseStorage implements IStorage {
       .filter((id): id is string => id !== null && id !== undefined);
   }
 
-  async getArchidocProjects(): Promise<ArchidocProject[]> {
-    return db.select().from(archidocProjects).orderBy(archidocProjects.projectName);
+  async getArchidocProjects(options?: { includeDeleted?: boolean }): Promise<ArchidocProject[]> {
+    if (options?.includeDeleted) {
+      return db.select().from(archidocProjects).orderBy(archidocProjects.projectName);
+    }
+    return db
+      .select()
+      .from(archidocProjects)
+      .where(eq(archidocProjects.isDeleted, false))
+      .orderBy(archidocProjects.projectName);
   }
 
   async getArchidocProject(archidocId: string): Promise<ArchidocProject | undefined> {
@@ -870,8 +877,15 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
-  async getArchidocContractors(): Promise<ArchidocContractor[]> {
-    return db.select().from(archidocContractors).orderBy(archidocContractors.name);
+  async getArchidocContractors(options?: { includeDeleted?: boolean }): Promise<ArchidocContractor[]> {
+    if (options?.includeDeleted) {
+      return db.select().from(archidocContractors).orderBy(archidocContractors.name);
+    }
+    return db
+      .select()
+      .from(archidocContractors)
+      .where(eq(archidocContractors.isDeleted, false))
+      .orderBy(archidocContractors.name);
   }
 
   async getArchidocContractor(archidocId: string): Promise<ArchidocContractor | undefined> {

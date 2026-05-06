@@ -82,7 +82,14 @@ export async function runContractorAutoSync(options: { incremental?: boolean } =
       throw new Error(mirrorResult.error);
     }
 
-    const allMirror = await db.select().from(archidocContractors);
+    // Exclude soft-deleted mirror rows so the auto-sync doesn't
+    // resurrect contractors that the reconciliation pass just cleared
+    // (rows from a previously-configured Archidoc backend, or rows
+    // missing from the latest full sync response).
+    const allMirror = await db
+      .select()
+      .from(archidocContractors)
+      .where(eq(archidocContractors.isDeleted, false));
     // On a full sync, only iterate mirror rows refreshed in this run so we
     // don't keep upserting (and re-clearing the orphan flag for) stale rows.
     // On incremental runs, every mirror row is potentially up-to-date.

@@ -488,9 +488,13 @@ export const archidocProjects = pgTable("archidoc_projects", {
   customLots: jsonb("custom_lots"),
   actors: jsonb("actors"),
   isDeleted: boolean("is_deleted").default(false),
+  deletedAt: timestamp("deleted_at"),
+  sourceBaseUrl: text("source_base_url"),
   archidocUpdatedAt: timestamp("archidoc_updated_at"),
   syncedAt: timestamp("synced_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  index("archidoc_projects_is_deleted_idx").on(table.isDeleted),
+]);
 
 export const archidocContractors = pgTable("archidoc_contractors", {
   archidocId: varchar("archidoc_id", { length: 255 }).primaryKey(),
@@ -512,10 +516,14 @@ export const archidocContractors = pgTable("archidoc_contractors", {
   rcProEndDate: text("rc_pro_end_date"),
   specialConditions: text("special_conditions"),
   contacts: jsonb("contacts"),
+  isDeleted: boolean("is_deleted").default(false).notNull(),
+  deletedAt: timestamp("deleted_at"),
+  sourceBaseUrl: text("source_base_url"),
   archidocUpdatedAt: timestamp("archidoc_updated_at"),
   syncedAt: timestamp("synced_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   check("archidoc_contractors_siret_format", sql`${table.siret} IS NULL OR ${table.siret} ~ '^[0-9]{14}$'`),
+  index("archidoc_contractors_is_deleted_idx").on(table.isDeleted),
 ]);
 
 export const archidocTrades = pgTable("archidoc_trades", {

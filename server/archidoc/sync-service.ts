@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { eq, desc, inArray } from "drizzle-orm";
+import { eq, desc, inArray, and, or, isNull, ne, notInArray } from "drizzle-orm";
 import {
   archidocProjects,
   archidocContractors,
@@ -19,6 +19,22 @@ import {
   type ArchidocTradeData,
 } from "./sync-client";
 import { normalizeSiret } from "../gmail/document-parser";
+import { env } from "../env";
+
+// Canonical form of the configured Archidoc backend URL — used to stamp
+// every mirror row so a future repointing of ARCHIDOC_BASE_URL can be
+// detected by the reconciliation pass and the previous backend's rows
+// can be soft-deleted in bulk. Kept narrow (origin only) so trailing
+// slashes / query strings can never cause spurious mismatches.
+export function getCurrentSourceBaseUrl(): string | null {
+  const raw = env.ARCHIDOC_BASE_URL;
+  if (!raw) return null;
+  try {
+    return new URL(raw).origin.toLowerCase();
+  } catch {
+    return raw.trim().toLowerCase();
+  }
+}
 
 // Mirror writes must satisfy the same 14-digit SIRET check constraint as the
 // canonical contractors table. Strip non-digits and accept only canonical
@@ -115,6 +131,7 @@ export async function recordSiretIssues(
 
 export async function upsertProject(p: ArchidocProjectData) {
   const clientName = p.clients?.[0]?.name || null;
+  const upstreamDeleted = p.isDeleted ?? false;
   const values = {
     archidocId: p.id,
     projectName: p.projectName,
@@ -126,7 +143,11 @@ export async function upsertProject(p: ArchidocProjectData) {
     lotContractors: p.lotContractors || null,
     customLots: p.customLots || null,
     actors: p.actors || null,
-    isDeleted: p.isDeleted ?? false,
+    isDeleted: upstreamDeleted,
+    // Clear the soft-delete audit timestamp whenever upstream confirms
+    // the row is alive again (re-pointed backend, undelete, etc).
+    deletedAt: upstreamDeleted ? new Date() : null,
+    sourceBaseUrl: getCurrentSourceBaseUrl(),
     archidocUpdatedAt: p.updatedAt ? new Date(p.updatedAt) : null,
     syncedAt: new Date(),
   };
@@ -174,6 +195,12 @@ export async function upsertContractor(
     rcProEndDate: c.rcPro?.endDate || null,
     specialConditions: c.specialConditions || null,
     contacts: c.contacts || null,
+    // Re-asserting the row in the upstream response always undoes any
+    // prior soft-delete (operator may have re-pointed the backend or
+    // restored the contractor on Archidoc).
+    isDeleted: false,
+    deletedAt: null,
+    sourceBaseUrl: getCurrentSourceBaseUrl(),
     archidocUpdatedAt: c.updatedAt ? new Date(c.updatedAt) : null,
     syncedAt: new Date(),
   };
@@ -227,6 +254,113 @@ function getLastSyncTime(syncType: string): Promise<Date | null> {
     .then(rows => rows[0]?.completedAt ?? null);
 }
 
+// Reconciliation pass — only safe to run on full syncs (where the
+// upstream response is the complete authoritative set). Soft-deletes
+// any mirror row whose archidoc_id is not in `seenIds`, AND any row
+// stamped with a different `source_base_url` than the one currently
+// configured (so a backend swap auto-clears the previous backend's
+// rows in the same run). NULL `source_base_url` is treated as "from
+// a previous backend" since legacy rows pre-date the column. Soft-
+// delete only — never DROP — because architrak.projects /
+// architrak.contractors hold archidoc_id references and operators
+// need the audit trail.
+export interface ReconciliationResult {
+  softDeletedDifferentSource: number;
+  softDeletedMissingFromResponse: number;
+}
+
+export async function reconcileProjectMirror(
+  seenIds: string[],
+  currentSource: string | null,
+): Promise<ReconciliationResult> {
+  const now = new Date();
+  let softDeletedDifferentSource = 0;
+  let softDeletedMissingFromResponse = 0;
+
+  if (currentSource) {
+    const orphans = await db
+      .update(archidocProjects)
+      .set({ isDeleted: true, deletedAt: now })
+      .where(
+        and(
+          eq(archidocProjects.isDeleted, false),
+          or(
+            isNull(archidocProjects.sourceBaseUrl),
+            ne(archidocProjects.sourceBaseUrl, currentSource),
+          ),
+        ),
+      )
+      .returning({ archidocId: archidocProjects.archidocId });
+    softDeletedDifferentSource = orphans.length;
+
+    const missingPredicate = seenIds.length > 0
+      ? and(
+          eq(archidocProjects.isDeleted, false),
+          eq(archidocProjects.sourceBaseUrl, currentSource),
+          notInArray(archidocProjects.archidocId, seenIds),
+        )
+      : and(
+          eq(archidocProjects.isDeleted, false),
+          eq(archidocProjects.sourceBaseUrl, currentSource),
+        );
+
+    const missing = await db
+      .update(archidocProjects)
+      .set({ isDeleted: true, deletedAt: now })
+      .where(missingPredicate)
+      .returning({ archidocId: archidocProjects.archidocId });
+    softDeletedMissingFromResponse = missing.length;
+  }
+
+  return { softDeletedDifferentSource, softDeletedMissingFromResponse };
+}
+
+export async function reconcileContractorMirror(
+  seenIds: string[],
+  currentSource: string | null,
+): Promise<ReconciliationResult> {
+  const now = new Date();
+  let softDeletedDifferentSource = 0;
+  let softDeletedMissingFromResponse = 0;
+
+  if (currentSource) {
+    const orphans = await db
+      .update(archidocContractors)
+      .set({ isDeleted: true, deletedAt: now })
+      .where(
+        and(
+          eq(archidocContractors.isDeleted, false),
+          or(
+            isNull(archidocContractors.sourceBaseUrl),
+            ne(archidocContractors.sourceBaseUrl, currentSource),
+          ),
+        ),
+      )
+      .returning({ archidocId: archidocContractors.archidocId });
+    softDeletedDifferentSource = orphans.length;
+
+    const missingPredicate = seenIds.length > 0
+      ? and(
+          eq(archidocContractors.isDeleted, false),
+          eq(archidocContractors.sourceBaseUrl, currentSource),
+          notInArray(archidocContractors.archidocId, seenIds),
+        )
+      : and(
+          eq(archidocContractors.isDeleted, false),
+          eq(archidocContractors.sourceBaseUrl, currentSource),
+        );
+
+    const missing = await db
+      .update(archidocContractors)
+      .set({ isDeleted: true, deletedAt: now })
+      .where(missingPredicate)
+      .returning({ archidocId: archidocContractors.archidocId });
+    softDeletedMissingFromResponse = missing.length;
+  }
+
+  return { softDeletedDifferentSource, softDeletedMissingFromResponse };
+}
+
 export async function syncProjects(incremental = true): Promise<{ updated: number; error?: string }> {
   if (!isArchidocConfigured()) {
     console.log("[ArchiDoc Sync] Not configured, skipping project sync");
@@ -243,9 +377,20 @@ export async function syncProjects(incremental = true): Promise<{ updated: numbe
 
     const response = await fetchProjects(since);
     let count = 0;
+    const seenIds: string[] = [];
     for (const project of response.projects) {
       await upsertProject(project);
+      seenIds.push(project.id);
       count++;
+    }
+
+    if (!incremental) {
+      const reconciled = await reconcileProjectMirror(seenIds, getCurrentSourceBaseUrl());
+      if (reconciled.softDeletedDifferentSource > 0 || reconciled.softDeletedMissingFromResponse > 0) {
+        console.log(
+          `[ArchiDoc Sync] Project mirror reconciled: ${reconciled.softDeletedDifferentSource} cleared from previous backend, ${reconciled.softDeletedMissingFromResponse} missing from response soft-deleted`,
+        );
+      }
     }
 
     await completeSyncLog(log.id, "completed", count);
@@ -277,6 +422,7 @@ export async function syncContractors(incremental = true): Promise<{ updated: nu
     let count = 0;
     const issues: MirrorSiretIssue[] = [];
     const cleared: string[] = [];
+    const seenIds: string[] = [];
     for (const contractor of response.contractors) {
       const { siretIssue } = await upsertContractor(contractor);
       if (siretIssue) {
@@ -284,7 +430,17 @@ export async function syncContractors(incremental = true): Promise<{ updated: nu
       } else {
         cleared.push(contractor.id);
       }
+      seenIds.push(contractor.id);
       count++;
+    }
+
+    if (!incremental) {
+      const reconciled = await reconcileContractorMirror(seenIds, getCurrentSourceBaseUrl());
+      if (reconciled.softDeletedDifferentSource > 0 || reconciled.softDeletedMissingFromResponse > 0) {
+        console.log(
+          `[ArchiDoc Sync] Contractor mirror reconciled: ${reconciled.softDeletedDifferentSource} cleared from previous backend, ${reconciled.softDeletedMissingFromResponse} missing from response soft-deleted`,
+        );
+      }
     }
 
     await recordSiretIssues(issues, cleared, log.id);

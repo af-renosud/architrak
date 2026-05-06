@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { storage } from "../storage";
 import { isArchidocConfigured, checkConnection } from "../archidoc/sync-client";
-import { fullSync, incrementalSync, getLastSyncStatus } from "../archidoc/sync-service";
+import { fullSync, incrementalSync, getLastSyncStatus, getCurrentSourceBaseUrl } from "../archidoc/sync-service";
 import { trackProject, refreshProject } from "../archidoc/import-service";
 import { env as envCfg } from "../env";
 import { validateRequest } from "../middleware/validate";
@@ -30,6 +30,20 @@ router.get("/api/archidoc/status", async (_req, res) => {
       connectionError = connResult.error;
     }
 
+    // Derive a short host identifier from ARCHIDOC_BASE_URL so the UI
+    // can warn the operator when the deployed Architrak is pointing at
+    // the wrong Archidoc backend (Task #164 root cause: prod sync was
+    // hitting riker.replit.dev for a week, surfacing dev fixtures).
+    const sourceBaseUrl = getCurrentSourceBaseUrl();
+    let sourceHost: string | null = null;
+    if (sourceBaseUrl) {
+      try {
+        sourceHost = new URL(sourceBaseUrl).host;
+      } catch {
+        sourceHost = sourceBaseUrl;
+      }
+    }
+
     res.json({
       configured: syncStatus.configured,
       connected,
@@ -41,6 +55,8 @@ router.get("/api/archidoc/status", async (_req, res) => {
       mirroredContractors: mirroredContractors.length,
       trackedProjects: trackedIds.length,
       siretIssueCount: siretIssues.length,
+      sourceBaseUrl,
+      sourceHost,
       webhookEnabled: true,
       webhookSecretConfigured: !!envCfg.ARCHIDOC_WEBHOOK_SECRET,
       pollingEnabled: envCfg.ARCHIDOC_POLLING_ENABLED,
