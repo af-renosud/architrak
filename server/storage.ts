@@ -186,12 +186,16 @@ export interface IStorage {
   getTrackedArchidocProjectIds(): Promise<string[]>;
 
   getArchidocProjects(options?: { includeDeleted?: boolean }): Promise<ArchidocProject[]>;
+  getSoftDeletedArchidocProjects(): Promise<ArchidocProject[]>;
   getArchidocProject(archidocId: string): Promise<ArchidocProject | undefined>;
   upsertArchidocProject(data: Omit<ArchidocProject, "syncedAt">): Promise<ArchidocProject>;
+  restoreArchidocProject(archidocId: string): Promise<ArchidocProject | undefined>;
 
   getArchidocContractors(options?: { includeDeleted?: boolean }): Promise<ArchidocContractor[]>;
+  getSoftDeletedArchidocContractors(): Promise<ArchidocContractor[]>;
   getArchidocContractor(archidocId: string): Promise<ArchidocContractor | undefined>;
   upsertArchidocContractor(data: Omit<ArchidocContractor, "syncedAt">): Promise<ArchidocContractor>;
+  restoreArchidocContractor(archidocId: string): Promise<ArchidocContractor | undefined>;
 
   getArchidocTrades(): Promise<ArchidocTrade[]>;
   upsertArchidocTrade(data: Omit<ArchidocTrade, "syncedAt">): Promise<ArchidocTrade>;
@@ -860,9 +864,26 @@ export class DatabaseStorage implements IStorage {
       .orderBy(archidocProjects.projectName);
   }
 
+  async getSoftDeletedArchidocProjects(): Promise<ArchidocProject[]> {
+    return db
+      .select()
+      .from(archidocProjects)
+      .where(eq(archidocProjects.isDeleted, true))
+      .orderBy(desc(archidocProjects.deletedAt));
+  }
+
   async getArchidocProject(archidocId: string): Promise<ArchidocProject | undefined> {
     const [project] = await db.select().from(archidocProjects).where(eq(archidocProjects.archidocId, archidocId));
     return project;
+  }
+
+  async restoreArchidocProject(archidocId: string): Promise<ArchidocProject | undefined> {
+    const [restored] = await db
+      .update(archidocProjects)
+      .set({ isDeleted: false, deletedAt: null })
+      .where(eq(archidocProjects.archidocId, archidocId))
+      .returning();
+    return restored;
   }
 
   async upsertArchidocProject(data: Omit<ArchidocProject, "syncedAt">): Promise<ArchidocProject> {
@@ -888,9 +909,26 @@ export class DatabaseStorage implements IStorage {
       .orderBy(archidocContractors.name);
   }
 
+  async getSoftDeletedArchidocContractors(): Promise<ArchidocContractor[]> {
+    return db
+      .select()
+      .from(archidocContractors)
+      .where(eq(archidocContractors.isDeleted, true))
+      .orderBy(desc(archidocContractors.deletedAt));
+  }
+
   async getArchidocContractor(archidocId: string): Promise<ArchidocContractor | undefined> {
     const [contractor] = await db.select().from(archidocContractors).where(eq(archidocContractors.archidocId, archidocId));
     return contractor;
+  }
+
+  async restoreArchidocContractor(archidocId: string): Promise<ArchidocContractor | undefined> {
+    const [restored] = await db
+      .update(archidocContractors)
+      .set({ isDeleted: false, deletedAt: null })
+      .where(eq(archidocContractors.archidocId, archidocId))
+      .returning();
+    return restored;
   }
 
   async upsertArchidocContractor(data: Omit<ArchidocContractor, "syncedAt">): Promise<ArchidocContractor> {

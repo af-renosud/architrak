@@ -34,6 +34,7 @@ import adminInvoiceRematchRouter from "./admin-invoice-rematch";
 import adminPageHintBackfillRouter from "./admin-page-hint-backfill";
 import adminTransientFailuresRouter from "./admin-transient-failures";
 import adminWebhookDlqRouter from "./admin-webhook-dlq";
+import adminMirrorRestoreRouter from "./admin-mirror-restore";
 import healthzRouter from "./healthz";
 
 // IDOR / Tenancy assumption (single-tenant deployment):
@@ -105,6 +106,7 @@ export async function registerRoutes(
   app.use(adminPageHintBackfillRouter);
   app.use(adminTransientFailuresRouter);
   app.use(adminWebhookDlqRouter);
+  app.use(adminMirrorRestoreRouter);
 
   return httpServer;
 }

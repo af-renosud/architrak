@@ -20,6 +20,7 @@ import SettingsPage from "@/pages/settings";
 import CostBenchmarks from "@/pages/cost-benchmarks";
 import AdminTransientFailures from "@/pages/admin-transient-failures";
 import AdminWebhookDlq from "@/pages/admin-webhook-dlq";
+import AdminMirrorRestore from "@/pages/admin-mirror-restore";
 import { Loader2 } from "lucide-react";
 
 function Router() {
@@ -39,6 +40,7 @@ function Router() {
       <Route path="/settings" component={SettingsPage} />
       <Route path="/admin/ops/transient-failures" component={AdminTransientFailures} />
       <Route path="/admin/ops/webhook-dlq" component={AdminWebhookDlq} />
+      <Route path="/admin/ops/mirror-restore" component={AdminMirrorRestore} />
       <Route component={NotFound} />
     </Switch>
   );
