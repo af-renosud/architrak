@@ -17,6 +17,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff, ShieldCheck, ShieldAlert, ShieldX, Trash2, X, Tag, Settings as SettingsIcon, Wand2, Pencil, UserCog, Copy, Send, MessageSquare } from "lucide-react";
 import { Link } from "wouter";
+import { getDevisUploadErrorTitle } from "@shared/devis-upload-errors";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
@@ -574,9 +575,11 @@ export function DevisTab({
         const err = await res.json().catch(() => ({ message: "Upload failed" }));
         const e = new Error(err.message || "Upload failed") as Error & {
           status?: number;
+          code?: string;
           extraction?: { contractorName?: string | null };
         };
         e.status = res.status;
+        e.code = err.code;
         e.extraction = err.extraction;
         throw e;
       }
@@ -604,23 +607,9 @@ export function DevisTab({
         });
       }
     },
-    onError: (error: Error & { status?: number; extraction?: { contractorName?: string | null } }) => {
+    onError: (error: Error & { status?: number; code?: string; extraction?: { contractorName?: string | null } }) => {
       const msg = error.message || "";
-      const status = error.status;
-      let title = "Upload failed";
-      if (status === 503) {
-        title = "AI extraction temporarily unavailable";
-      } else if (status === 422) {
-        if (/no contractors exist/i.test(msg)) {
-          title = "No contractors synced from ArchiDoc";
-        } else if (/contractor/i.test(msg)) {
-          title = "Contractor not found in ArchiTrak";
-        } else if (/extract|valid quotation|meaningful data/i.test(msg)) {
-          title = "Could not extract devis data";
-        } else if (/password/i.test(msg)) {
-          title = "PDF is password-protected";
-        }
-      }
+      const title = getDevisUploadErrorTitle(error.code);
       toast({ title, description: msg, variant: "destructive" });
       setUploading(false);
     },

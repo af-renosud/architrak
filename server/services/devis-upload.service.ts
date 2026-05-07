@@ -7,6 +7,7 @@ import { reconcileAdvisories } from "./advisory-reconciler";
 import { assertPdfMagic } from "../middleware/upload";
 import { triggerDevisTranslation } from "./devis-translation";
 import { toSentenceCase } from "../lib/sentence-case";
+import { DEVIS_UPLOAD_ERROR_CODES } from "../../shared/devis-upload-errors";
 
 interface UploadedFile {
   originalname: string;
@@ -82,6 +83,7 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
       status: transient ? 503 : 422,
       data: {
         message,
+        code: transient ? DEVIS_UPLOAD_ERROR_CODES.AI_TRANSIENT : DEVIS_UPLOAD_ERROR_CODES.DEVIS_PARSE_FAILED,
         extraction: parsed,
         storageKey,
         fileName: file.originalname,
@@ -113,6 +115,7 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
         status: 422,
         data: {
           message: "No contractors exist in the database. Please sync from ArchiDoc first before uploading documents.",
+          code: DEVIS_UPLOAD_ERROR_CODES.NO_CONTRACTORS_SYNCED,
           extraction: parsed,
           storageKey,
           fileName: file.originalname,
@@ -128,6 +131,7 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
       status: 422,
       data: {
         message,
+        code: DEVIS_UPLOAD_ERROR_CODES.DEVIS_CONTRACTOR_NOT_FOUND,
         extraction: parsed,
         validation: {
           isValid: false,
