@@ -572,7 +572,13 @@ export function DevisTab({
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ message: "Upload failed" }));
-        throw new Error(err.message);
+        const e = new Error(err.message || "Upload failed") as Error & {
+          status?: number;
+          extraction?: { contractorName?: string | null };
+        };
+        e.status = res.status;
+        e.extraction = err.extraction;
+        throw e;
       }
       return res.json();
     },
@@ -598,8 +604,24 @@ export function DevisTab({
         });
       }
     },
-    onError: (error: Error) => {
-      toast({ title: "Upload failed", description: error.message, variant: "destructive" });
+    onError: (error: Error & { status?: number; extraction?: { contractorName?: string | null } }) => {
+      const msg = error.message || "";
+      const status = error.status;
+      let title = "Upload failed";
+      if (status === 503) {
+        title = "AI extraction temporarily unavailable";
+      } else if (status === 422) {
+        if (/no contractors exist/i.test(msg)) {
+          title = "No contractors synced from ArchiDoc";
+        } else if (/contractor/i.test(msg)) {
+          title = "Contractor not found in ArchiTrak";
+        } else if (/extract|valid quotation|meaningful data/i.test(msg)) {
+          title = "Could not extract devis data";
+        } else if (/password/i.test(msg)) {
+          title = "PDF is password-protected";
+        }
+      }
+      toast({ title, description: msg, variant: "destructive" });
       setUploading(false);
     },
   });
