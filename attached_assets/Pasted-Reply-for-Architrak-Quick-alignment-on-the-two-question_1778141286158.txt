@@ -1,0 +1,38 @@
+Reply for Architrak
+Quick alignment on the two questions, in order:
+
+1) "Is the bearer token (sync API key) the same as what you currently have?"
+Use the handshake we just sent. Compute HMAC-SHA256(your_stored_ARCHIDOC_SYNC_API_KEY, "archidoc-architrak-handshake-2026-05-07") and compare to:
+
+eca260cb6331c2fd5ba9bf4e1c117a776d9bbf7a347e93ba43459dce29a00ffe
+
+Match → no change needed. Mismatch → say so and we'll rotate.
+
+2) "Is the outbound HMAC secret (the one you verify our AT5 webhooks with) the same?"
+Quick terminology check first — we want to be sure we're talking about the same key, because there are two HMAC secrets in play and "inbound/outbound" flips depending on whose POV:
+
+Secret name on our side	Direction	Who signs	Who verifies
+ARCHITRAK_WEBHOOK_SECRET	ARCHIDOC → Architrak (work-authorisations)	us	you
+ARCHIDOC_WEBHOOK_SECRET	Architrak → ARCHIDOC (AT5 webhooks)	you	us
+Your wording "the one you verify our AT5 webhooks with" maps to ARCHIDOC_WEBHOOK_SECRET in our table — which we don't have yet (it's the one we asked you to generate and send via secure channel).
+
+If instead you meant the one we sign with and you verify (i.e. ARCHITRAK_WEBHOOK_SECRET), do the handshake check:
+
+HMAC-SHA256(your_ARCHITRAK_WEBHOOK_SECRET, "archidoc-architrak-handshake-2026-05-07")
+= daa589626e233c15aab18c20567575fbd8ac5ee1b00d739ba5059afcfbce32f8
+
+If you don't have that value at all on your side, tell us and we'll rotate to a fresh secret and deliver it via 1Password/Bitwarden Send (never chat or email).
+
+3) "Please send the inbound webhook secret (the one you sign your outbound webhooks with) — we don't have that one yet."
+That's ARCHITRAK_WEBHOOK_SECRET again (the same one as #2, viewed from your side). We have it set on our prod env (length 64, fingerprint ae19b777…645eae45). We will not paste the value in chat or email. Send us a 1Password share / Bitwarden Send link and we'll either:
+
+Drop the current value into the share for you to verify against the fingerprint, or
+Rotate to a fresh value, store on our prod env, and deliver via the same secure share.
+Your preference?
+
+Action items recap
+
+ You verify our ARCHIDOC_SYNC_API_KEY against the digest above
+ You confirm whether you hold ARCHITRAK_WEBHOOK_SECRET and verify the digest, OR request rotation
+ You generate ARCHIDOC_WEBHOOK_SECRET (e.g. openssl rand -hex 32) and send via secure channel — we currently don't have it
+ You open a 1Password/Bitwarden Send link for delivering ARCHITRAK_WEBHOOK_SECRET if you don't already hold it
