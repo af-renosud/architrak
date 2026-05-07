@@ -30,6 +30,7 @@ export async function trackProject(archidocId: string, options: TrackProjectOpti
 
   const clients = (mirrorProject.clients as any[]) || [];
   const clientAddress = extractClientAddress(clients);
+  const clientContact = extractClientContact(clients);
 
   const existingByName = await storage.getProjectByName(mirrorProject.projectName);
   let project;
@@ -42,6 +43,8 @@ export async function trackProject(archidocId: string, options: TrackProjectOpti
       clientName: mirrorProject.clientName || existingByName.clientName,
       clientAddress: clientAddress || existingByName.clientAddress,
       siteAddress: mirrorProject.address || existingByName.siteAddress,
+      clientContactName: clientContact.name ?? existingByName.clientContactName,
+      clientContactEmail: clientContact.email ?? existingByName.clientContactEmail,
       archidocClients: mirrorProject.clients as Record<string, unknown> | null,
       lastSyncedAt: new Date(),
     });
@@ -61,6 +64,8 @@ export async function trackProject(archidocId: string, options: TrackProjectOpti
       planningFee: options.planningFee,
       hasMarche: options.hasMarche || false,
       archidocId: archidocId,
+      clientContactName: clientContact.name,
+      clientContactEmail: clientContact.email,
       archidocClients: mirrorProject.clients as Record<string, unknown> | null,
       lastSyncedAt: new Date(),
     };
@@ -187,12 +192,15 @@ export async function refreshProject(projectId: number): Promise<{ updated: bool
 
   const refreshClients = (mirrorProject.clients as any[]) || [];
   const refreshClientAddress = extractClientAddress(refreshClients);
+  const refreshClientContact = extractClientContact(refreshClients);
 
   await storage.updateProject(projectId, {
     name: mirrorProject.projectName,
     clientName: mirrorProject.clientName || project.clientName,
     clientAddress: refreshClientAddress || project.clientAddress,
     siteAddress: mirrorProject.address || project.siteAddress,
+    clientContactName: refreshClientContact.name ?? project.clientContactName,
+    clientContactEmail: refreshClientContact.email ?? project.clientContactEmail,
     archidocClients: mirrorProject.clients as Record<string, unknown> | null,
     lastSyncedAt: new Date(),
   });
@@ -235,6 +243,20 @@ function extractClientAddress(clients: any[]): string | null {
     }
   }
   return null;
+}
+
+function extractClientContact(clients: any[]): { name: string | null; email: string | null } {
+  for (const c of clients) {
+    const name = typeof c.name === "string" ? c.name.trim() : "";
+    const email = typeof c.email === "string" ? c.email.trim() : "";
+    if (name && email) return { name, email };
+  }
+  for (const c of clients) {
+    const name = typeof c.name === "string" ? c.name.trim() : "";
+    const email = typeof c.email === "string" ? c.email.trim() : "";
+    if (name || email) return { name: name || null, email: email || null };
+  }
+  return { name: null, email: null };
 }
 
 async function createContractorFromMirror(mirror: ArchidocContractor) {
