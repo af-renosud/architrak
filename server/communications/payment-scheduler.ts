@@ -63,36 +63,83 @@ export function startScheduler(intervalMs: number = 60 * 60 * 1000) {
  * than once per day. The dashboard strip surfaces the same data
  * immediately at `/api/design-contracts/dashboard-actions`.
  */
+type DigestRow = Awaited<ReturnType<typeof storage.getReachedUninvoicedMilestones>>[number];
+
+const OVERDUE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
+const IMMINENT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+const REMINDER_QUIET_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Partition reached-but-not-invoiced rows into:
+ *   - overdue:  reachedAt older than 7 days  ➜ red, action required
+ *   - imminent: reachedAt within last 14 days ➜ amber, warn-but-not-stale
+ * Imminent excludes rows already classified as overdue. Returned arrays
+ * are stable (input order preserved). Exported for unit testing.
+ */
+export function partitionDigestRows(
+  rows: readonly DigestRow[],
+  now: Date = new Date(),
+): { overdue: DigestRow[]; imminent: DigestRow[] } {
+  const nowMs = now.getTime();
+  const overdue: DigestRow[] = [];
+  const imminent: DigestRow[] = [];
+  for (const r of rows) {
+    if (!r.milestone.reachedAt) continue;
+    const ageMs = nowMs - new Date(r.milestone.reachedAt).getTime();
+    if (ageMs > OVERDUE_THRESHOLD_MS) overdue.push(r);
+    else if (ageMs >= 0 && ageMs <= IMMINENT_WINDOW_MS) imminent.push(r);
+  }
+  return { overdue, imminent };
+}
+
+/**
+ * Group rows by uploadedByUserId. Rows without an uploader are dropped
+ * (no architect to notify). Exported for unit testing.
+ */
+export function groupRowsByArchitect(
+  rows: readonly DigestRow[],
+): Map<number, DigestRow[]> {
+  const out = new Map<number, DigestRow[]>();
+  for (const row of rows) {
+    const uid = row.contract.uploadedByUserId;
+    if (uid == null) continue;
+    const list = out.get(uid) ?? [];
+    list.push(row);
+    out.set(uid, list);
+  }
+  return out;
+}
+
 async function processDesignContractDigest(): Promise<void> {
   try {
-    const overdue = await storage.getReachedUninvoicedMilestones({
-      staleAfterMs: 7 * 24 * 60 * 60 * 1000,
-      reminderQuietMs: 24 * 60 * 60 * 1000,
+    // Pull every reached-but-not-invoiced milestone whose reminder
+    // watermark has cooled (>24h since last reminder). The architect
+    // sees both overdue and imminent in the same email so they can
+    // act before the imminent items become overdue.
+    const allDue = await storage.getReachedUninvoicedMilestones({
+      staleAfterMs: 0,
+      reminderQuietMs: REMINDER_QUIET_MS,
     });
-    if (overdue.length === 0) return;
+    if (allDue.length === 0) return;
 
-    const byArchitect = new Map<number, typeof overdue>();
-    for (const row of overdue) {
-      const uid = row.contract.uploadedByUserId;
-      if (uid == null) continue;
-      const list = byArchitect.get(uid) ?? [];
-      list.push(row);
-      byArchitect.set(uid, list);
-    }
-
+    const byArchitect = groupRowsByArchitect(allDue);
     const gmailReady = isGmailConfigured();
 
     for (const [architectUserId, rows] of Array.from(byArchitect.entries())) {
+      const { overdue, imminent } = partitionDigestRows(rows);
+      if (overdue.length === 0 && imminent.length === 0) continue;
+
       const user = await storage.getUser(architectUserId);
       const recipient = user?.email ?? null;
 
       console.log(
-        `[design-digest] user=${architectUserId} email=${recipient ?? "(unknown)"} milestones=${rows.length}`,
+        `[design-digest] user=${architectUserId} email=${recipient ?? "(unknown)"} ` +
+          `overdue=${overdue.length} imminent=${imminent.length}`,
       );
 
       if (gmailReady && recipient) {
         try {
-          await sendDesignDigestEmail(recipient, rows);
+          await sendDesignDigestEmail(recipient, overdue, imminent);
         } catch (err) {
           console.error(
             `[design-digest] gmail send failed for user=${architectUserId}:`,
@@ -101,14 +148,17 @@ async function processDesignContractDigest(): Promise<void> {
           continue;
         }
       } else {
-        for (const row of rows) {
+        for (const row of [...overdue, ...imminent]) {
           console.log(
             `[design-digest]   project=${row.project.code} "${row.milestone.labelFr}" amount=${row.milestone.amountTtc}`,
           );
         }
       }
 
-      for (const row of rows) {
+      // Watermark only the rows we actually surfaced (overdue + imminent),
+      // so a fresh-reached milestone outside the 14d window doesn't get
+      // its reminder watermark bumped without being mailed.
+      for (const row of [...overdue, ...imminent]) {
         await storage.markDesignContractMilestoneReminderSent(row.milestone.id);
       }
     }
@@ -117,25 +167,44 @@ async function processDesignContractDigest(): Promise<void> {
   }
 }
 
+export function buildDigestBody(
+  overdue: readonly DigestRow[],
+  imminent: readonly DigestRow[],
+): { subject: string; body: string } {
+  const fmt = (r: DigestRow) =>
+    `  - [${r.project.code}] ${r.project.name} — "${r.milestone.labelFr}" · ${r.milestone.amountTtc} € TTC` +
+    (r.milestone.reachedAt
+      ? ` · reached ${new Date(r.milestone.reachedAt).toISOString().slice(0, 10)}`
+      : "");
+  const total = overdue.length + imminent.length;
+  const sections: string[] = [
+    `You have ${total} design-contract milestone(s) awaiting invoicing.`,
+    "",
+  ];
+  if (overdue.length > 0) {
+    sections.push(`OVERDUE — reached more than 7 days ago (${overdue.length}):`);
+    sections.push(...overdue.map(fmt));
+    sections.push("");
+  }
+  if (imminent.length > 0) {
+    sections.push(`UPCOMING — reached within last 14 days (${imminent.length}):`);
+    sections.push(...imminent.map(fmt));
+    sections.push("");
+  }
+  sections.push("Open the dashboard to invoice them: /dashboard");
+  return {
+    subject: `[Architrak] ${total} design-contract milestone(s) awaiting invoice`,
+    body: sections.join("\n"),
+  };
+}
+
 async function sendDesignDigestEmail(
   recipient: string,
-  rows: Awaited<ReturnType<typeof storage.getReachedUninvoicedMilestones>>,
+  overdue: readonly DigestRow[],
+  imminent: readonly DigestRow[],
 ): Promise<void> {
   const gmail = await getUncachableGmailClient();
-  const lines = rows.map(
-    (r) =>
-      `  - [${r.project.code}] ${r.project.name} — "${r.milestone.labelFr}" · ${r.milestone.amountTtc} € TTC` +
-      (r.milestone.reachedAt ? ` · reached ${new Date(r.milestone.reachedAt).toISOString().slice(0, 10)}` : ""),
-  );
-  const body = [
-    `You have ${rows.length} design-contract milestone(s) reached more than 7 days ago that have not yet been invoiced:`,
-    "",
-    ...lines,
-    "",
-    "Open the dashboard to invoice them: /dashboard",
-  ].join("\n");
-  const subject = `[Architrak] ${rows.length} design-contract milestone(s) awaiting invoice`;
-
+  const { subject, body } = buildDigestBody(overdue, imminent);
   const raw = [
     `From: me`,
     `To: ${recipient}`,
