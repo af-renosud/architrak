@@ -22,6 +22,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { insertCertificatSchema, insertFeeSchema, insertFeeEntrySchema, insertLotSchema, insertMarcheSchema } from "@shared/schema";
 import type { Project, Devis, Lot, Marche, Certificat, Fee, FeeEntry, Contractor, Invoice, ProjectDocument, ProjectCommunication, PaymentReminder } from "@shared/schema";
 import { DevisTab } from "@/components/devis/DevisTab";
+import { DesignContractCard } from "@/components/projects/DesignContractCard";
 import { FacturesTab } from "@/components/factures/FacturesTab";
 import { Receipt } from "lucide-react";
 import { z } from "zod";
@@ -1090,6 +1091,7 @@ export default function ProjectDetail() {
           <TabsContent value="resume">
             {financialSummary ? (
               <div className="space-y-6">
+                <DesignContractCard projectId={project.id} />
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <LuxuryCard data-testid="card-total-contracted">
                     <TechnicalLabel>Total Contracted</TechnicalLabel>

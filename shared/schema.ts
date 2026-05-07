@@ -476,6 +476,86 @@ export const feeEntries = pgTable("fee_entries", {
   check("fee_entries_fee_rate_pct", sql`${table.feeRate} >= 0 AND ${table.feeRate} <= 100`),
 ]);
 
+// =============================================================================
+// Design contracts (Task #175) — uploaded PDF design contract per project,
+// extracted by Gemini into totals + payment milestones. Replaces the manual
+// conception/planning numeric inputs in the New Project dialog. One contract
+// per project (UNIQUE projectId); re-upload archives the previous PDF and
+// replaces both rows.
+// =============================================================================
+export const DESIGN_CONTRACT_TRIGGER_EVENTS = [
+  "file_opened",
+  "concept_signed",
+  "permit_deposited",
+  "final_plans_signed",
+  "manual",
+] as const;
+export type DesignContractTriggerEvent = (typeof DESIGN_CONTRACT_TRIGGER_EVENTS)[number];
+
+export const DESIGN_CONTRACT_MILESTONE_STATUSES = [
+  "pending",
+  "reached",
+  "invoiced",
+  "paid",
+] as const;
+export type DesignContractMilestoneStatus = (typeof DESIGN_CONTRACT_MILESTONE_STATUSES)[number];
+
+export const designContracts = pgTable("design_contracts", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  storageKey: text("storage_key").notNull(),
+  originalFilename: text("original_filename").notNull(),
+  totalHt: numeric("total_ht", { precision: 12, scale: 2 }),
+  totalTva: numeric("total_tva", { precision: 12, scale: 2 }),
+  totalTtc: numeric("total_ttc", { precision: 12, scale: 2 }).notNull(),
+  tvaRate: numeric("tva_rate", { precision: 5, scale: 2 }),
+  conceptionAmountHt: numeric("conception_amount_ht", { precision: 12, scale: 2 }),
+  planningAmountHt: numeric("planning_amount_ht", { precision: 12, scale: 2 }),
+  contractDate: date("contract_date"),
+  contractReference: text("contract_reference"),
+  extractionConfidence: jsonb("extraction_confidence"),
+  extractionWarnings: jsonb("extraction_warnings"),
+  uploadedByUserId: integer("uploaded_by_user_id"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  uniqueIndex("design_contracts_project_unique").on(table.projectId),
+  index("design_contracts_project_id_idx").on(table.projectId),
+  check("design_contracts_total_ttc_nonneg", sql`${table.totalTtc} >= 0`),
+]);
+
+export const designContractMilestones = pgTable("design_contract_milestones", {
+  id: serial("id").primaryKey(),
+  contractId: integer("contract_id").notNull().references(() => designContracts.id, { onDelete: "cascade" }),
+  sequence: integer("sequence").notNull(),
+  labelFr: text("label_fr").notNull(),
+  labelEn: text("label_en"),
+  percentage: numeric("percentage", { precision: 5, scale: 2 }).notNull(),
+  amountTtc: numeric("amount_ttc", { precision: 12, scale: 2 }).notNull(),
+  triggerEvent: text("trigger_event").notNull().default("manual"),
+  status: text("status").notNull().default("pending"),
+  reachedAt: timestamp("reached_at"),
+  invoicedAt: timestamp("invoiced_at"),
+  paidAt: timestamp("paid_at"),
+  notes: text("notes"),
+  reminderLastSentAt: timestamp("reminder_last_sent_at"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("design_contract_milestones_contract_id_idx").on(table.contractId),
+  index("design_contract_milestones_status_idx").on(table.status),
+  uniqueIndex("design_contract_milestones_contract_seq_unique").on(table.contractId, table.sequence),
+  check("design_contract_milestones_pct_range", sql`${table.percentage} >= 0 AND ${table.percentage} <= 100`),
+  check("design_contract_milestones_amount_nonneg", sql`${table.amountTtc} >= 0`),
+  check(
+    "design_contract_milestones_trigger_event_chk",
+    sql`${table.triggerEvent} IN ('file_opened','concept_signed','permit_deposited','final_plans_signed','manual')`,
+  ),
+  check(
+    "design_contract_milestones_status_chk",
+    sql`${table.status} IN ('pending','reached','invoiced','paid')`,
+  ),
+]);
+
 export const archidocProjects = pgTable("archidoc_projects", {
   archidocId: varchar("archidoc_id", { length: 255 }).primaryKey(),
   projectName: text("project_name").notNull(),
@@ -1034,6 +1114,22 @@ export type Fee = typeof fees.$inferSelect;
 export type InsertFee = z.infer<typeof insertFeeSchema>;
 export type FeeEntry = typeof feeEntries.$inferSelect;
 export type InsertFeeEntry = z.infer<typeof insertFeeEntrySchema>;
+
+export const insertDesignContractSchema = createInsertSchema(designContracts).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertDesignContractMilestoneSchema = createInsertSchema(designContractMilestones).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type DesignContract = typeof designContracts.$inferSelect;
+export type InsertDesignContract = z.infer<typeof insertDesignContractSchema>;
+export type DesignContractMilestone = typeof designContractMilestones.$inferSelect;
+export type InsertDesignContractMilestone = z.infer<typeof insertDesignContractMilestoneSchema>;
 
 export const insertEmailDocumentSchema = createInsertSchema(emailDocuments).omit({
   id: true,

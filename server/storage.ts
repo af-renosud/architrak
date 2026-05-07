@@ -38,6 +38,9 @@ import {
   type Certificat, type InsertCertificat,
   type Fee, type InsertFee,
   type FeeEntry, type InsertFeeEntry,
+  designContracts, designContractMilestones,
+  type DesignContract, type InsertDesignContract,
+  type DesignContractMilestone, type InsertDesignContractMilestone,
   type ArchidocProject, type ArchidocContractor, type ArchidocTrade, type ArchidocProposalFee, type ArchidocSyncLogEntry, type ArchidocSiretIssue,
   type EmailDocument, type InsertEmailDocument,
   type ProjectDocument, type InsertProjectDocument,
@@ -399,6 +402,42 @@ export interface IStorage {
   // Admin manual retry: clear terminal flags + arm for immediate attempt.
   // Preserves event_id (G6: receivers dedup on it).
   resetWebhookDeliveryForRetry(id: number): Promise<WebhookDeliveryOut | undefined>;
+
+  // Task #175 — design contracts (one per project; re-upload archives prior).
+  getDesignContractByProject(projectId: number): Promise<DesignContract | undefined>;
+  getDesignContract(id: number): Promise<DesignContract | undefined>;
+  createDesignContract(data: InsertDesignContract): Promise<DesignContract>;
+  deleteDesignContract(id: number): Promise<void>;
+  getDesignContractMilestones(contractId: number): Promise<DesignContractMilestone[]>;
+  createDesignContractMilestones(rows: InsertDesignContractMilestone[]): Promise<DesignContractMilestone[]>;
+  updateDesignContractMilestone(id: number, data: Partial<InsertDesignContractMilestone>): Promise<DesignContractMilestone | undefined>;
+  /**
+   * Replace the contract+milestones for a project atomically. If a prior
+   * contract exists its row (and milestones via cascade) is removed and the
+   * new rows inserted; the caller is responsible for archiving the prior PDF
+   * blob in object storage before invoking this.
+   */
+  replaceDesignContractForProject(
+    projectId: number,
+    contract: InsertDesignContract,
+    milestones: Omit<InsertDesignContractMilestone, "contractId">[],
+  ): Promise<{ contract: DesignContract; milestones: DesignContractMilestone[]; previousStorageKey: string | null }>;
+  /**
+   * For the daily reminder digest + dashboard strip: milestones whose status
+   * is `reached` and were reached at least `staleAfterMs` ago and have not
+   * been reminded since `reminderQuietMs` ago. Returned shape includes
+   * project + contract context so the digest mailer can compose without
+   * extra round-trips.
+   */
+  getReachedUninvoicedMilestones(opts: {
+    staleAfterMs?: number;
+    reminderQuietMs?: number;
+  }): Promise<Array<{
+    milestone: DesignContractMilestone;
+    contract: DesignContract;
+    project: Project;
+  }>>;
+  markDesignContractMilestoneReminderSent(id: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -826,6 +865,117 @@ export class DatabaseStorage implements IStorage {
   async updateFeeEntry(id: number, data: Partial<InsertFeeEntry>): Promise<FeeEntry | undefined> {
     const [entry] = await db.update(feeEntries).set(data).where(eq(feeEntries.id, id)).returning();
     return entry;
+  }
+
+  // -------------------------------------------------------------------------
+  // Task #175 — design contracts
+  // -------------------------------------------------------------------------
+  async getDesignContractByProject(projectId: number): Promise<DesignContract | undefined> {
+    const [row] = await db.select().from(designContracts).where(eq(designContracts.projectId, projectId));
+    return row;
+  }
+
+  async getDesignContract(id: number): Promise<DesignContract | undefined> {
+    const [row] = await db.select().from(designContracts).where(eq(designContracts.id, id));
+    return row;
+  }
+
+  async createDesignContract(data: InsertDesignContract): Promise<DesignContract> {
+    const [row] = await db.insert(designContracts).values(data).returning();
+    return row;
+  }
+
+  async deleteDesignContract(id: number): Promise<void> {
+    await db.delete(designContracts).where(eq(designContracts.id, id));
+  }
+
+  async getDesignContractMilestones(contractId: number): Promise<DesignContractMilestone[]> {
+    return db
+      .select()
+      .from(designContractMilestones)
+      .where(eq(designContractMilestones.contractId, contractId))
+      .orderBy(asc(designContractMilestones.sequence));
+  }
+
+  async createDesignContractMilestones(rows: InsertDesignContractMilestone[]): Promise<DesignContractMilestone[]> {
+    if (rows.length === 0) return [];
+    return db.insert(designContractMilestones).values(rows).returning();
+  }
+
+  async updateDesignContractMilestone(
+    id: number,
+    data: Partial<InsertDesignContractMilestone>,
+  ): Promise<DesignContractMilestone | undefined> {
+    const [row] = await db.update(designContractMilestones).set(data).where(eq(designContractMilestones.id, id)).returning();
+    return row;
+  }
+
+  async replaceDesignContractForProject(
+    projectId: number,
+    contract: InsertDesignContract,
+    milestones: Omit<InsertDesignContractMilestone, "contractId">[],
+  ): Promise<{ contract: DesignContract; milestones: DesignContractMilestone[]; previousStorageKey: string | null }> {
+    return db.transaction(async (tx) => {
+      const [prior] = await tx.select().from(designContracts).where(eq(designContracts.projectId, projectId));
+      const previousStorageKey = prior?.storageKey ?? null;
+      if (prior) {
+        await tx.delete(designContracts).where(eq(designContracts.id, prior.id));
+      }
+      const [created] = await tx
+        .insert(designContracts)
+        .values({ ...contract, projectId })
+        .returning();
+      const milestoneRows = milestones.length === 0
+        ? []
+        : await tx
+            .insert(designContractMilestones)
+            .values(milestones.map((m) => ({ ...m, contractId: created.id })))
+            .returning();
+      return { contract: created, milestones: milestoneRows, previousStorageKey };
+    });
+  }
+
+  async getReachedUninvoicedMilestones(opts: {
+    staleAfterMs?: number;
+    reminderQuietMs?: number;
+  }): Promise<Array<{
+    milestone: DesignContractMilestone;
+    contract: DesignContract;
+    project: Project;
+  }>> {
+    const staleAfterMs = opts.staleAfterMs ?? 7 * 24 * 60 * 60 * 1000;
+    const reminderQuietMs = opts.reminderQuietMs ?? 24 * 60 * 60 * 1000;
+    const reachedCutoff = new Date(Date.now() - staleAfterMs);
+    const reminderCutoff = new Date(Date.now() - reminderQuietMs);
+    const rows = await db
+      .select({
+        milestone: designContractMilestones,
+        contract: designContracts,
+        project: projects,
+      })
+      .from(designContractMilestones)
+      .innerJoin(designContracts, eq(designContractMilestones.contractId, designContracts.id))
+      .innerJoin(projects, eq(designContracts.projectId, projects.id))
+      .where(
+        and(
+          eq(designContractMilestones.status, "reached"),
+          isNull(projects.archivedAt),
+          lte(designContractMilestones.reachedAt, reachedCutoff),
+          or(
+            isNull(designContractMilestones.reminderLastSentAt),
+            lte(designContractMilestones.reminderLastSentAt, reminderCutoff),
+          ),
+        ),
+      )
+      .orderBy(asc(designContractMilestones.reachedAt));
+    return rows;
+  }
+
+  async markDesignContractMilestoneReminderSent(id: number): Promise<void> {
+    await db
+      .update(designContractMilestones)
+      .set({ reminderLastSentAt: new Date() })
+      .where(eq(designContractMilestones.id, id));
   }
 
   async getProjectByArchidocId(archidocId: string): Promise<Project | undefined> {

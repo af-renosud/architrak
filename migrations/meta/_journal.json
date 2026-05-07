@@ -190,6 +190,13 @@
       "when": 1778078000000,
       "tag": "0026_archidoc_mirror_reconciliation",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1778500000000,
+      "tag": "0027_design_contracts",
+      "breakpoints": true
     }
   ]
 }

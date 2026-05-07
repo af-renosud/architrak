@@ -19,6 +19,7 @@ import {
 import { RetentionBlockedDialog, type RetainedRecordCounts } from "@/components/projects/RetentionBlockedDialog";
 import { ApiError } from "@/lib/queryClient";
 import { formatLotDescription } from "@shared/lot-label";
+import { DesignContractUpload, type ConfirmedDesignContract } from "@/components/projects/DesignContractUpload";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -66,9 +67,8 @@ export default function Projects() {
   const [searchQuery, setSearchQuery] = useState("");
   const [feeType, setFeeType] = useState("percentage");
   const [feePercentage, setFeePercentage] = useState("");
-  const [conceptionFee, setConceptionFee] = useState("");
-  const [planningFee, setPlanningFee] = useState("");
   const [hasMarche, setHasMarche] = useState(false);
+  const [designContract, setDesignContract] = useState<ConfirmedDesignContract | null>(null);
   const { toast } = useToast();
 
   const { data: projects, isLoading } = useQuery<Project[]>({
@@ -110,16 +110,37 @@ export default function Projects() {
     },
   });
 
+  // Project creation now requires a confirmed design contract (Task #175).
+  // Two-step flow: track the project, then immediately POST the staged
+  // design contract against the freshly-created project id. If the second
+  // step fails the project still exists — the user can retry from the
+  // project detail card. We surface the partial-success in the toast so
+  // the architect knows to follow up.
   const trackMutation = useMutation({
     mutationFn: async (archidocId: string) => {
-      const res = await apiRequest("POST", `/api/archidoc/track/${archidocId}`, {
+      if (!designContract) {
+        throw new Error("Design contract is required");
+      }
+      const trackRes = await apiRequest("POST", `/api/archidoc/track/${archidocId}`, {
         feeType,
         feePercentage: feePercentage || null,
-        conceptionFee: conceptionFee || null,
-        planningFee: planningFee || null,
         hasMarche,
       });
-      return res.json();
+      const trackData = await trackRes.json() as { projectId?: number; contractorsCreated: number; lotsCreated: number };
+      const projectId = trackData.projectId;
+      if (!projectId) {
+        return { ...trackData, designContractStatus: "skipped" as const };
+      }
+      try {
+        await apiRequest("POST", `/api/projects/${projectId}/design-contract`, designContract);
+        return { ...trackData, designContractStatus: "saved" as const };
+      } catch (err) {
+        return {
+          ...trackData,
+          designContractStatus: "failed" as const,
+          designContractError: err instanceof Error ? err.message : String(err),
+        };
+      }
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
@@ -127,9 +148,16 @@ export default function Projects() {
       queryClient.invalidateQueries({ queryKey: ["/api/archidoc/status"] });
       setDialogOpen(false);
       resetForm();
+      const dcMsg =
+        data.designContractStatus === "saved"
+          ? " Design contract saved."
+          : data.designContractStatus === "failed"
+            ? ` Design contract upload failed: ${data.designContractError ?? "unknown error"} — retry from the project detail page.`
+            : "";
       toast({
         title: "Project tracked",
-        description: `Project created with ${data.contractorsCreated} contractor(s) and ${data.lotsCreated} lot(s).`,
+        description: `Project created with ${data.contractorsCreated} contractor(s) and ${data.lotsCreated} lot(s).${dcMsg}`,
+        variant: data.designContractStatus === "failed" ? "destructive" : undefined,
       });
     },
     onError: (error: Error) => {
@@ -142,9 +170,8 @@ export default function Projects() {
     setSearchQuery("");
     setFeeType("percentage");
     setFeePercentage("");
-    setConceptionFee("");
-    setPlanningFee("");
     setHasMarche(false);
+    setDesignContract(null);
   }
 
   const selectedProject = archidocProjects?.find(p => p.archidocId === selectedArchidocId);
@@ -406,30 +433,12 @@ export default function Projects() {
                         </div>
                         <div />
                       </div>
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <Label className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">Conception Fee</Label>
-                          <Input
-                            value={conceptionFee}
-                            onChange={(e) => setConceptionFee(e.target.value)}
-                            type="number"
-                            step="0.01"
-                            className="mt-1"
-                            data-testid="input-conception-fee"
-                          />
-                        </div>
-                        <div>
-                          <Label className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">Planning Fee</Label>
-                          <Input
-                            value={planningFee}
-                            onChange={(e) => setPlanningFee(e.target.value)}
-                            type="number"
-                            step="0.01"
-                            className="mt-1"
-                            data-testid="input-planning-fee"
-                          />
-                        </div>
-                      </div>
+                      <DesignContractUpload
+                        confirmed={designContract}
+                        onConfirmed={setDesignContract}
+                        onCleared={() => setDesignContract(null)}
+                        mode="create"
+                      />
                       <div className="flex items-center gap-3">
                         <Switch
                           checked={hasMarche}
@@ -445,14 +454,18 @@ export default function Projects() {
                     <Button
                       onClick={() => trackMutation.mutate(selectedArchidocId!)}
                       className="w-full"
-                      disabled={trackMutation.isPending}
+                      disabled={trackMutation.isPending || !designContract}
                       data-testid="button-submit-project"
                     >
                       {trackMutation.isPending ? (
                         <Loader2 size={14} className="animate-spin mr-2" />
                       ) : null}
                       <span className="text-[9px] font-bold uppercase tracking-widest">
-                        {trackMutation.isPending ? "Creating..." : "Create Project"}
+                        {trackMutation.isPending
+                          ? "Creating..."
+                          : !designContract
+                            ? "Upload design contract to continue"
+                            : "Create Project"}
                       </span>
                     </Button>
                   </div>

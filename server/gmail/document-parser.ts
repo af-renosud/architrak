@@ -348,7 +348,7 @@ async function decryptPdf(inputPath: string, outputPath: string): Promise<{ decr
   });
 }
 
-async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Promise<Buffer[]> {
+export async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Promise<Buffer[]> {
   const tempDir = await mkdtemp(join(tmpdir(), "architrak-pdf-"));
   const pdfPath = join(tempDir, "input.pdf");
   const decryptedPath = join(tempDir, "decrypted.pdf");

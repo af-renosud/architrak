@@ -36,6 +36,7 @@ import adminTransientFailuresRouter from "./admin-transient-failures";
 import adminWebhookDlqRouter from "./admin-webhook-dlq";
 import adminMirrorRestoreRouter from "./admin-mirror-restore";
 import healthzRouter from "./healthz";
+import designContractsRouter from "./design-contracts";
 
 // IDOR / Tenancy assumption (single-tenant deployment):
 // ArchiTrak runs as a dedicated single-firm deployment for Renosud
@@ -71,7 +72,7 @@ export async function registerRoutes(
   app.use(healthzRouter);
 
   app.use("/api/webhooks", webhookLimiter);
-  app.use(["/api/devis/:devisId/invoices/upload", "/api/projects/:projectId/devis/upload"], uploadLimiter);
+  app.use(["/api/devis/:devisId/invoices/upload", "/api/projects/:projectId/devis/upload", "/api/design-contracts/preview"], uploadLimiter);
   app.use("/api", apiLimiter);
 
   app.use(projectsRouter);
@@ -107,6 +108,7 @@ export async function registerRoutes(
   app.use(adminTransientFailuresRouter);
   app.use(adminWebhookDlqRouter);
   app.use(adminMirrorRestoreRouter);
+  app.use(designContractsRouter);
 
   return httpServer;
 }
