@@ -118,7 +118,13 @@ export function verifyArchisignWebhook(req: Request, res: Response, next: NextFu
   const provided = Buffer.from(providedHex.toLowerCase(), "hex");
   const expected = Buffer.from(expectedHex.toLowerCase(), "hex");
   if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
-    console.warn("[ArchisignWebhook] Signature mismatch — 401");
+    const secretFp = crypto.createHash("sha256").update(secret, "utf8").digest("hex").slice(0, 12);
+    console.warn(
+      `[ArchisignWebhook] Signature mismatch — 401 ` +
+      `ts=${timestamp} bodyLen=${rawBody.length} ` +
+      `providedHead=${providedHex.slice(0, 8)} expectedHead=${expectedHex.slice(0, 8)} ` +
+      `secretLen=${secret.length} secretFp=${secretFp}`,
+    );
     return res.status(401).json({ message: "Invalid webhook signature" });
   }
 
