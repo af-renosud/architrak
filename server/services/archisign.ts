@@ -229,7 +229,9 @@ export async function createEnvelope(payload: CreateEnvelopePayload): Promise<Cr
   }
   const wirePayload = {
     externalRef: payload.externalRef,
-    signer: payload.signer,
+    signers: [payload.signer],
+    signerEmail: payload.signer.email,
+    signerName: payload.signer.fullName,
     pdfFetchUrl: payload.pdfFetchUrl,
     webhookUrl: payload.webhookUrl,
     origin: "architrak",
