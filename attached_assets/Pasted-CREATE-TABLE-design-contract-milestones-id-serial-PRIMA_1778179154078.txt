@@ -1,0 +1,56 @@
+CREATE TABLE "design_contract_milestones" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"contract_id" integer NOT NULL,
+	"sequence" integer NOT NULL,
+	"label_fr" text NOT NULL,
+	"label_en" text,
+	"percentage" numeric(5, 2) NOT NULL,
+	"amount_ttc" numeric(12, 2) NOT NULL,
+	"trigger_event" text DEFAULT 'manual' NOT NULL,
+	"status" text DEFAULT 'pending' NOT NULL,
+	"reached_at" timestamp,
+	"invoiced_at" timestamp,
+	"paid_at" timestamp,
+	"notes" text,
+	"reminder_last_sent_at" timestamp,
+	"created_at" timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	CONSTRAINT "design_contract_milestones_amount_nonneg" CHECK (amount_ttc >= (0)::numeric),
+	CONSTRAINT "design_contract_milestones_pct_range" CHECK ((percentage >= (0)::numeric) AND (percentage <= (100)::numeric)),
+	CONSTRAINT "design_contract_milestones_status_chk" CHECK (status = ANY (ARRAY['pending'::text, 'reached'::text, 'invoiced'::text, 'paid'::text])),
+	CONSTRAINT "design_contract_milestones_trigger_event_chk" CHECK (trigger_event = ANY (ARRAY['file_opened'::text, 'concept_signed'::text, 'permit_deposited'::text, 'final_plans_signed'::text, 'manual'::text]))
+);
+CREATE TABLE "design_contracts" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"project_id" integer NOT NULL,
+	"storage_key" text NOT NULL,
+	"original_filename" text NOT NULL,
+	"total_ht" numeric(12, 2),
+	"total_tva" numeric(12, 2),
+	"total_ttc" numeric(12, 2) NOT NULL,
+	"tva_rate" numeric(5, 2),
+	"conception_amount_ht" numeric(12, 2),
+	"planning_amount_ht" numeric(12, 2),
+	"contract_date" date,
+	"contract_reference" text,
+	"extraction_confidence" jsonb,
+	"extraction_warnings" jsonb,
+	"uploaded_by_user_id" integer,
+	"created_at" timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	"updated_at" timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	"client_name" text,
+	"architect_name" text,
+	"project_address" text,
+	CONSTRAINT "design_contracts_total_ttc_nonneg" CHECK (total_ttc >= (0)::numeric)
+);
+ALTER TABLE "devis" ADD COLUMN "lot_catalog_id" integer;
+ALTER TABLE "devis" ADD COLUMN "lot_ref_text" text;
+ALTER TABLE "devis" ADD COLUMN "lot_sequence" integer;
+ALTER TABLE "design_contract_milestones" ADD CONSTRAINT "design_contract_milestones_contract_id_fkey" FOREIGN KEY ("contract_id") REFERENCES "public"."design_contracts"("id") ON DELETE cascade ON UPDATE no action;
+ALTER TABLE "design_contracts" ADD CONSTRAINT "design_contracts_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE cascade ON UPDATE no action;
+CREATE INDEX "design_contract_milestones_contract_id_idx" ON "design_contract_milestones" USING btree ("contract_id");
+CREATE UNIQUE INDEX "design_contract_milestones_contract_seq_unique" ON "design_contract_milestones" USING btree ("contract_id","sequence");
+CREATE INDEX "design_contract_milestones_status_idx" ON "design_contract_milestones" USING btree ("status");
+CREATE INDEX "design_contracts_project_id_idx" ON "design_contracts" USING btree ("project_id");
+CREATE UNIQUE INDEX "design_contracts_project_unique" ON "design_contracts" USING btree ("project_id");
+ALTER TABLE "devis" ADD CONSTRAINT "devis_lot_catalog_id_fkey" FOREIGN KEY ("lot_catalog_id") REFERENCES "public"."lot_catalog"("id") ON DELETE set null ON UPDATE no action;
+CREATE UNIQUE INDEX "devis_project_lot_ref_seq_unique" ON "devis" USING btree (project_id text_ops,lower(lot_ref_text) int4_ops,lot_sequence int4_ops) WHERE ((lot_ref_text IS NOT NULL) AND (lot_sequence IS NOT NULL));
