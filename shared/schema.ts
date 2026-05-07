@@ -328,7 +328,7 @@ export const devis = pgTable("devis", {
   // project under concurrent saves. Case-insensitive on lotRefText so
   // FD.1 and fd.1 collide (the composer uppercases for display).
   uniqueIndex("devis_project_lot_ref_seq_unique")
-    .on(table.projectId, sql`lower(${table.lotRefText})`, table.lotSequence)
+    .on(sql`${table.projectId}`, sql`lower(${table.lotRefText})`, sql`${table.lotSequence}`)
     .where(sql`${table.lotRefText} IS NOT NULL AND ${table.lotSequence} IS NOT NULL`),
 ]);
 

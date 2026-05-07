@@ -24,6 +24,12 @@ ALTER TABLE "devis"
   ADD COLUMN IF NOT EXISTS "lot_ref_text" text,
   ADD COLUMN IF NOT EXISTS "lot_sequence" integer;
 
-CREATE UNIQUE INDEX IF NOT EXISTS "devis_project_lot_ref_seq_unique"
+-- Drop any pre-existing index variant in case a prior deploy attempt
+-- partially applied a wrong-opclass build (the schema-based fallback at
+-- one point emitted `project_id text_ops, lower(lot_ref_text) int4_ops,
+-- lot_sequence int4_ops` which Postgres rejects). Recreating without
+-- opclasses lets Postgres pick the correct default per column type.
+DROP INDEX IF EXISTS "devis_project_lot_ref_seq_unique";
+CREATE UNIQUE INDEX "devis_project_lot_ref_seq_unique"
   ON "devis" ("project_id", lower("lot_ref_text"), "lot_sequence")
   WHERE "lot_ref_text" IS NOT NULL AND "lot_sequence" IS NOT NULL;
