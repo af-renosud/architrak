@@ -30,7 +30,10 @@ import {
   uploadDocument,
   getDocumentStream,
   deleteDocument,
+  moveDocument,
+  buildDesignContractObjectName,
 } from "../storage/object-storage";
+import { roundCurrency as round2 } from "../../shared/financial-utils";
 import {
   parseDesignContract,
   validateConfirmedSchedule,
@@ -118,9 +121,14 @@ router.post(
           message: "File is not a valid PDF",
         });
       }
+      // Staging key is namespaced by the uploader's session id so the
+      // preview-pdf streamer can verify ownership before serving — without
+      // this binding any authenticated user could iframe-stream another
+      // user's staged contract by guessing the timestamp prefix.
+      const userId = (req.session as { userId?: number } | undefined)?.userId ?? 0;
       const stagingKey = await uploadDocument(
         null,
-        `staging/design-contract_${file.originalname}`,
+        `staging/u${userId}/design-contract_${file.originalname}`,
         file.buffer,
         file.mimetype || "application/pdf",
       );
@@ -211,9 +219,20 @@ router.post(
       }
 
       const userId = (req.session as { userId?: number } | undefined)?.userId ?? null;
+
+      // Per task spec: move staged PDF to its final
+      // `design-contracts/{projectId}/active/{ts}_{slug}.pdf` location
+      // BEFORE writing the row, so the persisted storage_key always
+      // points to the canonical path. If the move fails we abort and
+      // surface a 502; the staging blob remains for retry.
+      const finalKey = await moveDocument(
+        body.stagingKey,
+        buildDesignContractObjectName(projectId, body.originalFilename, false),
+      );
+
       const contractInsert: InsertDesignContract = {
         projectId,
-        storageKey: body.stagingKey,
+        storageKey: finalKey,
         originalFilename: body.originalFilename,
         totalHt: body.totalHt != null ? roundCurrency(body.totalHt).toFixed(2) : null,
         totalTva: body.totalTva != null ? roundCurrency(body.totalTva).toFixed(2) : null,
@@ -236,17 +255,70 @@ router.post(
         milestoneInserts,
       );
 
-      // Best-effort archive of the prior PDF blob. Object storage failures
-      // here MUST NOT roll back the row replacement — operators can clean
+      // Per task spec: archive (don't hard-delete) the prior PDF blob
+      // under `design-contracts/{projectId}/archive/...`. Failures here
+      // MUST NOT roll back the row replacement — operators can clean
       // up orphaned blobs separately.
-      if (result.previousStorageKey && result.previousStorageKey !== body.stagingKey) {
+      if (result.previousStorageKey && result.previousStorageKey !== finalKey) {
         try {
-          await deleteDocument(result.previousStorageKey);
+          await moveDocument(
+            result.previousStorageKey,
+            buildDesignContractObjectName(projectId, body.originalFilename, true),
+          );
         } catch (err) {
           console.warn(
-            `[design-contracts] Failed to delete prior PDF blob "${result.previousStorageKey}":`,
+            `[design-contracts] Failed to archive prior PDF blob "${result.previousStorageKey}":`,
             err instanceof Error ? err.message : err,
           );
+        }
+      }
+
+      // Mirror the design-fee numbers onto the project row so the rest
+      // of the app (existing fees views, dashboard contracted totals)
+      // sees them without needing to join `design_contracts`. Mirror,
+      // not source-of-truth: the `design_contracts` row remains the
+      // canonical record.
+      const conceptionHt = body.conceptionAmountHt != null ? round2(body.conceptionAmountHt) : null;
+      const planningHt = body.planningAmountHt != null ? round2(body.planningAmountHt) : null;
+      await storage.updateProject(projectId, {
+        conceptionFee: conceptionHt != null ? conceptionHt.toFixed(2) : null,
+        planningFee: planningHt != null ? planningHt.toFixed(2) : null,
+      });
+
+      // Reconcile `fees` rows for the conception + planning phases so
+      // the existing honoraires workflow can invoice against them. We
+      // upsert by (projectId, feeType, phase) — when the architect
+      // re-uploads with revised numbers the existing rows are updated,
+      // not duplicated. Pre-existing invoiced amounts are preserved.
+      const existingFees = await storage.getFeesByProject(projectId);
+      type DesignPhase = { phase: "conception" | "planning"; amount: number | null };
+      const phases: DesignPhase[] = [
+        { phase: "conception", amount: conceptionHt },
+        { phase: "planning", amount: planningHt },
+      ];
+      for (const { phase, amount } of phases) {
+        if (amount == null) continue;
+        const prior = existingFees.find((f) => f.feeType === "fixed" && f.phase === phase);
+        const invoiced = prior ? Number(prior.invoicedAmount ?? "0") : 0;
+        const remaining = Math.max(0, round2(amount - invoiced));
+        if (prior) {
+          await storage.updateFee(prior.id, {
+            baseAmountHt: amount.toFixed(2),
+            feeAmountHt: amount.toFixed(2),
+            remainingAmount: remaining.toFixed(2),
+          });
+        } else {
+          await storage.createFee({
+            projectId,
+            feeType: "fixed",
+            phase,
+            baseAmountHt: amount.toFixed(2),
+            feeRate: null,
+            feeAmountHt: amount.toFixed(2),
+            invoicedAmount: "0.00",
+            remainingAmount: amount.toFixed(2),
+            status: "pending",
+          });
         }
       }
 
@@ -332,9 +404,40 @@ router.get(
     try {
       const stagingKey = String((req.query as { stagingKey: string }).stagingKey);
       const filename = String((req.query as { filename?: string }).filename ?? "design-contract.pdf");
+      // Ownership binding: the staging key was minted with the uploader's
+      // session id baked into the path (`.../staging/u{userId}/...`).
+      // Reject any preview request whose session does not match.
+      const userId = (req.session as { userId?: number } | undefined)?.userId ?? 0;
+      if (!stagingKey.includes(`/staging/u${userId}/`)) {
+        return res.status(403).json({ message: "Not your staged contract" });
+      }
       const { stream, contentType } = await getDocumentStream(stagingKey);
       res.setHeader("Content-Type", contentType || "application/pdf");
       res.setHeader("Content-Disposition", `inline; filename="${filename.replace(/"/g, "")}"`);
+      stream.pipe(res);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * Project-scoped PDF download alias used by the project-detail card.
+ * Routes through the same stream helper as `/api/design-contracts/:id/pdf`
+ * but accepts the project id (which the card already has in scope) and
+ * looks up the contract server-side.
+ */
+router.get(
+  "/api/projects/:id/design-contract/pdf",
+  validateRequest({ params: idParams }),
+  async (req, res, next) => {
+    try {
+      const projectId = Number(req.params.id);
+      const contract = await storage.getDesignContractByProject(projectId);
+      if (!contract) return res.status(404).json({ message: "No design contract on this project" });
+      const { stream, contentType } = await getDocumentStream(contract.storageKey);
+      res.setHeader("Content-Type", contentType || "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="${contract.originalFilename.replace(/"/g, "")}"`);
       stream.pipe(res);
     } catch (err) {
       next(err);

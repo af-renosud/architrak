@@ -70,6 +70,44 @@ export async function getDocumentStream(storageKey: string) {
   };
 }
 
+/**
+ * Server-side copy + delete of an object. Used by the design-contract
+ * confirm flow to move a staged PDF to its final
+ * `design-contracts/{projectId}/{timestamp}_{slug}.pdf` location and to
+ * archive the prior PDF under `design-contracts/{projectId}/archive/...`.
+ *
+ * The download → re-upload approach is chosen over a native rename/copy
+ * call so we stay on the existing `objectStorageClient` API surface
+ * without depending on backend-specific copy semantics. Object sizes
+ * are bounded by the upload limit (≤25 MiB) so the in-memory hop is
+ * acceptable.
+ */
+export async function moveDocument(
+  sourceKey: string,
+  destObjectName: string,
+): Promise<string> {
+  const bucketName = getBucketName();
+  const buf = await getDocumentBuffer(sourceKey);
+  const bucket = objectStorageClient.bucket(bucketName);
+  const dest = bucket.file(destObjectName);
+  await dest.save(buf, { contentType: "application/pdf", metadata: { contentType: "application/pdf" } });
+  await deleteDocument(sourceKey);
+  return `/${bucketName}/${destObjectName}`;
+}
+
+/** Build a final object name for a confirmed design contract. */
+export function buildDesignContractObjectName(
+  projectId: number,
+  filename: string,
+  archive = false,
+): string {
+  const privateDir = getPrivateDir();
+  const safe = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const ts = Date.now();
+  const segment = archive ? "archive" : "active";
+  return `${privateDir}/design-contracts/${projectId}/${segment}/${ts}_${safe}`;
+}
+
 export async function deleteDocument(storageKey: string): Promise<void> {
   const { bucketName, objectName } = parseStorageKey(storageKey);
   const bucket = objectStorageClient.bucket(bucketName);

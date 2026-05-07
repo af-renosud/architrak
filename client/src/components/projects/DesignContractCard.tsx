@@ -64,6 +64,18 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
 
   const replaceMutation = useMutation({
     mutationFn: async (payload: ConfirmedDesignContract) => {
+      // Re-upload destroys the prior milestone schedule — confirm before
+      // we overwrite. Skipped when no contract exists yet (empty-state).
+      if (data) {
+        const ok = window.confirm(
+          "Replacing the design contract will archive the existing PDF and overwrite the current milestone schedule. Continue?",
+        );
+        if (!ok) {
+          const e = new Error("Cancelled");
+          (e as Error & { __cancelled?: boolean }).__cancelled = true;
+          throw e;
+        }
+      }
       const res = await apiRequest("POST", `/api/projects/${projectId}/design-contract`, payload);
       return res.json();
     },
@@ -73,6 +85,10 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
       toast({ title: "Design contract saved", description: "The new contract has been stored and the previous version archived." });
     },
     onError: (err: Error) => {
+      if ((err as Error & { __cancelled?: boolean }).__cancelled) {
+        setPendingReplace(null);
+        return;
+      }
       toast({ title: "Save failed", description: err.message, variant: "destructive" });
     },
   });
@@ -80,8 +96,7 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
   const markReachedMutation = useMutation({
     mutationFn: async (milestoneId: number) => {
       const res = await apiRequest("PATCH", `/api/design-contracts/milestones/${milestoneId}`, {
-        reached: true,
-        triggerSource: "manual",
+        status: "reached",
       });
       return res.json();
     },

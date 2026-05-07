@@ -102,6 +102,18 @@ function fmtEur(n: number | null | undefined): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(n);
 }
 
+const LOW_CONFIDENCE_THRESHOLD = 0.7;
+
+function isLowConfidence(confidence: Record<string, number> | null | undefined, key: string): boolean {
+  if (!confidence) return false;
+  const v = confidence[key];
+  return typeof v === "number" && v < LOW_CONFIDENCE_THRESHOLD;
+}
+
+function lowConfClass(confidence: Record<string, number> | null | undefined, key: string): string {
+  return isLowConfidence(confidence, key) ? "bg-amber-50 border-amber-400" : "";
+}
+
 export function DesignContractUpload({ confirmed, onConfirmed, onCleared, mode = "create" }: DesignContractUploadProps) {
   const { toast } = useToast();
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -308,28 +320,28 @@ export function DesignContractUpload({ confirmed, onConfirmed, onCleared, mode =
                 )}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <Label className="text-[10px]">Total HT</Label>
-                    <Input type="number" step="0.01" value={draft.totalHt ?? ""} onChange={(e) => updateDraft({ totalHt: e.target.value === "" ? null : Number(e.target.value) })} data-testid="input-total-ht" />
+                    <Label className="text-[10px]">Total HT {isLowConfidence(draft.extractionConfidence, "totalHt") && <span className="text-amber-700">⚠ low confidence</span>}</Label>
+                    <Input className={lowConfClass(draft.extractionConfidence, "totalHt")} type="number" step="0.01" value={draft.totalHt ?? ""} onChange={(e) => updateDraft({ totalHt: e.target.value === "" ? null : Number(e.target.value) })} data-testid="input-total-ht" />
                   </div>
                   <div>
-                    <Label className="text-[10px]">Total TVA</Label>
-                    <Input type="number" step="0.01" value={draft.totalTva ?? ""} onChange={(e) => updateDraft({ totalTva: e.target.value === "" ? null : Number(e.target.value) })} data-testid="input-total-tva" />
+                    <Label className="text-[10px]">Total TVA {isLowConfidence(draft.extractionConfidence, "totalTva") && <span className="text-amber-700">⚠</span>}</Label>
+                    <Input className={lowConfClass(draft.extractionConfidence, "totalTva")} type="number" step="0.01" value={draft.totalTva ?? ""} onChange={(e) => updateDraft({ totalTva: e.target.value === "" ? null : Number(e.target.value) })} data-testid="input-total-tva" />
                   </div>
                   <div>
-                    <Label className="text-[10px]">Total TTC <span className="text-destructive">*</span></Label>
-                    <Input type="number" step="0.01" value={draft.totalTtc} onChange={(e) => updateDraft({ totalTtc: Number(e.target.value) || 0 })} data-testid="input-total-ttc" />
+                    <Label className="text-[10px]">Total TTC <span className="text-destructive">*</span> {isLowConfidence(draft.extractionConfidence, "totalTtc") && <span className="text-amber-700">⚠</span>}</Label>
+                    <Input className={lowConfClass(draft.extractionConfidence, "totalTtc")} type="number" step="0.01" value={draft.totalTtc} onChange={(e) => updateDraft({ totalTtc: Number(e.target.value) || 0 })} data-testid="input-total-ttc" />
                   </div>
                   <div>
                     <Label className="text-[10px]">TVA Rate %</Label>
-                    <Input type="number" step="0.01" value={draft.tvaRate ?? ""} onChange={(e) => updateDraft({ tvaRate: e.target.value === "" ? null : Number(e.target.value) })} data-testid="input-tva-rate" />
+                    <Input className={lowConfClass(draft.extractionConfidence, "tvaRate")} type="number" step="0.01" value={draft.tvaRate ?? ""} onChange={(e) => updateDraft({ tvaRate: e.target.value === "" ? null : Number(e.target.value) })} data-testid="input-tva-rate" />
                   </div>
                   <div>
-                    <Label className="text-[10px]">Conception HT</Label>
-                    <Input type="number" step="0.01" value={draft.conceptionAmountHt ?? ""} onChange={(e) => updateDraft({ conceptionAmountHt: e.target.value === "" ? null : Number(e.target.value) })} data-testid="input-conception-ht" />
+                    <Label className="text-[10px]">Conception HT {isLowConfidence(draft.extractionConfidence, "conceptionAmountHt") && <span className="text-amber-700">⚠</span>}</Label>
+                    <Input className={lowConfClass(draft.extractionConfidence, "conceptionAmountHt")} type="number" step="0.01" value={draft.conceptionAmountHt ?? ""} onChange={(e) => updateDraft({ conceptionAmountHt: e.target.value === "" ? null : Number(e.target.value) })} data-testid="input-conception-ht" />
                   </div>
                   <div>
-                    <Label className="text-[10px]">Planning HT</Label>
-                    <Input type="number" step="0.01" value={draft.planningAmountHt ?? ""} onChange={(e) => updateDraft({ planningAmountHt: e.target.value === "" ? null : Number(e.target.value) })} data-testid="input-planning-ht" />
+                    <Label className="text-[10px]">Planning HT {isLowConfidence(draft.extractionConfidence, "planningAmountHt") && <span className="text-amber-700">⚠</span>}</Label>
+                    <Input className={lowConfClass(draft.extractionConfidence, "planningAmountHt")} type="number" step="0.01" value={draft.planningAmountHt ?? ""} onChange={(e) => updateDraft({ planningAmountHt: e.target.value === "" ? null : Number(e.target.value) })} data-testid="input-planning-ht" />
                   </div>
                   <div>
                     <Label className="text-[10px]">Contract Date</Label>
