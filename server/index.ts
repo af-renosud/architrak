@@ -39,13 +39,18 @@ declare module "http" {
 // so it is co-located with the verifier and cannot be silently bypassed
 // by ordering changes here. The express.json `verify` callback below
 // captures `req.rawBody` for any other webhook needing a verbatim copy.
-app.use(
-  express.json({
-    verify: (req, _res, buf) => {
-      req.rawBody = buf;
-    },
-  }),
-);
+const jsonParser = express.json({
+  verify: (req, _res, buf) => {
+    req.rawBody = buf;
+  },
+});
+app.use((req, res, next) => {
+  // Skip the global JSON parser for the Archisign webhook path so the
+  // route-level express.raw() in `server/routes/archisign-webhooks.ts`
+  // can read the body bytes verbatim for HMAC v2 verification.
+  if (req.path === "/api/webhooks/archisign") return next();
+  return jsonParser(req, res, next);
+});
 
 app.use(express.urlencoded({ extended: false }));
 
