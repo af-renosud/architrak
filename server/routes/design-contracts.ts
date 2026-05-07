@@ -27,11 +27,11 @@ import { requireAuth } from "../auth/middleware";
 import { upload, assertPdfMagic } from "../middleware/upload";
 import { validateRequest } from "../middleware/validate";
 import {
-  uploadDocument,
   getDocumentStream,
-  deleteDocument,
   moveDocument,
   buildDesignContractObjectName,
+  uploadStagingDesignContract,
+  isStagingKeyOwnedBy,
 } from "../storage/object-storage";
 import { roundCurrency as round2 } from "../../shared/financial-utils";
 import {
@@ -122,13 +122,17 @@ router.post(
         });
       }
       // Staging key is namespaced by the uploader's session id so the
-      // preview-pdf streamer can verify ownership before serving — without
-      // this binding any authenticated user could iframe-stream another
-      // user's staged contract by guessing the timestamp prefix.
+      // preview-pdf streamer + confirm endpoint can verify ownership
+      // before serving / mutating — without this binding any
+      // authenticated user could iframe-stream or move another user's
+      // staged contract by guessing the timestamp prefix.
       const userId = (req.session as { userId?: number } | undefined)?.userId ?? 0;
-      const stagingKey = await uploadDocument(
-        null,
-        `staging/u${userId}/design-contract_${file.originalname}`,
+      if (!userId) {
+        return res.status(401).json({ message: "Authenticated session required" });
+      }
+      const stagingKey = await uploadStagingDesignContract(
+        userId,
+        file.originalname,
         file.buffer,
         file.mimetype || "application/pdf",
       );
@@ -220,6 +224,19 @@ router.post(
 
       const userId = (req.session as { userId?: number } | undefined)?.userId ?? null;
 
+      // Server-side ownership validation: the confirm endpoint accepts a
+      // raw stagingKey from the client, so without this check an
+      // authenticated user could pass any object key (including another
+      // tenant's blob) and we'd happily move/delete it. The staging path
+      // was minted with `staging/u{userId}/` baked in by the preview
+      // endpoint; reject anything that doesn't carry the matching segment.
+      if (!userId || !isStagingKeyOwnedBy(body.stagingKey, userId)) {
+        return res.status(403).json({
+          code: DESIGN_CONTRACT_ERROR_CODES.INVALID_PDF,
+          message: "Staging key does not belong to the current session",
+        });
+      }
+
       // Per task spec: move staged PDF to its final
       // `design-contracts/{projectId}/active/{ts}_{slug}.pdf` location
       // BEFORE writing the row, so the persisted storage_key always
@@ -249,10 +266,26 @@ router.post(
 
       const milestoneInserts: Omit<InsertDesignContractMilestone, "contractId">[] = milestones;
 
+      // Mirror data computed up-front so the storage transaction can
+      // apply the project + fees changes atomically with the contract
+      // row replacement (no partial-persistence window).
+      const conceptionHt = body.conceptionAmountHt != null ? round2(body.conceptionAmountHt) : null;
+      const planningHt = body.planningAmountHt != null ? round2(body.planningAmountHt) : null;
+      const feeMirrors: Array<{ feeType: "conception" | "planning"; amountHt: string }> = [];
+      if (conceptionHt != null) feeMirrors.push({ feeType: "conception", amountHt: conceptionHt.toFixed(2) });
+      if (planningHt != null) feeMirrors.push({ feeType: "planning", amountHt: planningHt.toFixed(2) });
+
       const result = await storage.replaceDesignContractForProject(
         projectId,
         contractInsert,
         milestoneInserts,
+        {
+          projectFeeMirror: {
+            conceptionFee: conceptionHt != null ? conceptionHt.toFixed(2) : null,
+            planningFee: planningHt != null ? planningHt.toFixed(2) : null,
+          },
+          feeMirrors,
+        },
       );
 
       // Per task spec: archive (don't hard-delete) the prior PDF blob
@@ -270,55 +303,6 @@ router.post(
             `[design-contracts] Failed to archive prior PDF blob "${result.previousStorageKey}":`,
             err instanceof Error ? err.message : err,
           );
-        }
-      }
-
-      // Mirror the design-fee numbers onto the project row so the rest
-      // of the app (existing fees views, dashboard contracted totals)
-      // sees them without needing to join `design_contracts`. Mirror,
-      // not source-of-truth: the `design_contracts` row remains the
-      // canonical record.
-      const conceptionHt = body.conceptionAmountHt != null ? round2(body.conceptionAmountHt) : null;
-      const planningHt = body.planningAmountHt != null ? round2(body.planningAmountHt) : null;
-      await storage.updateProject(projectId, {
-        conceptionFee: conceptionHt != null ? conceptionHt.toFixed(2) : null,
-        planningFee: planningHt != null ? planningHt.toFixed(2) : null,
-      });
-
-      // Reconcile `fees` rows for the conception + planning phases so
-      // the existing honoraires workflow can invoice against them. We
-      // upsert by (projectId, feeType, phase) — when the architect
-      // re-uploads with revised numbers the existing rows are updated,
-      // not duplicated. Pre-existing invoiced amounts are preserved.
-      const existingFees = await storage.getFeesByProject(projectId);
-      type DesignPhase = { phase: "conception" | "planning"; amount: number | null };
-      const phases: DesignPhase[] = [
-        { phase: "conception", amount: conceptionHt },
-        { phase: "planning", amount: planningHt },
-      ];
-      for (const { phase, amount } of phases) {
-        if (amount == null) continue;
-        const prior = existingFees.find((f) => f.feeType === "fixed" && f.phase === phase);
-        const invoiced = prior ? Number(prior.invoicedAmount ?? "0") : 0;
-        const remaining = Math.max(0, round2(amount - invoiced));
-        if (prior) {
-          await storage.updateFee(prior.id, {
-            baseAmountHt: amount.toFixed(2),
-            feeAmountHt: amount.toFixed(2),
-            remainingAmount: remaining.toFixed(2),
-          });
-        } else {
-          await storage.createFee({
-            projectId,
-            feeType: "fixed",
-            phase,
-            baseAmountHt: amount.toFixed(2),
-            feeRate: null,
-            feeAmountHt: amount.toFixed(2),
-            invoicedAmount: "0.00",
-            remainingAmount: amount.toFixed(2),
-            status: "pending",
-          });
         }
       }
 
@@ -408,7 +392,7 @@ router.get(
       // session id baked into the path (`.../staging/u{userId}/...`).
       // Reject any preview request whose session does not match.
       const userId = (req.session as { userId?: number } | undefined)?.userId ?? 0;
-      if (!stagingKey.includes(`/staging/u${userId}/`)) {
+      if (!userId || !isStagingKeyOwnedBy(stagingKey, userId)) {
         return res.status(403).json({ message: "Not your staged contract" });
       }
       const { stream, contentType } = await getDocumentStream(stagingKey);

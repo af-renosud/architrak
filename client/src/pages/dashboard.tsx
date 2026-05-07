@@ -21,6 +21,53 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "wouter";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import BurnUpChart from "@/components/dashboard/BurnUpChart";
+import { Briefcase } from "lucide-react";
+
+interface DesignContractDashboardAction {
+  milestoneId: number;
+  contractId: number;
+  projectId: number;
+  projectName: string;
+  projectCode: string;
+  labelFr: string;
+  amountTtc: string;
+  reachedAt: string | null;
+  triggerEvent: string;
+}
+
+function DesignFeeActionsStrip() {
+  const { data } = useQuery<DesignContractDashboardAction[]>({
+    queryKey: ["/api/design-contracts/dashboard-actions"],
+  });
+  if (!data || data.length === 0) return null;
+  return (
+    <div data-testid="strip-design-fee-actions">
+      <SectionHeader icon={Briefcase} title="Design Fee Actions" subtitle="Reached milestones awaiting invoice" />
+      <div className="space-y-2 mt-3">
+        {data.map((a) => (
+          <Link key={a.milestoneId} href={`/projets/${a.projectId}`}>
+            <LuxuryCard className="cursor-pointer hover-elevate transition-all" data-testid={`card-design-action-${a.milestoneId}`}>
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="p-1.5 rounded-lg bg-amber-50 dark:bg-amber-950/30">
+                    <Briefcase size={14} className="text-amber-500" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold text-foreground truncate">{a.labelFr}</p>
+                    <p className="text-[10px] text-muted-foreground truncate">{a.projectCode} · {a.projectName}</p>
+                  </div>
+                </div>
+                <span className="text-[11px] font-semibold text-foreground whitespace-nowrap shrink-0">
+                  {new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(parseFloat(a.amountTtc))}
+                </span>
+              </div>
+            </LuxuryCard>
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
@@ -166,6 +213,8 @@ export default function Dashboard() {
             </LuxuryCard>
           </div>
         ) : null}
+
+        <DesignFeeActionsStrip />
 
         {data && data.urgentItems.length > 0 && (
           <div>

@@ -133,40 +133,13 @@ export async function trackProject(archidocId: string, options: TrackProjectOpti
     }
   }
 
-  const proposalFees = await storage.getArchidocProposalFees(archidocId);
-  if (proposalFees.length > 0) {
-    const pf = proposalFees[0];
-
-    if (pf.proServiceHt && parseFloat(pf.proServiceHt) > 0) {
-      const feeData: InsertFee = {
-        projectId: project.id,
-        feeType: "conception",
-        baseAmountHt: "0.00",
-        feeRate: options.feePercentage,
-        feeAmountHt: pf.proServiceHt,
-        invoicedAmount: "0.00",
-        remainingAmount: pf.proServiceHt,
-        status: "pending",
-      };
-      await storage.createFee(feeData);
-      feesCreated++;
-    }
-
-    if (pf.planningHt && parseFloat(pf.planningHt) > 0) {
-      const feeData: InsertFee = {
-        projectId: project.id,
-        feeType: "planning",
-        baseAmountHt: "0.00",
-        feeRate: null,
-        feeAmountHt: pf.planningHt,
-        invoicedAmount: "0.00",
-        remainingAmount: pf.planningHt,
-        status: "pending",
-      };
-      await storage.createFee(feeData);
-      feesCreated++;
-    }
-  }
+  // Task #175: design-contract upload is now the canonical source of
+  // conception/planning fee numbers. The Archidoc proposal-fees branch
+  // used to seed `fees` rows here, but it would race / duplicate with
+  // the design-contract confirm flow (which writes the same feeType
+  // rows from architect-reviewed values). We deliberately skip it —
+  // the design-contract confirm route owns the upsert.
+  void storage.getArchidocProposalFees;
 
   return {
     projectId: project.id,

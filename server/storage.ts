@@ -421,6 +421,10 @@ export interface IStorage {
     projectId: number,
     contract: InsertDesignContract,
     milestones: Omit<InsertDesignContractMilestone, "contractId">[],
+    sideEffects?: {
+      projectFeeMirror?: { conceptionFee: string | null; planningFee: string | null };
+      feeMirrors?: Array<{ feeType: "conception" | "planning"; amountHt: string }>;
+    },
   ): Promise<{ contract: DesignContract; milestones: DesignContractMilestone[]; previousStorageKey: string | null }>;
   /**
    * For the daily reminder digest + dashboard strip: milestones whose status
@@ -914,6 +918,10 @@ export class DatabaseStorage implements IStorage {
     projectId: number,
     contract: InsertDesignContract,
     milestones: Omit<InsertDesignContractMilestone, "contractId">[],
+    sideEffects?: {
+      projectFeeMirror?: { conceptionFee: string | null; planningFee: string | null };
+      feeMirrors?: Array<{ feeType: "conception" | "planning"; amountHt: string }>;
+    },
   ): Promise<{ contract: DesignContract; milestones: DesignContractMilestone[]; previousStorageKey: string | null }> {
     return db.transaction(async (tx) => {
       const [prior] = await tx.select().from(designContracts).where(eq(designContracts.projectId, projectId));
@@ -931,6 +939,47 @@ export class DatabaseStorage implements IStorage {
             .insert(designContractMilestones)
             .values(milestones.map((m) => ({ ...m, contractId: created.id })))
             .returning();
+
+      // Task #175: project fee-field mirror + design-fee row reconciliation
+      // run inside the SAME transaction as the contract row replacement so
+      // partial persistence is impossible. Re-upload preserves prior
+      // invoicedAmount on the matching fee row.
+      if (sideEffects?.projectFeeMirror) {
+        await tx
+          .update(projects)
+          .set({
+            conceptionFee: sideEffects.projectFeeMirror.conceptionFee,
+            planningFee: sideEffects.projectFeeMirror.planningFee,
+          })
+          .where(eq(projects.id, projectId));
+      }
+      if (sideEffects?.feeMirrors && sideEffects.feeMirrors.length > 0) {
+        const existingFees = await tx.select().from(fees).where(eq(fees.projectId, projectId));
+        for (const m of sideEffects.feeMirrors) {
+          const prior = existingFees.find((f) => f.feeType === m.feeType);
+          const invoiced = prior ? Number(prior.invoicedAmount ?? "0") : 0;
+          const remaining = Math.max(0, Math.round((Number(m.amountHt) - invoiced) * 100) / 100);
+          if (prior) {
+            await tx.update(fees).set({
+              baseAmountHt: m.amountHt,
+              feeAmountHt: m.amountHt,
+              remainingAmount: remaining.toFixed(2),
+            }).where(eq(fees.id, prior.id));
+          } else {
+            await tx.insert(fees).values({
+              projectId,
+              feeType: m.feeType,
+              baseAmountHt: m.amountHt,
+              feeRate: null,
+              feeAmountHt: m.amountHt,
+              invoicedAmount: "0.00",
+              remainingAmount: m.amountHt,
+              status: "pending",
+            });
+          }
+        }
+      }
+
       return { contract: created, milestones: milestoneRows, previousStorageKey };
     });
   }

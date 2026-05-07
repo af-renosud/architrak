@@ -71,6 +71,35 @@ export async function getDocumentStream(storageKey: string) {
 }
 
 /**
+ * Stage a design contract PDF under an explicit, slash-preserving path so
+ * the confirm/preview-pdf endpoints can verify ownership by inspecting
+ * the staging key segments. Goes around `uploadDocument` because that
+ * helper sanitizes "/" → "_" in the supplied filename and forces the
+ * `unmatched/documents/` prefix, which would defeat ownership binding.
+ */
+export async function uploadStagingDesignContract(
+  userId: number,
+  filename: string,
+  buffer: Buffer,
+  contentType: string = "application/pdf",
+): Promise<string> {
+  const bucketName = getBucketName();
+  const privateDir = getPrivateDir();
+  const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const ts = Date.now();
+  const objectName = `${privateDir}/design-contracts/staging/u${userId}/${ts}_${safeName}`;
+  const bucket = objectStorageClient.bucket(bucketName);
+  const file = bucket.file(objectName);
+  await file.save(buffer, { contentType, metadata: { contentType } });
+  return `/${bucketName}/${objectName}`;
+}
+
+/** Returns true if the given storage key is a staging key owned by `userId`. */
+export function isStagingKeyOwnedBy(storageKey: string, userId: number): boolean {
+  return storageKey.includes(`/design-contracts/staging/u${userId}/`);
+}
+
+/**
  * Server-side copy + delete of an object. Used by the design-contract
  * confirm flow to move a staged PDF to its final
  * `design-contracts/{projectId}/{timestamp}_{slug}.pdf` location and to

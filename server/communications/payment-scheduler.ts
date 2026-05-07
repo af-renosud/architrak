@@ -41,9 +41,43 @@ export function startScheduler(intervalMs: number = 60 * 60 * 1000) {
   if (schedulerInterval) return;
 
   console.log(`[PaymentScheduler] Starting scheduler, checking every ${intervalMs / 1000}s`);
-  schedulerInterval = setInterval(() => processDueReminders().catch(console.error), intervalMs);
+  schedulerInterval = setInterval(() => {
+    processDueReminders().catch(console.error);
+    processDesignContractDigest().catch(console.error);
+  }, intervalMs);
 
-  setTimeout(() => processDueReminders().catch(console.error), 30000);
+  setTimeout(() => {
+    processDueReminders().catch(console.error);
+    processDesignContractDigest().catch(console.error);
+  }, 30000);
+}
+
+/**
+ * Task #175 — daily reminder digest. Architects who have any
+ * reached-but-not-invoiced design-contract milestones older than 7d
+ * receive a once-per-24h log entry (full email rendering deferred to
+ * the next iteration; the storage method already gates on
+ * reminderQuietMs so we won't spam). The dashboard strip
+ * (`/api/design-contracts/dashboard-actions`) is the user-facing
+ * surface today; this digest path is the cron hook that exists so
+ * email integration is a one-line addition later.
+ */
+async function processDesignContractDigest(): Promise<void> {
+  try {
+    const overdue = await storage.getReachedUninvoicedMilestones({
+      staleAfterMs: 7 * 24 * 60 * 60 * 1000,
+      reminderQuietMs: 24 * 60 * 60 * 1000,
+    });
+    if (overdue.length === 0) return;
+    console.log(
+      `[PaymentScheduler] Design-contract digest: ${overdue.length} milestone(s) reached >7d ago without invoice`,
+    );
+    for (const row of overdue) {
+      await storage.markDesignContractMilestoneReminderSent(row.milestone.id);
+    }
+  } catch (err) {
+    console.error("[PaymentScheduler] Design-contract digest error:", err);
+  }
 }
 
 export function stopScheduler() {
