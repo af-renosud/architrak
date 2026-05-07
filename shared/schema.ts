@@ -324,16 +324,15 @@ export const devis = pgTable("devis", {
   index("devis_project_id_idx").on(table.projectId),
   index("devis_contractor_id_idx").on(table.contractorId),
   index("devis_archisign_envelope_id_idx").on(table.archisignEnvelopeId),
-  // Partial unique index: prevents duplicate {lotRef}.{number} within a
-  // project under concurrent saves. Case-insensitive on lotRefText so
-  // FD.1 and fd.1 collide (the composer uppercases for display).
-  uniqueIndex("devis_project_lot_ref_seq_unique")
-    .on(
-      table.projectId.asc().op("int4_ops"),
-      sql`lower(${table.lotRefText})`,
-      table.lotSequence.asc().op("int4_ops"),
-    )
-    .where(sql`${table.lotRefText} IS NOT NULL AND ${table.lotSequence} IS NOT NULL`),
+  // Partial unique index `devis_project_lot_ref_seq_unique` is intentionally
+  // declared ONLY in migrations/0029_devis_structured_lot_code.sql, not here.
+  // Drizzle-kit (as of 0.31) misaligns opclasses for indexes that mix plain
+  // columns with sql`...` expressions (it emits e.g. `project_id text_ops`
+  // which Postgres rejects with: operator class "text_ops" does not accept
+  // data type integer). Keeping the index out of the schema prevents the
+  // schema-based deploy generator from re-emitting that broken DDL.
+  // Application-level uniqueness is enforced by isLotSequenceTaken /
+  // findNextLotSequence in server/lib/devis-code.ts before insert/update.
 ]);
 
 export const devisLineItems = pgTable("devis_line_items", {
