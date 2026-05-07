@@ -4,7 +4,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { FolderOpen, ArrowLeft, MapPin, User, FileText, Layers, ScrollText, Award, Coins, BarChart3, Plus, Eye, EyeOff, ChevronRight, Pencil, Upload, Download, ExternalLink, MessageSquare, Send, Clock, RefreshCw, FileCheck, AlertTriangle, Settings, Loader2, FolderDown, Archive, ArchiveRestore } from "lucide-react";
+import { FolderOpen, ArrowLeft, MapPin, User, FileText, Layers, ScrollText, Award, Coins, BarChart3, Plus, Eye, EyeOff, ChevronRight, Pencil, Upload, Download, ExternalLink, MessageSquare, Send, Clock, RefreshCw, FileCheck, AlertTriangle, Settings, Loader2, FolderDown, Archive, ArchiveRestore, Mail, Phone, Lock, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -135,6 +135,179 @@ const entryFormSchema = insertFeeEntrySchema.extend({
   feeAmount: z.string().min(1, "Required"),
 });
 type EntryFormValues = z.infer<typeof entryFormSchema>;
+
+interface ArchidocClientEntry {
+  name?: string;
+  email?: string;
+  phone?: string;
+  address?: string;
+  homeAddress?: string;
+}
+
+function ClientCard({
+  project,
+  onRefresh,
+  refreshing,
+  disabled,
+}: {
+  project: Project;
+  onRefresh: () => void;
+  refreshing: boolean;
+  disabled: boolean;
+}) {
+  const archidocId = project.archidocId;
+  const archidocClientsRaw: unknown = project.archidocClients;
+  const archidocClients: ArchidocClientEntry[] = Array.isArray(archidocClientsRaw)
+    ? (archidocClientsRaw as ArchidocClientEntry[])
+    : [];
+  const lastSyncedAt = project.lastSyncedAt;
+
+  const fallbackEntry: ArchidocClientEntry | null =
+    archidocClients.length === 0 && (project.clientName || project.clientContactEmail || project.clientAddress)
+      ? {
+          name: project.clientContactName ?? project.clientName ?? undefined,
+          email: project.clientContactEmail ?? undefined,
+          address: project.clientAddress ?? undefined,
+        }
+      : null;
+  const entries: ArchidocClientEntry[] =
+    archidocClients.length > 0 ? archidocClients : fallbackEntry ? [fallbackEntry] : [];
+
+  return (
+    <LuxuryCard data-testid="card-client-record">
+      <div className="flex items-start justify-between gap-3 flex-wrap mb-4">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-9 h-9 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0">
+            <Users size={16} className="text-primary" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-[13px] font-bold uppercase tracking-tight text-foreground">
+              Client Record
+            </p>
+            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+              <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest text-muted-foreground">
+                <Lock size={9} /> Read-only · managed in Archidoc
+              </span>
+              {archidocId && (
+                <span className="text-[9px] text-muted-foreground font-mono" data-testid="text-client-archidoc-id">
+                  AD-{String(archidocId).slice(0, 8).toUpperCase()}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {lastSyncedAt && (
+            <span className="text-[9px] text-muted-foreground" data-testid="text-client-last-synced">
+              Last synced:{" "}
+              {new Date(lastSyncedAt).toLocaleDateString("fr-FR", {
+                day: "2-digit",
+                month: "short",
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+            </span>
+          )}
+          {archidocId && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2"
+              onClick={onRefresh}
+              disabled={refreshing || disabled}
+              data-testid="button-refresh-client"
+            >
+              <RefreshCw size={10} className={refreshing ? "animate-spin" : ""} />
+              <span className="text-[8px] font-bold uppercase tracking-widest">
+                {refreshing ? "Refreshing..." : "Refresh from Archidoc"}
+              </span>
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {entries.length === 0 ? (
+        <div className="text-center py-6" data-testid="empty-client-record">
+          <p className="text-[11px] text-muted-foreground">
+            No client details synced from Archidoc yet.
+          </p>
+          {archidocId && (
+            <p className="text-[10px] text-muted-foreground mt-1">
+              Click "Refresh from Archidoc" to pull the latest data.
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {entries.map((c, idx) => {
+            const name = (c.name ?? "").trim();
+            const email = (c.email ?? "").trim();
+            const phone = (c.phone ?? "").trim();
+            const address = (c.homeAddress ?? c.address ?? "").trim();
+            return (
+              <div
+                key={idx}
+                className="rounded-lg border border-border bg-muted/20 p-3 space-y-2"
+                data-testid={`card-client-entry-${idx}`}
+              >
+                <div className="flex items-center gap-2">
+                  <User size={12} className="text-muted-foreground" />
+                  <span
+                    className="text-[12px] font-semibold text-foreground"
+                    data-testid={`text-client-name-${idx}`}
+                  >
+                    {name || <span className="text-muted-foreground italic">No name on file</span>}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 min-w-0">
+                  <Mail size={11} className="text-muted-foreground flex-shrink-0" />
+                  {email ? (
+                    <a
+                      href={`mailto:${email}`}
+                      className="text-[11px] text-primary hover:underline truncate"
+                      data-testid={`link-client-email-${idx}`}
+                    >
+                      {email}
+                    </a>
+                  ) : (
+                    <span className="text-[11px] text-muted-foreground italic">No email</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 min-w-0">
+                  <Phone size={11} className="text-muted-foreground flex-shrink-0" />
+                  {phone ? (
+                    <a
+                      href={`tel:${phone.replace(/\s+/g, "")}`}
+                      className="text-[11px] text-primary hover:underline truncate"
+                      data-testid={`link-client-phone-${idx}`}
+                    >
+                      {phone}
+                    </a>
+                  ) : (
+                    <span className="text-[11px] text-muted-foreground italic">No phone</span>
+                  )}
+                </div>
+                <div className="flex items-start gap-2 min-w-0">
+                  <MapPin size={11} className="text-muted-foreground flex-shrink-0 mt-0.5" />
+                  {address ? (
+                    <span
+                      className="text-[11px] text-muted-foreground"
+                      data-testid={`text-client-address-${idx}`}
+                    >
+                      {address}
+                    </span>
+                  ) : (
+                    <span className="text-[11px] text-muted-foreground italic">No address</span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </LuxuryCard>
+  );
+}
 
 export default function ProjectDetail() {
   const params = useParams<{ id: string }>();
@@ -804,6 +977,13 @@ export default function ProjectDetail() {
             </div>
           </LuxuryCard>
         )}
+
+        <ClientCard
+          project={project}
+          onRefresh={() => refreshProjectMutation.mutate()}
+          refreshing={refreshProjectMutation.isPending}
+          disabled={isArchived}
+        />
 
         <div className="flex items-center justify-end gap-2 mb-1 flex-wrap">
           <Button
