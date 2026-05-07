@@ -6,6 +6,7 @@ import { processStandaloneBenchmarkUpload } from "../services/benchmark-ingest.s
 import { PdfPasswordProtectedError } from "../gmail/document-parser";
 import { getDocumentStream } from "../storage/object-storage";
 import { validateRequest } from "../middleware/validate";
+import { BENCHMARK_UPLOAD_ERROR_CODES } from "../../shared/benchmark-upload-errors";
 
 const router = Router();
 
@@ -71,7 +72,11 @@ router.post(
   validateRequest({ body: uploadInputSchema }),
   async (req, res) => {
     try {
-      if (!req.file) return res.status(400).json({ message: "No file provided" });
+      if (!req.file) {
+        return res
+          .status(400)
+          .json({ message: "No file provided", code: BENCHMARK_UPLOAD_ERROR_CODES.NO_FILE_PROVIDED });
+      }
       const body = req.body as UploadInput;
       const result = await processStandaloneBenchmarkUpload(req.file, {
         contractorId: body.contractorId ?? null,
@@ -83,11 +88,30 @@ router.post(
       res.status(result.status).json(result.data);
     } catch (err: unknown) {
       if (err instanceof PdfPasswordProtectedError) {
-        return res.status(422).json({ message: err.message, code: "PDF_PASSWORD_PROTECTED" });
+        return res
+          .status(422)
+          .json({ message: err.message, code: BENCHMARK_UPLOAD_ERROR_CODES.PDF_PASSWORD_PROTECTED });
       }
       const message = err instanceof Error ? err.message : String(err);
+      // assertPdfMagic and similar guards attach a numeric `.status` (e.g. 415)
+      // on the thrown Error. Preserve it so the client sees the right HTTP
+      // status and stable code instead of a collapsed 500.
+      const statusFromErr =
+        err && typeof err === "object" && typeof (err as { status?: unknown }).status === "number"
+          ? (err as { status: number }).status
+          : null;
+      if (statusFromErr === 415) {
+        return res
+          .status(415)
+          .json({ message, code: BENCHMARK_UPLOAD_ERROR_CODES.PDF_INVALID_MAGIC });
+      }
       console.error("[Benchmark Upload] Error:", message);
-      res.status(500).json({ message: `Upload failed: ${message}` });
+      res
+        .status(statusFromErr ?? 500)
+        .json({
+          message: `Upload failed: ${message}`,
+          code: BENCHMARK_UPLOAD_ERROR_CODES.BENCHMARK_UPLOAD_FAILED,
+        });
     }
   },
 );

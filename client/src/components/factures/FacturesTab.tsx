@@ -13,6 +13,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Invoice, Contractor, Devis } from "@shared/schema";
+import { getInvoiceUploadErrorTitle } from "@shared/invoice-upload-errors";
 import { AdvisoriesList, AdvisoryBadge } from "@/components/advisories/AdvisoriesList";
 import { TvaDerivedHint } from "@/components/ui/tva-derived-hint";
 
@@ -54,7 +55,9 @@ export function FacturesTab({ projectId, contractors, isArchived = false }: Fact
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ message: "Upload failed" }));
-        throw new Error(err.message || "Upload failed");
+        const e = new Error(err.message || "Upload failed") as Error & { code?: string };
+        e.code = err.code;
+        throw e;
       }
       return res.json();
     },
@@ -70,8 +73,9 @@ export function FacturesTab({ projectId, contractors, isArchived = false }: Fact
         toast({ title: "Invoice uploaded successfully", description: `${data.fileName} — ${formatCurrency(ext.amountHt)} HT / ${formatCurrency(ext.amountTtc)} TTC detected` });
       }
     },
-    onError: (error: Error) => {
-      toast({ title: "Upload failed", description: error.message, variant: "destructive" });
+    onError: (error: Error & { code?: string }) => {
+      const title = getInvoiceUploadErrorTitle(error.code);
+      toast({ title, description: error.message, variant: "destructive" });
     },
   });
 

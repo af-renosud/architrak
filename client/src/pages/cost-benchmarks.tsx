@@ -16,6 +16,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Upload, Search, Trash2, Tag as TagIcon, AlertTriangle, FileText } from "lucide-react";
 import type { Contractor } from "@shared/schema";
+import { getBenchmarkUploadErrorTitle } from "@shared/benchmark-upload-errors";
 
 interface BenchmarkTag {
   id: number;
@@ -100,7 +101,11 @@ function UploadPanel() {
       if (notes) fd.append("notes", notes);
       const res = await fetch("/api/benchmarks/upload", { method: "POST", body: fd, credentials: "include" });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.message || "Upload failed");
+      if (!res.ok) {
+        const e = new Error(data.message || "Upload failed") as Error & { code?: string };
+        e.code = data.code;
+        throw e;
+      }
       return data;
     },
     onSuccess: (data) => {
@@ -114,8 +119,9 @@ function UploadPanel() {
       setNotes("");
       if (fileRef.current) fileRef.current.value = "";
     },
-    onError: (err: Error) => {
-      toast({ title: "Upload failed", description: err.message, variant: "destructive" });
+    onError: (err: Error & { code?: string }) => {
+      const title = getBenchmarkUploadErrorTitle(err.code);
+      toast({ title, description: err.message, variant: "destructive" });
     },
   });
 

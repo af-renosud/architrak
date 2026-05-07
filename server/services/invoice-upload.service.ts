@@ -4,6 +4,7 @@ import { validateExtraction } from "./extraction-validator";
 import { roundCurrency, deriveTvaAmount } from "../../shared/financial-utils";
 import { reconcileAdvisories } from "./advisory-reconciler";
 import { assertPdfMagic } from "../middleware/upload";
+import { INVOICE_UPLOAD_ERROR_CODES } from "../../shared/invoice-upload-errors";
 
 interface UploadedFile {
   originalname: string;
@@ -15,7 +16,11 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
   assertPdfMagic(file.buffer);
   const devis = await storage.getDevis(devisId);
   if (!devis) {
-    return { success: false, status: 404, data: { message: "Devis not found" } };
+    return {
+      success: false,
+      status: 404,
+      data: { message: "Devis not found", code: INVOICE_UPLOAD_ERROR_CODES.INVOICE_DEVIS_NOT_FOUND },
+    };
   }
 
   const storageKey = await uploadDocument(devis.projectId, file.originalname, file.buffer, file.mimetype);

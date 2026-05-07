@@ -3,7 +3,8 @@ import { db } from "../db";
 import { devis as devisTable, benchmarkDocuments, benchmarkItems, benchmarkItemTags } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { uploadDocument } from "../storage/object-storage";
-import { parseDocument, type ParsedDocument } from "../gmail/document-parser";
+import { parseDocument, type ParsedDocument, isTransientParseFailure, getParseFailureMessage } from "../gmail/document-parser";
+import { BENCHMARK_UPLOAD_ERROR_CODES } from "../../shared/benchmark-upload-errors";
 import { validateExtraction } from "./extraction-validator";
 import { roundCurrency } from "../../shared/financial-utils";
 import { normalizeUnit } from "./benchmark-tags";
@@ -251,7 +252,10 @@ export async function processStandaloneBenchmarkUpload(file: UploadedFile, input
     return {
       success: false,
       status: 400,
-      data: { message: "Either contractorId or externalContractorName must be provided." },
+      data: {
+        message: "Either contractorId or externalContractorName must be provided.",
+        code: BENCHMARK_UPLOAD_ERROR_CODES.BENCHMARK_CONTRACTOR_REQUIRED,
+      },
     };
   }
 
@@ -259,11 +263,21 @@ export async function processStandaloneBenchmarkUpload(file: UploadedFile, input
   const parsed = await parseDocument(file.buffer, file.originalname);
 
   if (parsed.documentType === "unknown" && !parsed.amountHt && !parsed.lineItems?.length) {
+    const transient = isTransientParseFailure(parsed);
+    const reason = getParseFailureMessage(parsed);
+    const message = transient
+      ? `AI extraction temporarily unavailable${reason ? ` (${reason})` : ""}. Please try again in a moment.`
+      : reason
+        ? `AI extraction failed: ${reason}`
+        : "Could not extract meaningful data from this PDF.";
     return {
       success: false,
-      status: 422,
+      status: transient ? 503 : 422,
       data: {
-        message: "Could not extract meaningful data from this PDF.",
+        message,
+        code: transient
+          ? BENCHMARK_UPLOAD_ERROR_CODES.AI_TRANSIENT
+          : BENCHMARK_UPLOAD_ERROR_CODES.BENCHMARK_PARSE_FAILED,
         extraction: parsed,
         storageKey,
         fileName: file.originalname,

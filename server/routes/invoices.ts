@@ -7,6 +7,7 @@ import { insertInvoiceSchema, type InsertInvoice } from "@shared/schema";
 import { upload } from "../middleware/upload";
 import { processInvoiceUpload } from "../services/invoice-upload.service";
 import { PdfPasswordProtectedError } from "../gmail/document-parser";
+import { INVOICE_UPLOAD_ERROR_CODES } from "../../shared/invoice-upload-errors";
 import { approveInvoice } from "../services/invoice-approval.service";
 import { getDocumentStream } from "../storage/object-storage";
 import { validateExtraction, type ValidationWarning } from "../services/extraction-validator";
@@ -50,17 +51,40 @@ router.post(
     try {
       const devisId = Number(req.params.devisId);
       const file = req.file;
-      if (!file) return res.status(400).json({ message: "No file provided" });
+      if (!file) {
+        return res
+          .status(400)
+          .json({ message: "No file provided", code: INVOICE_UPLOAD_ERROR_CODES.NO_FILE_PROVIDED });
+      }
 
       const result = await processInvoiceUpload(devisId, file);
       res.status(result.status).json(result.data);
     } catch (err: unknown) {
       if (err instanceof PdfPasswordProtectedError) {
-        return res.status(422).json({ message: err.message, code: "PDF_PASSWORD_PROTECTED" });
+        return res
+          .status(422)
+          .json({ message: err.message, code: INVOICE_UPLOAD_ERROR_CODES.PDF_PASSWORD_PROTECTED });
       }
       const message = err instanceof Error ? err.message : String(err);
+      // assertPdfMagic and similar guards attach a numeric `.status` (e.g. 415)
+      // on the thrown Error. Preserve it so the client sees the right HTTP
+      // status and stable code instead of a collapsed 500.
+      const statusFromErr =
+        err && typeof err === "object" && typeof (err as { status?: unknown }).status === "number"
+          ? (err as { status: number }).status
+          : null;
+      if (statusFromErr === 415) {
+        return res
+          .status(415)
+          .json({ message, code: INVOICE_UPLOAD_ERROR_CODES.PDF_INVALID_MAGIC });
+      }
       console.error("[Invoice Upload] Error:", message);
-      res.status(500).json({ message: `Invoice upload/parse failed: ${message}` });
+      res
+        .status(statusFromErr ?? 500)
+        .json({
+          message: `Invoice upload/parse failed: ${message}`,
+          code: INVOICE_UPLOAD_ERROR_CODES.INVOICE_UPLOAD_FAILED,
+        });
     }
   },
 );

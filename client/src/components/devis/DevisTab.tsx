@@ -18,6 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff, ShieldCheck, ShieldAlert, ShieldX, Trash2, X, Tag, Settings as SettingsIcon, Wand2, Pencil, UserCog, Copy, Send, MessageSquare } from "lucide-react";
 import { Link } from "wouter";
 import { getDevisUploadErrorTitle } from "@shared/devis-upload-errors";
+import { getInvoiceUploadErrorTitle } from "@shared/invoice-upload-errors";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
@@ -81,7 +82,9 @@ function InvoiceUploadDialog({
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ message: "Upload failed" }));
-        throw new Error(err.message || "Upload failed");
+        const e = new Error(err.message || "Upload failed") as Error & { code?: string };
+        e.code = err.code;
+        throw e;
       }
       return res.json();
     },
@@ -97,8 +100,9 @@ function InvoiceUploadDialog({
         toast({ title: "Invoice uploaded successfully", description: `${data.fileName} — ${formatCurrency(ext.amountHt)} HT detected` });
       }
     },
-    onError: (error: Error) => {
-      toast({ title: "Upload failed", description: error.message, variant: "destructive" });
+    onError: (error: Error & { code?: string }) => {
+      const title = getInvoiceUploadErrorTitle(error.code);
+      toast({ title, description: error.message, variant: "destructive" });
     },
   });
 
