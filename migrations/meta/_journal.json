@@ -204,6 +204,13 @@
       "when": 1778510000000,
       "tag": "0028_design_contract_parties",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1778520000000,
+      "tag": "0029_devis_structured_lot_code",
+      "breakpoints": true
     }
   ]
 }

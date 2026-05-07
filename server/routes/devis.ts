@@ -30,6 +30,13 @@ import { validateRequest } from "../middleware/validate";
 import { translateDevis, retranslateSingleLine, triggerDevisTranslation } from "../services/devis-translation";
 import { normalizeDevisText, normalizeLineItemText, toSentenceCase } from "../lib/sentence-case";
 import {
+  composeDevisCode,
+  findNextLotSequence,
+  isLotSequenceTaken,
+  validateDevisCodeParts,
+  type DevisCodeParts,
+} from "../lib/devis-code";
+import {
   generateDevisTranslationPdf,
   generateCombinedPdf,
 } from "../communications/devis-translation-generator";
@@ -65,11 +72,35 @@ const advisoryAckParams = z.object({
 });
 
 const createDevisBodySchema = insertDevisSchema.omit({ projectId: true });
-const updateDevisSchema = insertDevisSchema.partial();
+// PATCH /api/devis/:id accepts the structured lot-code parts as a virtual
+// `lotCode` field alongside any of the underlying columns. The handler
+// validates uniqueness, composes `devisCode`, and persists the three
+// structured columns; raw `lotCatalogId` / `lotRefText` / `lotSequence`
+// in the body are ignored when `lotCode` is supplied.
+const lotCodePatchSchema = z
+  .object({
+    lotCatalogId: z.number().int().positive().nullable().optional(),
+    lotRefText: z.string().trim().min(1),
+    lotSequence: z.number().int().min(1),
+    lotDescription: z.string().trim().min(1),
+  })
+  .optional();
+const updateDevisSchema = insertDevisSchema.partial().extend({
+  lotCode: lotCodePatchSchema,
+});
 const createLineItemBodySchema = insertDevisLineItemSchema.omit({ devisId: true });
 const updateLineItemSchema = insertDevisLineItemSchema.partial();
 const createAvenantBodySchema = insertAvenantSchema.omit({ devisId: true });
 const updateAvenantSchema = insertAvenantSchema.partial();
+
+const lotCodePartsSchema = z
+  .object({
+    lotCatalogId: z.number().int().positive().nullable().optional(),
+    lotRefText: z.string().trim().min(1),
+    lotSequence: z.number().int().min(1),
+    lotDescription: z.string().trim().min(1),
+  })
+  .optional();
 
 const devisConfirmSchema = z.object({
   amountHt: z.coerce.number().nonnegative().optional(),
@@ -78,6 +109,7 @@ const devisConfirmSchema = z.object({
   devisNumber: z.string().optional(),
   descriptionFr: z.string().optional(),
   dateSent: z.string().optional(),
+  lotCode: lotCodePartsSchema,
 }).strict();
 type DevisConfirmInput = z.infer<typeof devisConfirmSchema>;
 
@@ -85,6 +117,113 @@ router.get("/api/projects/:projectId/devis", async (req, res) => {
   const devisList = await storage.getDevisByProject(Number(req.params.projectId));
   res.json(devisList);
 });
+
+const nextLotNumberQuerySchema = z.object({
+  lotRef: z.string().trim().min(1, "lotRef is required"),
+  excludeDevisId: z.coerce.number().int().positive().optional(),
+});
+
+router.get(
+  "/api/projects/:projectId/devis/next-lot-number",
+  validateRequest({ params: projectIdParams, query: nextLotNumberQuerySchema }),
+  async (req, res) => {
+    const projectId = Number(req.params.projectId);
+    const lotRef = String(req.query.lotRef);
+    const excludeDevisId = req.query.excludeDevisId
+      ? Number(req.query.excludeDevisId)
+      : undefined;
+    const next = await findNextLotSequence(projectId, lotRef, { excludeDevisId });
+    // Response key is `nextLotSequence` to match the client contract and
+    // signal "the next free number for this (project, lotRef)" — distinct
+    // from the row's persisted `lotSequence`.
+    res.json({ lotRef, nextLotSequence: next });
+  },
+);
+
+/**
+ * Validate the structured lot-code parts and produce the DB updates that
+ * persist them (lotCatalogId, lotRefText, lotSequence) plus the composed
+ * `devisCode`. Returns either an error response payload or the updates
+ * to merge into the storage.updateDevis call.
+ *
+ * Uniqueness is checked against the project (case-insensitive on lotRef);
+ * on collision the response includes a fresh `nextLotSequence` suggestion
+ * so the form can re-populate immediately without a second round-trip.
+ */
+type LotCodeUpdatesResult =
+  | { ok: true; updates: Record<string, unknown>; composedCode: string }
+  | { ok: false; status: number; body: Record<string, unknown> };
+
+async function buildLotCodeUpdates(
+  projectId: number,
+  lotCode: NonNullable<z.infer<typeof lotCodePartsSchema>>,
+  opts: { excludeDevisId?: number },
+): Promise<LotCodeUpdatesResult> {
+  const parts: DevisCodeParts = {
+    lotRef: lotCode.lotRefText,
+    lotSequence: lotCode.lotSequence,
+    description: lotCode.lotDescription,
+  };
+  const errors = validateDevisCodeParts(parts);
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      status: 400,
+      body: { message: errors[0].message, code: "devis_code_invalid", errors },
+    };
+  }
+  if (lotCode.lotCatalogId != null) {
+    const entry = await storage.getLotCatalogEntry(lotCode.lotCatalogId);
+    if (!entry) {
+      return {
+        ok: false,
+        status: 404,
+        body: { message: "Lot catalog entry not found", code: "lot_catalog_not_found" },
+      };
+    }
+    if (entry.code.toLowerCase() !== lotCode.lotRefText.trim().toLowerCase()) {
+      return {
+        ok: false,
+        status: 400,
+        body: {
+          message: "Lot reference does not match the selected catalog entry",
+          code: "devis_code_catalog_mismatch",
+        },
+      };
+    }
+  }
+  const taken = await isLotSequenceTaken(
+    projectId,
+    lotCode.lotRefText,
+    lotCode.lotSequence,
+    { excludeDevisId: opts.excludeDevisId },
+  );
+  if (taken) {
+    const next = await findNextLotSequence(projectId, lotCode.lotRefText, {
+      excludeDevisId: opts.excludeDevisId,
+    });
+    return {
+      ok: false,
+      status: 409,
+      body: {
+        message: `Devis number ${lotCode.lotSequence} already exists for lot "${lotCode.lotRefText}". The next available number is ${next}.`,
+        code: "devis_lot_sequence_taken",
+        nextLotSequence: next,
+      },
+    };
+  }
+  const composedCode = composeDevisCode(parts);
+  return {
+    ok: true,
+    composedCode,
+    updates: {
+      lotCatalogId: lotCode.lotCatalogId ?? null,
+      lotRefText: lotCode.lotRefText.trim().toUpperCase(),
+      lotSequence: lotCode.lotSequence,
+      devisCode: composedCode,
+    },
+  };
+}
 
 router.post(
   "/api/projects/:projectId/devis",
@@ -475,7 +614,25 @@ router.patch(
       prevContractor = (await storage.getContractor(before.contractorId)) ?? null;
     }
 
-    const d = await storage.updateDevis(id, normalizeDevisText({ ...req.body }));
+    // Structured devis-code (Task #176): when the architect submits the
+    // three-part composer through the edit dialog, validate uniqueness,
+    // compose the display string, and merge the structured-column updates
+    // into the patch payload. Strip the virtual `lotCode` field so it
+    // doesn't leak into the storage layer.
+    const patchBody: Record<string, unknown> = { ...req.body };
+    const lotCodePart = (patchBody as { lotCode?: NonNullable<z.infer<typeof lotCodePatchSchema>> }).lotCode;
+    delete patchBody.lotCode;
+    if (lotCodePart) {
+      const result = await buildLotCodeUpdates(before.projectId, lotCodePart, {
+        excludeDevisId: id,
+      });
+      if (!result.ok) {
+        return res.status(result.status).json(result.body);
+      }
+      Object.assign(patchBody, result.updates);
+    }
+
+    const d = await storage.updateDevis(id, normalizeDevisText(patchBody));
     if (!d) return res.status(404).json({ message: "Devis not found" });
     // Lifecycle-bound auto-revoke: if this edit lowered the contracted HT
     // (or otherwise pushed the devis to fully-invoiced), retire the active
@@ -496,8 +653,11 @@ router.patch(
 
     if (before.status !== "draft") {
       const auditFields: Array<"devisCode" | "devisNumber" | "ref2"> = ["devisCode", "devisNumber", "ref2"];
+      // The structured composer rewrites `devisCode` indirectly via the
+      // `lotCode` field; treat that as an explicit edit for audit purposes.
+      const sentDevisCodeIndirectly = lotCodePart != null;
       for (const f of auditFields) {
-        if (Object.prototype.hasOwnProperty.call(req.body, f)) {
+        if (Object.prototype.hasOwnProperty.call(req.body, f) || (f === "devisCode" && sentDevisCodeIndirectly)) {
           const prev = (before[f] ?? null) as string | null;
           const next = (d[f] ?? null) as string | null;
           if ((prev ?? "") !== (next ?? "")) {
@@ -651,6 +811,21 @@ router.post(
       if (corrections.devisNumber != null) updates.devisNumber = corrections.devisNumber;
       if (corrections.descriptionFr != null) updates.descriptionFr = toSentenceCase(corrections.descriptionFr);
       if (corrections.dateSent != null) updates.dateSent = corrections.dateSent;
+
+      // Structured devis-code (Task #176). When the architect submitted the
+      // three-part composer, validate uniqueness server-side, persist the
+      // structured columns, and overwrite `devisCode` with the composed
+      // string. The composer's output takes precedence over any free-text
+      // `devisCode` correction in the same payload.
+      if (corrections.lotCode) {
+        const result = await buildLotCodeUpdates(devis.projectId, corrections.lotCode, {
+          excludeDevisId: devis.id,
+        });
+        if (!result.ok) {
+          return res.status(result.status).json(result.body);
+        }
+        Object.assign(updates, result.updates);
+      }
 
       let nextWarnings = (devis.validationWarnings as ValidationWarning[] | null) ?? [];
       const aiData = (devis.aiExtractedData as Record<string, unknown> | null) ?? {};

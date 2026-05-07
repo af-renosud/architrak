@@ -22,12 +22,19 @@ import { getInvoiceUploadErrorTitle } from "@shared/invoice-upload-errors";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, ApiError } from "@/lib/queryClient";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { insertDevisLineItemSchema, insertAvenantSchema, insertLotSchema } from "@shared/schema";
 import type { Devis, Contractor, Lot, LotCatalog, DevisLineItem, Avenant, Invoice, DevisRefEdit } from "@shared/schema";
 import { formatLotDescription } from "@shared/lot-label";
+import {
+  composeDevisCode,
+  tryParseDevisCode,
+  validateDevisCodeParts,
+  DEVIS_CODE_MAX_LOT_REF,
+  DEVIS_CODE_MAX_DESCRIPTION,
+} from "@shared/devis-code";
 import { z } from "zod";
 import { AdvisoriesList, AdvisoryBadge } from "@/components/advisories/AdvisoriesList";
 import { DevisTranslationSection } from "@/components/devis/DevisTranslationSection";
@@ -43,6 +50,317 @@ import {
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
+}
+
+export type LotCodeValue = {
+  lotCatalogId: number | null;
+  lotRefText: string;
+  lotSequence: number | null;
+  lotDescription: string;
+};
+
+type LotCodeUpdater = LotCodeValue | ((prev: LotCodeValue) => LotCodeValue);
+
+interface LotCodeComposerProps {
+  projectId: string;
+  excludeDevisId?: number;
+  value: LotCodeValue;
+  /**
+   * Accepts either a flat replacement or an updater fn (à la
+   * `useState`). Async paths (next-number fetch, 409 re-suggest)
+   * **must** use the updater form so they merge against the latest
+   * state instead of clobbering edits the user made while the request
+   * was in flight.
+   */
+  onChange: (next: LotCodeUpdater) => void;
+  /** Suggested next sequence to honour (e.g. after a 409). */
+  forcedNextLotSequence?: number | null;
+  testIdPrefix?: string;
+}
+
+/**
+ * Three-part composer for the structured devis-code (Task #176).
+ *
+ * The architect either picks a lot from the firm-wide catalog or toggles
+ * "Custom" to type a free-text reference. Either way, when the lot ref
+ * settles we ask the server for the next available sequence number for
+ * `(projectId, lotRef)` and pre-fill it. The composed string
+ * `{LOTREF}.{N}.{description}` is rendered live so reviewers see exactly
+ * what will be persisted into `devisCode`.
+ *
+ * Catalog-vs-custom detection on the way IN: if the initial value's
+ * `lotRefText` matches a catalog entry case-insensitively we surface the
+ * catalog ID so the dropdown shows the picked entry; otherwise we drop
+ * into custom mode.
+ */
+function LotCodeComposer({ projectId, excludeDevisId, value, onChange, forcedNextLotSequence = null, testIdPrefix = "lot-code" }: LotCodeComposerProps) {
+  const { data: catalog = [] } = useQuery<LotCatalog[]>({
+    queryKey: ["/api/lot-catalog"],
+  });
+  const sortedCatalog = [...catalog].sort((a, b) =>
+    (a.code ?? "").localeCompare(b.code ?? "", undefined, { numeric: true, sensitivity: "base" }),
+  );
+
+  const matchedCatalogId = (() => {
+    if (value.lotCatalogId != null) return value.lotCatalogId;
+    if (!value.lotRefText) return null;
+    const hit = catalog.find((c) => (c.code ?? "").toLowerCase() === value.lotRefText.toLowerCase());
+    return hit?.id ?? null;
+  })();
+  const [customMode, setCustomMode] = useState<boolean>(() => {
+    if (value.lotRefText && matchedCatalogId == null) return true;
+    return false;
+  });
+
+  // Once the catalog query resolves we may discover the initial lotRefText
+  // actually matches a catalog entry — flip out of custom mode in that case
+  // (one-shot per catalog change).
+  useEffect(() => {
+    if (catalog.length === 0) return;
+    if (value.lotRefText && customMode) {
+      const hit = catalog.find((c) => (c.code ?? "").toLowerCase() === value.lotRefText.toLowerCase());
+      if (hit) {
+        setCustomMode(false);
+        onChange((prev) => ({ ...prev, lotCatalogId: hit.id, lotRefText: hit.code }));
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalog.length]);
+
+  const fetchNext = useCallback(async (lotRef: string) => {
+    if (!lotRef.trim()) return;
+    const params = new URLSearchParams({ lotRef });
+    if (excludeDevisId) params.set("excludeDevisId", String(excludeDevisId));
+    const res = await fetch(`/api/projects/${projectId}/devis/next-lot-number?${params}`, { credentials: "include" });
+    if (!res.ok) return;
+    const body: { nextLotSequence: number } = await res.json();
+    // Functional update so we merge against the latest state — by the
+    // time this resolves the user may have changed the description or
+    // toggled the catalog selection, and a flat replace would clobber
+    // those edits (notably `lotCatalogId`).
+    onChange((prev) => {
+      // Don't override a sequence the user typed manually while we were
+      // fetching, and don't write a stale sequence onto a lot ref that
+      // has since changed.
+      if (prev.lotRefText.trim().toUpperCase() !== lotRef.trim().toUpperCase()) return prev;
+      if (prev.lotSequence != null) return prev;
+      return { ...prev, lotSequence: body.nextLotSequence };
+    });
+  }, [projectId, excludeDevisId, onChange]);
+
+  // Auto-suggest the next sequence whenever a lot ref is supplied without
+  // a sequence — covers the AI-prefilled draft-review case where the
+  // lotRefText comes from the extraction (no user click on the catalog
+  // dropdown / no blur on the custom input). The `autoFetchedRef` guard
+  // ensures we issue the suggestion fetch exactly once per (lotRef)
+  // change so manual overrides aren't clobbered.
+  const autoFetchedRef = useRef<string | null>(null);
+  useEffect(() => {
+    const ref = value.lotRefText.trim();
+    if (!ref) {
+      autoFetchedRef.current = null;
+      return;
+    }
+    if (value.lotSequence != null) return;
+    if (autoFetchedRef.current === ref.toUpperCase()) return;
+    autoFetchedRef.current = ref.toUpperCase();
+    void fetchNext(ref);
+  }, [value.lotRefText, value.lotSequence, fetchNext]);
+
+  // Honour a server-suggested next sequence (e.g. after a 409 collision
+  // the parent re-suggests via `forcedNextLotSequence`). Reuses the same
+  // auto-fetch debouncing key so this counts as a fresh suggestion.
+  useEffect(() => {
+    if (forcedNextLotSequence == null) return;
+    onChange((prev) => ({ ...prev, lotSequence: forcedNextLotSequence }));
+    autoFetchedRef.current = value.lotRefText.trim().toUpperCase() || null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forcedNextLotSequence]);
+
+  const handleCatalogPick = (idStr: string) => {
+    const id = Number(idStr);
+    const entry = catalog.find((c) => c.id === id);
+    if (!entry) return;
+    // Reset the sequence so the auto-fetch effect re-runs against the
+    // newly-picked lot — the in-flight fetch (if any) for the previous
+    // lot is skipped via the `lotRefText` mismatch guard in `fetchNext`.
+    onChange((prev) => ({ ...prev, lotCatalogId: id, lotRefText: entry.code, lotSequence: null }));
+  };
+
+  const handleToggleCustom = () => {
+    const goingCustom = !customMode;
+    setCustomMode(goingCustom);
+    if (goingCustom) {
+      onChange((prev) => ({ ...prev, lotCatalogId: null }));
+    } else {
+      onChange((prev) => ({ ...prev, lotCatalogId: null, lotRefText: "", lotSequence: null }));
+    }
+  };
+
+  const handleCustomBlur = () => {
+    if (customMode && value.lotRefText.trim()) {
+      void fetchNext(value.lotRefText.trim());
+    }
+  };
+
+  const errors = validateDevisCodeParts({
+    lotRef: value.lotRefText,
+    lotSequence: value.lotSequence ?? undefined,
+    description: value.lotDescription,
+  });
+  const errorByField = (field: "lotRef" | "lotSequence" | "description") =>
+    errors.find((e) => e.field === field)?.message;
+
+  const previewReady = errors.length === 0;
+  const preview = previewReady
+    ? composeDevisCode({
+        lotRef: value.lotRefText,
+        lotSequence: value.lotSequence as number,
+        description: value.lotDescription,
+      })
+    : "—";
+
+  return (
+    <div className="space-y-2 rounded border border-border/60 bg-muted/20 p-2.5">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <TechnicalLabel>Devis Code (structured)</TechnicalLabel>
+        <button
+          type="button"
+          className="text-[9px] uppercase tracking-widest text-muted-foreground hover:text-foreground underline"
+          onClick={handleToggleCustom}
+          data-testid={`${testIdPrefix}-toggle-custom`}
+        >
+          {customMode ? "Pick from catalog" : "Use custom reference"}
+        </button>
+      </div>
+      <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-2">
+        <div className="space-y-1">
+          <span className="text-[9px] uppercase tracking-widest text-muted-foreground">Lot</span>
+          {customMode ? (
+            <Input
+              value={value.lotRefText}
+              onChange={(e) => {
+                const v = e.target.value.slice(0, DEVIS_CODE_MAX_LOT_REF);
+                // Reset sequence so the auto-fetch effect picks the
+                // suggestion for the newly-typed lot ref.
+                onChange((prev) => ({ ...prev, lotRefText: v, lotSequence: null }));
+              }}
+              onBlur={handleCustomBlur}
+              placeholder="e.g. FD"
+              maxLength={DEVIS_CODE_MAX_LOT_REF}
+              className="text-[11px] uppercase"
+              data-testid="select-lot-ref"
+            />
+          ) : (
+            <Select
+              value={matchedCatalogId != null ? String(matchedCatalogId) : ""}
+              onValueChange={handleCatalogPick}
+            >
+              <SelectTrigger className="text-[11px]" data-testid="select-lot-ref">
+                <SelectValue placeholder="Select lot…" />
+              </SelectTrigger>
+              <SelectContent>
+                {sortedCatalog.map((c) => (
+                  <SelectItem key={c.id} value={String(c.id)} className="text-[11px]">
+                    <span className="font-mono font-bold">{c.code}</span>
+                    <span className="text-muted-foreground"> · {formatLotDescription(c) || ""}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          {errorByField("lotRef") && (
+            <p className="text-[9px] text-rose-600" data-testid={`${testIdPrefix}-error-lot-ref`}>{errorByField("lotRef")}</p>
+          )}
+        </div>
+        <div className="space-y-1">
+          <span className="text-[9px] uppercase tracking-widest text-muted-foreground">Number</span>
+          <Input
+            type="number"
+            min={1}
+            value={value.lotSequence ?? ""}
+            onChange={(e) => {
+              const n = e.target.value === "" ? null : Number(e.target.value);
+              onChange((prev) => ({ ...prev, lotSequence: n }));
+            }}
+            placeholder="auto"
+            className="text-[11px]"
+            data-testid="input-lot-number"
+          />
+          {errorByField("lotSequence") && (
+            <p className="text-[9px] text-rose-600" data-testid={`${testIdPrefix}-error-lot-number`}>{errorByField("lotSequence")}</p>
+          )}
+        </div>
+      </div>
+      <div className="space-y-1">
+        <span className="text-[9px] uppercase tracking-widest text-muted-foreground">Description</span>
+        <Input
+          value={value.lotDescription}
+          onChange={(e) => {
+            const v = e.target.value.slice(0, DEVIS_CODE_MAX_DESCRIPTION);
+            onChange((prev) => ({ ...prev, lotDescription: v }));
+          }}
+          placeholder="e.g. HOUSE FACADE"
+          maxLength={DEVIS_CODE_MAX_DESCRIPTION}
+          className="text-[11px]"
+          data-testid="input-lot-description"
+        />
+        {errorByField("description") && (
+          <p className="text-[9px] text-rose-600" data-testid={`${testIdPrefix}-error-description`}>{errorByField("description")}</p>
+        )}
+      </div>
+      <div className="flex items-baseline justify-between gap-2 border-t border-border/40 pt-1.5">
+        <span className="text-[9px] uppercase tracking-widest text-muted-foreground">Preview</span>
+        <span
+          className={`text-[11px] font-mono ${previewReady ? "text-foreground font-semibold" : "text-muted-foreground italic"}`}
+          data-testid="text-devis-code-preview"
+        >
+          {preview}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** True when every part of a `LotCodeValue` is filled and well-formed. */
+function isLotCodeValueComplete(v: LotCodeValue): v is LotCodeValue & { lotSequence: number } {
+  return (
+    !!v.lotRefText.trim() &&
+    typeof v.lotSequence === "number" &&
+    v.lotSequence >= 1 &&
+    !!v.lotDescription.trim() &&
+    validateDevisCodeParts({
+      lotRef: v.lotRefText,
+      lotSequence: v.lotSequence,
+      description: v.lotDescription,
+    }).length === 0
+  );
+}
+
+/**
+ * Build a `LotCodeValue` from an existing devis row.
+ *
+ * Reads ONLY the structured columns — legacy free-text `devisCode` values
+ * are intentionally NOT reverse-parsed (Task #176 explicitly excludes
+ * automated backfill). Legacy rows surface as an empty composer that the
+ * architect must fill in deliberately, which then writes the structured
+ * columns going forward.
+ *
+ * For freshly-created structured rows we also pull the description out
+ * of `devisCode` (the third dot-segment) so the editor renders the
+ * persisted text rather than a blank field.
+ */
+function lotCodeValueFromDevis(d: Pick<Devis, "devisCode" | "lotCatalogId" | "lotRefText" | "lotSequence">): LotCodeValue {
+  if (d.lotRefText && d.lotSequence) {
+    const parsed = tryParseDevisCode(d.devisCode);
+    return {
+      lotCatalogId: d.lotCatalogId ?? null,
+      lotRefText: d.lotRefText,
+      lotSequence: d.lotSequence,
+      lotDescription: parsed?.description ?? "",
+    };
+  }
+  return { lotCatalogId: null, lotRefText: "", lotSequence: null, lotDescription: "" };
 }
 
 const avenantFormSchema = insertAvenantSchema.extend({
@@ -558,7 +876,85 @@ export function DevisTab({
   });
 
   const voidCount = devisList?.filter(d => d.status === "void").length ?? 0;
-  const filteredDevisList = showVoid ? devisList : devisList?.filter(d => d.status !== "void");
+
+  // Devis list filters (Task #176): lot multi-select + free-text search.
+  // Lot options come from the structured `lotRefText` column on currently
+  // visible (non-void unless toggled) devis — we don't surface lots that
+  // have no visible rows. Search matches devisCode, descriptionFr,
+  // contractor name, and amounts (HT/TTC, both raw and FR-formatted).
+  const [selectedLots, setSelectedLots] = useState<string[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const contractorById = new Map<number, Contractor>(contractors.map((c) => [c.id, c]));
+  const visibleBeforeFilters = showVoid ? (devisList ?? []) : (devisList ?? []).filter(d => d.status !== "void");
+  // Build the lot filter options + tag each one as catalog vs custom
+  // (custom = free-text). A lot is considered catalog-backed if at least
+  // one currently-visible devis with that ref carries a `lotCatalogId`.
+  // Free-text lots are intentionally NOT promoted to the master list
+  // (per spec) — but the filter still surfaces them so they're filterable.
+  const lotOriginByRef = new Map<string, "catalog" | "custom">();
+  for (const d of visibleBeforeFilters) {
+    const ref = (d.lotRefText ?? "").toUpperCase().trim();
+    if (!ref) continue;
+    const current = lotOriginByRef.get(ref);
+    if (d.lotCatalogId != null) {
+      lotOriginByRef.set(ref, "catalog");
+    } else if (current == null) {
+      lotOriginByRef.set(ref, "custom");
+    }
+  }
+  const lotOptions = Array.from(lotOriginByRef.keys()).sort((a, b) =>
+    a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
+  );
+
+  const matchesSearch = (d: Devis): boolean => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return true;
+    const haystacks: string[] = [
+      d.devisCode ?? "",
+      d.descriptionFr ?? "",
+      d.devisNumber ?? "",
+      contractorById.get(d.contractorId)?.name ?? "",
+      d.amountHt ?? "",
+      d.amountTtc ?? "",
+    ];
+    const ht = parseFloat(d.amountHt ?? "");
+    const ttc = parseFloat(d.amountTtc ?? "");
+    if (Number.isFinite(ht)) {
+      haystacks.push(new Intl.NumberFormat("fr-FR").format(ht));
+      haystacks.push(String(Math.round(ht)));
+    }
+    if (Number.isFinite(ttc)) {
+      haystacks.push(new Intl.NumberFormat("fr-FR").format(ttc));
+      haystacks.push(String(Math.round(ttc)));
+    }
+    const normalisedQ = q.replace(/\s+/g, "");
+    return haystacks.some((h) => {
+      const lower = h.toLowerCase();
+      if (lower.includes(q)) return true;
+      // Allow numeric search to match across NBSP / regular-space FR formatting.
+      const compact = lower.replace(/\s|\u00a0/g, "");
+      return compact.includes(normalisedQ);
+    });
+  };
+
+  const filteredDevisList = visibleBeforeFilters.filter((d) => {
+    if (selectedLots.length > 0) {
+      const lr = (d.lotRefText ?? "").toUpperCase();
+      if (!selectedLots.includes(lr)) return false;
+    }
+    if (!matchesSearch(d)) return false;
+    return true;
+  });
+  const hiddenByFilterCount = visibleBeforeFilters.length - filteredDevisList.length;
+  const filtersActive = selectedLots.length > 0 || searchQuery.trim().length > 0;
+
+  const toggleLotFilter = (lot: string) => {
+    setSelectedLots((prev) => (prev.includes(lot) ? prev.filter((l) => l !== lot) : [...prev, lot]));
+  };
+  const clearFilters = () => {
+    setSelectedLots([]);
+    setSearchQuery("");
+  };
 
   const activeDevis = devisList?.filter(d => d.status !== "void") ?? [];
   const totalDevisCount = activeDevis.length;
@@ -702,6 +1098,94 @@ export function DevisTab({
         )}
       </div>
 
+      {(lotOptions.length > 0 || filtersActive || (visibleBeforeFilters.length > 0)) && (
+        <div className="flex items-center gap-2 flex-wrap" data-testid="row-devis-filters">
+          <Input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search devis (code, description, contractor, amount)…"
+            className="h-7 text-[11px] flex-1 min-w-[200px]"
+            data-testid="input-search-devis"
+          />
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-[10px] px-3 gap-1.5"
+                data-testid="select-filter-lot"
+              >
+                <Tag size={12} />
+                {selectedLots.length === 0 ? "All lots" : `Lots · ${selectedLots.length}`}
+                <ChevronDown size={12} />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-56 p-2" align="end">
+              {lotOptions.length === 0 ? (
+                <p className="text-[10px] text-muted-foreground italic px-1 py-2">No lots in this project yet.</p>
+              ) : (
+                <div className="space-y-1 max-h-60 overflow-y-auto">
+                  {lotOptions.map((lot) => {
+                    const checked = selectedLots.includes(lot);
+                    const origin = lotOriginByRef.get(lot) ?? "custom";
+                    return (
+                      <label
+                        key={lot}
+                        className="flex items-center gap-2 px-2 py-1 rounded cursor-pointer hover:bg-muted/60 text-[11px]"
+                        data-testid={`option-filter-lot-${lot}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleLotFilter(lot)}
+                          className="h-3 w-3"
+                        />
+                        <span className="font-mono font-bold flex-1">{lot}</span>
+                        <span
+                          className={`text-[8px] uppercase tracking-widest ${origin === "catalog" ? "text-muted-foreground" : "text-amber-600"}`}
+                          data-testid={`label-lot-origin-${lot}`}
+                        >
+                          {origin === "catalog" ? "Catalog" : "Custom"}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+              {selectedLots.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-[9px] uppercase tracking-widest mt-1 w-full"
+                  onClick={() => setSelectedLots([])}
+                  data-testid="button-clear-lot-filter"
+                >
+                  Clear lot filter
+                </Button>
+              )}
+            </PopoverContent>
+          </Popover>
+          {filtersActive && (
+            <>
+              <span className="text-[10px] text-muted-foreground" data-testid="text-filter-hidden-count">
+                {hiddenByFilterCount > 0
+                  ? `${hiddenByFilterCount} devis hidden by filters`
+                  : "No devis hidden"}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 text-[9px] uppercase tracking-widest"
+                onClick={clearFilters}
+                data-testid="button-clear-filters"
+              >
+                Clear
+              </Button>
+            </>
+          )}
+        </div>
+      )}
+
       {filteredDevisList && filteredDevisList.length > 0 ? (
         <div className="space-y-3">
           {filteredDevisList.map((d) => (
@@ -733,11 +1217,30 @@ export function DevisTab({
           ))}
         </div>
       ) : !uploading ? (
-        <LuxuryCard data-testid="card-empty-devis">
-          <p className="text-[12px] text-muted-foreground text-center py-6">
-            No Devis for this project yet. Drop a quotation PDF above to get started.
-          </p>
-        </LuxuryCard>
+        filtersActive && visibleBeforeFilters.length > 0 ? (
+          <LuxuryCard data-testid="card-empty-devis-filtered">
+            <div className="text-center py-6 space-y-2">
+              <p className="text-[12px] text-muted-foreground">
+                No devis match the current filters.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-[10px] px-3"
+                onClick={clearFilters}
+                data-testid="button-clear-filters-empty"
+              >
+                Clear filters
+              </Button>
+            </div>
+          </LuxuryCard>
+        ) : (
+          <LuxuryCard data-testid="card-empty-devis">
+            <p className="text-[12px] text-muted-foreground text-center py-6">
+              No Devis for this project yet. Drop a quotation PDF above to get started.
+            </p>
+          </LuxuryCard>
+        )
       ) : null}
 
       {draftReviewData && (
@@ -941,12 +1444,13 @@ function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDev
   const { toast } = useToast();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const [contractorId, setContractorIdState] = useState<number>(devis.contractorId);
-  const [devisCode, setDevisCode] = useState(devis.devisCode ?? "");
+  const [lotCode, setLotCode] = useState<LotCodeValue>(() => lotCodeValueFromDevis(devis));
+  const [forcedNextLotSequence, setForcedNextLotSequence] = useState<number | null>(null);
   const [devisNumber, setDevisNumber] = useState(devis.devisNumber ?? "");
   const [ref2, setRef2] = useState(devis.ref2 ?? "");
 
   const mutation = useMutation({
-    mutationFn: async (payload: Record<string, string | number | null>) => {
+    mutationFn: async (payload: Record<string, unknown>) => {
       const res = await apiRequest("PATCH", `/api/devis/${devis.id}`, payload);
       return res.json();
     },
@@ -957,6 +1461,21 @@ function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDev
       onClose();
     },
     onError: (error: Error) => {
+      // 409 from buildLotCodeUpdates carries `nextLotSequence` —
+      // auto-fill the composer with the suggestion so the architect
+      // can resubmit without manual hunting.
+      if (error instanceof ApiError && error.status === 409) {
+        const data = error.data as { nextLotSequence?: number } | null;
+        if (data?.nextLotSequence != null) {
+          setForcedNextLotSequence(data.nextLotSequence);
+          toast({
+            title: "That number is already taken",
+            description: `Suggested next free number: ${data.nextLotSequence}.`,
+            variant: "destructive",
+          });
+          return;
+        }
+      }
       toast({ title: "Update failed", description: error.message, variant: "destructive" });
     },
   });
@@ -970,16 +1489,32 @@ function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDev
       });
       return;
     }
-    const trimmedCode = devisCode.trim();
     const trimmedNumber = devisNumber.trim();
     const trimmedRef2 = ref2.trim();
-    if (!trimmedCode) {
-      toast({ title: "Devis code required", description: "Devis code cannot be empty", variant: "destructive" });
+    if (!isLotCodeValueComplete(lotCode)) {
+      toast({ title: "Devis code incomplete", description: "Lot, number and description are all required.", variant: "destructive" });
       return;
     }
-    const payload: Record<string, string | number | null> = {};
+    const payload: Record<string, unknown> = {};
     if (contractorId !== devis.contractorId) payload.contractorId = contractorId;
-    if (trimmedCode !== (devis.devisCode ?? "")) payload.devisCode = trimmedCode;
+    const composedNow = composeDevisCode({
+      lotRef: lotCode.lotRefText,
+      lotSequence: lotCode.lotSequence,
+      description: lotCode.lotDescription,
+    });
+    const lotChanged =
+      composedNow !== (devis.devisCode ?? "") ||
+      lotCode.lotCatalogId !== (devis.lotCatalogId ?? null) ||
+      lotCode.lotRefText.toUpperCase() !== (devis.lotRefText ?? "").toUpperCase() ||
+      lotCode.lotSequence !== (devis.lotSequence ?? null);
+    if (lotChanged) {
+      payload.lotCode = {
+        lotCatalogId: lotCode.lotCatalogId,
+        lotRefText: lotCode.lotRefText.trim().toUpperCase(),
+        lotSequence: lotCode.lotSequence,
+        lotDescription: lotCode.lotDescription.trim(),
+      };
+    }
     if (trimmedNumber !== (devis.devisNumber ?? "")) payload.devisNumber = trimmedNumber === "" ? null : trimmedNumber;
     if (trimmedRef2 !== (devis.ref2 ?? "")) payload.ref2 = trimmedRef2 === "" ? null : trimmedRef2;
     if (Object.keys(payload).length === 0) {
@@ -1016,16 +1551,14 @@ function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDev
               testId="select-edit-devis-contractor"
             />
           </div>
-          <div className="space-y-1">
-            <TechnicalLabel>Devis Code</TechnicalLabel>
-            <Input
-              value={devisCode}
-              onChange={(e) => setDevisCode(e.target.value)}
-              className="text-[12px]"
-              placeholder="e.g. GRACE_1348_1"
-              data-testid="input-edit-devis-code"
-            />
-          </div>
+          <LotCodeComposer
+            projectId={projectId}
+            excludeDevisId={devis.id}
+            value={lotCode}
+            onChange={setLotCode}
+            forcedNextLotSequence={forcedNextLotSequence}
+            testIdPrefix="edit-devis-code"
+          />
           <div className="space-y-1">
             <TechnicalLabel>Supplier Reference (N°)</TechnicalLabel>
             <Input
@@ -1060,7 +1593,7 @@ function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDev
           <Button
             size="sm"
             onClick={handleSave}
-            disabled={mutation.isPending || !devisCode.trim() || !isAuthenticated || authLoading}
+            disabled={mutation.isPending || !isLotCodeValueComplete(lotCode) || !isAuthenticated || authLoading}
             data-testid="button-save-edit-devis-refs"
           >
             {mutation.isPending ? <Loader2 size={12} className="animate-spin" /> : "Save"}
@@ -1335,11 +1868,29 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
   const [editValues, setEditValues] = useState({
     amountHt: devis.amountHt ?? "",
     amountTtc: devis.amountTtc ?? "",
-    devisCode: devis.devisCode ?? "",
     devisNumber: devis.devisNumber ?? "",
     descriptionFr: devis.descriptionFr ?? "",
     dateSent: devis.dateSent ?? "",
   });
+  // Pre-fill the structured composer from the AI extraction's lot reference
+  // when present (e.g. "FD" detected on the PDF). The number always starts
+  // empty here; the composer will fetch the project-scoped next available
+  // sequence the moment the lot is set, so the architect never picks an
+  // already-used (lot, n) tuple by accident.
+  const initialLotCode: LotCodeValue = (() => {
+    const fromDevis = lotCodeValueFromDevis(devis);
+    if (fromDevis.lotRefText) return fromDevis;
+    const aiLotRefs: string[] = Array.isArray(extraction?.lotReferences) ? extraction.lotReferences : [];
+    const aiLotRef = (aiLotRefs.find((r) => typeof r === "string" && r.trim().length > 0) ?? "").trim();
+    return {
+      lotCatalogId: null,
+      lotRefText: aiLotRef,
+      lotSequence: null,
+      lotDescription: "",
+    };
+  })();
+  const [lotCode, setLotCode] = useState<LotCodeValue>(initialLotCode);
+  const [forcedNextLotSequence, setForcedNextLotSequence] = useState<number | null>(null);
 
   const fieldWarnings = (field: string) => warnings.filter(w => w.field === field);
 
@@ -1355,6 +1906,18 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
       onClose();
     },
     onError: (error: Error) => {
+      if (error instanceof ApiError && error.status === 409) {
+        const data = error.data as { nextLotSequence?: number } | null;
+        if (data?.nextLotSequence != null) {
+          setForcedNextLotSequence(data.nextLotSequence);
+          toast({
+            title: "That number is already taken",
+            description: `Suggested next free number: ${data.nextLotSequence}.`,
+            variant: "destructive",
+          });
+          return;
+        }
+      }
       toast({ title: "Confirmation failed", description: error.message, variant: "destructive" });
     },
   });
@@ -1376,10 +1939,24 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
   });
 
   const handleConfirm = async () => {
-    const corrections: Record<string, any> = {};
+    if (!isLotCodeValueComplete(lotCode)) {
+      toast({
+        title: "Devis code incomplete",
+        description: "Pick a lot, set the number, and add a description before confirming.",
+        variant: "destructive",
+      });
+      return;
+    }
+    const corrections: Record<string, any> = {
+      lotCode: {
+        lotCatalogId: lotCode.lotCatalogId,
+        lotRefText: lotCode.lotRefText.trim().toUpperCase(),
+        lotSequence: lotCode.lotSequence,
+        lotDescription: lotCode.lotDescription.trim(),
+      },
+    };
     if (editValues.amountHt !== (devis.amountHt ?? "")) corrections.amountHt = editValues.amountHt;
     if (editValues.amountTtc !== (devis.amountTtc ?? "")) corrections.amountTtc = editValues.amountTtc;
-    if (editValues.devisCode !== (devis.devisCode ?? "")) corrections.devisCode = editValues.devisCode;
     if (editValues.devisNumber !== (devis.devisNumber ?? "")) corrections.devisNumber = editValues.devisNumber;
     if (editValues.descriptionFr !== (devis.descriptionFr ?? "")) corrections.descriptionFr = editValues.descriptionFr;
     if (editValues.dateSent !== (devis.dateSent ?? "")) corrections.dateSent = editValues.dateSent;
@@ -1453,39 +2030,34 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
             )}
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <TechnicalLabel>Devis Code</TechnicalLabel>
-                {fieldWarnings("devisCode").map((w, i) => (
-                  <Badge key={i} variant="outline" className={`text-[8px] ${w.severity === "error" ? "border-rose-300 text-rose-600" : "border-amber-300 text-amber-600"}`}>
-                    {w.severity}
-                  </Badge>
-                ))}
-              </div>
-              <Input
-                value={editValues.devisCode}
-                onChange={(e) => updateField("devisCode", e.target.value)}
-                className="text-[11px]"
-                data-testid="input-draft-devis-code"
-              />
+          <LotCodeComposer
+            projectId={projectId}
+            excludeDevisId={devisId}
+            value={lotCode}
+            onChange={setLotCode}
+            forcedNextLotSequence={forcedNextLotSequence}
+            testIdPrefix="draft-devis-code"
+          />
+          {fieldWarnings("devisCode").map((w, i) => (
+            <Badge key={i} variant="outline" className={`text-[8px] ${w.severity === "error" ? "border-rose-300 text-rose-600" : "border-amber-300 text-amber-600"}`}>
+              {w.severity}: devis code · {w.message ?? ""}
+            </Badge>
+          ))}
+          <div className="space-y-1">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <TechnicalLabel>Devis Number (supplier ref)</TechnicalLabel>
+              {fieldWarnings("devisNumber").map((w, i) => (
+                <Badge key={i} variant="outline" className={`text-[8px] ${w.severity === "error" ? "border-rose-300 text-rose-600" : "border-amber-300 text-amber-600"}`}>
+                  {w.severity}
+                </Badge>
+              ))}
             </div>
-            <div className="space-y-1">
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <TechnicalLabel>Devis Number</TechnicalLabel>
-                {fieldWarnings("devisNumber").map((w, i) => (
-                  <Badge key={i} variant="outline" className={`text-[8px] ${w.severity === "error" ? "border-rose-300 text-rose-600" : "border-amber-300 text-amber-600"}`}>
-                    {w.severity}
-                  </Badge>
-                ))}
-              </div>
-              <Input
-                value={editValues.devisNumber}
-                onChange={(e) => updateField("devisNumber", e.target.value)}
-                className="text-[11px]"
-                data-testid="input-draft-devis-number"
-              />
-            </div>
+            <Input
+              value={editValues.devisNumber}
+              onChange={(e) => updateField("devisNumber", e.target.value)}
+              className="text-[11px]"
+              data-testid="input-draft-devis-number"
+            />
           </div>
 
           <div className="space-y-1">
@@ -1590,7 +2162,7 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
             <Button
               size="sm"
               onClick={handleConfirm}
-              disabled={confirmMutation.isPending || discardMutation.isPending || isArchived}
+              disabled={confirmMutation.isPending || discardMutation.isPending || isArchived || !isLotCodeValueComplete(lotCode)}
               data-testid="button-confirm-draft"
             >
               <Check size={12} />

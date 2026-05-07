@@ -300,12 +300,36 @@ export const devis = pgTable("devis", {
   // archisignOtpDestination — masked phone/email shown in /create response
   // (§3.5.1). Persisted for UI display only; not used for auth.
   archisignOtpDestination: text("archisign_otp_destination"),
+  // Structured devis-code (Task #176). The architect supplies three parts:
+  //   1. lotRef    — picked from `lot_catalog` (then `lotCatalogId` is set
+  //                   and `lotRefText` mirrors the catalog code) OR typed
+  //                   free-text (`lotCatalogId` null, `lotRefText` holds it).
+  //                   Free-text refs are NOT promoted into the master list.
+  //   2. lotSequence — auto-suggested per-project next integer for that lot
+  //                    reference; uniqueness enforced by the partial index
+  //                    below.
+  //   3. description — free text composed into `devisCode` only; not stored
+  //                    separately (we split it back out of `devisCode` at
+  //                    edit time using the dot delimiter).
+  // The composed `{lotRef}.{number}.{description}` string lives in the
+  // existing `devisCode` column so all read paths keep working unchanged.
+  // Legacy free-text-only devis carry NULLs in all three columns until an
+  // architect edits them through the structured form (lazy migration).
+  lotCatalogId: integer("lot_catalog_id").references(() => lotCatalog.id, { onDelete: "set null" }),
+  lotRefText: text("lot_ref_text"),
+  lotSequence: integer("lot_sequence"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   index("devis_project_id_idx").on(table.projectId),
   index("devis_contractor_id_idx").on(table.contractorId),
   index("devis_archisign_envelope_id_idx").on(table.archisignEnvelopeId),
+  // Partial unique index: prevents duplicate {lotRef}.{number} within a
+  // project under concurrent saves. Case-insensitive on lotRefText so
+  // FD.1 and fd.1 collide (the composer uppercases for display).
+  uniqueIndex("devis_project_lot_ref_seq_unique")
+    .on(table.projectId, sql`lower(${table.lotRefText})`, table.lotSequence)
+    .where(sql`${table.lotRefText} IS NOT NULL AND ${table.lotSequence} IS NOT NULL`),
 ]);
 
 export const devisLineItems = pgTable("devis_line_items", {

@@ -1082,6 +1082,9 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     archisignOtpDestination: null,
     identityVerification: null,
     signedPdfFetchUrlSnapshot: null,
+    lotCatalogId: null,
+    lotRefText: null,
+    lotSequence: null,
     createdAt: now,
     updatedAt: now,
   };
