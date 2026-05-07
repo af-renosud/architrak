@@ -408,6 +408,7 @@ export interface IStorage {
   getDesignContract(id: number): Promise<DesignContract | undefined>;
   createDesignContract(data: InsertDesignContract): Promise<DesignContract>;
   deleteDesignContract(id: number): Promise<void>;
+  getDesignContractMilestone(id: number): Promise<DesignContractMilestone | undefined>;
   getDesignContractMilestones(contractId: number): Promise<DesignContractMilestone[]>;
   createDesignContractMilestones(rows: InsertDesignContractMilestone[]): Promise<DesignContractMilestone[]>;
   updateDesignContractMilestone(id: number, data: Partial<InsertDesignContractMilestone>): Promise<DesignContractMilestone | undefined>;
@@ -892,6 +893,11 @@ export class DatabaseStorage implements IStorage {
 
   async deleteDesignContract(id: number): Promise<void> {
     await db.delete(designContracts).where(eq(designContracts.id, id));
+  }
+
+  async getDesignContractMilestone(id: number): Promise<DesignContractMilestone | undefined> {
+    const [row] = await db.select().from(designContractMilestones).where(eq(designContractMilestones.id, id)).limit(1);
+    return row;
   }
 
   async getDesignContractMilestones(contractId: number): Promise<DesignContractMilestone[]> {

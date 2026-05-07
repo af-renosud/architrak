@@ -442,6 +442,19 @@ router.patch(
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
+      const userId = (req.session as { userId?: number } | undefined)?.userId;
+      if (!userId) {
+        return res.status(401).json({ message: "Authenticated session required" });
+      }
+      // Per-project ownership check: only the architect who uploaded the
+      // contract may mutate its milestones.
+      const existing = await storage.getDesignContractMilestone(id);
+      if (!existing) return res.status(404).json({ message: "Milestone not found" });
+      const owningContract = await storage.getDesignContract(existing.contractId);
+      if (!owningContract) return res.status(404).json({ message: "Contract not found" });
+      if (owningContract.uploadedByUserId !== userId) {
+        return res.status(403).json({ message: "Not the contract owner" });
+      }
       const body = req.body as z.infer<typeof milestonePatchSchema>;
       const patch: Partial<InsertDesignContractMilestone> = {};
       if (body.status) {

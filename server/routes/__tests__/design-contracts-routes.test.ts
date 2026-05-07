@@ -6,7 +6,10 @@ vi.mock("../../storage", () => ({
   storage: {
     getReachedUninvoicedMilestones: vi.fn(),
     getDesignContractMilestone: vi.fn(),
+    getDesignContract: vi.fn(),
     getDesignContractByProjectId: vi.fn(),
+    updateDesignContractMilestone: vi.fn(),
+    replaceDesignContractForProject: vi.fn(),
   },
 }));
 
@@ -23,6 +26,9 @@ vi.mock("../../middleware/auth", () => ({
 import { storage } from "../../storage";
 
 const getReached = storage.getReachedUninvoicedMilestones as unknown as ReturnType<typeof vi.fn>;
+const getMilestone = storage.getDesignContractMilestone as unknown as ReturnType<typeof vi.fn>;
+const getContract = storage.getDesignContract as unknown as ReturnType<typeof vi.fn>;
+const updateMilestone = storage.updateDesignContractMilestone as unknown as ReturnType<typeof vi.fn>;
 
 let baseUrl: string;
 let server: import("http").Server;
@@ -56,6 +62,9 @@ afterAll(async () => {
 
 beforeEach(() => {
   getReached.mockReset();
+  getMilestone.mockReset();
+  getContract.mockReset();
+  updateMilestone.mockReset();
 });
 
 describe("GET /api/design-contracts/dashboard-actions", () => {
@@ -74,5 +83,46 @@ describe("GET /api/design-contracts/dashboard-actions", () => {
     expect(getReached).toHaveBeenCalledWith(
       expect.objectContaining({ architectUserId: 42, staleAfterMs: 0, reminderQuietMs: 0 }),
     );
+  });
+});
+
+describe("PATCH /api/design-contracts/milestones/:id — ownership check", () => {
+  it("returns 403 when session user is not the contract uploader", async () => {
+    getMilestone.mockResolvedValue({ id: 7, contractId: 3, status: "pending" });
+    getContract.mockResolvedValue({ id: 3, uploadedByUserId: 99 });
+    const res = await fetch(`${baseUrl}/api/design-contracts/milestones/7`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({ status: "reached" }),
+    });
+    expect(res.status).toBe(403);
+    expect(updateMilestone).not.toHaveBeenCalled();
+  });
+
+  it("allows the contract uploader to mutate the milestone", async () => {
+    getMilestone.mockResolvedValue({ id: 7, contractId: 3, status: "pending" });
+    getContract.mockResolvedValue({ id: 3, uploadedByUserId: 42 });
+    updateMilestone.mockResolvedValue({ id: 7, status: "reached" });
+    const res = await fetch(`${baseUrl}/api/design-contracts/milestones/7`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({ status: "reached" }),
+    });
+    expect(res.status).toBe(200);
+    expect(updateMilestone).toHaveBeenCalledWith(7, expect.objectContaining({ status: "reached" }));
+  });
+});
+
+describe("storage.replaceDesignContractForProject — re-upload archive contract", () => {
+  it("returns the previous storage key so the route can move it under archive/", async () => {
+    const replace = storage.replaceDesignContractForProject as unknown as ReturnType<typeof vi.fn>;
+    replace.mockResolvedValue({
+      contract: { id: 1, storageKey: "design-contracts/5/active/v2.pdf" },
+      milestones: [],
+      previousStorageKey: "design-contracts/5/active/v1.pdf",
+    });
+    const out = await storage.replaceDesignContractForProject(5, {} as never, []);
+    expect(out.previousStorageKey).toBe("design-contracts/5/active/v1.pdf");
+    expect(out.contract.storageKey).toBe("design-contracts/5/active/v2.pdf");
   });
 });

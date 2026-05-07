@@ -14,7 +14,7 @@
  */
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { FileText, Download, CheckCircle2, Circle, Loader2, AlertCircle } from "lucide-react";
+import { FileText, Download, CheckCircle2, Circle, Loader2, AlertCircle, Receipt, Wallet } from "lucide-react";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Button } from "@/components/ui/button";
@@ -152,8 +152,13 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
   }
 
   const { contract, milestones } = data;
-  const isReached = (m: DesignContractMilestone) => m.status !== "pending";
-  const reachedCount = milestones.filter(isReached).length;
+  const reachedCount = milestones.filter((m) => m.status !== "pending").length;
+  const STATUS_STYLE: Record<string, { bg: string; badge: string; label: string }> = {
+    pending: { bg: "bg-card border-border", badge: "bg-muted text-muted-foreground", label: "Pending" },
+    reached: { bg: "bg-amber-50 border-amber-200", badge: "bg-amber-100 text-amber-900", label: "Reached" },
+    invoiced: { bg: "bg-sky-50 border-sky-200", badge: "bg-sky-100 text-sky-900", label: "Invoiced" },
+    paid: { bg: "bg-emerald-50 border-emerald-200", badge: "bg-emerald-100 text-emerald-900", label: "Paid" },
+  };
 
   return (
     <LuxuryCard data-testid="card-design-contract">
@@ -222,29 +227,39 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
         </div>
         <div className="space-y-1">
           {milestones.map((m) => {
-            const reached = isReached(m);
+            const style = STATUS_STYLE[m.status] ?? STATUS_STYLE.pending;
+            const Icon =
+              m.status === "paid" ? Wallet :
+              m.status === "invoiced" ? Receipt :
+              m.status === "reached" ? CheckCircle2 :
+              Circle;
             return (
             <div
               key={m.id}
-              className={`flex items-center gap-3 p-2 rounded border ${reached ? "bg-emerald-50 border-emerald-200" : "bg-card border-border"}`}
+              className={`flex items-center gap-3 p-2 rounded border ${style.bg}`}
               data-testid={`row-milestone-detail-${m.id}`}
             >
-              {reached ? <CheckCircle2 size={14} className="text-emerald-600" /> : <Circle size={14} className="text-muted-foreground" />}
+              <Icon size={14} className="text-foreground/70" />
               <div className="flex-1 min-w-0">
-                <div className="text-xs font-medium truncate">
+                <div className="text-xs font-medium truncate flex items-center gap-2">
                   #{m.sequence} · {m.labelFr}
+                  <span
+                    className={`text-[9px] uppercase px-1.5 py-0.5 rounded ${style.badge}`}
+                    data-testid={`badge-milestone-status-${m.id}`}
+                  >{style.label}</span>
                 </div>
                 <div className="text-[10px] text-muted-foreground">
                   Trigger: {TRIGGER_LABELS[m.triggerEvent as DesignContractTriggerEvent]}
-                  {reached && m.reachedAt ? ` · reached ${new Date(m.reachedAt).toLocaleDateString()}` : ""}
-                  {m.status === "invoiced" ? " · invoiced" : ""}
+                  {m.reachedAt ? ` · reached ${new Date(m.reachedAt).toLocaleDateString()}` : ""}
+                  {m.invoicedAt ? ` · invoiced ${new Date(m.invoicedAt).toLocaleDateString()}` : ""}
+                  {m.paidAt ? ` · paid ${new Date(m.paidAt).toLocaleDateString()}` : ""}
                 </div>
               </div>
               <div className="text-right shrink-0">
                 <div className="text-xs font-medium" data-testid={`text-milestone-amount-${m.id}`}>{fmtEur(m.amountTtc)}</div>
                 <div className="text-[10px] text-muted-foreground">{Number(m.percentage).toFixed(2)}%</div>
               </div>
-              {!reached && (
+              {m.status === "pending" && (
                 <Button
                   size="sm"
                   variant="outline"

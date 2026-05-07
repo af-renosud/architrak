@@ -53,29 +53,13 @@ export function startScheduler(intervalMs: number = 60 * 60 * 1000) {
   }, 30000);
 }
 
-/**
- * Daily reminder digest for design-contract milestones whose status is
- * `reached` and whose reachedAt is older than 7 days without a matching
- * invoice. Per-architect: results are grouped by uploadedByUserId and one
- * digest email is sent per architect (to their Google account email) via
- * the existing Gmail send infrastructure. The storage layer enforces a
- * 24h reminder quiet period so a single milestone can't be re-sent more
- * than once per day. The dashboard strip surfaces the same data
- * immediately at `/api/design-contracts/dashboard-actions`.
- */
 type DigestRow = Awaited<ReturnType<typeof storage.getReachedUninvoicedMilestones>>[number];
 
 const OVERDUE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
 const IMMINENT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 const REMINDER_QUIET_MS = 24 * 60 * 60 * 1000;
 
-/**
- * Partition reached-but-not-invoiced rows into:
- *   - overdue:  reachedAt older than 7 days  ➜ red, action required
- *   - imminent: reachedAt within last 14 days ➜ amber, warn-but-not-stale
- * Imminent excludes rows already classified as overdue. Returned arrays
- * are stable (input order preserved). Exported for unit testing.
- */
+// Splits rows into overdue (>7d) and imminent (≤14d). Exported for tests.
 export function partitionDigestRows(
   rows: readonly DigestRow[],
   now: Date = new Date(),
@@ -92,10 +76,7 @@ export function partitionDigestRows(
   return { overdue, imminent };
 }
 
-/**
- * Group rows by uploadedByUserId. Rows without an uploader are dropped
- * (no architect to notify). Exported for unit testing.
- */
+// Group rows by uploader. Rows without an uploader are dropped.
 export function groupRowsByArchitect(
   rows: readonly DigestRow[],
 ): Map<number, DigestRow[]> {
@@ -112,10 +93,6 @@ export function groupRowsByArchitect(
 
 async function processDesignContractDigest(): Promise<void> {
   try {
-    // Pull every reached-but-not-invoiced milestone whose reminder
-    // watermark has cooled (>24h since last reminder). The architect
-    // sees both overdue and imminent in the same email so they can
-    // act before the imminent items become overdue.
     const allDue = await storage.getReachedUninvoicedMilestones({
       staleAfterMs: 0,
       reminderQuietMs: REMINDER_QUIET_MS,
@@ -155,9 +132,6 @@ async function processDesignContractDigest(): Promise<void> {
         }
       }
 
-      // Watermark only the rows we actually surfaced (overdue + imminent),
-      // so a fresh-reached milestone outside the 14d window doesn't get
-      // its reminder watermark bumped without being mailed.
       for (const row of [...overdue, ...imminent]) {
         await storage.markDesignContractMilestoneReminderSent(row.milestone.id);
       }
