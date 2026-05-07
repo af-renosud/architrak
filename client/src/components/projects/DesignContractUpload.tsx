@@ -1,5 +1,5 @@
 /**
- * Task #175 — Design contract upload + review widget.
+ * Design contract upload + review widget.
  *
  * Two responsibilities:
  *   1. Drag-and-drop / click-to-pick PDF, POST to /api/design-contracts/preview,

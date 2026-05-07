@@ -133,13 +133,8 @@ export async function trackProject(archidocId: string, options: TrackProjectOpti
     }
   }
 
-  // Task #175: design-contract upload is now the canonical source of
-  // conception/planning fee numbers. The Archidoc proposal-fees branch
-  // used to seed `fees` rows here, but it would race / duplicate with
-  // the design-contract confirm flow (which writes the same feeType
-  // rows from architect-reviewed values). We deliberately skip it —
-  // the design-contract confirm route owns the upsert.
-  void storage.getArchidocProposalFees;
+  // Conception/planning fees come from the design-contract upload flow
+  // (architect-reviewed values), not from Archidoc proposal seeds.
 
   return {
     projectId: project.id,

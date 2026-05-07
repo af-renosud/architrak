@@ -1,5 +1,5 @@
 /**
- * Task #175 — REST surface for the design contract upload + review flow.
+ * REST surface for the design contract upload + review flow.
  *
  *   POST /api/design-contracts/preview         — multipart PDF, stages to
  *                                                 object storage, runs Gemini
@@ -29,7 +29,8 @@ import { validateRequest } from "../middleware/validate";
 import {
   getDocumentStream,
   moveDocument,
-  buildDesignContractObjectName,
+  buildDesignContractActiveObjectName,
+  buildDesignContractArchiveObjectName,
   uploadStagingDesignContract,
   isStagingKeyOwnedBy,
 } from "../storage/object-storage";
@@ -182,7 +183,7 @@ router.post(
  * storage and the rows are replaced atomically (one contract per project).
  */
 router.post(
-  "/api/projects/:id/design-contract",
+  ["/api/projects/:id/design-contract", "/api/design-contracts/confirm/:id"],
   validateRequest({ params: idParams, body: confirmContractSchema }),
   async (req, res, next) => {
     try {
@@ -244,7 +245,7 @@ router.post(
       // surface a 502; the staging blob remains for retry.
       const finalKey = await moveDocument(
         body.stagingKey,
-        buildDesignContractObjectName(projectId, body.originalFilename, false),
+        buildDesignContractActiveObjectName(projectId, body.originalFilename),
       );
 
       const contractInsert: InsertDesignContract = {
@@ -296,7 +297,7 @@ router.post(
         try {
           await moveDocument(
             result.previousStorageKey,
-            buildDesignContractObjectName(projectId, body.originalFilename, true),
+            buildDesignContractArchiveObjectName(projectId, result.previousStorageKey),
           );
         } catch (err) {
           console.warn(

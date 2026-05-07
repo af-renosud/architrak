@@ -124,17 +124,24 @@ export async function moveDocument(
   return `/${bucketName}/${destObjectName}`;
 }
 
-/** Build a final object name for a confirmed design contract. */
-export function buildDesignContractObjectName(
-  projectId: number,
-  filename: string,
-  archive = false,
-): string {
+/** Active object name, per task spec: `design-contracts/{projectId}/{ts}_{slug}.pdf`. */
+export function buildDesignContractActiveObjectName(projectId: number, filename: string): string {
   const privateDir = getPrivateDir();
   const safe = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
   const ts = Date.now();
-  const segment = archive ? "archive" : "active";
-  return `${privateDir}/design-contracts/${projectId}/${segment}/${ts}_${safe}`;
+  return `${privateDir}/design-contracts/${projectId}/${ts}_${safe}`;
+}
+
+/**
+ * Archive object name, per task spec: `design-contracts/{projectId}/archive/{originalKey}`.
+ * `originalKey` here is the basename of the previous active object so the
+ * archive set is browseable without further metadata.
+ */
+export function buildDesignContractArchiveObjectName(projectId: number, sourceStorageKey: string): string {
+  const privateDir = getPrivateDir();
+  const { objectName } = parseStorageKey(sourceStorageKey);
+  const basename = objectName.split("/").pop() ?? "archived.pdf";
+  return `${privateDir}/design-contracts/${projectId}/archive/${basename}`;
 }
 
 export async function deleteDocument(storageKey: string): Promise<void> {

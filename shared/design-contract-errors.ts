@@ -1,6 +1,6 @@
 /**
  * Stable machine-readable error codes for the design-contract upload flow
- * (Task #175). Mirrored in client + server so the React form can map to a
+ * Mirrored in client + server so the React form can map to a
  * specific UI message without parsing free-text.
  */
 export const DESIGN_CONTRACT_ERROR_CODES = {

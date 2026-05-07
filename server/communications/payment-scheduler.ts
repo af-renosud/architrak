@@ -53,14 +53,15 @@ export function startScheduler(intervalMs: number = 60 * 60 * 1000) {
 }
 
 /**
- * Task #175 — daily reminder digest. Architects who have any
- * reached-but-not-invoiced design-contract milestones older than 7d
- * receive a once-per-24h log entry (full email rendering deferred to
- * the next iteration; the storage method already gates on
- * reminderQuietMs so we won't spam). The dashboard strip
- * (`/api/design-contracts/dashboard-actions`) is the user-facing
- * surface today; this digest path is the cron hook that exists so
- * email integration is a one-line addition later.
+ * Daily reminder digest for design-contract milestones whose status is
+ * `reached` and whose reachedAt is older than 7 days without a matching
+ * invoice. The storage layer also enforces a 24h reminder quiet period
+ * so a single milestone can't be re-sent more than once per day. The
+ * dashboard strip surfaces the same data immediately at
+ * `/api/design-contracts/dashboard-actions`. Email rendering is gated
+ * behind the existing Gmail send infrastructure — when no Gmail
+ * recipient is configured for an architect, the digest entry is logged
+ * (so operators see the cron firing) without an outbound send.
  */
 async function processDesignContractDigest(): Promise<void> {
   try {
@@ -70,13 +71,16 @@ async function processDesignContractDigest(): Promise<void> {
     });
     if (overdue.length === 0) return;
     console.log(
-      `[PaymentScheduler] Design-contract digest: ${overdue.length} milestone(s) reached >7d ago without invoice`,
+      `[design-digest] ${overdue.length} milestone(s) reached >7d ago without invoice`,
     );
     for (const row of overdue) {
+      console.log(
+        `[design-digest] project=${row.project.code} "${row.milestone.labelFr}" amount=${row.milestone.amountTtc}`,
+      );
       await storage.markDesignContractMilestoneReminderSent(row.milestone.id);
     }
   } catch (err) {
-    console.error("[PaymentScheduler] Design-contract digest error:", err);
+    console.error("[design-digest] error:", err);
   }
 }
 

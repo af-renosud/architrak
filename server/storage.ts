@@ -403,7 +403,7 @@ export interface IStorage {
   // Preserves event_id (G6: receivers dedup on it).
   resetWebhookDeliveryForRetry(id: number): Promise<WebhookDeliveryOut | undefined>;
 
-  // Task #175 — design contracts (one per project; re-upload archives prior).
+  // Design contracts (one per project; re-upload archives prior).
   getDesignContractByProject(projectId: number): Promise<DesignContract | undefined>;
   getDesignContract(id: number): Promise<DesignContract | undefined>;
   createDesignContract(data: InsertDesignContract): Promise<DesignContract>;
@@ -872,7 +872,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   // -------------------------------------------------------------------------
-  // Task #175 — design contracts
+  // Design contracts
   // -------------------------------------------------------------------------
   async getDesignContractByProject(projectId: number): Promise<DesignContract | undefined> {
     const [row] = await db.select().from(designContracts).where(eq(designContracts.projectId, projectId));
@@ -940,7 +940,7 @@ export class DatabaseStorage implements IStorage {
             .values(milestones.map((m) => ({ ...m, contractId: created.id })))
             .returning();
 
-      // Task #175: project fee-field mirror + design-fee row reconciliation
+      // Project fee-field mirror + design-fee row reconciliation
       // run inside the SAME transaction as the contract row replacement so
       // partial persistence is impossible. Re-upload preserves prior
       // invoicedAmount on the matching fee row.

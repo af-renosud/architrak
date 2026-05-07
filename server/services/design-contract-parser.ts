@@ -1,5 +1,5 @@
 /**
- * Task #175 — Gemini-powered extractor for French architecture design
+ * Gemini-powered extractor for French architecture design
  * contracts ("Contrat de Maîtrise d'Œuvre"). Reuses the same model
  * selection + retry plumbing as the devis/invoice document-parser, but
  * targets a contract-specific JSON schema: total HT/TVA/TTC, contract

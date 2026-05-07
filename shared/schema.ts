@@ -477,7 +477,7 @@ export const feeEntries = pgTable("fee_entries", {
 ]);
 
 // =============================================================================
-// Design contracts (Task #175) — uploaded PDF design contract per project,
+// Design contracts — uploaded PDF design contract per project,
 // extracted by Gemini into totals + payment milestones. Replaces the manual
 // conception/planning numeric inputs in the New Project dialog. One contract
 // per project (UNIQUE projectId); re-upload archives the previous PDF and

@@ -110,37 +110,23 @@ export default function Projects() {
     },
   });
 
-  // Project creation now requires a confirmed design contract (Task #175).
-  // Two-step flow: track the project, then immediately POST the staged
-  // design contract against the freshly-created project id. If the second
-  // step fails the project still exists — the user can retry from the
-  // project detail card. We surface the partial-success in the toast so
-  // the architect knows to follow up.
+  // Atomic single-call orchestration: the server creates the project AND
+  // persists the design contract in one transaction. On any failure the
+  // server rolls back the project deletion so the user is never left
+  // with a half-created project.
   const trackMutation = useMutation({
     mutationFn: async (archidocId: string) => {
-      if (!designContract) {
-        throw new Error("Design contract is required");
-      }
-      const trackRes = await apiRequest("POST", `/api/archidoc/track/${archidocId}`, {
-        feeType,
-        feePercentage: feePercentage || null,
-        hasMarche,
+      if (!designContract) throw new Error("Design contract is required");
+      const res = await apiRequest("POST", `/api/archidoc/track-with-contract/${archidocId}`, {
+        trackOptions: { feeType, feePercentage: feePercentage || null, hasMarche },
+        designContract,
       });
-      const trackData = await trackRes.json() as { projectId?: number; contractorsCreated: number; lotsCreated: number };
-      const projectId = trackData.projectId;
-      if (!projectId) {
-        return { ...trackData, designContractStatus: "skipped" as const };
-      }
-      try {
-        await apiRequest("POST", `/api/projects/${projectId}/design-contract`, designContract);
-        return { ...trackData, designContractStatus: "saved" as const };
-      } catch (err) {
-        return {
-          ...trackData,
-          designContractStatus: "failed" as const,
-          designContractError: err instanceof Error ? err.message : String(err),
-        };
-      }
+      return res.json() as Promise<{
+        projectId: number;
+        contractorsCreated: number;
+        lotsCreated: number;
+        contractId: number;
+      }>;
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
@@ -148,16 +134,9 @@ export default function Projects() {
       queryClient.invalidateQueries({ queryKey: ["/api/archidoc/status"] });
       setDialogOpen(false);
       resetForm();
-      const dcMsg =
-        data.designContractStatus === "saved"
-          ? " Design contract saved."
-          : data.designContractStatus === "failed"
-            ? ` Design contract upload failed: ${data.designContractError ?? "unknown error"} — retry from the project detail page.`
-            : "";
       toast({
         title: "Project tracked",
-        description: `Project created with ${data.contractorsCreated} contractor(s) and ${data.lotsCreated} lot(s).${dcMsg}`,
-        variant: data.designContractStatus === "failed" ? "destructive" : undefined,
+        description: `Project created with ${data.contractorsCreated} contractor(s) and ${data.lotsCreated} lot(s). Design contract saved.`,
       });
     },
     onError: (error: Error) => {

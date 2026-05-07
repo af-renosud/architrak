@@ -1,5 +1,5 @@
 /**
- * Project-detail "Design Contract" card (Task #175).
+ * Project-detail "Design Contract" card.
  *
  * Reads /api/projects/:id/design-contract and renders:
  *   - Header with totals + reference + a download button for the PDF.
