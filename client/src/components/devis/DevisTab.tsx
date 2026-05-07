@@ -2985,6 +2985,7 @@ function SigningPanel({
       });
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId] });
       queryClient.invalidateQueries({ queryKey: ["/api/devis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
     },
     onError: (error: Error) => {
       toast({ title: "Erreur d'envoi", description: error.message, variant: "destructive" });
