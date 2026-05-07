@@ -232,6 +232,7 @@ export async function createEnvelope(payload: CreateEnvelopePayload): Promise<Cr
     signer: payload.signer,
     pdfFetchUrl: payload.pdfFetchUrl,
     webhookUrl: payload.webhookUrl,
+    origin: "architrak",
     expiresAt: expiresAt.toISOString(),
     subject: payload.subject,
     body: payload.body,

@@ -1,0 +1,50 @@
+Archisign production cutover — your turn
+
+Archisign production is live with rotated credentials and v2 HMAC enabled for our tenant. Please complete your side of the cutover and run an end-to-end smoke test.
+
+1. Store these in your production secrets (delivered out-of-band by the operator):
+
+ARCHISIGN_API_KEY — used as X-API-KEY on every outbound request
+ARCHISIGN_WEBHOOK_SECRET — HMAC shared secret for verifying inbound webhooks
+2. Confirm your config:
+
+Base URL: https://archi-sign-pro.replit.app (no trailing slash)
+Your inbound webhook receiver: https://architrak.replit.app/api/webhooks/archisign
+On every /api/v1/envelopes/create call, include "webhookUrl": "https://architrak.replit.app/api/webhooks/archisign" and "origin": "architrak" in the body. The origin value is the v2 HMAC tenant gate — without it, Archisign falls back to v1 (bare hex, no timestamp) and your born-v2 verifier will 401 every event.
+3. Verifier sanity check (no network call needed):
+Confirm your verifier expects:
+
+Header X-Archisign-Signature: sha256=<hex>
+Header X-Archisign-Timestamp: <unix-ms>
+Signature input: ${timestamp}.${rawBody}, HMAC-SHA-256 with the shared secret
+Length-guard before timingSafeEqual
+Idempotency keyed on eventId (UUIDv7) from the payload
+4. End-to-end smoke test from your side:
+
+a. Auth probe — confirm the API key is loaded:
+
+curl -i -X POST https://archi-sign-pro.replit.app/api/v1/envelopes/create \
+  -H "X-API-KEY: $ARCHISIGN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+Expect 400 (validation error). A 401 means the key isn't loaded in your production env.
+
+b. Full envelope flow — create a real test envelope through your normal code path with a throwaway signer email you control. Verify:
+
+/create returns 201 with signers[].accessUrl and otpDestination
+/send returns 200 (idempotent — retry it once, should still 200 with the same sentAt)
+Your webhook receiver logs envelope.sent with valid v2 signature (look for sha256= prefix and the timestamp header)
+Open the accessUrl, complete OTP + signing, confirm envelope.signed lands on your receiver
+Call /signed-pdf-url and confirm you get a 15-min HMAC-signed fetch URL that returns the PDF
+c. Negative checks:
+
+Tamper with one byte of a webhook body in your verifier test harness — must reject with 401
+Replay an old eventId — your handler must short-circuit (idempotency)
+5. Report back with:
+
+Auth probe HTTP status
+Full-flow envelope ID and the list of webhook events received with their eventIds
+Verifier accept/reject results on tamper + replay tests
+Anything that doesn't match the contract (docs/INTER_APP_CONTRACT_v1.0.md, frozen 2026-04-25)
+Known deferred: §3.5.4 token re-mint on resend-after-expiry is not yet implemented (AS6). Your G3 invariant trigger remains the envelope.expired webhook.
