@@ -74,6 +74,9 @@ export interface ConfirmedDesignContract {
   planningAmountHt: number | null;
   contractDate: string | null;
   contractReference: string | null;
+  clientName: string | null;
+  architectName: string | null;
+  projectAddress: string | null;
   extractionConfidence: Record<string, number> | null;
   extractionWarnings: string[] | null;
   milestones: ExtractedMilestone[];
@@ -154,6 +157,9 @@ export function DesignContractUpload({ confirmed, onConfirmed, onCleared, mode =
         planningAmountHt: data.extracted.planningAmountHt,
         contractDate: data.extracted.contractDate,
         contractReference: data.extracted.contractReference,
+        clientName: data.extracted.clientName,
+        architectName: data.extracted.architectName,
+        projectAddress: data.extracted.projectAddress,
         extractionConfidence: data.extracted.confidence,
         extractionWarnings: data.extracted.warnings,
         milestones: data.extracted.milestones.map((m, i) => ({ ...m, sequence: i + 1 })),
@@ -350,6 +356,18 @@ export function DesignContractUpload({ confirmed, onConfirmed, onCleared, mode =
                   <div>
                     <Label className="text-[10px]">Reference</Label>
                     <Input value={draft.contractReference ?? ""} onChange={(e) => updateDraft({ contractReference: e.target.value || null })} data-testid="input-contract-reference" />
+                  </div>
+                  <div className="col-span-2">
+                    <Label className="text-[10px]">Client name {isLowConfidence(draft.extractionConfidence, "clientName") && <span className="text-amber-700">⚠</span>}</Label>
+                    <Input className={lowConfClass(draft.extractionConfidence, "clientName")} value={draft.clientName ?? ""} onChange={(e) => updateDraft({ clientName: e.target.value || null })} data-testid="input-client-name" />
+                  </div>
+                  <div className="col-span-2">
+                    <Label className="text-[10px]">Architect name {isLowConfidence(draft.extractionConfidence, "architectName") && <span className="text-amber-700">⚠</span>}</Label>
+                    <Input className={lowConfClass(draft.extractionConfidence, "architectName")} value={draft.architectName ?? ""} onChange={(e) => updateDraft({ architectName: e.target.value || null })} data-testid="input-architect-name" />
+                  </div>
+                  <div className="col-span-2">
+                    <Label className="text-[10px]">Project address {isLowConfidence(draft.extractionConfidence, "projectAddress") && <span className="text-amber-700">⚠</span>}</Label>
+                    <Input className={lowConfClass(draft.extractionConfidence, "projectAddress")} value={draft.projectAddress ?? ""} onChange={(e) => updateDraft({ projectAddress: e.target.value || null })} data-testid="input-project-address" />
                   </div>
                 </div>
                 <div className="space-y-2">

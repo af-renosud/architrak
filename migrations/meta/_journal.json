@@ -197,6 +197,13 @@
       "when": 1778500000000,
       "tag": "0027_design_contracts",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1778510000000,
+      "tag": "0028_design_contract_parties",
+      "breakpoints": true
     }
   ]
 }

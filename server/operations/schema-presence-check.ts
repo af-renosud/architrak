@@ -83,6 +83,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0025_archisign_envelope_tracking", artifact: { kind: "column", table: "devis", column: "archisign_access_url" } },
   { tag: "0026_archidoc_mirror_reconciliation", artifact: { kind: "column", table: "archidoc_contractors", column: "source_base_url" } },
   { tag: "0027_design_contracts", artifact: { kind: "table", table: "design_contracts" } },
+  { tag: "0028_design_contract_parties", artifact: { kind: "column", table: "design_contracts", column: "client_name" } },
 ];
 
 interface JournalFile {

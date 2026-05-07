@@ -1,5 +1,6 @@
 import { storage } from "../storage";
 import { sendPaymentChase } from "./email-sender";
+import { getUncachableGmailClient, isGmailConfigured } from "../gmail/client";
 import type { InsertPaymentReminder } from "@shared/schema";
 
 const REMINDER_SCHEDULE = [
@@ -55,13 +56,12 @@ export function startScheduler(intervalMs: number = 60 * 60 * 1000) {
 /**
  * Daily reminder digest for design-contract milestones whose status is
  * `reached` and whose reachedAt is older than 7 days without a matching
- * invoice. The storage layer also enforces a 24h reminder quiet period
- * so a single milestone can't be re-sent more than once per day. The
- * dashboard strip surfaces the same data immediately at
- * `/api/design-contracts/dashboard-actions`. Email rendering is gated
- * behind the existing Gmail send infrastructure — when no Gmail
- * recipient is configured for an architect, the digest entry is logged
- * (so operators see the cron firing) without an outbound send.
+ * invoice. Per-architect: results are grouped by uploadedByUserId and one
+ * digest email is sent per architect (to their Google account email) via
+ * the existing Gmail send infrastructure. The storage layer enforces a
+ * 24h reminder quiet period so a single milestone can't be re-sent more
+ * than once per day. The dashboard strip surfaces the same data
+ * immediately at `/api/design-contracts/dashboard-actions`.
  */
 async function processDesignContractDigest(): Promise<void> {
   try {
@@ -70,18 +70,86 @@ async function processDesignContractDigest(): Promise<void> {
       reminderQuietMs: 24 * 60 * 60 * 1000,
     });
     if (overdue.length === 0) return;
-    console.log(
-      `[design-digest] ${overdue.length} milestone(s) reached >7d ago without invoice`,
-    );
+
+    const byArchitect = new Map<number, typeof overdue>();
     for (const row of overdue) {
+      const uid = row.contract.uploadedByUserId;
+      if (uid == null) continue;
+      const list = byArchitect.get(uid) ?? [];
+      list.push(row);
+      byArchitect.set(uid, list);
+    }
+
+    const gmailReady = isGmailConfigured();
+
+    for (const [architectUserId, rows] of Array.from(byArchitect.entries())) {
+      const user = await storage.getUser(architectUserId);
+      const recipient = user?.email ?? null;
+
       console.log(
-        `[design-digest] project=${row.project.code} "${row.milestone.labelFr}" amount=${row.milestone.amountTtc}`,
+        `[design-digest] user=${architectUserId} email=${recipient ?? "(unknown)"} milestones=${rows.length}`,
       );
-      await storage.markDesignContractMilestoneReminderSent(row.milestone.id);
+
+      if (gmailReady && recipient) {
+        try {
+          await sendDesignDigestEmail(recipient, rows);
+        } catch (err) {
+          console.error(
+            `[design-digest] gmail send failed for user=${architectUserId}:`,
+            err instanceof Error ? err.message : err,
+          );
+          continue;
+        }
+      } else {
+        for (const row of rows) {
+          console.log(
+            `[design-digest]   project=${row.project.code} "${row.milestone.labelFr}" amount=${row.milestone.amountTtc}`,
+          );
+        }
+      }
+
+      for (const row of rows) {
+        await storage.markDesignContractMilestoneReminderSent(row.milestone.id);
+      }
     }
   } catch (err) {
     console.error("[design-digest] error:", err);
   }
+}
+
+async function sendDesignDigestEmail(
+  recipient: string,
+  rows: Awaited<ReturnType<typeof storage.getReachedUninvoicedMilestones>>,
+): Promise<void> {
+  const gmail = await getUncachableGmailClient();
+  const lines = rows.map(
+    (r) =>
+      `  - [${r.project.code}] ${r.project.name} — "${r.milestone.labelFr}" · ${r.milestone.amountTtc} € TTC` +
+      (r.milestone.reachedAt ? ` · reached ${new Date(r.milestone.reachedAt).toISOString().slice(0, 10)}` : ""),
+  );
+  const body = [
+    `You have ${rows.length} design-contract milestone(s) reached more than 7 days ago that have not yet been invoiced:`,
+    "",
+    ...lines,
+    "",
+    "Open the dashboard to invoice them: /dashboard",
+  ].join("\n");
+  const subject = `[Architrak] ${rows.length} design-contract milestone(s) awaiting invoice`;
+
+  const raw = [
+    `From: me`,
+    `To: ${recipient}`,
+    `Subject: ${subject}`,
+    `MIME-Version: 1.0`,
+    `Content-Type: text/plain; charset="UTF-8"`,
+    "",
+    body,
+  ].join("\r\n");
+
+  await gmail.users.messages.send({
+    userId: "me",
+    requestBody: { raw: Buffer.from(raw).toString("base64url") },
+  });
 }
 
 export function stopScheduler() {

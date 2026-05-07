@@ -436,6 +436,7 @@ export interface IStorage {
   getReachedUninvoicedMilestones(opts: {
     staleAfterMs?: number;
     reminderQuietMs?: number;
+    architectUserId?: number;
   }): Promise<Array<{
     milestone: DesignContractMilestone;
     contract: DesignContract;
@@ -987,6 +988,15 @@ export class DatabaseStorage implements IStorage {
   async getReachedUninvoicedMilestones(opts: {
     staleAfterMs?: number;
     reminderQuietMs?: number;
+    /**
+     * When set, restrict results to contracts uploaded by this user. The
+     * dashboard strip + daily digest scope by uploader so each architect
+     * only sees their own projects' actionable milestones (the project
+     * model has no first-class "owner" field — uploadedByUserId on the
+     * contract is the de-facto ownership signal for the design-fee
+     * lifecycle).
+     */
+    architectUserId?: number;
   }): Promise<Array<{
     milestone: DesignContractMilestone;
     contract: DesignContract;
@@ -996,6 +1006,18 @@ export class DatabaseStorage implements IStorage {
     const reminderQuietMs = opts.reminderQuietMs ?? 24 * 60 * 60 * 1000;
     const reachedCutoff = new Date(Date.now() - staleAfterMs);
     const reminderCutoff = new Date(Date.now() - reminderQuietMs);
+    const conditions = [
+      eq(designContractMilestones.status, "reached"),
+      isNull(projects.archivedAt),
+      lte(designContractMilestones.reachedAt, reachedCutoff),
+      or(
+        isNull(designContractMilestones.reminderLastSentAt),
+        lte(designContractMilestones.reminderLastSentAt, reminderCutoff),
+      ),
+    ];
+    if (opts.architectUserId !== undefined) {
+      conditions.push(eq(designContracts.uploadedByUserId, opts.architectUserId));
+    }
     const rows = await db
       .select({
         milestone: designContractMilestones,
@@ -1005,17 +1027,7 @@ export class DatabaseStorage implements IStorage {
       .from(designContractMilestones)
       .innerJoin(designContracts, eq(designContractMilestones.contractId, designContracts.id))
       .innerJoin(projects, eq(designContracts.projectId, projects.id))
-      .where(
-        and(
-          eq(designContractMilestones.status, "reached"),
-          isNull(projects.archivedAt),
-          lte(designContractMilestones.reachedAt, reachedCutoff),
-          or(
-            isNull(designContractMilestones.reminderLastSentAt),
-            lte(designContractMilestones.reminderLastSentAt, reminderCutoff),
-          ),
-        ),
-      )
+      .where(and(...conditions))
       .orderBy(asc(designContractMilestones.reachedAt));
     return rows;
   }

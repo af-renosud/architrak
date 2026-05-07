@@ -74,6 +74,9 @@ const confirmContractSchema = z.object({
   planningAmountHt: z.coerce.number().nonnegative().nullable().optional(),
   contractDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   contractReference: z.string().trim().min(1).nullable().optional(),
+  clientName: z.string().trim().min(1).nullable().optional(),
+  architectName: z.string().trim().min(1).nullable().optional(),
+  projectAddress: z.string().trim().min(1).nullable().optional(),
   extractionConfidence: z.record(z.string(), z.number()).nullable().optional(),
   extractionWarnings: z.array(z.string()).nullable().optional(),
   milestones: z.array(milestoneInputSchema).min(1),
@@ -260,6 +263,9 @@ router.post(
         planningAmountHt: body.planningAmountHt != null ? roundCurrency(body.planningAmountHt).toFixed(2) : null,
         contractDate: body.contractDate ?? null,
         contractReference: body.contractReference ?? null,
+        clientName: body.clientName ?? null,
+        architectName: body.architectName ?? null,
+        projectAddress: body.projectAddress ?? null,
         extractionConfidence: body.extractionConfidence ?? null,
         extractionWarnings: body.extractionWarnings ?? null,
         uploadedByUserId: userId,
@@ -461,13 +467,19 @@ router.patch(
  * regardless of staleness (the architect wants to see them as soon as
  * they trigger), with project + contract context.
  */
-router.get("/api/design-contracts/dashboard-actions", async (_req, res, next) => {
+router.get("/api/design-contracts/dashboard-actions", async (req, res, next) => {
   try {
+    const userId = (req.session as { userId?: number } | undefined)?.userId;
+    if (!userId) {
+      return res.status(401).json({ message: "Authenticated session required" });
+    }
     // staleAfterMs=0 / reminderQuietMs=0 → return everything reached, used
     // by the dashboard strip (the daily digest passes the real cutoffs).
+    // Scoped by architectUserId so each user only sees their own projects.
     const rows = await storage.getReachedUninvoicedMilestones({
       staleAfterMs: 0,
       reminderQuietMs: 0,
+      architectUserId: userId,
     });
     res.json(
       rows.map((r) => ({

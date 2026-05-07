@@ -199,6 +199,23 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
         </div>
       </div>
 
+      {(contract.clientName || contract.architectName || contract.projectAddress) && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4 p-3 rounded border border-border bg-muted/30">
+          <div>
+            <TechnicalLabel>Client</TechnicalLabel>
+            <p className="text-[12px]" data-testid="text-design-contract-client-name">{contract.clientName ?? "—"}</p>
+          </div>
+          <div>
+            <TechnicalLabel>Architect</TechnicalLabel>
+            <p className="text-[12px]" data-testid="text-design-contract-architect-name">{contract.architectName ?? "—"}</p>
+          </div>
+          <div>
+            <TechnicalLabel>Project address</TechnicalLabel>
+            <p className="text-[12px]" data-testid="text-design-contract-project-address">{contract.projectAddress ?? "—"}</p>
+          </div>
+        </div>
+      )}
+
       <div className="space-y-2 mb-4">
         <div className="flex items-center justify-between">
           <TechnicalLabel>Payment milestones ({reachedCount}/{milestones.length} reached)</TechnicalLabel>
