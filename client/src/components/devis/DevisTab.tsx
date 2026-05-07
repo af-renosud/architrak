@@ -94,6 +94,11 @@ interface LotCodeComposerProps {
  * into custom mode.
  */
 function LotCodeComposer({ projectId, excludeDevisId, value, onChange, forcedNextLotSequence = null, testIdPrefix = "lot-code" }: LotCodeComposerProps) {
+  // Server's most recently advertised next-available sequence, scoped to a
+  // specific lot ref. We track the ref alongside the number so a stale
+  // suggestion for a previous lot can never be mistakenly displayed against
+  // the current one. Cleared whenever the lot ref changes.
+  const [suggestion, setSuggestion] = useState<{ lotRef: string; nextLotSequence: number } | null>(null);
   const { data: catalog = [] } = useQuery<LotCatalog[]>({
     queryKey: ["/api/lot-catalog"],
   });
@@ -134,6 +139,11 @@ function LotCodeComposer({ projectId, excludeDevisId, value, onChange, forcedNex
     const res = await fetch(`/api/projects/${projectId}/devis/next-lot-number?${params}`, { credentials: "include" });
     if (!res.ok) return;
     const body: { nextLotSequence: number } = await res.json();
+    const refKey = lotRef.trim().toUpperCase();
+    // Cache the suggestion (keyed by ref) so the hint can be rendered
+    // even after the user manually overrides the value, and the
+    // "Reset to next" link knows what to restore.
+    setSuggestion({ lotRef: refKey, nextLotSequence: body.nextLotSequence });
     // Functional update so we merge against the latest state — by the
     // time this resolves the user may have changed the description or
     // toggled the catalog selection, and a flat replace would clobber
@@ -142,7 +152,7 @@ function LotCodeComposer({ projectId, excludeDevisId, value, onChange, forcedNex
       // Don't override a sequence the user typed manually while we were
       // fetching, and don't write a stale sequence onto a lot ref that
       // has since changed.
-      if (prev.lotRefText.trim().toUpperCase() !== lotRef.trim().toUpperCase()) return prev;
+      if (prev.lotRefText.trim().toUpperCase() !== refKey) return prev;
       if (prev.lotSequence != null) return prev;
       return { ...prev, lotSequence: body.nextLotSequence };
     });
@@ -172,8 +182,10 @@ function LotCodeComposer({ projectId, excludeDevisId, value, onChange, forcedNex
   // auto-fetch debouncing key so this counts as a fresh suggestion.
   useEffect(() => {
     if (forcedNextLotSequence == null) return;
+    const refKey = value.lotRefText.trim().toUpperCase();
     onChange((prev) => ({ ...prev, lotSequence: forcedNextLotSequence }));
-    autoFetchedRef.current = value.lotRefText.trim().toUpperCase() || null;
+    autoFetchedRef.current = refKey || null;
+    if (refKey) setSuggestion({ lotRef: refKey, nextLotSequence: forcedNextLotSequence });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [forcedNextLotSequence]);
 
@@ -285,8 +297,45 @@ function LotCodeComposer({ projectId, excludeDevisId, value, onChange, forcedNex
             }}
             placeholder="auto"
             className="text-[11px]"
+            title={
+              suggestion && suggestion.lotRef === value.lotRefText.trim().toUpperCase()
+                ? `Server suggested next free number: ${suggestion.nextLotSequence}`
+                : undefined
+            }
             data-testid="input-lot-number"
           />
+          {(() => {
+            // Only render the hint when the cached suggestion is for the
+            // *current* lot ref — otherwise we'd be showing a stale number
+            // for a different lot.
+            if (!suggestion) return null;
+            if (suggestion.lotRef !== value.lotRefText.trim().toUpperCase()) return null;
+            const matches = value.lotSequence === suggestion.nextLotSequence;
+            if (matches) {
+              return (
+                <p
+                  className="text-[9px] text-muted-foreground"
+                  data-testid={`${testIdPrefix}-next-hint`}
+                >
+                  next free: <span className="font-mono">{suggestion.nextLotSequence}</span>
+                </p>
+              );
+            }
+            return (
+              <p className="text-[9px] text-muted-foreground">
+                <button
+                  type="button"
+                  className="underline hover:text-foreground"
+                  onClick={() => {
+                    onChange((prev) => ({ ...prev, lotSequence: suggestion.nextLotSequence }));
+                  }}
+                  data-testid={`${testIdPrefix}-reset-to-next`}
+                >
+                  Reset to next: <span className="font-mono">{suggestion.nextLotSequence}</span>
+                </button>
+              </p>
+            );
+          })()}
           {errorByField("lotSequence") && (
             <p className="text-[9px] text-rose-600" data-testid={`${testIdPrefix}-error-lot-number`}>{errorByField("lotSequence")}</p>
           )}
