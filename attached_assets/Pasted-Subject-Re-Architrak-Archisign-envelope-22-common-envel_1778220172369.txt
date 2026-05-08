@@ -1,0 +1,64 @@
+Subject: Re: Architrak ↔ Archisign envelope 22 — common envelope ✓, two per-event tight schemas drifted
+
+Common envelope patch confirmed live (no timestamp / envelopeId errors anywhere). Both replays now make it past the common parse and 400 inside your per-event tight schemas. Verbatim bodies + responses below.
+
+Probe — envelope.queried (canonical shape)
+
+Sent (363 bytes, ts 1778220114240, sig-fp 9a75902ed893):
+
+{
+  "eventId": "daeb15ed-8c8d-4fd9-be18-bbefe6856f19",
+  "event": "envelope.queried",
+  "envelopeId": 22,
+  "externalRef": "devis-8",
+  "metadata": null,
+  "occurredAt": "2026-05-08T06:01:54.240Z",
+  "queryId": "<uuid>",
+  "signerEmail": "clivegpalmer@gmail.com",
+  "queryText": "PROBE — verifier acceptance test, please discard",
+  "queriedAt": "2026-05-08T06:01:54.240Z"
+}
+
+Got back (400, 339ms):
+
+{"message":"Malformed envelope.queried payload",
+ "errors":{"fieldErrors":{"queryEventId":["Required"],"raisedAt":["Required"]}}}
+
+Your queriedSchema requires queryEventId + raisedAt. Contract §3.3 / §3.4 sample at line 356-360 specifies queryId + queriedAt. Our dispatcher emits the contract names. Rename both fields in queriedSchema and we're done — no semantic change, pure aliasing.
+
+Probe — envelope.sent replay (the dead-letter row, eventId 019e02ae-…b2a0, byte-equal to the original payload)
+
+Sent (239 bytes, ts 1778220115464, fresh v2 sig):
+
+{
+  "eventId": "019e02ae-ae50-740e-ac3f-80608e57b2a0",
+  "event": "envelope.sent",
+  "envelopeId": 22,
+  "externalRef": "devis-8",
+  "metadata": null,
+  "occurredAt": "2026-05-07T13:44:21.516Z",
+  "signers": [{"email": "clivegpalmer@gmail.com", "name": "clive palmer"}]
+}
+
+Got back (400, 233ms):
+
+{"message":"Malformed envelope.sent payload",
+ "errors":{"fieldErrors":{"sentAt":["Required"]}}}
+
+Your sentSchema requires sentAt. Contract §3.3 lines 351-352 define envelope.sent as { ..., "event": "envelope.sent", "signers": [...] } — there is no sentAt field on the per-event payload. The send timestamp is occurredAt on the common envelope (already present in our payload above). Drop the sentAt requirement from sentSchema; if you need a timestamp on your side, derive it from occurredAt.
+
+Heads-up on envelope.signed
+
+We're holding the synthesis for envelope 22 until you patch the two above, because the same drift class will almost certainly hit. Per contract §3.3, our envelope.signed payload carries signedAt, signedPdfFetchUrl, signedPdfFetchUrlExpiresAt, and a nested identityVerification object (method, otpIssuedAt, otpVerifiedAt, signerIpAddress, signerUserAgent, lastViewedAt, signedAt, authenticationId). If your signedSchema was authored against an older draft, expect renamed/missing fields and an obvious 400 — please share the body verbatim like above and we'll iterate. Doing one round-trip on signed will tell us if the schema is solid or if a third patch is needed.
+
+State on our side, unchanged:
+
+v2 signing ✓ (verifier passes every time — never seen a 401 since the CSV flip)
+envelope.sent dead-letter row: still dead_lettered, ledger untouched, ready for clean retry the moment your sentSchema accepts contract shape
+envelope.signed synthesis: held pending the patch
+Credential triple admin surfacing: separate work item, will land independently
+Ping us when both per-event schemas are renamed and we'll re-run the sent replay + start the signed synthesis back-to-back.
+
+Thanks,
+Archisign
+

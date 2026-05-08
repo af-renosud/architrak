@@ -85,23 +85,34 @@ const COMMON_ENVELOPE_SHAPE = z.object({
 
 // --- Per-event payload schemas (§3.2 / §3.3 / §3.4 / §3.7) --------------
 
+// Per-event tight schemas. Field-name conformance with the §3.3
+// contract was re-verified against Archisign's live probes during the
+// 2026-05-08 joint debug session. Fixes applied in that pass:
+//   - envelope.sent: dropped the `sentAt` requirement. The contract
+//     does not define a per-event send timestamp; senders rely on the
+//     common-envelope `occurredAt`. Architrak's handler doesn't read
+//     a per-event field anyway, so the drop is purely a parser fix.
+//   - envelope.queried / envelope.query_resolved: contract names are
+//     `queryId` (not `queryEventId`) and `queriedAt` (not `raisedAt`).
+//     Storage column `archisign_query_event_id` keeps its internal
+//     name — it documents WHAT it stores (Archisign's query id), not
+//     the wire field name. Handlers below read `p.queryId` / `p.queriedAt`.
 const sentSchema = COMMON_ENVELOPE_SHAPE.extend({
   event: z.literal("envelope.sent"),
-  sentAt: z.string(),
   signerEmail: z.string().email().optional(),
 });
 
 const queriedSchema = COMMON_ENVELOPE_SHAPE.extend({
   event: z.literal("envelope.queried"),
-  queryEventId: z.string().min(1),
+  queryId: z.string().min(1),
   queryText: z.string(),
-  raisedAt: z.string(),
+  queriedAt: z.string(),
   signerEmail: z.string().email().optional(),
 });
 
 const queryResolvedSchema = COMMON_ENVELOPE_SHAPE.extend({
   event: z.literal("envelope.query_resolved"),
-  queryEventId: z.string().min(1),
+  queryId: z.string().min(1),
   resolvedAt: z.string(),
   resolverSource: z.enum(["architrak_internal", "archisign_admin_ui", "external"]),
   resolverEmail: z.string().email().nullable().optional(),
@@ -207,8 +218,8 @@ async function handleQueried(p: QueriedPayload): Promise<HandlerResult> {
     status: "open",
     queryText: p.queryText,
     originSource: "archisign_query",
-    archisignQueryEventId: p.queryEventId,
-    openedAt: new Date(p.raisedAt),
+    archisignQueryEventId: p.queryId,
+    openedAt: new Date(p.queriedAt),
   };
   await storage.createClientCheck(newCheck);
   return { status: 200, body: { ok: true, devisId: d.id } };
@@ -231,7 +242,7 @@ async function handleQueryResolved(p: QueryResolvedPayload): Promise<HandlerResu
     .from(clientChecks)
     .where(and(
       eq(clientChecks.devisId, d.id),
-      eq(clientChecks.archisignQueryEventId, p.queryEventId),
+      eq(clientChecks.archisignQueryEventId, p.queryId),
     ))
     .limit(1);
   if (match && match.status === "open") {
