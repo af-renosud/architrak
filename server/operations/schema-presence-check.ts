@@ -207,6 +207,12 @@ export async function assertSchemaMatchesTracker(
 
   // For each journal entry, decide whether the tracker claims it
   // applied (by `when` ↔ `created_at`) and probe the artifact.
+  // We collect both directions of drift so we can decide between
+  // self-heal (only "tracker behind, schema forward" entries) and
+  // hard-abort (any "tracker forward, schema behind" entries).
+  const trackerBehindEntries: Array<{ tag: string; artifact: ArtifactKind }> = [];
+  const trackerForwardEntries: Array<{ tag: string; artifact: ArtifactKind; when: number }> = [];
+
   for (const entry of journal.entries) {
     const artifact = MIGRATION_ARTIFACTS.find((m) => m.tag === entry.tag)!.artifact;
     if (artifact.kind === "data_only") continue;
@@ -215,14 +221,72 @@ export async function assertSchemaMatchesTracker(
     const present = await probe(opts.pool, artifact);
 
     if (trackerSaysApplied && !present) {
-      const msg = `[migrate] FATAL — schema drift: ${entry.tag} claims applied (tracker has a row with created_at=${entry.when}) but ${describe(artifact)} is missing. Either restore the artifact or remove the tracker row, then redeploy.`;
-      console.error(msg);
-      throw new Error(msg);
+      trackerForwardEntries.push({ tag: entry.tag, artifact, when: entry.when });
+    } else if (!trackerSaysApplied && present) {
+      trackerBehindEntries.push({ tag: entry.tag, artifact });
     }
-    if (!trackerSaysApplied && present) {
-      const msg = `[migrate] FATAL — schema drift: ${describe(artifact)} already exists in the database but tracker has no row for ${entry.tag}. Run scripts/reconcile-drizzle-tracker.ts to add the missing tracker row, then redeploy.`;
-      console.error(msg);
-      throw new Error(msg);
+  }
+
+  // "Tracker forward, schema behind" is genuine drift (the artifact
+  // was dropped manually after the tracker recorded the apply, or a
+  // partial-apply lost the DDL between drizzle's tracker insert and
+  // the SQL commit). We have no safe automatic remediation — abort.
+  if (trackerForwardEntries.length > 0) {
+    const first = trackerForwardEntries[0];
+    const msg = `[migrate] FATAL — schema drift: ${first.tag} claims applied (tracker has a row with created_at=${first.when}) but ${describe(first.artifact)} is missing. Either restore the artifact or remove the tracker row, then redeploy.`;
+    console.error(msg);
+    throw new Error(msg);
+  }
+
+  // "Tracker behind, schema forward" is the recoverable direction:
+  // Replit's publish-time DDL applied the schema but did not insert
+  // the corresponding rows into drizzle.__drizzle_migrations. We
+  // self-heal by invoking the same reconcile script the operator
+  // would have run by hand (per the original FATAL message). Safe
+  // because:
+  //   1. reconcileTracker only writes to drizzle.__drizzle_migrations,
+  //      never to schema.
+  //   2. It refuses to write if the tracker contains hashes not in
+  //      the journal (would mean an unknown migration was applied).
+  //   3. It only inserts rows whose hashes are derived from .sql
+  //      files already on disk in this deployment, so the tracker
+  //      ends up consistent with what subsequent migrate() runs would
+  //      consider "already applied".
+  // After self-heal, re-read the tracker and re-verify; if either
+  // direction of drift remains, abort.
+  if (trackerBehindEntries.length > 0) {
+    const tags = trackerBehindEntries.map((e) => e.tag).join(", ");
+    console.warn(
+      `[migrate] tracker-behind drift detected for ${trackerBehindEntries.length} migration(s) (${tags}); attempting self-heal via reconcileTracker.`,
+    );
+    const { reconcileTracker } = await import(
+      "../../scripts/reconcile-drizzle-tracker"
+    );
+    const result = await reconcileTracker({
+      pool: opts.pool,
+      migrationsFolder,
+      apply: true,
+      log: (m) => console.log(m),
+    });
+    console.log(
+      `[migrate] self-heal complete — inserted ${result.toInsert.length} tracker row(s); tracker now has ${result.trackerCountAfter} rows (journal: ${result.journalCount}).`,
+    );
+    // Re-verify after self-heal: read the tracker fresh and confirm
+    // every previously-behind entry is now present.
+    const reread = await opts.pool.query<{ created_at: string | null }>(
+      `SELECT created_at FROM drizzle.__drizzle_migrations`,
+    );
+    const healedWhens = new Set<number>();
+    for (const r of reread.rows) {
+      const v = r.created_at == null ? null : Number(r.created_at);
+      if (v != null && Number.isFinite(v)) healedWhens.add(v);
+    }
+    for (const entry of journal.entries) {
+      if (!healedWhens.has(entry.when)) {
+        const msg = `[migrate] FATAL — self-heal did not insert tracker row for ${entry.tag} (when=${entry.when}); aborting.`;
+        console.error(msg);
+        throw new Error(msg);
+      }
     }
   }
 }
