@@ -12,11 +12,14 @@
  * retry on 5xx + network errors + 429 (Retry-After honoured); 4xx fails fast
  * and the caller is expected to surface the error to the architect.
  *
- * Wire response: /create returns { envelopeId, accessUrl, accessToken,
- * otpDestination, expiresAt }. accessUrl is the ONLY persisted URL —
+ * Wire response: /create returns { envelopeId:<number>, status, createdAt,
+ * expiresAt, signers:[{ id, accessToken, accessUrl, otpDestination }] }.
+ * The signer-scoped fields live nested under signers[0]; we flatten in
+ * createEnvelope() before returning. accessUrl is the ONLY persisted URL —
  * /send's response is not re-read for URL data per G3 / §3.5.4.
  */
 
+import { z } from "zod";
 import { env } from "../env";
 
 export class ArchisignError extends Error {
@@ -52,13 +55,51 @@ interface CreateEnvelopePayload {
   body?: string;
 }
 
+/**
+ * Architrak-internal flattened shape returned by `createEnvelope`.
+ *
+ * IMPORTANT — this is NOT the on-the-wire response shape. Archisign's
+ * `/api/v1/envelopes/create` returns:
+ *   {
+ *     envelopeId: <number>,           // JSON number, not string
+ *     status: "draft",
+ *     createdAt, expiresAt,            // top-level
+ *     signers: [{ id, accessToken, accessUrl, otpDestination }]
+ *   }
+ * The signer-scoped fields (accessUrl / accessToken / otpDestination) live
+ * under `signers[0]` on the wire — Architrak only ever has a single signer
+ * per envelope, so we flatten the first signer into the top level here for
+ * caller convenience and to keep the persistence path in
+ * routes/archisign-envelopes.ts unchanged.
+ *
+ * Wire-shape verification (and the field-name mismatch that caused the
+ * 2026-05-07 production miss on devis 8 / envelope 22) was confirmed in
+ * writing by the Archisign team — paste of their reply lives in the chat
+ * thread for the AT4 cohort.
+ */
 export interface CreateEnvelopeResponse {
-  envelopeId: string;
+  envelopeId: string;       // coerced from wire `number` to string for parity with downstream string-typed columns
   accessUrl: string;
   accessToken: string;
   otpDestination: string;
-  expiresAt: string; // ISO 8601 — Archisign's authoritative value (echoed for storage)
+  expiresAt: string;        // ISO 8601 — Archisign's authoritative value (echoed for storage)
 }
+
+// Zod guard for the actual wire shape. We parse defensively so a future
+// shape drift fails LOUDLY at the boundary (with the offending payload in
+// the error) instead of silently NULLing fields downstream — that's the
+// failure mode that produced the original silent regression.
+const createEnvelopeWireSchema = z.object({
+  envelopeId: z.union([z.string().min(1), z.number().int()]),
+  expiresAt: z.string().min(1),
+  signers: z.array(
+    z.object({
+      accessToken: z.string().min(1),
+      accessUrl: z.string().url(),
+      otpDestination: z.string().min(1),
+    }),
+  ).min(1),
+}).passthrough();
 
 export interface SendEnvelopeResponse {
   envelopeId: string;
@@ -239,7 +280,30 @@ export async function createEnvelope(payload: CreateEnvelopePayload): Promise<Cr
     subject: payload.subject,
     body: payload.body,
   };
-  return archisignFetch<CreateEnvelopeResponse>("POST", "/api/v1/envelopes/create", wirePayload);
+  const raw = await archisignFetch<unknown>("POST", "/api/v1/envelopes/create", wirePayload);
+  const parsed = createEnvelopeWireSchema.safeParse(raw);
+  if (!parsed.success) {
+    // Boundary failure: surface the actual payload shape so the next
+    // operator can correlate against the §3.5.1 contract without re-running
+    // the integration. We do NOT log accessToken values — they're
+    // signer-scoped credentials. The error message itself is safe to
+    // bubble to the architect-facing 502 surface in send-to-signer.
+    throw new ArchisignError(
+      `Archisign /create returned an unexpected shape: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
+      502,
+      undefined,
+      false,
+    );
+  }
+  const wire = parsed.data;
+  const signer = wire.signers[0];
+  return {
+    envelopeId: String(wire.envelopeId),
+    accessUrl: signer.accessUrl,
+    accessToken: signer.accessToken,
+    otpDestination: signer.otpDestination,
+    expiresAt: wire.expiresAt,
+  };
 }
 
 /**
