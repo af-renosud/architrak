@@ -1,0 +1,64 @@
+To determine if your current accounting system is "French-compatible," you need to verify if it can handle a **cumulative, three-party verification loop** rather than a simple linear "Quote → Invoice" flow.
+
+Here is a summary of the French private construction financial workflow designed for a systems audit:
+
+---
+
+### 1. The Legal Foundation: Le Marché Travaux
+
+The system must be able to anchor all future transactions to a **Marché** (Contract).
+
+* **The Difference:** In standard accounting, a "Quote" is often just a draft invoice. In France, the *Marché* is a legal "ceiling."
+* **System Requirement:** Can your system lock an initial budget and track any changes specifically as **Avenants** (Amendments) rather than just editing the original quote?
+
+---
+
+### 2. The Adjustment Logic: Plus-Value (PV) & Moins-Value (MV)
+
+Your system must allow for granular adjustments to the contract value.
+
+* **The Workflow:** If a client changes a tile choice, the system shouldn't just change the price; it needs to record a **PV** (Increase) or **MV** (Decrease).
+* **System Requirement:** Does your software support "Change Orders" that maintain an audit trail of the *Original Budget* vs. the *Current Revised Budget*?
+
+---
+
+### 3. The Billing Mode: Situations de Travaux (Progress Billing)
+
+This is where most standard accounting systems fail. French construction uses **cumulative** billing.
+
+* **The Logic:** Invoice #3 is not for "30% of the work." It is for **"75% of total work done since the start, MINUS what was paid in Invoice #1 and #2."**
+* **System Requirement:** Can your system track **Percentage of Completion (% Avancement)** per line item? If it only handles "Quantity" or "Flat Fees," it will struggle with French construction.
+
+---
+
+### 4. The Validation Filter: Certificat de Paiement
+
+In France, the contractor’s invoice is legally just a "proposal" until the Architect signs off.
+
+* **The Logic:** The Architect reviews the *Situation* and may "prorate" or reject certain percentages. This results in a **Certificat de Paiement**.
+* **System Requirement:** Does your system allow for an **Approval Workflow** where the "Amount to Pay" can be different from the "Invoiced Amount" without creating a messy "Partial Payment" status?
+
+---
+
+### 5. The Legal Withholding: Retenue de Garantie (5%)
+
+French law allows the client to withhold 5% of every invoice for one year to cover potential defects.
+
+* **The Workflow:** On a €10,000 invoice, the client pays €9,500. The remaining €500 is tracked in a separate "bucket" called the *Retenue de Garantie*.
+* **System Requirement:** Can your system automatically calculate a **5% Retention** and keep it on the balance sheet as a "Liability" or "Future Payable" rather than just showing the invoice as "Unpaid"?
+
+---
+
+### Summary Checklist for your System:
+
+| Feature | Necessary for French Construction? |
+| --- | --- |
+| **Cumulative Invoicing** | **Yes** (Must track total work to date) |
+| **Line-Item % Progress** | **Yes** (Essential for Situations) |
+| **Avenant (PV/MV) Tracking** | **Yes** (For budget history) |
+| **5% Retention Logic** | **Yes** (Legal requirement) |
+| **Three-Party Approval** | **Yes** (Architect / Contractor / Client) |
+
+---
+
+**If your current system treats every invoice as a standalone event (like a grocery store receipt), it will likely fail to provide the "count to zero" clarity you need for French projects.** Would you like me to explain how to handle the **TVA (VAT)** specifically, as French construction has different rates (20%, 10%, and 5.5%) that can sometimes apply to the same project?
