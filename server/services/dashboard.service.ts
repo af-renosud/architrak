@@ -117,7 +117,14 @@ export async function getDashboardSummary() {
 
   return {
     gmailLastCheck: gmailStatus.lastPollTime,
-    gmailPolling: gmailStatus.polling,
+    // `gmailPolling` historically meant "is the interval scheduled". The
+    // monitor's old `polling` field was actually the mid-poll flag, which
+    // caused a permanent "Polling paused" badge on the dashboard. Now wired
+    // to the new `enabled` field which actually reflects the scheduler.
+    gmailPolling: gmailStatus.enabled,
+    gmailConfigured: gmailStatus.configured,
+    gmailLastPollStatus: gmailStatus.lastPollStatus,
+    gmailLastPollError: gmailStatus.lastPollError,
     overview: {
       activeProjects: allProjects.filter(p => p.status === "active").length,
       totalProjects: allProjects.length,

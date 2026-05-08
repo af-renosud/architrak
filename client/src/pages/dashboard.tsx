@@ -1,4 +1,9 @@
 import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+import { Button } from "@/components/ui/button";
+import { RefreshCw, AlertCircle } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
@@ -73,6 +78,120 @@ function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
 }
 
+function GmailStatusBar({
+  isLoading,
+  data,
+}: {
+  isLoading: boolean;
+  data: DashboardData | undefined;
+}) {
+  const { toast } = useToast();
+  const pollMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/gmail/poll");
+      return res.json() as Promise<{ processed: number; errors: number }>;
+    },
+    onSuccess: (result) => {
+      toast({
+        title: "Inbox checked",
+        description: `${result.processed} new document${result.processed === 1 ? "" : "s"} processed${result.errors > 0 ? `, ${result.errors} error${result.errors === 1 ? "" : "s"}` : ""}.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard/summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/email-documents"] });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Poll failed",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  // States we care about, in priority order:
+  //   1. not configured       → orange, "Connect Gmail" CTA (settings)
+  //   2. permissions error    → red, "Reconnect Gmail" CTA (settings)
+  //   3. last poll errored    → amber, retry button
+  //   4. healthy              → muted, "Last Gmail Check: Xm ago" + Check now
+  const status = data?.gmailLastPollStatus ?? "idle";
+  const isPermsError = status === "insufficient_permissions";
+  const isOtherError = status === "error";
+  const notConfigured = data && !data.gmailConfigured;
+  const pollingDisabled = data && data.gmailConfigured && !data.gmailPolling;
+  const hasIssue = notConfigured || isPermsError || isOtherError || pollingDisabled;
+
+  const tone = hasIssue
+    ? "border-amber-300 bg-amber-50/70 dark:border-amber-700 dark:bg-amber-950/30"
+    : "border-border bg-muted/50";
+
+  return (
+    <div
+      className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border ${tone}`}
+      data-testid="bar-gmail-status"
+    >
+      {hasIssue ? (
+        <AlertCircle size={14} className="text-amber-600 dark:text-amber-400" />
+      ) : (
+        <Mail size={14} className="text-muted-foreground" />
+      )}
+      <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+        Last Gmail Check:
+      </span>
+      <span className="text-[11px] font-bold text-foreground" data-testid="text-gmail-last-check">
+        {isLoading ? "..." : formatTimeAgo(data?.gmailLastCheck ?? null)}
+      </span>
+
+      {notConfigured && (
+        <a
+          href="/settings"
+          className="text-[10px] font-semibold text-amber-700 dark:text-amber-300 underline ml-1 hover:no-underline"
+          data-testid="link-connect-gmail"
+        >
+          Connect Gmail to enable inbox monitoring →
+        </a>
+      )}
+      {!notConfigured && isPermsError && (
+        <a
+          href="/settings"
+          className="text-[10px] font-semibold text-amber-700 dark:text-amber-300 underline ml-1 hover:no-underline"
+          data-testid="link-reconnect-gmail"
+          title={data?.gmailLastPollError ?? undefined}
+        >
+          Re-authorize Gmail (read scope needed) →
+        </a>
+      )}
+      {!notConfigured && !isPermsError && isOtherError && (
+        <span
+          className="text-[10px] text-amber-700 dark:text-amber-300 ml-1"
+          title={data?.gmailLastPollError ?? undefined}
+          data-testid="text-gmail-error"
+        >
+          Last poll errored — will retry automatically.
+        </span>
+      )}
+      {!notConfigured && !isPermsError && !isOtherError && pollingDisabled && (
+        <span className="text-[10px] text-amber-700 dark:text-amber-300 ml-1">
+          (Polling paused)
+        </span>
+      )}
+
+      <div className="ml-auto">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2 text-[10px] font-semibold uppercase tracking-wider"
+          disabled={pollMutation.isPending || !data?.gmailConfigured}
+          onClick={() => pollMutation.mutate()}
+          data-testid="button-poll-gmail-now"
+        >
+          <RefreshCw size={12} className={`mr-1 ${pollMutation.isPending ? "animate-spin" : ""}`} />
+          {pollMutation.isPending ? "Checking..." : "Check now"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function formatTimeAgo(isoString: string | null): string {
   if (!isoString) return "Never";
   const diff = Date.now() - new Date(isoString).getTime();
@@ -122,6 +241,9 @@ interface UrgentItem {
 interface DashboardData {
   gmailLastCheck: string | null;
   gmailPolling: boolean;
+  gmailConfigured: boolean;
+  gmailLastPollStatus: string;
+  gmailLastPollError: string | null;
   overview: {
     activeProjects: number;
     totalProjects: number;
@@ -149,18 +271,7 @@ export default function Dashboard() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-muted/50 border border-border" data-testid="bar-gmail-status">
-          <Mail size={14} className="text-muted-foreground" />
-          <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
-            Last Gmail Check:
-          </span>
-          <span className="text-[11px] font-bold text-foreground" data-testid="text-gmail-last-check">
-            {isLoading ? "..." : formatTimeAgo(data?.gmailLastCheck ?? null)}
-          </span>
-          {data && !data.gmailPolling && (
-            <span className="text-[10px] text-amber-600 dark:text-amber-400 ml-1">(Polling paused)</span>
-          )}
-        </div>
+        <GmailStatusBar isLoading={isLoading} data={data} />
 
         {isLoading ? (
           <LuxuryCard>

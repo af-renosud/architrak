@@ -14,7 +14,15 @@ let lastPollError: string | null = null;
 export function getGmailMonitorStatus() {
   return {
     configured: isGmailConfigured() && isObjectStorageConfigured(),
-    polling: isPolling,
+    // `enabled` = the 15-min interval is set up and will keep firing.
+    // `running` = a poll is mid-flight right this second (true for ~5s out
+    // of every 15min). The dashboard wants `enabled`; older callers that
+    // checked `polling` were actually reading `running` and so showed
+    // "Polling paused" 99.9% of the time. `polling` is kept as an alias
+    // for `enabled` to avoid breaking external consumers.
+    enabled: pollInterval !== null,
+    polling: pollInterval !== null,
+    running: isPolling,
     lastPollTime: lastPollTime?.toISOString() ?? null,
     lastPollStatus,
     lastPollError,

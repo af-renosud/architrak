@@ -43,6 +43,12 @@ function isFakeGmailEnabled(): boolean {
 
 let fakeCounter = 0;
 function buildFakeGmailClient() {
+  // The fake client used to stub only `messages.send` (E2E send tests).
+  // The 15-min inbox poller calls `messages.list` / `labels.list` /
+  // `messages.get` / `messages.attachments.get` / `messages.modify` on
+  // every tick — those would crash with "undefined is not a function" and
+  // park the dashboard's status at `lastPollStatus="error"`. Stub them all
+  // as no-ops returning empty result sets so dev polling is silently happy.
   return {
     users: {
       messages: {
@@ -55,6 +61,16 @@ function buildFakeGmailClient() {
             },
           };
         },
+        list: async (_args: unknown) => ({ data: { messages: [] } }),
+        get: async (_args: unknown) => ({ data: { payload: { headers: [], parts: [] }, threadId: "" } }),
+        modify: async (_args: unknown) => ({ data: {} }),
+        attachments: {
+          get: async (_args: unknown) => ({ data: { data: "" } }),
+        },
+      },
+      labels: {
+        list: async (_args: unknown) => ({ data: { labels: [] } }),
+        create: async (_args: unknown) => ({ data: { id: "fake-label-id" } }),
       },
     },
   } as unknown as ReturnType<typeof google.gmail>;
