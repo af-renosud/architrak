@@ -51,6 +51,23 @@ const archisignRawJson = express.raw({ type: "application/json", limit: "1mb" })
 //
 // All seven events share these four fields; per-event handlers parse the
 // rest of the payload with a tighter zod schema.
+//
+// Two wire-shape conformance notes from the 2026-05-07 Archisign joint
+// debug session (see chat thread for the full exchange):
+//
+//   - The per-event time field is named `occurredAt` per §3.2 / §3.4
+//     ("receivers must use occurredAt for ordering and eventId for
+//     dedup"), NOT `timestamp`. Architrak previously mis-spelled it as
+//     `timestamp`; the rename is safe because no handler reads it (the
+//     per-event schemas carry their own typed time field — `sentAt`,
+//     `signedAt`, etc. — that the handlers actually use).
+//
+//   - `envelopeId` is emitted by Archisign as a JSON number, not a
+//     string. We coerce on parse via `z.coerce.string()` so downstream
+//     storage lookups (`getDevisByArchisignEnvelopeId`, which keys off
+//     a text column) keep working without a parallel int code path.
+//     Same class of bug as the /create response parser fix shipped
+//     immediately prior — outbound was patched, inbound also needed it.
 const COMMON_ENVELOPE_SHAPE = z.object({
   event: z.enum([
     "envelope.sent",
@@ -62,9 +79,9 @@ const COMMON_ENVELOPE_SHAPE = z.object({
     "envelope.retention_breach",
   ]),
   eventId: z.string().min(1),
-  timestamp: z.string().min(1),
-  envelopeId: z.string().min(1),
-});
+  occurredAt: z.string().min(1),
+  envelopeId: z.coerce.string().min(1),
+}).passthrough();
 
 // --- Per-event payload schemas (§3.2 / §3.3 / §3.4 / §3.7) --------------
 

@@ -1,0 +1,41 @@
+Subject: Re: Architrak ↔ Archisign envelope 22 — v2 verifier ✓, but two more schema drifts on your receiver
+
+Step 2 (app bounce) ✓ done. Step 3 (test event) attempted twice. Result: your v2 signature verifier accepts us cleanly — both probes got past the HMAC check with no 401, no signature error, second probe round-tripped in 198ms. So the CSV allowlist fix is confirmed working end-to-end.
+
+However, both probes were 400'd by your downstream Zod schema for two distinct contract drifts on your webhook receiver. Same class of bug as the /create response parser you just fixed — outbound got fixed, inbound still has it. Replaying envelope.sent and envelope.signed right now will just produce two more 400s, so we're holding step 4 until you patch.
+
+Probe 1 — minimal archisign.ping shape (deliberately non-canonical, just to test the verifier):
+
+400 Bad Request
+{"event":["Invalid enum value… received 'archisign.ping'"],
+ "timestamp":["Required"],
+ "envelopeId":["Required"]}
+
+Verifier passed. Schema flagged the bogus event name (correct), then surfaced two field-name issues we hadn't seen yet.
+
+Probe 2 — fully contract-canonical envelope.queried shape per §3.2 + §3.3 (eventId, event, envelopeId: 22, externalRef: "devis-8", metadata: null, occurredAt: "<ISO>", queryId, signerEmail, queryText, queriedAt):
+
+400 Bad Request
+{"timestamp":["Required"],
+ "envelopeId":["Expected string, received number"]}
+
+Two drifts to fix on your receiver:
+
+Drift A — timestamp vs occurredAt
+Your schema requires a top-level field called timestamp. The frozen contract uses occurredAt (verbatim — see §3.2 fixture, §3.4 ordering note "receivers must use occurredAt for ordering and eventId for dedup", and the §3.4 sample at line 621). We emit occurredAt. The dead-lettered envelope.sent payload from devis 8 also has occurredAt — confirmed against our ledger row. So even after you flip the field name, the existing dead-letter row will replay correctly without us having to mutate it.
+
+Drift B — envelopeId type
+Your schema rejects envelopeId: 22 with Expected string, received number. We send it as a JSON number per the contract type signature. This is structurally identical to the /create response bug you just fixed — you patched the outbound parser to coerce number → string, but the inbound webhook receiver schema still has z.string() where it should be z.coerce.string() (or just z.union([z.string(), z.number()])). Same one-liner fix.
+
+Both probe payloads + responses are reproducible — happy to share the exact bytes if your engineer wants to drop them straight into a failing test case.
+
+State on our side:
+
+v2 signing: live and verified ✓
+Dead-lettered envelope.sent for envelope 22: untouched, eventId still 019e02ae-ae50-740e-ac3f-80608e57b2a0, ready for one-shot retry
+Synthesised envelope.signed for envelope 22: not built yet — will construct once your schema accepts contract shape, so we don't waste a fresh eventId on a 400
+Credential triple for envelope 22: ready to surface in the admin envelope detail view as you requested — separate work item, will land independently of the webhook story
+Ping us when both schema drifts are patched and we'll replay both events back-to-back.
+
+Thanks,
+Archisign
