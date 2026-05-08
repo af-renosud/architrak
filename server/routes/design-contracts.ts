@@ -23,7 +23,6 @@ import { Router } from "express";
 import { z } from "zod";
 import multer from "multer";
 import { storage } from "../storage";
-import { requireAuth } from "../auth/middleware";
 import { upload, assertPdfMagic } from "../middleware/upload";
 import { validateRequest } from "../middleware/validate";
 import {
@@ -92,7 +91,18 @@ const milestonePatchSchema = z.object({
   message: "At least one of status / notes / triggerEvent is required",
 });
 
-router.use(requireAuth);
+// NOTE: do NOT add `router.use(requireAuth)` here. This router is mounted
+// at the application root (`app.use(designContractsRouter)` in routes/index.ts),
+// so a router-level middleware with no path prefix runs for EVERY request the
+// app receives — including `/`, `/index.html`, `/favicon.png`, and the rest of
+// the static frontend — and short-circuits them with a 401 before they can
+// fall through to `serveStatic`. Production crash 2026-05-08: every URL
+// returned `{"message":"Authentication required"}` and the SPA never loaded
+// (recurrence of the 2026-04-24 incident documented in
+// server/routes/devis-checks.ts). Auth for every route in this file is already
+// enforced by the `/api` perimeter gate in `server/index.ts` (all routes here
+// are under `/api/...`), so per-router auth is redundant. Add per-route
+// `requireAuth` if you ever introduce a non-`/api` route in this file.
 
 /**
  * POST /api/design-contracts/preview — multipart upload (single PDF, ≤25 MiB),
