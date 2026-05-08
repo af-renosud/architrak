@@ -386,6 +386,82 @@ describe("structured devis-code uniqueness — edit route (PATCH /api/devis/:id)
   });
 });
 
+describe("structured devis-code uniqueness — AI-correction flow (POST /api/devis/:id/confirm)", () => {
+  // The confirm endpoint accepts user corrections to AI-extracted fields
+  // (devisCode, amounts, dates, and the structured `lotCode` composer).
+  // It is the third call site of `buildLotCodeUpdates` after the confirm
+  // body validation in the existing suite — these tests mirror the
+  // contract exercised against the architect-edit PATCH path so the trio
+  // of callers (confirm, PATCH edit, AI-correction at line 821) cannot
+  // silently regress on the uniqueness rules.
+  it("collision against another devis on the AI-correction confirm returns 409 with a fresh nextLotSequence", async () => {
+    state.devis.push({ id: 400, projectId: 1, lotRefText: "ELEC", lotSequence: 1 });
+    const draft = seedDraftDevis();
+
+    const res = await fetch(`${baseUrl}/api/devis/${draft.id}/confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lotCode: { lotRefText: "ELEC", lotSequence: 1, lotDescription: "Cabling" },
+      }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { code: string; nextLotSequence: number };
+    expect(body.code).toBe("devis_lot_sequence_taken");
+    expect(body.nextLotSequence).toBe(2);
+    expect(storageSpy.updateDevis).not.toHaveBeenCalled();
+  });
+
+  it("AI-correction collision detection is case-insensitive on lotRef", async () => {
+    state.devis.push({ id: 401, projectId: 1, lotRefText: "ELEC", lotSequence: 4 });
+    const draft = seedDraftDevis();
+
+    const res = await fetch(`${baseUrl}/api/devis/${draft.id}/confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lotCode: { lotRefText: "  elec  ", lotSequence: 4, lotDescription: "Wiring" },
+      }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { nextLotSequence: number };
+    expect(body.nextLotSequence).toBe(5);
+    expect(storageSpy.updateDevis).not.toHaveBeenCalled();
+  });
+
+  it("re-submitting the draft's own pre-filled (lotRef, lotSequence) succeeds via excludeDevisId", async () => {
+    // A draft devis can carry pre-filled structured columns (e.g. set by an
+    // earlier extraction pass before the user clicks Confirm). Re-confirming
+    // with the same numbers must not collide with itself — the confirm route
+    // passes `excludeDevisId: devis.id` to `buildLotCodeUpdates` for exactly
+    // this case.
+    const draft = seedDraftDevis({
+      lotRefText: "ELEC",
+      lotSequence: 7,
+    });
+
+    const res = await fetch(`${baseUrl}/api/devis/${draft.id}/confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lotCode: { lotRefText: "ELEC", lotSequence: 7, lotDescription: "Cabling" },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    // Both uniqueness helpers must have been called with the row's own id
+    // excluded so the self-owned (ELEC, 7) doesn't trip the collision arm.
+    expect(devisCodeSpy.isLotSequenceTaken).toHaveBeenCalledWith(
+      1,
+      "ELEC",
+      7,
+      { excludeDevisId: draft.id },
+    );
+  });
+});
+
 describe("next-lot-number suggestion endpoint", () => {
   it("returns 1 for an unused lotRef in the project", async () => {
     const res = await fetch(
