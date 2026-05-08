@@ -1,0 +1,52 @@
+Subject: Re: Architrak ↔ Archisign envelope 22 — root cause found, blocked on a config decision
+
+Hi,
+
+Quick update before we do any of the four steps. While checking #1 (the v2 tenant flip) we found the actual root cause of the 401 on envelope.sent, and it changes the order of operations a bit.
+
+What we expected to find on our side
+
+Per your AT4 §3.9.1 ask, we needed architrak to be in our ARCHISIGN_WEBHOOK_V2_TENANTS allowlist so we'd dual-emit v2-signed payloads. If it wasn't, we'd be sending v1-only and your strict-v2 verifier would correctly 401 us. That matches the symptom.
+
+What we actually found
+
+ARCHISIGN_WEBHOOK_V2_TENANTS is set, but its value is a JSON object of the form:
+
+{"architrak":"<32-byte base64 key>"}
+
+…not the CSV string our parser expects. Our gating code is literally:
+
+(process.env.ARCHISIGN_WEBHOOK_V2_TENANTS || "")
+  .split(",").map(s => s.trim()).filter(Boolean)
+  .includes(tenantKey);
+
+Splitting that JSON blob on , returns one element — the whole JSON string — so .includes("architrak") is false. v2 has been off for the architrak tenant since the secret was first populated. That's why envelope.sent for envelope 22 was signed v1-only and hit your verifier as a 401.
+
+The bigger question this raises
+
+Whoever populated the secret on our side put a per-tenant signing key in there alongside the tenant name. That key is currently dead config — our code never reads it. Two interpretations, and we'd like your read before we change anything:
+
+It's vestigial. The intent was always a CSV allowlist, and the JSON shape is a mistake. Fix: rewrite the secret to the literal string architrak (CSV). v2 dual-emit activates on next restart, signed with the global ARCHISIGN_WEBHOOK_SECRET you and we already share.
+
+It's intentional but unwired. The plan was per-tenant HMAC keys, and that base64 value is the key you actually want us signing your payloads with. Fix: we update the gating code to parse a JSON map, then sign v2 payloads to you with that per-tenant key instead of the shared secret. This is bigger work and means you'd need to rotate your verifier off ARCHISIGN_WEBHOOK_SECRET and onto the per-tenant key.
+
+If (2), please confirm the per-tenant key in the JSON map is the one your verifier is loaded with — if not, the fix is just to overwrite the secret with the right key, then we update the parser to read it.
+
+What we're holding on
+
+We're not retrying the dead-lettered envelope.sent (eventId 019e02ae-…b2a0) until you tell us which signing key it should be re-signed with. Wrong key just produces another 401 and another dead-letter row.
+We're not synthesising the missing envelope.signed for envelope 22 yet either, for the same reason. (Reminder: it was never in our outbound ledger because the legacy dispatcher path doesn't persist — that's the AS3/AS4 gap we agreed to track as follow-up A.)
+We have the accessUrl / accessToken / otpDestination triple for envelope 22 ready to send out-of-band as soon as you tell us your preferred secure channel. We're deliberately not putting the bearer token in this thread.
+What we need from you
+
+Just one decision: (1) CSV with shared secret, or (2) JSON map with per-tenant key. After you answer, our sequence is:
+
+Apply the matching fix on our side (config-only for #1, code+config for #2).
+Bounce the app so the new gating takes effect.
+Send you a single low-stakes test event so your verifier can confirm v2 acceptance.
+Retry the dead-lettered envelope.sent (idempotent on eventId, safe).
+Synthesise + emit envelope.signed for envelope 22 once follow-up A lands the proper code path (or as a one-off if you'd rather not wait).
+Hand over the credential triple OOB.
+Thanks,
+Archisign
+
