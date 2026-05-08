@@ -1,0 +1,53 @@
+Here's everything I pulled from the production database for envelope 22 — you can paste this back to Architrak as-is.
+
+1. /api/v1/envelopes/create — actual response shape
+Their parser expects accessUrl / otpDestination at the top level. Ours nests them under signers[]. That is the root cause of why those two fields landed empty on their side.
+
+The exact body shape we return (HTTP 201) is:
+
+{
+  "envelopeId": 22,
+  "status": "draft",
+  "createdAt": "2026-05-07T13:44:20.864Z",
+  "expiresAt": "2026-06-06T13:44:17.071Z",
+  "signers": [
+    {
+      "id": 23,
+      "accessToken": "<64-char hex>",
+      "accessUrl": "https://<host>/sign/<accessToken>",
+      "otpDestination": "clivegpalmer@gmail.com"
+    }
+  ]
+}
+
+Two more gotchas worth flagging to them:
+
+envelopeId is a JSON number, not a string (22, not "22"). Their example shows "22".
+otpDestination is the signer's email (we send OTP by email). Their example shows a +33… phone — we don't return phone numbers.
+So they need to read signers[0].accessUrl and signers[0].otpDestination, and treat envelopeId as a number.
+
+2. webhookUrl — sent vs stored
+They are byte-identical. No mismatch on this axis.
+
+value
+Stored against envelope 22	https://architrak.replit.app/api/webhooks/archisign
+Audit confirms received from create call	tenant architrak, externalRef devis-8, pdfSource pdfFetchUrl
+3. Delivery log for envelope 22
+Only one delivery is recorded in our outbound ledger:
+
+event	eventId	URL	HTTP	attempts	state	timeline
+envelope.sent	019e02ae-ae50-740e-ac3f-80608e57b2a0	https://architrak.replit.app/api/webhooks/archisign	401 Unauthorized	1	dead_lettered	created 13:44:22.880Z, attempted 13:44:23.046Z, dead-lettered 13:44:23.080Z
+Raw payload we POSTed (239 bytes):
+
+{"eventId":"019e02ae-ae50-740e-ac3f-80608e57b2a0","event":"envelope.sent","envelopeId":22,"externalRef":"devis-8","metadata":null,"occurredAt":"2026-05-07T13:44:21.516Z","signers":[{"email":"clivegpalmer@gmail.com","name":"clive palmer"}]}
+
+So they need to look at why their inbound webhook returned 401 to us — that's why nothing reached their queue. Our dispatcher treats 401 as non-retryable per spec, so it was immediately dead-lettered (no retries).
+
+Two latent issues on our side that this investigation surfaced
+These are worth fixing regardless of Architrak's 401:
+
+A. envelope.signed is not going through the new ledger. The audit trail confirms the document was signed at 13:49:13Z, but no envelope.signed row exists in webhook_deliveries. The signed-event call site in server/routes.ts is still on the legacy dispatchWebhook path (per the AS3 note in replit.md: "Existing dispatchWebhook call sites in routes.ts left untouched … AS4 wiring will migrate them per call site as needs arise"). The legacy dispatcher doesn't persist attempts, so we can't tell Architrak with certainty whether the signed event was even attempted, let alone its status. Production logs from that day are already rotated out, so log scraping won't help. We should migrate the signed/declined/queried call sites to emitEvent so they land in the ledger like envelope.sent does.
+
+B. v2 HMAC may not be enabled for the architrak tenant. Architrak says they verify with the v2 scheme sha256(${X-Archisign-Timestamp}.${rawBody}). Our dispatcher only dual-emits v2 when the tenant key is listed in ARCHISIGN_WEBHOOK_V2_TENANTS; otherwise we sign v1 only. If architrak isn't in that env var, their v2 verifier will fail every payload regardless of payload correctness — and the 401 they returned is consistent with a verifier rejecting an unsigned-or-v1-signed request. Worth confirming the env var contents and adding architrak if it's missing.
+
+Want me to open follow-up tasks for (A) the legacy → ledger migration and (B) confirming/adjusting the v2 tenant allowlist?
