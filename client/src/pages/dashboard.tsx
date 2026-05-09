@@ -108,17 +108,22 @@ function GmailStatusBar({
     },
   });
 
-  // States we care about, in priority order:
-  //   1. not configured       → orange, "Connect Gmail" CTA (settings)
-  //   2. permissions error    → red, "Reconnect Gmail" CTA (settings)
-  //   3. last poll errored    → amber, retry button
-  //   4. healthy              → muted, "Last Gmail Check: Xm ago" + Check now
+  // After the Path 1 (per-user OAuth) refactor, "linkedUserCount" tells us
+  // whether anyone has actually granted gmail.readonly via /api/auth/link-gmail.
+  // The current user's own link state lives on /api/auth/user (gmailLinked).
+  const { data: me } = useQuery<{ id: number; email: string; gmailLinked?: boolean }>({
+    queryKey: ["/api/auth/user"],
+  });
   const status = data?.gmailLastPollStatus ?? "idle";
-  const isPermsError = status === "insufficient_permissions";
+  const isPermsError = status === "insufficient_permissions"; // legacy — superseded by no_linked_users
+  const isNoLinkedUsers = status === "no_linked_users";
+  const isAuthRevoked = status === "auth_revoked";
   const isOtherError = status === "error";
   const notConfigured = data && !data.gmailConfigured;
   const pollingDisabled = data && data.gmailConfigured && !data.gmailPolling;
-  const hasIssue = notConfigured || isPermsError || isOtherError || pollingDisabled;
+  const meLinked = me?.gmailLinked === true;
+  const showLinkCta = !notConfigured && (isNoLinkedUsers || isPermsError || (!meLinked && me !== undefined));
+  const hasIssue = notConfigured || isPermsError || isNoLinkedUsers || isAuthRevoked || isOtherError || pollingDisabled || !meLinked;
 
   const tone = hasIssue
     ? "border-amber-300 bg-amber-50/70 dark:border-amber-700 dark:bg-amber-950/30"
@@ -150,17 +155,25 @@ function GmailStatusBar({
           Connect Gmail to enable inbox monitoring →
         </a>
       )}
-      {!notConfigured && isPermsError && (
+      {showLinkCta && (
         <a
-          href="/settings"
+          href="/api/auth/link-gmail"
           className="text-[10px] font-semibold text-amber-700 dark:text-amber-300 underline ml-1 hover:no-underline"
-          data-testid="link-reconnect-gmail"
-          title={data?.gmailLastPollError ?? undefined}
+          data-testid="link-link-gmail-inbox"
+          title={
+            isAuthRevoked
+              ? "Your Google account revoked access. Re-link to resume polling."
+              : "Grant Gmail read access so ArchiTrak can scan your inbox for devis PDFs every 15 minutes."
+          }
         >
-          Re-authorize Gmail (read scope needed) →
+          {meLinked && isAuthRevoked
+            ? "Re-link your inbox (access revoked) →"
+            : meLinked
+            ? "Re-link your inbox →"
+            : "Link my inbox to enable monitoring →"}
         </a>
       )}
-      {!notConfigured && !isPermsError && isOtherError && (
+      {!notConfigured && !isPermsError && !showLinkCta && isOtherError && (
         <span
           className="text-[10px] text-amber-700 dark:text-amber-300 ml-1"
           title={data?.gmailLastPollError ?? undefined}
@@ -180,7 +193,7 @@ function GmailStatusBar({
           variant="ghost"
           size="sm"
           className="h-7 px-2 text-[10px] font-semibold uppercase tracking-wider"
-          disabled={pollMutation.isPending || !data?.gmailConfigured}
+          disabled={pollMutation.isPending || !data?.gmailConfigured || !meLinked}
           onClick={() => pollMutation.mutate()}
           data-testid="button-poll-gmail-now"
         >

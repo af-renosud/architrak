@@ -258,6 +258,21 @@ export interface IStorage {
   getUser(id: number): Promise<User | undefined>;
   getUserByGoogleId(googleId: string): Promise<User | undefined>;
   upsertUser(data: InsertUser): Promise<User>;
+  // Gmail polling (per-user OAuth path — see migration 0030).
+  listGmailPollingUsers(): Promise<User[]>;
+  updateUserGmailTokens(userId: number, tokens: {
+    gmailRefreshToken?: string | null;
+    gmailAccessToken?: string | null;
+    gmailTokenExpiresAt?: Date | null;
+    gmailScopeGranted?: string | null;
+  }): Promise<void>;
+  updateUserGmailPollStatus(userId: number, status: {
+    gmailLastPollAt: Date;
+    gmailLastPollStatus: string;
+    gmailLastPollError: string | null;
+  }): Promise<void>;
+  setUserGmailPollingEnabled(userId: number, enabled: boolean): Promise<void>;
+  unlinkUserGmail(userId: number): Promise<void>;
 
   getBenchmarkTags(): Promise<BenchmarkTag[]>;
   upsertBenchmarkTag(data: InsertBenchmarkTag): Promise<BenchmarkTag>;
@@ -2208,6 +2223,60 @@ export class DatabaseStorage implements IStorage {
     }
     const [created] = await db.insert(users).values(data).returning();
     return created;
+  }
+
+  // -- Gmail polling per-user OAuth (migration 0030) -----------------------
+  async listGmailPollingUsers(): Promise<User[]> {
+    return db
+      .select()
+      .from(users)
+      .where(
+        and(
+          isNotNull(users.gmailRefreshToken),
+          eq(users.gmailPollingEnabled, true),
+        ),
+      );
+  }
+
+  async updateUserGmailTokens(userId: number, tokens: {
+    gmailRefreshToken?: string | null;
+    gmailAccessToken?: string | null;
+    gmailTokenExpiresAt?: Date | null;
+    gmailScopeGranted?: string | null;
+  }): Promise<void> {
+    // Build the update payload defensively: `undefined` means "leave alone"
+    // (notably for refresh_token which Google only rotates occasionally),
+    // `null` means "explicitly clear" (used by unlink).
+    const patch: Record<string, unknown> = {};
+    if (tokens.gmailRefreshToken !== undefined) patch.gmailRefreshToken = tokens.gmailRefreshToken;
+    if (tokens.gmailAccessToken !== undefined) patch.gmailAccessToken = tokens.gmailAccessToken;
+    if (tokens.gmailTokenExpiresAt !== undefined) patch.gmailTokenExpiresAt = tokens.gmailTokenExpiresAt;
+    if (tokens.gmailScopeGranted !== undefined) patch.gmailScopeGranted = tokens.gmailScopeGranted;
+    if (Object.keys(patch).length === 0) return;
+    await db.update(users).set(patch).where(eq(users.id, userId));
+  }
+
+  async updateUserGmailPollStatus(userId: number, status: {
+    gmailLastPollAt: Date;
+    gmailLastPollStatus: string;
+    gmailLastPollError: string | null;
+  }): Promise<void> {
+    await db.update(users).set(status).where(eq(users.id, userId));
+  }
+
+  async setUserGmailPollingEnabled(userId: number, enabled: boolean): Promise<void> {
+    await db.update(users).set({ gmailPollingEnabled: enabled }).where(eq(users.id, userId));
+  }
+
+  async unlinkUserGmail(userId: number): Promise<void> {
+    await db.update(users).set({
+      gmailRefreshToken: null,
+      gmailAccessToken: null,
+      gmailTokenExpiresAt: null,
+      gmailScopeGranted: null,
+      gmailLastPollStatus: null,
+      gmailLastPollError: null,
+    }).where(eq(users.id, userId));
   }
 
   // -- Insurance overrides (AT3, contract §1.3 / §2.1.4) -------------------

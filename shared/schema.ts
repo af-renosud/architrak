@@ -1333,6 +1333,22 @@ export const users = pgTable("users", {
   profileImageUrl: text("profile_image_url"),
   lastLoginAt: timestamp("last_login_at"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  // Gmail polling per-user OAuth tokens (Path 1 of the inbox-monitoring fix
+  // 2026-05-08). The Replit-managed `google-mail` connector only grants
+  // gmail.send + addon scopes — it does NOT include gmail.readonly, which is
+  // required for users.messages.list. Instead, we extend the existing Google
+  // Workspace login OAuth (server/auth/google-oauth.ts) with a gmail.readonly
+  // scope on first login, persist the resulting refresh_token here, and let
+  // server/gmail/monitor.ts poll every linked architect's inbox individually.
+  // Tokens are sensitive: never log, never return from /api/auth/user.
+  gmailRefreshToken: text("gmail_refresh_token"),
+  gmailAccessToken: text("gmail_access_token"),
+  gmailTokenExpiresAt: timestamp("gmail_token_expires_at"),
+  gmailScopeGranted: text("gmail_scope_granted"),
+  gmailPollingEnabled: boolean("gmail_polling_enabled").notNull().default(true),
+  gmailLastPollAt: timestamp("gmail_last_poll_at"),
+  gmailLastPollStatus: text("gmail_last_poll_status"),
+  gmailLastPollError: text("gmail_last_poll_error"),
 });
 
 export const sessions = pgTable("session", {

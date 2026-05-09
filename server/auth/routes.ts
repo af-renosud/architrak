@@ -20,6 +20,20 @@ export function registerAuthRoutes(app: Express) {
     }
   });
 
+  // /api/auth/link-gmail — opt-in inbox-monitoring grant. Same OAuth flow as
+  // /login but adds the gmail.modify scope and forces prompt=consent so
+  // Google returns a refresh_token (only emitted on first consent). Idempotent
+  // — re-running just refreshes the stored refresh_token.
+  app.get("/api/auth/link-gmail", (req: Request, res: Response) => {
+    try {
+      const callbackUrl = getCallbackUrl(req);
+      const authUrl = getAuthUrl(callbackUrl, { linkGmail: true });
+      res.redirect(authUrl);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
   app.get("/api/auth/callback", async (req: Request, res: Response) => {
     const code = req.query.code as string;
     if (!code) {
@@ -28,7 +42,8 @@ export function registerAuthRoutes(app: Express) {
 
     try {
       const callbackUrl = getCallbackUrl(req);
-      const googleUser = await exchangeCodeForUser(code, callbackUrl);
+      const result = await exchangeCodeForUser(code, callbackUrl);
+      const googleUser = result.user;
 
       const user = await storage.upsertUser({
         googleId: googleUser.googleId,
@@ -38,6 +53,19 @@ export function registerAuthRoutes(app: Express) {
         profileImageUrl: googleUser.profileImageUrl,
         lastLoginAt: new Date(),
       });
+
+      // If the user just granted the gmail scope, persist their refresh
+      // token so server/gmail/monitor.ts can poll their inbox. Don't blank
+      // out a previously-stored refresh_token if this login didn't grant
+      // gmail (e.g. they re-logged via the regular /login route).
+      if (result.gmailRefreshToken) {
+        await storage.updateUserGmailTokens(user.id, {
+          gmailRefreshToken: result.gmailRefreshToken,
+          gmailAccessToken: result.gmailAccessToken ?? null,
+          gmailTokenExpiresAt: result.gmailTokenExpiresAt ?? null,
+          gmailScopeGranted: result.gmailScopeGranted ?? null,
+        });
+      }
 
       req.session.regenerate((regenerateErr) => {
         if (regenerateErr) {
@@ -139,6 +167,12 @@ export function registerAuthRoutes(app: Express) {
       firstName: user.firstName,
       lastName: user.lastName,
       profileImageUrl: user.profileImageUrl,
+      // Inbox-link state for the dashboard's "Link my inbox" CTA. Never
+      // expose the refresh_token itself — only whether one exists.
+      gmailLinked: user.gmailRefreshToken !== null && user.gmailRefreshToken !== "",
+      gmailPollingEnabled: user.gmailPollingEnabled,
+      gmailLastPollAt: user.gmailLastPollAt?.toISOString() ?? null,
+      gmailLastPollStatus: user.gmailLastPollStatus,
     });
   });
 }

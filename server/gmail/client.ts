@@ -41,6 +41,12 @@ function isFakeGmailEnabled(): boolean {
   return env.NODE_ENV !== 'production' && !!env.E2E_FAKE_GMAIL;
 }
 
+/** Public re-export so server/gmail/monitor.ts can branch on fake mode without
+ * having to know about the env-var detection logic. */
+export function isFakeGmailMode(): boolean {
+  return isFakeGmailEnabled();
+}
+
 let fakeCounter = 0;
 function buildFakeGmailClient() {
   // The fake client used to stub only `messages.send` (E2E send tests).

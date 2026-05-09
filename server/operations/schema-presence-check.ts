@@ -85,6 +85,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0027_design_contracts", artifact: { kind: "table", table: "design_contracts" } },
   { tag: "0028_design_contract_parties", artifact: { kind: "column", table: "design_contracts", column: "client_name" } },
   { tag: "0029_devis_structured_lot_code", artifact: { kind: "column", table: "devis", column: "lot_ref_text" } },
+  { tag: "0030_user_gmail_polling", artifact: { kind: "column", table: "users", column: "gmail_refresh_token" } },
 ];
 
 interface JournalFile {
