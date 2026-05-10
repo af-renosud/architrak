@@ -26,3 +26,24 @@ export const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024, files: 1 },
   fileFilter: pdfFileFilter,
 });
+
+const ALLOWED_IMAGE_MIME = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/gif",
+  "image/webp",
+]);
+
+function imageFileFilter(_req: Request, file: Express.Multer.File, cb: FileFilterCallback) {
+  if (!ALLOWED_IMAGE_MIME.has(file.mimetype)) {
+    return cb(new Error("Only PNG, JPEG, GIF, or WEBP images are allowed"));
+  }
+  cb(null, true);
+}
+
+export const imageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024, files: 1 },
+  fileFilter: imageFileFilter,
+});

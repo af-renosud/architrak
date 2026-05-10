@@ -1726,6 +1726,7 @@ export const wishListItems = pgTable("wish_list_items", {
   title: text("title").notNull(),
   description: text("description"),
   status: text("status").notNull().default("open"),
+  imageStorageKeys: text("image_storage_keys").array().notNull().default(sql`'{}'::text[]`),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
@@ -1749,6 +1750,7 @@ export const insertWishListItemSchema = createInsertSchema(wishListItems).omit({
     .nullable()
     .optional(),
   status: z.enum(WISH_LIST_STATUSES).optional(),
+  imageStorageKeys: z.array(z.string().min(1)).max(20, "Up to 20 images per item").optional(),
 });
 
 export const updateWishListItemSchema = insertWishListItemSchema.partial();

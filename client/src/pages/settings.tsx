@@ -1893,8 +1893,14 @@ interface WishListItemDto {
   title: string;
   description: string | null;
   status: "open" | "in_progress" | "done" | "wontfix";
+  imageStorageKeys: string[];
   createdAt: string;
   updatedAt: string;
+}
+
+interface DraftImage {
+  storageKey: string;
+  previewUrl: string;
 }
 
 const WISH_STATUS_LABEL: Record<WishListItemDto["status"], string> = {
@@ -1916,13 +1922,87 @@ function WishListSection() {
   const [type, setType] = useState<"feature" | "bug">("feature");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [draftImages, setDraftImages] = useState<DraftImage[]>([]);
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: items = [], isLoading } = useQuery<WishListItemDto[]>({
     queryKey: ["/api/wish-list"],
   });
 
+  const uploadImageFile = async (file: File): Promise<string | null> => {
+    if (!file.type.startsWith("image/")) {
+      toast({ title: "Only images can be attached", variant: "destructive" });
+      return null;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      toast({ title: "Image too large", description: "Max 8 MB per image", variant: "destructive" });
+      return null;
+    }
+    setIsUploadingImage(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file, file.name || "pasted.png");
+      const res = await fetch("/api/wish-list/upload-image", {
+        method: "POST",
+        credentials: "include",
+        body: fd,
+      });
+      if (!res.ok) {
+        const msg = await res.text().catch(() => "Upload failed");
+        throw new Error(msg || "Upload failed");
+      }
+      const json = (await res.json()) as { storageKey: string };
+      const previewUrl = URL.createObjectURL(file);
+      setDraftImages((prev) => [...prev, { storageKey: json.storageKey, previewUrl }]);
+      return json.storageKey;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Upload failed";
+      toast({ title: "Image upload failed", description: message, variant: "destructive" });
+      return null;
+    } finally {
+      setIsUploadingImage(false);
+    }
+  };
+
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const imageFiles: File[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (it.kind === "file" && it.type.startsWith("image/")) {
+        const f = it.getAsFile();
+        if (f) imageFiles.push(f);
+      }
+    }
+    if (imageFiles.length === 0) return;
+    e.preventDefault();
+    for (const f of imageFiles) {
+      // eslint-disable-next-line no-await-in-loop
+      await uploadImageFile(f);
+    }
+  };
+
+  const handleFilePick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = "";
+    for (const f of files) {
+      // eslint-disable-next-line no-await-in-loop
+      await uploadImageFile(f);
+    }
+  };
+
+  const removeDraftImage = (storageKey: string) => {
+    setDraftImages((prev) => {
+      const target = prev.find((d) => d.storageKey === storageKey);
+      if (target) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter((d) => d.storageKey !== storageKey);
+    });
+  };
+
   const createMutation = useMutation({
-    mutationFn: async (body: { type: string; title: string; description: string }) => {
+    mutationFn: async (body: { type: string; title: string; description: string; imageStorageKeys: string[] }) => {
       const res = await apiRequest("POST", "/api/wish-list", body);
       return res.json();
     },
@@ -1932,6 +2012,8 @@ function WishListSection() {
       setTitle("");
       setDescription("");
       setType("feature");
+      draftImages.forEach((d) => URL.revokeObjectURL(d.previewUrl));
+      setDraftImages([]);
     },
     onError: (err: Error) => {
       toast({ title: "Could not save", description: err.message, variant: "destructive" });
@@ -1972,7 +2054,12 @@ function WishListSection() {
       toast({ title: "Title is required", variant: "destructive" });
       return;
     }
-    createMutation.mutate({ type, title: trimmed, description: description.trim() });
+    createMutation.mutate({
+      type,
+      title: trimmed,
+      description: description.trim(),
+      imageStorageKeys: draftImages.map((d) => d.storageKey),
+    });
   };
 
   const openItems = items.filter((i) => i.status === "open" || i.status === "in_progress");
@@ -2032,20 +2119,80 @@ function WishListSection() {
             data-testid="input-wish-title"
           />
           <textarea
-            placeholder="Optional details — steps to reproduce, why it matters, etc."
+            placeholder="Optional details — steps to reproduce, why it matters, etc. Tip: paste screenshots here."
             value={description}
             onChange={(e) => setDescription(e.target.value)}
+            onPaste={handlePaste}
             maxLength={2000}
             rows={3}
             className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-[12px] text-foreground placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300"
             data-testid="textarea-wish-description"
           />
-          <div className="flex justify-end">
-            <Button type="submit" size="sm" disabled={createMutation.isPending} data-testid="button-wish-submit">
+
+          {(draftImages.length > 0 || isUploadingImage) && (
+            <div className="flex flex-wrap gap-2" data-testid="container-wish-draft-images">
+              {draftImages.map((img) => (
+                <div
+                  key={img.storageKey}
+                  className="relative group rounded-md overflow-hidden border border-slate-200 bg-slate-50"
+                  data-testid={`thumb-wish-draft-${img.storageKey.slice(-12)}`}
+                >
+                  <img
+                    src={img.previewUrl}
+                    alt="Pasted attachment"
+                    className="h-20 w-20 object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeDraftImage(img.storageKey)}
+                    className="absolute top-0.5 right-0.5 bg-black/60 text-white rounded-full w-5 h-5 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    data-testid={`button-remove-draft-${img.storageKey.slice(-12)}`}
+                    aria-label="Remove image"
+                  >
+                    <Trash2 size={10} />
+                  </button>
+                </div>
+              ))}
+              {isUploadingImage && (
+                <div className="h-20 w-20 rounded-md border border-dashed border-slate-300 bg-slate-50 flex items-center justify-center">
+                  <Loader2 size={16} className="animate-spin text-slate-400" />
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isUploadingImage}
+                data-testid="button-wish-attach-image"
+              >
+                <Image size={13} className="mr-1.5" />
+                Attach image
+              </Button>
+              <span className="text-[10px] text-muted-foreground hidden sm:inline">
+                or paste a screenshot into the description
+              </span>
+            </div>
+            <Button type="submit" size="sm" disabled={createMutation.isPending || isUploadingImage} data-testid="button-wish-submit">
               {createMutation.isPending ? <Loader2 size={14} className="mr-1.5 animate-spin" /> : <Plus size={14} className="mr-1.5" />}
               Add to wish list
             </Button>
           </div>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={handleFilePick}
+            data-testid="input-file-wish-image"
+          />
         </form>
       </LuxuryCard>
 
@@ -2123,6 +2270,26 @@ function WishListGroup({
                   </p>
                   {item.description && (
                     <p className="text-[11px] text-muted-foreground mt-0.5 whitespace-pre-wrap break-words">{item.description}</p>
+                  )}
+                  {item.imageStorageKeys && item.imageStorageKeys.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mt-2" data-testid={`images-wish-${item.id}`}>
+                      {item.imageStorageKeys.map((_key, idx) => (
+                        <a
+                          key={idx}
+                          href={`/api/wish-list/${item.id}/image/${idx}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block rounded-md overflow-hidden border border-slate-200 hover:border-slate-400 transition-colors"
+                          data-testid={`link-wish-image-${item.id}-${idx}`}
+                        >
+                          <img
+                            src={`/api/wish-list/${item.id}/image/${idx}`}
+                            alt={`Attachment ${idx + 1}`}
+                            className="h-16 w-16 object-cover"
+                          />
+                        </a>
+                      ))}
+                    </div>
                   )}
                   <p className="text-[9px] text-slate-400 mt-1 uppercase tracking-wide">
                     {new Date(item.createdAt).toLocaleDateString()}
