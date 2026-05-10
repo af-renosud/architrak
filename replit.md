@@ -1,77 +1,123 @@
-# ArchiTrak — French Architecture Financial Management
+# ArchiTrak
 
-## Overview
-ArchiTrak is a financial workflow management application for French architectural firms (maîtres d'œuvre). It manages the complete financial lifecycle of construction projects, from initial contracts and quotations through variations, progress claims, and architect-verified payment instructions, up to fee tracking. The application integrates with ArchiDoc for project and contractor management and features AI-powered extraction of financial data from PDF attachments in Gmail. The business vision is to streamline financial operations for architectural firms, improving accuracy and efficiency in project billing and financial oversight.
+Financial workflow app for French architectural firms (maîtres d'œuvre). Manages the
+full lifecycle of construction-project finances: contracts → quotations → variations →
+progress claims → architect-verified payment instructions → fee tracking. Integrates
+with **ArchiDoc** for project/contractor data and **Archisign** for client e-signature.
+AI extraction (Gemini) parses PDF attachments arriving by Gmail.
 
-## User Preferences
-- French domain terms kept (Devis, Avenant, Marché, Certificat, Honoraires, Lot, Situation, Retenue de Garantie, PV/MV, TVA, SIRET). All other UI in English.
-- Bilingual data fields (description_fr + description_uk) for client communication.
-- Projects ONLY created via ArchiDoc API — no manual project creation.
+> Deep architectural rules, calculation invariants, and inter-app contracts live in
+> **`ARCHITECTURE.md`** ("the constitution"). Read it before changing financial logic
+> or webhook contracts.
 
-## System Architecture
+## Stack
 
-### Operations Runbook
-- **Migrations**: Generated via `npm run db:generate`, applied at deploy via `npx tsx scripts/run-migrations.mjs`. Direct `db:push` is prohibited due to hand-tracked SQL migrations.
-- **Migration-replay gate**: `bash scripts/check-migration-replay.sh` ensures migration consistency.
-- **Deep healthcheck + post-deploy smoke gate**: `GET /healthz/deep` verifies database table integrity, with a post-deploy smoke test polling for up to 60 seconds.
-- **Post-merge schema-error classifier + runtime watchdog**: Classifies post-merge script failures to distinguish schema errors (deploy abort) from transient issues (operator alert). A runtime watchdog polls `/healthz/deep` in production for continuous monitoring.
-- **Repeat-transient escalation**: Escalates recurring transient failures to prevent them from being dismissed.
-- **Database identity guard**: Verifies the application is connected to the correct database using host fingerprinting and a sentinel row, preventing accidental operation on incorrect databases.
-- **Schema-presence boot invariant**: Checks for schema drift at startup, ensuring the database schema matches the migration tracker before the application fully boots.
-- **Tracker reconciliation script**: Provides a recovery mechanism for `drizzle.__drizzle_migrations` tracker drift, allowing operators to resync the tracker with the actual schema.
+- **Frontend**: React 18 + TypeScript, Vite, Tailwind, Shadcn UI, Wouter, TanStack Query
+- **Backend**: Node 20, Express 5, TypeScript (`tsx` in dev, `esbuild` for prod)
+- **DB**: PostgreSQL 16 + Drizzle ORM (53 application tables in `shared/schema.ts` + 1 identity-guard sentinel, 32 hand-tracked SQL migrations)
+- **AI**: Google Gemini (`@google/generative-ai`) for PDF extraction
+- **Storage**: Replit Object Storage (GCS-backed) for PDFs and uploads
+- **External services**: ArchiDoc, Archisign, DocRaptor (HTML→PDF), Gmail API
+- **Auth**: Google Workspace OAuth 2.0 (`@renosud.com` domain-restricted)
+- **Tests**: Vitest (unit + integration), Playwright (browser, in `tests/browser/`)
 
-### Tech Stack
-- **Frontend**: React 18, TypeScript, Vite, Tailwind CSS, Shadcn UI, Wouter, TanStack React Query.
-- **Backend**: Express 5 (Node.js), PostgreSQL, Drizzle ORM.
-- **Integrations**: ArchiDoc API, Gmail API, OpenAI, Object Storage.
-- **Design System**: Archidoc "Architectural Luxury" (Navy primary, Inter font, luxury cards).
+## Repo layout
 
-### Core Financial Concepts
-- **Three Buckets**: Contracted, Certified, Reste à Réaliser.
-- **Two Invoicing Modes**: Mode A (tick-off) and Mode B (percentage completion).
-- **Retenue de Garantie**: 5% holdback.
-- **PV/MV**: Variation orders.
-- **Fee Types**: Works percentage, Conception, Planning.
-- **Commission Workflow**: Invoice upload → approval → auto-calculation → fee entry.
-- **Commission Rate**: Project-specific `feePercentage`.
-- **Dashboard Layout**: Gmail status bar, per-project rows with counters for Devis, Signed, Factures, Agent.
+```
+client/        React app (entry: client/src/main.tsx)
+server/        Express app (entry: server/index.ts)
+  routes/      Domain routes (39 routers, mounted by routes/index.ts)
+  services/    Business logic
+  archidoc/    ArchiDoc sync + import
+  gmail/       Inbox polling + extraction
+  operations/  Boot invariants (schema-presence-check, db identity guard)
+shared/        Schema, types, financial utils — imported by client AND server
+migrations/    Hand-written SQL + meta/_journal.json (NEVER use drizzle db:push)
+scripts/       Ops scripts (run-migrations, post-deploy smoke, backfills)
+script/        ⚠ Build entrypoint (script/build.ts) — singular, not "scripts"
+docs/          Inter-app contract specs, wire fixtures
+tests/browser/ Playwright e2e
+```
 
-### Technical Implementations
-- **Database Schema**: Extensive schema covering financial data, ArchiDoc mirrors, and document/communication tracking. Includes tables for client checks, insurance overrides, and webhook logging.
-- **Client review portal**: A public, token-authenticated portal for clients to review and approve/reject devis, with PDF viewing and messaging functionality.
-- **AI Extraction Layer**: Uses Google Gemini with a specialized prompt for structured JSON extraction from financial PDFs, including validation and confidence scoring.
-- **Certificat de Paiement Generation**: HTML to PDF conversion via DocRaptor, adhering to the ARCHIDOC design system with auto-sequential numbering.
-- **ArchiDoc Sync**: Event-driven webhook and polling for project and contractor data synchronization.
-- **Insurance Sign-off Gate (AT3)**: Live-verdict client to Archidoc's `/api/integrations/architrak/contractors/:id/insurance-verdict` (5s budget, 2.5s/attempt, 401 retry-once, 404 non-overridable). Per contract §1.3 the mirror is advisory only and not the gate's source of truth: 503 / timeout / network all map to `live_transient` (red + overridable) with mirror status surfaced as context only. Mirror-only fall-through is preserved solely for env without `ARCHIDOC_BASE_URL` / `ARCHIDOC_SYNC_API_KEY` or rows missing archidoc IDs (no live attempt). Enforced at any PATCH that crosses into `sent_to_client`; stale overrides are invalidated when drift moves the verdict to a non-overridable arm. 7-field override snapshot is persisted server-side from a fresh evaluation into `insurance_overrides` (immutable audit row).
-- **Archisign Envelope Orchestration (AT4)**: Outbound client (`server/services/archisign.ts`) wraps `/envelopes/create` then `/envelopes/send` with X-API-KEY auth (CSV `ARCHISIGN_API_KEY`, first key used), 3-attempt 5xx/network retry (1s/3s backoff), 10s/attempt cap, and a now()+1min `expiresAt` floor (G5). 410 retention-breach errors surface as `ArchisignRetentionBreachError`. Inbound webhook (`POST /api/webhooks/archisign`) is born-strict HMAC v2 only — `sha256(${ts}.${rawBody})` keyed off `ARCHISIGN_WEBHOOK_SECRET` with ±5min skew, 1 MiB body cap, 401/413/503 outcomes. Idempotency via `ON CONFLICT DO NOTHING` insert into `webhook_events_in` BEFORE per-event handler dispatch; duplicates → 200 `{deduplicated:true}`. Seven events from §2.1 (`envelope.{sent,queried,query_resolved,declined,expired,signed,retention_breach}`) drive the §1.2 lifecycle: declined → `void`, expired → back to `approved_for_signing` (accessUrl soft-invalidated), signed → `client_signed_off` with 8-field `identityVerification` block + `signedPdfFetchUrl` snapshot, queried opens a `client_checks` row (originSource=`archisign_query`), retention_breach inserts a `signed_pdf_retention_breaches` row (`ON CONFLICT DO NOTHING`). Architect-facing send flow: `POST /api/devis/:id/send-to-signer` mints a 1h HMAC-signed PDF fetch token (`server/services/archisign-pdf-token.ts`) → public download endpoint `GET /api/public/devis-pdf/:token` (auth-bypassed via `publicPaths`) → `/create` then `/send`. UI: `SigningPanel` in `DevisTab.tsx` shows envelope status badge, access URL, OTP destination, and expiry; resend-after-expiry is intentionally out of AT4 scope (UI shows the soft-invalidated link struck-through with a "future update" note). Schema additions live in `migrations/0025_archisign_envelope_tracking.sql` (5 nullable cols on `devis` + status enum CHECK).
-- **Outbound Archidoc Webhook Delivery (AT5)**: One-way Architrak → Archidoc surface for the work-authorisations endpoint (contract §5.3). Two payload variants — `work_authorised` (§5.3.1, fired on AT4's `client_signed_off` transition) and `signed_pdf_retention_breach` (§5.3.2, routed from AT4's `envelope.retention_breach` handler) — share a single endpoint URL and discriminate via the explicit `eventType` field (G8). HMAC v2 signing: `sha256(${ts}.${rawBody})` keyed off `ARCHITRAK_WEBHOOK_SECRET`, headers `X-Architrak-Timestamp` + `X-Architrak-Signature`, deterministic `JSON.stringify` serialisation, 1 MiB pre-send cap, 10s/attempt timeout. Hard-fails when the secret is unset on the actual dispatch path; soft-skips at enqueue time so AT4 inbound webhooks still 200 in dev (no `webhook_deliveries_out` row inserted when surface is unconfigured). Each enqueue mints a stable RFC 9562 UUIDv7 (`server/lib/uuidv7.ts`, no new dep) into `event_id` so retries dedup at the receiver (G6). Storage uses INSERT … ON CONFLICT (event_id) DO NOTHING in `claimWebhookDeliveryOut` (race-safe). Retry orchestrator (`server/services/webhook-delivery.ts`): 3 attempts total, exponential 1s/3s backoff with ±20% jitter; 4xx (non-429) → dead-letter immediately; 5xx/429/network → retryable; 429 honours `Retry-After`. First attempt fires inline (fire-and-forget) from the AT4 handler; an in-process `setInterval` sweeper (30s) drains rows whose `next_attempt_at` is due, surviving process restarts. Per **§5.3.2.1 of inter-app contract v1.1** (sender-side canonical-form mandate, added 2026-05-03 after the 2026-05-02 joint live E2E postmortem), Architrak canonicalizes the three timestamp fields participating in Archidoc's byte-equality correlation rule — `signedAt` (top-level), `identityVerification.signedAt`, and `originalSignedAt` — to the `YYYY-MM-DDTHH:MM:SS.SSSZ` form at every relay boundary. The reference normalizer lives in `server/lib/canonical-timestamp.ts` (mirrors the contract's reference impl in §5.3.2.1) and is invoked from both `enqueueWorkAuthorised` and `enqueueRetentionBreach` in `server/routes/archisign-webhooks.ts`. This closes the Postgres `timestamptz` insert-time normalization drift that surfaced when the inbound Archisign body carried the seconds-only `...Z` form: Archidoc stored the `.000Z` canonical, then Architrak re-emitted the `...Z` form on the breach path, breaking byte equality despite logical equality. Other identity-verification timestamps (`otpIssuedAt`, `otpVerifiedAt`, `lastViewedAt`) and the breach `detectedAt` are out of §5.3.2.1 scope and relayed verbatim. Admin DLQ at `/admin/ops/webhook-dlq`: list rows by state (pending / succeeded / dead_lettered), one-click retry resets to pending and triggers an immediate attempt (eventId preserved → safe re-attempt). Wire fixtures live in `docs/wire-fixtures/{work-authorised,signed-pdf-retention-breach,identity-verification}.json`. No schema migration — `webhook_deliveries_out` was added in AT1.
-- **Authentication**: Google Workspace OAuth 2.0 with domain restriction, PostgreSQL session store, and a dev-only login for E2E testing.
-- **Error Handling**: Global error handler and Zod for API payload validation.
-- **Rate Limiting**: Token-bucket algorithm.
-- **Rounding Policy**: Strict 2-decimal rounding for all financial calculations.
-- **Document Storage**: Object storage for PDFs and other documents.
-- **API Structure**: Domain-driven routing for CRUD and financial workflows.
-- **Fee Tracking**: Advanced fee tracking by phase.
-- **Executive Dashboard**: Burn-up charts for contract and certified value.
-- **Bulk Export**: Generates ZIP archives of financial documents.
+## Dev workflow
 
-### Devis-Check Portal Token Lifecycle
-- Tokens are automatically revoked when their associated devis is "fully invoiced."
-- A periodic cleanup job sweeps expired and fully-invoiced devis tokens.
-- An idle ceiling limits how long an uncompleted devis token can remain active.
+The `Start application` workflow runs:
+```
+PUBLIC_BASE_URL=http://localhost:5000 E2E_FAKE_GMAIL=true npm run dev
+```
+Server on port **5000** (Vite mounted on the same port). `E2E_FAKE_GMAIL=true` short-circuits
+outbound Gmail to an in-memory fake — real send won't fire locally.
 
-### Core Development Protocols
-- **Zero-Tolerance TypeScript**: No `any`, `@ts-ignore`, `@ts-expect-error`.
-- **Environment Variables**: Zod-validated fail-fast exports.
-- **API Perimeter Validation**: Strict Zod schemas via `validateRequest` middleware.
-- **Database Mutations**: Drizzle versioned migrations.
-- **Error Handling**: No stack traces or raw database errors to clients.
+| Command | Purpose |
+|---|---|
+| `npm run dev` | Dev server (tsx watch) |
+| `npm run check` | TypeScript type-check (no emit) |
+| `npm run build` | Production bundle (`script/build.ts` → `dist/`) |
+| `npm run start` | Run production bundle |
+| `npm run db:generate` | Generate a new Drizzle migration |
+| `npx tsx scripts/run-migrations.mjs` | Apply migrations (also runs at deploy) |
+| `npx vitest` | Unit + integration tests |
+| `npx playwright test` | Browser e2e |
 
-## External Dependencies
-- **ArchiDoc API**: For project and contractor data synchronization.
-- **Google Gemini API**: For AI-powered document parsing and financial data extraction.
-- **DocRaptor API**: For high-fidelity HTML to PDF conversion.
-- **Google OAuth 2.0**: For user authentication and authorization.
-- **Gmail API**: For monitoring incoming emails and extracting PDF attachments.
-- **PostgreSQL**: Primary database.
-- **Object Storage**: For storing documents.
+## Environment variables
+
+Validated via Zod in `server/env.ts` — server refuses to boot on invalid/missing required vars.
+**Required**: `DATABASE_URL`, `SESSION_SECRET`. **Feature-scoped** (each unlocks a feature when set):
+`GEMINI_API_KEY`, `GOOGLE_CLIENT_ID/SECRET`, `DOCRAPTOR_API_KEY`,
+`ARCHIDOC_BASE_URL` + `ARCHIDOC_SYNC_API_KEY` + `ARCHIDOC_WEBHOOK_SECRET`,
+`ARCHISIGN_BASE_URL` + `ARCHISIGN_API_KEY` + `ARCHISIGN_WEBHOOK_SECRET`,
+`ARCHITRAK_WEBHOOK_SECRET`, `DEFAULT_OBJECT_STORAGE_BUCKET_ID` + `PRIVATE_OBJECT_DIR`.
+Full list with comments in `server/env.ts`.
+
+### ⚠ Production safety flags
+`ENABLE_DEV_LOGIN_FOR_E2E` and `E2E_FAKE_GMAIL` MUST be unset in production. The boot
+sequence (`assertNoDevLoginBackdoorInProduction`) hard-fails if either is truthy with
+`NODE_ENV=production`. Never propagate them to a deployed env.
+
+## User preferences
+
+- French domain terms preserved verbatim: Devis, Avenant, Marché, Certificat, Honoraires,
+  Lot, Situation, Retenue de Garantie, PV/MV, TVA, SIRET. All other UI in English.
+- Bilingual data fields: `description_fr` + `description_uk` for client communication.
+- Projects ONLY enter the system via ArchiDoc sync — no manual project creation in UI.
+
+## Core financial concepts
+
+- **Three buckets**: Contracted, Certified, Reste à Réaliser.
+- **Two invoicing modes**: Mode A (tick-off line items), Mode B (% completion).
+- **Retenue de garantie**: 5% holdback.
+- **PV/MV**: variation orders on signed marchés.
+- **Fees**: works-percentage, conception, planning. Per-project `feePercentage`.
+- All financial math goes through `shared/financial-utils.ts` (strict 2-decimal rounding).
+
+## Inter-app contract gates (summary — full detail in `ARCHITECTURE.md`)
+
+- **AT3 — Insurance sign-off gate**: live verdict from Archidoc, fired on PATCH crossing
+  into `sent_to_client`. Mirror is advisory only; transient failures are overridable
+  with audit row in `insurance_overrides`.
+- **AT4 — Archisign envelope orchestration**: outbound `/envelopes/create` + `/envelopes/send`,
+  inbound HMAC-v2 webhook (`/api/webhooks/archisign`) drives the devis sign-off lifecycle.
+- **AT5 — Outbound Architrak → Archidoc webhook delivery**: signed `/work-authorisations`
+  delivery with retry orchestrator, DLQ at `/admin/ops/webhook-dlq`, UUIDv7 idempotency,
+  canonical-form timestamps per contract §5.3.2.1.
+
+## Operations gotchas
+
+- **Migrations are hand-tracked SQL** in `migrations/`. NEVER run `drizzle-kit push` or
+  `npm run db:push` — it will desync the `drizzle.__drizzle_migrations` tracker.
+  Generate via `npm run db:generate`, edit the SQL by hand if needed, then add an entry
+  to both `migrations/meta/_journal.json` AND `server/operations/schema-presence-check.ts`.
+- **Boot invariants**: `server/operations/schema-presence-check.ts` (every migration must
+  declare a sentinel table/column) and `database-identity-guard` (refuses wrong DB).
+- **Deep healthcheck** at `GET /healthz/deep` is unauthenticated, used by post-deploy smoke.
+- **Migration replay gate**: `bash scripts/check-migration-replay.sh`.
+- **Tracker drift recovery**: `npx tsx scripts/reconcile-drizzle-tracker.ts`.
+
+## Development protocols
+
+- **Zero-tolerance TypeScript**: no `any`, no `@ts-ignore`, no `@ts-expect-error`.
+- **API perimeter**: every route validates request shape with Zod via the
+  `validateRequest` middleware. Single-tenant assumption (`@renosud.com`) — see the
+  IDOR comment block at the top of `server/routes/index.ts` before adding multi-tenant features.
+- **Errors**: never leak stack traces or raw DB errors to clients (global error handler).
+- **Rate limiting**: token-bucket; configurable via `RATE_LIMIT_STORE` (memory|postgres).

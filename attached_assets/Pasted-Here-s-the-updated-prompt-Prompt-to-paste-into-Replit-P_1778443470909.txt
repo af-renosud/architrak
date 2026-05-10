@@ -1,0 +1,43 @@
+Here's the updated prompt:
+
+---
+
+**Prompt to paste into Replit:**
+
+> Please review and rewrite my `replit.md` file to reflect current reality and maximum effectiveness. Follow these steps:
+>
+> 1. **Read the current file** — load the full contents of `replit.md`.
+>
+> 2. **Scan the actual project** to understand what is really true right now:
+>    - Check the file/folder structure to see what actually exists
+>    - Read `package.json`, `pyproject.toml`, or equivalent to confirm the real tech stack and dependencies
+>    - Check any config files (`.env.example`, `vite.config.js`, `tsconfig.json`, etc.) for accurate setup details
+>    - Look at the actual entry points and run commands to confirm they still match what's in the `.md`
+>    - Note any files, folders, or patterns referenced in `replit.md` that no longer exist
+>
+> 3. **Audit the existing `replit.md` against these quality criteria:**
+>    - Is any information duplicated or contradictory?
+>    - Does anything contradict what you just found in the actual project?
+>    - Are there sections that are outdated, vague, or no longer accurate?
+>    - Is it longer than it needs to be? (Verbose explanations, commented-out blocks, stale instructions?)
+>    - Is there anything missing that would help an AI agent understand the project faster or avoid mistakes?
+>
+> 4. **Rewrite it** using these principles:
+>    - **Reflect reality** — only include what is actually true of the project as it stands today
+>    - **Be ruthlessly concise** — every line must earn its place; cut anything redundant or stale
+>    - **Lead with the essentials** — project purpose, tech stack, and run/build commands at the top
+>    - **Use short, scannable sections** with clear headings (e.g. Project Overview, Stack, Key Files, Dev Workflow, Environment Variables, Known Constraints)
+>    - **State facts, not history** — remove change logs, old reasoning, or "we used to do X" commentary
+>    - **Prefer bullet points over paragraphs** for lists of facts
+>    - **Flag anything an AI agent needs to avoid mistakes** — gotchas, non-obvious dependencies, file naming conventions, API quirks
+>
+> 5. **Show me the proposed rewrite** along with a short summary of:
+>    - What was removed and why
+>    - What was corrected to match current reality
+>    - Anything you found in the project that should be in the `.md` but wasn't
+>
+> Do not modify any files yet — show me the proposed `replit.md` first so I can review and approve it.
+
+---
+
+The key addition here is step 2, which forces Replit to *ground-truth the project itself* before touching the doc — so the rewrite is based on what the code actually is today, not what it was when the `.md` was last edited.
