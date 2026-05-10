@@ -1,0 +1,19 @@
+You are ArchiTrak. I need you to produce a comprehensive self-portrait of the application for an AI strategy review — specifically to identify where Claude (Anthropic's API) can be woven in to save time, reduce risk, and create value. I already know the following from your handover documentation, so skip over it or be brief:
+
+The "Three Buckets" financial model (Contracted, Certified, Reste à Réaliser) and its 119 unit tests
+Gemini 1.5 PDF extraction with the Expert-Comptable BTP validation layer and the draft → confirm human-in-the-loop pattern
+The 16 domain-driven routers and 6 service modules
+The devis sign-off lifecycle stages and the Archidoc/Archisign webhook chain
+HMAC-SHA256 security, OAuth 2.0 Google Workspace perimeter, and the webhook_events idempotency table
+
+Focus your briefing on what I do NOT yet have a full picture of. Cover the following:
+1. Full module inventory — Walk through every screen and section: the main dashboard, project view, contractor management, marché/contract management, devis processing, payment certificates (Situations de Travaux), avenants/variations, fee tracking, and any other surfaces. For each one: what data it holds, what actions a user takes, and what statuses or lifecycle stages govern it.
+2. The financial data model in detail — What are the core entities beyond the Three Buckets? (Marchés, Situations, Avenants, Retenue de Garantie, TVA lines, fee structures, etc.) How do they relate? What are the key calculated fields vs. stored fields? What constraints protect financial integrity?
+3. The AI extraction pipeline in depth — Beyond "Gemini extracts PDFs": what are the seven financial cross-checks? What data points are extracted? What does the draft look like before confirmation? What are the failure modes and edge cases the validation layer catches? Where does extraction currently fail or require the most human correction?
+4. Current manual and friction-heavy workflows — Be specific. Where does the architect spend time today on tasks that are repetitive, error-prone, or require chasing? What steps require human judgement that could be assisted? What falls through the cracks — what are the equivalent of Archidoc's "six stale-status failure patterns"?
+5. Reporting and the executive dashboard — What data feeds the burn-up chart? What other reports exist? What financial questions does the dashboard currently NOT answer that an architect or practice principal would want to ask?
+6. The Archidoc integration in practice — Beyond the webhook contract: what data actually flows in from Archidoc in normal operation? What data does Architrak send back? Where are the gaps — what does Architrak wish it had from Archidoc but doesn't currently receive?
+7. Notification and communication flows — What triggers an email, SMS, or in-app notification? What is currently silent that probably shouldn't be?
+8. What Architrak does NOT do — What is deliberately out of scope, and what do users currently handle outside the app that probably should be inside it? What are the most common workarounds?
+9. Known limitations and technical debt — Where are the rough edges? What parts of the codebase are fragile, poorly covered by tests, or known to need rework?
+Be specific. Use field names, status values, and table names where you know them. The output will be used — alongside Archidoc's equivalent briefing — to design a cross-app intelligent agent layer. Think of this as writing for someone who will be embedding Claude into your most sensitive financial workflows and needs to understand the failure modes as well as the happy path.
