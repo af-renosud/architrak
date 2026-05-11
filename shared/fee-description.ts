@@ -1,4 +1,8 @@
-import { calculateFeeAmount, roundCurrency } from "./financial-utils";
+import {
+  calculateFeeAmount,
+  formatCurrencyNoSymbol,
+  roundCurrency,
+} from "./financial-utils";
 
 export interface OutstandingFeeEntry {
   entryId: number;
@@ -32,13 +36,6 @@ export interface OutstandingFeeSummary {
   entries: OutstandingFeeEntry[];
 }
 
-function formatFrenchAmount(value: number): string {
-  return new Intl.NumberFormat("fr-FR", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(roundCurrency(value));
-}
-
 function formatRate(value: number): string {
   if (Number.isInteger(value)) return value.toString();
   return value
@@ -60,20 +57,22 @@ export function buildFeeInvoiceDescription(input: FeeDescriptionInput): string {
   const contractor = (input.contractorName ?? "").trim() || "(unknown contractor)";
   const invoiceNumber = (input.invoiceNumber ?? "").trim() || "(no invoice number)";
   const devisCode = (input.devisCode ?? "").trim() || "(no devis reference)";
-  const ht = formatFrenchAmount(input.amountHt);
-  const ttc = formatFrenchAmount(input.amountTtc);
+  const ht = formatCurrencyNoSymbol(roundCurrency(input.amountHt));
+  const ttc = formatCurrencyNoSymbol(roundCurrency(input.amountTtc));
   const rate = formatRate(input.feePercentage);
-  const feeHt = formatFrenchAmount(calculateFeeAmount(input.amountHt, input.feePercentage));
+  const feeHt = formatCurrencyNoSymbol(
+    calculateFeeAmount(input.amountHt, input.feePercentage),
+  );
 
   return (
     `Architects' Project Management Fees against contractor: ${contractor} ` +
     `and references as follows: ` +
     `Invoice: ${invoiceNumber}. ` +
     `Corresponding signed Devis: ${devisCode}. ` +
-    `Contractor's total invoice value TTC: ${ttc} EUR. ` +
-    `Contractor's total invoice value HT: ${ht} EUR. ` +
+    `Contractor's total invoice value TTC: ${ttc}. ` +
+    `Contractor's total invoice value HT: ${ht}. ` +
     `Project management fees are calculated as ${rate}% x contractor's invoice ` +
-    `${ht} EUR = ${feeHt} EUR HT.`
+    `${ht} = ${feeHt} HT.`
   );
 }
 

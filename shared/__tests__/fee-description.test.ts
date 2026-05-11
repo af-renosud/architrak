@@ -21,10 +21,10 @@ describe("buildFeeInvoiceDescription", () => {
         "and references as follows: " +
         "Invoice: F-2026-0042. " +
         "Corresponding signed Devis: DEV-2026-001-A. " +
-        "Contractor's total invoice value TTC: 14\u202F814,80 EUR. " +
-        "Contractor's total invoice value HT: 12\u202F345,67 EUR. " +
+        "Contractor's total invoice value TTC: 14\u202F814,80 \u20AC. " +
+        "Contractor's total invoice value HT: 12\u202F345,67 \u20AC. " +
         "Project management fees are calculated as 8% x contractor's invoice " +
-        "12\u202F345,67 EUR = 987,65 EUR HT.",
+        "12\u202F345,67 \u20AC = 987,65 \u20AC HT.",
     );
   });
 
@@ -38,7 +38,7 @@ describe("buildFeeInvoiceDescription", () => {
       amountTtc: 1481.47,
       feePercentage: 8.5,
     });
-    expect(desc).toContain("= 104,94 EUR HT");
+    expect(desc).toContain("= 104,94 \u20AC HT");
     expect(desc).toContain("8.5%");
   });
 

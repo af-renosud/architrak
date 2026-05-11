@@ -29,6 +29,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import BurnUpChart from "@/components/dashboard/BurnUpChart";
 import { Briefcase } from "lucide-react";
 import { OutstandingFeesPanel } from "@/components/fees/OutstandingFeesPanel";
+import { OutstandingFeesBanner } from "@/components/fees/OutstandingFeesBanner";
 
 interface DesignContractDashboardAction {
   milestoneId: number;
@@ -285,6 +286,8 @@ export default function Dashboard() {
             Overview of your projects and activity
           </p>
         </div>
+
+        <OutstandingFeesBanner scope="global" href="/honoraires" />
 
         <GmailStatusBar isLoading={isLoading} data={data} />
 

@@ -5,8 +5,9 @@ import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Badge } from "@/components/ui/badge";
-import { Coins, Plus, Pencil } from "lucide-react";
+import { Coins, Plus, Pencil, Copy, Check } from "lucide-react";
 import { OutstandingFeesPanel } from "@/components/fees/OutstandingFeesPanel";
+import { OutstandingFeesBanner } from "@/components/fees/OutstandingFeesBanner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -78,6 +79,43 @@ function FeeTypeLabel({ type }: { type: string }) {
     planning: "Planning",
   };
   return <span>{labels[type] ?? type}</span>;
+}
+
+function CopyEntryButton({ entryId }: { entryId: number }) {
+  const { toast } = useToast();
+  const [copied, setCopied] = useState(false);
+  const onCopy = async () => {
+    try {
+      const res = await fetch(`/api/fee-entries/${entryId}/copy-text`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load description");
+      const { text } = (await res.json()) as { text: string };
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+      toast({ title: "Invoice description copied" });
+    } catch {
+      toast({
+        title: "Copy failed",
+        description: "Clipboard or network unavailable.",
+        variant: "destructive",
+      });
+    }
+  };
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className="h-7 px-2 border-[#c1a27b]/40 text-[#0B2545] hover:bg-[#c1a27b]/10"
+      onClick={onCopy}
+      data-testid={`button-copy-entry-${entryId}`}
+      title="Copy invoice description for accounting"
+    >
+      {copied ? <Check size={12} className="mr-1" /> : <Copy size={12} className="mr-1" />}
+      <span className="text-[9px] font-bold uppercase tracking-widest">
+        {copied ? "Copied" : "Copy"}
+      </span>
+    </Button>
+  );
 }
 
 export default function Fees() {
@@ -539,6 +577,9 @@ export default function Fees() {
                                     {formatCurrency(parseFloat(entry.feeAmount))}
                                   </span>
                                   <StatusBadge status={entry.status} />
+                                  {entry.status === "pending" && !entry.pennylaneInvoiceRef && (
+                                    <CopyEntryButton entryId={entry.id} />
+                                  )}
                                   <Button
                                     variant="ghost"
                                     size="icon"

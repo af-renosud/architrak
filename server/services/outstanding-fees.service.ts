@@ -40,6 +40,7 @@ async function fetchOutstandingRows(filter: QueryFilter): Promise<OutstandingFee
       invoiceNumber: invoices.invoiceNumber,
       invoiceAmountHt: invoices.amountHt,
       invoiceAmountTtc: invoices.amountTtc,
+      invoiceCreatedAt: invoices.createdAt,
       invoiceContractorId: invoices.contractorId,
       contractorName: contractors.name,
       devisId: feeEntries.devisId,
@@ -60,9 +61,13 @@ async function fetchOutstandingRows(filter: QueryFilter): Promise<OutstandingFee
 
   const now = Date.now();
   return rows.map((r) => {
-    const createdAt = r.entryCreatedAt instanceof Date
-      ? r.entryCreatedAt
-      : new Date(String(r.entryCreatedAt));
+    // Age is measured from the contractor invoice's record creation
+    // (proxy for "approved on" — invoice rows are inserted on approval flow),
+    // falling back to the fee_entry's createdAt when the invoice link is null.
+    const ageSource = r.invoiceCreatedAt ?? r.entryCreatedAt;
+    const createdAt = ageSource instanceof Date
+      ? ageSource
+      : new Date(String(ageSource));
     const ageMs = Math.max(0, now - createdAt.getTime());
     const ageDays = Math.floor(ageMs / (1000 * 60 * 60 * 24));
 

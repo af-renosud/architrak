@@ -13,25 +13,80 @@ import {
   getOutstandingFeesForProject,
 } from "../services/outstanding-fees.service";
 import { roundCurrency } from "@shared/financial-utils";
+import { buildFeeInvoiceDescription } from "@shared/fee-description";
+import { db } from "../db";
+import { eq } from "drizzle-orm";
+import {
+  feeEntries as feeEntriesTbl,
+  fees as feesTbl,
+  projects as projectsTbl,
+  invoices as invoicesTbl,
+  contractors as contractorsTbl,
+  devis as devisTbl,
+} from "@shared/schema";
 import { validateRequest } from "../middleware/validate";
 
 const router = Router();
+const idParams = z.object({ id: z.coerce.number().int().positive() });
+const feeIdParams = z.object({ feeId: z.coerce.number().int().positive() });
+const projectIdParams = z.object({ projectId: z.coerce.number().int().positive() });
 
 router.get("/api/fees/outstanding", async (_req, res) => {
   const summary = await getOutstandingFeesGlobal();
   res.json(summary);
 });
 
-router.get("/api/projects/:projectId/fees/outstanding", async (req, res) => {
-  const projectId = Number(req.params.projectId);
-  if (!Number.isFinite(projectId) || projectId <= 0) {
-    return res.status(400).json({ message: "Invalid project ID" });
-  }
-  const summary = await getOutstandingFeesForProject(projectId);
-  res.json(summary);
-});
-const idParams = z.object({ id: z.coerce.number().int().positive() });
-const feeIdParams = z.object({ feeId: z.coerce.number().int().positive() });
+router.get(
+  "/api/projects/:projectId/fees/outstanding",
+  validateRequest({ params: projectIdParams }),
+  async (req, res) => {
+    const summary = await getOutstandingFeesForProject(Number(req.params.projectId));
+    res.json(summary);
+  },
+);
+
+router.get(
+  "/api/fee-entries/:id/copy-text",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    const entryId = Number(req.params.id);
+    const [row] = await db
+      .select({
+        entryBaseHt: feeEntriesTbl.baseHt,
+        entryFeeRate: feeEntriesTbl.feeRate,
+        invoiceNumber: invoicesTbl.invoiceNumber,
+        invoiceAmountHt: invoicesTbl.amountHt,
+        invoiceAmountTtc: invoicesTbl.amountTtc,
+        contractorName: contractorsTbl.name,
+        devisCode: devisTbl.devisCode,
+        feePercentage: projectsTbl.feePercentage,
+      })
+      .from(feeEntriesTbl)
+      .innerJoin(feesTbl, eq(feesTbl.id, feeEntriesTbl.feeId))
+      .innerJoin(projectsTbl, eq(projectsTbl.id, feesTbl.projectId))
+      .leftJoin(invoicesTbl, eq(invoicesTbl.id, feeEntriesTbl.invoiceId))
+      .leftJoin(contractorsTbl, eq(contractorsTbl.id, invoicesTbl.contractorId))
+      .leftJoin(devisTbl, eq(devisTbl.id, feeEntriesTbl.devisId))
+      .where(eq(feeEntriesTbl.id, entryId));
+
+    if (!row) return res.status(404).json({ message: "Fee entry not found" });
+
+    const amountHt = row.invoiceAmountHt != null ? parseFloat(row.invoiceAmountHt) : parseFloat(row.entryBaseHt);
+    const amountTtc = row.invoiceAmountTtc != null ? parseFloat(row.invoiceAmountTtc) : 0;
+    const feePercentage = row.feePercentage != null ? parseFloat(row.feePercentage) : parseFloat(row.entryFeeRate);
+
+    const text = buildFeeInvoiceDescription({
+      contractorName: row.contractorName,
+      invoiceNumber: row.invoiceNumber,
+      devisCode: row.devisCode,
+      amountHt,
+      amountTtc,
+      feePercentage,
+    });
+    res.json({ text });
+  },
+);
+
 const updateFeeSchema = insertFeeSchema.partial();
 const updateFeeEntrySchema = insertFeeEntrySchema.partial();
 const createFeeEntryBodySchema = insertFeeEntrySchema.omit({ feeId: true });

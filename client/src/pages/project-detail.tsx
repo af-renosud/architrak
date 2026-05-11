@@ -23,6 +23,7 @@ import { insertCertificatSchema, insertFeeSchema, insertFeeEntrySchema, insertLo
 import type { Project, Devis, Lot, Marche, Certificat, Fee, FeeEntry, Contractor, Invoice, ProjectDocument, ProjectCommunication, PaymentReminder } from "@shared/schema";
 import { DevisTab } from "@/components/devis/DevisTab";
 import { OutstandingFeesPanel } from "@/components/fees/OutstandingFeesPanel";
+import { OutstandingFeesBanner } from "@/components/fees/OutstandingFeesBanner";
 import { DesignContractCard } from "@/components/projects/DesignContractCard";
 import { FacturesTab } from "@/components/factures/FacturesTab";
 import { Receipt } from "lucide-react";
@@ -321,6 +322,14 @@ export default function ProjectDetail() {
     const n = raw ? Number(raw) : NaN;
     return Number.isFinite(n) && n > 0 ? n : null;
   })();
+  const deepLinkTab = searchParams.get("tab");
+  const [activeTab, setActiveTab] = useState<string>(
+    deepLinkTab && deepLinkTab.length > 0
+      ? deepLinkTab
+      : deepLinkDevisId
+        ? "devis"
+        : "resume",
+  );
   const deepLinkCheckId = (() => {
     const raw = searchParams.get("check");
     const n = raw ? Number(raw) : NaN;
@@ -1045,7 +1054,15 @@ export default function ProjectDetail() {
           </DialogContent>
         </Dialog>
 
-        <Tabs defaultValue={deepLinkDevisId ? "devis" : "resume"} data-testid="tabs-project-detail">
+        <OutstandingFeesBanner
+          scope="project"
+          projectId={parseInt(projectId!)}
+          href={`/projets/${projectId}?tab=honoraires`}
+          dismissKey={`project-${projectId}`}
+          onView={() => setActiveTab("honoraires")}
+        />
+
+        <Tabs value={activeTab} onValueChange={setActiveTab} data-testid="tabs-project-detail">
           <TabsList className="flex-wrap">
             <TabsTrigger value="resume" data-testid="tab-resume">
               <BarChart3 size={12} className="mr-1" />
