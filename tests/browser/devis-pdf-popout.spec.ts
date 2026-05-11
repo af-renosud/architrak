@@ -161,6 +161,35 @@ test.describe("Devis PDF pop-out viewer (task #191)", () => {
       // No new browser tab/window was opened.
       expect(newPages, `unexpected new pages: ${JSON.stringify(newPages)}`).toEqual([]);
 
+      // ---------- 3b. Resize handle is reachable via Tab and operable via arrow keys ----------
+      // Task #192: keyboard-only architects must be able to focus the
+      // resize handle. We Tab from the dialog root until either focus
+      // lands on the resize handle or we exhaust a generous budget.
+      await dialog.focus();
+      const resizeHandle = page.getByTestId(`pdf-popout-resize-${devisId}`);
+      let reached = false;
+      for (let i = 0; i < 25; i++) {
+        await page.keyboard.press("Tab");
+        const focusedTestId = await page.evaluate(
+          () => (document.activeElement as HTMLElement | null)?.getAttribute("data-testid") ?? null,
+        );
+        if (focusedTestId === `pdf-popout-resize-${devisId}`) {
+          reached = true;
+          break;
+        }
+      }
+      expect(reached, "Tab should eventually focus the resize handle").toBe(true);
+      // Arrow key resizes the popout.
+      const beforeBox = await dialog.boundingBox();
+      await page.keyboard.press("ArrowRight");
+      await page.keyboard.press("ArrowDown");
+      const afterBox = await dialog.boundingBox();
+      expect(beforeBox && afterBox).toBeTruthy();
+      expect(afterBox!.width).toBeGreaterThan(beforeBox!.width);
+      expect(afterBox!.height).toBeGreaterThan(beforeBox!.height);
+      // Handle still focused after resize (no focus loss).
+      await expect(resizeHandle).toBeFocused();
+
       // Esc closes.
       await page.keyboard.press("Escape");
       await expect(dialog).toHaveCount(0);

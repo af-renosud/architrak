@@ -41,6 +41,10 @@ const STORAGE_KEY = "architrak.pdfPopout.frame";
 const MIN_W = 480;
 const MIN_H = 360;
 const COLLAPSED_H = 40;
+// Keyboard nudge step sizes for resize (arrow keys on the resize handle) and
+// move (Alt+Arrow anywhere inside the dialog). Shift multiplies for fast nudge.
+const NUDGE_STEP = 16;
+const NUDGE_STEP_LARGE = 64;
 
 function loadFrame(): StoredFrame {
   if (typeof window === "undefined") {
@@ -194,7 +198,7 @@ export function PdfPopoutViewer({
     };
   }, [pdfUrl, reloadToken, availableVariants.length]);
 
-  const onPointerDownDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+  const onPointerDownDrag = (e: React.PointerEvent<HTMLElement>) => {
     if (e.button !== 0) return;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     dragRef.current = {
@@ -205,7 +209,7 @@ export function PdfPopoutViewer({
     };
   };
 
-  const onPointerDownResize = (e: React.PointerEvent<HTMLDivElement>) => {
+  const onPointerDownResize = (e: React.PointerEvent<HTMLElement>) => {
     if (e.button !== 0 || frame.minimized) return;
     e.stopPropagation();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -250,6 +254,55 @@ export function PdfPopoutViewer({
     }
   };
 
+  // Keyboard nudge for moving the popout. Alt+Arrow nudges, Alt+Shift+Arrow
+   // nudges by a larger step. Active only when focus is inside the dialog so
+   // it never collides with arrow-key navigation in surrounding UI.
+  const nudgePosition = useCallback(
+    (dx: number, dy: number) => {
+      setFrame((f) => {
+        if (f.minimized) return f;
+        const maxX = Math.max(0, window.innerWidth - 80);
+        const maxY = Math.max(0, window.innerHeight - 40);
+        return {
+          ...f,
+          x: Math.min(maxX, Math.max(-f.w + 80, f.x + dx)),
+          y: Math.min(maxY, Math.max(0, f.y + dy)),
+        };
+      });
+    },
+    [],
+  );
+
+  // Keyboard resize via arrow keys when the resize handle is focused.
+  const onResizeKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (frame.minimized) return;
+    const step = e.shiftKey ? NUDGE_STEP_LARGE : NUDGE_STEP;
+    let dw = 0;
+    let dh = 0;
+    switch (e.key) {
+      case "ArrowRight":
+        dw = step;
+        break;
+      case "ArrowLeft":
+        dw = -step;
+        break;
+      case "ArrowDown":
+        dh = step;
+        break;
+      case "ArrowUp":
+        dh = -step;
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+    setFrame((f) => ({
+      ...f,
+      w: Math.max(MIN_W, Math.min(window.innerWidth - f.x, f.w + dw)),
+      h: Math.max(MIN_H, Math.min(window.innerHeight - f.y, f.h + dh)),
+    }));
+  };
+
   const trapFocus = useCallback((e: KeyboardEvent) => {
     if (e.key !== "Tab") return;
     const root = containerRef.current;
@@ -282,6 +335,33 @@ export function PdfPopoutViewer({
         onClose();
         return;
       }
+      // Alt+Arrow nudges the popout's position when focus is inside the
+      // dialog. Shift makes the step larger. Skipped if the resize handle
+      // owns focus, since arrows there resize instead.
+      if (
+        e.altKey &&
+        (e.key === "ArrowUp" ||
+          e.key === "ArrowDown" ||
+          e.key === "ArrowLeft" ||
+          e.key === "ArrowRight")
+      ) {
+        const root = containerRef.current;
+        const active = document.activeElement as HTMLElement | null;
+        if (root && active && root.contains(active)) {
+          const isResizeHandle =
+            active.getAttribute("data-pdf-popout-resize") === "true";
+          if (!isResizeHandle) {
+            e.preventDefault();
+            const step = e.shiftKey ? NUDGE_STEP_LARGE : NUDGE_STEP;
+            const dx =
+              e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+            const dy =
+              e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
+            nudgePosition(dx, dy);
+            return;
+          }
+        }
+      }
       trapFocus(e);
     };
     window.addEventListener("keydown", onKey, true);
@@ -298,7 +378,7 @@ export function PdfPopoutViewer({
         }
       }
     };
-  }, [onClose, trapFocus]);
+  }, [onClose, trapFocus, nudgePosition]);
 
   const downloadName = `DEVIS-${devisCode}-${variant}.pdf`;
   const isMinimized = !!frame.minimized;
@@ -458,11 +538,18 @@ export function PdfPopoutViewer({
         </div>
       )}
       {!isMinimized && (
-        <div
-          className="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize bg-[#0B2545]/20 hover:bg-[#0B2545]/40"
+        // Modal dialog decision: this popout is treated as a true modal
+        // (aria-modal + focus trap + Esc closes + opener-focus restore).
+        // The resize handle is a real button so it's reachable via Tab and
+        // operable via arrow keys (Shift = larger step) for keyboard users.
+        <button
+          type="button"
+          className="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize bg-[#0B2545]/20 hover:bg-[#0B2545]/40 focus:bg-[#0B2545]/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0B2545]"
           onPointerDown={onPointerDownResize}
+          onKeyDown={onResizeKeyDown}
           data-testid={`pdf-popout-resize-${devisId}`}
-          aria-label="Resize PDF viewer"
+          data-pdf-popout-resize="true"
+          aria-label="Resize PDF viewer (use arrow keys, Shift for larger step)"
           style={{
             clipPath: "polygon(100% 0, 100% 100%, 0 100%)",
           }}
