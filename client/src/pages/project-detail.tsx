@@ -1057,7 +1057,7 @@ export default function ProjectDetail() {
         <OutstandingFeesBanner
           scope="project"
           projectId={parseInt(projectId!)}
-          href={`/projets/${projectId}?tab=honoraires`}
+          href={`/projets/${projectId}?tab=honoraires&filter=outstanding`}
           dismissKey={`project-${projectId}`}
           onView={() => setActiveTab("honoraires")}
         />

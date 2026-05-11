@@ -139,8 +139,15 @@ export async function getFeeEntryCopyText(entryId: number): Promise<string | nul
 
 async function fetchOutstandingRowsForEntry(entryId: number): Promise<OutstandingFeeEntry[]> {
   // Reuse the same join + canonical recomputation as the listing query so
-  // the copy text and the panel always agree.
-  const conditions = [eq(feeEntries.id, entryId)];
+  // the copy text and the panel always agree. Enforces the same outstanding
+  // predicate (works-percentage + pending + no Pennylane ref) so the copy
+  // endpoint cannot leak text for entries outside this monitor's scope.
+  const conditions = [
+    eq(feeEntries.id, entryId),
+    eq(feeEntries.status, "pending"),
+    isNull(feeEntries.pennylaneInvoiceRef),
+    eq(fees.feeType, "works_percentage"),
+  ];
   const rows = await db
     .select({
       entryId: feeEntries.id,

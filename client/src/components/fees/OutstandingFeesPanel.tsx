@@ -158,12 +158,12 @@ export function OutstandingFeesPanel({ scope, projectId, compact }: Props) {
         ))}
       </div>
 
-      {scope === "global" && data.byProject.length > 1 && (
+      {scope === "global" && data.byProject.length > 0 && (
         <div className="mb-4" data-testid="section-outstanding-by-project">
           <TechnicalLabel>By Project</TechnicalLabel>
           <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
             {data.byProject.map((p) => (
-              <Link key={p.projectId} href={`/projets/${p.projectId}?tab=honoraires`}>
+              <Link key={p.projectId} href={`/projets/${p.projectId}?tab=honoraires&filter=outstanding`}>
                 <div
                   className="rounded-lg border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] p-2 hover-elevate cursor-pointer"
                   data-testid={`row-outstanding-project-${p.projectId}`}
