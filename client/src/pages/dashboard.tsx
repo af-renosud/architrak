@@ -20,6 +20,7 @@ import {
   Check,
   HelpCircle,
   TrendingUp,
+  Coins,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -27,6 +28,7 @@ import { Link } from "wouter";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import BurnUpChart from "@/components/dashboard/BurnUpChart";
 import { Briefcase } from "lucide-react";
+import { OutstandingFeesPanel } from "@/components/fees/OutstandingFeesPanel";
 
 interface DesignContractDashboardAction {
   milestoneId: number;
@@ -337,6 +339,17 @@ export default function Dashboard() {
             </LuxuryCard>
           </div>
         ) : null}
+
+        <div data-testid="section-outstanding-fees-dashboard">
+          <SectionHeader
+            icon={Coins}
+            title="Outstanding Architect Fees"
+            subtitle="Approved invoices missing a Penny Lane reference"
+          />
+          <div className="mt-3">
+            <OutstandingFeesPanel scope="global" />
+          </div>
+        </div>
 
         <DesignFeeActionsStrip />
 

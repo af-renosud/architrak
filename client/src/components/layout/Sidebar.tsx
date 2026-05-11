@@ -1,4 +1,6 @@
 import { useLocation, Link } from "wouter";
+import { useQuery } from "@tanstack/react-query";
+import type { OutstandingFeeSummary } from "@shared/fee-description";
 import {
   LayoutDashboard,
   FolderOpen,
@@ -44,6 +46,11 @@ const toolButtons = [
 export function Sidebar() {
   const [location] = useLocation();
   const { user, logout } = useAuth();
+  const { data: outstanding } = useQuery<OutstandingFeeSummary>({
+    queryKey: ["/api/fees/outstanding"],
+    refetchInterval: 60_000,
+  });
+  const outstandingCount = outstanding?.totalCount ?? 0;
 
   const isActive = (path: string) => {
     if (path === "/") return location === "/";
@@ -103,6 +110,15 @@ export function Sidebar() {
                 >
                   {item.label}
                 </span>
+                {item.path === "/honoraires" && outstandingCount > 0 && (
+                  <span
+                    className="ml-auto inline-flex items-center justify-center min-w-[18px] h-[18px] px-1.5 rounded-full bg-amber-500 text-white text-[10px] font-bold"
+                    data-testid="badge-sidebar-outstanding-fees"
+                    title={`${outstandingCount} outstanding architect fee${outstandingCount === 1 ? "" : "s"}`}
+                  >
+                    {outstandingCount}
+                  </span>
+                )}
               </div>
             </Link>
           );

@@ -22,6 +22,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { insertCertificatSchema, insertFeeSchema, insertFeeEntrySchema, insertLotSchema, insertMarcheSchema } from "@shared/schema";
 import type { Project, Devis, Lot, Marche, Certificat, Fee, FeeEntry, Contractor, Invoice, ProjectDocument, ProjectCommunication, PaymentReminder } from "@shared/schema";
 import { DevisTab } from "@/components/devis/DevisTab";
+import { OutstandingFeesPanel } from "@/components/fees/OutstandingFeesPanel";
 import { DesignContractCard } from "@/components/projects/DesignContractCard";
 import { FacturesTab } from "@/components/factures/FacturesTab";
 import { Receipt } from "lucide-react";
@@ -1731,6 +1732,9 @@ export default function ProjectDetail() {
 
           <TabsContent value="honoraires">
             <div className="space-y-4">
+              {projectId && (
+                <OutstandingFeesPanel scope="project" projectId={parseInt(projectId)} />
+              )}
               <div className="flex items-center justify-between gap-4 flex-wrap">
                 <div className="grid grid-cols-3 gap-4 flex-1">
                   <div>

@@ -6,6 +6,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Badge } from "@/components/ui/badge";
 import { Coins, Plus, Pencil } from "lucide-react";
+import { OutstandingFeesPanel } from "@/components/fees/OutstandingFeesPanel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -319,6 +320,11 @@ export default function Fees() {
           icon={Coins}
           title="Honoraires Tracking"
           subtitle="Works percentage, conception & planning"
+        />
+
+        <OutstandingFeesPanel
+          scope={selectedProjectId ? "project" : "global"}
+          projectId={selectedProjectId ? parseInt(selectedProjectId) : undefined}
         />
 
         <div className="max-w-xs">

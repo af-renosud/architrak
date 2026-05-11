@@ -8,10 +8,28 @@ import {
   type InsertFeeEntry,
 } from "@shared/schema";
 import { markFeeEntryInvoiced } from "../services/fee-calculation.service";
+import {
+  getOutstandingFeesGlobal,
+  getOutstandingFeesForProject,
+} from "../services/outstanding-fees.service";
 import { roundCurrency } from "@shared/financial-utils";
 import { validateRequest } from "../middleware/validate";
 
 const router = Router();
+
+router.get("/api/fees/outstanding", async (_req, res) => {
+  const summary = await getOutstandingFeesGlobal();
+  res.json(summary);
+});
+
+router.get("/api/projects/:projectId/fees/outstanding", async (req, res) => {
+  const projectId = Number(req.params.projectId);
+  if (!Number.isFinite(projectId) || projectId <= 0) {
+    return res.status(400).json({ message: "Invalid project ID" });
+  }
+  const summary = await getOutstandingFeesForProject(projectId);
+  res.json(summary);
+});
 const idParams = z.object({ id: z.coerce.number().int().positive() });
 const feeIdParams = z.object({ feeId: z.coerce.number().int().positive() });
 const updateFeeSchema = insertFeeSchema.partial();
