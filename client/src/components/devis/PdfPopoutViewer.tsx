@@ -1,6 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
-import { X, Download, FileText, GripHorizontal } from "lucide-react";
+import {
+  X,
+  Download,
+  FileText,
+  GripHorizontal,
+  Minus,
+  Maximize2,
+  RefreshCw,
+  AlertTriangle,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -25,15 +34,17 @@ interface StoredFrame {
   y: number;
   w: number;
   h: number;
+  minimized?: boolean;
 }
 
 const STORAGE_KEY = "architrak.pdfPopout.frame";
 const MIN_W = 480;
 const MIN_H = 360;
+const COLLAPSED_H = 40;
 
 function loadFrame(): StoredFrame {
   if (typeof window === "undefined") {
-    return { x: 80, y: 80, w: 900, h: 700 };
+    return { x: 80, y: 80, w: 900, h: 700, minimized: false };
   }
   try {
     const raw = window.sessionStorage.getItem(STORAGE_KEY);
@@ -50,6 +61,7 @@ function loadFrame(): StoredFrame {
           y: Math.max(0, parsed.y),
           w: Math.max(MIN_W, parsed.w),
           h: Math.max(MIN_H, parsed.h),
+          minimized: !!parsed.minimized,
         };
       }
     }
@@ -63,6 +75,7 @@ function loadFrame(): StoredFrame {
     y: Math.max(20, Math.floor((window.innerHeight - defaultH) / 2)),
     w: defaultW,
     h: defaultH,
+    minimized: false,
   };
 }
 
@@ -77,6 +90,14 @@ function saveFrame(frame: StoredFrame) {
 interface TranslationStatusResponse {
   status: "missing" | "draft" | "edited" | "finalised" | string;
 }
+
+type LoadState =
+  | { kind: "loading" }
+  | { kind: "ok" }
+  | { kind: "error"; message: string };
+
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), [role="combobox"], iframe, input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 export function PdfPopoutViewer({
   devisId,
@@ -105,20 +126,18 @@ export function PdfPopoutViewer({
       : availableVariants[0] ?? "original";
 
   const [variant, setVariant] = useState<PdfVariant>(defaultVariant);
-  // Reconcile if translation readiness arrives after mount and the chosen
-  // variant is no longer available.
   useEffect(() => {
     if (!availableVariants.includes(variant) && availableVariants.length > 0) {
       setVariant(
-        translationReady && hasOriginal
-          ? "combined"
-          : availableVariants[0],
+        translationReady && hasOriginal ? "combined" : availableVariants[0],
       );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [translationReady, hasOriginal]);
 
   const [frame, setFrame] = useState<StoredFrame>(() => loadFrame());
+  const [reloadToken, setReloadToken] = useState(0);
+  const [loadState, setLoadState] = useState<LoadState>({ kind: "loading" });
   const dragRef = useRef<{
     mode: "move" | "resize";
     startX: number;
@@ -126,10 +145,44 @@ export function PdfPopoutViewer({
     startFrame: StoredFrame;
   } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     saveFrame(frame);
   }, [frame]);
+
+  // Probe the PDF endpoint with HEAD before letting the iframe show; native
+  // <iframe> never fires `onerror` for HTTP failures, so we can't surface a
+  // retry-able error state without an explicit probe. Cheap (HEAD only).
+  const pdfUrl = `/api/devis/${devisId}/pdf?variant=${variant}`;
+  useEffect(() => {
+    let cancelled = false;
+    setLoadState({ kind: "loading" });
+    if (availableVariants.length === 0) return;
+    fetch(pdfUrl, { method: "HEAD", credentials: "same-origin" })
+      .then((res) => {
+        if (cancelled) return;
+        if (!res.ok) {
+          setLoadState({
+            kind: "error",
+            message: `The PDF could not be loaded (${res.status}).`,
+          });
+        } else {
+          setLoadState({ kind: "ok" });
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLoadState({
+          kind: "error",
+          message: "The PDF could not be loaded. Check your connection and try again.",
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pdfUrl, reloadToken, availableVariants.length]);
 
   const onPointerDownDrag = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
@@ -143,7 +196,7 @@ export function PdfPopoutViewer({
   };
 
   const onPointerDownResize = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || frame.minimized) return;
     e.stopPropagation();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     dragRef.current = {
@@ -187,12 +240,31 @@ export function PdfPopoutViewer({
     }
   };
 
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  const openerRef = useRef<HTMLElement | null>(null);
+  const trapFocus = useCallback((e: KeyboardEvent) => {
+    if (e.key !== "Tab") return;
+    const root = containerRef.current;
+    if (!root) return;
+    const focusable = Array.from(
+      root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+    ).filter((el) => !el.hasAttribute("disabled") && el.offsetParent !== null);
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement as HTMLElement | null;
+    if (e.shiftKey) {
+      if (active === first || !root.contains(active)) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else {
+      if (active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  }, []);
 
   useEffect(() => {
-    // Capture the element that had focus when we opened, so we can return
-    // focus to it on close (accessibility: focus restoration).
     openerRef.current = document.activeElement as HTMLElement | null;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -200,47 +272,43 @@ export function PdfPopoutViewer({
         onClose();
         return;
       }
-      // Arrow / PageUp / PageDown are forwarded to the iframe by the browser
-      // when it has focus. We auto-focus the iframe on load so the
-      // architect's first arrow press already paginates without a click.
+      trapFocus(e);
     };
-    window.addEventListener("keydown", onKey);
-    // Auto-focus the container so Esc works immediately. The iframe is
-    // focused once it loads (see iframe.onLoad below) so arrow keys flow
-    // straight to the embedded PDF viewer.
+    window.addEventListener("keydown", onKey, true);
     const t = window.setTimeout(() => containerRef.current?.focus(), 0);
     return () => {
-      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onKey, true);
       window.clearTimeout(t);
-      // Return focus to the opener (e.g. the "View PDF" button) so screen
-      // readers and keyboard users land back where they were.
       const opener = openerRef.current;
       if (opener && typeof opener.focus === "function") {
         try {
           opener.focus();
         } catch {
-          // ignore — opener may have unmounted
+          // opener may have unmounted
         }
       }
     };
-  }, [onClose]);
+  }, [onClose, trapFocus]);
 
-  const pdfUrl = `/api/devis/${devisId}/pdf?variant=${variant}`;
   const downloadName = `DEVIS-${devisCode}-${variant}.pdf`;
+  const isMinimized = !!frame.minimized;
+  const renderHeight = isMinimized ? COLLAPSED_H : frame.h;
 
   const node = (
     <div
       ref={containerRef}
       role="dialog"
+      aria-modal="true"
       aria-label={`PDF viewer for ${devisCode}`}
       tabIndex={-1}
       data-testid={`dialog-pdf-popout-${devisId}`}
+      data-minimized={isMinimized ? "true" : "false"}
       className="fixed z-[60] flex flex-col bg-white dark:bg-neutral-900 border border-[#0B2545]/30 dark:border-neutral-700 rounded-lg shadow-2xl overflow-hidden focus:outline-none"
       style={{
         left: frame.x,
         top: frame.y,
         width: frame.w,
-        height: frame.h,
+        height: renderHeight,
       }}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -258,9 +326,15 @@ export function PdfPopoutViewer({
         >
           {devisCode}
         </span>
-        <div className="ml-auto flex items-center gap-2" onPointerDown={(e) => e.stopPropagation()}>
-          {availableVariants.length > 1 ? (
-            <Select value={variant} onValueChange={(v) => setVariant(v as PdfVariant)}>
+        <div
+          className="ml-auto flex items-center gap-2"
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          {availableVariants.length > 1 && !isMinimized ? (
+            <Select
+              value={variant}
+              onValueChange={(v) => setVariant(v as PdfVariant)}
+            >
               <SelectTrigger
                 className="h-7 w-[140px] bg-white/10 border-white/20 text-white text-[11px] focus:ring-white/40"
                 data-testid={`select-pdf-variant-${devisId}`}
@@ -306,6 +380,19 @@ export function PdfPopoutViewer({
             size="icon"
             variant="ghost"
             className="h-7 w-7 text-white hover:bg-white/15"
+            onClick={() =>
+              setFrame((f) => ({ ...f, minimized: !f.minimized }))
+            }
+            data-testid={`button-pdf-popout-minimize-${devisId}`}
+            aria-label={isMinimized ? "Restore PDF viewer" : "Minimize PDF viewer"}
+          >
+            {isMinimized ? <Maximize2 size={14} /> : <Minus size={14} />}
+          </Button>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="h-7 w-7 text-white hover:bg-white/15"
             onClick={onClose}
             data-testid={`button-pdf-popout-close-${devisId}`}
             aria-label="Close PDF viewer"
@@ -314,44 +401,66 @@ export function PdfPopoutViewer({
           </Button>
         </div>
       </div>
-      <div className="flex-1 bg-neutral-100 dark:bg-neutral-800">
-        {availableVariants.length === 0 ? (
-          <div
-            className="h-full flex items-center justify-center text-[12px] text-muted-foreground"
-            data-testid={`pdf-popout-empty-${devisId}`}
-          >
-            No PDF available
-          </div>
-        ) : (
-          <iframe
-            ref={iframeRef}
-            key={pdfUrl}
-            src={pdfUrl}
-            title={`PDF — ${devisCode} (${variant})`}
-            className="w-full h-full border-0"
-            data-testid={`pdf-popout-iframe-${devisId}`}
-            onLoad={() => {
-              // Hand focus to the embedded PDF viewer so the browser's
-              // native page nav (arrow keys / PageUp / PageDown) is live
-              // immediately after open, not after a manual click.
-              try {
-                iframeRef.current?.focus();
-              } catch {
-                // ignore — focus may fail on cross-origin frames
-              }
-            }}
-          />
-        )}
-      </div>
-      <div
-        className="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize bg-[#0B2545]/20 hover:bg-[#0B2545]/40"
-        onPointerDown={onPointerDownResize}
-        data-testid={`pdf-popout-resize-${devisId}`}
-        aria-label="Resize PDF viewer"
-        style={{
-          clipPath: "polygon(100% 0, 100% 100%, 0 100%)",
-        }}
-      />
+      {!isMinimized && (
+        <div className="flex-1 bg-neutral-100 dark:bg-neutral-800 relative">
+          {availableVariants.length === 0 ? (
+            <div
+              className="h-full flex items-center justify-center text-[12px] text-muted-foreground"
+              data-testid={`pdf-popout-empty-${devisId}`}
+            >
+              No PDF available
+            </div>
+          ) : loadState.kind === "error" ? (
+            <div
+              className="h-full flex flex-col items-center justify-center gap-3 text-center px-6"
+              data-testid={`pdf-popout-error-${devisId}`}
+            >
+              <AlertTriangle size={28} className="text-amber-500" />
+              <p className="text-[12px] text-foreground max-w-xs">
+                {loadState.message}
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="gap-1.5 text-[11px]"
+                onClick={() => setReloadToken((n) => n + 1)}
+                data-testid={`button-pdf-popout-retry-${devisId}`}
+              >
+                <RefreshCw size={12} />
+                Retry
+              </Button>
+            </div>
+          ) : (
+            <iframe
+              ref={iframeRef}
+              key={`${pdfUrl}#${reloadToken}`}
+              src={pdfUrl}
+              title={`PDF — ${devisCode} (${variant})`}
+              className="w-full h-full border-0"
+              data-testid={`pdf-popout-iframe-${devisId}`}
+              onLoad={() => {
+                try {
+                  iframeRef.current?.focus();
+                } catch {
+                  // ignore — focus may fail on cross-origin frames
+                }
+              }}
+            />
+          )}
+        </div>
+      )}
+      {!isMinimized && (
+        <div
+          className="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize bg-[#0B2545]/20 hover:bg-[#0B2545]/40"
+          onPointerDown={onPointerDownResize}
+          data-testid={`pdf-popout-resize-${devisId}`}
+          aria-label="Resize PDF viewer"
+          style={{
+            clipPath: "polygon(100% 0, 100% 100%, 0 100%)",
+          }}
+        />
+      )}
     </div>
   );
 

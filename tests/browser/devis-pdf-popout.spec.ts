@@ -166,10 +166,49 @@ test.describe("Devis PDF pop-out viewer (task #191)", () => {
 
       // ---------- 4. Icon button opens the same pop-out ----------
       await iconBtn2.click();
-      await expect(page.getByTestId(`dialog-pdf-popout-${devisId}`)).toBeVisible();
-      // Close button works too.
+      const dialog2 = page.getByTestId(`dialog-pdf-popout-${devisId}`);
+      await expect(dialog2).toBeVisible();
+
+      // ---------- 5. Minimize / restore preserves frame ----------
+      const minimizeBtn = page.getByTestId(`button-pdf-popout-minimize-${devisId}`);
+      await minimizeBtn.click();
+      await expect(dialog2).toHaveAttribute("data-minimized", "true");
+      // Iframe (or error/retry) chrome is gone in collapsed mode.
+      await expect(page.getByTestId(`pdf-popout-iframe-${devisId}`)).toHaveCount(0);
+      await expect(page.getByTestId(`pdf-popout-error-${devisId}`)).toHaveCount(0);
+      await minimizeBtn.click();
+      await expect(dialog2).toHaveAttribute("data-minimized", "false");
+
+      // ---------- 6. Stub HEAD /api/devis/:id/pdf to fail; retry button shown ----------
+      // Force the variant switch path through an aborted response so the
+      // viewer surfaces its retry-able error UI rather than a blank iframe.
+      await page.route(`**/api/devis/${devisId}/pdf?variant=*`, (route) => {
+        if (route.request().method() === "HEAD") {
+          return route.fulfill({ status: 502, body: "" });
+        }
+        return route.continue();
+      });
+      // Trigger a re-probe by closing & re-opening so the HEAD fetch fires
+      // against the now-stubbed endpoint.
       await page.getByTestId(`button-pdf-popout-close-${devisId}`).click();
-      await expect(page.getByTestId(`dialog-pdf-popout-${devisId}`)).toHaveCount(0);
+      await expect(dialog2).toHaveCount(0);
+      await iconBtn2.click();
+      await expect(page.getByTestId(`pdf-popout-error-${devisId}`)).toBeVisible();
+      await expect(
+        page.getByTestId(`button-pdf-popout-retry-${devisId}`),
+      ).toBeVisible();
+
+      // Unroute and retry → iframe should appear again.
+      await page.unroute(`**/api/devis/${devisId}/pdf?variant=*`);
+      await page.getByTestId(`button-pdf-popout-retry-${devisId}`).click();
+      await expect(page.getByTestId(`pdf-popout-iframe-${devisId}`)).toBeVisible();
+
+      // ---------- 7. Variant selector hidden when only one variant ----------
+      // Without a translation row, only "original" is available — selector
+      // is suppressed by design.
+      await expect(
+        page.getByTestId(`select-pdf-variant-${devisId}`),
+      ).toHaveCount(0);
 
       // Final guard: still no new tabs anywhere in the flow.
       expect(newPages, `unexpected new pages: ${JSON.stringify(newPages)}`).toEqual([]);
