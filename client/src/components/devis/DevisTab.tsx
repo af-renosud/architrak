@@ -714,12 +714,38 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
 
                 <span className="hidden min-[900px]:block h-4 w-px bg-border" aria-hidden />
 
-                <div className="hidden min-[900px]:flex items-center gap-1.5">
-                  <TechnicalLabel>Mode</TechnicalLabel>
-                  <span className="text-[11px] font-semibold text-foreground">
-                    {d.invoicingMode === "mode_a" ? "A" : "B"}
-                  </span>
-                </div>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div
+                      className="hidden min-[900px]:flex items-center gap-1.5 cursor-help"
+                      data-testid={`badge-invoicing-mode-${d.id}`}
+                    >
+                      <TechnicalLabel>Mode</TechnicalLabel>
+                      <span className="text-[11px] font-semibold text-foreground">
+                        {d.invoicingMode === "mode_a" ? "A" : "B"}
+                      </span>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-[280px] text-[11px] leading-snug">
+                    {d.invoicingMode === "mode_a" ? (
+                      <>
+                        <span className="font-semibold">Mode A — Tick-off</span>
+                        <br />
+                        Each line item is billed in full once it's marked
+                        complete. Use this when work is delivered as discrete
+                        units (e.g. fixed deliverables).
+                      </>
+                    ) : (
+                      <>
+                        <span className="font-semibold">Mode B — % completion</span>
+                        <br />
+                        Each line is billed by the percentage of work done so
+                        far (line total × % complete). Use this for ongoing
+                        work measured progressively (e.g. m², m³, hours).
+                      </>
+                    )}
+                  </TooltipContent>
+                </Tooltip>
 
                 <span className="hidden min-[900px]:block h-4 w-px bg-border empty:hidden" aria-hidden />
 
