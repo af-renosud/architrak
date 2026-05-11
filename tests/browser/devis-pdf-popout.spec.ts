@@ -502,4 +502,112 @@ test.describe("Devis PDF pop-out viewer (task #191)", () => {
       }
     }
   });
+
+  // Task #195: Alt+Arrow nudges the popout's position when focus is inside
+  // the dialog (but not on the resize handle, which uses arrow keys for
+  // resize). Plain arrow keys without Alt must NOT move the popout — that
+  // would hijack normal arrow-key navigation in surrounding controls.
+  test("Alt+Arrow nudges popout position; plain arrows do not move it", async ({
+    browser,
+  }) => {
+    const databaseUrl = process.env.DATABASE_URL;
+    expect(databaseUrl, "DATABASE_URL must be set for this test").toBeTruthy();
+    const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+    const email = `e2e-pdf-popout-nudge-${uniq}@local.test`;
+    const db = new Client({ connectionString: databaseUrl! });
+    await db.connect();
+
+    const context = await browser.newContext({
+      viewport: { width: 1600, height: 1000 },
+    });
+    let s: Seed | null = null;
+
+    try {
+      await devLogin(context.request, email);
+      s = await seed(context.request, uniq);
+      const devisId = s.devis.id;
+
+      await db.query(
+        "UPDATE devis SET pdf_storage_key = $1, pdf_file_name = $2 WHERE id = $3",
+        [`stub/${uniq}.pdf`, `stub-${uniq}.pdf`, devisId],
+      );
+
+      const page = await context.newPage();
+      // Start from a centred default frame so window-edge clamps don't
+      // swallow our 16px nudges.
+      await page.addInitScript(() => {
+        try {
+          sessionStorage.removeItem("architrak.pdfPopout.frame");
+        } catch {
+          /* ignore */
+        }
+      });
+
+      await page.goto(`/projets/${s.projectId}`);
+      await page.getByTestId("tab-devis").click();
+      await page.getByTestId(`row-devis-toggle-${devisId}`).click();
+      await page.getByTestId(`button-view-pdf-${devisId}`).click();
+
+      const dialog = page.getByTestId(`dialog-pdf-popout-${devisId}`);
+      await expect(dialog).toBeVisible();
+
+      // Focus the dialog itself (NOT the resize handle — arrows there
+      // resize, not move). The component auto-focuses the container on
+      // mount; explicitly re-focus to be deterministic.
+      await dialog.focus();
+      // Confirm focus did not land on the resize handle.
+      const focusedTestId = await page.evaluate(
+        () =>
+          (document.activeElement as HTMLElement | null)?.getAttribute(
+            "data-testid",
+          ) ?? null,
+      );
+      expect(
+        focusedTestId === `pdf-popout-resize-${devisId}` ? "resize-handle" : "ok",
+      ).toBe("ok");
+
+      // ---------- Alt+Arrow MOVES the popout ----------
+      const NUDGE_STEP = 16;
+      const beforeBox = await dialog.boundingBox();
+      expect(beforeBox).not.toBeNull();
+      await page.keyboard.press("Alt+ArrowRight");
+      await page.keyboard.press("Alt+ArrowDown");
+      const afterBox = await dialog.boundingBox();
+      expect(afterBox).not.toBeNull();
+      expect(afterBox!.x - beforeBox!.x).toBeCloseTo(NUDGE_STEP, 0);
+      expect(afterBox!.y - beforeBox!.y).toBeCloseTo(NUDGE_STEP, 0);
+      // Width/height must NOT change — this is move, not resize.
+      expect(afterBox!.width).toBeCloseTo(beforeBox!.width, 0);
+      expect(afterBox!.height).toBeCloseTo(beforeBox!.height, 0);
+
+      // ---------- Alt+Arrow in the opposite direction also nudges ----------
+      await page.keyboard.press("Alt+ArrowLeft");
+      await page.keyboard.press("Alt+ArrowUp");
+      const restoredBox = await dialog.boundingBox();
+      expect(restoredBox!.x).toBeCloseTo(beforeBox!.x, 0);
+      expect(restoredBox!.y).toBeCloseTo(beforeBox!.y, 0);
+
+      // ---------- Plain ArrowRight/ArrowDown must NOT move the popout ----------
+      // Re-focus the dialog (sometimes Alt-key combos shift focus on
+      // some platforms — be deterministic).
+      await dialog.focus();
+      const baselineBox = await dialog.boundingBox();
+      await page.keyboard.press("ArrowRight");
+      await page.keyboard.press("ArrowDown");
+      await page.keyboard.press("ArrowLeft");
+      await page.keyboard.press("ArrowUp");
+      const stillBox = await dialog.boundingBox();
+      expect(stillBox!.x).toBeCloseTo(baselineBox!.x, 0);
+      expect(stillBox!.y).toBeCloseTo(baselineBox!.y, 0);
+      expect(stillBox!.width).toBeCloseTo(baselineBox!.width, 0);
+      expect(stillBox!.height).toBeCloseTo(baselineBox!.height, 0);
+    } finally {
+      try {
+        await cleanup(db, s);
+      } finally {
+        await db.end();
+        await context.close();
+      }
+    }
+  });
 });
