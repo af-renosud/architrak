@@ -166,6 +166,22 @@ const envSchema = z.object({
   REPL_IDENTITY: optionalString(),
   WEB_REPL_RENEWAL: optionalString(),
 
+  // --- Outstanding architect-fee weekly digest -------------------------
+  // Recipient list for the Monday-morning outstanding architect-fee
+  // summary emailed to the accounting team. Comma-separated for multiple
+  // addressees. Unset = the digest scheduler runs but logs a skip
+  // notice instead of sending. The Gmail "From" is the connected
+  // account.
+  OUTSTANDING_FEES_DIGEST_RECIPIENTS: optionalString(),
+
+  // Hour-of-day (server local time, 0-23) at which the Monday digest
+  // fires. Defaults to 8 (08:00 local). The scheduler ticks hourly and
+  // sends once when the local hour first reaches this value on a Monday.
+  OUTSTANDING_FEES_DIGEST_HOUR: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.coerce.number().int().min(0).max(23).default(8),
+  ),
+
   // --- Operator alerts (post-deploy maintenance scripts) ---------------
   // Recipient for operational alerts emitted by post-deploy maintenance
   // jobs (e.g. the page-hint backfill). Unset = alerts only land in the

@@ -8,6 +8,7 @@ import { createServer } from "http";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { startPolling } from "./gmail/monitor";
 import { startScheduler } from "./communications/payment-scheduler";
+import { startOutstandingFeesDigestScheduler } from "./communications/outstanding-fees-digest";
 import { startDevisCheckTokenCleanup } from "./services/devis-check-token-cleanup";
 import { startContractorAutoSyncScheduler } from "./archidoc/contractor-auto-sync";
 import { clearPreviousBackendMirrorRows } from "./archidoc/sync-service";
@@ -178,6 +179,7 @@ app.use((req, res, next) => {
     console.log("[ArchiDoc] Webhook mode active, polling disabled. Set ARCHIDOC_POLLING_ENABLED=true to re-enable polling.");
   }
   startScheduler(60 * 60 * 1000);
+  startOutstandingFeesDigestScheduler(60 * 60 * 1000);
   startContractorAutoSyncScheduler(60 * 60 * 1000);
   startDevisCheckTokenCleanup(6 * 60 * 60 * 1000);
 
