@@ -9,8 +9,14 @@ import {
   Maximize2,
   RefreshCw,
   AlertTriangle,
+  Keyboard,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -445,6 +451,59 @@ export function PdfPopoutViewer({
               </SelectContent>
             </Select>
           ) : null}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="h-7 w-7 text-white hover:bg-white/15"
+                data-testid={`button-pdf-popout-shortcuts-${devisId}`}
+                aria-label="Show keyboard shortcuts"
+              >
+                <Keyboard size={14} />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              className="w-72 text-[12px]"
+              data-testid={`popover-pdf-popout-shortcuts-${devisId}`}
+            >
+              <div className="font-semibold mb-2">Keyboard shortcuts</div>
+              <ul className="space-y-1.5">
+                <li className="flex items-start justify-between gap-3">
+                  <span className="text-muted-foreground">Resize (focus the resize handle)</span>
+                  <kbd className="font-mono text-[10px] bg-muted px-1.5 py-0.5 rounded border">
+                    ← ↑ → ↓
+                  </kbd>
+                </li>
+                <li className="flex items-start justify-between gap-3">
+                  <span className="text-muted-foreground">Resize larger step</span>
+                  <kbd className="font-mono text-[10px] bg-muted px-1.5 py-0.5 rounded border">
+                    Shift + Arrow
+                  </kbd>
+                </li>
+                <li className="flex items-start justify-between gap-3">
+                  <span className="text-muted-foreground">Move the popout</span>
+                  <kbd className="font-mono text-[10px] bg-muted px-1.5 py-0.5 rounded border">
+                    Alt + Arrow
+                  </kbd>
+                </li>
+                <li className="flex items-start justify-between gap-3">
+                  <span className="text-muted-foreground">Move larger step</span>
+                  <kbd className="font-mono text-[10px] bg-muted px-1.5 py-0.5 rounded border">
+                    Alt + Shift + Arrow
+                  </kbd>
+                </li>
+                <li className="flex items-start justify-between gap-3">
+                  <span className="text-muted-foreground">Close</span>
+                  <kbd className="font-mono text-[10px] bg-muted px-1.5 py-0.5 rounded border">
+                    Esc
+                  </kbd>
+                </li>
+              </ul>
+            </PopoverContent>
+          </Popover>
           <Button
             type="button"
             size="icon"
