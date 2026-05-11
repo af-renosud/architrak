@@ -15,7 +15,7 @@ import { Receipt, FilePlus2, ListOrdered, Languages } from "lucide-react";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff, ShieldCheck, ShieldAlert, ShieldX, Trash2, X, Tag, Settings as SettingsIcon, Wand2, Pencil, UserCog, Copy, Send, MessageSquare } from "lucide-react";
+import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight, Upload, Loader2, ExternalLink, Check, Ban, AlertTriangle, Eye, EyeOff, ShieldCheck, ShieldAlert, ShieldX, Trash2, X, Tag, Settings as SettingsIcon, Wand2, Pencil, UserCog, Copy, Send, MessageSquare, RefreshCw } from "lucide-react";
 import { Link } from "wouter";
 import { getDevisUploadErrorTitle } from "@shared/devis-upload-errors";
 import { getInvoiceUploadErrorTitle } from "@shared/invoice-upload-errors";
@@ -4434,6 +4434,37 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
   const [newLotDescriptionUk, setNewLotDescriptionUk] = useState("");
   const [suggestingLotUk, setSuggestingLotUk] = useState(false);
   const [descriptionUkLocal, setDescriptionUkLocal] = useState(devis.descriptionUk || "");
+  const [rescrapeConfirmOpen, setRescrapeConfirmOpen] = useState(false);
+
+  const rescrapeMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/devis/${devis.id}/rescrape`, {});
+      return res.json();
+    },
+    onSuccess: (data: { extraction?: { lineItemsExtracted?: number; lineItemsCreated?: number } }) => {
+      setRescrapeConfirmOpen(false);
+      const created = data?.extraction?.lineItemsCreated ?? 0;
+      const extracted = data?.extraction?.lineItemsExtracted ?? 0;
+      toast({
+        title: "Devis re-scraped",
+        description:
+          extracted > 0
+            ? `Refreshed ${created} of ${extracted} line item${extracted === 1 ? "" : "s"} from the PDF.`
+            : "Re-scraped, but the AI did not return any line items.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id, "line-items"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id, "translation"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis"] });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Re-scrape failed",
+        description: err instanceof ApiError ? (err.data as { message?: string } | null)?.message ?? err.message : err.message,
+        variant: "destructive",
+      });
+    },
+  });
 
   const { data: invoices } = useQuery<Invoice[]>({
     queryKey: ["/api/devis", devis.id, "invoices"],
@@ -4627,29 +4658,96 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
       <div className="flex items-center justify-between gap-2 pt-1" data-testid={`header-devis-detail-${devis.id}`}>
         <TechnicalLabel>Devis Document</TechnicalLabel>
         <TooltipProvider delayDuration={200}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="inline-flex">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="default"
-                  className="h-8 gap-1.5 bg-[#0B2545] hover:bg-[#0B2545]/90 text-white text-[11px] font-bold uppercase tracking-widest"
-                  disabled={!hasPdf}
-                  onClick={onOpenPdfPopout}
-                  data-testid={`button-view-pdf-prominent-${devis.id}`}
-                >
-                  <FileText size={13} />
-                  View PDF
-                </Button>
-              </span>
-            </TooltipTrigger>
-            {!hasPdf && (
-              <TooltipContent side="top" className="text-[10px]">No PDF on file</TooltipContent>
-            )}
-          </Tooltip>
+          <div className="flex items-center gap-2">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 gap-1.5 text-[11px] font-bold uppercase tracking-widest"
+                    disabled={!hasPdf || rescrapeMutation.isPending}
+                    onClick={() => setRescrapeConfirmOpen(true)}
+                    data-testid={`button-rescrape-pdf-${devis.id}`}
+                  >
+                    {rescrapeMutation.isPending ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : (
+                      <RefreshCw size={13} />
+                    )}
+                    Re-scrape
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="text-[10px] max-w-[240px]">
+                {hasPdf
+                  ? "Re-run AI extraction on the stored PDF. Replaces line items and amounts; keeps your manual edits to the devis code, contractor, lot and status."
+                  : "No PDF on file"}
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="default"
+                    className="h-8 gap-1.5 bg-[#0B2545] hover:bg-[#0B2545]/90 text-white text-[11px] font-bold uppercase tracking-widest"
+                    disabled={!hasPdf}
+                    onClick={onOpenPdfPopout}
+                    data-testid={`button-view-pdf-prominent-${devis.id}`}
+                  >
+                    <FileText size={13} />
+                    View PDF
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              {!hasPdf && (
+                <TooltipContent side="top" className="text-[10px]">No PDF on file</TooltipContent>
+              )}
+            </Tooltip>
+          </div>
         </TooltipProvider>
       </div>
+      <AlertDialog
+        open={rescrapeConfirmOpen}
+        onOpenChange={(open) => {
+          if (!open && !rescrapeMutation.isPending) setRescrapeConfirmOpen(false);
+        }}
+      >
+        <AlertDialogContent data-testid={`dialog-confirm-rescrape-${devis.id}`}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Re-scrape this devis?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The AI will read <span className="font-semibold">{devis.devisCode}</span> again and
+              replace its current line items and totals with whatever it
+              extracts. Your manual edits to the devis code, contractor, lot
+              and status will be kept. This usually takes a few seconds.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={rescrapeMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={rescrapeMutation.isPending}
+              onClick={(e) => {
+                e.preventDefault();
+                rescrapeMutation.mutate();
+              }}
+              data-testid={`button-confirm-rescrape-${devis.id}`}
+            >
+              {rescrapeMutation.isPending ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <Loader2 size={13} className="animate-spin" />
+                  Re-scraping…
+                </span>
+              ) : (
+                "Re-scrape"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       {!isVoid && (() => {
         const lotRefWarnings = ((devis.validationWarnings as any[]) || []).filter(
           (w: any) => w?.field === "lotReferences",

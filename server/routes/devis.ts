@@ -12,6 +12,7 @@ import {
 } from "@shared/schema";
 import { upload } from "../middleware/upload";
 import { processDevisUpload } from "../services/devis-upload.service";
+import { rescrapeDevis } from "../services/devis-rescrape.service";
 import { confirmDevisAndMirror, assignTagsForInsertedItems } from "../services/benchmark-ingest.service";
 import { PdfPasswordProtectedError } from "../gmail/document-parser";
 import { DEVIS_UPLOAD_ERROR_CODES } from "../../shared/devis-upload-errors";
@@ -342,6 +343,23 @@ router.get(
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ message: `PDF view failed: ${message}` });
+    }
+  },
+);
+
+router.post(
+  "/api/devis/:id/rescrape",
+  requireAuth,
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    try {
+      const devisId = Number(req.params.id);
+      const result = await rescrapeDevis(devisId);
+      res.status(result.status).json(result.data);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[Devis Rescrape] Error:", message);
+      res.status(500).json({ message: `Re-scrape failed: ${message}` });
     }
   },
 );
