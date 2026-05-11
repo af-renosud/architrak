@@ -38,6 +38,7 @@ import {
 import { z } from "zod";
 import { AdvisoriesList, AdvisoryBadge } from "@/components/advisories/AdvisoriesList";
 import { DevisTranslationSection } from "@/components/devis/DevisTranslationSection";
+import { PdfPopoutViewer } from "@/components/devis/PdfPopoutViewer";
 import { ContractorSelect } from "@/components/ui/contractor-select";
 import { TvaDerivedHint } from "@/components/ui/tva-derived-hint";
 import {
@@ -658,7 +659,9 @@ interface DevisRowProps {
 function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openChecks, onToggle, onEditRefs, onReviewDraft }: DevisRowProps) {
   const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [avenantOpen, setAvenantOpen] = useState(false);
+  const [pdfPopoutOpen, setPdfPopoutOpen] = useState(false);
   const isVoid = d.status === "void";
+  const hasPdf = !!d.pdfStorageKey;
 
   return (
     <div>
@@ -738,26 +741,29 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
 
                 {/* Icon-only action cluster */}
                 <div className="flex items-center gap-1">
-                  {d.pdfStorageKey ? (
-                    <Tooltip>
-                      <TooltipTrigger asChild>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="inline-flex">
                         <Button
                           variant="outline"
                           size="icon"
                           className="h-8 w-8 border-[#0B2545]/20 text-[#0B2545] hover:bg-[#0B2545]/5"
+                          disabled={!hasPdf}
                           onClick={(e) => {
                             e.stopPropagation();
-                            window.open(`/api/devis/${d.id}/pdf`, "_blank");
+                            if (hasPdf) setPdfPopoutOpen(true);
                           }}
                           data-testid={`button-view-pdf-${d.id}`}
                           aria-label="View PDF"
                         >
                           <FileText size={13} />
                         </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side="top" className="text-[10px]">View PDF</TooltipContent>
-                    </Tooltip>
-                  ) : null}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="text-[10px]">
+                      {hasPdf ? "View PDF" : "No PDF on file"}
+                    </TooltipContent>
+                  </Tooltip>
                   {!isVoid ? (
                     <>
                       <Tooltip>
@@ -848,11 +854,23 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
           isArchived={isArchived}
           onOpenInvoiceUpload={() => setInvoiceOpen(true)}
           onOpenAvenantDialog={() => setAvenantOpen(true)}
+          onOpenPdfPopout={() => {
+            if (hasPdf) setPdfPopoutOpen(true);
+          }}
+          hasPdf={hasPdf}
         />
       )}
 
       <InvoiceUploadDialog devisId={d.id} projectId={projectId} open={invoiceOpen} onOpenChange={setInvoiceOpen} />
       <AvenantDialog devisId={d.id} projectId={projectId} open={avenantOpen} onOpenChange={setAvenantOpen} />
+      {pdfPopoutOpen && (
+        <PdfPopoutViewer
+          devisId={d.id}
+          devisCode={d.devisCode}
+          hasOriginal={hasPdf}
+          onClose={() => setPdfPopoutOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -4381,7 +4399,7 @@ function DevisDetailTabs({
   );
 }
 
-function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = false, onOpenInvoiceUpload, onOpenAvenantDialog }: { devis: Devis; projectId: string; contractors: Contractor[]; lots: Lot[]; isArchived?: boolean; onOpenInvoiceUpload: () => void; onOpenAvenantDialog: () => void }) {
+function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = false, onOpenInvoiceUpload, onOpenAvenantDialog, onOpenPdfPopout, hasPdf }: { devis: Devis; projectId: string; contractors: Contractor[]; lots: Lot[]; isArchived?: boolean; onOpenInvoiceUpload: () => void; onOpenAvenantDialog: () => void; onOpenPdfPopout: () => void; hasPdf: boolean }) {
   const { toast } = useToast();
   const [lineItemDialogOpen, setLineItemDialogOpen] = useState(false);
   const [addingNewLot, setAddingNewLot] = useState(false);
@@ -4580,6 +4598,32 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
 
   return (
     <div className={`ml-4 mt-1 mb-3 border-l-2 border-[rgba(0,0,0,0.08)] pl-4 space-y-4 ${isVoid ? "opacity-50" : ""}`} data-testid={`detail-devis-${devis.id}`}>
+      <div className="flex items-center justify-between gap-2 pt-1" data-testid={`header-devis-detail-${devis.id}`}>
+        <TechnicalLabel>Devis Document</TechnicalLabel>
+        <TooltipProvider delayDuration={200}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="default"
+                  className="h-8 gap-1.5 bg-[#0B2545] hover:bg-[#0B2545]/90 text-white text-[11px] font-bold uppercase tracking-widest"
+                  disabled={!hasPdf}
+                  onClick={onOpenPdfPopout}
+                  data-testid={`button-view-pdf-prominent-${devis.id}`}
+                >
+                  <FileText size={13} />
+                  View PDF
+                </Button>
+              </span>
+            </TooltipTrigger>
+            {!hasPdf && (
+              <TooltipContent side="top" className="text-[10px]">No PDF on file</TooltipContent>
+            )}
+          </Tooltip>
+        </TooltipProvider>
+      </div>
       {!isVoid && (() => {
         const lotRefWarnings = ((devis.validationWarnings as any[]) || []).filter(
           (w: any) => w?.field === "lotReferences",

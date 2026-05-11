@@ -1,0 +1,185 @@
+import { test, expect, type APIRequestContext } from "@playwright/test";
+import { Client } from "pg";
+
+/**
+ * E2E coverage for the in-app PDF pop-out viewer added in task #191.
+ *
+ * Verifies:
+ *   1. The collapsed-row FileText icon is disabled with a "No PDF on file"
+ *      tooltip when devis.pdfStorageKey is null, and does NOT use
+ *      window.open to navigate to the PDF endpoint.
+ *   2. After expanding the row and seeding a pdfStorageKey directly in the
+ *      DB, the prominent "View PDF" button in the DevisDetailInline header
+ *      becomes enabled.
+ *   3. Clicking either the prominent button or the icon opens the same
+ *      in-app pop-out dialog (NOT a new tab) with the iframe pointing at
+ *      /api/devis/:id/pdf and the close button + Esc both close it.
+ *
+ * Requires NODE_ENV=development AND ENABLE_DEV_LOGIN_FOR_E2E=true so that
+ * POST /api/auth/dev-login is registered, plus DATABASE_URL so we can
+ * stub a pdfStorageKey onto the seeded devis.
+ */
+
+interface SeededDevis {
+  id: number;
+}
+
+interface Seed {
+  projectId: number;
+  contractorId: number;
+  devis: SeededDevis;
+}
+
+async function devLogin(api: APIRequestContext, email: string) {
+  const res = await api.post("/api/auth/dev-login", { data: { email } });
+  expect(
+    res.ok(),
+    `dev-login failed (${res.status()}). Is ENABLE_DEV_LOGIN_FOR_E2E=true?`,
+  ).toBe(true);
+}
+
+async function postOk<T = unknown>(
+  api: APIRequestContext,
+  url: string,
+  body: unknown,
+): Promise<T> {
+  const res = await api.post(url, { data: body });
+  expect(res.ok(), `${url} failed: ${res.status()}`).toBe(true);
+  return (await res.json()) as T;
+}
+
+async function seed(api: APIRequestContext, uniq: string): Promise<Seed> {
+  const project = await postOk<{ id: number }>(api, "/api/projects", {
+    name: `PdfPopout ${uniq}`,
+    code: `PP-${uniq}`,
+    clientName: "PP Client",
+  });
+  const contractor = await postOk<{ id: number }>(api, "/api/contractors", {
+    name: `PP Co ${uniq}`,
+  });
+  const devis = await postOk<{ id: number }>(
+    api,
+    `/api/projects/${project.id}/devis`,
+    {
+      contractorId: contractor.id,
+      devisCode: `PP-D-${uniq}`,
+      descriptionFr: `PdfPopout devis ${uniq}`,
+      amountHt: "100.00",
+      amountTtc: "120.00",
+      invoicingMode: "mode_a",
+    },
+  );
+  return { projectId: project.id, contractorId: contractor.id, devis };
+}
+
+async function cleanup(db: Client, s: Seed | null) {
+  if (!s) return;
+  const stmts: Array<[string, unknown[]]> = [
+    ["DELETE FROM devis_line_items WHERE devis_id = $1", [s.devis.id]],
+    ["DELETE FROM devis WHERE id = $1", [s.devis.id]],
+    ["DELETE FROM projects WHERE id = $1", [s.projectId]],
+    ["DELETE FROM contractors WHERE id = $1", [s.contractorId]],
+  ];
+  for (const [sql, params] of stmts) {
+    try {
+      await db.query(sql, params);
+    } catch (err) {
+      console.warn("[pdf-popout cleanup] swallowed:", (err as Error).message);
+    }
+  }
+}
+
+test.describe("Devis PDF pop-out viewer (task #191)", () => {
+  test("disabled without PDF; opens in-app pop-out (not new tab) when PDF present; Esc closes", async ({
+    browser,
+  }) => {
+    const databaseUrl = process.env.DATABASE_URL;
+    expect(databaseUrl, "DATABASE_URL must be set for this test").toBeTruthy();
+    const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+    const email = `e2e-pdf-popout-${uniq}@local.test`;
+    const db = new Client({ connectionString: databaseUrl! });
+    await db.connect();
+
+    const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+    let s: Seed | null = null;
+
+    try {
+      await devLogin(context.request, email);
+      s = await seed(context.request, uniq);
+
+      const page = await context.newPage();
+
+      // Track any new pages — there must be NONE: the pop-out is in-app.
+      const newPages: string[] = [];
+      context.on("page", (p) => newPages.push(p.url()));
+
+      await page.goto(`/projets/${s.projectId}`);
+      await page.getByTestId("tab-devis").click();
+
+      const devisId = s.devis.id;
+      const iconBtn = page.getByTestId(`button-view-pdf-${devisId}`);
+
+      // ---------- 1. Without a PDF: icon disabled + "No PDF on file" tooltip ----------
+      await expect(iconBtn).toBeVisible();
+      await expect(iconBtn).toBeDisabled();
+      await iconBtn.hover({ force: true });
+      await expect(page.getByText("No PDF on file").first()).toBeVisible();
+
+      // Expand row to reveal the prominent button — also disabled.
+      await page.getByTestId(`row-devis-toggle-${devisId}`).click();
+      const prominentBtn = page.getByTestId(`button-view-pdf-prominent-${devisId}`);
+      await expect(prominentBtn).toBeVisible();
+      await expect(prominentBtn).toBeDisabled();
+
+      // ---------- 2. Stub a pdfStorageKey directly in the DB ----------
+      // The /api/devis/:id/pdf endpoint will 404 because the storage key
+      // doesn't reference a real object, but the iframe still loads with
+      // the right URL — we assert on the URL, not the response body.
+      await db.query(
+        "UPDATE devis SET pdf_storage_key = $1, pdf_file_name = $2 WHERE id = $3",
+        [`stub/${uniq}.pdf`, `stub-${uniq}.pdf`, devisId],
+      );
+      await page.reload();
+      await page.getByTestId("tab-devis").click();
+      await page.getByTestId(`row-devis-toggle-${devisId}`).click();
+
+      const iconBtn2 = page.getByTestId(`button-view-pdf-${devisId}`);
+      const prominentBtn2 = page.getByTestId(`button-view-pdf-prominent-${devisId}`);
+      await expect(iconBtn2).toBeEnabled();
+      await expect(prominentBtn2).toBeEnabled();
+
+      // ---------- 3. Prominent button opens in-app pop-out (no new tab) ----------
+      await prominentBtn2.click();
+      const dialog = page.getByTestId(`dialog-pdf-popout-${devisId}`);
+      await expect(dialog).toBeVisible();
+      const iframe = page.getByTestId(`pdf-popout-iframe-${devisId}`);
+      await expect(iframe).toHaveAttribute(
+        "src",
+        new RegExp(`/api/devis/${devisId}/pdf\\?variant=`),
+      );
+      // No new browser tab/window was opened.
+      expect(newPages, `unexpected new pages: ${JSON.stringify(newPages)}`).toEqual([]);
+
+      // Esc closes.
+      await page.keyboard.press("Escape");
+      await expect(dialog).toHaveCount(0);
+
+      // ---------- 4. Icon button opens the same pop-out ----------
+      await iconBtn2.click();
+      await expect(page.getByTestId(`dialog-pdf-popout-${devisId}`)).toBeVisible();
+      // Close button works too.
+      await page.getByTestId(`button-pdf-popout-close-${devisId}`).click();
+      await expect(page.getByTestId(`dialog-pdf-popout-${devisId}`)).toHaveCount(0);
+
+      // Final guard: still no new tabs anywhere in the flow.
+      expect(newPages, `unexpected new pages: ${JSON.stringify(newPages)}`).toEqual([]);
+    } finally {
+      try {
+        await cleanup(db, s);
+      } finally {
+        await db.end();
+        await context.close();
+      }
+    }
+  });
+});
