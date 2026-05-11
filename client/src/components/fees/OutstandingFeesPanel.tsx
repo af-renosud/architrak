@@ -1,12 +1,14 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
-import { AlertTriangle, Copy, Check, Coins } from "lucide-react";
+import { AlertTriangle, Copy, Check, Coins, CheckCircle2, X } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { useToast } from "@/hooks/use-toast";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
   buildFeeInvoiceDescription,
   type OutstandingFeeEntry,
@@ -65,6 +67,109 @@ function CopyButton({ entry }: { entry: OutstandingFeeEntry }) {
         {copied ? "Copied" : "Copy"}
       </span>
     </Button>
+  );
+}
+
+function MarkInvoicedAction({
+  entry,
+  scope,
+  projectId,
+}: {
+  entry: OutstandingFeeEntry;
+  scope: "global" | "project";
+  projectId?: number;
+}) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [ref, setRef] = useState("");
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const trimmed = ref.trim();
+      const res = await apiRequest("POST", `/api/fee-entries/${entry.entryId}/mark-invoiced`, {
+        pennylaneInvoiceRef: trimmed || undefined,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/fees/outstanding"] });
+      const pid = scope === "project" ? projectId : entry.projectId;
+      if (pid !== undefined) {
+        const pidStr = String(pid);
+        queryClient.invalidateQueries({
+          queryKey: ["/api/projects", pidStr, "fees", "outstanding"],
+        });
+        queryClient.invalidateQueries({ queryKey: ["/api/projects", pidStr, "fee-entries"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/projects", pidStr, "fees"] });
+      }
+      setOpen(false);
+      setRef("");
+      toast({ title: "Commission marked as invoiced" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  if (!open) {
+    return (
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-7 px-2 border-emerald-500/40 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/10"
+        onClick={() => setOpen(true)}
+        data-testid={`button-mark-invoiced-${entry.entryId}`}
+        title="Mark this commission as invoiced in Penny Lane"
+      >
+        <CheckCircle2 size={12} className="mr-1" />
+        <span className="text-[9px] font-bold uppercase tracking-widest">Mark Invoiced</span>
+      </Button>
+    );
+  }
+
+  return (
+    <form
+      className="flex items-center gap-1"
+      onSubmit={(e) => {
+        e.preventDefault();
+        mutation.mutate();
+      }}
+      data-testid={`form-mark-invoiced-${entry.entryId}`}
+    >
+      <Input
+        autoFocus
+        value={ref}
+        onChange={(e) => setRef(e.target.value)}
+        placeholder="Penny Lane ref (optional)"
+        className="h-7 w-44 text-[11px]"
+        data-testid={`input-pennylane-ref-${entry.entryId}`}
+      />
+      <Button
+        type="submit"
+        size="sm"
+        className="h-7 px-2 bg-emerald-600 hover:bg-emerald-700 text-white"
+        disabled={mutation.isPending}
+        data-testid={`button-confirm-mark-invoiced-${entry.entryId}`}
+      >
+        <span className="text-[9px] font-bold uppercase tracking-widest">
+          {mutation.isPending ? "Saving..." : "Save"}
+        </span>
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-7 w-7 p-0"
+        onClick={() => {
+          setOpen(false);
+          setRef("");
+        }}
+        disabled={mutation.isPending}
+        data-testid={`button-cancel-mark-invoiced-${entry.entryId}`}
+      >
+        <X size={12} />
+      </Button>
+    </form>
   );
 }
 
@@ -230,11 +335,12 @@ export function OutstandingFeesPanel({ scope, projectId, compact }: Props) {
                   {" · "}TTC {formatCurrency(e.amountTtc)}
                 </p>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
                 <span className="text-[12px] font-semibold text-amber-600 dark:text-amber-400" data-testid={`text-outstanding-fee-${e.entryId}`}>
                   {formatCurrency(e.feeAmountHt)}
                 </span>
                 <CopyButton entry={e} />
+                <MarkInvoicedAction entry={e} scope={scope} projectId={projectId} />
               </div>
             </div>
           ))}
