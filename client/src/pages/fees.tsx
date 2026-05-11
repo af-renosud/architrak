@@ -577,9 +577,11 @@ export default function Fees() {
                                     {formatCurrency(parseFloat(entry.feeAmount))}
                                   </span>
                                   <StatusBadge status={entry.status} />
-                                  {entry.status === "pending" && !entry.pennylaneInvoiceRef && (
-                                    <CopyEntryButton entryId={entry.id} />
-                                  )}
+                                  {fee.feeType === "works_percentage" &&
+                                    entry.status === "pending" &&
+                                    !entry.pennylaneInvoiceRef && (
+                                      <CopyEntryButton entryId={entry.id} />
+                                    )}
                                   <Button
                                     variant="ghost"
                                     size="icon"

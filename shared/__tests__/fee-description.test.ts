@@ -77,9 +77,9 @@ describe("bucketAgeDays", () => {
 });
 
 describe("summarizeOutstandingFees", () => {
-  const entry = (id: number, ageDays: number, feeAmountHt: number): OutstandingFeeEntry => ({
-    entryId: id, feeId: 1, projectId: 1,
-    projectName: "P", projectCode: "PC",
+  const entry = (id: number, ageDays: number, feeAmountHt: number, projectId = 1): OutstandingFeeEntry => ({
+    entryId: id, feeId: 1, projectId,
+    projectName: `P${projectId}`, projectCode: `PC${projectId}`,
     contractorName: "C", invoiceId: id, invoiceNumber: `F-${id}`,
     devisId: id, devisCode: `D-${id}`,
     amountHt: 1000, amountTtc: 1200, feePercentage: 8,
@@ -102,6 +102,22 @@ describe("summarizeOutstandingFees", () => {
     expect(byLabel["31-60"].count).toBe(1);
     expect(byLabel["61-90"].count).toBe(1);
     expect(byLabel["90+"].count).toBe(1);
+  });
+
+  it("rolls up by project with oldest age and largest total first", () => {
+    const summary = summarizeOutstandingFees([
+      entry(1, 10, 100, 1),
+      entry(2, 200, 50, 1),
+      entry(3, 5, 300, 2),
+    ]);
+    expect(summary.byProject).toHaveLength(2);
+    expect(summary.byProject[0].projectId).toBe(2);
+    expect(summary.byProject[0].totalFeeHt).toBe(300);
+    expect(summary.byProject[0].oldestAgeDays).toBe(5);
+    expect(summary.byProject[1].projectId).toBe(1);
+    expect(summary.byProject[1].count).toBe(2);
+    expect(summary.byProject[1].totalFeeHt).toBe(150);
+    expect(summary.byProject[1].oldestAgeDays).toBe(200);
   });
 
   it("returns zeros when no entries", () => {

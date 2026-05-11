@@ -158,6 +158,34 @@ export function OutstandingFeesPanel({ scope, projectId, compact }: Props) {
         ))}
       </div>
 
+      {scope === "global" && data.byProject.length > 1 && (
+        <div className="mb-4" data-testid="section-outstanding-by-project">
+          <TechnicalLabel>By Project</TechnicalLabel>
+          <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {data.byProject.map((p) => (
+              <Link key={p.projectId} href={`/projets/${p.projectId}?tab=honoraires`}>
+                <div
+                  className="rounded-lg border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] p-2 hover-elevate cursor-pointer"
+                  data-testid={`row-outstanding-project-${p.projectId}`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold uppercase tracking-widest text-[#0B2545] truncate">
+                      {p.projectCode}
+                    </span>
+                    <span className="text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+                      {formatCurrency(p.totalFeeHt)}
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground truncate">
+                    {p.count} entry{p.count === 1 ? "" : "s"} · oldest {p.oldestAgeDays}d
+                  </p>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+
       {!compact && (
         <div className="space-y-2" data-testid="list-outstanding-entries">
           {data.entries.map((e) => (
@@ -181,12 +209,19 @@ export function OutstandingFeesPanel({ scope, projectId, compact }: Props) {
                   <span className="text-[12px] font-semibold text-foreground truncate" data-testid={`text-outstanding-contractor-${e.entryId}`}>
                     {e.contractorName ?? "Unknown contractor"}
                   </span>
-                  {e.ageDays > 60 && (
-                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-red-600 dark:text-red-400">
-                      <AlertTriangle size={10} />
-                      {e.ageDays}d
-                    </span>
-                  )}
+                  <span
+                    className={`inline-flex items-center gap-1 text-[10px] font-semibold ${
+                      e.ageDays > 90
+                        ? "text-red-600 dark:text-red-400"
+                        : e.ageDays > 60
+                          ? "text-amber-600 dark:text-amber-400"
+                          : "text-muted-foreground"
+                    }`}
+                    data-testid={`text-outstanding-age-${e.entryId}`}
+                  >
+                    {e.ageDays > 60 && <AlertTriangle size={10} />}
+                    {e.ageDays}d
+                  </span>
                 </div>
                 <p className="text-[10px] text-muted-foreground mt-0.5 truncate">
                   Facture {e.invoiceNumber ?? "—"}

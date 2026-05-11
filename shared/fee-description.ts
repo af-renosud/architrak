@@ -29,10 +29,20 @@ export interface OutstandingFeeBucket {
   totalFeeHt: number;
 }
 
+export interface OutstandingFeeProjectRollup {
+  projectId: number;
+  projectCode: string;
+  projectName: string;
+  count: number;
+  totalFeeHt: number;
+  oldestAgeDays: number;
+}
+
 export interface OutstandingFeeSummary {
   totalCount: number;
   totalFeeHt: number;
   buckets: OutstandingFeeBucket[];
+  byProject: OutstandingFeeProjectRollup[];
   entries: OutstandingFeeEntry[];
 }
 
@@ -90,14 +100,34 @@ export function summarizeOutstandingFees(entries: OutstandingFeeEntry[]): Outsta
     "61-90": { count: 0, totalFeeHt: 0 },
     "90+": { count: 0, totalFeeHt: 0 },
   };
+  const projectAcc = new Map<number, OutstandingFeeProjectRollup>();
   let totalFeeHt = 0;
   for (const e of entries) {
     const label = bucketAgeDays(e.ageDays);
     bucketAcc[label].count += 1;
     bucketAcc[label].totalFeeHt = roundCurrency(bucketAcc[label].totalFeeHt + e.feeAmountHt);
     totalFeeHt = roundCurrency(totalFeeHt + e.feeAmountHt);
+
+    const existing = projectAcc.get(e.projectId);
+    if (existing) {
+      existing.count += 1;
+      existing.totalFeeHt = roundCurrency(existing.totalFeeHt + e.feeAmountHt);
+      if (e.ageDays > existing.oldestAgeDays) existing.oldestAgeDays = e.ageDays;
+    } else {
+      projectAcc.set(e.projectId, {
+        projectId: e.projectId,
+        projectCode: e.projectCode,
+        projectName: e.projectName,
+        count: 1,
+        totalFeeHt: roundCurrency(e.feeAmountHt),
+        oldestAgeDays: e.ageDays,
+      });
+    }
   }
   const labels: OutstandingFeeBucket["label"][] = ["0-30", "31-60", "61-90", "90+"];
+  const byProject = Array.from(projectAcc.values()).sort(
+    (a, b) => b.totalFeeHt - a.totalFeeHt,
+  );
   return {
     totalCount: entries.length,
     totalFeeHt,
@@ -106,6 +136,7 @@ export function summarizeOutstandingFees(entries: OutstandingFeeEntry[]): Outsta
       count: bucketAcc[label].count,
       totalFeeHt: bucketAcc[label].totalFeeHt,
     })),
+    byProject,
     entries,
   };
 }
