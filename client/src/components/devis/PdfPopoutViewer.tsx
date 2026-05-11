@@ -126,14 +126,24 @@ export function PdfPopoutViewer({
       : availableVariants[0] ?? "original";
 
   const [variant, setVariant] = useState<PdfVariant>(defaultVariant);
+  // True once the user explicitly picked a variant from the selector — we
+  // then stop reconciling against the auto-default so a late-arriving
+  // translation row doesn't yank the viewer away from the user's choice.
+  const userPickedRef = useRef(false);
+
   useEffect(() => {
-    if (!availableVariants.includes(variant) && availableVariants.length > 0) {
-      setVariant(
-        translationReady && hasOriginal ? "combined" : availableVariants[0],
-      );
-    }
+    if (userPickedRef.current) return;
+    if (availableVariants.length === 0) return;
+    const want: PdfVariant =
+      translationReady && hasOriginal ? "combined" : availableVariants[0];
+    if (want !== variant) setVariant(want);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [translationReady, hasOriginal]);
+
+  const onVariantChange = (v: string) => {
+    userPickedRef.current = true;
+    setVariant(v as PdfVariant);
+  };
 
   const [frame, setFrame] = useState<StoredFrame>(() => loadFrame());
   const [reloadToken, setReloadToken] = useState(0);
@@ -331,10 +341,7 @@ export function PdfPopoutViewer({
           onPointerDown={(e) => e.stopPropagation()}
         >
           {availableVariants.length > 1 && !isMinimized ? (
-            <Select
-              value={variant}
-              onValueChange={(v) => setVariant(v as PdfVariant)}
-            >
+            <Select value={variant} onValueChange={onVariantChange}>
               <SelectTrigger
                 className="h-7 w-[140px] bg-white/10 border-white/20 text-white text-[11px] focus:ring-white/40"
                 data-testid={`select-pdf-variant-${devisId}`}

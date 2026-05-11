@@ -75,6 +75,7 @@ async function seed(api: APIRequestContext, uniq: string): Promise<Seed> {
 async function cleanup(db: Client, s: Seed | null) {
   if (!s) return;
   const stmts: Array<[string, unknown[]]> = [
+    ["DELETE FROM devis_translations WHERE devis_id = $1", [s.devis.id]],
     ["DELETE FROM devis_line_items WHERE devis_id = $1", [s.devis.id]],
     ["DELETE FROM devis WHERE id = $1", [s.devis.id]],
     ["DELETE FROM projects WHERE id = $1", [s.projectId]],
@@ -209,6 +210,48 @@ test.describe("Devis PDF pop-out viewer (task #191)", () => {
       await expect(
         page.getByTestId(`select-pdf-variant-${devisId}`),
       ).toHaveCount(0);
+      await page.getByTestId(`button-pdf-popout-close-${devisId}`).click();
+      await expect(dialog2).toHaveCount(0);
+
+      // ---------- 8. Translation present → selector visible, defaults to combined ----------
+      // Seed a finalised translation row directly in the DB. The shared
+      // translation-status helper considers draft / edited / finalised as
+      // "ready"; finalised is the strongest signal.
+      await db.query(
+        `INSERT INTO devis_translations (devis_id, status, line_translations, header_translated, updated_at)
+         VALUES ($1, 'finalised', '[]'::jsonb, '{}'::jsonb, NOW())
+         ON CONFLICT (devis_id) DO UPDATE SET status = EXCLUDED.status, updated_at = NOW()`,
+        [devisId],
+      );
+      // Reopen — query refetches translation status, default should land
+      // on `combined` per server-side fallback parity.
+      await iconBtn2.click();
+      await expect(dialog2).toBeVisible();
+      const variantSelect = page.getByTestId(`select-pdf-variant-${devisId}`);
+      await expect(variantSelect).toBeVisible();
+      // Iframe URL reflects the chosen default.
+      await expect(page.getByTestId(`pdf-popout-iframe-${devisId}`)).toHaveAttribute(
+        "src",
+        new RegExp(`/api/devis/${devisId}/pdf\\?variant=combined`),
+      );
+      // Switch to translation and verify iframe URL updates.
+      await variantSelect.click();
+      await page
+        .getByTestId(`select-pdf-variant-${devisId}-option-translation`)
+        .click();
+      await expect(page.getByTestId(`pdf-popout-iframe-${devisId}`)).toHaveAttribute(
+        "src",
+        new RegExp(`/api/devis/${devisId}/pdf\\?variant=translation`),
+      );
+      // Switch to original.
+      await variantSelect.click();
+      await page
+        .getByTestId(`select-pdf-variant-${devisId}-option-original`)
+        .click();
+      await expect(page.getByTestId(`pdf-popout-iframe-${devisId}`)).toHaveAttribute(
+        "src",
+        new RegExp(`/api/devis/${devisId}/pdf\\?variant=original`),
+      );
 
       // Final guard: still no new tabs anywhere in the flow.
       expect(newPages, `unexpected new pages: ${JSON.stringify(newPages)}`).toEqual([]);
