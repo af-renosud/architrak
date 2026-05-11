@@ -264,4 +264,213 @@ test.describe("Devis PDF pop-out viewer (task #191)", () => {
       }
     }
   });
+
+  test("download anchor reflects current variant; window frame is remembered across reopen", async ({
+    browser,
+  }) => {
+    const databaseUrl = process.env.DATABASE_URL;
+    expect(databaseUrl, "DATABASE_URL must be set for this test").toBeTruthy();
+    const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+    const email = `e2e-pdf-popout-frame-${uniq}@local.test`;
+    const db = new Client({ connectionString: databaseUrl! });
+    await db.connect();
+
+    const context = await browser.newContext({
+      viewport: { width: 1600, height: 1000 },
+    });
+    let s: Seed | null = null;
+
+    try {
+      await devLogin(context.request, email);
+      s = await seed(context.request, uniq);
+      const devisId = s.devis.id;
+      const devisCode = `PP-D-${uniq}`;
+
+      // Stub a pdfStorageKey + a finalised translation so both the
+      // variant selector and the download link become meaningful.
+      await db.query(
+        "UPDATE devis SET pdf_storage_key = $1, pdf_file_name = $2 WHERE id = $3",
+        [`stub/${uniq}.pdf`, `stub-${uniq}.pdf`, devisId],
+      );
+      await db.query(
+        `INSERT INTO devis_translations (devis_id, status, line_translations, header_translated, updated_at)
+         VALUES ($1, 'finalised', '[]'::jsonb, '{}'::jsonb, NOW())
+         ON CONFLICT (devis_id) DO UPDATE SET status = EXCLUDED.status, updated_at = NOW()`,
+        [devisId],
+      );
+
+      const page = await context.newPage();
+      // Clear any frame remembered from a previous run within the
+      // same browser context so we start from the centred default.
+      await page.addInitScript(() => {
+        try {
+          sessionStorage.removeItem("architrak.pdfPopout.frame");
+        } catch {
+          /* ignore */
+        }
+      });
+
+      // Suppress real downloads — we only assert the anchor attributes.
+      await page.route(`**/api/devis/${devisId}/pdf?variant=*`, (route) => {
+        if (route.request().method() === "HEAD") {
+          return route.fulfill({
+            status: 200,
+            headers: { "content-type": "application/pdf" },
+            body: "",
+          });
+        }
+        return route.fulfill({
+          status: 200,
+          headers: { "content-type": "application/pdf" },
+          body: "%PDF-1.4\n%stub\n",
+        });
+      });
+
+      await page.goto(`/projets/${s.projectId}`);
+      await page.getByTestId("tab-devis").click();
+      await page.getByTestId(`row-devis-toggle-${devisId}`).click();
+
+      const iconBtn = page.getByTestId(`button-view-pdf-${devisId}`);
+      await expect(iconBtn).toBeEnabled();
+      await iconBtn.click();
+
+      const dialog = page.getByTestId(`dialog-pdf-popout-${devisId}`);
+      await expect(dialog).toBeVisible();
+
+      // ---------- Download anchor: defaults to combined ----------
+      const downloadLink = page.getByTestId(`button-pdf-download-${devisId}`);
+      await expect(downloadLink).toHaveAttribute(
+        "href",
+        `/api/devis/${devisId}/pdf?variant=combined`,
+      );
+      await expect(downloadLink).toHaveAttribute(
+        "download",
+        `DEVIS-${devisCode}-combined.pdf`,
+      );
+
+      // Switch variant → both href AND download filename update in lockstep.
+      const variantSelect = page.getByTestId(`select-pdf-variant-${devisId}`);
+      await variantSelect.click();
+      await page
+        .getByTestId(`select-pdf-variant-${devisId}-option-translation`)
+        .click();
+      await expect(downloadLink).toHaveAttribute(
+        "href",
+        `/api/devis/${devisId}/pdf?variant=translation`,
+      );
+      await expect(downloadLink).toHaveAttribute(
+        "download",
+        `DEVIS-${devisCode}-translation.pdf`,
+      );
+
+      await variantSelect.click();
+      await page
+        .getByTestId(`select-pdf-variant-${devisId}-option-original`)
+        .click();
+      await expect(downloadLink).toHaveAttribute(
+        "href",
+        `/api/devis/${devisId}/pdf?variant=original`,
+      );
+      await expect(downloadLink).toHaveAttribute(
+        "download",
+        `DEVIS-${devisCode}-original.pdf`,
+      );
+
+      // ---------- Drag the dialog via the title bar handle ----------
+      const handle = page.getByTestId(`pdf-popout-handle-${devisId}`);
+      const handleBox = await handle.boundingBox();
+      expect(handleBox, "drag handle must have a bounding box").not.toBeNull();
+      const startX = handleBox!.x + 30;
+      const startY = handleBox!.y + handleBox!.height / 2;
+      const dragDx = 140;
+      const dragDy = 90;
+      await page.mouse.move(startX, startY);
+      await page.mouse.down();
+      await page.mouse.move(startX + dragDx / 2, startY + dragDy / 2, {
+        steps: 5,
+      });
+      await page.mouse.move(startX + dragDx, startY + dragDy, { steps: 5 });
+      await page.mouse.up();
+
+      // ---------- Resize via the bottom-right grip ----------
+      const resize = page.getByTestId(`pdf-popout-resize-${devisId}`);
+      const rBox = await resize.boundingBox();
+      expect(rBox, "resize grip must have a bounding box").not.toBeNull();
+      const resizeStartX = rBox!.x + rBox!.width / 2;
+      const resizeStartY = rBox!.y + rBox!.height / 2;
+      const resizeDx = 120;
+      const resizeDy = 80;
+      await page.mouse.move(resizeStartX, resizeStartY);
+      await page.mouse.down();
+      await page.mouse.move(
+        resizeStartX + resizeDx / 2,
+        resizeStartY + resizeDy / 2,
+        { steps: 5 },
+      );
+      await page.mouse.move(
+        resizeStartX + resizeDx,
+        resizeStartY + resizeDy,
+        { steps: 5 },
+      );
+      await page.mouse.up();
+
+      // Capture the frame as actually rendered after drag + resize.
+      const captured = await dialog.evaluate((el) => {
+        const s = (el as HTMLElement).style;
+        return {
+          left: parseFloat(s.left),
+          top: parseFloat(s.top),
+          width: parseFloat(s.width),
+          height: parseFloat(s.height),
+        };
+      });
+      expect(captured.width).toBeGreaterThan(0);
+      expect(captured.height).toBeGreaterThan(0);
+
+      // sessionStorage should mirror the rendered frame.
+      const stored = await page.evaluate(() =>
+        window.sessionStorage.getItem("architrak.pdfPopout.frame"),
+      );
+      expect(stored, "frame should be persisted to sessionStorage").toBeTruthy();
+      const parsed = JSON.parse(stored!) as {
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+        minimized?: boolean;
+      };
+      expect(parsed.x).toBeCloseTo(captured.left, 0);
+      expect(parsed.y).toBeCloseTo(captured.top, 0);
+      expect(parsed.w).toBeCloseTo(captured.width, 0);
+      expect(parsed.h).toBeCloseTo(captured.height, 0);
+
+      // ---------- Close & reopen → frame must be restored ----------
+      await page.getByTestId(`button-pdf-popout-close-${devisId}`).click();
+      await expect(dialog).toHaveCount(0);
+
+      await page.getByTestId(`button-view-pdf-${devisId}`).click();
+      const dialog2 = page.getByTestId(`dialog-pdf-popout-${devisId}`);
+      await expect(dialog2).toBeVisible();
+      const restored = await dialog2.evaluate((el) => {
+        const s = (el as HTMLElement).style;
+        return {
+          left: parseFloat(s.left),
+          top: parseFloat(s.top),
+          width: parseFloat(s.width),
+          height: parseFloat(s.height),
+        };
+      });
+      expect(restored.left).toBeCloseTo(captured.left, 0);
+      expect(restored.top).toBeCloseTo(captured.top, 0);
+      expect(restored.width).toBeCloseTo(captured.width, 0);
+      expect(restored.height).toBeCloseTo(captured.height, 0);
+    } finally {
+      try {
+        await cleanup(db, s);
+      } finally {
+        await db.end();
+        await context.close();
+      }
+    }
+  });
 });
