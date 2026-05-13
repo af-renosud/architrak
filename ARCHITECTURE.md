@@ -401,6 +401,16 @@ into the Renosud shared Google Drive at:
 - **Feature flag** — `DRIVE_AUTO_UPLOAD_ENABLED=false` by default. When off,
   `enqueueDriveUpload` is a silent no-op so wire-in callers don't need to
   gate themselves. No backfill of pre-existing PDFs.
+- **Gmail-scrape ingestion** — when `processEmailDocument` matches a
+  scraped PDF to a project AND the parsed `documentType` is `devis` or
+  `invoice`, the PDF is enqueued under `doc_kind = "scrape"` against the
+  newly-created `project_documents.id`. The scrape lands in the
+  project's `(unassigned-lot)` fallback because the lot isn't known
+  until the operator promotes the draft. Once promoted, the
+  devis/invoice upload services enqueue again under their own
+  doc_kind, producing a second authoritative copy in the correct lot
+  folder. Migration `0033_drive_uploads_scrape_kind.sql` adds the
+  fourth doc_kind.
 - **Out of scope (this iteration)**: `avoirs` / credit-note table does not
   exist in the schema; if introduced later, add a new `doc_kind` to
   `DRIVE_UPLOAD_DOC_KINDS` + the writeback switch in

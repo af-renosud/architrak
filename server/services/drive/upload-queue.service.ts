@@ -188,6 +188,12 @@ async function writeBackToSourceRow(
     case "certificat":
       await storage.setCertificatDriveLink(docId, result.fileId, result.webViewLink);
       return;
+    case "scrape":
+      // project_documents have no drive_link column — the upload row
+      // itself carries the fileId/webViewLink for audit. Nothing to
+      // write back. The scraped PDF will be re-mirrored under its
+      // proper devis/invoice id once the operator promotes it.
+      return;
     default: {
       // Compile-time exhaustiveness so adding a new DriveUploadDocKind
       // forces us to add a writeback path.

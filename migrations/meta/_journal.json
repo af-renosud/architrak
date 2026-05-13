@@ -232,6 +232,13 @@
       "when": 1778550000000,
       "tag": "0032_drive_auto_upload",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1778560000000,
+      "tag": "0033_drive_uploads_scrape_kind",
+      "breakpoints": true
     }
   ]
 }

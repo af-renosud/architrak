@@ -88,6 +88,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0030_user_gmail_polling", artifact: { kind: "column", table: "users", column: "gmail_refresh_token" } },
   { tag: "0031_wish_list_images", artifact: { kind: "column", table: "wish_list_items", column: "image_storage_keys" } },
   { tag: "0032_drive_auto_upload", artifact: { kind: "column", table: "lots", column: "drive_folder_id" } },
+  { tag: "0033_drive_uploads_scrape_kind", artifact: { kind: "table", table: "drive_uploads" } },
 ];
 
 interface JournalFile {

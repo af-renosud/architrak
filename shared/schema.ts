@@ -1814,7 +1814,7 @@ export type PostMergeTransientFailure =
 // file id + viewer link to the originating row (devis / invoice /
 // certificat) AND to this queue row (for the admin DLQ surface).
 // ---------------------------------------------------------------------
-export const DRIVE_UPLOAD_DOC_KINDS = ["devis", "invoice", "certificat"] as const;
+export const DRIVE_UPLOAD_DOC_KINDS = ["devis", "invoice", "certificat", "scrape"] as const;
 export type DriveUploadDocKind = (typeof DRIVE_UPLOAD_DOC_KINDS)[number];
 
 export const DRIVE_UPLOAD_STATES = [

@@ -841,7 +841,7 @@ export async function processEmailDocument(emailDocumentId: number): Promise<voi
         "application/pdf"
       );
 
-      await storage.createProjectDocument({
+      const projectDoc = await storage.createProjectDocument({
         projectId: match.projectId,
         fileName: emailDoc.attachmentFileName || "document.pdf",
         storageKey: newStorageKey,
@@ -850,6 +850,32 @@ export async function processEmailDocument(emailDocumentId: number): Promise<voi
         description: `Auto-extracted from email: ${emailDoc.emailSubject}`,
         sourceEmailDocumentId: emailDocumentId,
       });
+
+      // Task #198 — mirror gmail-scraped devis/factures into Drive at
+      // ingest time. We don't yet have a devis/facture row (those are
+      // only created when an operator confirms the draft via the
+      // devis/invoice upload services, which themselves enqueue), so
+      // we file under doc_kind = "scrape" with the project_document
+      // id. The folder lookup still uses the project name; the file
+      // lands in the project's `(unassigned-lot)` fallback until the
+      // operator promotes the draft and the lot is known. Idempotent
+      // on (doc_kind, doc_id). Silent no-op when feature flag off.
+      if (parsed.documentType === "devis" || parsed.documentType === "invoice") {
+        try {
+          const { enqueueDriveUpload } = await import("../services/drive/upload-queue.service");
+          void enqueueDriveUpload({
+            docKind: "scrape",
+            docId: projectDoc.id,
+            projectId: match.projectId,
+            lotId: null,
+            sourceStorageKey: newStorageKey,
+            displayName: emailDoc.attachmentFileName || `scrape-${projectDoc.id}.pdf`,
+            seedDevisCode: `scrape-${projectDoc.id}`,
+          });
+        } catch (err) {
+          console.warn(`[Gmail] Drive enqueue at scrape time skipped:`, err);
+        }
+      }
     }
 
     console.log(`[DocumentParser] Processed document ${emailDocumentId}: type=${parsed.documentType}, matchConfidence=${match.confidence}%, validationValid=${validation.isValid}, validationScore=${validation.confidenceScore}, status=${status}`);
