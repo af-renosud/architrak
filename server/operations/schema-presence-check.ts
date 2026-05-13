@@ -87,6 +87,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0029_devis_structured_lot_code", artifact: { kind: "column", table: "devis", column: "lot_ref_text" } },
   { tag: "0030_user_gmail_polling", artifact: { kind: "column", table: "users", column: "gmail_refresh_token" } },
   { tag: "0031_wish_list_images", artifact: { kind: "column", table: "wish_list_items", column: "image_storage_keys" } },
+  { tag: "0032_drive_auto_upload", artifact: { kind: "column", table: "lots", column: "drive_folder_id" } },
 ];
 
 interface JournalFile {

@@ -4707,6 +4707,25 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
                 <TooltipContent side="top" className="text-[10px]">No PDF on file</TooltipContent>
               )}
             </Tooltip>
+            {/* Task #198 — only rendered when the auto-upload to the
+                 Renosud shared Drive has succeeded for this devis. */}
+            {devis.driveWebViewLink && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <a
+                    href={devis.driveWebViewLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-input bg-background px-3 text-[11px] font-bold uppercase tracking-widest hover:bg-accent hover:text-accent-foreground"
+                    data-testid={`link-view-on-drive-${devis.id}`}
+                  >
+                    <FileText size={13} />
+                    Drive
+                  </a>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-[10px]">Open in Renosud shared Drive</TooltipContent>
+              </Tooltip>
+            )}
           </div>
         </TooltipProvider>
       </div>

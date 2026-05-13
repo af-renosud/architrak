@@ -7,6 +7,7 @@ import { checkLotReferencesAgainstCatalog } from "./lot-reference-validator";
 import { roundCurrency } from "../../shared/financial-utils";
 import { reconcileAdvisories } from "./advisory-reconciler";
 import { triggerDevisTranslation } from "./devis-translation";
+import { enqueueDriveUpload } from "./drive/upload-queue.service";
 import { toSentenceCase } from "../lib/sentence-case";
 import { coerceBbox } from "./devis-upload.service";
 import {
@@ -287,6 +288,21 @@ export async function rescrapeDevis(devisId: number): Promise<RescrapeResult> {
   triggerDevisTranslation(devisId);
 
   const refreshed = await storage.getDevis(devisId);
+
+  // Task #198 — re-enqueue Drive upload for the (possibly replaced)
+  // PDF. The queue is idempotent on (devis, devisId) so a row that
+  // already succeeded stays succeeded; this only fires the upload when
+  // no Drive copy exists yet (e.g. operator scraped the PDF later).
+  if (initial.pdfStorageKey && refreshed) {
+    void enqueueDriveUpload({
+      docKind: "devis",
+      docId: devisId,
+      projectId: refreshed.projectId,
+      lotId: refreshed.lotId ?? null,
+      sourceStorageKey: initial.pdfStorageKey,
+      displayName: `${refreshed.devisCode || `devis-${devisId}`}.pdf`,
+    });
+  }
 
   return {
     success: true,

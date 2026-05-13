@@ -157,6 +157,10 @@ export const projects = pgTable("projects", {
   // is the fallback for projects whose Archidoc record carries no contact.
   clientContactName: text("client_contact_name"),
   clientContactEmail: text("client_contact_email"),
+  // Task #198 — cached Google Drive folder id for the project's
+  // "1 DEVIS & FACTURE FOLDERS" subfolder under the Renosud shared
+  // drive. Resolved lazily on first upload; null = not yet resolved.
+  driveFolderId: text("drive_folder_id"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
@@ -209,6 +213,10 @@ export const lots = pgTable("lots", {
   lotNumber: text("lot_number").notNull(),
   descriptionFr: text("description_fr").notNull(),
   descriptionUk: text("description_uk"),
+  // Task #198 — single per-lot Drive folder that holds ALL financial
+  // docs for this lot (devis incl. avenants/PV-MV, factures, certificats,
+  // future credit notes). Resolved + cached on first upload.
+  driveFolderId: text("drive_folder_id"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   index("lots_project_id_idx").on(table.projectId),
@@ -258,6 +266,12 @@ export const devis = pgTable("devis", {
   dateSent: date("date_sent"),
   dateSigned: date("date_signed"),
   pvmvRef: text("pvmv_ref"),
+  // Task #198 — cached Drive file id + viewer link for the devis PDF
+  // copy in `{lot}/{project}/{devisCode}` subfolder. Populated by the
+  // drive-upload worker after a successful push; null while pending.
+  driveFileId: text("drive_file_id"),
+  driveWebViewLink: text("drive_web_view_link"),
+  driveUploadedAt: timestamp("drive_uploaded_at"),
   pdfStorageKey: text("pdf_storage_key"),
   pdfFileName: text("pdf_file_name"),
   validationWarnings: jsonb("validation_warnings"),
@@ -401,6 +415,10 @@ export const invoices = pgTable("invoices", {
   validationWarnings: jsonb("validation_warnings"),
   aiExtractedData: jsonb("ai_extracted_data"),
   aiConfidence: integer("ai_confidence"),
+  // Task #198 — Drive copy of this invoice's PDF (see devis above).
+  driveFileId: text("drive_file_id"),
+  driveWebViewLink: text("drive_web_view_link"),
+  driveUploadedAt: timestamp("drive_uploaded_at"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   index("invoices_project_id_idx").on(table.projectId),
@@ -461,6 +479,10 @@ export const certificats = pgTable("certificats", {
   netToPayTtc: numeric("net_to_pay_ttc", { precision: 12, scale: 2 }).notNull(),
   status: text("status").notNull().default("draft"),
   notes: text("notes"),
+  // Task #198 — Drive copy of the architect-signed certificat PDF.
+  driveFileId: text("drive_file_id"),
+  driveWebViewLink: text("drive_web_view_link"),
+  driveUploadedAt: timestamp("drive_uploaded_at"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   unique("certificats_project_ref_unique").on(table.projectId, table.certificateRef),
@@ -1781,3 +1803,60 @@ export const postMergeTransientFailures = pgTable("post_merge_transient_failures
 
 export type PostMergeTransientFailure =
   typeof postMergeTransientFailures.$inferSelect;
+
+// ---------------------------------------------------------------------
+// Task #198 — Drive auto-upload queue (AT5-style retry + DLQ).
+//
+// One row per (docKind, docId) — re-enqueueing an already-succeeded
+// row is a no-op handled in the service (UNIQUE constraint enforced
+// at the SQL level). The worker sweeps `pending` rows whose
+// `nextAttemptAt` has passed; on success it writes back the Drive
+// file id + viewer link to the originating row (devis / invoice /
+// certificat) AND to this queue row (for the admin DLQ surface).
+// ---------------------------------------------------------------------
+export const DRIVE_UPLOAD_DOC_KINDS = ["devis", "invoice", "certificat"] as const;
+export type DriveUploadDocKind = (typeof DRIVE_UPLOAD_DOC_KINDS)[number];
+
+export const DRIVE_UPLOAD_STATES = [
+  "pending",
+  "in_flight",
+  "succeeded",
+  "failed",
+  "dead_letter",
+] as const;
+export type DriveUploadState = (typeof DRIVE_UPLOAD_STATES)[number];
+
+export const driveUploads = pgTable("drive_uploads", {
+  id: serial("id").primaryKey(),
+  docKind: text("doc_kind").notNull(),
+  docId: integer("doc_id").notNull(),
+  projectId: integer("project_id")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  lotId: integer("lot_id").references(() => lots.id, { onDelete: "set null" }),
+  sourceStorageKey: text("source_storage_key").notNull(),
+  displayName: text("display_name").notNull(),
+  state: text("state").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  lastAttemptAt: timestamp("last_attempt_at"),
+  nextAttemptAt: timestamp("next_attempt_at")
+    .default(sql`CURRENT_TIMESTAMP`)
+    .notNull(),
+  driveFileId: text("drive_file_id"),
+  driveWebViewLink: text("drive_web_view_link"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  unique("drive_uploads_doc_unique").on(table.docKind, table.docId),
+  index("drive_uploads_state_next_idx").on(table.state, table.nextAttemptAt),
+  index("drive_uploads_project_idx").on(table.projectId),
+]);
+
+export const insertDriveUploadSchema = createInsertSchema(driveUploads).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertDriveUpload = z.infer<typeof insertDriveUploadSchema>;
+export type DriveUpload = typeof driveUploads.$inferSelect;

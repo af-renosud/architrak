@@ -100,6 +100,14 @@ sequence (`assertNoDevLoginBackdoorInProduction`) hard-fails if either is truthy
 - **AT5 — Outbound Architrak → Archidoc webhook delivery**: signed `/work-authorisations`
   delivery with retry orchestrator, DLQ at `/admin/ops/webhook-dlq`, UUIDv7 idempotency,
   canonical-form timestamps per contract §5.3.2.1.
+- **Drive auto-upload (Task #198, feature-flagged OFF by default)**: every devis +
+  facture PDF is mirrored into the Renosud shared Drive at
+  `{project}/FINANCIAL/LIVE PROJECT FINANCIAL/1 DEVIS & FACTURE FOLDERS/{Lot} {project} {devisCode}`.
+  ONE LOT → ONE FOLDER (all financial docs for that lot land alongside the original
+  devis). AT5-style retry queue (`drive_uploads`), 5 attempts with backoff, DLQ at
+  `/admin/ops/drive-uploads`. Service-account auth — set `GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON`,
+  `GOOGLE_DRIVE_SHARED_DRIVE_ID`, then flip `DRIVE_AUTO_UPLOAD_ENABLED=true` to turn on.
+  No backfill of pre-existing PDFs.
 
 ## Operations gotchas
 

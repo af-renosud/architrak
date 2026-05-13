@@ -159,6 +159,15 @@ app.use((req, res, next) => {
   registerObjectStorageRoutes(app);
   await registerRoutes(httpServer, app);
 
+  // Task #198 — Drive auto-upload sweeper. No-op when feature flag is
+  // off (safe to call unconditionally on every boot).
+  try {
+    const { startDriveUploadSweeper } = await import("./services/drive/upload-queue.service");
+    startDriveUploadSweeper();
+  } catch (err) {
+    console.error("[DriveQueue] failed to start sweeper:", err);
+  }
+
   // Boot-time backend-swap reconciliation (Task #164). MUST run
   // BEFORE the contractor-auto-sync scheduler and the webhook
   // listeners come online, otherwise a stale dev/legacy mirror row

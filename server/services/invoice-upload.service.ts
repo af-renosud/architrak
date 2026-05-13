@@ -3,6 +3,7 @@ import { uploadDocument } from "../storage/object-storage";
 import { validateExtraction } from "./extraction-validator";
 import { roundCurrency, deriveTvaAmount } from "../../shared/financial-utils";
 import { reconcileAdvisories } from "./advisory-reconciler";
+import { enqueueDriveUpload } from "./drive/upload-queue.service";
 import { assertPdfMagic } from "../middleware/upload";
 import { INVOICE_UPLOAD_ERROR_CODES } from "../../shared/invoice-upload-errors";
 
@@ -93,6 +94,18 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
   } catch (advErr) {
     console.warn(`[Invoice Upload] Failed to persist advisories:`, advErr);
   }
+
+  // Task #198 — push the invoice PDF into the same per-lot Drive
+  // folder as the devis it's invoicing. Idempotent + no-op when the
+  // feature flag is off.
+  void enqueueDriveUpload({
+    docKind: "invoice",
+    docId: invoice.id,
+    projectId: invoice.projectId,
+    lotId: devis.lotId ?? null,
+    sourceStorageKey: storageKey,
+    displayName: `${invoice.invoiceNumber || `invoice-${invoice.id}`}.pdf`,
+  });
 
   // Lifecycle-bound auto-revoke: a freshly-uploaded invoice can push the
   // devis to fully-invoiced. Cheap no-op otherwise.

@@ -6,6 +6,7 @@ import { roundCurrency } from "../../shared/financial-utils";
 import { reconcileAdvisories } from "./advisory-reconciler";
 import { assertPdfMagic } from "../middleware/upload";
 import { triggerDevisTranslation } from "./devis-translation";
+import { enqueueDriveUpload } from "./drive/upload-queue.service";
 import { toSentenceCase } from "../lib/sentence-case";
 import { DEVIS_UPLOAD_ERROR_CODES } from "../../shared/devis-upload-errors";
 
@@ -232,6 +233,18 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
   }
 
   triggerDevisTranslation(devisRecord.id);
+
+  // Task #198 — push the freshly uploaded PDF into the Renosud shared
+  // Drive. No-op when DRIVE_AUTO_UPLOAD_ENABLED is false; failures
+  // self-recover via the sweeper + admin DLQ retry.
+  void enqueueDriveUpload({
+    docKind: "devis",
+    docId: devisRecord.id,
+    projectId: devisRecord.projectId,
+    lotId: devisRecord.lotId ?? null,
+    sourceStorageKey: storageKey,
+    displayName: `${devisRecord.devisCode || file.originalname.replace(/\.pdf$/i, "")}.pdf`,
+  });
 
   return {
     success: true,

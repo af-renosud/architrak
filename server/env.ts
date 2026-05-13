@@ -124,6 +124,22 @@ const envSchema = z.object({
   PRIVATE_OBJECT_DIR: optionalString(),
   PUBLIC_OBJECT_SEARCH_PATHS: z.string().optional(),
 
+  // --- Google Drive auto-upload (feature-scoped, Task #198) ------------
+  // Pushes a copy of every devis/facture/certificat PDF into the
+  // Renosud shared Drive at:
+  //   {project folder} / FINANCIAL / LIVE PROJECT FINANCIAL /
+  //   1 DEVIS & FACTURE FOLDERS / {Lot} {project} {devisCode}
+  // Service-account model: the JSON below MUST be the credentials of a
+  // service account that has been granted "Content manager" on the
+  // shared drive identified by GOOGLE_DRIVE_SHARED_DRIVE_ID. The flag
+  // is OFF by default — even if creds + drive id are present the
+  // worker stays silent until DRIVE_AUTO_UPLOAD_ENABLED is truthy.
+  // This lets us deploy schema + code changes ahead of operator
+  // provisioning credentials, and gives a fast on/off kill switch.
+  GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON: optionalString(),
+  GOOGLE_DRIVE_SHARED_DRIVE_ID: optionalString(),
+  DRIVE_AUTO_UPLOAD_ENABLED: booleanFlag(false),
+
   // --- Rate limit store selector ---------------------------------------
   RATE_LIMIT_STORE: optionalEnum(["memory", "postgres"]),
 

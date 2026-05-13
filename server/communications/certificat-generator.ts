@@ -1008,6 +1008,7 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     archivedAt: null,
     clientContactName: null,
     clientContactEmail: null,
+    driveFolderId: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -1045,6 +1046,7 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     lotNumber: "03",
     descriptionFr: "Maçonnerie - Gros œuvre",
     descriptionUk: "Masonry - Structural works",
+    driveFolderId: null,
     createdAt: now,
   };
 
@@ -1085,6 +1087,9 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     lotCatalogId: null,
     lotRefText: null,
     lotSequence: null,
+    driveFileId: null,
+    driveWebViewLink: null,
+    driveUploadedAt: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -1108,6 +1113,9 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     validationWarnings: null,
     aiExtractedData: null,
     aiConfidence: null,
+    driveFileId: null,
+    driveWebViewLink: null,
+    driveUploadedAt: null,
     createdAt: now,
   };
 
@@ -1126,6 +1134,9 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     netToPayTtc: "15000.00",
     status: "draft",
     notes: null,
+    driveFileId: null,
+    driveWebViewLink: null,
+    driveUploadedAt: null,
     createdAt: now,
   };
 

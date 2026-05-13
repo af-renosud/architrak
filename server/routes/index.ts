@@ -35,6 +35,7 @@ import adminPageHintBackfillRouter from "./admin-page-hint-backfill";
 import adminTransientFailuresRouter from "./admin-transient-failures";
 import adminWebhookDlqRouter from "./admin-webhook-dlq";
 import adminMirrorRestoreRouter from "./admin-mirror-restore";
+import adminDriveUploadsRouter from "./admin-drive-uploads";
 import healthzRouter from "./healthz";
 import designContractsRouter from "./design-contracts";
 
@@ -108,6 +109,7 @@ export async function registerRoutes(
   app.use(adminTransientFailuresRouter);
   app.use(adminWebhookDlqRouter);
   app.use(adminMirrorRestoreRouter);
+  app.use(adminDriveUploadsRouter);
   app.use(designContractsRouter);
 
   return httpServer;

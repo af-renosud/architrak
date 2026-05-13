@@ -3,6 +3,8 @@ import { eq, ne, desc, asc, and, or, inArray, isNotNull, isNull, lte, gte, like,
 import {
   projects, contractors, lots, lotCatalog, marches, devis, devisLineItems,
   avenants, invoices, situations, situationLines, certificats, fees, feeEntries,
+  driveUploads,
+  type DriveUpload, type InsertDriveUpload,
   archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog, archidocSiretIssues,
   emailDocuments, projectDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
   aiModelSettings, templateAssets, users, devisTranslations, wishListItems,
@@ -459,6 +461,23 @@ export interface IStorage {
     project: Project;
   }>>;
   markDesignContractMilestoneReminderSent(id: number): Promise<void>;
+
+  // --- Task #198: Drive auto-upload ----------------------------------
+  setProjectDriveFolderId(projectId: number, folderId: string): Promise<void>;
+  setLotDriveFolderId(lotId: number, folderId: string): Promise<void>;
+  setDevisDriveLink(devisId: number, fileId: string, webViewLink: string): Promise<void>;
+  setInvoiceDriveLink(invoiceId: number, fileId: string, webViewLink: string): Promise<void>;
+  setCertificatDriveLink(certificatId: number, fileId: string, webViewLink: string): Promise<void>;
+  upsertDriveUpload(data: InsertDriveUpload): Promise<DriveUpload>;
+  claimDriveUploadForAttempt(uploadId: number): Promise<DriveUpload | null>;
+  markDriveUploadSucceeded(args: { uploadId: number; attempts: number; driveFileId: string; driveWebViewLink: string }): Promise<void>;
+  markDriveUploadDeadLettered(args: { uploadId: number; attempts: number; lastError: string }): Promise<void>;
+  markDriveUploadPendingRetry(args: { uploadId: number; attempts: number; lastError: string; nextAttemptAt: Date }): Promise<void>;
+  listDueDriveUploads(limit: number): Promise<DriveUpload[]>;
+  reclaimStaleDriveUploads(maxAgeMs: number): Promise<number>;
+  listDriveUploads(filter?: { state?: string; limit?: number; offset?: number }): Promise<DriveUpload[]>;
+  getDriveUpload(uploadId: number): Promise<DriveUpload | undefined>;
+  resetDriveUploadForRetry(uploadId: number): Promise<DriveUpload | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2470,6 +2489,166 @@ export class DatabaseStorage implements IStorage {
         updatedAt: sql`CURRENT_TIMESTAMP`,
       })
       .where(eq(webhookDeliveriesOut.id, id))
+      .returning();
+    return row;
+  }
+
+  // --- Task #198: Drive auto-upload ----------------------------------
+
+  async setProjectDriveFolderId(projectId: number, folderId: string): Promise<void> {
+    await db.update(projects).set({ driveFolderId: folderId }).where(eq(projects.id, projectId));
+  }
+
+  async setLotDriveFolderId(lotId: number, folderId: string): Promise<void> {
+    await db.update(lots).set({ driveFolderId: folderId }).where(eq(lots.id, lotId));
+  }
+
+  async setDevisDriveLink(devisId: number, fileId: string, webViewLink: string): Promise<void> {
+    await db
+      .update(devis)
+      .set({ driveFileId: fileId, driveWebViewLink: webViewLink, driveUploadedAt: new Date() })
+      .where(eq(devis.id, devisId));
+  }
+
+  async setInvoiceDriveLink(invoiceId: number, fileId: string, webViewLink: string): Promise<void> {
+    await db
+      .update(invoices)
+      .set({ driveFileId: fileId, driveWebViewLink: webViewLink, driveUploadedAt: new Date() })
+      .where(eq(invoices.id, invoiceId));
+  }
+
+  async setCertificatDriveLink(certificatId: number, fileId: string, webViewLink: string): Promise<void> {
+    await db
+      .update(certificats)
+      .set({ driveFileId: fileId, driveWebViewLink: webViewLink, driveUploadedAt: new Date() })
+      .where(eq(certificats.id, certificatId));
+  }
+
+  async upsertDriveUpload(data: InsertDriveUpload): Promise<DriveUpload> {
+    // ON CONFLICT DO NOTHING semantics: re-enqueueing an existing
+    // (docKind, docId) row never resets a succeeded/dead-lettered row.
+    // We INSERT and on conflict return the EXISTING row untouched.
+    const [inserted] = await db
+      .insert(driveUploads)
+      .values(data)
+      .onConflictDoNothing({
+        target: [driveUploads.docKind, driveUploads.docId],
+      })
+      .returning();
+    if (inserted) return inserted;
+    const [existing] = await db
+      .select()
+      .from(driveUploads)
+      .where(and(eq(driveUploads.docKind, data.docKind), eq(driveUploads.docId, data.docId)));
+    return existing;
+  }
+
+  async claimDriveUploadForAttempt(uploadId: number): Promise<DriveUpload | null> {
+    // Atomic claim: only flip from `pending` → `in_flight`. If another
+    // worker has already claimed it (or the row finished/dead-lettered)
+    // the UPDATE matches zero rows and we bail.
+    const [row] = await db
+      .update(driveUploads)
+      .set({ state: "in_flight", lastAttemptAt: new Date(), updatedAt: sql`CURRENT_TIMESTAMP` })
+      .where(and(eq(driveUploads.id, uploadId), eq(driveUploads.state, "pending")))
+      .returning();
+    return row ?? null;
+  }
+
+  async markDriveUploadSucceeded(args: { uploadId: number; attempts: number; driveFileId: string; driveWebViewLink: string }): Promise<void> {
+    await db
+      .update(driveUploads)
+      .set({
+        state: "succeeded",
+        attempts: args.attempts,
+        driveFileId: args.driveFileId,
+        driveWebViewLink: args.driveWebViewLink,
+        lastError: null,
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(eq(driveUploads.id, args.uploadId));
+  }
+
+  async markDriveUploadDeadLettered(args: { uploadId: number; attempts: number; lastError: string }): Promise<void> {
+    await db
+      .update(driveUploads)
+      .set({
+        state: "dead_letter",
+        attempts: args.attempts,
+        lastError: args.lastError,
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(eq(driveUploads.id, args.uploadId));
+  }
+
+  async markDriveUploadPendingRetry(args: { uploadId: number; attempts: number; lastError: string; nextAttemptAt: Date }): Promise<void> {
+    await db
+      .update(driveUploads)
+      .set({
+        state: "pending",
+        attempts: args.attempts,
+        lastError: args.lastError,
+        nextAttemptAt: args.nextAttemptAt,
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(eq(driveUploads.id, args.uploadId));
+  }
+
+  async reclaimStaleDriveUploads(maxAgeMs: number): Promise<number> {
+    // Stale-claim recovery (architect review of Task #198): if a
+    // worker crashed between flipping pending→in_flight and finishing
+    // the upload, the row would otherwise sit in `in_flight` forever
+    // because the sweeper only scans `pending`. We reclaim any
+    // `in_flight` row whose `lastAttemptAt` is older than the
+    // configured lease window, returning it to `pending` for the
+    // sweeper to re-attempt.
+    const cutoff = new Date(Date.now() - maxAgeMs);
+    const reclaimed = await db
+      .update(driveUploads)
+      .set({
+        state: "pending",
+        nextAttemptAt: new Date(),
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(and(eq(driveUploads.state, "in_flight"), lte(driveUploads.lastAttemptAt, cutoff)))
+      .returning({ id: driveUploads.id });
+    return reclaimed.length;
+  }
+
+  async listDueDriveUploads(limit: number): Promise<DriveUpload[]> {
+    return db
+      .select()
+      .from(driveUploads)
+      .where(and(eq(driveUploads.state, "pending"), lte(driveUploads.nextAttemptAt, new Date())))
+      .orderBy(asc(driveUploads.nextAttemptAt))
+      .limit(limit);
+  }
+
+  async listDriveUploads(filter?: { state?: string; limit?: number; offset?: number }): Promise<DriveUpload[]> {
+    const where = filter?.state ? eq(driveUploads.state, filter.state) : undefined;
+    let q = db.select().from(driveUploads).$dynamic();
+    if (where) q = q.where(where);
+    return q
+      .orderBy(desc(driveUploads.updatedAt))
+      .limit(filter?.limit ?? 200)
+      .offset(filter?.offset ?? 0);
+  }
+
+  async getDriveUpload(uploadId: number): Promise<DriveUpload | undefined> {
+    const [row] = await db.select().from(driveUploads).where(eq(driveUploads.id, uploadId));
+    return row;
+  }
+
+  async resetDriveUploadForRetry(uploadId: number): Promise<DriveUpload | undefined> {
+    const [row] = await db
+      .update(driveUploads)
+      .set({
+        state: "pending",
+        nextAttemptAt: new Date(),
+        lastError: null,
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(eq(driveUploads.id, uploadId))
       .returning();
     return row;
   }

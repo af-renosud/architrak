@@ -21,6 +21,7 @@ import CostBenchmarks from "@/pages/cost-benchmarks";
 import AdminTransientFailures from "@/pages/admin-transient-failures";
 import AdminWebhookDlq from "@/pages/admin-webhook-dlq";
 import AdminMirrorRestore from "@/pages/admin-mirror-restore";
+import AdminDriveUploads from "@/pages/admin-drive-uploads";
 import { Loader2 } from "lucide-react";
 
 function Router() {
@@ -41,6 +42,7 @@ function Router() {
       <Route path="/admin/ops/transient-failures" component={AdminTransientFailures} />
       <Route path="/admin/ops/webhook-dlq" component={AdminWebhookDlq} />
       <Route path="/admin/ops/mirror-restore" component={AdminMirrorRestore} />
+      <Route path="/admin/ops/drive-uploads" component={AdminDriveUploads} />
       <Route component={NotFound} />
     </Switch>
   );
