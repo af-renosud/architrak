@@ -482,6 +482,28 @@ export async function generateCertificatPdf(certificatId: number): Promise<{ sto
   const pdfBuffer = await convertHtmlToPdf(html, docName);
   const storageKey = await uploadDocument(project.id, fileName, pdfBuffer, "application/pdf");
 
+  // Task #198 — enqueue Drive mirror at PDF materialisation time, not
+  // only on send, so a draft certificat that's been previewed is
+  // already filed in Drive. Idempotent on (doc_kind, doc_id) so
+  // repeated previews collapse to a single Drive copy. Lazy import
+  // breaks an otherwise circular dependency:
+  //   email-sender → certificat-generator → upload-queue → ... .
+  try {
+    const { enqueueDriveUpload } = await import("../services/drive/upload-queue.service");
+    const seedDevis = activeDevis.find((d) => d.lotId != null) ?? activeDevis[0];
+    void enqueueDriveUpload({
+      docKind: "certificat",
+      docId: certificat.id,
+      projectId: project.id,
+      lotId: seedDevis?.lotId ?? null,
+      sourceStorageKey: storageKey,
+      displayName: `${docName}.pdf`,
+      seedDevisCode: seedDevis?.devisCode ?? `cert-${certificat.certificateRef}`,
+    });
+  } catch (err) {
+    console.warn(`[Certificat] Drive enqueue at PDF generation skipped:`, err);
+  }
+
   return { storageKey, pdfBuffer };
 }
 

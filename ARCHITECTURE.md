@@ -362,7 +362,51 @@ The raw body is captured via `express.json({ verify })` callback and stored on `
 - Label operations (categorizing processed emails) conditionally skipped when permissions are insufficient
 - Extracted documents follow the same AI pipeline: parse -> validate -> draft -> review
 
-### 4.5 Object Storage
+### 4.5 Drive Auto-Upload (Task #198, feature-flagged)
+
+Every devis / facture / certificat PDF stored in object storage is mirrored
+into the Renosud shared Google Drive at:
+
+```
+{project name}/FINANCIAL/LIVE PROJECT FINANCIAL/1 DEVIS & FACTURE FOLDERS/
+  {Lot} {project} {devisCode}/
+```
+
+**Invariants**:
+
+- **ONE LOT → ONE FOLDER** — devis, factures, and certificats for a single lot
+  share a single Drive folder. The folder name is seeded from the originating
+  devis code so it stays canonical regardless of which doc lands first.
+- **Auth is service-account only** (`GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON`,
+  domain-wide delegation NOT used — the SA itself is granted Editor on the
+  shared drive). User OAuth is intentionally rejected so no one operator's
+  identity is on the audit trail.
+- **Project root resolution is strict-exact-match-only** on the
+  case-and-accent-normalised folder name. Ambiguity (≥2 matches) is fatal —
+  the operator must rename in Drive then click Retry. Step-by-step location
+  also requires `FINANCIAL/LIVE PROJECT FINANCIAL/1 DEVIS & FACTURE FOLDERS`
+  to exist verbatim — these intermediate folders are NEVER auto-created.
+- **Concurrency** — `pg_advisory_xact_lock(198, lotId)` serialises per-lot
+  folder creation so two concurrent uploads can't create duplicate folders
+  before either has persisted `lots.drive_folder_id`.
+- **AT5-style retry** — `drive_uploads` table, 5 attempts with
+  10s/30s/2m/5m backoff, then `dead_letter`. Folder-not-found errors are
+  treated as transient (operator may not have created the client folder
+  yet). Crashed `in_flight` rows older than 10 min are reclaimed by the
+  sweeper.
+- **Admin DLQ** at `/admin/ops/drive-uploads` — list/filter/retry. Retry is
+  only permitted on `dead_letter` and `failed` rows (resetting `succeeded`
+  would create duplicate Drive copies; resetting `in_flight` would race the
+  worker).
+- **Feature flag** — `DRIVE_AUTO_UPLOAD_ENABLED=false` by default. When off,
+  `enqueueDriveUpload` is a silent no-op so wire-in callers don't need to
+  gate themselves. No backfill of pre-existing PDFs.
+- **Out of scope (this iteration)**: `avoirs` / credit-note table does not
+  exist in the schema; if introduced later, add a new `doc_kind` to
+  `DRIVE_UPLOAD_DOC_KINDS` + the writeback switch in
+  `server/services/drive/upload-queue.service.ts`.
+
+### 4.6 Object Storage
 
 All documents stored in Replit Object Storage via `server/storage/object-storage.ts`:
 

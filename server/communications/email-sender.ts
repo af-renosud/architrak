@@ -2,7 +2,6 @@ import { getUncachableGmailClient, isGmailConfigured } from "../gmail/client";
 import { storage } from "../storage";
 import { generateCertificatPdf, buildCertificatEmailBody } from "./certificat-generator";
 import { getDocumentBuffer } from "../storage/object-storage";
-import { enqueueDriveUpload } from "../services/drive/upload-queue.service";
 import type { InsertProjectCommunication } from "@shared/schema";
 
 export async function sendCertificat(certificatId: number): Promise<number> {
@@ -34,32 +33,9 @@ export async function sendCertificat(certificatId: number): Promise<number> {
   };
 
   const created = await storage.createProjectCommunication(comm);
-
-  // Task #198 — mirror the certificat PDF into the same per-lot
-  // Drive folder used for devis + factures. The certificat is filed
-  // under the lot of the contractor's first signed devis (all of a
-  // contractor's financial docs for one lot live together — see the
-  // "ONE LOT → ONE FOLDER" rule in replit.md). lotId may be null if
-  // none of the contractor's devis are lot-assigned yet — the queue
-  // will then file under the project's `(unassigned-lot)` fallback.
-  // Idempotent + no-op when DRIVE_AUTO_UPLOAD_ENABLED is false.
-  try {
-    const contractorDevis = (await storage.getDevisByProjectAndContractor(project.id, contractor.id))
-      .filter((d) => d.status !== "void");
-    const seedDevis = contractorDevis.find((d) => d.lotId != null) ?? contractorDevis[0];
-    void enqueueDriveUpload({
-      docKind: "certificat",
-      docId: certificatId,
-      projectId: project.id,
-      lotId: seedDevis?.lotId ?? null,
-      sourceStorageKey: storageKey,
-      displayName: `Certificat_${certificat.certificateRef}.pdf`,
-      seedDevisCode: seedDevis?.devisCode ?? `cert-${certificat.certificateRef}`,
-    });
-  } catch (err) {
-    console.warn(`[Certificat] Drive enqueue skipped:`, err);
-  }
-
+  // NB: Drive enqueue happens inside `generateCertificatPdf` itself
+  // (Task #198), so previewing a draft certificat already mirrors it
+  // to Drive. The send path here doesn't need a second enqueue.
   return created.id;
 }
 
