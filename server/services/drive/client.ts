@@ -104,7 +104,19 @@ export async function pingDrive(): Promise<{ ok: true; driveName: string } | { o
 }
 
 /** True for HTTP statuses we should retry. Mirrors AT5 webhook-delivery semantics. */
+export const DRIVE_FOLDER_NOT_FOUND_NAME = "DriveFolderNotFoundError";
+
 export function isTransientDriveError(err: unknown): boolean {
+  // Folder-not-found is treated as transient (Task #198 spec): the
+  // operator may simply not have created the client folder yet, or
+  // may have it under a slightly different name. We let the queue
+  // keep retrying through the normal backoff schedule so once the
+  // operator fixes the Drive structure the upload self-heals; on
+  // exhaustion it dead-letters into the admin DLQ where they can
+  // click Retry after correcting the mismatch.
+  if (err && typeof err === "object" && (err as { name?: string }).name === DRIVE_FOLDER_NOT_FOUND_NAME) {
+    return true;
+  }
   const code = (err as { code?: unknown })?.code;
   if (typeof code === "number") {
     if (code === 408 || code === 429) return true;

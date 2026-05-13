@@ -160,7 +160,7 @@ export default function AdminDriveUploads() {
                   <tr key={row.id} className="border-b" data-testid={`row-drive-upload-${row.id}`}>
                     <td className="py-2 font-mono">{row.id}</td>
                     <td>
-                      <div className="font-medium">{row.displayName}</div>
+                      <div className="font-medium">{row.displayName.split("\u0001")[0]}</div>
                       <div className="text-xs text-muted-foreground">
                         {row.docKind}#{row.docId} · project {row.projectId}
                         {row.lotId ? ` · lot ${row.lotId}` : " · (unassigned lot)"}
@@ -191,7 +191,7 @@ export default function AdminDriveUploads() {
                           <ExternalLink size={12} /> Drive
                         </a>
                       )}
-                      {(row.state === "dead_letter" || row.state === "failed" || row.state === "pending") && (
+                      {(row.state === "dead_letter" || row.state === "failed") && (
                         <Button
                           size="sm"
                           variant="outline"

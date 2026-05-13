@@ -96,6 +96,9 @@ function findFuzzyProjectFolder(folders: ListResult[], projectName: string): str
 }
 
 export class DriveFolderNotFoundError extends Error {
+  // Stable name so isTransientDriveError can detect us without an
+  // import cycle (client.ts must not import folder-locator.ts).
+  override name = "DriveFolderNotFoundError";
   constructor(message: string) {
     super(message);
     this.name = "DriveFolderNotFoundError";

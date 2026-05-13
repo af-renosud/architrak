@@ -105,6 +105,10 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
     lotId: devis.lotId ?? null,
     sourceStorageKey: storageKey,
     displayName: `${invoice.invoiceNumber || `invoice-${invoice.id}`}.pdf`,
+    // Folder name is `{Lot} {project} {devisCode}` — use the parent
+    // devis code so the lot folder gets the canonical name even when
+    // an invoice lands before any devis has triggered the create.
+    seedDevisCode: devis.devisCode,
   });
 
   // Lifecycle-bound auto-revoke: a freshly-uploaded invoice can push the

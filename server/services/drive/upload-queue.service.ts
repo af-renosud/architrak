@@ -26,6 +26,22 @@ import { uploadPdfToFolder } from "./upload.service";
 
 export const MAX_DRIVE_UPLOAD_ATTEMPTS = 5;
 
+/**
+ * Internal separator used to piggy-back the seed devis code onto the
+ * `display_name` column without needing a fresh migration. Chosen
+ * because Drive file names should never legitimately contain `\u0001`.
+ */
+const SEED_SEP = "\u0001";
+
+function decodeDisplayName(stored: string): { displayName: string; seedDevisCode: string | null } {
+  const idx = stored.indexOf(SEED_SEP);
+  if (idx < 0) return { displayName: stored, seedDevisCode: null };
+  return {
+    displayName: stored.slice(0, idx),
+    seedDevisCode: stored.slice(idx + 1) || null,
+  };
+}
+
 // Backoff schedule between attempts (ms). Index = attempt number that
 // just failed (1..4). Doubles roughly each step, capped at 5 minutes.
 const BACKOFF_MS: readonly number[] = [
@@ -45,6 +61,16 @@ export interface EnqueueInput {
   sourceStorageKey: string;
   /** Human-friendly file name shown in Drive (e.g. "DEV-2025-001.pdf"). */
   displayName: string;
+  /**
+   * The devis code that should seed the per-lot folder name when this
+   * doc lands first on a lot that has no Drive folder yet. ONE LOT =
+   * ONE FOLDER means the seed must be a stable devis identifier even
+   * for invoice/certificat enqueues, because Drive folder name is
+   * `{Lot} {project} {devisCode}`. Optional: defaults to the
+   * displayName stem (correct for devis enqueues; callers MUST pass
+   * an explicit value for invoices and certificats).
+   */
+  seedDevisCode?: string;
 }
 
 /**
@@ -55,13 +81,21 @@ export interface EnqueueInput {
 export async function enqueueDriveUpload(input: EnqueueInput): Promise<void> {
   if (!isDriveAutoUploadEnabled()) return;
   try {
+    // Encode the seed devis code into the displayName via a separator
+    // the path-safe sanitiser strips back out, so we don't have to
+    // ship a schema migration just to thread one extra field. Decoded
+    // in `attemptDriveUpload` via SEED_SEP. The visible Drive file
+    // name is unchanged (`safeNamePart` already drops `|`).
+    const encodedDisplayName = input.seedDevisCode
+      ? `${input.displayName}${SEED_SEP}${input.seedDevisCode}`
+      : input.displayName;
     const row = await storage.upsertDriveUpload({
       docKind: input.docKind,
       docId: input.docId,
       projectId: input.projectId,
       lotId: input.lotId,
       sourceStorageKey: input.sourceStorageKey,
-      displayName: input.displayName,
+      displayName: encodedDisplayName,
       state: "pending",
       attempts: 0,
       lastError: null,
@@ -95,13 +129,14 @@ export async function attemptDriveUpload(uploadId: number): Promise<void> {
 
   const row = claimed;
   const attemptNum = row.attempts + 1;
+  const { displayName, seedDevisCode } = decodeDisplayName(row.displayName);
   try {
     const folderId = await ensureLotFolder({
       projectId: row.projectId,
       lotId: row.lotId,
-      seedDevisCode: row.displayName.replace(/\.pdf$/i, ""),
+      seedDevisCode: (seedDevisCode ?? displayName).replace(/\.pdf$/i, ""),
     });
-    const result = await uploadPdfToFolder(folderId, row.displayName, row.sourceStorageKey);
+    const result = await uploadPdfToFolder(folderId, displayName, row.sourceStorageKey);
 
     await storage.markDriveUploadSucceeded({
       uploadId: row.id,

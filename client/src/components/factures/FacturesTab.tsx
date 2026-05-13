@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ChevronDown, ChevronRight, FileText, Upload, FileUp, Loader2, Save, Calendar, Building2, Hash, Receipt, CheckCircle2, ShieldCheck, AlertTriangle, Trash2, Sparkles } from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, Upload, FileUp, Loader2, Save, Calendar, Building2, Hash, Receipt, CheckCircle2, ShieldCheck, AlertTriangle, Trash2, Sparkles, ExternalLink } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -174,6 +174,22 @@ export function FacturesTab({ projectId, contractors, isArchived = false }: Fact
                         >
                           <FileText size={12} />
                           <span className="text-[9px] font-bold uppercase tracking-widest">View PDF</span>
+                        </Button>
+                      )}
+                      {inv.driveWebViewLink && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-3 gap-1.5 border-emerald-700/30 text-emerald-800 hover:bg-emerald-700/5"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            window.open(inv.driveWebViewLink as string, "_blank", "noopener,noreferrer");
+                          }}
+                          data-testid={`button-view-drive-facture-${inv.id}`}
+                          title="Open in Renosud shared Drive"
+                        >
+                          <ExternalLink size={12} />
+                          <span className="text-[9px] font-bold uppercase tracking-widest">Drive</span>
                         </Button>
                       )}
                       <div className="text-right">

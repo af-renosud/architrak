@@ -4,7 +4,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { FileCheck, Plus, Eye, ChevronRight } from "lucide-react";
+import { FileCheck, Plus, Eye, ChevronRight, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -46,11 +46,25 @@ function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Certifica
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <StatusBadge status={cert.status} />
-            {cert.dateIssued && (
-              <span className="text-[11px] text-muted-foreground" data-testid="text-cert-detail-date">
-                {cert.dateIssued}
-              </span>
-            )}
+            <div className="flex items-center gap-3">
+              {cert.driveWebViewLink && (
+                <a
+                  href={cert.driveWebViewLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-widest text-emerald-800 hover:underline"
+                  data-testid={`link-cert-drive-${cert.id}`}
+                  title="Open in Renosud shared Drive"
+                >
+                  <ExternalLink size={11} /> Drive
+                </a>
+              )}
+              {cert.dateIssued && (
+                <span className="text-[11px] text-muted-foreground" data-testid="text-cert-detail-date">
+                  {cert.dateIssued}
+                </span>
+              )}
+            </div>
           </div>
 
           {contractor && (
