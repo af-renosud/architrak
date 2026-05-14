@@ -358,7 +358,17 @@ async function handleSigned(p: SignedPayload): Promise<HandlerResult> {
   // completing, the sweeper will recover this row at the armed
   // next_attempt_at. Idempotent: arming is a no-op once any attempt
   // has succeeded or recorded a failure (see storage.armSignedPdfPersistRetry).
-  await storage.armSignedPdfPersistRetry(d.id, new Date(Date.now() + 60_000));
+  // Fail-open: arming is best-effort. The webhook MUST 200 once the
+  // stage transition has committed; if arming fails (DB blip), the
+  // detached persist will still run, and on its own failure it will
+  // record a retry row through recordSignedPdfPersistFailure. The
+  // sweeper picks the row up either way.
+  try {
+    await storage.armSignedPdfPersistRetry(d.id, new Date(Date.now() + 60_000));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[SignedPdfPersist] arming retry for devis ${d.id} failed: ${message}`);
+  }
 
   setImmediate(() => {
     persistSignedDevisPdf(d.id).catch((err) => {

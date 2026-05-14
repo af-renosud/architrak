@@ -373,12 +373,17 @@ router.get(
       let stream, contentType: string | undefined, size: number | undefined;
       try {
         ({ stream, contentType, size } = await getDocumentStream(d.signedPdfStorageKey));
-      } catch {
-        // Storage miss is indistinguishable from "not available" from
-        // the architect's POV — collapse to 404 instead of leaking the
-        // internal error text. Real 5xx (object-storage outage) still
-        // falls through to the outer catch below.
-        return res.status(404).json({ message: "Signed PDF not available" });
+      } catch (err) {
+        // Differentiate "object missing" (404 — the audit copy was
+        // never persisted, or was deleted out-of-band) from real
+        // storage outages (5xx — observability matters here so the
+        // operator can see backend trouble instead of a generic 404).
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/not found/i.test(msg)) {
+          return res.status(404).json({ message: "Signed PDF not available" });
+        }
+        console.error(`[SignedPdfDownload] devis ${devisId}: storage error: ${msg}`);
+        return res.status(502).json({ message: "Signed PDF storage unavailable" });
       }
       res.setHeader("Content-Type", contentType || "application/pdf");
       res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
