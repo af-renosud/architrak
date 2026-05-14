@@ -347,12 +347,16 @@ function LotCodeComposer({ projectId, excludeDevisId, value, onChange, forcedNex
         <Input
           value={value.lotDescription}
           onChange={(e) => {
-            const v = e.target.value.slice(0, DEVIS_CODE_MAX_DESCRIPTION);
+            // Devis description is always uppercase by convention —
+            // force the casing on every keystroke so both the initial
+            // devis setup and the Edit References modal stay
+            // consistent.
+            const v = e.target.value.toUpperCase().slice(0, DEVIS_CODE_MAX_DESCRIPTION);
             onChange((prev) => ({ ...prev, lotDescription: v }));
           }}
           placeholder="e.g. HOUSE FACADE"
           maxLength={DEVIS_CODE_MAX_DESCRIPTION}
-          className="text-[11px]"
+          className="text-[11px] uppercase"
           data-testid="input-lot-description"
         />
         {errorByField("description") && (
@@ -407,7 +411,7 @@ function lotCodeValueFromDevis(d: Pick<Devis, "devisCode" | "lotCatalogId" | "lo
       lotCatalogId: d.lotCatalogId ?? null,
       lotRefText: d.lotRefText,
       lotSequence: d.lotSequence,
-      lotDescription: parsed?.description ?? "",
+      lotDescription: (parsed?.description ?? "").toUpperCase(),
     };
   }
   return { lotCatalogId: null, lotRefText: "", lotSequence: null, lotDescription: "" };
