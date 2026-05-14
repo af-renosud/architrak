@@ -7,6 +7,7 @@ const OPS_NAV_ITEMS = [
   { path: "/admin/ops/mirror-restore", label: "Mirror restore" },
   { path: "/admin/ops/transient-failures", label: "Transient failures" },
   { path: "/admin/ops/drive-uploads", label: "Drive auto-upload" },
+  { path: "/admin/ops/signed-pdf-recovery", label: "Signed PDF recovery" },
 ] as const;
 
 interface DriveStatusResponse {

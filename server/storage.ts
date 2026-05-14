@@ -471,6 +471,19 @@ export interface IStorage {
   armSignedPdfPersistRetry(devisId: number, nextAttemptAt: Date): Promise<void>;
   clearSignedPdfRetry(devisId: number): Promise<void>;
   listDueSignedPdfRetries(limit: number): Promise<Array<{ id: number }>>;
+  listSignedPdfRecoveryCandidates(): Promise<Array<{
+    id: number;
+    devisCode: string | null;
+    projectId: number;
+    lotId: number | null;
+    archisignEnvelopeId: string | null;
+    signedPdfRetryAttempts: number;
+    signedPdfNextAttemptAt: Date | null;
+    signedPdfLastError: string | null;
+    dateSigned: string | null;
+    retentionBreachedAt: Date | null;
+    retentionIncidentRef: string | null;
+  }>>;
   setInvoiceDriveLink(invoiceId: number, fileId: string, webViewLink: string): Promise<void>;
   setCertificatDriveLink(certificatId: number, fileId: string, webViewLink: string): Promise<void>;
   upsertDriveUpload(data: InsertDriveUpload): Promise<DriveUpload>;
@@ -2586,6 +2599,41 @@ export class DatabaseStorage implements IStorage {
         ),
       )
       .limit(limit);
+    return rows;
+  }
+
+  async listSignedPdfRecoveryCandidates() {
+    // Devis stuck at `client_signed_off` with an envelope but no
+    // persisted audit copy. LEFT JOIN signed_pdf_retention_breaches so
+    // the admin UI can grey out rows whose bytes Archisign has already
+    // purged (no point retrying — the source of truth is gone).
+    const rows = await db
+      .select({
+        id: devis.id,
+        devisCode: devis.devisCode,
+        projectId: devis.projectId,
+        lotId: devis.lotId,
+        archisignEnvelopeId: devis.archisignEnvelopeId,
+        signedPdfRetryAttempts: devis.signedPdfRetryAttempts,
+        signedPdfNextAttemptAt: devis.signedPdfNextAttemptAt,
+        signedPdfLastError: devis.signedPdfLastError,
+        dateSigned: devis.dateSigned,
+        retentionBreachedAt: signedPdfRetentionBreaches.detectedAt,
+        retentionIncidentRef: signedPdfRetentionBreaches.incidentRef,
+      })
+      .from(devis)
+      .leftJoin(
+        signedPdfRetentionBreaches,
+        eq(signedPdfRetentionBreaches.devisId, devis.id),
+      )
+      .where(
+        and(
+          eq(devis.signOffStage, "client_signed_off"),
+          isNotNull(devis.archisignEnvelopeId),
+          isNull(devis.signedPdfStorageKey),
+        ),
+      )
+      .orderBy(desc(devis.dateSigned), desc(devis.id));
     return rows;
   }
 
