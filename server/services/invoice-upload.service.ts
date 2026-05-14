@@ -25,25 +25,14 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
     };
   }
 
-  const storageKey = await uploadDocument(devis.projectId, file.originalname, file.buffer, file.mimetype);
-
-  await storage.createProjectDocument({
-    projectId: devis.projectId,
-    fileName: file.originalname,
-    storageKey,
-    documentType: "invoice",
-    uploadedBy: "manual",
-    description: `Invoice PDF upload for devis ${devis.devisCode}: ${file.originalname}`,
-  });
-
+  // Task #215 — parse FIRST so we can apply the acompte gate before
+  // touching object storage. This avoids leaving an orphaned PDF +
+  // project_documents row when the upload is rejected by the gate.
+  // The facture d'acompte itself is exempt so linking it never
+  // deadlocks against its own gate.
   const { parseDocument } = await import("../gmail/document-parser");
   const parsed = await parseDocument(file.buffer, file.originalname);
 
-  // Task #215 — apply the acompte gate to manual facture uploads.
-  // The deposit invoice itself (documentType="acompte") is exempt
-  // so linking the facture d'acompte never deadlocks against its
-  // own gate. This mirrors the gate applied at POST
-  // /api/devis/:devisId/invoices and /situations.
   const isAcompteInvoice = parsed.documentType === "acompte";
   const gateDecision = evaluateAcompteGate(gateInputsFromDevis(devis), { isAcompteInvoice });
   if (gateDecision.blocked) {
@@ -57,6 +46,17 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
       },
     };
   }
+
+  const storageKey = await uploadDocument(devis.projectId, file.originalname, file.buffer, file.mimetype);
+
+  await storage.createProjectDocument({
+    projectId: devis.projectId,
+    fileName: file.originalname,
+    storageKey,
+    documentType: "invoice",
+    uploadedBy: "manual",
+    description: `Invoice PDF upload for devis ${devis.devisCode}: ${file.originalname}`,
+  });
 
   const validation = validateExtraction(parsed);
 

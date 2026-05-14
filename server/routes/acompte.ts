@@ -44,12 +44,14 @@ router.post(
         currentState: devis.acompteState,
       });
     }
-    // If the linked invoice already has a payment date, jump straight to 'paid'.
+    // If the linked invoice already has a payment date, jump straight
+    // to 'paid' and use the invoice's actual payment date for audit
+    // precision (not "now").
     const finalState = invoice.datePaid ? "paid" : target;
     const updated = await storage.updateDevis(devisId, {
       acompteInvoiceId: invoiceId,
       acompteState: finalState,
-      acomptePaidAt: invoice.datePaid ? new Date() : null,
+      acomptePaidAt: invoice.datePaid ? new Date(invoice.datePaid) : null,
     });
     res.json(updated);
   },
