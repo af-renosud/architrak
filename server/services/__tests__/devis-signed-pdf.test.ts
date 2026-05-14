@@ -19,7 +19,11 @@ const { storageMock, archisignMock, uploadMock, driveQueueMock } = vi.hoisted(()
     getSignedPdfUrl: vi.fn(),
   },
   uploadMock: {
-    uploadDocument: vi.fn(async (_p: number, _name: string, _buf: Buffer) => "object/key/from-test.pdf"),
+    uploadDocumentAtKey: vi.fn(async (objectName: string, _buf: Buffer) => `/bucket/${objectName}`),
+    buildSignedDevisObjectName: vi.fn(
+      (projectId: number, devisId: number) =>
+        `private/projects/${projectId}/documents/devis-signed/${devisId}.pdf`,
+    ),
   },
   driveQueueMock: {
     enqueueDriveUpload: vi.fn(async () => undefined),
@@ -38,7 +42,10 @@ vi.mock("../archisign.js", () => ({
     }
   },
 }));
-vi.mock("../../storage/object-storage", () => ({ uploadDocument: uploadMock.uploadDocument }));
+vi.mock("../../storage/object-storage", () => ({
+  uploadDocumentAtKey: uploadMock.uploadDocumentAtKey,
+  buildSignedDevisObjectName: uploadMock.buildSignedDevisObjectName,
+}));
 vi.mock("../drive/upload-queue.service", () => ({ enqueueDriveUpload: driveQueueMock.enqueueDriveUpload }));
 
 import { persistSignedDevisPdf, signedPdfFileName } from "../devis-signed-pdf.service";
@@ -89,8 +96,13 @@ describe("persistSignedDevisPdf", () => {
     storageMock.recordSignedPdfPersistFailure.mockReset();
     storageMock.clearSignedPdfRetry.mockReset();
     archisignMock.getSignedPdfUrl.mockReset();
-    uploadMock.uploadDocument.mockReset();
-    uploadMock.uploadDocument.mockResolvedValue("object/key/from-test.pdf");
+    uploadMock.uploadDocumentAtKey.mockReset();
+    uploadMock.uploadDocumentAtKey.mockResolvedValue("/bucket/private/projects/7/documents/devis-signed/42.pdf");
+    uploadMock.buildSignedDevisObjectName.mockReset();
+    uploadMock.buildSignedDevisObjectName.mockImplementation(
+      (projectId: number, devisId: number) =>
+        `private/projects/${projectId}/documents/devis-signed/${devisId}.pdf`,
+    );
     driveQueueMock.enqueueDriveUpload.mockReset();
   });
 
@@ -102,20 +114,26 @@ describe("persistSignedDevisPdf", () => {
 
     expect(global.fetch).toHaveBeenCalledWith(baseDevis.signedPdfFetchUrlSnapshot, expect.anything());
     expect(archisignMock.getSignedPdfUrl).not.toHaveBeenCalled();
-    expect(uploadMock.uploadDocument).toHaveBeenCalledWith(
-      7,
-      "DEV-2026-014 signed.pdf",
+    // Deterministic key: one devis → one stable object name (no
+    // timestamp). Concurrent webhook replays / sweeper retries collapse
+    // onto this same path so we cannot accumulate duplicate artifacts.
+    expect(uploadMock.buildSignedDevisObjectName).toHaveBeenCalledWith(7, 42);
+    expect(uploadMock.uploadDocumentAtKey).toHaveBeenCalledWith(
+      "private/projects/7/documents/devis-signed/42.pdf",
       expect.any(Buffer),
       "application/pdf",
     );
-    expect(storageMock.setDevisSignedPdfStorageKey).toHaveBeenCalledWith(42, "object/key/from-test.pdf");
+    expect(storageMock.setDevisSignedPdfStorageKey).toHaveBeenCalledWith(
+      42,
+      "/bucket/private/projects/7/documents/devis-signed/42.pdf",
+    );
     expect(driveQueueMock.enqueueDriveUpload).toHaveBeenCalledWith(
       expect.objectContaining({
         docKind: "devis_signed",
         docId: 42,
         projectId: 7,
         lotId: 3,
-        sourceStorageKey: "object/key/from-test.pdf",
+        sourceStorageKey: "/bucket/private/projects/7/documents/devis-signed/42.pdf",
         displayName: "DEV-2026-014 signed.pdf",
         seedDevisCode: "DEV-2026-014",
       }),
@@ -135,7 +153,7 @@ describe("persistSignedDevisPdf", () => {
     await persistSignedDevisPdf(42);
 
     expect(archisignMock.getSignedPdfUrl).toHaveBeenCalledWith("env_abc");
-    expect(uploadMock.uploadDocument).toHaveBeenCalledTimes(1);
+    expect(uploadMock.uploadDocumentAtKey).toHaveBeenCalledTimes(1);
     expect(driveQueueMock.enqueueDriveUpload).toHaveBeenCalledTimes(1);
   });
 
@@ -147,7 +165,7 @@ describe("persistSignedDevisPdf", () => {
 
     await persistSignedDevisPdf(42);
 
-    expect(uploadMock.uploadDocument).not.toHaveBeenCalled();
+    expect(uploadMock.uploadDocumentAtKey).not.toHaveBeenCalled();
     expect(storageMock.setDevisSignedPdfStorageKey).not.toHaveBeenCalled();
     expect(driveQueueMock.enqueueDriveUpload).not.toHaveBeenCalled();
     expect(storageMock.recordSignedPdfPersistFailure).toHaveBeenCalledWith(
@@ -155,6 +173,20 @@ describe("persistSignedDevisPdf", () => {
       expect.stringContaining("retention breach"),
       null,
     );
+  });
+
+  it("two concurrent persist runs for the same devis upload to the SAME deterministic key (no duplicate physical artifacts on race/replay)", async () => {
+    storageMock.getDevis.mockResolvedValue({ ...baseDevis });
+    mockFetchOk();
+
+    await Promise.all([persistSignedDevisPdf(42), persistSignedDevisPdf(42)]);
+
+    // Both calls compute the same deterministic object name and write
+    // to it; idempotent overwrite means a single physical artifact.
+    const keysUploaded = uploadMock.uploadDocumentAtKey.mock.calls.map((c) => c[0]);
+    const uniqueKeys = new Set(keysUploaded);
+    expect(uniqueKeys.size).toBe(1);
+    expect([...uniqueKeys][0]).toBe("private/projects/7/documents/devis-signed/42.pdf");
   });
 
   it("sweepDueSignedPdfRetries delegates to persistSignedDevisPdf for each row returned by storage and is bounded by what storage decides is due", async () => {
@@ -194,7 +226,7 @@ describe("persistSignedDevisPdf", () => {
     await persistSignedDevisPdf(42);
 
     expect(global.fetch).not.toHaveBeenCalled();
-    expect(uploadMock.uploadDocument).not.toHaveBeenCalled();
+    expect(uploadMock.uploadDocumentAtKey).not.toHaveBeenCalled();
     expect(storageMock.setDevisSignedPdfStorageKey).not.toHaveBeenCalled();
     expect(driveQueueMock.enqueueDriveUpload).toHaveBeenCalledWith(
       expect.objectContaining({ docKind: "devis_signed", sourceStorageKey: "existing/key.pdf" }),

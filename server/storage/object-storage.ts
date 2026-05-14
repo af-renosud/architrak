@@ -42,6 +42,38 @@ export async function uploadDocument(
   return `/${bucketName}/${objectName}`;
 }
 
+/**
+ * Upload a buffer to a deterministic, caller-supplied object key (no
+ * timestamp prefix). Used by flows where the same logical artifact is
+ * being (re)written under a stable name so replay/concurrent attempts
+ * collapse onto a single physical object.
+ *
+ * Returns the canonical `/{bucket}/{objectName}` storage key.
+ */
+export async function uploadDocumentAtKey(
+  objectName: string,
+  buffer: Buffer,
+  contentType: string = "application/pdf",
+): Promise<string> {
+  const bucketName = getBucketName();
+  const bucket = objectStorageClient.bucket(bucketName);
+  const file = bucket.file(objectName);
+  await file.save(buffer, { contentType, metadata: { contentType } });
+  return `/${bucketName}/${objectName}`;
+}
+
+/**
+ * Deterministic object name for a signed devis PDF. One devis → one
+ * object key, regardless of how many redelivered webhooks or retries
+ * occur. Concurrent uploads land on the same key (idempotent overwrite
+ * with identical signed bytes) so we cannot accumulate duplicate
+ * artifacts on replay or multi-process races.
+ */
+export function buildSignedDevisObjectName(projectId: number, devisId: number): string {
+  const privateDir = getPrivateDir();
+  return `${privateDir}/projects/${projectId}/documents/devis-signed/${devisId}.pdf`;
+}
+
 export async function getDocumentBuffer(storageKey: string): Promise<Buffer> {
   const { bucketName, objectName } = parseStorageKey(storageKey);
   const bucket = objectStorageClient.bucket(bucketName);

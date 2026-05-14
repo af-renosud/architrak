@@ -28,7 +28,7 @@ import {
   getSignedPdfUrl,
   ArchisignRetentionBreachError,
 } from "./archisign.js";
-import { uploadDocument } from "../storage/object-storage";
+import { uploadDocumentAtKey, buildSignedDevisObjectName } from "../storage/object-storage";
 import { enqueueDriveUpload } from "./drive/upload-queue.service";
 import type { Devis } from "@shared/schema";
 
@@ -144,9 +144,13 @@ export async function persistSignedDevisPdf(devisId: number): Promise<void> {
         return;
       }
 
-      const fileName = signedPdfFileName(d);
+      // Deterministic object name keyed by devisId. Concurrent webhook
+      // replays / sweeper retries collapse onto a single physical object
+      // (same path → idempotent overwrite with identical signed bytes),
+      // so we cannot accumulate duplicate artifacts under racy delivery.
+      const objectName = buildSignedDevisObjectName(d.projectId, devisId);
       try {
-        storageKey = await uploadDocument(d.projectId, fileName, bytes, "application/pdf");
+        storageKey = await uploadDocumentAtKey(objectName, bytes, "application/pdf");
         await storage.setDevisSignedPdfStorageKey(devisId, storageKey);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
