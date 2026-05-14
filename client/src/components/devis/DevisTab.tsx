@@ -672,6 +672,11 @@ function AcompteBadge({ devis }: { devis: Devis }) {
   const { toast } = useToast();
   const state = devis.acompteState ?? "none";
   const blocking = state === "pending" || state === "invoiced";
+  // Strict state machine: mark-paid is only legal from 'invoiced'
+  // (i.e. after the facture d'acompte has been linked). Operators
+  // marking paid from 'pending' must first upload/link the deposit
+  // invoice via the standard facture upload flow.
+  const canMarkPaid = state === "invoiced";
   const tone =
     state === "paid" || state === "applied"
       ? "bg-emerald-50 text-emerald-700 border-emerald-200"
@@ -706,7 +711,7 @@ function AcompteBadge({ devis }: { devis: Devis }) {
       onClick={(e) => e.stopPropagation()}
     >
       <span data-testid={`text-acompte-state-${devis.id}`}>{label} · {state}</span>
-      {blocking && (
+      {canMarkPaid && (
         <button
           type="button"
           className="rounded bg-white/60 px-1 text-[10px] font-bold hover:bg-white"

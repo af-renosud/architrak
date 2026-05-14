@@ -55,10 +55,20 @@ router.post(
   },
 );
 
+// Operators may supply the bank-transfer date when marking the deposit
+// paid (e.g. backfilling a payment that landed yesterday). Defaults to
+// "now" when omitted. The date must be an ISO-8601 string and not in
+// the future.
+const markPaidBodySchema = z
+  .object({
+    datePaid: z.string().datetime({ offset: true }).optional(),
+  })
+  .strict();
+
 router.post(
   "/api/devis/:id/acompte/mark-paid",
   requireAuth,
-  validateRequest({ params: idParams }),
+  validateRequest({ params: idParams, body: markPaidBodySchema }),
   async (req, res) => {
     const devisId = Number(req.params.id);
     const devis = await storage.getDevis(devisId);
@@ -69,14 +79,19 @@ router.post(
     const target = nextAcompteState(devis.acompteState, "mark_paid");
     if (!target) {
       return res.status(409).json({
-        message: `Impossible de marquer l'acompte payé depuis l'état "${devis.acompteState}"`,
+        message: `Impossible de marquer l'acompte payé depuis l'état "${devis.acompteState}". Lier d'abord la facture d'acompte.`,
         code: "acompte_invalid_transition",
         currentState: devis.acompteState,
       });
     }
+    const supplied = (req.body as { datePaid?: string }).datePaid;
+    const paidAt = supplied ? new Date(supplied) : new Date();
+    if (Number.isNaN(paidAt.getTime()) || paidAt.getTime() > Date.now() + 60_000) {
+      return res.status(400).json({ message: "Invalid datePaid (must be ISO-8601 and not in the future)" });
+    }
     const updated = await storage.updateDevis(devisId, {
       acompteState: target,
-      acomptePaidAt: new Date(),
+      acomptePaidAt: paidAt,
     });
     res.json(updated);
   },

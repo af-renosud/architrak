@@ -73,20 +73,28 @@ describe("acompte.service — nextAcompteState", () => {
     expect(nextAcompteState("paid", "link_invoice")).toBeNull();
   });
 
-  it("mark_paid: pending -> paid (allows skip-link by ops)", () => {
-    expect(nextAcompteState("pending", "mark_paid")).toBe("paid");
-  });
-
   it("mark_paid: invoiced -> paid", () => {
     expect(nextAcompteState("invoiced", "mark_paid")).toBe("paid");
+  });
+
+  it("mark_paid: from 'pending' is rejected (must link facture d'acompte first)", () => {
+    expect(nextAcompteState("pending", "mark_paid")).toBeNull();
   });
 
   it("mark_paid: from 'none' is rejected", () => {
     expect(nextAcompteState("none", "mark_paid")).toBeNull();
   });
 
-  it("unlink: invoiced -> pending", () => {
-    expect(nextAcompteState("invoiced", "unlink")).toBe("pending");
+  it("mark_paid: from 'paid' is rejected (already past)", () => {
+    expect(nextAcompteState("paid", "mark_paid")).toBeNull();
+  });
+
+  it("mark_paid: from 'applied' is rejected (terminal)", () => {
+    expect(nextAcompteState("applied", "mark_paid")).toBeNull();
+  });
+
+  it("link_invoice: from 'applied' is rejected (terminal)", () => {
+    expect(nextAcompteState("applied", "link_invoice")).toBeNull();
   });
 });
 

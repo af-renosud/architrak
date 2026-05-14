@@ -116,22 +116,29 @@ export function gateInputsFromDevis(d: Devis): GateInputs {
  */
 export function nextAcompteState(
   current: string,
-  event: "link_invoice" | "mark_paid" | "unlink",
+  event: "link_invoice" | "mark_paid",
 ): AcompteState | null {
   const c = current as AcompteState;
+  // Strict forward-only state machine per Task #215 spec:
+  //   none → pending → invoiced → paid → applied
+  // (`applied` is reached by the deduction engine — see follow-up #216 —
+  //  not by these manual transitions.) Backward / skip transitions
+  //  (e.g. pending→paid, invoiced→pending) are intentionally rejected;
+  //  admin reset to `none` is a separate audited operation, not a
+  //  generic event handled here.
   switch (event) {
     case "link_invoice":
       // Linking the facture d'acompte is only meaningful while pending.
-      // Linking again from invoiced is a no-op handled at the route
-      // layer (it updates the link target without changing state).
+      // Re-linking from invoiced is a no-op handled at the route layer
+      // (it updates the link target without changing state).
       if (c === "pending") return "invoiced";
       if (c === "invoiced") return "invoiced";
       return null;
     case "mark_paid":
-      if (c === "invoiced" || c === "pending") return "paid";
-      return null;
-    case "unlink":
-      if (c === "invoiced" || c === "paid") return "pending";
+      // The deposit is "paid" only after the facture d'acompte has been
+      // linked (state='invoiced'). Operators who never upload a
+      // facture d'acompte must link one before marking paid.
+      if (c === "invoiced") return "paid";
       return null;
   }
 }
