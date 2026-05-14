@@ -28,7 +28,16 @@ export async function approveInvoice(invoiceId: number) {
       return { success: false, status: 404, data: { message: "Project not found" } };
     }
 
-    const feeRate = parseFloat(project.feePercentage ?? "0");
+    // Per-devis override wins over the project's blanket rate (Task —
+    // ARCHITECTURE.md). NULL means "inherit project rate". An explicit
+    // 0.00 zero-rates this devis — used for professional-services
+    // contracts that don't carry an architect commission.
+    const sourceDevis = locked.devisId != null
+      ? await storage.getDevis(locked.devisId)
+      : null;
+    const feeRate = sourceDevis?.feePercentageOverride != null
+      ? parseFloat(sourceDevis.feePercentageOverride)
+      : parseFloat(project.feePercentage ?? "0");
 
     const [updatedInvoice] = await tx
       .update(invoices)

@@ -254,6 +254,13 @@ export const devis = pgTable("devis", {
   descriptionUk: text("description_uk"),
   amountHt: numeric("amount_ht", { precision: 12, scale: 2 }).notNull(),
   amountTtc: numeric("amount_ttc", { precision: 12, scale: 2 }).notNull(),
+  // Per-devis architect-commission override (Task — see ARCHITECTURE.md).
+  // NULL = inherit `projects.fee_percentage`; 0.00 = explicitly zero
+  // (e.g. professional-services devis that don't carry a commission);
+  // any other value = use this rate for invoices approved against this
+  // devis instead of the project's blanket rate. Resolution lives in
+  // server/services/{invoice-approval,outstanding-fees}.service.ts.
+  feePercentageOverride: numeric("fee_percentage_override", { precision: 5, scale: 2 }),
   invoicingMode: text("invoicing_mode").notNull().default("mode_a"),
   status: text("status").notNull().default("pending"),
   // sign_off_stage: see SIGN_OFF_STAGES tuple below for the canonical

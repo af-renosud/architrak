@@ -1541,6 +1541,12 @@ function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDev
   const [forcedNextLotSequence, setForcedNextLotSequence] = useState<number | null>(null);
   const [devisNumber, setDevisNumber] = useState(devis.devisNumber ?? "");
   const [ref2, setRef2] = useState(devis.ref2 ?? "");
+  // Architect-commission override. "" = inherit project rate (NULL),
+  // any other string = explicit per-devis rate (including "0" for
+  // professional-services devis that don't carry a commission).
+  const [feeOverride, setFeeOverride] = useState<string>(
+    devis.feePercentageOverride ?? "",
+  );
 
   const mutation = useMutation({
     mutationFn: async (payload: Record<string, unknown>) => {
@@ -1610,6 +1616,24 @@ function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDev
     }
     if (trimmedNumber !== (devis.devisNumber ?? "")) payload.devisNumber = trimmedNumber === "" ? null : trimmedNumber;
     if (trimmedRef2 !== (devis.ref2 ?? "")) payload.ref2 = trimmedRef2 === "" ? null : trimmedRef2;
+    const trimmedFee = feeOverride.trim();
+    const currentFee = devis.feePercentageOverride ?? "";
+    if (trimmedFee !== currentFee) {
+      if (trimmedFee === "") {
+        payload.feePercentageOverride = null;
+      } else {
+        const parsed = parseFloat(trimmedFee);
+        if (Number.isNaN(parsed) || parsed < 0 || parsed > 100) {
+          toast({
+            title: "Invalid commission rate",
+            description: "Enter a number between 0 and 100, or leave blank to use the project rate.",
+            variant: "destructive",
+          });
+          return;
+        }
+        payload.feePercentageOverride = parsed.toFixed(2);
+      }
+    }
     if (Object.keys(payload).length === 0) {
       onClose();
       return;
@@ -1671,6 +1695,21 @@ function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDev
               placeholder="Optional"
               data-testid="input-edit-devis-ref2"
             />
+          </div>
+          <div className="space-y-1">
+            <TechnicalLabel>Architect Commission Override (%)</TechnicalLabel>
+            <Input
+              value={feeOverride}
+              onChange={(e) => setFeeOverride(e.target.value)}
+              className="text-[12px]"
+              placeholder="Leave blank to use project rate"
+              inputMode="decimal"
+              data-testid="input-edit-devis-fee-override"
+            />
+            <p className="text-[10px] text-muted-foreground">
+              Blank = inherit project rate. Enter <strong>0</strong> for
+              professional-services devis that don't carry a commission.
+            </p>
           </div>
         </div>
         <div className="flex items-center justify-end gap-2 pt-2">

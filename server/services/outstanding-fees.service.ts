@@ -50,6 +50,7 @@ async function fetchOutstandingRows(filter: QueryFilter): Promise<OutstandingFee
       contractorName: contractors.name,
       devisId: feeEntries.devisId,
       devisCode: devis.devisCode,
+      devisFeeOverride: devis.feePercentageOverride,
       projectId: fees.projectId,
       projectName: projects.name,
       projectCode: projects.code,
@@ -82,10 +83,15 @@ async function fetchOutstandingRows(filter: QueryFilter): Promise<OutstandingFee
     const amountTtc = r.invoiceAmountTtc != null
       ? parseFloat(r.invoiceAmountTtc)
       : 0;
-    const feePercentage = r.projectFeePercentage != null
-      ? parseFloat(r.projectFeePercentage)
-      : parseFloat(r.entryFeeRate);
-    // Always recompute deterministically from invoice HT × project fee %
+    // Per-devis override beats project rate, both beat the persisted
+    // entry rate (which is only a fallback for orphaned entries with
+    // no devis link).
+    const feePercentage = r.devisFeeOverride != null
+      ? parseFloat(r.devisFeeOverride)
+      : r.projectFeePercentage != null
+        ? parseFloat(r.projectFeePercentage)
+        : parseFloat(r.entryFeeRate);
+    // Always recompute deterministically from invoice HT × resolved fee %
     // rather than trusting the persisted entry value — this is what the
     // accounting copy text and aging buckets must reflect.
     const feeAmountHt = calculateFeeAmount(amountHt, feePercentage);
@@ -165,6 +171,7 @@ async function fetchOutstandingRowsForEntry(entryId: number): Promise<Outstandin
       contractorName: contractors.name,
       devisId: feeEntries.devisId,
       devisCode: devis.devisCode,
+      devisFeeOverride: devis.feePercentageOverride,
       projectId: fees.projectId,
       projectName: projects.name,
       projectCode: projects.code,
@@ -185,9 +192,11 @@ async function fetchOutstandingRowsForEntry(entryId: number): Promise<Outstandin
     const ageDays = Math.floor(Math.max(0, now - createdAt.getTime()) / (1000 * 60 * 60 * 24));
     const amountHt = r.invoiceAmountHt != null ? parseFloat(r.invoiceAmountHt) : parseFloat(r.entryBaseHt);
     const amountTtc = r.invoiceAmountTtc != null ? parseFloat(r.invoiceAmountTtc) : 0;
-    const feePercentage = r.projectFeePercentage != null
-      ? parseFloat(r.projectFeePercentage)
-      : parseFloat(r.entryFeeRate);
+    const feePercentage = r.devisFeeOverride != null
+      ? parseFloat(r.devisFeeOverride)
+      : r.projectFeePercentage != null
+        ? parseFloat(r.projectFeePercentage)
+        : parseFloat(r.entryFeeRate);
     return {
       entryId: r.entryId,
       feeId: r.feeId,

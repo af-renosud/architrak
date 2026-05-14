@@ -1082,6 +1082,7 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     descriptionUk: "Masonry works - extension",
     amountHt: "24500.00",
     amountTtc: "29400.00",
+    feePercentageOverride: null,
     invoicingMode: "mode_a",
     status: "approved",
     signOffStage: "signed",
