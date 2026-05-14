@@ -1,6 +1,7 @@
 import { storage } from "../storage";
 import { uploadDocument, getDocumentBuffer } from "../storage/object-storage";
 import { convertHtmlToPdf } from "../services/docraptor";
+import { enqueueDriveUpload } from "../services/drive/upload-queue.service";
 import { roundCurrency } from "@shared/financial-utils";
 import type { Certificat, Project, Contractor, Devis, Lot, Invoice, Avenant } from "@shared/schema";
 import { formatLotDescription } from "@shared/lot-label";
@@ -482,27 +483,23 @@ export async function generateCertificatPdf(certificatId: number): Promise<{ sto
   const pdfBuffer = await convertHtmlToPdf(html, docName);
   const storageKey = await uploadDocument(project.id, fileName, pdfBuffer, "application/pdf");
 
-  // Task #198 — enqueue Drive mirror at PDF materialisation time, not
-  // only on send, so a draft certificat that's been previewed is
-  // already filed in Drive. Idempotent on (doc_kind, doc_id) so
-  // repeated previews collapse to a single Drive copy. Lazy import
-  // breaks an otherwise circular dependency:
-  //   email-sender → certificat-generator → upload-queue → ... .
-  try {
-    const { enqueueDriveUpload } = await import("../services/drive/upload-queue.service");
-    const seedDevis = activeDevis.find((d) => d.lotId != null) ?? activeDevis[0];
-    void enqueueDriveUpload({
-      docKind: "certificat",
-      docId: certificat.id,
-      projectId: project.id,
-      lotId: seedDevis?.lotId ?? null,
-      sourceStorageKey: storageKey,
-      displayName: `${docName}.pdf`,
-      seedDevisCode: seedDevis?.devisCode ?? `cert-${certificat.certificateRef}`,
-    });
-  } catch (err) {
-    console.warn(`[Certificat] Drive enqueue at PDF generation skipped:`, err);
-  }
+  // Mirror the certificat PDF into the Renosud shared Drive so it
+  // lands in the same `{Lot} {project} {devisCode}` per-lot folder as
+  // the devis and factures. Enqueue runs at PDF materialisation time
+  // (covers both /preview and /send paths) and is idempotent on
+  // (doc_kind, doc_id), so repeated previews collapse to one Drive
+  // copy. The whole call no-ops when DRIVE_AUTO_UPLOAD_ENABLED is
+  // false — gated inside enqueueDriveUpload itself.
+  const seedDevis = activeDevis.find((d) => d.lotId != null) ?? activeDevis[0];
+  void enqueueDriveUpload({
+    docKind: "certificat",
+    docId: certificat.id,
+    projectId: project.id,
+    lotId: seedDevis?.lotId ?? null,
+    sourceStorageKey: storageKey,
+    displayName: `${docName}.pdf`,
+    seedDevisCode: seedDevis?.devisCode ?? `cert-${certificat.certificateRef}`,
+  });
 
   return { storageKey, pdfBuffer };
 }

@@ -353,6 +353,19 @@ export default function Certificats() {
                         <p className="text-[9px] text-muted-foreground">TTC</p>
                       </div>
                       <StatusBadge status={cert.status} />
+                      {cert.driveWebViewLink && (
+                        <a
+                          href={cert.driveWebViewLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-input bg-background px-3 text-[11px] font-bold uppercase tracking-widest hover:bg-accent hover:text-accent-foreground"
+                          data-testid={`link-view-on-drive-cert-${cert.id}`}
+                          title="Open in Renosud shared Drive"
+                        >
+                          <ExternalLink size={11} />
+                          Drive
+                        </a>
+                      )}
                       {nextStatus && nextLabel && (
                         <Button
                           variant="outline"
