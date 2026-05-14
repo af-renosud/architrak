@@ -253,6 +253,13 @@
       "when": 1778580000000,
       "tag": "0035_devis_signed_pdf",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1778590000000,
+      "tag": "0036_devis_signed_pdf_retry",
+      "breakpoints": true
     }
   ]
 }

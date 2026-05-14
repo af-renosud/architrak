@@ -35,6 +35,34 @@ import type { Devis } from "@shared/schema";
 const DOWNLOAD_TIMEOUT_MS = 30_000;
 
 /**
+ * Maximum retry attempts before we give up on a devis. After this
+ * many failed sweeps the row is left with `signed_pdf_next_attempt_at`
+ * NULL but `signed_pdf_retry_attempts` = MAX, surfacing it as a dead
+ * letter for the operator.
+ */
+export const MAX_SIGNED_PDF_RETRY_ATTEMPTS = 5;
+
+/**
+ * Exponential backoff schedule (ms) keyed by the upcoming attempt
+ * number (i.e. `attempts` BEFORE the increment). Entry [0] is the
+ * delay between the failed first attempt and the next retry, [1] is
+ * after the second attempt, etc. Tuned for an external API whose
+ * outages typically resolve in minutes-to-hours.
+ */
+const RETRY_BACKOFF_MS: readonly number[] = [
+  5 * 60_000, // 5min  → attempt 2
+  15 * 60_000, // 15min → attempt 3
+  60 * 60_000, // 1h    → attempt 4
+  4 * 60 * 60_000, // 4h    → attempt 5
+];
+
+function nextAttemptAtFromAttempts(currentAttempts: number): Date | null {
+  if (currentAttempts >= MAX_SIGNED_PDF_RETRY_ATTEMPTS - 1) return null;
+  const delay = RETRY_BACKOFF_MS[currentAttempts] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1];
+  return new Date(Date.now() + delay);
+}
+
+/**
  * Download a signed PDF body from a short-lived URL with a hard timeout.
  * Returns the bytes on success or throws on any non-2xx / network error.
  */
@@ -78,31 +106,67 @@ export async function persistSignedDevisPdf(devisId: number): Promise<void> {
 
     // 1. Download + persist locally (one-shot per devis).
     if (!storageKey) {
-      const bytes = await downloadSignedPdf(d).catch((err) => {
+      let bytes: Buffer | null = null;
+      let giveUp = false;
+      let failureMessage: string | null = null;
+      try {
+        bytes = await downloadSignedPdf(d);
+      } catch (err) {
         if (err instanceof ArchisignRetentionBreachError) {
+          // Terminal: Archisign has purged the bytes. Stop retrying.
+          giveUp = true;
+          failureMessage = `retention breach (incidentRef=${err.breach.incidentRef})`;
           console.error(
             `[SignedPdfPersist] devis ${devisId} envelope ${d.archisignEnvelopeId}: ` +
               `Archisign retention breach — bytes no longer retrievable; ` +
               `audit copy will not be saved. incidentRef=${err.breach.incidentRef}`,
           );
-          return null;
+        } else {
+          failureMessage = err instanceof Error ? err.message : String(err);
+          console.error(
+            `[SignedPdfPersist] devis ${devisId} envelope ${d.archisignEnvelopeId}: ` +
+              `download failed: ${failureMessage}`,
+          );
         }
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(
-          `[SignedPdfPersist] devis ${devisId} envelope ${d.archisignEnvelopeId}: ` +
-            `download failed: ${message}`,
+      }
+
+      if (!bytes) {
+        // Schedule a retry unless the failure is terminal. Backoff is
+        // computed off the row's CURRENT attempt count so the sweeper
+        // can pick the same row up later.
+        const currentAttempts = d.signedPdfRetryAttempts ?? 0;
+        const nextAt = giveUp ? null : nextAttemptAtFromAttempts(currentAttempts);
+        await storage.recordSignedPdfPersistFailure(
+          devisId,
+          failureMessage ?? "unknown",
+          nextAt,
         );
-        return null;
-      });
-      if (!bytes) return;
+        return;
+      }
 
       const fileName = signedPdfFileName(d);
-      storageKey = await uploadDocument(d.projectId, fileName, bytes, "application/pdf");
-      await storage.setDevisSignedPdfStorageKey(devisId, storageKey);
+      try {
+        storageKey = await uploadDocument(d.projectId, fileName, bytes, "application/pdf");
+        await storage.setDevisSignedPdfStorageKey(devisId, storageKey);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[SignedPdfPersist] devis ${devisId}: upload/persist failed: ${message}`,
+        );
+        const currentAttempts = d.signedPdfRetryAttempts ?? 0;
+        await storage.recordSignedPdfPersistFailure(
+          devisId,
+          message,
+          nextAttemptAtFromAttempts(currentAttempts),
+        );
+        return;
+      }
       console.log(
         `[SignedPdfPersist] devis ${devisId} envelope ${d.archisignEnvelopeId}: ` +
           `persisted ${bytes.length} bytes → ${storageKey}`,
       );
+      // Clear retry bookkeeping on success.
+      await storage.clearSignedPdfRetry(devisId).catch(() => {});
     }
 
     // 2. Mirror to the per-lot Drive folder. enqueueDriveUpload is a
@@ -138,6 +202,54 @@ export function signedPdfFileName(d: Pick<Devis, "id" | "devisCode">): string {
   const raw = d.devisCode ?? `devis_${d.id}`;
   const safe = raw.replace(/[/\\\u0000-\u001f\u007f]/g, "_");
   return `${safe} signed.pdf`;
+}
+
+// ---------------------------------------------------------------------
+// Sweeper — process-local periodic job that retries failed signed-PDF
+// persistence attempts. Mirrors the design of the Drive upload-queue
+// sweeper (server/services/drive/upload-queue.service.ts): single
+// in-process timer, claim-by-row pattern via storage.listDueSignedPdfRetries,
+// idempotent re-entry guarded by signedPdfStorageKey on the devis row.
+// ---------------------------------------------------------------------
+
+let sweeperInterval: ReturnType<typeof setInterval> | null = null;
+const SWEEP_BATCH = 20;
+
+export async function sweepDueSignedPdfRetries(): Promise<void> {
+  try {
+    const due = await storage.listDueSignedPdfRetries(SWEEP_BATCH);
+    if (due.length === 0) return;
+    console.log(`[SignedPdfPersist] sweep claimed ${due.length} due retries`);
+    for (const row of due) {
+      await persistSignedDevisPdf(row.id).catch((err) => {
+        // persistSignedDevisPdf already swallows its own errors, but
+        // keep this guard so a future refactor can't break the loop.
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[SignedPdfPersist] sweep attempt for devis ${row.id} threw: ${message}`);
+      });
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[SignedPdfPersist] sweep failed: ${message}`);
+  }
+}
+
+export function startSignedPdfRetrySweeper(intervalMs: number = 5 * 60_000): void {
+  if (sweeperInterval) return;
+  sweeperInterval = setInterval(() => {
+    sweepDueSignedPdfRetries().catch(console.error);
+  }, intervalMs);
+  console.log(
+    `[SignedPdfPersist] retry sweeper started (every ${Math.round(intervalMs / 1000)}s, ` +
+      `max ${MAX_SIGNED_PDF_RETRY_ATTEMPTS} attempts per devis)`,
+  );
+}
+
+export function stopSignedPdfRetrySweeper(): void {
+  if (sweeperInterval) {
+    clearInterval(sweeperInterval);
+    sweeperInterval = null;
+  }
 }
 
 async function downloadSignedPdf(d: Devis): Promise<Buffer> {

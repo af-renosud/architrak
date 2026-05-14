@@ -311,6 +311,16 @@ export const devis = pgTable("devis", {
   // rolled back. The same PDF is also mirrored into the per-lot Drive
   // folder via the AT5-style drive_uploads queue (docKind=devis_signed).
   signedPdfStorageKey: text("signed_pdf_storage_key"),
+  // Task #206 (retry) — durable async retry state for the signed-PDF
+  // persistence job. The webhook handler always tries first (detached
+  // setImmediate), but if that attempt fails the sweeper picks the
+  // row back up using these columns: increments attempts, schedules
+  // the next attempt with exponential backoff, and gives up after
+  // MAX_SIGNED_PDF_RETRY_ATTEMPTS. Reset to (0, NULL, NULL) on
+  // successful persistence.
+  signedPdfRetryAttempts: integer("signed_pdf_retry_attempts").notNull().default(0),
+  signedPdfNextAttemptAt: timestamp("signed_pdf_next_attempt_at"),
+  signedPdfLastError: text("signed_pdf_last_error"),
   // AT4 envelope-tracking columns (contract §3.5.1 / §1.2). All nullable;
   // populated on transition to `sent_to_client` and updated by the inbound
   // 7-event receiver. accessUrl is the ONLY persisted URL — it comes from

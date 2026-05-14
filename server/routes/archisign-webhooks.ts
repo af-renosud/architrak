@@ -158,7 +158,7 @@ type QueryResolvedPayload = z.infer<typeof queryResolvedSchema>;
 type DeclinedPayload = z.infer<typeof declinedSchema>;
 type ExpiredPayload = z.infer<typeof expiredSchema>;
 type SignedPayload = z.infer<typeof signedSchema>;
-type RetentionBreachPayload = z.infer<typeof retentionBreachSchema>;
+export type RetentionBreachPayload = z.infer<typeof retentionBreachSchema>;
 
 // --- Handler dispatch table (addressable for AT5) -----------------------
 
@@ -353,6 +353,13 @@ async function handleSigned(p: SignedPayload): Promise<HandlerResult> {
   // (column-level "skip if already set") — this lets a redelivered
   // webhook recover from a prior partial-failure where the stage
   // transition committed but the audit copy did not.
+  // Durability: arm the retry queue BEFORE detaching. If the process
+  // crashes between the 200 response and the detached persist
+  // completing, the sweeper will recover this row at the armed
+  // next_attempt_at. Idempotent: arming is a no-op once any attempt
+  // has succeeded or recorded a failure (see storage.armSignedPdfPersistRetry).
+  await storage.armSignedPdfPersistRetry(d.id, new Date(Date.now() + 60_000));
+
   setImmediate(() => {
     persistSignedDevisPdf(d.id).catch((err) => {
       // The service catches its own errors; this is a belt-and-braces
@@ -365,7 +372,7 @@ async function handleSigned(p: SignedPayload): Promise<HandlerResult> {
   return { status: 200, body: { ok: true, devisId: d.id, transition: "client_signed_off" } };
 }
 
-async function handleRetentionBreach(p: RetentionBreachPayload): Promise<HandlerResult> {
+export async function handleRetentionBreach(p: RetentionBreachPayload): Promise<HandlerResult> {
   // §1.2: stays at client_signed_off (logically terminal). Inserts a
   // signed_pdf_retention_breaches row. Belt-and-braces UNIQUE on
   // (envelope_id, incident_ref) handles any race; downstream re-

@@ -467,6 +467,10 @@ export interface IStorage {
   setLotDriveFolderId(lotId: number, folderId: string): Promise<void>;
   setDevisDriveLink(devisId: number, fileId: string, webViewLink: string): Promise<void>;
   setDevisSignedPdfStorageKey(devisId: number, storageKey: string): Promise<void>;
+  recordSignedPdfPersistFailure(devisId: number, errorMessage: string, nextAttemptAt: Date | null): Promise<void>;
+  armSignedPdfPersistRetry(devisId: number, nextAttemptAt: Date): Promise<void>;
+  clearSignedPdfRetry(devisId: number): Promise<void>;
+  listDueSignedPdfRetries(limit: number): Promise<Array<{ id: number }>>;
   setInvoiceDriveLink(invoiceId: number, fileId: string, webViewLink: string): Promise<void>;
   setCertificatDriveLink(certificatId: number, fileId: string, webViewLink: string): Promise<void>;
   upsertDriveUpload(data: InsertDriveUpload): Promise<DriveUpload>;
@@ -2509,6 +2513,80 @@ export class DatabaseStorage implements IStorage {
       .update(devis)
       .set({ driveFileId: fileId, driveWebViewLink: webViewLink, driveUploadedAt: new Date() })
       .where(eq(devis.id, devisId));
+  }
+
+  async recordSignedPdfPersistFailure(
+    devisId: number,
+    errorMessage: string,
+    nextAttemptAt: Date | null,
+  ): Promise<void> {
+    // Increment attempts even when we're giving up (next_attempt_at=null)
+    // so the row's attempt count is the audit-truth of how hard we tried.
+    await db
+      .update(devis)
+      .set({
+        signedPdfRetryAttempts: sql`${devis.signedPdfRetryAttempts} + 1`,
+        signedPdfNextAttemptAt: nextAttemptAt,
+        signedPdfLastError: errorMessage.slice(0, 2000),
+      })
+      .where(and(eq(devis.id, devisId), isNull(devis.signedPdfStorageKey)));
+  }
+
+  async armSignedPdfPersistRetry(devisId: number, nextAttemptAt: Date): Promise<void> {
+    // Pre-arm the retry queue BEFORE the detached first-attempt task
+    // runs. If the process crashes between this row's commit and the
+    // detached persist completing, the sweeper will pick the row up
+    // when next_attempt_at is due. Conditional WHERE keeps the arming
+    // a no-op once a real attempt has either succeeded
+    // (signed_pdf_storage_key set) or recorded a failure (attempts > 0).
+    await db
+      .update(devis)
+      .set({ signedPdfNextAttemptAt: nextAttemptAt })
+      .where(
+        and(
+          eq(devis.id, devisId),
+          isNull(devis.signedPdfStorageKey),
+          eq(devis.signedPdfRetryAttempts, 0),
+        ),
+      );
+  }
+
+  async clearSignedPdfRetry(devisId: number): Promise<void> {
+    await db
+      .update(devis)
+      .set({
+        signedPdfRetryAttempts: 0,
+        signedPdfNextAttemptAt: null,
+        signedPdfLastError: null,
+      })
+      .where(eq(devis.id, devisId));
+  }
+
+  async listDueSignedPdfRetries(limit: number): Promise<Array<{ id: number }>> {
+    // Pick devis that need a (re)try: signed_pdf_storage_key NULL
+    // (no audit copy yet), envelope present, attempts under cap, and
+    // signed_pdf_next_attempt_at IS NOT NULL AND <= now.
+    //
+    // CRITICAL: NULL next_attempt_at means TERMINAL (retention breach
+    // gave up, or no retry is currently scheduled). We MUST NOT pick
+    // those rows up. The webhook handler arms next_attempt_at
+    // immediately after writing client_signed_off, so a process crash
+    // before the detached persist runs still leaves the row picked
+    // up by this sweeper on the next pass.
+    const rows = await db
+      .select({ id: devis.id })
+      .from(devis)
+      .where(
+        and(
+          isNull(devis.signedPdfStorageKey),
+          isNotNull(devis.archisignEnvelopeId),
+          isNotNull(devis.signedPdfNextAttemptAt),
+          lte(devis.signedPdfNextAttemptAt, new Date()),
+          sql`${devis.signedPdfRetryAttempts} < 5`,
+        ),
+      )
+      .limit(limit);
+    return rows;
   }
 
   async setDevisSignedPdfStorageKey(devisId: number, storageKey: string): Promise<void> {

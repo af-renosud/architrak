@@ -10,6 +10,10 @@ const { storageMock, archisignMock, uploadMock, driveQueueMock } = vi.hoisted(()
   storageMock: {
     getDevis: vi.fn(),
     setDevisSignedPdfStorageKey: vi.fn(async () => {}),
+    recordSignedPdfPersistFailure: vi.fn(async () => {}),
+    armSignedPdfPersistRetry: vi.fn(async () => {}),
+    clearSignedPdfRetry: vi.fn(async () => {}),
+    listDueSignedPdfRetries: vi.fn(async () => [] as Array<{ id: number }>),
   },
   archisignMock: {
     getSignedPdfUrl: vi.fn(),
@@ -48,6 +52,9 @@ const baseDevis = {
   archisignEnvelopeId: "env_abc",
   signedPdfFetchUrlSnapshot: "https://archisign.test/snap.pdf",
   signedPdfStorageKey: null as string | null,
+  signedPdfRetryAttempts: 0,
+  signedPdfNextAttemptAt: null as Date | null,
+  signedPdfLastError: null as string | null,
 };
 
 function mockFetchOk(body = "fake-pdf-bytes") {
@@ -79,6 +86,8 @@ describe("persistSignedDevisPdf", () => {
     vi.clearAllMocks();
     storageMock.getDevis.mockReset();
     storageMock.setDevisSignedPdfStorageKey.mockReset();
+    storageMock.recordSignedPdfPersistFailure.mockReset();
+    storageMock.clearSignedPdfRetry.mockReset();
     archisignMock.getSignedPdfUrl.mockReset();
     uploadMock.uploadDocument.mockReset();
     uploadMock.uploadDocument.mockResolvedValue("object/key/from-test.pdf");
@@ -130,7 +139,7 @@ describe("persistSignedDevisPdf", () => {
     expect(driveQueueMock.enqueueDriveUpload).toHaveBeenCalledTimes(1);
   });
 
-  it("skips persistence (and Drive enqueue) when re-mint reports an Archisign retention breach", async () => {
+  it("skips persistence (and Drive enqueue) when re-mint reports an Archisign retention breach, and marks the retry as terminal (nextAttemptAt=null)", async () => {
     storageMock.getDevis.mockResolvedValue({ ...baseDevis, signedPdfFetchUrlSnapshot: null });
     archisignMock.getSignedPdfUrl.mockRejectedValue(
       new ArchisignRetentionBreachError({ incidentRef: "inc_123" } as never),
@@ -141,6 +150,41 @@ describe("persistSignedDevisPdf", () => {
     expect(uploadMock.uploadDocument).not.toHaveBeenCalled();
     expect(storageMock.setDevisSignedPdfStorageKey).not.toHaveBeenCalled();
     expect(driveQueueMock.enqueueDriveUpload).not.toHaveBeenCalled();
+    expect(storageMock.recordSignedPdfPersistFailure).toHaveBeenCalledWith(
+      42,
+      expect.stringContaining("retention breach"),
+      null,
+    );
+  });
+
+  it("sweepDueSignedPdfRetries delegates to persistSignedDevisPdf for each row returned by storage and is bounded by what storage decides is due", async () => {
+    const { sweepDueSignedPdfRetries } = await import("../devis-signed-pdf.service");
+    storageMock.listDueSignedPdfRetries.mockResolvedValueOnce([{ id: 11 }, { id: 22 }]);
+    // Force getDevis to short-circuit so we just observe the dispatch.
+    storageMock.getDevis.mockResolvedValue(null);
+
+    await sweepDueSignedPdfRetries();
+
+    expect(storageMock.listDueSignedPdfRetries).toHaveBeenCalledWith(20);
+    expect(storageMock.getDevis).toHaveBeenCalledWith(11);
+    expect(storageMock.getDevis).toHaveBeenCalledWith(22);
+    // Eligibility is enforced by SQL inside listDueSignedPdfRetries
+    // (NOT NULL next_attempt_at + attempts < MAX). The sweeper trusts
+    // that filter and never picks up rows storage has not yielded.
+    expect(storageMock.getDevis).toHaveBeenCalledTimes(2);
+  });
+
+  it("schedules a retry with exponential backoff when a transient download failure occurs", async () => {
+    storageMock.getDevis.mockResolvedValue({ ...baseDevis, signedPdfFetchUrlSnapshot: null });
+    archisignMock.getSignedPdfUrl.mockRejectedValue(new Error("upstream 503"));
+
+    await persistSignedDevisPdf(42);
+
+    expect(storageMock.recordSignedPdfPersistFailure).toHaveBeenCalledTimes(1);
+    const [, message, nextAt] = storageMock.recordSignedPdfPersistFailure.mock.calls[0];
+    expect(message).toMatch(/upstream 503/);
+    expect(nextAt).toBeInstanceOf(Date);
+    expect((nextAt as Date).getTime()).toBeGreaterThan(Date.now());
   });
 
   it("is idempotent: when signedPdfStorageKey already exists, skips the download but still ensures the Drive enqueue", async () => {
