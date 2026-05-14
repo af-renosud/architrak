@@ -351,6 +351,44 @@ router.get(
   },
 );
 
+router.get(
+  "/api/devis/:id/signed-pdf",
+  requireAuth,
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    // Task #206 — stream the locally-persisted signed PDF saved on
+    // the `envelope.signed` webhook. 404 covers both "no envelope yet"
+    // and "Archisign retention-breach lost the bytes before we could
+    // download" — both indistinguishable from the architect's point
+    // of view (no audit copy available).
+    try {
+      const devisId = Number(req.params.id);
+      const d = await storage.getDevis(devisId);
+      if (!d) return res.status(404).json({ message: "Devis not found" });
+      if (!d.signedPdfStorageKey) {
+        return res.status(404).json({ message: "Signed PDF not available" });
+      }
+      const fileName = `signed_${(d.devisCode ?? `devis_${d.id}`).replace(/[^a-zA-Z0-9._-]/g, "_")}.pdf`;
+      let stream, contentType: string | undefined, size: number | undefined;
+      try {
+        ({ stream, contentType, size } = await getDocumentStream(d.signedPdfStorageKey));
+      } catch {
+        // Storage miss is indistinguishable from "not available" from
+        // the architect's POV — collapse to 404 instead of leaking the
+        // internal error text. Real 5xx (object-storage outage) still
+        // falls through to the outer catch below.
+        return res.status(404).json({ message: "Signed PDF not available" });
+      }
+      res.setHeader("Content-Type", contentType || "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
+      if (size) res.setHeader("Content-Length", String(size));
+      stream.pipe(res);
+    } catch {
+      res.status(500).json({ message: "Signed PDF view failed" });
+    }
+  },
+);
+
 router.post(
   "/api/devis/:id/rescrape",
   requireAuth,

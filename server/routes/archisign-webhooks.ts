@@ -37,6 +37,7 @@ import { eq, and } from "drizzle-orm";
 import { uuidv7 } from "../lib/uuidv7";
 import { canonicalizeTimestamp } from "../lib/canonical-timestamp";
 import { enqueueWebhookDelivery } from "../services/webhook-delivery";
+import { persistSignedDevisPdf } from "../services/devis-signed-pdf.service";
 import type { OutboundEventType } from "../services/archidoc-webhook-client";
 
 const router = Router();
@@ -340,6 +341,26 @@ async function handleSigned(p: SignedPayload): Promise<HandlerResult> {
     const reloaded = await storage.getDevis(d.id);
     await enqueueWorkAuthorised(reloaded ?? d, p);
   }
+
+  // Task #206 — persist the signed PDF locally and enqueue a Drive
+  // mirror to the per-lot folder. Fire-and-forget: the Archisign
+  // sender enforces a 5s response budget, but downloading the signed
+  // PDF + uploading to object storage can take much longer (30s
+  // timeout). Detaching from the response path keeps us within SLA;
+  // the service has its own try/catch and logs all failure modes
+  // under `[SignedPdfPersist]`. Runs on EVERY delivery (not just
+  // fresh transitions) because the local persist is itself guarded
+  // (column-level "skip if already set") — this lets a redelivered
+  // webhook recover from a prior partial-failure where the stage
+  // transition committed but the audit copy did not.
+  setImmediate(() => {
+    persistSignedDevisPdf(d.id).catch((err) => {
+      // The service catches its own errors; this is a belt-and-braces
+      // guard against any future refactor that might let one escape.
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[SignedPdfPersist] devis ${d.id}: detached task threw: ${message}`);
+    });
+  });
 
   return { status: 200, body: { ok: true, devisId: d.id, transition: "client_signed_off" } };
 }

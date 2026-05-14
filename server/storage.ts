@@ -466,6 +466,7 @@ export interface IStorage {
   setProjectDriveFolderId(projectId: number, folderId: string): Promise<void>;
   setLotDriveFolderId(lotId: number, folderId: string): Promise<void>;
   setDevisDriveLink(devisId: number, fileId: string, webViewLink: string): Promise<void>;
+  setDevisSignedPdfStorageKey(devisId: number, storageKey: string): Promise<void>;
   setInvoiceDriveLink(invoiceId: number, fileId: string, webViewLink: string): Promise<void>;
   setCertificatDriveLink(certificatId: number, fileId: string, webViewLink: string): Promise<void>;
   upsertDriveUpload(data: InsertDriveUpload): Promise<DriveUpload>;
@@ -2508,6 +2509,18 @@ export class DatabaseStorage implements IStorage {
       .update(devis)
       .set({ driveFileId: fileId, driveWebViewLink: webViewLink, driveUploadedAt: new Date() })
       .where(eq(devis.id, devisId));
+  }
+
+  async setDevisSignedPdfStorageKey(devisId: number, storageKey: string): Promise<void> {
+    // Task #206 — one-shot persist. Guarded against overwrite so a
+    // redelivered `envelope.signed` webhook can never replace an
+    // already-persisted signed PDF (each Archisign download mints a
+    // new short-lived URL but the bytes are immutable; we keep the
+    // first-saved key as the canonical audit pointer).
+    await db
+      .update(devis)
+      .set({ signedPdfStorageKey: storageKey })
+      .where(and(eq(devis.id, devisId), isNull(devis.signedPdfStorageKey)));
   }
 
   async setInvoiceDriveLink(invoiceId: number, fileId: string, webViewLink: string): Promise<void> {

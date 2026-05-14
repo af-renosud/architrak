@@ -304,6 +304,13 @@ export const devis = pgTable("devis", {
   // receivers must re-mint via `GET /api/v1/envelopes/:id/signed-pdf-url`
   // (§3.5.3). The snapshot is therefore advisory only.
   signedPdfFetchUrlSnapshot: text("signed_pdf_fetch_url_snapshot"),
+  // Task #206 — object-storage key of the locally-persisted signed PDF
+  // downloaded from Archisign on the `envelope.signed` webhook. Closes
+  // the audit loop so the signed artefact survives the Archisign 90-day
+  // retention window. Populated one-shot post-stage-transition; never
+  // rolled back. The same PDF is also mirrored into the per-lot Drive
+  // folder via the AT5-style drive_uploads queue (docKind=devis_signed).
+  signedPdfStorageKey: text("signed_pdf_storage_key"),
   // AT4 envelope-tracking columns (contract §3.5.1 / §1.2). All nullable;
   // populated on transition to `sent_to_client` and updated by the inbound
   // 7-event receiver. accessUrl is the ONLY persisted URL — it comes from
@@ -1821,7 +1828,7 @@ export type PostMergeTransientFailure =
 // file id + viewer link to the originating row (devis / invoice /
 // certificat) AND to this queue row (for the admin DLQ surface).
 // ---------------------------------------------------------------------
-export const DRIVE_UPLOAD_DOC_KINDS = ["devis", "invoice", "certificat", "scrape"] as const;
+export const DRIVE_UPLOAD_DOC_KINDS = ["devis", "invoice", "certificat", "scrape", "devis_signed"] as const;
 export type DriveUploadDocKind = (typeof DRIVE_UPLOAD_DOC_KINDS)[number];
 
 export const DRIVE_UPLOAD_STATES = [

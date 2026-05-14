@@ -3731,6 +3731,7 @@ function SigningPanel({
     archisignEnvelopeStatus?: string | null;
     archisignEnvelopeExpiresAt?: string | null;
     archisignOtpDestination?: string | null;
+    signedPdfStorageKey?: string | null;
   }) | undefined;
 
   if (devisQuery.isLoading || !d) {
@@ -3892,6 +3893,25 @@ function SigningPanel({
               {d.archisignEnvelopeId ?? "—"}
             </span>
           </div>
+          {/* Task #206 — once the signed PDF has been persisted locally,
+              surface a direct view link alongside the envelope details
+              so the architect can pull up the audit copy without
+              digging through Drive. */}
+          {d.signedPdfStorageKey && (
+            <div className="sm:col-span-2">
+              <span className="font-semibold text-muted-foreground">PDF signé :</span>{" "}
+              <a
+                href={`/api/devis/${devisId}/signed-pdf`}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="text-[#0B2545] underline hover:no-underline inline-flex items-center gap-1"
+                data-testid={`link-signed-pdf-${devisId}`}
+              >
+                Ouvrir le PDF signé
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            </div>
+          )}
         </div>
       )}
     </LuxuryCard>

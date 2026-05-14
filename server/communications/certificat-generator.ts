@@ -1104,6 +1104,7 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     archisignOtpDestination: null,
     identityVerification: null,
     signedPdfFetchUrlSnapshot: null,
+    signedPdfStorageKey: null,
     lotCatalogId: null,
     lotRefText: null,
     lotSequence: null,

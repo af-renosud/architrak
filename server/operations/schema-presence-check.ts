@@ -90,6 +90,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0032_drive_auto_upload", artifact: { kind: "column", table: "lots", column: "drive_folder_id" } },
   { tag: "0033_drive_uploads_scrape_kind", artifact: { kind: "table", table: "drive_uploads" } },
   { tag: "0034_devis_fee_percentage_override", artifact: { kind: "column", table: "devis", column: "fee_percentage_override" } },
+  { tag: "0035_devis_signed_pdf", artifact: { kind: "column", table: "devis", column: "signed_pdf_storage_key" } },
 ];
 
 interface JournalFile {

@@ -194,6 +194,14 @@ async function writeBackToSourceRow(
       // write back. The scraped PDF will be re-mirrored under its
       // proper devis/invoice id once the operator promotes it.
       return;
+    case "devis_signed":
+      // Task #206 — the signed-PDF mirror has no dedicated columns on
+      // devis (the local audit pointer is `devis.signed_pdf_storage_key`,
+      // populated separately by persistSignedDevisPdf before enqueue).
+      // The drive_uploads row carries the fileId/webViewLink for the
+      // admin DLQ surface; the architect-facing UI links to the local
+      // copy via /api/devis/:id/signed-pdf, not Drive.
+      return;
     default: {
       // Compile-time exhaustiveness so adding a new DriveUploadDocKind
       // forces us to add a writeback path.
