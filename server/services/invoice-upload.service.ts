@@ -122,16 +122,27 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
   // operator can still link/mark-paid manually via the dedicated
   // routes.
   if (isAcompteInvoice && devis.acompteRequired && (devis.acompteState === "pending" || devis.acompteState === "invoiced")) {
-    const target = nextAcompteState(devis.acompteState, "link_invoice");
-    if (target) {
-      try {
-        await storage.updateDevis(devisId, {
-          acompteInvoiceId: invoice.id,
-          acompteState: target,
-        });
-      } catch (linkErr) {
-        console.warn(`[Invoice Upload] Acompte auto-link failed for devis ${devisId}:`, linkErr);
+    // Compare-and-set guard: re-fetch the devis right before writing
+    // and confirm the lifecycle state is still in a legal predecessor
+    // for `link_invoice` (pending|invoiced). This prevents a stale
+    // read from this handler racing against another transition (e.g.
+    // a concurrent /acompte/mark-paid) and silently overwriting a
+    // newer state. If the state has moved on, skip silently — the
+    // operator can still re-link via the dedicated route if needed.
+    try {
+      const fresh = await storage.getDevis(devisId);
+      const freshState = fresh?.acompteState;
+      if (fresh && (freshState === "pending" || freshState === "invoiced")) {
+        const target = nextAcompteState(freshState, "link_invoice");
+        if (target) {
+          await storage.updateDevis(devisId, {
+            acompteInvoiceId: invoice.id,
+            acompteState: target,
+          });
+        }
       }
+    } catch (linkErr) {
+      console.warn(`[Invoice Upload] Acompte auto-link failed for devis ${devisId}:`, linkErr);
     }
   }
 
