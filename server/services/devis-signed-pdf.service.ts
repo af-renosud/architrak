@@ -96,7 +96,7 @@ export async function persistSignedDevisPdf(devisId: number): Promise<void> {
       });
       if (!bytes) return;
 
-      const fileName = `signed_${(d.devisCode ?? `devis_${d.id}`).replace(/[^a-zA-Z0-9._-]/g, "_")}.pdf`;
+      const fileName = signedPdfFileName(d);
       storageKey = await uploadDocument(d.projectId, fileName, bytes, "application/pdf");
       await storage.setDevisSignedPdfStorageKey(devisId, storageKey);
       console.log(
@@ -108,7 +108,6 @@ export async function persistSignedDevisPdf(devisId: number): Promise<void> {
     // 2. Mirror to the per-lot Drive folder. enqueueDriveUpload is a
     //    no-op when the feature flag is off and idempotent on
     //    (docKind, docId) — safe on retries.
-    const safeCode = (d.devisCode ?? `devis_${d.id}`).replace(/[^a-zA-Z0-9._-]/g, "_");
     await enqueueDriveUpload({
       docKind: "devis_signed",
       docId: d.id,
@@ -116,15 +115,29 @@ export async function persistSignedDevisPdf(devisId: number): Promise<void> {
       lotId: d.lotId ?? null,
       sourceStorageKey: storageKey,
       // ONE LOT → ONE FOLDER: the file name ends up alongside the
-      // original devis PDF in `{Lot} {project} {devisCode}`. Prefix
-      // `signed_` keeps it sorted next to the original.
-      displayName: `signed_${safeCode}.pdf`,
+      // original devis PDF in `{Lot} {project} {devisCode}`. Suffix
+      // " signed.pdf" keeps it visually grouped with the original
+      // and matches the naming convention pinned in task #206.
+      displayName: signedPdfFileName(d),
       seedDevisCode: d.devisCode,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[SignedPdfPersist] devis ${devisId}: unexpected failure: ${message}`);
   }
+}
+
+/**
+ * Build the canonical signed-PDF filename: `{devisCode} signed.pdf`.
+ * The space is preserved (object storage and Drive both accept it);
+ * only path-hostile characters in the devisCode itself are sanitised.
+ * Exported so the download route and any future re-mint admin tools
+ * stay byte-aligned with what was written into storage / Drive.
+ */
+export function signedPdfFileName(d: Pick<Devis, "id" | "devisCode">): string {
+  const raw = d.devisCode ?? `devis_${d.id}`;
+  const safe = raw.replace(/[/\\\u0000-\u001f\u007f]/g, "_");
+  return `${safe} signed.pdf`;
 }
 
 async function downloadSignedPdf(d: Devis): Promise<Buffer> {

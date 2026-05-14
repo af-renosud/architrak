@@ -17,6 +17,7 @@ import { confirmDevisAndMirror, assignTagsForInsertedItems } from "../services/b
 import { PdfPasswordProtectedError } from "../gmail/document-parser";
 import { DEVIS_UPLOAD_ERROR_CODES } from "../../shared/devis-upload-errors";
 import { getDocumentStream } from "../storage/object-storage";
+import { signedPdfFileName } from "../services/devis-signed-pdf.service";
 import { validateExtraction, type ValidationWarning } from "../services/extraction-validator";
 import { checkLotReferencesAgainstCatalog } from "../services/lot-reference-validator";
 import type { ParsedDocument } from "../gmail/document-parser";
@@ -368,7 +369,7 @@ router.get(
       if (!d.signedPdfStorageKey) {
         return res.status(404).json({ message: "Signed PDF not available" });
       }
-      const fileName = `signed_${(d.devisCode ?? `devis_${d.id}`).replace(/[^a-zA-Z0-9._-]/g, "_")}.pdf`;
+      const fileName = signedPdfFileName(d);
       let stream, contentType: string | undefined, size: number | undefined;
       try {
         ({ stream, contentType, size } = await getDocumentStream(d.signedPdfStorageKey));

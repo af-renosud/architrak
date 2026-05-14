@@ -541,7 +541,20 @@ async function enqueueRetentionBreach(d: Devis, p: RetentionBreachPayload): Prom
       // and we relay it verbatim.
       originalSignedAt: canonicalizeTimestamp(p.originalSignedAt),
       detectedAt: p.detectedAt,
+      // Task #206 — signal to Archidoc / operators that ArchiTrak
+      // already holds a local copy of the signed PDF (downloaded on
+      // the prior `envelope.signed`). When true the breach is
+      // remediation-noisy only: the audit artefact is still
+      // retrievable from /api/devis/:id/signed-pdf and the per-lot
+      // Drive folder. When false the breach is ground-truth lost.
+      coveredByLocalCopy: !!d.signedPdfStorageKey,
     };
+    if (d.signedPdfStorageKey) {
+      console.log(
+        `[ArchisignWebhook] retention_breach for devisId=${d.id} envelopeId=${p.envelopeId} ` +
+          `is COVERED by local audit copy (${d.signedPdfStorageKey}) — incident is operator-visibility only`,
+      );
+    }
     await enqueueOutboundDelivery({
       eventId,
       eventType: "signed_pdf_retention_breach",
