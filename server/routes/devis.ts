@@ -688,6 +688,29 @@ router.patch(
     const patchBody: Record<string, unknown> = { ...req.body };
     const lotCodePart = (patchBody as { lotCode?: NonNullable<z.infer<typeof lotCodePatchSchema>> }).lotCode;
     delete patchBody.lotCode;
+
+    // Task #215 — keep the acompte state machine sealed. The lifecycle
+    // columns (acompteState, acompteInvoiceId, acomptePaidAt) are owned
+    // by the dedicated /acompte/{link-invoice,mark-paid} routes. Strip
+    // them from the generic PATCH so an operator can't side-step the
+    // transition validator (e.g. jump from 'none' to 'paid'). The SPEC
+    // columns (acompteRequired, acomptePercent, acompteAmountHt,
+    // acompteTrigger, allowProgressBeforeAcompte) remain editable here.
+    delete patchBody.acompteState;
+    delete patchBody.acompteInvoiceId;
+    delete patchBody.acomptePaidAt;
+    // When the architect flips `acompteRequired` from false → true on
+    // a row whose state was 'none', auto-arm the gate by transitioning
+    // to 'pending'. Without this, the gate would silently stay
+    // disarmed (evaluateAcompteGate only blocks on pending|invoiced)
+    // and lifecycle routes would refuse the first transition.
+    if (
+      patchBody.acompteRequired === true &&
+      before.acompteRequired !== true &&
+      (before.acompteState ?? "none") === "none"
+    ) {
+      patchBody.acompteState = "pending";
+    }
     if (lotCodePart) {
       const result = await buildLotCodeUpdates(before.projectId, lotCodePart, {
         excludeDevisId: id,

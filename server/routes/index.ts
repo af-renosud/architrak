@@ -9,6 +9,7 @@ import lotsRouter from "./lots";
 import lotCatalogRouter from "./lot-catalog";
 import wishListRouter from "./wishlist";
 import devisRouter from "./devis";
+import acompteRouter from "./acompte";
 import devisChecksRouter from "./devis-checks";
 import clientChecksRouter from "./client-checks";
 import insuranceGateRouter from "./insurance-gate";
@@ -84,6 +85,7 @@ export async function registerRoutes(
   app.use(lotCatalogRouter);
   app.use(wishListRouter);
   app.use(devisRouter);
+  app.use(acompteRouter);
   app.use(devisChecksRouter);
   app.use(clientChecksRouter);
   app.use(insuranceGateRouter);

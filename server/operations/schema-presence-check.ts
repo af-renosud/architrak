@@ -92,6 +92,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0034_devis_fee_percentage_override", artifact: { kind: "column", table: "devis", column: "fee_percentage_override" } },
   { tag: "0035_devis_signed_pdf", artifact: { kind: "column", table: "devis", column: "signed_pdf_storage_key" } },
   { tag: "0036_devis_signed_pdf_retry", artifact: { kind: "column", table: "devis", column: "signed_pdf_next_attempt_at" } },
+  { tag: "0037_devis_acompte", artifact: { kind: "column", table: "devis", column: "acompte_state" } },
 ];
 
 interface JournalFile {

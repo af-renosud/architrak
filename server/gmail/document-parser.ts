@@ -42,7 +42,7 @@ function getGeminiClient() {
 }
 
 export interface ParsedDocument {
-  documentType: "quotation" | "invoice" | "situation" | "avenant" | "other" | "unknown";
+  documentType: "quotation" | "invoice" | "situation" | "avenant" | "acompte" | "other" | "unknown";
   contractorName?: string;
   clientName?: string;
   projectAddress?: string;
@@ -60,6 +60,18 @@ export interface ParsedDocument {
   retenueDeGarantie?: number;
   netAPayer?: number;
   paymentTerms?: string;
+  // Task #215 — Acompte (deposit) workflow. Best-effort signal extracted
+  // from the devis payment-terms / down-payment clause. acompteRequired
+  // is true iff the document explicitly demands a deposit on order or
+  // signature; downstream the devis-upload service decides whether to
+  // flip the gate on. acompteAmountHt is taken verbatim when stated;
+  // otherwise the upload service derives it from acomptePercent and the
+  // devis HT total (rounded). acompteTrigger is the verbatim phrase
+  // that justified detection, kept for audit.
+  acompteRequired?: boolean;
+  acomptePercent?: number;
+  acompteAmountHt?: number;
+  acompteTrigger?: string;
   lotReferences?: string[];
   description?: string;
   lineItems?: Array<{
@@ -121,7 +133,7 @@ Domain Knowledge:
 - SIRET: 14-digit identifier for French companies, often on letterhead.
 - RCS: Registre du Commerce et des Societes registration.
 - Lot references: Construction projects are divided into lots (e.g., "Lot 1 - Gros Oeuvre", "Lot 7 - Electricite"). Extract all lot codes visible.
-- Distinguish Acompte (deposit invoice) from Situation (progress claim with cumulative percentages).
+- Distinguish Acompte (deposit invoice / deposit clause on a devis) from Situation (progress claim with cumulative percentages). On a devis, an acompte is announced via payment-terms wording such as "Acompte de 30% à la commande", "30 % à la signature", "Versement à la réservation", etc. — when present, set acompteRequired=true, capture acomptePercent and/or acompteAmountHt, and copy the verbatim phrase into acompteTrigger. On a facture, the document itself is an "acompte" when the title/header includes "FACTURE D'ACOMPTE" or "ACOMPTE Nº" — use documentType="acompte" in that case (do NOT confuse with progress invoices).
 
 Extraction Rules:
 - All monetary amounts must be numbers with exactly 2 decimal precision (e.g., 15000.00 not 15000).
@@ -135,7 +147,11 @@ Extraction Rules:
 
 const USER_PROMPT = `Analyze this French construction document and extract the following fields:
 
-- documentType: "quotation" (devis), "invoice" (facture), "situation" (situation de travaux), "avenant" (amendment), "other", or "unknown"
+- documentType: "quotation" (devis), "invoice" (facture), "situation" (situation de travaux), "avenant" (amendment), "acompte" (facture d'acompte / deposit invoice), "other", or "unknown"
+- acompteRequired: boolean — true if this devis explicitly requires a deposit on order/signature (look at payment-terms and any "Conditions de règlement" block). Omit on factures.
+- acomptePercent: number 0..100 — the deposit percentage if stated (e.g. 30 for "30%"). Omit if not stated.
+- acompteAmountHt: number — the deposit amount HT if stated as a euro amount on the devis. Omit if only a percentage is given.
+- acompteTrigger: string — the VERBATIM phrase from the document that announces the deposit (e.g. "Acompte de 30% à la commande"). Omit when no deposit clause is present.
 - contractorName: the company/contractor name (the entity providing the service/goods, often at the top of the document)
 - clientName: the client/maitre d'ouvrage name (the entity receiving the service)
 - projectAddress: site/project address if visible
@@ -165,8 +181,8 @@ const EXTRACTION_SCHEMA: ResponseSchema = {
     documentType: {
       type: SchemaType.STRING,
       format: "enum",
-      description: "Type of document: quotation, invoice, situation, avenant, other, or unknown",
-      enum: ["quotation", "invoice", "situation", "avenant", "other", "unknown"],
+      description: "Type of document: quotation, invoice, situation, avenant, acompte, other, or unknown",
+      enum: ["quotation", "invoice", "situation", "avenant", "acompte", "other", "unknown"],
     },
     contractorName: {
       type: SchemaType.STRING,
@@ -251,6 +267,26 @@ const EXTRACTION_SCHEMA: ResponseSchema = {
     paymentTerms: {
       type: SchemaType.STRING,
       description: "Payment conditions text",
+      nullable: true,
+    },
+    acompteRequired: {
+      type: SchemaType.BOOLEAN,
+      description: "True when this devis explicitly requires a deposit (acompte) on order or signature. Omit on factures.",
+      nullable: true,
+    },
+    acomptePercent: {
+      type: SchemaType.NUMBER,
+      description: "Acompte percentage (0..100) if stated on the devis (e.g. 30 for 30%).",
+      nullable: true,
+    },
+    acompteAmountHt: {
+      type: SchemaType.NUMBER,
+      description: "Acompte amount HT in euros if stated as a fixed amount on the devis.",
+      nullable: true,
+    },
+    acompteTrigger: {
+      type: SchemaType.STRING,
+      description: "Verbatim payment-terms phrase that justifies the deposit (e.g. 'Acompte de 30% à la commande').",
       nullable: true,
     },
     lotReferences: {

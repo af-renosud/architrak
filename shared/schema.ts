@@ -356,6 +356,43 @@ export const devis = pgTable("devis", {
   lotCatalogId: integer("lot_catalog_id").references(() => lotCatalog.id, { onDelete: "set null" }),
   lotRefText: text("lot_ref_text"),
   lotSequence: integer("lot_sequence"),
+  // Task #215 — Acompte (deposit) workflow. French BTP devis routinely
+  // require a 30% deposit on order/signature; the contractor issues a
+  // SEPARATE facture d'acompte that subsequent progress invoices must
+  // deduct ("déduction acompte versé") to avoid double-billing.
+  //
+  //   acompteRequired               — flips the gate on for this devis.
+  //                                    Default false (no acompte).
+  //   acomptePercent / acompteAmountHt — spec extracted from the devis
+  //                                    PDF or set manually. At least one
+  //                                    of the two should be present
+  //                                    when acompteRequired is true.
+  //   acompteTrigger                — verbatim payment-terms phrase that
+  //                                    triggered detection (e.g.
+  //                                    "30% à la commande"). Audit-only.
+  //   acompteState                  — lifecycle: 'none' | 'pending' |
+  //                                    'invoiced' | 'paid' | 'applied'.
+  //                                    See migrations/0037 for the full
+  //                                    state-machine description. No
+  //                                    DB-level CHECK by convention.
+  //   acompteInvoiceId              — facture d'acompte once linked.
+  //   acomptePaidAt                 — when state advanced to 'paid'.
+  //   allowProgressBeforeAcompte    — per-devis override of the
+  //                                    invoice/situation gate. Default
+  //                                    false (gate ON per task spec).
+  acompteRequired: boolean("acompte_required").notNull().default(false),
+  acomptePercent: numeric("acompte_percent", { precision: 5, scale: 2 }),
+  acompteAmountHt: numeric("acompte_amount_ht", { precision: 12, scale: 2 }),
+  acompteTrigger: text("acompte_trigger"),
+  acompteState: text("acompte_state").notNull().default("none"),
+  // FK to invoices(id) is declared in migrations/0037_devis_acompte.sql.
+  // We intentionally do NOT mirror it via .references() here because that
+  // would create a circular Drizzle declaration (invoices already
+  // references devis), which collapses TS inference of both tables to
+  // `any`. The DB enforces the constraint either way.
+  acompteInvoiceId: integer("acompte_invoice_id"),
+  acomptePaidAt: timestamp("acompte_paid_at", { withTimezone: true }),
+  allowProgressBeforeAcompte: boolean("allow_progress_before_acompte").notNull().default(false),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [

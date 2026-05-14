@@ -8,6 +8,7 @@ import {
   type InsertSituationLine,
 } from "@shared/schema";
 import { validateRequest } from "../middleware/validate";
+import { evaluateAcompteGate, gateInputsFromDevis } from "../services/acompte.service";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
@@ -27,7 +28,20 @@ router.post(
   "/api/devis/:devisId/situations",
   validateRequest({ params: devisIdParams, body: createSituationBodySchema }),
   async (req, res) => {
-    const situation = await storage.createSituation({ ...req.body, devisId: Number(req.params.devisId) });
+    const devisId = Number(req.params.devisId);
+    // Task #215 — block progress invoicing while a required acompte
+    // is still pending/invoiced (override: allowProgressBeforeAcompte).
+    const devis = await storage.getDevis(devisId);
+    if (!devis) return res.status(404).json({ message: "Devis not found" });
+    const decision = evaluateAcompteGate(gateInputsFromDevis(devis));
+    if (decision.blocked) {
+      return res.status(409).json({
+        message: decision.message,
+        code: decision.code,
+        acompteState: decision.state,
+      });
+    }
+    const situation = await storage.createSituation({ ...req.body, devisId });
     res.status(201).json(situation);
   },
 );

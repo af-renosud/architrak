@@ -260,6 +260,13 @@
       "when": 1778590000000,
       "tag": "0036_devis_signed_pdf_retry",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1778600000000,
+      "tag": "0037_devis_acompte",
+      "breakpoints": true
     }
   ]
 }

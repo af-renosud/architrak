@@ -6,6 +6,7 @@ import { reconcileAdvisories } from "./advisory-reconciler";
 import { enqueueDriveUpload } from "./drive/upload-queue.service";
 import { assertPdfMagic } from "../middleware/upload";
 import { INVOICE_UPLOAD_ERROR_CODES } from "../../shared/invoice-upload-errors";
+import { evaluateAcompteGate, gateInputsFromDevis, nextAcompteState } from "./acompte.service";
 
 interface UploadedFile {
   originalname: string;
@@ -37,6 +38,25 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
 
   const { parseDocument } = await import("../gmail/document-parser");
   const parsed = await parseDocument(file.buffer, file.originalname);
+
+  // Task #215 — apply the acompte gate to manual facture uploads.
+  // The deposit invoice itself (documentType="acompte") is exempt
+  // so linking the facture d'acompte never deadlocks against its
+  // own gate. This mirrors the gate applied at POST
+  // /api/devis/:devisId/invoices and /situations.
+  const isAcompteInvoice = parsed.documentType === "acompte";
+  const gateDecision = evaluateAcompteGate(gateInputsFromDevis(devis), { isAcompteInvoice });
+  if (gateDecision.blocked) {
+    return {
+      success: false,
+      status: 409,
+      data: {
+        message: gateDecision.message,
+        code: gateDecision.code,
+        acompteState: gateDecision.state,
+      },
+    };
+  }
 
   const validation = validateExtraction(parsed);
 
@@ -93,6 +113,26 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
     await reconcileAdvisories({ invoiceId: invoice.id }, enrichedWarnings, "extractor");
   } catch (advErr) {
     console.warn(`[Invoice Upload] Failed to persist advisories:`, advErr);
+  }
+
+  // Task #215 — when the upload IS the facture d'acompte and the
+  // devis is awaiting one, auto-link it and advance the lifecycle.
+  // We do this best-effort: if the transition is no longer legal
+  // (e.g. another link already happened), silently skip — the
+  // operator can still link/mark-paid manually via the dedicated
+  // routes.
+  if (isAcompteInvoice && devis.acompteRequired && (devis.acompteState === "pending" || devis.acompteState === "invoiced")) {
+    const target = nextAcompteState(devis.acompteState, "link_invoice");
+    if (target) {
+      try {
+        await storage.updateDevis(devisId, {
+          acompteInvoiceId: invoice.id,
+          acompteState: target,
+        });
+      } catch (linkErr) {
+        console.warn(`[Invoice Upload] Acompte auto-link failed for devis ${devisId}:`, linkErr);
+      }
+    }
   }
 
   // Task #198 — push the invoice PDF into the same per-lot Drive

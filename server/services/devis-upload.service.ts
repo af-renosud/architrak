@@ -55,6 +55,57 @@ export function coerceBbox(raw: unknown): { x: number; y: number; w: number; h: 
   return { x: cx, y: cy, w: cw, h: ch };
 }
 
+/**
+ * Task #215 — translate the extractor's acompte signal into the
+ * devis-row columns. Called from the create path only (rescrape uses
+ * its own merge logic). Behaviour:
+ *
+ *   - If the AI did NOT mark the devis as requiring an acompte, we
+ *     return an empty patch — the row defaults stand (acompteRequired
+ *     false, acompteState 'none').
+ *   - If acompteRequired is true we always start in state 'pending'
+ *     (the gate is armed). At least one of {acompteAmountHt,
+ *     acomptePercent} should be present; if only the percent is given
+ *     we derive acompteAmountHt = round(devisHt * pct/100). If only
+ *     the amount is given we leave the percent null (auditing the
+ *     literal extracted figure is more important than back-deriving
+ *     a possibly-imprecise %).
+ *
+ * The returned patch is spread into the createDevis call so future
+ * additions to the acompte schema stay localised here.
+ */
+export function buildAcompteInsertFields(
+  parsed: { acompteRequired?: boolean; acomptePercent?: number; acompteAmountHt?: number; acompteTrigger?: string },
+  devisAmountHtStr: string,
+): {
+  acompteRequired?: boolean;
+  acomptePercent?: string | null;
+  acompteAmountHt?: string | null;
+  acompteTrigger?: string | null;
+  acompteState?: string;
+} {
+  if (!parsed.acompteRequired) return {};
+  const pct = typeof parsed.acomptePercent === "number" && Number.isFinite(parsed.acomptePercent) && parsed.acomptePercent > 0 && parsed.acomptePercent <= 100
+    ? roundCurrency(parsed.acomptePercent)
+    : null;
+  let amountHt: number | null = typeof parsed.acompteAmountHt === "number" && Number.isFinite(parsed.acompteAmountHt) && parsed.acompteAmountHt > 0
+    ? roundCurrency(parsed.acompteAmountHt)
+    : null;
+  if (amountHt == null && pct != null) {
+    const devisHt = Number(devisAmountHtStr);
+    if (Number.isFinite(devisHt) && devisHt > 0) {
+      amountHt = roundCurrency(devisHt * pct / 100);
+    }
+  }
+  return {
+    acompteRequired: true,
+    acomptePercent: pct != null ? String(pct) : null,
+    acompteAmountHt: amountHt != null ? String(amountHt) : null,
+    acompteTrigger: typeof parsed.acompteTrigger === "string" && parsed.acompteTrigger.trim() ? parsed.acompteTrigger.trim().slice(0, 500) : null,
+    acompteState: "pending",
+  };
+}
+
 export async function processDevisUpload(projectId: number, file: UploadedFile) {
   assertPdfMagic(file.buffer);
   const storageKey = await uploadDocument(projectId, file.originalname, file.buffer, file.mimetype);
@@ -184,6 +235,7 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
     validationWarnings: allWarnings,
     aiExtractedData: parsed,
     aiConfidence: validation.confidenceScore,
+    ...buildAcompteInsertFields(parsed, amountHt),
   });
 
   try {

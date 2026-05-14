@@ -19,6 +19,7 @@ import {
   acknowledgeAdvisoryForSubject,
 } from "../services/advisory-reconciler";
 import { validateRequest } from "../middleware/validate";
+import { evaluateAcompteGate, gateInputsFromDevis } from "../services/acompte.service";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
@@ -94,6 +95,19 @@ router.post(
   validateRequest({ params: devisIdParams, body: createInvoiceBodySchema }),
   async (req, res) => {
     const devisId = Number(req.params.devisId);
+    // Task #215 — gate generic invoice creation. The dedicated facture
+    // d'acompte path (POST /api/devis/:id/acompte/link-invoice) is
+    // exempt by design: it links an *already-created* invoice.
+    const devis = await storage.getDevis(devisId);
+    if (!devis) return res.status(404).json({ message: "Devis not found" });
+    const decision = evaluateAcompteGate(gateInputsFromDevis(devis));
+    if (decision.blocked) {
+      return res.status(409).json({
+        message: decision.message,
+        code: decision.code,
+        acompteState: decision.state,
+      });
+    }
     const invoice = await storage.createInvoice({ ...req.body, devisId });
     // Lifecycle-bound auto-revoke: this invoice may have just pushed the
     // devis to fully-invoiced. Cheap no-op when it hasn't.

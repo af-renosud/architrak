@@ -660,6 +660,68 @@ interface DevisRowProps {
   onReviewDraft: (d: Devis) => void;
 }
 
+/**
+ * Task #215 — compact "Acompte" status pill rendered inline on the
+ * devis row when the deposit gate is active. Shows the lifecycle
+ * state and exposes a one-click "Mark paid" action while the gate is
+ * still blocking (pending or invoiced). The full spec/override edit
+ * lives in EditDevisRefsDialog; this badge is the at-a-glance signal
+ * + the most common ops action.
+ */
+function AcompteBadge({ devis }: { devis: Devis }) {
+  const { toast } = useToast();
+  const state = devis.acompteState ?? "none";
+  const blocking = state === "pending" || state === "invoiced";
+  const tone =
+    state === "paid" || state === "applied"
+      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+      : blocking
+        ? "bg-amber-50 text-amber-800 border-amber-200"
+        : "bg-muted text-muted-foreground border-border";
+  const label =
+    devis.acomptePercent
+      ? `Acompte ${Number(devis.acomptePercent).toLocaleString("fr-FR")}%`
+      : devis.acompteAmountHt
+        ? `Acompte ${Number(devis.acompteAmountHt).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`
+        : "Acompte";
+
+  const markPaid = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/devis/${devis.id}/acompte/mark-paid`, {});
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", devis.projectId, "devis"] });
+      toast({ title: "Acompte marqué payé" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Échec", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-semibold ${tone}`}
+      data-testid={`badge-acompte-${devis.id}`}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <span data-testid={`text-acompte-state-${devis.id}`}>{label} · {state}</span>
+      {blocking && (
+        <button
+          type="button"
+          className="rounded bg-white/60 px-1 text-[10px] font-bold hover:bg-white"
+          onClick={(e) => { e.stopPropagation(); markPaid.mutate(); }}
+          disabled={markPaid.isPending}
+          title="Marquer l'acompte comme payé"
+          data-testid={`button-acompte-mark-paid-${devis.id}`}
+        >
+          {markPaid.isPending ? "…" : "Payé"}
+        </button>
+      )}
+    </span>
+  );
+}
+
 function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openChecks, onToggle, onEditRefs, onReviewDraft }: DevisRowProps) {
   const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [avenantOpen, setAvenantOpen] = useState(false);
@@ -702,6 +764,9 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
                   >
                     <Pencil size={11} />
                   </button>
+                )}
+                {d.acompteRequired && d.acompteState !== "none" && (
+                  <AcompteBadge devis={d} />
                 )}
               </div>
               <p className="text-[12px] text-foreground mt-0.5 truncate">{d.descriptionFr}</p>
@@ -1551,6 +1616,13 @@ function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDev
   const [feeOverride, setFeeOverride] = useState<string>(
     devis.feePercentageOverride ?? "",
   );
+  // Task #215 — Acompte (deposit) spec + per-devis gate override.
+  const [acompteRequired, setAcompteRequired] = useState<boolean>(devis.acompteRequired === true);
+  const [acomptePercent, setAcomptePercent] = useState<string>(devis.acomptePercent ?? "");
+  const [acompteAmountHt, setAcompteAmountHt] = useState<string>(devis.acompteAmountHt ?? "");
+  const [allowProgressBeforeAcompte, setAllowProgressBeforeAcompte] = useState<boolean>(
+    devis.allowProgressBeforeAcompte === true,
+  );
 
   const mutation = useMutation({
     mutationFn: async (payload: Record<string, unknown>) => {
@@ -1638,6 +1710,39 @@ function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDev
         payload.feePercentageOverride = parsed.toFixed(2);
       }
     }
+    // Task #215 — acompte spec changes.
+    if (acompteRequired !== (devis.acompteRequired === true)) {
+      payload.acompteRequired = acompteRequired;
+    }
+    const trimmedPct = acomptePercent.trim();
+    if (trimmedPct !== (devis.acomptePercent ?? "")) {
+      if (trimmedPct === "") {
+        payload.acomptePercent = null;
+      } else {
+        const p = parseFloat(trimmedPct);
+        if (Number.isNaN(p) || p <= 0 || p > 100) {
+          toast({ title: "Invalid acompte %", description: "Enter a percentage between 0 and 100, or leave blank.", variant: "destructive" });
+          return;
+        }
+        payload.acomptePercent = p.toFixed(2);
+      }
+    }
+    const trimmedAmt = acompteAmountHt.trim();
+    if (trimmedAmt !== (devis.acompteAmountHt ?? "")) {
+      if (trimmedAmt === "") {
+        payload.acompteAmountHt = null;
+      } else {
+        const a = parseFloat(trimmedAmt);
+        if (Number.isNaN(a) || a < 0) {
+          toast({ title: "Invalid acompte amount", description: "Enter a non-negative euro amount, or leave blank.", variant: "destructive" });
+          return;
+        }
+        payload.acompteAmountHt = a.toFixed(2);
+      }
+    }
+    if (allowProgressBeforeAcompte !== (devis.allowProgressBeforeAcompte === true)) {
+      payload.allowProgressBeforeAcompte = allowProgressBeforeAcompte;
+    }
     if (Object.keys(payload).length === 0) {
       onClose();
       return;
@@ -1714,6 +1819,65 @@ function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDev
               Blank = inherit project rate. Enter <strong>0</strong> for
               professional-services devis that don't carry a commission.
             </p>
+          </div>
+          <div className="space-y-2 rounded border border-border/60 bg-muted/30 p-2">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id={`acompte-required-${devis.id}`}
+                checked={acompteRequired}
+                onChange={(e) => setAcompteRequired(e.target.checked)}
+                data-testid="checkbox-edit-devis-acompte-required"
+              />
+              <label htmlFor={`acompte-required-${devis.id}`} className="text-[12px] font-semibold">
+                Acompte requis (deposit before progress invoicing)
+              </label>
+            </div>
+            {acompteRequired && (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <TechnicalLabel>Acompte %</TechnicalLabel>
+                    <Input
+                      value={acomptePercent}
+                      onChange={(e) => setAcomptePercent(e.target.value)}
+                      className="text-[12px]"
+                      placeholder="e.g. 30"
+                      inputMode="decimal"
+                      data-testid="input-edit-devis-acompte-percent"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <TechnicalLabel>Acompte HT (€)</TechnicalLabel>
+                    <Input
+                      value={acompteAmountHt}
+                      onChange={(e) => setAcompteAmountHt(e.target.value)}
+                      className="text-[12px]"
+                      placeholder="auto from %"
+                      inputMode="decimal"
+                      data-testid="input-edit-devis-acompte-amount"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id={`acompte-override-${devis.id}`}
+                    checked={allowProgressBeforeAcompte}
+                    onChange={(e) => setAllowProgressBeforeAcompte(e.target.checked)}
+                    data-testid="checkbox-edit-devis-acompte-override"
+                  />
+                  <label htmlFor={`acompte-override-${devis.id}`} className="text-[11px] text-foreground">
+                    Autoriser la facturation avant acompte (override gate)
+                  </label>
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  Statut acompte : <strong>{devis.acompteState ?? "none"}</strong>.
+                  Le déblocage se fait via la facture d'acompte ou « Marquer payé »
+                  sur la ligne devis.
+                </p>
+              </>
+            )}
           </div>
         </div>
         <div className="flex items-center justify-end gap-2 pt-2">
