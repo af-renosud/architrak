@@ -2003,6 +2003,7 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
     devisNumber: devis.devisNumber ?? "",
     descriptionFr: devis.descriptionFr ?? "",
     dateSent: devis.dateSent ?? "",
+    feePercentageOverride: devis.feePercentageOverride ?? "",
   });
   // Pre-fill the structured composer from the AI extraction's lot reference
   // when present (e.g. "FD" detected on the PDF). The number always starts
@@ -2092,6 +2093,24 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
     if (editValues.devisNumber !== (devis.devisNumber ?? "")) corrections.devisNumber = editValues.devisNumber;
     if (editValues.descriptionFr !== (devis.descriptionFr ?? "")) corrections.descriptionFr = editValues.descriptionFr;
     if (editValues.dateSent !== (devis.dateSent ?? "")) corrections.dateSent = editValues.dateSent;
+    const trimmedFee = editValues.feePercentageOverride.trim();
+    const currentFee = devis.feePercentageOverride ?? "";
+    if (trimmedFee !== currentFee) {
+      if (trimmedFee === "") {
+        corrections.feePercentageOverride = null;
+      } else {
+        const parsed = parseFloat(trimmedFee);
+        if (Number.isNaN(parsed) || parsed < 0 || parsed > 100) {
+          toast({
+            title: "Invalid commission rate",
+            description: "Enter a number between 0 and 100, or leave blank to use the project rate.",
+            variant: "destructive",
+          });
+          return;
+        }
+        corrections.feePercentageOverride = parsed;
+      }
+    }
 
     if (draftContractorId && draftContractorId !== initialContractorId) {
       try {
@@ -2264,6 +2283,22 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
               className="text-[11px]"
               data-testid="input-draft-date"
             />
+          </div>
+
+          <div className="space-y-1">
+            <TechnicalLabel>Architect Commission Override (%)</TechnicalLabel>
+            <Input
+              value={editValues.feePercentageOverride}
+              onChange={(e) => updateField("feePercentageOverride", e.target.value)}
+              className="text-[11px]"
+              placeholder="Leave blank to use project rate"
+              inputMode="decimal"
+              data-testid="input-draft-fee-override"
+            />
+            <p className="text-[10px] text-muted-foreground">
+              Blank = inherit project rate. Enter <strong>0</strong> for any
+              devis the firm doesn't charge a commission on.
+            </p>
           </div>
         </div>
 

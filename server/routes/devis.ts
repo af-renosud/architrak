@@ -110,6 +110,10 @@ const devisConfirmSchema = z.object({
   devisNumber: z.string().optional(),
   descriptionFr: z.string().optional(),
   dateSent: z.string().optional(),
+  // Per-devis architect-commission override. null = inherit project rate,
+  // 0..100 = explicit per-devis rate (use 0 for any work the firm doesn't
+  // charge a commission on — e.g. professional services, in-kind, etc.).
+  feePercentageOverride: z.union([z.coerce.number().min(0).max(100), z.null()]).optional(),
   lotCode: lotCodePartsSchema,
 }).strict();
 type DevisConfirmInput = z.infer<typeof devisConfirmSchema>;
@@ -829,6 +833,11 @@ router.post(
       if (corrections.devisNumber != null) updates.devisNumber = corrections.devisNumber;
       if (corrections.descriptionFr != null) updates.descriptionFr = toSentenceCase(corrections.descriptionFr);
       if (corrections.dateSent != null) updates.dateSent = corrections.dateSent;
+      if (Object.prototype.hasOwnProperty.call(corrections, "feePercentageOverride")) {
+        updates.feePercentageOverride = corrections.feePercentageOverride == null
+          ? null
+          : Number(corrections.feePercentageOverride).toFixed(2);
+      }
 
       // Structured devis-code (Task #176). When the architect submitted the
       // three-part composer, validate uniqueness server-side, persist the
