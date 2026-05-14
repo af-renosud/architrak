@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { OpsAdminNav } from "@/components/layout/OpsAdminNav";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -99,6 +100,7 @@ export default function AdminWebhookDlqPage() {
   return (
     <AppLayout>
       <div className="space-y-6" data-testid="page-webhook-dlq">
+        <OpsAdminNav />
         <div className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight" data-testid="text-page-title">

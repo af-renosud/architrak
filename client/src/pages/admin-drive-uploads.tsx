@@ -6,6 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2, RotateCw, ExternalLink } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { OpsAdminNav } from "@/components/layout/OpsAdminNav";
 
 interface DriveUploadRow {
   id: number;
@@ -80,8 +82,10 @@ export default function AdminDriveUploads() {
   });
 
   return (
-    <div className="container mx-auto p-6 space-y-6" data-testid="page-admin-drive-uploads">
-      <div className="flex items-center justify-between">
+    <AppLayout>
+      <div className="space-y-6" data-testid="page-admin-drive-uploads">
+        <OpsAdminNav />
+        <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Drive auto-upload</h1>
           <p className="text-sm text-muted-foreground">
@@ -210,6 +214,7 @@ export default function AdminDriveUploads() {
           )}
         </CardContent>
       </Card>
-    </div>
+      </div>
+    </AppLayout>
   );
 }
