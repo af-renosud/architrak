@@ -1,0 +1,136 @@
+Analytical General Ledger export
+Allow to export the Analytical General Ledger.
+
+
+Bank establishments
+Allows to list your bank establishments.
+
+
+Customer invoices templates
+Allows to manage your customer invoices templates.
+
+
+FEC export
+Allows to export the FEC.
+
+
+Fiscal years
+Allows to list your fiscal years.
+
+
+General Ledger export
+Allow to export the General Ledger.
+
+
+PA registrations
+Allows reading your PA activation status for e-invoicing.
+
+
+Trial balance
+Allows to retrieve the trial balance.
+
+
+Bank accounts
+Allows to manage your bank accounts.
+
+bank_accounts__readonly
+
+bank_accounts__all
+Billing subscriptions
+Allows to manage your billing subscriptions.
+
+billing_subscriptions__readonly
+
+billing_subscriptions__all
+Categories
+Allows to manage your categories and category groups.
+
+categories__readonly
+
+
+categories__all
+Commercial documents
+Allows to manage your commercial documents.
+
+commercial_documents__readonly
+
+commercial_documents__all
+Customer invoices
+Allows to manage your customer invoices and e-invoices.
+
+customer_invoices__readonly
+
+
+customer_invoices__all
+Customer mandates
+Allows to manage your customer mandates.
+
+customer_mandates__readonly
+
+customer_mandates__all
+Customers
+Allows to manage your customers.
+
+customers__readonly
+
+customers__all
+Files
+Allows to manage files imported via the API.
+
+file_attachments__readonly
+
+file_attachments__all
+Journals
+Allows to manage journals.
+
+journals__readonly
+
+journals__all
+Ledger accounts
+Allows to manage ledger accounts.
+
+ledger_accounts__readonly
+
+ledger_accounts__all
+Ledger entries
+Allows to manage ledger entries.
+
+ledger_entries__readonly
+
+ledger_entries__all
+Products
+Allows to manage your products.
+
+products__readonly
+
+products__all
+Purchase requests
+Allows to manage purchase requests.
+
+purchase_requests__readonly
+
+purchase_requests__all
+Quotes
+Allows to manage your quotes.
+
+quotes__readonly
+
+quotes__all
+Supplier invoices
+Allows to manage your supplier invoices and e-invoices.
+
+supplier_invoices__readonly
+
+supplier_invoices__all
+Suppliers
+Allows to manage your suppliers.
+
+suppliers__readonly
+
+suppliers__all
+Transactions
+Allows to manage your transactions.
+
+transactions__readonly
+
+transactions__all
