@@ -24,5 +24,6 @@ describe("isSandboxBaseUrl", () => {
   it("rejects malformed URLs and unsupported protocols", () => {
     expect(isSandboxBaseUrl("not a url").ok).toBe(false);
     expect(isSandboxBaseUrl("ftp://sandbox.pennylane.com").ok).toBe(false);
+    expect(isSandboxBaseUrl("http://sandbox.pennylane.com").ok).toBe(false);
   });
 });

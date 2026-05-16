@@ -65,8 +65,8 @@ export function isSandboxBaseUrl(
   } catch {
     return { ok: false, reason: `PENNYLANE_BASE_URL "${rawUrl}" is not a valid URL` };
   }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    return { ok: false, reason: `unsupported protocol "${parsed.protocol}"` };
+  if (parsed.protocol !== "https:") {
+    return { ok: false, reason: `unsupported protocol "${parsed.protocol}" — https only` };
   }
   const host = parsed.hostname.toLowerCase();
   if (!SANDBOX_HOSTNAME_ALLOWLIST.has(host)) {
