@@ -433,6 +433,57 @@ Unmatched documents (no projectId): `/${bucketName}/${PRIVATE_OBJECT_DIR}/unmatc
 
 ---
 
+### 4.7 Pennylane Push (Task #214, feature-flagged)
+
+Architect-honoraires-only outbound to Pennylane. Operator clicks **Invoice fees now**
+on Outstanding Fees → idempotent queue runs `customer → customer_invoice → email_send`,
+mirroring the rendered PDF into Object Storage and auto-emailing the client through the
+architect's Gmail. An hourly poller writes `paid_at` back when Pennylane reports paid.
+
+**Scope guardrail (constitutional, non-negotiable):** Only the architect's `fee_entries`
+are pushable. Contractor-side data (`devis`, `factures`, `contractors`, `lots`) MUST
+never be mapped to a Pennylane customer or invoice. Adding any new push kind requires an
+ADR + amendment of this section.
+
+| Column / file | Role |
+|---|---|
+| `pennylane_pushes(kind, doc_id)` UNIQUE | Idempotency key |
+| `kind` enum: `customer` / `customer_invoice` / `email_send` | Chain steps |
+| `projects.pennylane_customer_id` | Mirror of the remote customer id |
+| `fee_entries.pennylane_invoice_id` + `_pdf_storage_key` + `_pushed_at` + `_paid_at` + `_paid_amount` + `_status` | Per-entry mirror |
+| `server/services/pennylane/client.ts` | HTTP client (cursor pagination, 429-aware backoff) |
+| `server/services/pennylane/mappers.ts` | Pure project→customer / fee_entry→invoice mappers |
+| `server/services/pennylane/push-queue.service.ts` | Sweeper (60s tick, 5 attempts, 10s/30s/2m/5m backoff, 10-min stale reclaim) |
+| `server/services/pennylane/paid-poller.service.ts` | Hourly paid-status poller |
+| `scripts/pennylane-sandbox-cleanup.ts` | Sandbox teardown (refuses if base URL is not sandbox/staging/test) |
+
+**External-id scheme:** customer = `architrak:client:project:{projectId}`,
+invoice = `architrak:fee_entry:{feeEntryId}`. Stable across re-pushes — Pennylane's
+upsert-by-external-id is the de-dup mechanism on their side, the `(kind, doc_id)`
+unique index is ours.
+
+**Dry-run mode:** `PENNYLANE_DRY_RUN=true` logs the outbound payload and writes
+sentinel ids of the form `dry-run:{kind}:{docId}` into the mirror columns so the chain
+fires end-to-end without ever contacting the Pennylane API. Useful for staging
+smoke-tests and for keeping the UI responsive while the env is partially configured.
+
+**Whitelist:** `PENNYLANE_PROJECT_WHITELIST` is a CSV of project ids. **Absent = all
+projects allowed.** **Empty string = kill-switch (zero projects allowed).** Whitelist
+is enforced at enqueue time, not at sweep time — already-queued rows continue to drain
+if the whitelist tightens mid-flight.
+
+**Admin surfaces:**
+- `/admin/ops/pennylane-pushes` — DLQ list, filter by kind/state, manual retry
+- `GET /api/admin/pennylane/me` — live ping (hits Pennylane)
+- `GET /api/pennylane/feature-flags` — env-only probe (no API call); powers the
+  Outstanding-Fees button swap between auto-flow and legacy "Mark Invoiced"
+
+**Production safety:** `PENNYLANE_PUSH_ENABLED` defaults OFF in every environment.
+The sweeper and paid-poller are NOT scheduled when the flag is off. Turning the flag
+on without `PENNYLANE_API_KEY` is detected by the boot env validator.
+
+---
+
 ## 5. Directory Map
 
 ```

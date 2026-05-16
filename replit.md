@@ -121,6 +121,35 @@ sequence (`assertNoDevLoginBackdoorInProduction`) hard-fails if either is truthy
 - **Migration replay gate**: `bash scripts/check-migration-replay.sh`.
 - **Tracker drift recovery**: `npx tsx scripts/reconcile-drizzle-tracker.ts`.
 
+## Pennylane integration (Task #214, feature-flagged OFF by default)
+
+Architect honoraires push from Outstanding Fees to Pennylane.
+"Invoice fees now" → create Pennylane customer + customer_invoice → mirror
+the PDF into Object Storage → auto-email the client via the architect's
+Gmail. An hourly poller writes `paid_at` back when Pennylane reports the
+invoice as paid. **Architect honoraires only** — no contractor / supplier
+data is ever pushed.
+
+- Three push kinds (`pennylane_pushes.kind`): `customer`, `customer_invoice`,
+  `email_send`. Idempotent on `(kind, doc_id)`; chain is
+  `customer → customer_invoice → email_send`. Sweeper every 60s, max 5
+  attempts, exponential backoff (10s / 30s / 2m / 5m). Stale `in_flight`
+  rows are reclaimed after 10 min.
+- Paid-status poller (`server/services/pennylane/paid-poller.service.ts`)
+  ticks hourly, GETs each unpaid invoice, writes back `pennylane_paid_at`
+  + `pennylane_paid_amount` + `pennylane_status`.
+- Env flags (all in `server/env.ts`): `PENNYLANE_API_KEY`,
+  `PENNYLANE_BASE_URL` (defaults to v2 production — set to the sandbox host
+  for testing), `PENNYLANE_PUSH_ENABLED` (default OFF), `PENNYLANE_DRY_RUN`
+  (logs payload + writes sentinel `dry-run:…` ids; never hits the API),
+  `PENNYLANE_PROJECT_WHITELIST` (CSV of project ids; absent = all allowed,
+  empty string = kill-switch).
+- Admin surfaces: `/admin/ops/pennylane-pushes` (DLQ + retry),
+  `GET /api/admin/pennylane/me` (ping), `GET /api/pennylane/feature-flags`
+  (unauthenticated-safe flag probe powering the UI button swap).
+- Sandbox cleanup: `npx tsx scripts/pennylane-sandbox-cleanup.ts --confirm`
+  — hard-refuses unless `PENNYLANE_BASE_URL` looks like sandbox/staging/test.
+
 ## Development protocols
 
 - **Zero-tolerance TypeScript**: no `any`, no `@ts-ignore`, no `@ts-expect-error`.

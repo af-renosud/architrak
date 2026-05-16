@@ -161,6 +161,11 @@ export const projects = pgTable("projects", {
   // "1 DEVIS & FACTURE FOLDERS" subfolder under the Renosud shared
   // drive. Resolved lazily on first upload; null = not yet resolved.
   driveFolderId: text("drive_folder_id"),
+  // Task #214 — cached Pennylane customer id for the project's client.
+  // Populated by the push-queue worker on first successful `customer`
+  // push (idempotent via external_id="architrak:client:project:{id}").
+  // Null until the first honoraires invoice for the project is pushed.
+  pennylaneCustomerId: text("pennylane_customer_id"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
@@ -575,13 +580,39 @@ export const feeEntries = pgTable("fee_entries", {
   baseHt: numeric("base_ht", { precision: 12, scale: 2 }).notNull(),
   feeRate: numeric("fee_rate", { precision: 5, scale: 2 }).notNull(),
   feeAmount: numeric("fee_amount", { precision: 12, scale: 2 }).notNull(),
+  // Pre-Task #214 manual entry — human-typed reference of an invoice
+  // the architect created in Pennylane by hand. Retained as the
+  // escape hatch when PENNYLANE_PUSH_ENABLED is off (legacy "Mark as
+  // invoiced" flow). The columns below carry the structured state of
+  // the automated push instead.
   pennylaneInvoiceRef: text("pennylane_invoice_ref"),
   dateInvoiced: date("date_invoiced"),
   status: text("status").notNull().default("pending"),
+  // Task #214 — automated honoraires push to Pennylane. All NULL
+  // until the queue worker successfully creates the customer_invoice.
+  // pennylaneInvoiceId: the API-assigned id (numeric in the JSON,
+  //   stored as text so we never coerce / truncate).
+  // pennylanePdfStorageKey: object-storage key for the mirrored PDF
+  //   we downloaded from the (short-lived) public_file_url returned
+  //   by the create call. Source of truth for the email attachment +
+  //   the audit trail.
+  // pennylanePushedAt: first time the invoice was created in
+  //   Pennylane. Never updated on subsequent paid-status polls.
+  // pennylanePaidAt / pennylanePaidAmount / pennylaneStatus: written
+  //   by the hourly poller from GET /customer_invoices.
+  pennylaneInvoiceId: text("pennylane_invoice_id"),
+  pennylanePdfStorageKey: text("pennylane_pdf_storage_key"),
+  pennylanePushedAt: timestamp("pennylane_pushed_at"),
+  pennylanePaidAt: timestamp("pennylane_paid_at"),
+  pennylanePaidAmount: numeric("pennylane_paid_amount", { precision: 12, scale: 2 }),
+  pennylaneStatus: text("pennylane_status"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   index("fee_entries_fee_id_idx").on(table.feeId),
   uniqueIndex("fee_entries_invoice_unique").on(table.invoiceId).where(sql`${table.invoiceId} IS NOT NULL`),
+  uniqueIndex("fee_entries_pennylane_invoice_unique")
+    .on(table.pennylaneInvoiceId)
+    .where(sql`${table.pennylaneInvoiceId} IS NOT NULL`),
   check("fee_entries_fee_amount_nonneg", sql`${table.feeAmount} >= 0`),
   check("fee_entries_fee_rate_pct", sql`${table.feeRate} >= 0 AND ${table.feeRate} <= 100`),
 ]);
@@ -1921,3 +1952,76 @@ export const insertDriveUploadSchema = createInsertSchema(driveUploads).omit({
 });
 export type InsertDriveUpload = z.infer<typeof insertDriveUploadSchema>;
 export type DriveUpload = typeof driveUploads.$inferSelect;
+
+// =============================================================================
+// Pennylane push queue (Task #214). One row per logical push action
+// keyed by (kind, doc_id) — re-enqueue of an already-succeeded row
+// is a no-op via the unique constraint, exactly like drive_uploads.
+//
+// Three kinds:
+//   - customer:         doc_id = projects.id;     creates a Pennylane
+//                       customer for the project's client.
+//   - customer_invoice: doc_id = fee_entries.id;  creates a Pennylane
+//                       customer_invoice for the architect commission.
+//                       Worker lazily resolves the parent `customer`
+//                       row as a precondition.
+//   - email_send:       doc_id = fee_entries.id;  chains after a
+//                       successful customer_invoice — loads the
+//                       mirrored PDF and emails it to the client via
+//                       the architect's own Gmail OAuth token.
+// =============================================================================
+
+export const PENNYLANE_PUSH_STATES = [
+  "pending",
+  "in_flight",
+  "succeeded",
+  "failed",
+  "dead_letter",
+] as const;
+export type PennylanePushState = (typeof PENNYLANE_PUSH_STATES)[number];
+
+export const PENNYLANE_PUSH_KINDS = [
+  "customer",
+  "customer_invoice",
+  "email_send",
+] as const;
+export type PennylanePushKind = (typeof PENNYLANE_PUSH_KINDS)[number];
+
+export const pennylanePushes = pgTable("pennylane_pushes", {
+  id: serial("id").primaryKey(),
+  kind: text("kind").notNull(),
+  docId: integer("doc_id").notNull(),
+  projectId: integer("project_id")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  state: text("state").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  lastAttemptAt: timestamp("last_attempt_at"),
+  nextAttemptAt: timestamp("next_attempt_at")
+    .default(sql`CURRENT_TIMESTAMP`)
+    .notNull(),
+  // The Pennylane-assigned id on success. For `customer` kind: the
+  // customer id; for `customer_invoice` kind: the invoice id; for
+  // `email_send` kind: the Gmail message id. Stored as text — the
+  // API returns ints for some and strings for others.
+  pennylaneId: text("pennylane_id"),
+  // True when this row was created under PENNYLANE_DRY_RUN and the
+  // worker only logged the intended payload (no API call fired). Kept
+  // so the admin DLQ can label dry-run rows distinctly.
+  dryRun: boolean("dry_run").notNull().default(false),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  unique("pennylane_pushes_doc_unique").on(table.kind, table.docId),
+  index("pennylane_pushes_state_next_idx").on(table.state, table.nextAttemptAt),
+  index("pennylane_pushes_project_idx").on(table.projectId),
+]);
+
+export const insertPennylanePushSchema = createInsertSchema(pennylanePushes).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertPennylanePush = z.infer<typeof insertPennylanePushSchema>;
+export type PennylanePush = typeof pennylanePushes.$inferSelect;

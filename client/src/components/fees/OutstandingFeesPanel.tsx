@@ -70,6 +70,68 @@ function CopyButton({ entry }: { entry: OutstandingFeeEntry }) {
   );
 }
 
+interface PennylaneFeatureFlags {
+  configured: boolean;
+  pushEnabled: boolean;
+  dryRun: boolean;
+}
+
+function InvoiceNowAction({
+  entry,
+  scope,
+  projectId,
+  dryRun,
+}: {
+  entry: OutstandingFeeEntry;
+  scope: "global" | "project";
+  projectId?: number;
+  dryRun: boolean;
+}) {
+  const { toast } = useToast();
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/fees/entries/${entry.entryId}/invoice-now`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/fees/outstanding"] });
+      const pid = scope === "project" ? projectId : entry.projectId;
+      if (pid !== undefined) {
+        const pidStr = String(pid);
+        queryClient.invalidateQueries({
+          queryKey: ["/api/projects", pidStr, "fees", "outstanding"],
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/pennylane/pushes"] });
+      toast({
+        title: dryRun ? "Dry-run push enqueued" : "Push enqueued",
+        description: dryRun
+          ? "Payload logged — Pennylane API not contacted."
+          : "Customer + invoice will be created on Pennylane shortly.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Push failed", description: error.message, variant: "destructive" });
+    },
+  });
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className="h-7 px-2 border-emerald-500/40 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/10"
+      onClick={() => mutation.mutate()}
+      disabled={mutation.isPending}
+      data-testid={`button-invoice-now-${entry.entryId}`}
+      title={dryRun ? "Dry-run: log payload only (Pennylane API NOT contacted)" : "Create Pennylane customer + invoice and auto-email the client"}
+    >
+      <CheckCircle2 size={12} className="mr-1" />
+      <span className="text-[9px] font-bold uppercase tracking-widest">
+        {mutation.isPending ? "Sending..." : dryRun ? "Invoice (dry-run)" : "Invoice fees now"}
+      </span>
+    </Button>
+  );
+}
+
 function MarkInvoicedAction({
   entry,
   scope,
@@ -82,6 +144,11 @@ function MarkInvoicedAction({
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [ref, setRef] = useState("");
+
+  const flagsQuery = useQuery<PennylaneFeatureFlags>({
+    queryKey: ["/api/pennylane/feature-flags"],
+    staleTime: 60_000,
+  });
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -110,6 +177,20 @@ function MarkInvoicedAction({
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
+
+  // When the Pennylane push is enabled, the auto-flow replaces the
+  // manual "Mark Invoiced" affordance — one click runs customer +
+  // invoice + email end-to-end.
+  if (flagsQuery.data?.pushEnabled) {
+    return (
+      <InvoiceNowAction
+        entry={entry}
+        scope={scope}
+        projectId={projectId}
+        dryRun={flagsQuery.data.dryRun}
+      />
+    );
+  }
 
   if (!open) {
     return (

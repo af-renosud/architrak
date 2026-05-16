@@ -209,6 +209,41 @@ const envSchema = z.object({
   REPL_ID: optionalString(),
   REPL_SLUG: optionalString(),
   REPLIT_DEPLOYMENT_ID: optionalString(),
+
+  // --- Pennylane accounting integration (Task #214, feature-scoped) ----
+  // One-click push of architect-honoraires customer_invoices to the
+  // firm's Pennylane books. Strict architect-side-only scope —
+  // contractor / supplier data is NEVER pushed (the architect is not
+  // the contractor's customer). See ARCHITECTURE.md §4.7 for the full
+  // contract and safety-rail rationale.
+  //
+  // PENNYLANE_API_KEY: bearer token. Sandbox tenant for development,
+  //   prod tenant for production. Refuses to push when unset.
+  // PENNYLANE_BASE_URL: defaults to the v2 external API base. Override
+  //   only when sandbox / staging hosts diverge.
+  // PENNYLANE_PUSH_ENABLED: master kill switch. Default OFF — every
+  //   wire-in (enqueue, sweeper, paid-status poller, "Invoice fees now"
+  //   button) is a silent no-op until this flips true.
+  // PENNYLANE_DRY_RUN: when true AND push is enabled, the worker logs
+  //   the resolved external_id + payload it would have sent but does
+  //   NOT hit the API. Lets the operator verify mapping on real prod
+  //   data with zero side effects.
+  // PENNYLANE_PROJECT_WHITELIST: comma-separated project ids. When
+  //   set, ONLY those projects' honoraires push (others silently
+  //   no-op at enqueue time). Empty / unset = no projects push when
+  //   the env var is intentionally set to ""; absent env var = all
+  //   projects push. Used to ring-fence a single dummy project
+  //   during sandbox cutover (phase 10e of the rollout plan).
+  PENNYLANE_API_KEY: optionalString(),
+  PENNYLANE_BASE_URL: z
+    .preprocess(
+      (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+      z.string().url(),
+    )
+    .default("https://app.pennylane.com/api/external/v2"),
+  PENNYLANE_PUSH_ENABLED: booleanFlag(false),
+  PENNYLANE_DRY_RUN: booleanFlag(false),
+  PENNYLANE_PROJECT_WHITELIST: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

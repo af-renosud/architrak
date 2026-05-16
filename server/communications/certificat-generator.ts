@@ -1028,6 +1028,7 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     clientContactName: null,
     clientContactEmail: null,
     driveFolderId: null,
+    pennylaneCustomerId: null,
     createdAt: now,
     updatedAt: now,
   };

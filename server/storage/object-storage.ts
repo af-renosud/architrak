@@ -74,6 +74,19 @@ export function buildSignedDevisObjectName(projectId: number, devisId: number): 
   return `${privateDir}/projects/${projectId}/documents/devis-signed/${devisId}.pdf`;
 }
 
+/**
+ * Deterministic object name for a Pennylane customer-invoice PDF
+ * mirror (Task #214). ONE fee_entry → ONE PDF, regardless of how
+ * many push retries land on the same row. The signed public_file_url
+ * Pennylane returns is short-lived (~1 hour), so we mirror the bytes
+ * here both for the auto-email attachment and for the long-term
+ * audit trail.
+ */
+export function buildPennylaneInvoiceObjectName(projectId: number, feeEntryId: number): string {
+  const privateDir = getPrivateDir();
+  return `${privateDir}/projects/${projectId}/documents/pennylane-invoices/${feeEntryId}.pdf`;
+}
+
 export async function getDocumentBuffer(storageKey: string): Promise<Buffer> {
   const { bucketName, objectName } = parseStorageKey(storageKey);
   const bucket = objectStorageClient.bucket(bucketName);

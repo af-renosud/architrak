@@ -5,6 +5,9 @@ import {
   avenants, invoices, situations, situationLines, certificats, fees, feeEntries,
   driveUploads,
   type DriveUpload, type InsertDriveUpload,
+  pennylanePushes,
+  type PennylanePush, type InsertPennylanePush,
+  type PennylanePushKind, type PennylanePushState,
   archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog, archidocSiretIssues,
   emailDocuments, projectDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
   aiModelSettings, templateAssets, users, devisTranslations, wishListItems,
@@ -177,6 +180,8 @@ export interface IStorage {
   updateCertificat(id: number, data: Partial<InsertCertificat>): Promise<Certificat | undefined>;
 
   getFeesByProject(projectId: number): Promise<Fee[]>;
+  getFee(id: number): Promise<Fee | undefined>;
+  getFeeEntry(id: number): Promise<FeeEntry | undefined>;
   createFee(data: InsertFee): Promise<Fee>;
   updateFee(id: number, data: Partial<InsertFee>): Promise<Fee | undefined>;
 
@@ -496,6 +501,35 @@ export interface IStorage {
   listDriveUploads(filter?: { state?: string; limit?: number; offset?: number }): Promise<DriveUpload[]>;
   getDriveUpload(uploadId: number): Promise<DriveUpload | undefined>;
   resetDriveUploadForRetry(uploadId: number): Promise<DriveUpload | undefined>;
+
+  // --- Pennylane push queue (Task #214) ---------------------------------
+  upsertPennylanePush(data: InsertPennylanePush): Promise<PennylanePush>;
+  claimPennylanePushForAttempt(pushId: number): Promise<PennylanePush | null>;
+  markPennylanePushSucceeded(args: { pushId: number; attempts: number; pennylaneId: string | null; dryRun?: boolean }): Promise<void>;
+  markPennylanePushDeadLettered(args: { pushId: number; attempts: number; lastError: string }): Promise<void>;
+  markPennylanePushPendingRetry(args: { pushId: number; attempts: number; lastError: string; nextAttemptAt: Date }): Promise<void>;
+  listDuePennylanePushes(limit: number): Promise<PennylanePush[]>;
+  reclaimStalePennylanePushes(maxAgeMs: number): Promise<number>;
+  listPennylanePushes(filter?: { state?: PennylanePushState; kind?: PennylanePushKind; limit?: number; offset?: number }): Promise<PennylanePush[]>;
+  getPennylanePush(pushId: number): Promise<PennylanePush | undefined>;
+  resetPennylanePushForRetry(pushId: number): Promise<PennylanePush | undefined>;
+
+  // --- Pennylane mirror columns (Task #214) -----------------------------
+  setProjectPennylaneCustomerId(projectId: number, customerId: string): Promise<void>;
+  setFeeEntryPennylaneInvoice(args: {
+    feeEntryId: number;
+    pennylaneInvoiceId: string;
+    pennylanePdfStorageKey: string | null;
+    pennylaneStatus: string | null;
+  }): Promise<void>;
+  setFeeEntryPennylanePaid(args: {
+    feeEntryId: number;
+    paidAt: Date | null;
+    paidAmount: number | null;
+    pennylaneStatus: string;
+  }): Promise<void>;
+  getFeeEntryByPennylaneInvoiceId(invoiceId: string): Promise<FeeEntry | undefined>;
+  listFeeEntriesWithPennylaneInvoice(args?: { onlyUnpaid?: boolean; limit?: number }): Promise<FeeEntry[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -901,6 +935,16 @@ export class DatabaseStorage implements IStorage {
 
   async getFeeEntries(feeId: number): Promise<FeeEntry[]> {
     return db.select().from(feeEntries).where(eq(feeEntries.feeId, feeId)).orderBy(feeEntries.createdAt);
+  }
+
+  async getFeeEntry(id: number): Promise<FeeEntry | undefined> {
+    const [row] = await db.select().from(feeEntries).where(eq(feeEntries.id, id));
+    return row;
+  }
+
+  async getFee(id: number): Promise<Fee | undefined> {
+    const [row] = await db.select().from(fees).where(eq(fees.id, id));
+    return row;
   }
 
   async getFeeEntriesByProject(projectId: number): Promise<FeeEntry[]> {
@@ -2790,6 +2834,232 @@ export class DatabaseStorage implements IStorage {
       .where(eq(driveUploads.id, uploadId))
       .returning();
     return row;
+  }
+
+  // ---------------------------------------------------------------------
+  // Pennylane push queue (Task #214). Mirrors the drive_uploads shape
+  // exactly — ON CONFLICT DO NOTHING idempotency on (kind, doc_id),
+  // atomic claim flip, exponential-backoff pending retry, and a
+  // dedicated dead-letter terminal state for the admin DLQ.
+  // ---------------------------------------------------------------------
+  async upsertPennylanePush(data: InsertPennylanePush): Promise<PennylanePush> {
+    const [inserted] = await db
+      .insert(pennylanePushes)
+      .values(data)
+      .onConflictDoNothing({
+        target: [pennylanePushes.kind, pennylanePushes.docId],
+      })
+      .returning();
+    if (inserted) return inserted;
+    const [existing] = await db
+      .select()
+      .from(pennylanePushes)
+      .where(
+        and(
+          eq(pennylanePushes.kind, data.kind),
+          eq(pennylanePushes.docId, data.docId),
+        ),
+      );
+    return existing;
+  }
+
+  async claimPennylanePushForAttempt(pushId: number): Promise<PennylanePush | null> {
+    const [row] = await db
+      .update(pennylanePushes)
+      .set({
+        state: "in_flight",
+        lastAttemptAt: new Date(),
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(
+        and(eq(pennylanePushes.id, pushId), eq(pennylanePushes.state, "pending")),
+      )
+      .returning();
+    return row ?? null;
+  }
+
+  async markPennylanePushSucceeded(args: {
+    pushId: number;
+    attempts: number;
+    pennylaneId: string | null;
+    dryRun?: boolean;
+  }): Promise<void> {
+    await db
+      .update(pennylanePushes)
+      .set({
+        state: "succeeded",
+        attempts: args.attempts,
+        pennylaneId: args.pennylaneId,
+        dryRun: args.dryRun ?? false,
+        lastError: null,
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(eq(pennylanePushes.id, args.pushId));
+  }
+
+  async markPennylanePushDeadLettered(args: { pushId: number; attempts: number; lastError: string }): Promise<void> {
+    await db
+      .update(pennylanePushes)
+      .set({
+        state: "dead_letter",
+        attempts: args.attempts,
+        lastError: args.lastError,
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(eq(pennylanePushes.id, args.pushId));
+  }
+
+  async markPennylanePushPendingRetry(args: { pushId: number; attempts: number; lastError: string; nextAttemptAt: Date }): Promise<void> {
+    await db
+      .update(pennylanePushes)
+      .set({
+        state: "pending",
+        attempts: args.attempts,
+        lastError: args.lastError,
+        nextAttemptAt: args.nextAttemptAt,
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(eq(pennylanePushes.id, args.pushId));
+  }
+
+  async reclaimStalePennylanePushes(maxAgeMs: number): Promise<number> {
+    const cutoff = new Date(Date.now() - maxAgeMs);
+    const reclaimed = await db
+      .update(pennylanePushes)
+      .set({
+        state: "pending",
+        nextAttemptAt: new Date(),
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(
+        and(
+          eq(pennylanePushes.state, "in_flight"),
+          lte(pennylanePushes.lastAttemptAt, cutoff),
+        ),
+      )
+      .returning({ id: pennylanePushes.id });
+    return reclaimed.length;
+  }
+
+  async listDuePennylanePushes(limit: number): Promise<PennylanePush[]> {
+    return db
+      .select()
+      .from(pennylanePushes)
+      .where(
+        and(
+          eq(pennylanePushes.state, "pending"),
+          lte(pennylanePushes.nextAttemptAt, new Date()),
+        ),
+      )
+      .orderBy(asc(pennylanePushes.nextAttemptAt))
+      .limit(limit);
+  }
+
+  async listPennylanePushes(filter?: {
+    state?: PennylanePushState;
+    kind?: PennylanePushKind;
+    limit?: number;
+    offset?: number;
+  }): Promise<PennylanePush[]> {
+    const clauses: SQL[] = [];
+    if (filter?.state) clauses.push(eq(pennylanePushes.state, filter.state));
+    if (filter?.kind) clauses.push(eq(pennylanePushes.kind, filter.kind));
+    let q = db.select().from(pennylanePushes).$dynamic();
+    if (clauses.length === 1) q = q.where(clauses[0]);
+    else if (clauses.length > 1) q = q.where(and(...clauses));
+    return q
+      .orderBy(desc(pennylanePushes.updatedAt))
+      .limit(filter?.limit ?? 200)
+      .offset(filter?.offset ?? 0);
+  }
+
+  async getPennylanePush(pushId: number): Promise<PennylanePush | undefined> {
+    const [row] = await db
+      .select()
+      .from(pennylanePushes)
+      .where(eq(pennylanePushes.id, pushId));
+    return row;
+  }
+
+  async resetPennylanePushForRetry(pushId: number): Promise<PennylanePush | undefined> {
+    const [row] = await db
+      .update(pennylanePushes)
+      .set({
+        state: "pending",
+        nextAttemptAt: new Date(),
+        lastError: null,
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(eq(pennylanePushes.id, pushId))
+      .returning();
+    return row;
+  }
+
+  // ---------------------------------------------------------------------
+  // Pennylane mirror-column setters/getters (Task #214). Kept thin —
+  // the queue worker + paid poller call these after a successful API
+  // hop. Never write the columns directly from a route handler.
+  // ---------------------------------------------------------------------
+  async setProjectPennylaneCustomerId(projectId: number, customerId: string): Promise<void> {
+    await db
+      .update(projects)
+      .set({
+        pennylaneCustomerId: customerId,
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(eq(projects.id, projectId));
+  }
+
+  async setFeeEntryPennylaneInvoice(args: {
+    feeEntryId: number;
+    pennylaneInvoiceId: string;
+    pennylanePdfStorageKey: string | null;
+    pennylaneStatus: string | null;
+  }): Promise<void> {
+    await db
+      .update(feeEntries)
+      .set({
+        pennylaneInvoiceId: args.pennylaneInvoiceId,
+        pennylanePdfStorageKey: args.pennylanePdfStorageKey,
+        pennylaneStatus: args.pennylaneStatus,
+        pennylanePushedAt: new Date(),
+      })
+      .where(eq(feeEntries.id, args.feeEntryId));
+  }
+
+  async setFeeEntryPennylanePaid(args: {
+    feeEntryId: number;
+    paidAt: Date | null;
+    paidAmount: number | null;
+    pennylaneStatus: string;
+  }): Promise<void> {
+    await db
+      .update(feeEntries)
+      .set({
+        pennylanePaidAt: args.paidAt,
+        pennylanePaidAmount: args.paidAmount === null ? null : args.paidAmount.toFixed(2),
+        pennylaneStatus: args.pennylaneStatus,
+      })
+      .where(eq(feeEntries.id, args.feeEntryId));
+  }
+
+  async getFeeEntryByPennylaneInvoiceId(invoiceId: string): Promise<FeeEntry | undefined> {
+    const [row] = await db
+      .select()
+      .from(feeEntries)
+      .where(eq(feeEntries.pennylaneInvoiceId, invoiceId));
+    return row;
+  }
+
+  async listFeeEntriesWithPennylaneInvoice(args?: {
+    onlyUnpaid?: boolean;
+    limit?: number;
+  }): Promise<FeeEntry[]> {
+    const clauses: SQL[] = [isNotNull(feeEntries.pennylaneInvoiceId)];
+    if (args?.onlyUnpaid) clauses.push(isNull(feeEntries.pennylanePaidAt));
+    let q = db.select().from(feeEntries).$dynamic();
+    q = q.where(and(...clauses));
+    return q.orderBy(asc(feeEntries.id)).limit(args?.limit ?? 500);
   }
 }
 

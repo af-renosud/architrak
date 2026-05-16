@@ -37,6 +37,7 @@ import adminTransientFailuresRouter from "./admin-transient-failures";
 import adminWebhookDlqRouter from "./admin-webhook-dlq";
 import adminMirrorRestoreRouter from "./admin-mirror-restore";
 import adminDriveUploadsRouter from "./admin-drive-uploads";
+import adminPennylaneRouter from "./admin-pennylane";
 import adminSignedPdfRecoveryRouter from "./admin-signed-pdf-recovery";
 import healthzRouter from "./healthz";
 import designContractsRouter from "./design-contracts";
@@ -113,6 +114,7 @@ export async function registerRoutes(
   app.use(adminWebhookDlqRouter);
   app.use(adminMirrorRestoreRouter);
   app.use(adminDriveUploadsRouter);
+  app.use(adminPennylaneRouter);
   app.use(adminSignedPdfRecoveryRouter);
   app.use(designContractsRouter);
 

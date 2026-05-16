@@ -9,6 +9,12 @@ import {
 } from "@shared/schema";
 import { markFeeEntryInvoiced } from "../services/fee-calculation.service";
 import {
+  enqueueHonorairesPush,
+  isPennylaneConfigured,
+  isPennylaneDryRun,
+  isPennylanePushEnabled,
+} from "../services/pennylane/push-queue.service";
+import {
   getOutstandingFeesGlobal,
   getOutstandingFeesForProject,
   getFeeEntryCopyText,
@@ -165,5 +171,56 @@ router.post(
     res.status(result.status).json(result.data);
   },
 );
+
+/**
+ * Task #214 — one-click Pennylane push. Enqueues a `customer` + a
+ * `customer_invoice` push for this fee entry and fires an inline
+ * sweep so the operator sees status move within a second. Returns
+ * 409 when the feature flag is off (UI can render a helpful tooltip).
+ */
+router.post(
+  "/api/fees/entries/:id/invoice-now",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    if (!isPennylanePushEnabled()) {
+      return res.status(409).json({
+        message: "Pennylane push is disabled — set PENNYLANE_PUSH_ENABLED=true to enable",
+        enabled: false,
+      });
+    }
+    try {
+      const row = await enqueueHonorairesPush(Number(req.params.id));
+      if (!row) {
+        return res.status(409).json({
+          message: "Push could not be enqueued — project is not in PENNYLANE_PROJECT_WHITELIST",
+          enabled: true,
+        });
+      }
+      res.status(202).json({
+        message: "Push enqueued",
+        pushId: row.id,
+        kind: row.kind,
+        state: row.state,
+        dryRun: isPennylaneDryRun(),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Enqueue failed: ${message}` });
+    }
+  },
+);
+
+/**
+ * Lightweight feature-flag probe for the Outstanding Fees UI — does
+ * NOT touch Pennylane, just reads env-derived predicates. Safe to
+ * call from every page render.
+ */
+router.get("/api/pennylane/feature-flags", (_req, res) => {
+  res.json({
+    configured: isPennylaneConfigured(),
+    pushEnabled: isPennylanePushEnabled(),
+    dryRun: isPennylaneDryRun(),
+  });
+});
 
 export default router;

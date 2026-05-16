@@ -169,6 +169,17 @@ app.use((req, res, next) => {
     console.error("[DriveQueue] failed to start sweeper:", err);
   }
 
+  // Task #214 — Pennylane push sweeper + hourly paid-status poller.
+  // Both are no-ops when PENNYLANE_PUSH_ENABLED is false.
+  try {
+    const { startPennylanePushSweeper } = await import("./services/pennylane/push-queue.service");
+    startPennylanePushSweeper();
+    const { startPennylanePaidPoller } = await import("./services/pennylane/paid-poller.service");
+    startPennylanePaidPoller();
+  } catch (err) {
+    console.error("[PennylaneQueue] failed to start sweepers:", err);
+  }
+
   // Boot-time backend-swap reconciliation (Task #164). MUST run
   // BEFORE the contractor-auto-sync scheduler and the webhook
   // listeners come online, otherwise a stale dev/legacy mirror row
