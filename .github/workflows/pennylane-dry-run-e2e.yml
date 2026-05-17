@@ -1,0 +1,132 @@
+name: Pennylane dry-run E2E
+
+on:
+  pull_request:
+    paths:
+      - "tests/browser/pennylane-dry-run.spec.ts"
+      - "server/services/pennylane/**"
+      - "server/routes/pennylane*.ts"
+      - "server/routes/honoraires*.ts"
+      - "client/src/**/pennylane/**"
+      - "client/src/**/Honoraires*"
+      - "shared/schema.ts"
+      - "migrations/**"
+      - "playwright.config.ts"
+      - ".github/workflows/pennylane-dry-run-e2e.yml"
+  workflow_dispatch:
+
+jobs:
+  pennylane-dry-run:
+    name: Playwright — Pennylane dry-run chain
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: architrak
+          POSTGRES_PASSWORD: architrak
+          POSTGRES_DB: architrak_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U architrak -d architrak_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # Core boot vars
+      DATABASE_URL: postgres://architrak:architrak@localhost:5432/architrak_test
+      SESSION_SECRET: ci-pennylane-dry-run-session-secret
+      NODE_ENV: development
+      PORT: "5000"
+      PUBLIC_BASE_URL: http://localhost:5000
+
+      # Required by the spec — see tests/browser/pennylane-dry-run.spec.ts
+      ENABLE_DEV_LOGIN_FOR_E2E: "true"
+      PENNYLANE_API_KEY: ci-stub-pennylane-key
+      PENNYLANE_PUSH_ENABLED: "true"
+      PENNYLANE_DRY_RUN: "true"
+
+      # Keep outbound side-effects inert during the run
+      E2E_FAKE_GMAIL: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser (chromium)
+        run: npx playwright install --with-deps chromium
+
+      - name: Apply database migrations
+        run: npx tsx scripts/run-migrations.mjs
+
+      - name: Start application server
+        run: |
+          npm run dev > server.log 2>&1 &
+          echo $! > server.pid
+          echo "Server PID: $(cat server.pid)"
+
+      - name: Wait for /healthz/deep
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS "http://localhost:5000/healthz/deep" > /dev/null; then
+              echo "Server is up after ${i} attempts"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Server failed to become healthy within 120s"
+          echo "----- server.log (tail) -----"
+          tail -n 200 server.log || true
+          exit 1
+
+      - name: Verify Pennylane feature flags are armed
+        run: |
+          set -e
+          flags=$(curl -fsS "http://localhost:5000/api/pennylane/feature-flags")
+          echo "feature-flags: $flags"
+          echo "$flags" | grep -q '"configured":true'
+          echo "$flags" | grep -q '"pushEnabled":true'
+          echo "$flags" | grep -q '"dryRun":true'
+
+      - name: Run Pennylane dry-run spec
+        env:
+          E2E_BASE_URL: http://localhost:5000
+        run: npx playwright test tests/browser/pennylane-dry-run.spec.ts --reporter=list
+
+      - name: Stop application server
+        if: always()
+        run: |
+          if [ -f server.pid ]; then
+            kill "$(cat server.pid)" 2>/dev/null || true
+          fi
+
+      - name: Upload server log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pennylane-dry-run-server-log
+          path: server.log
+          if-no-files-found: ignore
+
+      - name: Upload Playwright traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pennylane-dry-run-playwright
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
