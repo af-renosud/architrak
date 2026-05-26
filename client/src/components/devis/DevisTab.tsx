@@ -727,6 +727,30 @@ function AcompteBadge({ devis }: { devis: Devis }) {
   );
 }
 
+function FeeOverrideBadge({ devis }: { devis: Devis }) {
+  if (devis.feePercentageOverride == null) return null;
+  const pct = Number(devis.feePercentageOverride);
+  if (!Number.isFinite(pct)) return null;
+  const isZero = pct === 0;
+  const tone = isZero
+    ? "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+    : "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300";
+  const label = isZero ? "No commission" : `Commission ${pct}%`;
+  const title = isZero
+    ? "This devis carries no architect commission (override = 0%). Project default does not apply."
+    : `Per-devis commission override (${pct}%) — overrides the project default for this devis only.`;
+  return (
+    <span
+      className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold ${tone}`}
+      data-testid={`badge-fee-override-${devis.id}`}
+      title={title}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {label}
+    </span>
+  );
+}
+
 function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openChecks, onToggle, onEditRefs, onReviewDraft }: DevisRowProps) {
   const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [avenantOpen, setAvenantOpen] = useState(false);
@@ -773,6 +797,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
                 {d.acompteRequired && d.acompteState !== "none" && (
                   <AcompteBadge devis={d} />
                 )}
+                <FeeOverrideBadge devis={d} />
               </div>
               <p className="text-[12px] text-foreground mt-0.5 truncate">{d.descriptionFr}</p>
               <span className="text-[10px] text-muted-foreground">
