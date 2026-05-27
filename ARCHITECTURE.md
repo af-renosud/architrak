@@ -482,6 +482,96 @@ if the whitelist tightens mid-flight.
 The sweeper and paid-poller are NOT scheduled when the flag is off. Turning the flag
 on without `PENNYLANE_API_KEY` is detected by the boot env validator.
 
+### 4.8 Contractor Banking Wire Contract — ArchiDoc → ArchiTrak (v1, Task #225 / #226)
+
+Frozen 2026-05-27. Both sides have a symmetric fixture-based contract
+test; the listed re-verify events are the only triggers for a fresh
+inter-agent check. No periodic re-verify.
+
+**Endpoint** — `GET /api/sync/contractors[?since=<ISO8601>]` against
+`ARCHIDOC_BASE_URL`. Bearer auth via `ARCHIDOC_SYNC_API_KEY` (the
+single shared key, also used by `/api/sync/projects`, `/api/sync/trades`,
+`/api/sync/proposal-fees`). On invalid `since=` ArchiDoc silently
+returns the full set — incremental sync therefore never throws on a
+malformed timestamp.
+
+**Banking block — exact key names** (nested under each contractor):
+
+```jsonc
+{
+  "id": "uuid",
+  "name": "string",
+  // ... non-banking fields ...
+  "banking": {
+    "accountHolderName":     "string",   // verbatim
+    "iban":                  "string",   // pre-normalised; we re-validate (mod-97)
+    "bic":                   "string",   // pre-normalised; we re-validate (ISO 9362)
+    "bankName":              "string",
+    "ribDocumentUrl":        "/objects/contractors/<contractorId>/<filename>",
+    "ribDocumentName":       "string",
+    "bankingVerifiedAt":     "ISO8601",  // PREFIXED — not `verifiedAt`
+    "bankingVerifiedBy":     "string",   // PREFIXED — not `verifiedBy`
+    "bankingAiExtractedData": { /* opaque */ }  // PREFIXED — not `aiExtractedData`
+  }
+}
+```
+
+The three audit fields use the **prefixed** form (`bankingVerifiedAt` /
+`By` / `AiExtractedData`) — mirroring ArchiDoc's column names. The
+short forms were a silent NULL-coercer in Task #225's first cut and
+were eliminated in Task #226. The interface in
+`server/archidoc/sync-client.ts:ArchidocContractorData.banking`
+declares only the prefixed keys so the TS compiler enforces the
+contract; the fixture test in
+`server/archidoc/__tests__/banking-wire-shape.test.ts` pins the
+exact wire shape and fails CI on drift.
+
+**Re-validation on persist** — IBAN/BIC are re-checked by
+`shared/iban.ts` (`validateIban` / `validateBic`) inside
+`server/archidoc/sync-service.ts#upsertContractor` before write.
+Anything that fails validation lands as NULL, not as persisted
+garbage; the certificat gate then refuses to issue, which is the
+intended failure mode.
+
+**RIB proxy contract (v1)** — When `banking.ribDocumentUrl` is
+present, `sendCertificat` fetches it through:
+
+- `GET <ARCHIDOC_BASE_URL>/objects/contractors/<id>/<filename>`
+- `Authorization: Bearer <ARCHIDOC_SYNC_API_KEY>` (same shared key)
+- 30s timeout, same-host guard
+- Success: `application/pdf` bytes — we mirror into object storage
+  and append to `attachmentStorageKeys`
+- Miss: HTTP 404 with structured JSON `{ "error": "Object not found" }`
+  — never an HTML error page
+- Sensitive-prefix gate on ArchiDoc covers `contractors/` and
+  `insurance-certificates/`, forcing bearer auth on those paths
+
+RIB fetch failure is **non-fatal** — the certificat itself always
+carries the IBAN block; the RIB attachment is a convenience.
+
+**Re-verify triggers (events, not calendar)** — A fresh inter-app
+check is required if any of the following changes on either side:
+
+1. Rename or type change to any field in the `banking` block.
+2. New field added to the block (treat as additive + null-by-default
+   so it's a non-breaking change, but ping the other side so they
+   can pre-wire).
+3. Change to IBAN/BIC validation rules in `shared/iban.ts`
+   (mod-97 / ISO 9362).
+4. Change to the `/objects/*` sensitive-prefix gate or bearer scope.
+5. Change to any of the four `/api/sync/*` paths or their `?since=`
+   semantics.
+
+Outside those events the fixture tests on both sides are the
+backstop; no scheduled re-verify.
+
+**Single-tenant invariant** — Banking fields MUST NEVER appear on
+any unauthenticated surface (`public-checks`, `public-client-checks`,
+`archisign-public`). See the inline comment block in
+`server/routes/public-checks.ts#buildPortalPayload`. Adding a new
+public surface requires explicitly whitelisting only the
+non-banking fields.
+
 ---
 
 ## 5. Directory Map

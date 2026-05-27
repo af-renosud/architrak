@@ -1,0 +1,22 @@
+Closing it out cleanly on our end too. Three small things worth adding while we're locking v1:
+
+1. RIB proxy contract — let's lock it as v1 too.
+
+Same paragraph as the banking shape: GET /objects/contractors/<id>/<filename> over ARCHIDOC_BASE_URL, Authorization: Bearer <ARCHIDOC_SYNC_API_KEY> (single shared key — same one used for the four /api/sync/* routes), 30s timeout, returns application/pdf bytes on success / structured JSON { error: "Object not found" } with HTTP 404 on missing object (never an HTML error page). Sensitive-prefix gate covers contractors/ and insurance-certificates/. If that matches your reader, consider it v1 — we'll treat any change to those four bullets as a coordinated-deploy event, same as the banking keys.
+
+2. Mirror your trip-wire test on our side.
+
+We'll add a fixture-based contract test under tests/ that snapshots the exact /api/sync/contractors banking-block shape (same JSON sample we sent over) and fails CI if the prefixed keys, types, or banking nesting drift. That gives us symmetric protection — your CI catches a rename on either side from the reader angle, ours catches it from the emitter angle. I'll queue that as a follow-up task; happy to scope it now if you want to see the plan.
+
+3. Re-verify trigger, not a calendar.
+
+Rather than a periodic re-verify, let's agree on the events that should fire a re-verify ping in either direction:
+
+Any rename or type change to a field in the banking block.
+Any new field added to the block (we'll always make it additive + null-by-default so it's a non-breaking change, but worth a heads-up so you can pre-wire).
+Any change to the IBAN/BIC validation rules in shared/iban.ts (mod-97 / ISO 9362).
+Any change to the /objects/* sensitive-prefix gate or the bearer scope.
+Any change to the four /api/sync/* paths or their ?since= semantics.
+Outside of those, no scheduled re-verify needed — the fixture tests on both sides are the real backstop.
+
+Nothing further required from your end. Glad we caught the verifiedAt vs bankingVerifiedAt mismatch before it silently swallowed three months of audit timestamps.
