@@ -7,6 +7,7 @@ import { enqueueDriveUpload } from "./drive/upload-queue.service";
 import { assertPdfMagic } from "../middleware/upload";
 import { INVOICE_UPLOAD_ERROR_CODES } from "../../shared/invoice-upload-errors";
 import { evaluateAcompteGate, gateInputsFromDevis, nextAcompteState } from "./acompte.service";
+import { safeExtractIban, safeExtractBic } from "../../shared/iban";
 
 interface UploadedFile {
   originalname: string;
@@ -107,6 +108,9 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
     validationWarnings: enrichedWarnings,
     aiExtractedData: parsed,
     aiConfidence: validation.confidenceScore,
+    // Task #225 — Anti-fraud banking capture (NULL when invalid/missing).
+    extractedIban: safeExtractIban(parsed.iban),
+    extractedBic: safeExtractBic(parsed.bic),
   });
 
   try {

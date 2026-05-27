@@ -83,6 +83,10 @@ export async function buildPortalPayload(devis: Devis): Promise<PortalDataPayloa
       hasPdf: !!devis.pdfStorageKey,
     },
     project: project ? { name: project.name } : null,
+    // Task #225 — whitelist: only `name` leaves the portal perimeter.
+    // contractor.iban/bic/bankName etc. are PII the architect uses for
+    // payment; they MUST NEVER appear on contractor/client/Archisign
+    // public surfaces. If you add fields here, audit them.
     contractor: contractor ? { name: contractor.name } : null,
     checks: enriched,
   };

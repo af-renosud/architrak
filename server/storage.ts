@@ -8,6 +8,8 @@ import {
   pennylanePushes,
   type PennylanePush, type InsertPennylanePush,
   type PennylanePushKind, type PennylanePushState,
+  bankingMismatchOverrides,
+  type BankingMismatchOverride, type InsertBankingMismatchOverride,
   archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog, archidocSiretIssues,
   emailDocuments, projectDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
   aiModelSettings, templateAssets, users, devisTranslations, wishListItems,
@@ -513,6 +515,21 @@ export interface IStorage {
   listPennylanePushes(filter?: { state?: PennylanePushState; kind?: PennylanePushKind; limit?: number; offset?: number }): Promise<PennylanePush[]>;
   getPennylanePush(pushId: number): Promise<PennylanePush | undefined>;
   resetPennylanePushForRetry(pushId: number): Promise<PennylanePush | undefined>;
+
+  // --- Banking mismatch overrides (Task #225) ----------------------------
+  // Architect-recorded acceptances of an extracted_iban ≠ contractor.iban
+  // discrepancy. Keyed by the polymorphic tuple (doc_kind, doc_id,
+  // doc_iban, archidoc_iban) so re-uploading the same doc with the same
+  // IBAN does NOT need a fresh override, but switching to a different
+  // suspicious IBAN does.
+  createBankingMismatchOverride(data: InsertBankingMismatchOverride): Promise<BankingMismatchOverride>;
+  findBankingMismatchOverride(args: {
+    docKind: "devis" | "invoice";
+    docId: number;
+    docIban: string;
+    archidocIban: string;
+  }): Promise<BankingMismatchOverride | undefined>;
+  listBankingMismatchOverridesByContractor(contractorId: number): Promise<BankingMismatchOverride[]>;
 
   // --- Pennylane mirror columns (Task #214) -----------------------------
   setProjectPennylaneCustomerId(projectId: number, customerId: string): Promise<void>;
@@ -3060,6 +3077,44 @@ export class DatabaseStorage implements IStorage {
     let q = db.select().from(feeEntries).$dynamic();
     q = q.where(and(...clauses));
     return q.orderBy(asc(feeEntries.id)).limit(args?.limit ?? 500);
+  }
+
+  // --- Banking mismatch overrides (Task #225) ---------------------------
+  async createBankingMismatchOverride(
+    data: InsertBankingMismatchOverride,
+  ): Promise<BankingMismatchOverride> {
+    const [row] = await db.insert(bankingMismatchOverrides).values(data).returning();
+    return row;
+  }
+
+  async findBankingMismatchOverride(args: {
+    docKind: "devis" | "invoice";
+    docId: number;
+    docIban: string;
+    archidocIban: string;
+  }): Promise<BankingMismatchOverride | undefined> {
+    const [row] = await db
+      .select()
+      .from(bankingMismatchOverrides)
+      .where(
+        and(
+          eq(bankingMismatchOverrides.docKind, args.docKind),
+          eq(bankingMismatchOverrides.docId, args.docId),
+          eq(bankingMismatchOverrides.docIban, args.docIban),
+          eq(bankingMismatchOverrides.archidocIban, args.archidocIban),
+        ),
+      );
+    return row;
+  }
+
+  async listBankingMismatchOverridesByContractor(
+    contractorId: number,
+  ): Promise<BankingMismatchOverride[]> {
+    return db
+      .select()
+      .from(bankingMismatchOverrides)
+      .where(eq(bankingMismatchOverrides.contractorId, contractorId))
+      .orderBy(desc(bankingMismatchOverrides.createdAt));
   }
 }
 

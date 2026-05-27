@@ -20,6 +20,7 @@ import {
 } from "./sync-client";
 import { normalizeSiret } from "../gmail/document-parser";
 import { env } from "../env";
+import { validateIban, normaliseIban, validateBic, normaliseBic } from "@shared/iban";
 
 // Canonical form of the configured Archidoc backend URL — used to stamp
 // every mirror row so a future repointing of ARCHIDOC_BASE_URL can be
@@ -195,6 +196,23 @@ export async function upsertContractor(
     rcProEndDate: c.rcPro?.endDate || null,
     specialConditions: c.specialConditions || null,
     contacts: c.contacts || null,
+    // Task #225 — Banking mirror. We revalidate IBAN/BIC shape+checksum
+    // before persist; a value that fails validation is stored as NULL
+    // (the downstream certificat gate will then refuse to issue, which
+    // is the safe failure mode).
+    accountHolderName: c.banking?.accountHolderName || null,
+    iban: c.banking?.iban && validateIban(c.banking.iban).valid
+      ? normaliseIban(c.banking.iban)
+      : null,
+    bic: c.banking?.bic && validateBic(c.banking.bic).valid
+      ? normaliseBic(c.banking.bic)
+      : null,
+    bankName: c.banking?.bankName || null,
+    ribDocumentUrl: c.banking?.ribDocumentUrl || null,
+    ribDocumentName: c.banking?.ribDocumentName || null,
+    bankingVerifiedAt: c.banking?.verifiedAt ? new Date(c.banking.verifiedAt) : null,
+    bankingVerifiedBy: c.banking?.verifiedBy || null,
+    bankingAiExtractedData: (c.banking?.aiExtractedData ?? null) as object | null,
     // Re-asserting the row in the upstream response always undoes any
     // prior soft-delete (operator may have re-pointed the backend or
     // restored the contractor on Archidoc).

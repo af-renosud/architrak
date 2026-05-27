@@ -5,12 +5,59 @@ import { enqueueDriveUpload } from "../services/drive/upload-queue.service";
 import { roundCurrency } from "@shared/financial-utils";
 import type { Certificat, Project, Contractor, Devis, Lot, Invoice, Avenant } from "@shared/schema";
 import { formatLotDescription } from "@shared/lot-label";
+import { ibansMatch, normaliseIban } from "@shared/iban";
 
 interface DevisWithDetails {
   devis: Devis;
   lot: Lot | null;
   invoices: Invoice[];
   invoicedTtc: number;
+}
+
+/**
+ * Task #225 — Typed blocker thrown when a certificat is being materialised
+ * for a contractor whose banking details are missing from ArchiDoc. The
+ * API route handler unwraps this and returns 422 with the French message
+ * so the architect knows to complete the contractor record in ArchiDoc
+ * (banking fields are read-only here — they only flow inbound).
+ */
+export class BankingDetailsMissingError extends Error {
+  readonly code = "BANKING_DETAILS_MISSING" as const;
+  readonly userMessageFr = "Coordonnées bancaires manquantes — à compléter dans Archi Doc";
+  constructor(readonly contractorId: number, readonly contractorName: string) {
+    super(`Contractor ${contractorId} (${contractorName}) has no IBAN on file`);
+    this.name = "BankingDetailsMissingError";
+  }
+}
+
+/**
+ * Task #225 — Anti-fraud gate. Raised when at least one related devis or
+ * invoice was extracted with an IBAN that disagrees with the
+ * ArchiDoc-verified value AND no architect-recorded override exists for
+ * that specific (doc_kind, doc_id, doc_iban, archidoc_iban) tuple. The
+ * architect must either correct ArchiDoc or record an override before
+ * the certificat can be issued.
+ */
+export interface BankingMismatchDocRef {
+  docKind: "devis" | "invoice";
+  docId: number;
+  docCode: string;
+  docIban: string;
+}
+
+export class BankingMismatchError extends Error {
+  readonly code = "BANKING_MISMATCH" as const;
+  readonly userMessageFr =
+    "Coordonnées bancaires différentes de celles enregistrées dans Archi Doc — vérifier avant paiement";
+  constructor(
+    readonly contractorId: number,
+    readonly contractorName: string,
+    readonly archidocIban: string,
+    readonly mismatches: BankingMismatchDocRef[],
+  ) {
+    super(`Contractor ${contractorId} (${contractorName}) has ${mismatches.length} doc(s) with a mismatched IBAN`);
+    this.name = "BankingMismatchError";
+  }
 }
 
 interface AvenantRow {
@@ -454,8 +501,60 @@ export async function generateCertificatPdf(certificatId: number): Promise<{ sto
   const contractor = await storage.getContractor(certificat.contractorId);
   if (!contractor) throw new Error(`Contractor ${certificat.contractorId} not found`);
 
+  // Task #225 — Banking gate. A certificat de paiement IS a payment
+  // instruction; we refuse to materialise one without a verified IBAN.
+  // The mirror writer (sync-service.upsertContractor) only stores
+  // checksum-valid IBANs, so a null here means ArchiDoc has nothing
+  // usable for this contractor.
+  if (!contractor.iban) {
+    throw new BankingDetailsMissingError(contractor.id, contractor.name);
+  }
+
   const allDevis = await storage.getDevisByProjectAndContractor(certificat.projectId, certificat.contractorId);
   const activeDevis = allDevis.filter(d => d.status !== "void");
+
+  // Task #225 — Mismatch gate. Walk every active devis + its invoices,
+  // collect rows whose extracted_iban disagrees with the ArchiDoc value,
+  // and demand an architect override for each unique disagreeing IBAN.
+  // Null/empty extracted_iban is treated as "AI couldn't see one" and is
+  // skipped — only an actually-extracted, validated IBAN can fire the
+  // gate. Comparison is whitespace/case insensitive via ibansMatch.
+  const archidocIbanCanonical = normaliseIban(contractor.iban);
+  const mismatches: BankingMismatchDocRef[] = [];
+  for (const d of activeDevis) {
+    if (d.extractedIban && !ibansMatch(d.extractedIban, contractor.iban)) {
+      const override = await storage.findBankingMismatchOverride({
+        docKind: "devis",
+        docId: d.id,
+        docIban: d.extractedIban,
+        archidocIban: archidocIbanCanonical,
+      });
+      if (!override) {
+        mismatches.push({
+          docKind: "devis", docId: d.id, docCode: d.devisCode, docIban: d.extractedIban,
+        });
+      }
+    }
+    const invoicesForDevis = await storage.getInvoicesByDevis(d.id);
+    for (const inv of invoicesForDevis) {
+      if (inv.extractedIban && !ibansMatch(inv.extractedIban, contractor.iban)) {
+        const override = await storage.findBankingMismatchOverride({
+          docKind: "invoice",
+          docId: inv.id,
+          docIban: inv.extractedIban,
+          archidocIban: archidocIbanCanonical,
+        });
+        if (!override) {
+          mismatches.push({
+            docKind: "invoice", docId: inv.id, docCode: inv.invoiceNumber, docIban: inv.extractedIban,
+          });
+        }
+      }
+    }
+  }
+  if (mismatches.length > 0) {
+    throw new BankingMismatchError(contractor.id, contractor.name, archidocIbanCanonical, mismatches);
+  }
 
   const devisDetails: DevisWithDetails[] = await Promise.all(
     activeDevis.map(async (d) => {
@@ -502,6 +601,37 @@ export async function generateCertificatPdf(certificatId: number): Promise<{ sto
   });
 
   return { storageKey, pdfBuffer };
+}
+
+/**
+ * Task #225 — Render the Coordonnées bancaires block printed on every
+ * certificat de paiement. The contractor row is guaranteed to have an
+ * IBAN by the time we reach the HTML builder (the gate in
+ * generateCertificatPdf throws BankingDetailsMissingError otherwise),
+ * so iban/bic are non-null here — but we still defensively check.
+ * IBAN is grouped 4-by-4 for printed legibility per French banking norm.
+ */
+function formatIbanForPrint(iban: string): string {
+  return iban.replace(/(.{4})/g, "$1 ").trim();
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function renderBankingBlock(contractor: Contractor): string {
+  if (!contractor.iban) return "";
+  const holder = contractor.accountHolderName || contractor.name;
+  const bank = contractor.bankName ? `<div class="banking-row"><span class="banking-label">Banque</span><span class="banking-value">${escapeHtml(contractor.bankName)}</span></div>` : "";
+  const bic = contractor.bic ? `<div class="banking-row"><span class="banking-label">BIC</span><span class="banking-value">${escapeHtml(contractor.bic)}</span></div>` : "";
+  return `
+  <div class="section-title">Coordonn\u00E9es bancaires</div>
+  <div class="banking-card">
+    <div class="banking-row"><span class="banking-label">Titulaire</span><span class="banking-value">${escapeHtml(holder)}</span></div>
+    <div class="banking-row"><span class="banking-label">IBAN</span><span class="banking-value banking-mono">${escapeHtml(formatIbanForPrint(contractor.iban))}</span></div>
+    ${bic}
+    ${bank}
+  </div>`;
 }
 
 function buildCertificatHtml(data: CertificatPdfData): string {
@@ -695,6 +825,34 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     font-size: 8pt;
     color: #34312D;
     line-height: 1.5;
+  }
+
+  /* Task #225 — Coordonnées bancaires block */
+  .banking-card {
+    background: #F8F9FA;
+    border-left: 3pt solid #0B2545;
+    padding: 8px 12px;
+    margin-bottom: 4mm;
+  }
+  .banking-row {
+    display: flex;
+    gap: 12px;
+    font-size: 9pt;
+    line-height: 1.6;
+    color: #34312D;
+  }
+  .banking-label {
+    flex: 0 0 80px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 8pt;
+    color: #7E7F83;
+  }
+  .banking-value { flex: 1; }
+  .banking-mono {
+    font-family: "Courier New", monospace;
+    letter-spacing: 0.04em;
   }
 
   table.works-table {
@@ -922,6 +1080,8 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     </div>
   </div>
 
+  ${renderBankingBlock(contractor)}
+
   <div class="section-title">Works Description</div>
   <table class="works-table">
     <thead>
@@ -1056,6 +1216,15 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     rcProPolicyNumber: null,
     rcProEndDate: null,
     specialConditions: null,
+    accountHolderName: "ENTREPRISE EXEMPLE BTP",
+    iban: "FR7630006000011234567890189",
+    bic: "BNPAFRPP",
+    bankName: "BNP Paribas",
+    ribDocumentUrl: null,
+    ribDocumentName: null,
+    bankingVerifiedAt: now,
+    bankingVerifiedBy: "architrak-sample",
+    bankingAiExtractedData: null,
     archidocOrphanedAt: null,
     createdAt: now,
   };
@@ -1123,6 +1292,8 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     driveFileId: null,
     driveWebViewLink: null,
     driveUploadedAt: null,
+    extractedIban: null,
+    extractedBic: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -1149,6 +1320,8 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     driveFileId: null,
     driveWebViewLink: null,
     driveUploadedAt: null,
+    extractedIban: null,
+    extractedBic: null,
     createdAt: now,
   };
 

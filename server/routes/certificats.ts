@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { storage } from "../storage";
 import { insertCertificatSchema, type InsertCertificat } from "@shared/schema";
-import { generateCertificatPdf } from "../communications/certificat-generator";
+import { generateCertificatPdf, BankingDetailsMissingError, BankingMismatchError } from "../communications/certificat-generator";
 import { sendCertificat } from "../communications/email-sender";
 import { validateRequest } from "../middleware/validate";
 
@@ -77,6 +77,26 @@ router.post(
       res.setHeader("Content-Disposition", `inline; filename="Certificat_${cert.certificateRef}.pdf"`);
       res.send(pdfBuffer);
     } catch (err: unknown) {
+      // Task #225 — surface the banking-gate blocker as 422 with the
+      // French user message; the certificat preview UI shows it verbatim.
+      if (err instanceof BankingDetailsMissingError) {
+        return res.status(422).json({
+          code: err.code,
+          message: err.userMessageFr,
+          contractorId: err.contractorId,
+          contractorName: err.contractorName,
+        });
+      }
+      if (err instanceof BankingMismatchError) {
+        return res.status(422).json({
+          code: err.code,
+          message: err.userMessageFr,
+          contractorId: err.contractorId,
+          contractorName: err.contractorName,
+          archidocIban: err.archidocIban,
+          mismatches: err.mismatches,
+        });
+      }
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ message: `Preview generation failed: ${message}` });
     }
@@ -113,6 +133,25 @@ router.post(
       const comm = await storage.getProjectCommunication(commId);
       res.json(comm);
     } catch (err: unknown) {
+      // Task #225 — same banking-gate translation as /preview.
+      if (err instanceof BankingDetailsMissingError) {
+        return res.status(422).json({
+          code: err.code,
+          message: err.userMessageFr,
+          contractorId: err.contractorId,
+          contractorName: err.contractorName,
+        });
+      }
+      if (err instanceof BankingMismatchError) {
+        return res.status(422).json({
+          code: err.code,
+          message: err.userMessageFr,
+          contractorId: err.contractorId,
+          contractorName: err.contractorName,
+          archidocIban: err.archidocIban,
+          mismatches: err.mismatches,
+        });
+      }
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ message: `Failed to queue certificat: ${message}` });
     }

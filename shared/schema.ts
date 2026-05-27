@@ -195,6 +195,18 @@ export const contractors = pgTable("contractors", {
   rcProPolicyNumber: text("rc_pro_policy_number"),
   rcProEndDate: date("rc_pro_end_date"),
   specialConditions: text("special_conditions"),
+  // Banking details (Task #225). Sourced from ArchiDoc; written here by
+  // `buildSyncedFields` in contractor-auto-sync. IBAN/BIC are revalidated
+  // before persist by `server/services/banking-validation.ts`.
+  accountHolderName: varchar("account_holder_name", { length: 255 }),
+  iban: varchar("iban", { length: 34 }),
+  bic: varchar("bic", { length: 11 }),
+  bankName: varchar("bank_name", { length: 255 }),
+  ribDocumentUrl: text("rib_document_url"),
+  ribDocumentName: varchar("rib_document_name", { length: 255 }),
+  bankingVerifiedAt: timestamp("banking_verified_at"),
+  bankingVerifiedBy: text("banking_verified_by"),
+  bankingAiExtractedData: jsonb("banking_ai_extracted_data"),
   archidocOrphanedAt: timestamp("archidoc_orphaned_at"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
@@ -398,6 +410,11 @@ export const devis = pgTable("devis", {
   acompteInvoiceId: integer("acompte_invoice_id"),
   acomptePaidAt: timestamp("acompte_paid_at", { withTimezone: true }),
   allowProgressBeforeAcompte: boolean("allow_progress_before_acompte").notNull().default(false),
+  // Task #225 — Gemini-extracted IBAN/BIC printed on the supplier devis.
+  // Compared against contractors.iban at certificat-issue time; a mismatch
+  // blocks issuance until an architect records a banking_mismatch_overrides row.
+  extractedIban: varchar("extracted_iban", { length: 34 }),
+  extractedBic: varchar("extracted_bic", { length: 11 }),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
@@ -485,6 +502,10 @@ export const invoices = pgTable("invoices", {
   driveFileId: text("drive_file_id"),
   driveWebViewLink: text("drive_web_view_link"),
   driveUploadedAt: timestamp("drive_uploaded_at"),
+  // Task #225 — Gemini-extracted IBAN/BIC printed on the supplier invoice.
+  // See devis.extractedIban for the anti-fraud rationale.
+  extractedIban: varchar("extracted_iban", { length: 34 }),
+  extractedBic: varchar("extracted_bic", { length: 11 }),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   index("invoices_project_id_idx").on(table.projectId),
@@ -740,6 +761,16 @@ export const archidocContractors = pgTable("archidoc_contractors", {
   rcProEndDate: text("rc_pro_end_date"),
   specialConditions: text("special_conditions"),
   contacts: jsonb("contacts"),
+  // Banking details mirror (Task #225). 1:1 with the upstream payload.
+  accountHolderName: varchar("account_holder_name", { length: 255 }),
+  iban: varchar("iban", { length: 34 }),
+  bic: varchar("bic", { length: 11 }),
+  bankName: varchar("bank_name", { length: 255 }),
+  ribDocumentUrl: text("rib_document_url"),
+  ribDocumentName: varchar("rib_document_name", { length: 255 }),
+  bankingVerifiedAt: timestamp("banking_verified_at"),
+  bankingVerifiedBy: text("banking_verified_by"),
+  bankingAiExtractedData: jsonb("banking_ai_extracted_data"),
   isDeleted: boolean("is_deleted").default(false).notNull(),
   deletedAt: timestamp("deleted_at"),
   sourceBaseUrl: text("source_base_url"),
@@ -2025,3 +2056,40 @@ export const insertPennylanePushSchema = createInsertSchema(pennylanePushes).omi
 });
 export type InsertPennylanePush = z.infer<typeof insertPennylanePushSchema>;
 export type PennylanePush = typeof pennylanePushes.$inferSelect;
+
+// ---------------------------------------------------------------------
+// Task #225 — Banking-detail anti-fraud overrides.
+//
+// Architect-only audit row. The certificat generator refuses to issue
+// payment for a contractor whose latest devis/invoice prints an IBAN
+// that disagrees with ArchiDoc's record — unless an override row here
+// pairs that exact `(doc_kind, doc_id, doc_iban, archidoc_iban)` tuple
+// with the architect who accepted the discrepancy and their reason.
+//
+// doc_kind/doc_id are polymorphic (no FK) — see migration 0039.
+// ---------------------------------------------------------------------
+export const bankingMismatchOverrides = pgTable("banking_mismatch_overrides", {
+  id: serial("id").primaryKey(),
+  docKind: text("doc_kind").notNull(),
+  docId: integer("doc_id").notNull(),
+  contractorId: integer("contractor_id")
+    .notNull()
+    .references(() => contractors.id, { onDelete: "cascade" }),
+  docIban: text("doc_iban").notNull(),
+  archidocIban: text("archidoc_iban").notNull(),
+  overrideByUserId: integer("override_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  reason: text("reason").notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  check("banking_mismatch_overrides_doc_kind_check", sql`${table.docKind} IN ('devis', 'invoice')`),
+  unique("banking_mismatch_overrides_doc_unique").on(table.docKind, table.docId, table.docIban, table.archidocIban),
+  index("banking_mismatch_overrides_contractor_idx").on(table.contractorId),
+  index("banking_mismatch_overrides_doc_idx").on(table.docKind, table.docId),
+]);
+
+export const insertBankingMismatchOverrideSchema = createInsertSchema(bankingMismatchOverrides).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertBankingMismatchOverride = z.infer<typeof insertBankingMismatchOverrideSchema>;
+export type BankingMismatchOverride = typeof bankingMismatchOverrides.$inferSelect;

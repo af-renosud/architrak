@@ -121,6 +121,38 @@ sequence (`assertNoDevLoginBackdoorInProduction`) hard-fails if either is truthy
 - **Migration replay gate**: `bash scripts/check-migration-replay.sh`.
 - **Tracker drift recovery**: `npx tsx scripts/reconcile-drizzle-tracker.ts`.
 
+## Contractor banking on certificats (Task #225)
+
+Banking fields (`iban`, `bic`, `bankName`, `accountHolderName`,
+`ribDocumentUrl`, `ribDocumentName`, `bankingVerifiedAt`,
+`bankingVerifiedBy`, `bankingAiExtractedData`) live on both
+`contractors` and the `archidoc_contractors` mirror — pushed in via
+the existing ArchiDoc contractor sync. ArchiTrak is read-only for
+these fields; edits happen in ArchiDoc. IBAN/BIC are revalidated
+(`shared/iban.ts`, mod-97 + ISO 9362) on every sync write; invalid
+values land as NULL rather than persisted garbage.
+
+- **Certificat gate**: `generateCertificatPdf` throws
+  `BankingDetailsMissingError` (no contractor IBAN) or
+  `BankingMismatchError` (any active devis/invoice has an
+  `extracted_iban` ≠ `contractor.iban` without an architect override
+  in `banking_mismatch_overrides`). Routes translate to 422 with
+  `code` + French `message` + `mismatches[]`; the FE shows a
+  destructive toast.
+- **Anti-fraud capture**: Gemini extracts IBAN/BIC from supplier
+  PDFs (devis + invoices); `safeExtractIban/Bic` validate and
+  normalise — invalid → NULL so the mismatch check never fires on
+  garbage. Re-runs on every devis rescrape.
+- **Portal whitelist**: `public-checks` / `public-client-checks` /
+  `archisign-public` expose only `contractor.name`. Banking fields
+  must never appear on any unauth surface — see the comment in
+  `server/routes/public-checks.ts buildPortalPayload`.
+- **RIB attachment**: `sendCertificat` fetches the RIB through the
+  authenticated ArchiDoc proxy (`ARCHIDOC_BASE_URL`, same-host guard,
+  30s timeout), mirrors to object storage, and appends to
+  `attachmentStorageKeys`. Failure is non-fatal — the certificat
+  itself always carries the IBAN block.
+
 ## Pennylane integration (Task #214, feature-flagged OFF by default)
 
 Architect honoraires push from Outstanding Fees to Pennylane.

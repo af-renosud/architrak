@@ -8,6 +8,7 @@ import { roundCurrency } from "../../shared/financial-utils";
 import { reconcileAdvisories } from "./advisory-reconciler";
 import { triggerDevisTranslation } from "./devis-translation";
 import { enqueueDriveUpload } from "./drive/upload-queue.service";
+import { safeExtractIban, safeExtractBic } from "../../shared/iban";
 import { toSentenceCase } from "../lib/sentence-case";
 import { coerceBbox } from "./devis-upload.service";
 import {
@@ -232,6 +233,10 @@ export async function rescrapeDevis(devisId: number): Promise<RescrapeResult> {
         validationWarnings: allWarnings,
         aiExtractedData: parsed,
         aiConfidence: validation.confidenceScore,
+        // Task #225 — Re-capture banking on every rescrape; user may have
+        // re-uploaded a corrected PDF with the right IBAN.
+        extractedIban: safeExtractIban(parsed.iban),
+        extractedBic: safeExtractBic(parsed.bic),
       })
       .where(sql`${devisTable.id} = ${devisId}`);
 

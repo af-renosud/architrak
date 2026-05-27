@@ -94,6 +94,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0036_devis_signed_pdf_retry", artifact: { kind: "column", table: "devis", column: "signed_pdf_next_attempt_at" } },
   { tag: "0037_devis_acompte", artifact: { kind: "column", table: "devis", column: "acompte_state" } },
   { tag: "0038_pennylane_pushes", artifact: { kind: "table", table: "pennylane_pushes" } },
+  { tag: "0039_contractor_banking_details", artifact: { kind: "column", table: "contractors", column: "iban" } },
 ];
 
 interface JournalFile {

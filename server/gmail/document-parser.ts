@@ -74,6 +74,13 @@ export interface ParsedDocument {
   acompteTrigger?: string;
   lotReferences?: string[];
   description?: string;
+  // Task #225 — Banking details printed on the supplier devis/facture.
+  // Compared against contractor.iban (sourced from ArchiDoc) at
+  // certificat-issue time; a mismatch blocks issuance until an architect
+  // records a banking_mismatch_overrides row. Raw verbatim — downstream
+  // normalisation/validation runs through @shared/iban.
+  iban?: string;
+  bic?: string;
   lineItems?: Array<{
     description: string;
     quantity?: number;
@@ -172,6 +179,8 @@ const USER_PROMPT = `Analyze this French construction document and extract the f
 - lotReferences: array of lot codes/references visible on the document (e.g., ["Lot 1", "Lot 7 - Electricite"])
 - description: brief description of the work/service
 - lineItems: array of line items, each with {description, quantity, unit, unitPrice, total, pageHint, bbox}
+- iban: contractor IBAN printed on the document if visible (typically in a "Coordonnées bancaires" / RIB block). Copy verbatim — preserve all characters including spaces; downstream code normalises and validates.
+- bic: contractor BIC / SWIFT code printed on the document if visible. Copy verbatim.
 
 Return ONLY valid JSON, no markdown, no code blocks.`;
 
@@ -298,6 +307,16 @@ const EXTRACTION_SCHEMA: ResponseSchema = {
     description: {
       type: SchemaType.STRING,
       description: "Brief description of the work/service",
+      nullable: true,
+    },
+    iban: {
+      type: SchemaType.STRING,
+      description: "Contractor IBAN printed on the document (Coordonnées bancaires / RIB block). Copy verbatim, including spaces.",
+      nullable: true,
+    },
+    bic: {
+      type: SchemaType.STRING,
+      description: "Contractor BIC / SWIFT code printed on the document. Copy verbatim.",
       nullable: true,
     },
     lineItems: {

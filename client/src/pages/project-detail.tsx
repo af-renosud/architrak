@@ -15,7 +15,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link, useParams, useSearch } from "wouter";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, ApiError } from "@/lib/queryClient";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
@@ -663,6 +663,28 @@ export default function ProjectDetail() {
       toast({ title: "Certificat queued for sending" });
     },
     onError: (error: Error) => {
+      // Task #225 — same banking-gate translation as previewCertPdf.
+      if (error instanceof ApiError && error.status === 422 && error.code === "BANKING_DETAILS_MISSING") {
+        const data = error.data as { contractorName?: string } | undefined;
+        toast({
+          title: "Coordonn\u00E9es bancaires manquantes",
+          description: `${error.message}${data?.contractorName ? ` (${data.contractorName})` : ""}`,
+          variant: "destructive",
+          duration: 12000,
+        });
+        return;
+      }
+      if (error instanceof ApiError && error.status === 422 && error.code === "BANKING_MISMATCH") {
+        const data = error.data as { contractorName?: string; mismatches?: Array<{ docKind: string; docCode: string }> } | undefined;
+        const docsList = (data?.mismatches ?? []).map(m => `${m.docKind === "devis" ? "Devis" : "Facture"} ${m.docCode}`).join(", ");
+        toast({
+          title: "Coordonn\u00E9es bancaires divergentes",
+          description: `${error.message}${data?.contractorName ? ` (${data.contractorName})` : ""}${docsList ? ` — ${docsList}` : ""}`,
+          variant: "destructive",
+          duration: 15000,
+        });
+        return;
+      }
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
@@ -795,8 +817,29 @@ export default function ProjectDetail() {
     try {
       const res = await fetch(`/api/certificats/${certId}/preview`, { method: "POST" });
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ message: "Preview failed" }));
-        throw new Error(err.message);
+        const body = await res.json().catch(() => ({ message: "Preview failed" }));
+        // Task #225 — banking-gate blocker. The server returns 422 with
+        // code BANKING_DETAILS_MISSING and the French user message.
+        if (res.status === 422 && body?.code === "BANKING_DETAILS_MISSING") {
+          toast({
+            title: "Coordonn\u00E9es bancaires manquantes",
+            description: `${body.message}${body.contractorName ? ` (${body.contractorName})` : ""}`,
+            variant: "destructive",
+            duration: 12000,
+          });
+          return;
+        }
+        if (res.status === 422 && body?.code === "BANKING_MISMATCH") {
+          const docsList = (body.mismatches ?? []).map((m: { docKind: string; docCode: string }) => `${m.docKind === "devis" ? "Devis" : "Facture"} ${m.docCode}`).join(", ");
+          toast({
+            title: "Coordonn\u00E9es bancaires divergentes",
+            description: `${body.message}${body.contractorName ? ` (${body.contractorName})` : ""}${docsList ? ` — ${docsList}` : ""}`,
+            variant: "destructive",
+            duration: 15000,
+          });
+          return;
+        }
+        throw new Error(body.message);
       }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);

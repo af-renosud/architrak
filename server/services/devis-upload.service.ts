@@ -9,6 +9,7 @@ import { triggerDevisTranslation } from "./devis-translation";
 import { enqueueDriveUpload } from "./drive/upload-queue.service";
 import { toSentenceCase } from "../lib/sentence-case";
 import { DEVIS_UPLOAD_ERROR_CODES } from "../../shared/devis-upload-errors";
+import { safeExtractIban, safeExtractBic } from "../../shared/iban";
 
 interface UploadedFile {
   originalname: string;
@@ -235,6 +236,9 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
     validationWarnings: allWarnings,
     aiExtractedData: parsed,
     aiConfidence: validation.confidenceScore,
+    // Task #225 — Anti-fraud banking capture (NULL when invalid/missing).
+    extractedIban: safeExtractIban(parsed.iban),
+    extractedBic: safeExtractBic(parsed.bic),
     ...buildAcompteInsertFields(parsed, amountHt),
   });
 

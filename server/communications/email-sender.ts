@@ -1,8 +1,55 @@
 import { getUncachableGmailClient, isGmailConfigured } from "../gmail/client";
 import { storage } from "../storage";
 import { generateCertificatPdf, buildCertificatEmailBody } from "./certificat-generator";
-import { getDocumentBuffer } from "../storage/object-storage";
+import { getDocumentBuffer, uploadDocument } from "../storage/object-storage";
+import { env } from "../env";
 import type { InsertProjectCommunication } from "@shared/schema";
+
+/**
+ * Task #225 — Pull the contractor's RIB (PDF of bank-account details)
+ * through the authenticated ArchiDoc proxy and mirror it into our
+ * object storage so it can be attached to the certificat email and
+ * land in the lot's Drive folder alongside the certificat itself.
+ *
+ * `ribDocumentUrl` from ArchiDoc is treated as a path relative to
+ * ARCHIDOC_BASE_URL (the proxy that re-signs on every fetch) — we
+ * never trust it as an absolute URL to an unknown host. Failure to
+ * mirror is non-fatal: the certificat email still goes out, just
+ * without the RIB. The architect always has the IBAN block printed
+ * on the certificat PDF itself.
+ */
+async function mirrorRibForAttachment(args: {
+  projectId: number;
+  ribDocumentUrl: string;
+  ribDocumentName: string | null;
+}): Promise<string | null> {
+  const baseUrl = env.ARCHIDOC_BASE_URL;
+  const apiKey = env.ARCHIDOC_SYNC_API_KEY;
+  if (!baseUrl || !apiKey) return null;
+  try {
+    const url = new URL(args.ribDocumentUrl, baseUrl);
+    if (new URL(baseUrl).host !== url.host) {
+      console.warn(`[Certificat] Refusing to fetch RIB from foreign host ${url.host}`);
+      return null;
+    }
+    const res = await fetch(url.toString(), {
+      method: "GET",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) {
+      console.warn(`[Certificat] RIB fetch ${res.status} from ${url.pathname}`);
+      return null;
+    }
+    const arrayBuf = await res.arrayBuffer();
+    const buffer = Buffer.from(arrayBuf);
+    const fileName = args.ribDocumentName || `RIB.pdf`;
+    return await uploadDocument(args.projectId, fileName, buffer, "application/pdf");
+  } catch (err: unknown) {
+    console.warn(`[Certificat] RIB mirror failed:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
 
 export async function sendCertificat(certificatId: number): Promise<number> {
   const certificat = await storage.getCertificat(certificatId);
@@ -19,6 +66,19 @@ export async function sendCertificat(certificatId: number): Promise<number> {
   const subject = `Certificat de Paiement ${certificat.certificateRef} - ${project.name}`;
   const body = buildCertificatEmailBody({ certificat, project, contractor });
 
+  // Task #225 — attach the contractor's RIB alongside the certificat so
+  // the client has the bank details in a separate document the bank can
+  // file as a single PDF. Non-fatal on failure.
+  const attachmentStorageKeys: string[] = [storageKey];
+  if (contractor.ribDocumentUrl) {
+    const ribKey = await mirrorRibForAttachment({
+      projectId: project.id,
+      ribDocumentUrl: contractor.ribDocumentUrl,
+      ribDocumentName: contractor.ribDocumentName,
+    });
+    if (ribKey) attachmentStorageKeys.push(ribKey);
+  }
+
   const comm: InsertProjectCommunication = {
     projectId: project.id,
     type: "certificat_sent",
@@ -27,7 +87,7 @@ export async function sendCertificat(certificatId: number): Promise<number> {
     recipientName: project.clientName,
     subject,
     body,
-    attachmentStorageKeys: [storageKey],
+    attachmentStorageKeys,
     status: "queued",
     relatedCertificatId: certificatId,
   };

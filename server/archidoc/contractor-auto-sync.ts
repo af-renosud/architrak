@@ -51,6 +51,18 @@ function buildSyncedFields(mirror: ArchidocContractor): Omit<InsertContractor, "
     rcProPolicyNumber: mirror.rcProPolicyNumber ?? null,
     rcProEndDate: mirror.rcProEndDate ?? null,
     specialConditions: mirror.specialConditions ?? null,
+    // Task #225 — Banking fields promoted verbatim from the mirror. The
+    // sync-service already revalidated IBAN/BIC before writing the mirror,
+    // so anything the mirror holds is safe to copy through as-is.
+    accountHolderName: mirror.accountHolderName ?? null,
+    iban: mirror.iban ?? null,
+    bic: mirror.bic ?? null,
+    bankName: mirror.bankName ?? null,
+    ribDocumentUrl: mirror.ribDocumentUrl ?? null,
+    ribDocumentName: mirror.ribDocumentName ?? null,
+    bankingVerifiedAt: mirror.bankingVerifiedAt ?? null,
+    bankingVerifiedBy: mirror.bankingVerifiedBy ?? null,
+    bankingAiExtractedData: (mirror.bankingAiExtractedData ?? null) as object | null,
   };
 }
 

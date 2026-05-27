@@ -85,6 +85,19 @@ export interface ArchidocContractorData {
     isPrimary?: boolean;
     notes?: string;
   }>;
+  // Task #225 — Banking details fed from ArchiDoc. All optional: a
+  // contractor on ArchiDoc may not yet have a verified RIB on file.
+  banking?: {
+    accountHolderName?: string;
+    iban?: string;
+    bic?: string;
+    bankName?: string;
+    ribDocumentUrl?: string;
+    ribDocumentName?: string;
+    verifiedAt?: string;
+    verifiedBy?: string;
+    aiExtractedData?: unknown;
+  };
   updatedAt?: string;
 }
 
