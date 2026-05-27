@@ -87,6 +87,12 @@ export interface ArchidocContractorData {
   }>;
   // Task #225 — Banking details fed from ArchiDoc. All optional: a
   // contractor on ArchiDoc may not yet have a verified RIB on file.
+  //
+  // Task #226 — Audit fields use the PREFIXED key names
+  // (`bankingVerifiedAt`, `bankingVerifiedBy`, `bankingAiExtractedData`)
+  // because that's what ArchiDoc's `/api/sync/contractors` actually
+  // emits inside this nested block (they kept the prefix to mirror
+  // their column names). The short forms were a silent data-dropper.
   banking?: {
     accountHolderName?: string;
     iban?: string;
@@ -94,9 +100,9 @@ export interface ArchidocContractorData {
     bankName?: string;
     ribDocumentUrl?: string;
     ribDocumentName?: string;
-    verifiedAt?: string;
-    verifiedBy?: string;
-    aiExtractedData?: unknown;
+    bankingVerifiedAt?: string;
+    bankingVerifiedBy?: string;
+    bankingAiExtractedData?: unknown;
   };
   updatedAt?: string;
 }

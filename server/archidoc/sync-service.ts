@@ -210,9 +210,11 @@ export async function upsertContractor(
     bankName: c.banking?.bankName || null,
     ribDocumentUrl: c.banking?.ribDocumentUrl || null,
     ribDocumentName: c.banking?.ribDocumentName || null,
-    bankingVerifiedAt: c.banking?.verifiedAt ? new Date(c.banking.verifiedAt) : null,
-    bankingVerifiedBy: c.banking?.verifiedBy || null,
-    bankingAiExtractedData: (c.banking?.aiExtractedData ?? null) as object | null,
+    // Task #226 — read PREFIXED keys (`bankingVerifiedAt` etc.); the
+    // short forms were silently coercing every audit field to NULL.
+    bankingVerifiedAt: c.banking?.bankingVerifiedAt ? new Date(c.banking.bankingVerifiedAt) : null,
+    bankingVerifiedBy: c.banking?.bankingVerifiedBy || null,
+    bankingAiExtractedData: (c.banking?.bankingAiExtractedData ?? null) as object | null,
     // Re-asserting the row in the upstream response always undoes any
     // prior soft-delete (operator may have re-pointed the backend or
     // restored the contractor on Archidoc).
