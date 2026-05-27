@@ -1,0 +1,196 @@
+ArchiDoc → ArchiTrak — follow-up
+
+1. JSON sample of the banking block — and yes, you've spotted a real mismatch.
+
+We emit the prefixed form (bankingVerifiedAt, bankingVerifiedBy, bankingAiExtractedData), not the shorter nested form. So your current reader using verifiedAt / verifiedBy / aiExtractedData is silently dropping those three fields to null on every sync. Glad we caught it.
+
+Exact wire shape, one contractor:
+
+{
+  "id": "8f1d3c2a-…",
+  "name": "Maçonnerie Dupont SARL",
+  "siret": "12345678900012",
+  "address1": "12 rue des Lilas",
+  "address2": null,
+  "town": "Lyon",
+  "postcode": "69003",
+  "officePhone": "+33 4 72 00 00 00",
+  "website": null,
+  "tradeIds": ["maconnerie", "gros-oeuvre"],
+  "insuranceStatus": "valid",
+  "specialConditions": null,
+  "decennale": {
+    "insurer": "MAAF Pro",
+    "policyNumber": "DEC-2025-…",
+    "endDate": "2026-12-31"
+  },
+  "rcPro": {
+    "insurer": "MAAF Pro",
+    "policyNumber": "RCP-2025-…",
+    "endDate": "2026-12-31"
+  },
+  "banking": {
+    "accountHolderName": "MACONNERIE DUPONT SARL",
+    "iban": "FR7630001007941234567890185",
+    "bic": "BDFEFRPPCCT",
+    "bankName": "Banque de France",
+    "ribDocumentUrl": "/objects/contractors/8f1d3c2a-…/rib-1748352000000-rib-dupont.pdf",
+    "ribDocumentName": "rib-dupont.pdf",
+    "bankingVerifiedAt": "2026-05-20T14:32:11.000Z",
+    "bankingVerifiedBy": "marie.architecte@renosud.com",
+    "bankingAiExtractedData": { "rawText": "…", "confidence": 0.94, "extractedAt": "…" }
+  },
+  "insuranceScope": { "version": 1, "scrapedAt": "…", "decennaleWorks": [], "rcProWorks": [], "unparseable": false },
+  "insuranceScopeVersion": 1,
+  "insuranceScopeHash": "…",
+  "insuranceScopeScrapedAt": "2026-05-19T10:00:00.000Z",
+  "contacts": [
+    { "name": "Jean Dupont", "jobTitle": "Gérant", "mobile": "+33 6 …", "email": "j.dupont@…", "isPrimary": true, "notes": null }
+  ],
+  "updatedAt": "2026-05-20T14:32:11.000Z"
+}
+
+Confirmed nothing else in the block — no extras, no flat-level duplicates.
+
+2. Endpoint paths — diff result, all four match exactly.
+
+Purpose	Yours	Ours	✓
+Contractor sync (full + incremental via ?since=)	GET /api/sync/contractors	GET /api/sync/contractors	✓
+Project sync	GET /api/sync/projects	GET /api/sync/projects	✓
+Trades sync	GET /api/sync/trades	GET /api/sync/trades	✓
+Proposal-fees sync	GET /api/sync/proposal-fees	GET /api/sync/proposal-fees	✓
+RIB document fetch	GET {ribDocumentUrl} against ARCHIDOC_BASE_URL	GET /objects/contractors/<id>/<filename> (matches what we emit)	✓
+All four sync routes are wired to requireSyncApiKey (bearer-only). The /objects/* route uses requireSessionOrSyncKey (session OR bearer), but only for the sensitive prefixes contractors/ and insurance-certificates/ — your RIB path is under contractors/, so the bearer is enforced. ?since= on /api/sync/contractors parses as ISO date and filters on contractors.updated_at >; invalid date silently returns the full set.
+
+3. Matching call sites on our side — for paste-and-verify.
+
+a. Contractor sync handler (server.ts, registered with requireSyncApiKey):
+
+app.get("/api/sync/contractors", requireSyncApiKey, async (req, res) => {
+  try {
+    const since = req.query.since as string | undefined;
+    let conditions = sql`1=1`;
+    if (since) {
+      const sinceDate = new Date(since);
+      if (!isNaN(sinceDate.getTime())) {
+        conditions = sql`${contractors.updatedAt} > ${sinceDate}`;
+      }
+    }
+    const allContractors = await db.select().from(contractors).where(conditions);
+    const allContacts = await db.select().from(contractorContacts);
+    const contactsByContractor = new Map<string, typeof allContacts>();
+    for (const contact of allContacts) {
+      const list = contactsByContractor.get(contact.contractorId) || [];
+      list.push(contact);
+      contactsByContractor.set(contact.contractorId, list);
+    }
+    const mapped = allContractors.map(c => ({
+      id: String(c.id),
+      name: c.name || null,
+      siret: c.siret || null,
+      address1: c.address1 || null,
+      address2: c.address2 || null,
+      town: c.town || null,
+      postcode: c.postcode || null,
+      officePhone: c.officePhone || null,
+      website: c.website || null,
+      tradeIds: c.tradeIds || [],
+      insuranceStatus: c.insuranceStatus || null,
+      specialConditions: c.specialConditions || null,
+      decennale: {
+        insurer: c.decennaleInsurer || null,
+        policyNumber: c.decennalePolicyNumber || null,
+        endDate: c.decennaleEndDate || null,
+      },
+      rcPro: {
+        insurer: c.rcProInsurer || null,
+        policyNumber: c.rcProPolicyNumber || null,
+        endDate: c.rcProEndDate || null,
+      },
+      // Task #491 — banking block consumed by ArchiTrak for certificats de
+      // paiement. Nested to mirror the `decennale` / `rcPro` shape.
+      banking: {
+        accountHolderName: c.accountHolderName || null,
+        iban: c.iban || null,
+        bic: c.bic || null,
+        bankName: c.bankName || null,
+        ribDocumentUrl: c.ribDocumentUrl || null,
+        ribDocumentName: c.ribDocumentName || null,
+        bankingVerifiedAt: c.bankingVerifiedAt
+          ? new Date(c.bankingVerifiedAt).toISOString()
+          : null,
+        bankingVerifiedBy: c.bankingVerifiedBy || null,
+        bankingAiExtractedData: c.bankingAiExtractedData ?? null,
+      },
+      insuranceScope: c.insuranceScope ?? null,
+      insuranceScopeVersion: c.insuranceScopeVersion ?? 0,
+      insuranceScopeHash: c.insuranceScopeHash ?? null,
+      insuranceScopeScrapedAt: c.insuranceScopeScrapedAt
+        ? new Date(c.insuranceScopeScrapedAt).toISOString()
+        : null,
+      contacts: (contactsByContractor.get(c.id) || []).map(ct => ({
+        name: ct.name || null,
+        jobTitle: ct.jobTitle || null,
+        mobile: ct.mobile || null,
+        email: ct.email || null,
+        isPrimary: ct.isPrimary || false,
+        notes: ct.notes || null,
+      })),
+      updatedAt: c.updatedAt ? new Date(c.updatedAt).toISOString() : null,
+    }));
+    res.json({ contractors: mapped, syncTimestamp: new Date().toISOString() });
+  } catch (error: unknown) {
+    console.error("[Sync API] Error fetching contractors:", error);
+    res.status(500).json({ error: "Failed to fetch contractors" });
+  }
+});
+
+b. Object-proxy route — sensitive-prefix gate (server.ts):
+
+const SENSITIVE_OBJECT_PREFIXES = [
+  'contractors/',           // RIB documents (Task #491 banking)
+  'insurance-certificates/', // Décennale / RC Pro certificates
+];
+app.get(/^\/objects\/(.+)$/, async (req, res, next) => {
+  const entityId = req.params[0];
+  const isSensitive = SENSITIVE_OBJECT_PREFIXES.some(p => entityId.startsWith(p));
+  if (isSensitive) {
+    return requireSessionOrSyncKey(req, res, next);
+  }
+  next();
+}, async (req, res) => {
+  // … resolves entityId → bucket/object via getPrivateObjectDir(),
+  // streams bytes with Content-Type from GCS metadata (falls back to
+  // extension MIME map → magic-byte sniff), Content-Disposition inline
+  // for PDFs/images/A-V else attachment, returns 404 JSON if not found
+  // in GCS *and* not in the Replit object-storage fallback bucket.
+});
+
+c. requireSessionOrSyncKey (server/middleware/requireSessionOrSyncKey.ts) — the single shared bearer accepted on the RIB proxy:
+
+export const requireSessionOrSyncKey: RequestHandler = (req, res, next) => {
+  // Path A — existing in-browser ArchiDoc users.
+  if (req.session?.userId) return next();
+  // Path B — sister-app server-to-server fetches.
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const apiKey = process.env.ARCHIDOC_SYNC_API_KEY;
+    if (!apiKey) {
+      console.error('[Auth] ARCHIDOC_SYNC_API_KEY is not configured — rejecting sync-key auth attempt');
+      return res.status(503).json({ error: 'Sync API not configured' });
+    }
+    if (safeCompareSecret(authHeader.slice(7), apiKey)) return next();
+  }
+  return res.status(401).json({ error: 'Unauthorized' });
+};
+// safeCompareSecret: length guard + crypto.timingSafeEqual
+
+requireSyncApiKey (used by the four /api/sync/* routes) is the same safeCompareSecret but bearer-only — no session path.
+
+On the 404 contract you flagged: the object-proxy returns 404 JSON: { error: "Object not found" } rather than HTML when the GCS object is missing and the Replit fallback bucket also has no copy. Your "clean log on expired link" expectation holds.
+
+Re: your question about Build mode.
+
+Yes — but I'd flip the framing. Since we're the ones emitting the prefixed keys and you asked which convention we actually use, the cleanest fix is on your reader side (rename to bankingVerifiedAt / bankingVerifiedBy / bankingAiExtractedData). Changing ours would be a wire-format break and we'd need to coordinate a deploy window with you anyway.
+
+If you'd rather we move to the shorter verifiedAt / verifiedBy / aiExtractedData form on our side (it is the nicer convention given the block is already namespaced under banking), I'm happy to switch to Build mode and ship a renamed emitter — but we'd need to do it as a dual-emit (both old and new keys for one release) so neither end breaks during the rollout. Let me know which you prefer and I'll plan accordingly.

@@ -1,0 +1,41 @@
+ArchiDoc → ArchiTrak — confirmation re: Task #225 banking contract
+
+Verified end-to-end against our current main. Confirmations below.
+
+1. Contractor sync payload — all 9 fields match.
+The contractor sync endpoint (GET /api/sync/contractors, Bearer ARCHIDOC_SYNC_API_KEY) emits the banking block as a nested banking: { … } object on each contractor record (same shape style as our existing decennale / rcPro blocks). Fields and types:
+
+Field	Type emitted
+accountHolderName	string ǀ null
+iban	string ǀ null (normalised, uppercase, no spaces)
+bic	string ǀ null (normalised, uppercase)
+bankName	string ǀ null
+ribDocumentUrl	string ǀ null (same-host /objects/<bucket>/<key> path — not absolute)
+ribDocumentName	string ǀ null
+bankingVerifiedAt	ISO-8601 string ǀ null
+bankingVerifiedBy	string ǀ null (plain text — verifier id/email, no FK)
+bankingAiExtractedData	JSON ǀ null (opaque passthrough on our side too)
+Missing/unknown fields are emitted as null rather than omitted, so your "missing = null" handling is safe either way. Heads-up on one shape choice: the block is nested under banking, not flat on the contractor record — please make sure your reader looks at contractor.banking.iban etc. (If you were expecting flat fields, that's the one mismatch worth flagging now.)
+
+2. IBAN / BIC validation — same rules both sides.
+Single source of truth lives in shared/iban.ts, used by both the architect contractor form and the server write handlers, so client and server can't drift:
+
+IBAN: ISO 13616 — country (2 letters) + 2 check digits + BBAN, length 14–34, alphanumeric only, full mod-97 checksum (digit-by-digit to stay in safe-integer range). Normalisation strips whitespace, -, _, . and uppercases.
+BIC: ISO 9362 — 8 or 11 chars, regex ^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$, empty allowed (BIC is optional for SEPA).
+We'll notify you if either rule changes — and your "drop invalid to NULL" policy matches our intent exactly (we reject invalid at write-time, so anything that reaches your sync should already pass).
+
+3. RIB proxy — confirmed, same Bearer key.
+ribDocumentUrl is a same-host /objects/<bucket>/<key> path, served by our object-storage proxy. The proxy accepts EITHER a live ArchiDoc browser session OR Authorization: Bearer <ARCHIDOC_SYNC_API_KEY> (single shared sync key — no separate scope), via the requireSessionOrSyncKey middleware. Bearer comparison is crypto.timingSafeEqual with a length guard, so probing for the secret's length doesn't leak. On not-found / expired-object the proxy returns a structured JSON error, not an HTML page, so your 30s/PDF-bytes contract is honoured cleanly. 30s timeout + GET + application/pdf on success is the right shape.
+
+4. Anti-fraud cross-check — understood.
+Acknowledged that a stale/wrong IBAN on our side will block your certificat de paiement until an architect overrides. Our contractor banking form is the authoritative editor (architect-only surface), with the same mod-97 validation gating saves, so we should be fine.
+
+5. Banking fields we plan to add later.
+None on the roadmap right now. If we add anything (e.g. SEPA mandate id, secondary RIB, IBAN history), we'll pre-flag it and ship it as additive fields inside the same banking: { … } block so it's a non-breaking change for you.
+
+6. Permission perimeter.
+Confirmed mirrored on our side: banking fields are never exposed on any contractor portal, public sub-share, client-facing, or unauth route. They only appear on (a) the authenticated architect surface and (b) the sync endpoint behind the bearer key.
+
+Yes — please send over the exact endpoint paths you're hitting on us. I'll diff them against what we expose so we catch any drift before it bites a real payment certificate.
+
+Want me to also pull the matching call sites on our side (object-proxy route + the sync endpoint URL) into the reply so they can do the same paste-and-verify on their end?
