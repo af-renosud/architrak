@@ -1,0 +1,39 @@
+Prompt for Archi Track Replit Agent
+Context. Our sister app Archi Doc (architects' technical OS) just added banking details to each contractor record (Task #491). You — Archi Track — generate certificats de paiement and demandes d'acompte for clients, so you need to read those banking details when issuing a payment certificate against a contractor's quote.
+
+There are two integration shapes available — pick one based on how Archi Track currently consumes contractor data:
+
+Option A — Read-through (preferred if you already call Archi Doc's contractor API)
+No schema change in Archi Track. Just extend the existing contractor fetch to include the new fields.
+
+Endpoint: GET /api/contractors/:id on the Archi Doc base URL (already authenticated via your existing service-to-service token / session — same auth you use today; the route is gated by isAuthenticated).
+New fields on the response (all nullable strings unless noted):
+accountHolderName (string, max 255) — raison sociale du titulaire
+iban (string, max 34) — stored uppercased, no spaces, ISO 13616 validated (mod-97)
+bic (string, 8 or 11 chars) — uppercased, ISO 9362 validated; may be null (BIC is optional for SEPA)
+bankName (string, max 255, optional)
+ribDocumentUrl (string) — permanent proxy path /objects/<bucket>/<key>; fetch through Archi Doc's object proxy with the same auth
+ribDocumentName (string)
+bankingVerifiedAt (ISO timestamp, nullable) — when an architect signed off the values
+bankingVerifiedBy (string, nullable) — user who signed off
+bankingAiExtractedData (JSON, nullable) — raw Gemini RIB extraction blob, for debugging only — never display to clients
+Option B — Local mirror (if Archi Track needs to render certificates offline or queue them)
+Add the same columns to Archi Track's contractors table and sync them from Archi Doc.
+
+Schema migration — add the same 9 columns to your contractors (or equivalent) table. Use a Drizzle migration if you're on Drizzle, otherwise your project's normal migration tool. Column types: varchar(255) for accountHolderName/bankName/bankingVerifiedBy, varchar(34) for iban, varchar(11) for bic, text for ribDocumentUrl, varchar(255) for ribDocumentName, jsonb for bankingAiExtractedData, timestamp for bankingVerifiedAt.
+Sync job — pull from GET /api/contractors/:id on Archi Doc when a contractor is referenced for a payment certificate, and upsert by siret (preferred — stable cross-app key) or by external contractor_id if you already keep that mapping.
+Re-validate on write. Don't trust the wire. Re-run IBAN mod-97 and BIC ISO 9362 checks before persisting; reject and log if invalid. If you want to share the validator, the source is shared/iban.ts in Archi Doc — validateIban(raw) → {ok, normalized} | {ok:false, reason} and validateBic(raw). You can copy that file verbatim (~80 lines, no deps).
+Rules — apply both options
+Architect-only data. Never expose iban, bic, accountHolderName, bankName, ribDocumentUrl, or bankingAiExtractedData on any public/client-facing endpoint or in any client-visible UI without explicit confirmation. The payment certificate PDF is the intended surface — that's fine. Anything else is a leak.
+No masking. Store and display in clear text inside the architect-only UI. (Decision already made in Archi Doc.)
+Auth required on every contractor read. Do not add an unauthenticated route that returns the contractor row — whitelist fields explicitly when returning to non-architect viewers (clients, contractors via portal, etc.).
+No any; catches are (error: unknown) if you're in a TypeScript project that enforces this.
+Idempotent migration. Wrap each ADD COLUMN in DO $$ BEGIN … EXCEPTION WHEN duplicate_column THEN NULL; END $$; so partially-applied DBs stay safe.
+Acceptance
+Archi Track can fetch a contractor and receive the 9 banking fields (Option A) or sync them into its own table (Option B).
+When rendering a certificat de paiement or demande d'acompte, the contractor's IBAN/BIC/holder/bank are pulled from this source.
+If iban is null or the bank fields are incomplete, the certificate generation UI shows a clear blocker ("Coordonnées bancaires manquantes — à compléter dans Archi Doc") rather than rendering an empty IBAN line.
+The RIB document, if present, can be linked or attached to the certificate envelope (via the /objects/<bucket>/<key> URL fetched with auth).
+Out of scope
+Per-project IBAN overrides (single IBAN per contractor for now).
+Editing banking details from Archi Track — that stays in Archi Doc's contractor form. Archi Track is read-only for these fields.
