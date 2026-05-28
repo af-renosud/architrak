@@ -3903,9 +3903,18 @@ function SigningPanel({
     queryKey: ["/api/devis", devisId],
   });
 
+  // Optional personalised message for the signer email — forwarded to
+  // Archisign /create only on first send. The resume branch (envelopeId
+  // already persisted) skips /create, so the dialog hides the input then.
+  const [sendDialogOpen, setSendDialogOpen] = useState(false);
+  const [personalMessage, setPersonalMessage] = useState("");
+  const MAX_MESSAGE_LEN = 2000;
+
   const sendMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", `/api/devis/${devisId}/send-to-signer`);
+    mutationFn: async (message: string | undefined) => {
+      const trimmed = (message ?? "").trim();
+      const body = trimmed.length > 0 ? { message: trimmed } : {};
+      const res = await apiRequest("POST", `/api/devis/${devisId}/send-to-signer`, body);
       return res.json();
     },
     onSuccess: () => {
@@ -3913,6 +3922,8 @@ function SigningPanel({
         title: "Envoyé à la signature",
         description: "L'enveloppe Archisign a été créée et envoyée au signataire.",
       });
+      setSendDialogOpen(false);
+      setPersonalMessage("");
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId] });
       queryClient.invalidateQueries({ queryKey: ["/api/devis"] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
@@ -4008,7 +4019,10 @@ function SigningPanel({
           <Button
             size="sm"
             variant="destructive"
-            onClick={() => sendMutation.mutate()}
+            onClick={() => {
+              setPersonalMessage("");
+              setSendDialogOpen(true);
+            }}
             disabled={sendMutation.isPending}
             data-testid={`button-send-to-signer-${devisId}`}
           >
@@ -4026,6 +4040,84 @@ function SigningPanel({
           </Button>
         )}
       </div>
+
+      <AlertDialog
+        open={sendDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && !sendMutation.isPending) {
+            setSendDialogOpen(false);
+          }
+        }}
+      >
+        <AlertDialogContent data-testid={`dialog-send-to-signer-${devisId}`}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {isResume ? "Réessayer l'envoi à la signature" : "Envoyer à la signature"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {isResume
+                ? "L'enveloppe a déjà été créée chez Archisign — un nouvel essai relance uniquement l'envoi au signataire. Le message personnalisé saisi lors de la création initiale ne peut pas être modifié."
+                : "Le signataire recevra un e-mail d'Archisign avec le lien de signature. Vous pouvez ajouter un message personnalisé (optionnel) qui sera inclus dans cet e-mail."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          {!isResume && (
+            <div className="space-y-2">
+              <label
+                htmlFor={`textarea-send-message-${devisId}`}
+                className="text-sm font-medium"
+              >
+                Message au signataire (optionnel)
+              </label>
+              <Textarea
+                id={`textarea-send-message-${devisId}`}
+                value={personalMessage}
+                onChange={(e) => setPersonalMessage(e.target.value.slice(0, MAX_MESSAGE_LEN))}
+                placeholder="Bonjour, veuillez trouver ci-joint le devis pour signature électronique. N'hésitez pas à me contacter pour toute question."
+                rows={5}
+                maxLength={MAX_MESSAGE_LEN}
+                disabled={sendMutation.isPending}
+                data-testid={`textarea-send-message-${devisId}`}
+              />
+              <div
+                className="text-xs text-muted-foreground text-right"
+                data-testid={`text-send-message-count-${devisId}`}
+              >
+                {personalMessage.length} / {MAX_MESSAGE_LEN}
+              </div>
+            </div>
+          )}
+
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              disabled={sendMutation.isPending}
+              data-testid={`button-send-to-signer-cancel-${devisId}`}
+            >
+              Annuler
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                sendMutation.mutate(isResume ? undefined : personalMessage);
+              }}
+              disabled={sendMutation.isPending}
+              data-testid={`button-send-to-signer-confirm-${devisId}`}
+            >
+              {sendMutation.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                  {isResume ? "Reprise…" : "Envoi…"}
+                </>
+              ) : (
+                <>
+                  <Send className="h-4 w-4 mr-1.5" />
+                  {isResume ? "Réessayer l'envoi" : "Envoyer à la signature"}
+                </>
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {!d.archisignEnvelopeId && !accessUrl && stage === "approved_for_signing" && (
         <p className="text-xs text-muted-foreground" data-testid={`text-signing-empty-${devisId}`}>

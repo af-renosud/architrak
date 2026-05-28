@@ -42,14 +42,30 @@ const router = Router();
 
 const idParams = z.object({ id: z.coerce.number().int().positive() });
 
+// Optional architect-supplied personalised message forwarded to the signer
+// email. Trimmed and capped at 2000 chars; empty/whitespace-only is treated
+// as absent so the architect doesn't accidentally ship a blank body. On the
+// resume branch (envelopeId already persisted) /create is skipped, so the
+// message — which is only forwarded into /create — is silently ignored.
+// The FE hides the input in that case.
+const sendBody = z.object({
+  message: z
+    .string()
+    .trim()
+    .max(2000, "Message trop long (2000 caractères maximum).")
+    .optional()
+    .transform((v) => (v && v.length > 0 ? v : undefined)),
+}).partial();
+
 const PDF_FETCH_URL_TTL_HOURS = 1; // 1h is comfortably above the §G2 5-min floor
 
 router.post(
   "/api/devis/:id/send-to-signer",
   requireAuth,
-  validateRequest({ params: idParams }),
+  validateRequest({ params: idParams, body: sendBody }),
   async (req, res) => {
     const devisId = Number(req.params.id);
+    const personalMessage = (req.body as { message?: string } | undefined)?.message;
     const userId = req.session?.userId;
     if (!userId) return res.status(401).json({ message: "Authentication required" });
 
@@ -187,6 +203,10 @@ router.post(
           webhookUrl: `${baseUrl}/api/webhooks/archisign`,
           // Default expiresAt = now + 30d (handled inside the client).
           subject: `Signature électronique — devis ${d.devisCode}`,
+          // Optional architect note (already trimmed + length-capped by sendBody).
+          // On the resume branch we never reach this block, so the message is
+          // silently dropped — the FE hides the input in that case.
+          body: personalMessage,
         });
       } catch (err) {
         if (err instanceof ArchisignError && err.httpStatus === 503) {
