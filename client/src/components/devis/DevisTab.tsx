@@ -3990,7 +3990,7 @@ function SigningPanel({
   const badge = envelopeStatus ? statusLabel[envelopeStatus] ?? { label: envelopeStatus, tone: "secondary" as const } : null;
 
   return (
-    <LuxuryCard className="p-3 space-y-3" data-testid={`panel-signing-${devisId}`}>
+    <LuxuryCard className="p-3 space-y-3 border-2 border-destructive ring-1 ring-destructive/30 shadow-[0_0_0_3px_hsl(var(--destructive)/0.08)]" data-testid={`panel-signing-${devisId}`}>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Send className="h-4 w-4 text-[#0B2545]" />
@@ -4007,6 +4007,7 @@ function SigningPanel({
         {canSend && (
           <Button
             size="sm"
+            variant="destructive"
             onClick={() => sendMutation.mutate()}
             disabled={sendMutation.isPending}
             data-testid={`button-send-to-signer-${devisId}`}
