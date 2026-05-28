@@ -915,7 +915,7 @@ export async function processEmailDocument(emailDocumentId: number): Promise<voi
       // lands in the project's `(unassigned-lot)` fallback until the
       // operator promotes the draft and the lot is known. Idempotent
       // on (doc_kind, doc_id). Silent no-op when feature flag off.
-      if (parsed.documentType === "devis" || parsed.documentType === "invoice") {
+      if (parsed.documentType === "quotation" || parsed.documentType === "invoice") {
         try {
           const { enqueueDriveUpload } = await import("../services/drive/upload-queue.service");
           void enqueueDriveUpload({

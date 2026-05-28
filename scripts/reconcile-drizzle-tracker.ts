@@ -146,7 +146,7 @@ export async function reconcileTracker(
     arr.push(p.tag);
     hashCounts.set(p.hash, arr);
   }
-  const dupes = [...hashCounts.entries()].filter(([, tags]) => tags.length > 1);
+  const dupes = Array.from(hashCounts.entries()).filter(([, tags]) => tags.length > 1);
   if (dupes.length > 0) {
     const summary = dupes
       .map(([h, tags]) => `${h.slice(0, 12)}…: ${tags.join(", ")}`)
@@ -189,7 +189,7 @@ export async function reconcileTracker(
 
     const toInsert = planned.filter((p) => !existingHashes.has(p.hash));
     const plannedHashes = new Set(planned.map((p) => p.hash));
-    const unexpectedExtraHashes = [...existingHashes].filter(
+    const unexpectedExtraHashes = Array.from(existingHashes).filter(
       (h) => !plannedHashes.has(h),
     );
 

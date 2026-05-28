@@ -91,7 +91,7 @@ export async function checkMigrationDrift(): Promise<DriftResult> {
 
   const journalWhens = new Set<number>(journal.map(e => e.when));
   const missingFromDb = journal.filter(e => !appliedWhens.has(e.when));
-  const orphanInDb = [...appliedWhens]
+  const orphanInDb = Array.from(appliedWhens)
     .filter(w => !journalWhens.has(w))
     .map(w => ({ created_at: w }));
 

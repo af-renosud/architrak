@@ -31,7 +31,7 @@ function makeWarning(
 
 describe("partitionDraftWarnings", () => {
   it("returns empty buckets for null/undefined/empty input", () => {
-    for (const input of [null, undefined, []] as const) {
+    for (const input of [null, undefined, [] as DraftValidationWarning[]]) {
       const result = partitionDraftWarnings(input);
       expect(result.lotRefWarnings).toEqual([]);
       expect(result.contractorAdvisories).toEqual([]);
