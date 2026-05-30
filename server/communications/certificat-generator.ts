@@ -1280,6 +1280,7 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     archisignEnvelopeStatus: null,
     archisignEnvelopeExpiresAt: null,
     archisignOtpDestination: null,
+    archisignSignerMessage: null,
     identityVerification: null,
     signedPdfFetchUrlSnapshot: null,
     signedPdfStorageKey: null,

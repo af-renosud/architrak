@@ -355,6 +355,14 @@ export const devis = pgTable("devis", {
   // archisignOtpDestination — masked phone/email shown in /create response
   // (§3.5.1). Persisted for UI display only; not used for auth.
   archisignOtpDestination: text("archisign_otp_destination"),
+  // archisignSignerMessage — the architect's optional personalised note,
+  // captured in the "Envoyer à la signature" dialog and forwarded to
+  // Archisign /create as the envelope `body`. Persisted here so the note
+  // is never lost: Archisign does not echo it back, and (depending on their
+  // email template) may not surface it to the signer. Written one-shot on
+  // first send only — the resume branch skips /create, so it is never
+  // overwritten on retry. NULL when the architect left the field empty.
+  archisignSignerMessage: text("archisign_signer_message"),
   // Structured devis-code (Task #176). The architect supplies three parts:
   //   1. lotRef    — picked from `lot_catalog` (then `lotCatalogId` is set
   //                   and `lotRefText` mirrors the catalog code) OR typed

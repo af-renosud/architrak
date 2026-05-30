@@ -234,6 +234,11 @@ router.post(
         archisignOtpDestination: createResp.otpDestination,
         archisignEnvelopeExpiresAt: createResp.expiresAt ? new Date(createResp.expiresAt) : null,
         archisignEnvelopeStatus: "sent",
+        // Persist the architect's personalised note on first send. We keep our
+        // own copy because Archisign does not echo it back and may not render
+        // it in the signer email — this closes the audit loop. Written only
+        // here (the resume branch skips /create), never overwritten on retry.
+        archisignSignerMessage: personalMessage ?? null,
       };
       await storage.updateDevis(devisId, persistCreate);
       envelopeId = createResp.envelopeId;

@@ -172,6 +172,32 @@ describe("POST /api/devis/:id/send-to-signer — personalised message", () => {
     expect(archisignMock.sendEnvelope).toHaveBeenCalledWith("env_42");
   });
 
+  it("persists the trimmed message on our side in the create branch", async () => {
+    const res = await postSend(100, { message: "  Bonjour, voici le devis pour signature.  " });
+    expect(res.status).toBe(200);
+    // The first updateDevis call is the post-/create persistence block.
+    const persistCall = storageMock.updateDevis.mock.calls.find(
+      (c) => (c[1] as { archisignEnvelopeId?: string }).archisignEnvelopeId === "env_42",
+    );
+    expect(persistCall).toBeDefined();
+    expect((persistCall![1] as { archisignSignerMessage?: string | null }).archisignSignerMessage).toBe(
+      "Bonjour, voici le devis pour signature.",
+    );
+  });
+
+  it("persists null when no message is supplied", async () => {
+    const res = await fetch(`${baseUrl}/api/devis/100/send-to-signer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    expect(res.status).toBe(200);
+    const persistCall = storageMock.updateDevis.mock.calls.find(
+      (c) => (c[1] as { archisignEnvelopeId?: string }).archisignEnvelopeId === "env_42",
+    );
+    expect(persistCall).toBeDefined();
+    expect((persistCall![1] as { archisignSignerMessage?: string | null }).archisignSignerMessage).toBeNull();
+  });
+
   it("collapses whitespace-only messages to undefined before calling createEnvelope", async () => {
     const res = await postSend(100, { message: "   \n\t   " });
     expect(res.status).toBe(200);
@@ -212,5 +238,10 @@ describe("POST /api/devis/:id/send-to-signer — personalised message", () => {
     expect(archisignMock.createEnvelope).not.toHaveBeenCalled();
     // /send still fires against the persisted envelopeId (idempotent per §S9).
     expect(archisignMock.sendEnvelope).toHaveBeenCalledWith("env_existing");
+    // No updateDevis call on the resume branch may carry the message — the
+    // originally persisted note must never be overwritten (incl. to null).
+    for (const call of storageMock.updateDevis.mock.calls) {
+      expect(call[1] as Record<string, unknown>).not.toHaveProperty("archisignSignerMessage");
+    }
   });
 });

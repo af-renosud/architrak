@@ -14,7 +14,7 @@ AI extraction (Gemini) parses PDF attachments arriving by Gmail.
 
 - **Frontend**: React 18 + TypeScript, Vite, Tailwind, Shadcn UI, Wouter, TanStack Query
 - **Backend**: Node 20, Express 5, TypeScript (`tsx` in dev, `esbuild` for prod)
-- **DB**: PostgreSQL 16 + Drizzle ORM (56 application tables in `shared/schema.ts`, 40 hand-tracked SQL migrations)
+- **DB**: PostgreSQL 16 + Drizzle ORM (56 application tables in `shared/schema.ts`, 41 hand-tracked SQL migrations)
 - **AI**: Google Gemini (`@google/generative-ai`) for PDF extraction
 - **Storage**: Replit Object Storage (GCS-backed) for PDFs and uploads
 - **External services**: ArchiDoc, Archisign, DocRaptor (HTML→PDF), Gmail API

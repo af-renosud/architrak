@@ -1,0 +1,1 @@
+- [Archisign envelope fields](archisign-envelope-fields.md) — Archisign `/create` renders `subject` in the signer email but NOT `body`; both are undocumented in contract §3.5.1. ArchiTrak persists the note locally.

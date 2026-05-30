@@ -85,6 +85,7 @@ export function SigningPanel({
     archisignEnvelopeStatus?: string | null;
     archisignEnvelopeExpiresAt?: string | null;
     archisignOtpDestination?: string | null;
+    archisignSignerMessage?: string | null;
     signedPdfStorageKey?: string | null;
   }) | undefined;
 
@@ -329,6 +330,20 @@ export function SigningPanel({
               {d.archisignEnvelopeId ?? "—"}
             </span>
           </div>
+          {/* Personalised note the architect attached on first send.
+              Persisted on our side so it survives regardless of whether
+              Archisign renders it in the signer email. */}
+          {d.archisignSignerMessage && (
+            <div className="sm:col-span-2">
+              <span className="font-semibold text-muted-foreground">Message au signataire :</span>
+              <p
+                className="mt-1 whitespace-pre-wrap rounded border border-border bg-muted/40 p-2 text-[11px] text-foreground"
+                data-testid={`text-archisign-signer-message-${devisId}`}
+              >
+                {d.archisignSignerMessage}
+              </p>
+            </div>
+          )}
           {/* Task #206 — once the signed PDF has been persisted locally,
               surface a direct view link alongside the envelope details
               so the architect can pull up the audit copy without
