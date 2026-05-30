@@ -1,0 +1,24 @@
+Task: Send a custom signer message ("body") to Archisign and verify it appears in the invitation email
+
+Archisign's e-signature API now accepts an optional body field on envelope creation. When provided, that text is shown to the signer in the "Document Ready for Signing" invitation email, under a heading "Message from the sender:", placed between the standard intro line and the Subject/Reference box. Confirm Architrak populates and sends this field correctly.
+
+What to do:
+
+Locate the Archisign create call — find where Architrak calls POST /api/v1/envelopes/create (authenticated with X-API-KEY). It already sends subject, signers[], and a PDF source (pdfBase64 / pdfUrl / pdfFetchUrl).
+
+Add the body field to that request payload. Contract:
+
+body is an optional string.
+Whatever you send is the personalised note the signer reads in their invitation email.
+Line breaks are preserved; the content is HTML-escaped on Archisign's side, so send plain text (no HTML markup — it won't render).
+Empty, whitespace-only, null, or omitted body = no message shown (email looks exactly as before). So only send it when there's a real message.
+Wire it to the source of the message — connect body to wherever the Architrak user/project supplies the note for the signer (e.g. a "message to signer" input or a generated cover note). Don't hardcode it.
+
+Verify end-to-end:
+
+Create a test envelope with a multi-line body and confirm the signer invitation email shows it under "Message from the sender:", with line breaks intact, above the Subject box.
+Create one with no body and confirm the email is unchanged.
+Send a body containing characters like <, >, & and confirm they display as literal text (not broken markup).
+Note: body is invitation-email only — it does not appear in any Archisign API response, webhook payload, or the signed PDF. Reference: docs/INTER_APP_CONTRACT_v1.0.md §3.5.1 on the Archisign side.
+
+Want me to tailor it to a specific Architrak field or flow if you tell me where their signer message comes from?

@@ -198,6 +198,21 @@ describe("POST /api/devis/:id/send-to-signer — personalised message", () => {
     expect((persistCall![1] as { archisignSignerMessage?: string | null }).archisignSignerMessage).toBeNull();
   });
 
+  it("forwards multi-line messages and special characters to createEnvelope verbatim", async () => {
+    // Archisign HTML-escapes on its side, so we must transmit the raw plain
+    // text untouched — internal newlines and < > & are preserved (only
+    // leading/trailing whitespace is trimmed by the Zod schema).
+    const raw = "Bonjour <Marie> & équipe,\nVoici le devis.\n\nCordialement & merci.";
+    const res = await postSend(100, { message: raw });
+    expect(res.status).toBe(200);
+    expect(archisignMock.createEnvelope.mock.calls[0][0].body).toBe(raw);
+    // And the same verbatim value is what we persist on our side.
+    const persistCall = storageMock.updateDevis.mock.calls.find(
+      (c) => (c[1] as { archisignEnvelopeId?: string }).archisignEnvelopeId === "env_42",
+    );
+    expect((persistCall![1] as { archisignSignerMessage?: string | null }).archisignSignerMessage).toBe(raw);
+  });
+
   it("collapses whitespace-only messages to undefined before calling createEnvelope", async () => {
     const res = await postSend(100, { message: "   \n\t   " });
     expect(res.status).toBe(200);

@@ -423,7 +423,8 @@ Embedded inside the `envelope.signed` payload as a **single object** (not an arr
 ```
 Header: X-API-KEY: <ARCHITRAK_API_KEY | ARCHIDOC_API_KEY>
 Body:   { pdfFetchUrl, externalRef?, metadata?, signers[], fields[],
-          webhookUrl, expiresAt?, identityVerification: { method } }
+          webhookUrl, expiresAt?, identityVerification: { method },
+          subject?, body? }
 
 Response 201: { envelopeId, status: "draft", createdAt, expiresAt,
                 signers: [{ id, accessToken, accessUrl, otpDestination }] }
@@ -437,6 +438,17 @@ Errors:
 ```
 
 `pdfFetchUrl` is fetched server-side by Archisign within 60s. Architrak/Archidoc must serve a signed URL with TTL ≥ 60s (Architrak uses 15-min TTL by convention, comfortably above the budget).
+
+`subject` and `body` are optional signer-facing email fields, both invitation-email
+only — they appear in neither the `/create` response, any webhook payload, nor the
+signed PDF. `subject` overrides the email subject line. `body` is rendered to the
+signer under a "Message from the sender:" heading, between the standard intro line
+and the Subject/Reference box. Senders MUST pass plain text: line breaks are
+preserved and the content is HTML-escaped by Archisign, so markup will not render.
+An empty / whitespace-only / null / omitted `body` shows no message block (email
+unchanged). Architrak sends `body` only on first `/create` (the resume branch skips
+`/create`), sourced from the architect's optional note in the send-to-signer dialog
+and persisted locally in `devis.archisign_signer_message`.
 
 #### §3.5.2 `POST /api/v1/envelopes/:envelopeId/send`
 
