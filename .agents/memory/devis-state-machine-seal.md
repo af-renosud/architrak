@@ -15,7 +15,10 @@ Known sealed columns and their owning machines:
 - `acompteState` / `acompteInvoiceId` / `acomptePaidAt` → `/acompte/*` routes.
 - `accountingState` → `reconcileAccountingStates` (auto) +
   `/api/overlap-cases/:id/resolve` (human), each writing an append-only
-  `accounting_state_changes` row via a compare-and-set transition.
+  `accounting_state_changes` row via a compare-and-set transition. Freshly
+  ingested devis start `provisional`; every ingest path (intake queue AND the
+  direct `/devis/upload` route) must `enqueueReconciliation(projectId)` after a
+  successful upload or the row stays out of Contracted indefinitely.
 
 **Why:** the generic PATCH validates *shape* but not *transition legality*.
 Because these are ordinary columns, an authenticated operator could otherwise

@@ -12,6 +12,7 @@ import {
 } from "@shared/schema";
 import { upload } from "../middleware/upload";
 import { processDevisUpload } from "../services/devis-upload.service";
+import { enqueueReconciliation } from "../services/reconciliation/reconciliation-queue.service";
 import { rescrapeDevis } from "../services/devis-rescrape.service";
 import { confirmDevisAndMirror, assignTagsForInsertedItems } from "../services/benchmark-ingest.service";
 import { PdfPasswordProtectedError } from "../gmail/document-parser";
@@ -251,6 +252,14 @@ router.post(
       if (!file) return res.status(400).json({ message: "No file provided", code: DEVIS_UPLOAD_ERROR_CODES.NO_FILE_PROVIDED });
 
       const result = await processDevisUpload(projectId, file);
+      if (result.success) {
+        // Task #232 — a freshly ingested devis lands `provisional`. Kick the
+        // per-project reconciliation pass so it gets its first deterministic
+        // promotion (→ active when no unresolved overlap) or supersession.
+        // Idempotent + coalescing + never moves money inline. Fire-and-forget;
+        // failures self-retry via the sweeper. Mirrors the intake-queue path.
+        void enqueueReconciliation(projectId);
+      }
       res.status(result.status).json(result.data);
     } catch (err: unknown) {
       if (err instanceof PdfPasswordProtectedError) {
