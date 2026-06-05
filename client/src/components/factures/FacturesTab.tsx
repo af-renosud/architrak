@@ -25,9 +25,10 @@ interface FacturesTabProps {
   projectId: string;
   contractors: Contractor[];
   isArchived?: boolean;
+  onGoToIntake: () => void;
 }
 
-export function FacturesTab({ projectId, contractors, isArchived = false }: FacturesTabProps) {
+export function FacturesTab({ projectId, contractors, isArchived = false, onGoToIntake }: FacturesTabProps) {
   const { toast } = useToast();
   const [expandedInvoice, setExpandedInvoice] = useState<number | null>(null);
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
@@ -124,7 +125,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false }: Fact
       </div>
 
       <div className="flex items-center justify-end">
-        <Button onClick={() => setUploadDialogOpen(true)} disabled={isArchived} data-testid="button-upload-facture">
+        <Button onClick={() => onGoToIntake()} disabled={isArchived} data-testid="button-upload-facture">
           <Upload size={14} />
           <span className="text-[9px] font-bold uppercase tracking-widest">Upload Invoice</span>
         </Button>

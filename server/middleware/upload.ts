@@ -47,3 +47,45 @@ export const imageUpload = multer({
   limits: { fileSize: 8 * 1024 * 1024, files: 1 },
   fileFilter: imageFileFilter,
 });
+
+// Unified intake (Task #229): the single "front door" accepts ANY contractor
+// financial document without pre-classification, so the allowlist is broad —
+// PDFs, images, and common office formats. A permissive extension fallback
+// covers files whose browser-supplied MIME is missing/wrong (common for .heic
+// and office docs). Keep this in sync with IntakeTab's accept attribute.
+const INTAKE_ALLOWED_MIME = new Set([
+  "application/pdf",
+  "application/x-pdf",
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/gif",
+  "image/webp",
+  "image/heic",
+  "image/heif",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+]);
+
+const INTAKE_ALLOWED_EXT = [
+  ".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif",
+  ".doc", ".docx", ".xls", ".xlsx",
+];
+
+function intakeFileFilter(_req: Request, file: Express.Multer.File, cb: FileFilterCallback) {
+  const ext = (file.originalname || "").toLowerCase();
+  const mimeOk = INTAKE_ALLOWED_MIME.has(file.mimetype);
+  const extOk = INTAKE_ALLOWED_EXT.some((e) => ext.endsWith(e));
+  if (!mimeOk && !extOk) {
+    return cb(new Error("Unsupported file type. Upload a PDF, image, or Word/Excel document."));
+  }
+  cb(null, true);
+}
+
+export const intakeUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024, files: 1 },
+  fileFilter: intakeFileFilter,
+});

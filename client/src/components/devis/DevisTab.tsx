@@ -659,6 +659,7 @@ interface DevisRowProps {
   onToggle: () => void;
   onEditRefs: (d: Devis) => void;
   onReviewDraft: (d: Devis) => void;
+  onGoToIntake: () => void;
 }
 
 /**
@@ -752,7 +753,7 @@ function FeeOverrideBadge({ devis }: { devis: Devis }) {
   );
 }
 
-function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openChecks, onToggle, onEditRefs, onReviewDraft }: DevisRowProps) {
+function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openChecks, onToggle, onEditRefs, onReviewDraft, onGoToIntake }: DevisRowProps) {
   const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [avenantOpen, setAvenantOpen] = useState(false);
   const [pdfPopoutOpen, setPdfPopoutOpen] = useState(false);
@@ -901,7 +902,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
                             disabled={isArchived}
                             onClick={(e) => {
                               e.stopPropagation();
-                              setInvoiceOpen(true);
+                              onGoToIntake();
                             }}
                             data-testid={`button-quick-upload-invoice-${d.id}`}
                             aria-label="Téléverser une facture"
@@ -978,7 +979,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
           contractors={contractors}
           lots={lots}
           isArchived={isArchived}
-          onOpenInvoiceUpload={() => setInvoiceOpen(true)}
+          onOpenInvoiceUpload={() => onGoToIntake()}
           onOpenAvenantDialog={() => setAvenantOpen(true)}
           onOpenPdfPopout={() => {
             if (hasPdf) setPdfPopoutOpen(true);
@@ -1008,6 +1009,7 @@ interface DevisTabProps {
   isArchived?: boolean;
   initialExpandedDevisId?: number | null;
   initialFocusedCheckId?: number | null;
+  onGoToIntake: () => void;
 }
 
 export function DevisTab({
@@ -1017,6 +1019,7 @@ export function DevisTab({
   isArchived = false,
   initialExpandedDevisId = null,
   initialFocusedCheckId = null,
+  onGoToIntake,
 }: DevisTabProps) {
   const { toast } = useToast();
   const [expandedDevis, setExpandedDevis] = useState<number | null>(initialExpandedDevisId);
@@ -1256,7 +1259,7 @@ export function DevisTab({
               variant="outline"
               size="sm"
               className="h-7 text-[10px] px-3 gap-1.5"
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => onGoToIntake()}
               disabled={isArchived}
               data-testid="button-upload-devis"
             >
@@ -1393,6 +1396,7 @@ export function DevisTab({
               openChecks={openChecksByDevis[d.id] ?? 0}
               onToggle={() => setExpandedDevis(expandedDevis === d.id ? null : d.id)}
               onEditRefs={setEditRefsFor}
+              onGoToIntake={onGoToIntake}
               onReviewDraft={(dev) => setDraftReviewData({
                 devisId: dev.id,
                 extraction: {

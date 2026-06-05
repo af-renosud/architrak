@@ -96,6 +96,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0038_pennylane_pushes", artifact: { kind: "table", table: "pennylane_pushes" } },
   { tag: "0039_contractor_banking_details", artifact: { kind: "column", table: "contractors", column: "iban" } },
   { tag: "0040_devis_archisign_signer_message", artifact: { kind: "column", table: "devis", column: "archisign_signer_message" } },
+  { tag: "0041_project_intake_documents", artifact: { kind: "table", table: "project_intake_documents" } },
 ];
 
 interface JournalFile {

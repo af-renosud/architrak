@@ -877,6 +877,40 @@ export const projectDocuments = pgTable("project_documents", {
   index("project_documents_source_email_doc_idx").on(table.sourceEmailDocumentId),
 ]);
 
+// Unified document intake (Task #229). The single "front door" for every
+// financial document: manual uploads AND email attachments land here in a
+// `pending` state, before any AI classification/extraction/routing (those are
+// later tasks). `analysisState`/`routingState` are deliberately left as plain
+// string status columns so downstream tasks can extend the vocabulary without
+// a schema migration. `extractedData` is the slot the AI step (#230) will fill;
+// `promotedKind`/`promotedId` record which typed record (devis, invoice, …) an
+// intake item is eventually promoted into. Email-sourced rows keep a pointer
+// back to their `email_documents` provenance row via `sourceEmailDocumentId`.
+export const projectIntakeDocuments = pgTable("project_intake_documents", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  fileName: text("file_name").notNull(),
+  storageKey: text("storage_key").notNull(),
+  mimeType: text("mime_type"),
+  fileSize: integer("file_size"),
+  source: text("source").notNull().default("manual"),
+  contentFingerprint: text("content_fingerprint"),
+  analysisState: text("analysis_state").notNull().default("pending"),
+  routingState: text("routing_state").notNull().default("unrouted"),
+  extractedData: jsonb("extracted_data"),
+  sourceEmailDocumentId: integer("source_email_document_id").references(() => emailDocuments.id),
+  promotedKind: text("promoted_kind"),
+  promotedId: integer("promoted_id"),
+  uploadedBy: text("uploaded_by"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("project_intake_documents_project_id_idx").on(table.projectId),
+  index("project_intake_documents_analysis_state_idx").on(table.analysisState),
+  uniqueIndex("project_intake_documents_source_email_doc_idx").on(table.sourceEmailDocumentId),
+]);
+
 export const projectCommunications = pgTable("project_communications", {
   id: serial("id").primaryKey(),
   projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
@@ -1325,6 +1359,12 @@ export const insertProjectDocumentSchema = createInsertSchema(projectDocuments).
   createdAt: true,
 });
 
+export const insertProjectIntakeDocumentSchema = createInsertSchema(projectIntakeDocuments).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
 export const insertProjectCommunicationSchema = createInsertSchema(projectCommunications).omit({
   id: true,
   createdAt: true,
@@ -1392,6 +1432,8 @@ export type EmailDocument = typeof emailDocuments.$inferSelect;
 export type InsertEmailDocument = z.infer<typeof insertEmailDocumentSchema>;
 export type ProjectDocument = typeof projectDocuments.$inferSelect;
 export type InsertProjectDocument = z.infer<typeof insertProjectDocumentSchema>;
+export type ProjectIntakeDocument = typeof projectIntakeDocuments.$inferSelect;
+export type InsertProjectIntakeDocument = z.infer<typeof insertProjectIntakeDocumentSchema>;
 export type ProjectCommunication = typeof projectCommunications.$inferSelect;
 export type InsertProjectCommunication = z.infer<typeof insertProjectCommunicationSchema>;
 export type PaymentReminder = typeof paymentReminders.$inferSelect;

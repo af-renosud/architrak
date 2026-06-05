@@ -22,11 +22,12 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { insertCertificatSchema, insertFeeSchema, insertFeeEntrySchema, insertLotSchema, insertMarcheSchema } from "@shared/schema";
 import type { Project, Devis, Lot, Marche, Certificat, Fee, FeeEntry, Contractor, Invoice, ProjectDocument, ProjectCommunication, PaymentReminder } from "@shared/schema";
 import { DevisTab } from "@/components/devis/DevisTab";
+import { IntakeTab } from "@/components/intake/IntakeTab";
 import { OutstandingFeesPanel } from "@/components/fees/OutstandingFeesPanel";
 import { OutstandingFeesBanner } from "@/components/fees/OutstandingFeesBanner";
 import { DesignContractCard } from "@/components/projects/DesignContractCard";
 import { FacturesTab } from "@/components/factures/FacturesTab";
-import { Receipt } from "lucide-react";
+import { Receipt, Inbox } from "lucide-react";
 import { z } from "zod";
 
 function formatCurrency(value: number): string {
@@ -1111,6 +1112,10 @@ export default function ProjectDetail() {
               <BarChart3 size={12} className="mr-1" />
               Financial Summary
             </TabsTrigger>
+            <TabsTrigger value="intake" data-testid="tab-intake">
+              <Inbox size={12} className="mr-1" />
+              Intake
+            </TabsTrigger>
             <TabsTrigger value="devis" data-testid="tab-devis">
               <FileText size={12} className="mr-1" />
               Devis
@@ -1278,6 +1283,10 @@ export default function ProjectDetail() {
             )}
           </TabsContent>
 
+          <TabsContent value="intake">
+            <IntakeTab projectId={projectId!} isArchived={isArchived} />
+          </TabsContent>
+
           <TabsContent value="devis">
             <DevisTab
               projectId={projectId!}
@@ -1286,6 +1295,7 @@ export default function ProjectDetail() {
               isArchived={isArchived}
               initialExpandedDevisId={deepLinkDevisId}
               initialFocusedCheckId={deepLinkCheckId}
+              onGoToIntake={() => setActiveTab("intake")}
             />
           </TabsContent>
 
@@ -1294,6 +1304,7 @@ export default function ProjectDetail() {
               projectId={projectId!}
               contractors={contractors ?? []}
               isArchived={isArchived}
+              onGoToIntake={() => setActiveTab("intake")}
             />
           </TabsContent>
 

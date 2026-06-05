@@ -22,6 +22,7 @@ import dashboardRouter from "./dashboard";
 import archidocRouter from "./archidoc";
 import gmailRouter from "./gmail";
 import documentsRouter from "./documents";
+import intakeRouter from "./intake";
 import communicationsRouter from "./communications";
 import settingsRouter from "./settings";
 import webhooksRouter from "./webhooks";
@@ -76,7 +77,7 @@ export async function registerRoutes(
   app.use(healthzRouter);
 
   app.use("/api/webhooks", webhookLimiter);
-  app.use(["/api/devis/:devisId/invoices/upload", "/api/projects/:projectId/devis/upload", "/api/design-contracts/preview"], uploadLimiter);
+  app.use(["/api/devis/:devisId/invoices/upload", "/api/projects/:projectId/devis/upload", "/api/projects/:projectId/intake/upload", "/api/design-contracts/preview"], uploadLimiter);
   app.use("/api", apiLimiter);
 
   app.use(projectsRouter);
@@ -99,6 +100,7 @@ export async function registerRoutes(
   app.use(archidocRouter);
   app.use(gmailRouter);
   app.use(documentsRouter);
+  app.use(intakeRouter);
   app.use(communicationsRouter);
   app.use(settingsRouter);
   app.use(webhooksRouter);

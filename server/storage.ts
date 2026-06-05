@@ -11,7 +11,7 @@ import {
   bankingMismatchOverrides,
   type BankingMismatchOverride, type InsertBankingMismatchOverride,
   archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog, archidocSiretIssues,
-  emailDocuments, projectDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
+  emailDocuments, projectDocuments, projectIntakeDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
   aiModelSettings, templateAssets, users, devisTranslations, wishListItems,
   benchmarkDocuments, benchmarkItems, benchmarkTags, benchmarkItemTags,
   devisChecks, devisCheckMessages, devisCheckTokens,
@@ -51,6 +51,7 @@ import {
   type ArchidocProject, type ArchidocContractor, type ArchidocTrade, type ArchidocProposalFee, type ArchidocSyncLogEntry, type ArchidocSiretIssue,
   type EmailDocument, type InsertEmailDocument,
   type ProjectDocument, type InsertProjectDocument,
+  type ProjectIntakeDocument, type InsertProjectIntakeDocument,
   type ProjectCommunication, type InsertProjectCommunication,
   type PaymentReminder, type InsertPaymentReminder,
   type ClientPaymentEvidence, type InsertClientPaymentEvidence,
@@ -231,6 +232,11 @@ export interface IStorage {
   getProjectDocuments(projectId: number): Promise<ProjectDocument[]>;
   getProjectDocument(id: number): Promise<ProjectDocument | undefined>;
   createProjectDocument(data: InsertProjectDocument): Promise<ProjectDocument>;
+
+  getProjectIntakeDocuments(projectId: number): Promise<ProjectIntakeDocument[]>;
+  getProjectIntakeDocument(id: number): Promise<ProjectIntakeDocument | undefined>;
+  createProjectIntakeDocument(data: InsertProjectIntakeDocument): Promise<ProjectIntakeDocument>;
+  getProjectIntakeDocumentByEmailDocumentId(emailDocumentId: number): Promise<ProjectIntakeDocument | undefined>;
 
   getProjectCommunications(projectId: number): Promise<ProjectCommunication[]>;
   getAllCommunications(): Promise<ProjectCommunication[]>;
@@ -1370,7 +1376,32 @@ export class DatabaseStorage implements IStorage {
 
   async updateEmailDocument(id: number, data: Partial<InsertEmailDocument>): Promise<EmailDocument | undefined> {
     const [doc] = await db.update(emailDocuments).set({ ...data, updatedAt: new Date() }).where(eq(emailDocuments.id, id)).returning();
+    // Unified intake (Task #229): the moment an email attachment is matched to
+    // a project (and has a stored file), mirror it into the project-scoped
+    // intake list so the two doors — manual upload and email — feed one list.
+    // Idempotent via the partial unique index on source_email_document_id.
+    if (doc) await this.mirrorEmailDocumentToIntake(doc);
     return doc;
+  }
+
+  /**
+   * Ensure a project-scoped intake row exists for an email document.
+   * No-op until the email doc has both a projectId and a stored file. The
+   * insert relies on the partial unique index `(source_email_document_id)`
+   * (ON CONFLICT DO NOTHING) so concurrent matches never create duplicates.
+   */
+  private async mirrorEmailDocumentToIntake(doc: EmailDocument): Promise<void> {
+    if (doc.projectId == null || !doc.storageKey) return;
+    await db.insert(projectIntakeDocuments).values({
+      projectId: doc.projectId,
+      fileName: doc.attachmentFileName ?? "document.pdf",
+      storageKey: doc.storageKey,
+      mimeType: "application/pdf",
+      source: "gmail",
+      analysisState: "pending",
+      routingState: "unrouted",
+      sourceEmailDocumentId: doc.id,
+    }).onConflictDoNothing();
   }
 
   async updateEmailDocumentLabelStatus(messageId: string): Promise<void> {
@@ -1394,6 +1425,25 @@ export class DatabaseStorage implements IStorage {
 
   async createProjectDocument(data: InsertProjectDocument): Promise<ProjectDocument> {
     const [doc] = await db.insert(projectDocuments).values(data).returning();
+    return doc;
+  }
+
+  async getProjectIntakeDocuments(projectId: number): Promise<ProjectIntakeDocument[]> {
+    return db.select().from(projectIntakeDocuments).where(eq(projectIntakeDocuments.projectId, projectId)).orderBy(desc(projectIntakeDocuments.createdAt));
+  }
+
+  async getProjectIntakeDocument(id: number): Promise<ProjectIntakeDocument | undefined> {
+    const [doc] = await db.select().from(projectIntakeDocuments).where(eq(projectIntakeDocuments.id, id));
+    return doc;
+  }
+
+  async createProjectIntakeDocument(data: InsertProjectIntakeDocument): Promise<ProjectIntakeDocument> {
+    const [doc] = await db.insert(projectIntakeDocuments).values(data).returning();
+    return doc;
+  }
+
+  async getProjectIntakeDocumentByEmailDocumentId(emailDocumentId: number): Promise<ProjectIntakeDocument | undefined> {
+    const [doc] = await db.select().from(projectIntakeDocuments).where(eq(projectIntakeDocuments.sourceEmailDocumentId, emailDocumentId));
     return doc;
   }
 
