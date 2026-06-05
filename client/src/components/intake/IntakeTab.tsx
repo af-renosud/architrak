@@ -1,10 +1,11 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Upload, FileText, Download, Mail, HardDriveUpload, Inbox } from "lucide-react";
+import { Upload, FileText, Download, Mail, HardDriveUpload, Inbox, ArrowRight, RotateCw } from "lucide-react";
+import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { useToast } from "@/hooks/use-toast";
-import { queryClient } from "@/lib/queryClient";
+import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { ProjectIntakeDocument } from "@shared/schema";
 
 interface IntakeTabProps {
@@ -33,6 +34,29 @@ function analysisLabel(state: string): { label: string; className: string } {
   }
 }
 
+function routingLabel(state: string): { label: string; className: string } | null {
+  switch (state) {
+    case "routed":
+      return { label: "Routed", className: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300" };
+    case "duplicate":
+      return { label: "Duplicate", className: "bg-violet-100 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300" };
+    case "parked":
+      return { label: "Parked", className: "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300" };
+    case "failed":
+      return { label: "Routing failed", className: "bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300" };
+    case "unrouted":
+    default:
+      return null;
+  }
+}
+
+function promotedHref(projectId: string, doc: ProjectIntakeDocument): string | null {
+  if (!doc.promotedId) return null;
+  if (doc.promotedKind === "devis") return `/projects/${projectId}?devis=${doc.promotedId}`;
+  if (doc.promotedKind === "invoice") return `/projects/${projectId}?invoice=${doc.promotedId}`;
+  return null;
+}
+
 export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
   const { toast } = useToast();
 
@@ -57,6 +81,19 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
     },
     onError: (error: Error) => {
       toast({ title: "Upload failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const retryMutation = useMutation({
+    mutationFn: async (intakeDocumentId: number) => {
+      return apiRequest("POST", `/api/intake-documents/${intakeDocumentId}/reanalyze`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "intake"] });
+      toast({ title: "Re-analysis triggered", description: "The document is being re-classified and routed." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Re-analysis failed", description: error.message, variant: "destructive" });
     },
   });
 
@@ -104,7 +141,11 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
         <div className="space-y-2" data-testid="list-intake-docs">
           {intakeDocs.map((doc) => {
             const status = analysisLabel(doc.analysisState);
+            const routing = routingLabel(doc.routingState);
             const isEmail = doc.source === "gmail";
+            const draftHref = promotedHref(projectId, doc);
+            const canRetry =
+              !isArchived && (doc.analysisState === "failed" || doc.routingState === "failed" || doc.routingState === "parked");
             return (
               <LuxuryCard key={doc.id} className="p-4" data-testid={`card-intake-doc-${doc.id}`}>
                 <div className="flex items-center justify-between gap-3">
@@ -123,6 +164,14 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
                         >
                           {status.label}
                         </span>
+                        {routing && (
+                          <span
+                            className={`text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full ${routing.className}`}
+                            data-testid={`routing-intake-${doc.id}`}
+                          >
+                            {routing.label}
+                          </span>
+                        )}
                         <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground" data-testid={`text-intake-source-${doc.id}`}>
                           {isEmail ? <Mail size={11} /> : <HardDriveUpload size={11} />}
                           {isEmail ? "Email" : "Manual upload"}
@@ -133,13 +182,43 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
                           </span>
                         )}
                       </div>
+                      {doc.notes && (doc.routingState === "parked" || doc.routingState === "duplicate" || doc.analysisState === "failed") && (
+                        <p className="text-[10px] text-muted-foreground mt-1 line-clamp-2" data-testid={`text-intake-notes-${doc.id}`}>
+                          {doc.notes}
+                        </p>
+                      )}
                     </div>
                   </div>
-                  <a href={`/api/intake-documents/${doc.id}/download`} download>
-                    <Button variant="ghost" size="icon" className="h-8 w-8" data-testid={`button-download-intake-${doc.id}`}>
-                      <Download size={14} />
-                    </Button>
-                  </a>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    {draftHref && (
+                      <Link href={draftHref}>
+                        <Button variant="outline" size="sm" className="h-8" data-testid={`button-open-draft-${doc.id}`}>
+                          <span className="text-[9px] font-bold uppercase tracking-widest">
+                            View {doc.promotedKind}
+                          </span>
+                          <ArrowRight size={12} />
+                        </Button>
+                      </Link>
+                    )}
+                    {canRetry && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => retryMutation.mutate(doc.id)}
+                        disabled={retryMutation.isPending}
+                        title="Re-run analysis & routing"
+                        data-testid={`button-reanalyze-intake-${doc.id}`}
+                      >
+                        <RotateCw size={14} />
+                      </Button>
+                    )}
+                    <a href={`/api/intake-documents/${doc.id}/download`} download>
+                      <Button variant="ghost" size="icon" className="h-8 w-8" data-testid={`button-download-intake-${doc.id}`}>
+                        <Download size={14} />
+                      </Button>
+                    </a>
+                  </div>
                 </div>
               </LuxuryCard>
             );

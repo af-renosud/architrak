@@ -8,6 +8,7 @@ import { assertPdfMagic } from "../middleware/upload";
 import { INVOICE_UPLOAD_ERROR_CODES } from "../../shared/invoice-upload-errors";
 import { evaluateAcompteGate, gateInputsFromDevis, nextAcompteState } from "./acompte.service";
 import { safeExtractIban, safeExtractBic } from "../../shared/iban";
+import type { ParsedDocument } from "../gmail/document-parser";
 
 interface UploadedFile {
   originalname: string;
@@ -15,7 +16,7 @@ interface UploadedFile {
   mimetype: string;
 }
 
-export async function processInvoiceUpload(devisId: number, file: UploadedFile) {
+export async function processInvoiceUpload(devisId: number, file: UploadedFile, preParsed?: ParsedDocument) {
   assertPdfMagic(file.buffer);
   const devis = await storage.getDevis(devisId);
   if (!devis) {
@@ -31,8 +32,10 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile) 
   // project_documents row when the upload is rejected by the gate.
   // The facture d'acompte itself is exempt so linking it never
   // deadlocks against its own gate.
+  // Task #230 — background ingest hands a pre-parsed result down so we
+  // never re-run Gemini for the same buffer.
   const { parseDocument } = await import("../gmail/document-parser");
-  const parsed = await parseDocument(file.buffer, file.originalname);
+  const parsed = preParsed ?? await parseDocument(file.buffer, file.originalname);
 
   const isAcompteInvoice = parsed.documentType === "acompte";
   const gateDecision = evaluateAcompteGate(gateInputsFromDevis(devis), { isAcompteInvoice });

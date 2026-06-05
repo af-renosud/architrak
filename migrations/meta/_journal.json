@@ -295,6 +295,13 @@
       "when": 1778640000000,
       "tag": "0041_project_intake_documents",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1778650000000,
+      "tag": "0042_intake_jobs",
+      "breakpoints": true
     }
   ]
 }

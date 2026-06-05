@@ -52,6 +52,7 @@ import {
   type EmailDocument, type InsertEmailDocument,
   type ProjectDocument, type InsertProjectDocument,
   type ProjectIntakeDocument, type InsertProjectIntakeDocument,
+  intakeJobs, type IntakeJob, type InsertIntakeJob,
   type ProjectCommunication, type InsertProjectCommunication,
   type PaymentReminder, type InsertPaymentReminder,
   type ClientPaymentEvidence, type InsertClientPaymentEvidence,
@@ -509,6 +510,22 @@ export interface IStorage {
   listDriveUploads(filter?: { state?: string; limit?: number; offset?: number }): Promise<DriveUpload[]>;
   getDriveUpload(uploadId: number): Promise<DriveUpload | undefined>;
   resetDriveUploadForRetry(uploadId: number): Promise<DriveUpload | undefined>;
+
+  // --- Intake ingest queue + routing (Task #230) ------------------------
+  updateProjectIntakeDocument(id: number, data: Partial<InsertProjectIntakeDocument>): Promise<ProjectIntakeDocument | undefined>;
+  findProcessedIntakeDuplicateByFingerprint(projectId: number, fingerprint: string, excludeId: number): Promise<ProjectIntakeDocument | undefined>;
+  findProcessedIntakeDuplicateByTextHash(projectId: number, textHash: string, excludeId: number): Promise<ProjectIntakeDocument | undefined>;
+  upsertIntakeJob(intakeDocumentId: number): Promise<IntakeJob>;
+  claimIntakeJobForAttempt(jobId: number): Promise<IntakeJob | null>;
+  markIntakeJobSucceeded(args: { jobId: number; attempts: number }): Promise<void>;
+  markIntakeJobDeadLettered(args: { jobId: number; attempts: number; lastError: string }): Promise<void>;
+  markIntakeJobPendingRetry(args: { jobId: number; attempts: number; lastError: string; nextAttemptAt: Date }): Promise<void>;
+  reclaimStaleIntakeJobs(maxAgeMs: number): Promise<number>;
+  listDueIntakeJobs(limit: number): Promise<IntakeJob[]>;
+  listIntakeJobs(filter?: { state?: string; limit?: number; offset?: number }): Promise<Array<IntakeJob & { projectId: number; fileName: string; source: string; analysisState: string; routingState: string; promotedKind: string | null; promotedId: number | null }>>;
+  getIntakeJob(jobId: number): Promise<IntakeJob | undefined>;
+  getIntakeJobByDocumentId(intakeDocumentId: number): Promise<IntakeJob | undefined>;
+  resetIntakeJobForRetry(jobId: number): Promise<IntakeJob | undefined>;
 
   // --- Pennylane push queue (Task #214) ---------------------------------
   upsertPennylanePush(data: InsertPennylanePush): Promise<PennylanePush>;
@@ -1392,7 +1409,7 @@ export class DatabaseStorage implements IStorage {
    */
   private async mirrorEmailDocumentToIntake(doc: EmailDocument): Promise<void> {
     if (doc.projectId == null || !doc.storageKey) return;
-    await db.insert(projectIntakeDocuments).values({
+    const [inserted] = await db.insert(projectIntakeDocuments).values({
       projectId: doc.projectId,
       fileName: doc.attachmentFileName ?? "document.pdf",
       storageKey: doc.storageKey,
@@ -1401,7 +1418,15 @@ export class DatabaseStorage implements IStorage {
       analysisState: "pending",
       routingState: "unrouted",
       sourceEmailDocumentId: doc.id,
-    }).onConflictDoNothing();
+    }).onConflictDoNothing().returning();
+    // Task #230 — enqueue background dedup → classify → route for the
+    // newly-mirrored doc. Skip when ON CONFLICT swallowed the insert (the
+    // doc — and its queue row — already exist). Dynamic import breaks the
+    // storage ↔ ingest-queue module cycle.
+    if (inserted) {
+      const { enqueueIntakeJob } = await import("./services/intake/ingest-queue.service");
+      void enqueueIntakeJob(inserted.id);
+    }
   }
 
   async updateEmailDocumentLabelStatus(messageId: string): Promise<void> {
@@ -2899,6 +2924,180 @@ export class DatabaseStorage implements IStorage {
         updatedAt: sql`CURRENT_TIMESTAMP`,
       })
       .where(eq(driveUploads.id, uploadId))
+      .returning();
+    return row;
+  }
+
+  // ---------------------------------------------------------------------
+  // Intake ingest queue + routing (Task #230). The queue row (intake_jobs)
+  // mirrors drive_uploads exactly — ON CONFLICT DO NOTHING idempotency on
+  // (intake_document_id), atomic claim flip, exponential-backoff retry, and
+  // a dead-letter terminal state for the admin DLQ. The user-facing
+  // analysis/routing state lives on project_intake_documents.
+  // ---------------------------------------------------------------------
+  async updateProjectIntakeDocument(id: number, data: Partial<InsertProjectIntakeDocument>): Promise<ProjectIntakeDocument | undefined> {
+    const [doc] = await db
+      .update(projectIntakeDocuments)
+      .set({ ...data, updatedAt: sql`CURRENT_TIMESTAMP` })
+      .where(eq(projectIntakeDocuments.id, id))
+      .returning();
+    return doc;
+  }
+
+  async findProcessedIntakeDuplicateByFingerprint(projectId: number, fingerprint: string, excludeId: number): Promise<ProjectIntakeDocument | undefined> {
+    // A "true duplicate" is another intake doc in the SAME project that has
+    // already been analysed (so its routing outcome is known) and carries
+    // the identical exact-bytes fingerprint. Oldest wins so the duplicate
+    // always points back to the original.
+    const [doc] = await db
+      .select()
+      .from(projectIntakeDocuments)
+      .where(and(
+        eq(projectIntakeDocuments.projectId, projectId),
+        eq(projectIntakeDocuments.contentFingerprint, fingerprint),
+        eq(projectIntakeDocuments.analysisState, "analyzed"),
+        ne(projectIntakeDocuments.id, excludeId),
+      ))
+      .orderBy(asc(projectIntakeDocuments.id))
+      .limit(1);
+    return doc;
+  }
+
+  async findProcessedIntakeDuplicateByTextHash(projectId: number, textHash: string, excludeId: number): Promise<ProjectIntakeDocument | undefined> {
+    // Secondary, near-duplicate check: same project, already analysed, and
+    // the canonical extracted-content hash (stored inside extracted_data)
+    // matches — this catches the same logical document re-exported with
+    // different bytes.
+    const [doc] = await db
+      .select()
+      .from(projectIntakeDocuments)
+      .where(and(
+        eq(projectIntakeDocuments.projectId, projectId),
+        eq(projectIntakeDocuments.analysisState, "analyzed"),
+        ne(projectIntakeDocuments.id, excludeId),
+        sql`${projectIntakeDocuments.extractedData}->>'contentHash' = ${textHash}`,
+      ))
+      .orderBy(asc(projectIntakeDocuments.id))
+      .limit(1);
+    return doc;
+  }
+
+  async upsertIntakeJob(intakeDocumentId: number): Promise<IntakeJob> {
+    const [inserted] = await db
+      .insert(intakeJobs)
+      .values({
+        intakeDocumentId,
+        state: "pending",
+        attempts: 0,
+        lastError: null,
+        lastAttemptAt: null,
+        nextAttemptAt: new Date(),
+      })
+      .onConflictDoNothing({ target: [intakeJobs.intakeDocumentId] })
+      .returning();
+    if (inserted) return inserted;
+    const [existing] = await db
+      .select()
+      .from(intakeJobs)
+      .where(eq(intakeJobs.intakeDocumentId, intakeDocumentId));
+    return existing;
+  }
+
+  async claimIntakeJobForAttempt(jobId: number): Promise<IntakeJob | null> {
+    const [row] = await db
+      .update(intakeJobs)
+      .set({ state: "in_flight", lastAttemptAt: new Date(), updatedAt: sql`CURRENT_TIMESTAMP` })
+      .where(and(eq(intakeJobs.id, jobId), eq(intakeJobs.state, "pending")))
+      .returning();
+    return row ?? null;
+  }
+
+  async markIntakeJobSucceeded(args: { jobId: number; attempts: number }): Promise<void> {
+    await db
+      .update(intakeJobs)
+      .set({ state: "succeeded", attempts: args.attempts, lastError: null, updatedAt: sql`CURRENT_TIMESTAMP` })
+      .where(eq(intakeJobs.id, args.jobId));
+  }
+
+  async markIntakeJobDeadLettered(args: { jobId: number; attempts: number; lastError: string }): Promise<void> {
+    await db
+      .update(intakeJobs)
+      .set({ state: "dead_letter", attempts: args.attempts, lastError: args.lastError, updatedAt: sql`CURRENT_TIMESTAMP` })
+      .where(eq(intakeJobs.id, args.jobId));
+  }
+
+  async markIntakeJobPendingRetry(args: { jobId: number; attempts: number; lastError: string; nextAttemptAt: Date }): Promise<void> {
+    await db
+      .update(intakeJobs)
+      .set({ state: "pending", attempts: args.attempts, lastError: args.lastError, nextAttemptAt: args.nextAttemptAt, updatedAt: sql`CURRENT_TIMESTAMP` })
+      .where(eq(intakeJobs.id, args.jobId));
+  }
+
+  async reclaimStaleIntakeJobs(maxAgeMs: number): Promise<number> {
+    const cutoff = new Date(Date.now() - maxAgeMs);
+    const reclaimed = await db
+      .update(intakeJobs)
+      .set({ state: "pending", nextAttemptAt: new Date(), updatedAt: sql`CURRENT_TIMESTAMP` })
+      .where(and(eq(intakeJobs.state, "in_flight"), lte(intakeJobs.lastAttemptAt, cutoff)))
+      .returning({ id: intakeJobs.id });
+    return reclaimed.length;
+  }
+
+  async listDueIntakeJobs(limit: number): Promise<IntakeJob[]> {
+    return db
+      .select()
+      .from(intakeJobs)
+      .where(and(eq(intakeJobs.state, "pending"), lte(intakeJobs.nextAttemptAt, new Date())))
+      .orderBy(asc(intakeJobs.nextAttemptAt))
+      .limit(limit);
+  }
+
+  async listIntakeJobs(filter?: { state?: string; limit?: number; offset?: number }): Promise<Array<IntakeJob & { projectId: number; fileName: string; source: string; analysisState: string; routingState: string; promotedKind: string | null; promotedId: number | null }>> {
+    const where = filter?.state ? eq(intakeJobs.state, filter.state) : undefined;
+    let q = db
+      .select({
+        id: intakeJobs.id,
+        intakeDocumentId: intakeJobs.intakeDocumentId,
+        state: intakeJobs.state,
+        attempts: intakeJobs.attempts,
+        lastError: intakeJobs.lastError,
+        lastAttemptAt: intakeJobs.lastAttemptAt,
+        nextAttemptAt: intakeJobs.nextAttemptAt,
+        createdAt: intakeJobs.createdAt,
+        updatedAt: intakeJobs.updatedAt,
+        projectId: projectIntakeDocuments.projectId,
+        fileName: projectIntakeDocuments.fileName,
+        source: projectIntakeDocuments.source,
+        analysisState: projectIntakeDocuments.analysisState,
+        routingState: projectIntakeDocuments.routingState,
+        promotedKind: projectIntakeDocuments.promotedKind,
+        promotedId: projectIntakeDocuments.promotedId,
+      })
+      .from(intakeJobs)
+      .innerJoin(projectIntakeDocuments, eq(intakeJobs.intakeDocumentId, projectIntakeDocuments.id))
+      .$dynamic();
+    if (where) q = q.where(where);
+    return q
+      .orderBy(desc(intakeJobs.updatedAt))
+      .limit(filter?.limit ?? 200)
+      .offset(filter?.offset ?? 0);
+  }
+
+  async getIntakeJob(jobId: number): Promise<IntakeJob | undefined> {
+    const [row] = await db.select().from(intakeJobs).where(eq(intakeJobs.id, jobId));
+    return row;
+  }
+
+  async getIntakeJobByDocumentId(intakeDocumentId: number): Promise<IntakeJob | undefined> {
+    const [row] = await db.select().from(intakeJobs).where(eq(intakeJobs.intakeDocumentId, intakeDocumentId));
+    return row;
+  }
+
+  async resetIntakeJobForRetry(jobId: number): Promise<IntakeJob | undefined> {
+    const [row] = await db
+      .update(intakeJobs)
+      .set({ state: "pending", attempts: 0, nextAttemptAt: new Date(), lastError: null, updatedAt: sql`CURRENT_TIMESTAMP` })
+      .where(eq(intakeJobs.id, jobId))
       .returning();
     return row;
   }

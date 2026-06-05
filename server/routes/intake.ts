@@ -80,10 +80,49 @@ router.post(
         uploadedBy: req.body.uploadedBy || "manual",
         notes: req.body.notes || null,
       });
+      // Task #230 — kick off background dedup → classify → route. Inline
+      // first attempt fires inside enqueue; failures self-heal via sweeper.
+      const { enqueueIntakeJob } = await import("../services/intake/ingest-queue.service");
+      void enqueueIntakeJob(doc.id);
       res.status(201).json(doc);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ message: `Upload failed: ${message}` });
+    }
+  },
+);
+
+router.post(
+  "/api/intake-documents/:id/reanalyze",
+  validateRequest({ params: intakeIdParams }),
+  async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const doc = await storage.getProjectIntakeDocument(id);
+      if (!doc) return res.status(404).json({ message: "Document not found" });
+
+      // Reset the user-facing state so the UI doesn't show a stale
+      // failed/parked verdict while the pipeline re-runs.
+      await storage.updateProjectIntakeDocument(id, {
+        analysisState: "pending",
+        routingState: "unrouted",
+      });
+
+      // Reset the queue row (if any) back to a fresh pending state, then
+      // fire one immediate attempt. enqueueIntakeJob is idempotent and
+      // (re)creates the row if it was never made.
+      const existingJob = await storage.getIntakeJobByDocumentId(id);
+      const { enqueueIntakeJob, attemptIntakeJob } = await import("../services/intake/ingest-queue.service");
+      if (existingJob) {
+        await storage.resetIntakeJobForRetry(existingJob.id);
+        void attemptIntakeJob(existingJob.id);
+      } else {
+        void enqueueIntakeJob(id);
+      }
+      res.json({ id, status: "reanalysis_triggered" });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Re-analysis failed: ${message}` });
     }
   },
 );

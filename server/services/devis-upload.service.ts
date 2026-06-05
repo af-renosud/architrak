@@ -10,6 +10,7 @@ import { enqueueDriveUpload } from "./drive/upload-queue.service";
 import { toSentenceCase } from "../lib/sentence-case";
 import { DEVIS_UPLOAD_ERROR_CODES } from "../../shared/devis-upload-errors";
 import { safeExtractIban, safeExtractBic } from "../../shared/iban";
+import type { ParsedDocument } from "../gmail/document-parser";
 
 interface UploadedFile {
   originalname: string;
@@ -107,7 +108,7 @@ export function buildAcompteInsertFields(
   };
 }
 
-export async function processDevisUpload(projectId: number, file: UploadedFile) {
+export async function processDevisUpload(projectId: number, file: UploadedFile, preParsed?: ParsedDocument) {
   assertPdfMagic(file.buffer);
   const storageKey = await uploadDocument(projectId, file.originalname, file.buffer, file.mimetype);
 
@@ -121,7 +122,9 @@ export async function processDevisUpload(projectId: number, file: UploadedFile) 
   });
 
   const { parseDocument, matchToProject, isTransientParseFailure, getParseFailureMessage } = await import("../gmail/document-parser");
-  const parsed = await parseDocument(file.buffer, file.originalname);
+  // Background ingest (Task #230) parses once up-front for classification +
+  // dedup, then hands the result down here so we never re-run Gemini.
+  const parsed = preParsed ?? await parseDocument(file.buffer, file.originalname);
 
   if (parsed.documentType === "unknown" && !parsed.amountHt && !parsed.contractorName && !parsed.lineItems?.length) {
     const transient = isTransientParseFailure(parsed);

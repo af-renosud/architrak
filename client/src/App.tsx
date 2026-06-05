@@ -22,6 +22,7 @@ import AdminTransientFailures from "@/pages/admin-transient-failures";
 import AdminWebhookDlq from "@/pages/admin-webhook-dlq";
 import AdminMirrorRestore from "@/pages/admin-mirror-restore";
 import AdminDriveUploads from "@/pages/admin-drive-uploads";
+import AdminIntakeJobs from "@/pages/admin-intake-jobs";
 import AdminPennylanePushes from "@/pages/admin-pennylane-pushes";
 import AdminSignedPdfRecovery from "@/pages/admin-signed-pdf-recovery";
 import { Loader2 } from "lucide-react";
@@ -45,6 +46,7 @@ function Router() {
       <Route path="/admin/ops/webhook-dlq" component={AdminWebhookDlq} />
       <Route path="/admin/ops/mirror-restore" component={AdminMirrorRestore} />
       <Route path="/admin/ops/drive-uploads" component={AdminDriveUploads} />
+      <Route path="/admin/ops/intake-jobs" component={AdminIntakeJobs} />
       <Route path="/admin/ops/pennylane-pushes" component={AdminPennylanePushes} />
       <Route path="/admin/ops/signed-pdf-recovery" component={AdminSignedPdfRecovery} />
       <Route component={NotFound} />

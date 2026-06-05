@@ -180,6 +180,16 @@ app.use((req, res, next) => {
     console.error("[PennylaneQueue] failed to start sweepers:", err);
   }
 
+  // Task #230 — background intake ingest & auto-routing sweeper. Drains
+  // pending intake_jobs (dedup → classify → route) and self-heals
+  // transient failures. Always safe to start.
+  try {
+    const { startIntakeJobSweeper } = await import("./services/intake/ingest-queue.service");
+    startIntakeJobSweeper();
+  } catch (err) {
+    console.error("[IntakeQueue] failed to start sweeper:", err);
+  }
+
   // Boot-time backend-swap reconciliation (Task #164). MUST run
   // BEFORE the contractor-auto-sync scheduler and the webhook
   // listeners come online, otherwise a stale dev/legacy mirror row

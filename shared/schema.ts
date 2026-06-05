@@ -911,6 +911,66 @@ export const projectIntakeDocuments = pgTable("project_intake_documents", {
   uniqueIndex("project_intake_documents_source_email_doc_idx").on(table.sourceEmailDocumentId),
 ]);
 
+// ---------------------------------------------------------------------
+// Background ingest & auto-routing (Task #230)
+// ---------------------------------------------------------------------
+// One queue row per intake document. The sweeper claims `pending` rows
+// (lease → `in_flight`), retries with backoff, reclaims stale in-flight
+// rows after a crash, and dead-letters after MAX attempts — mirroring
+// the proven drive_uploads / pennylane_pushes machinery so we don't
+// invent a new pattern. The pipeline (dedup → Gemini classify/extract →
+// route into a typed draft) runs inside `attemptIntakeJob`; the intake
+// document row itself carries the user-facing analysis/routing state.
+
+// Lifecycle of the OWNING intake document (project_intake_documents):
+export const INTAKE_ANALYSIS_STATES = ["pending", "analyzing", "analyzed", "failed"] as const;
+export type IntakeAnalysisState = (typeof INTAKE_ANALYSIS_STATES)[number];
+
+export const INTAKE_ROUTING_STATES = ["unrouted", "routed", "duplicate", "parked", "failed"] as const;
+export type IntakeRoutingState = (typeof INTAKE_ROUTING_STATES)[number];
+
+// Typed records the pipeline can auto-create a draft in. Situation /
+// avenant / RIB are detected but parked for manual routing (later task).
+export const INTAKE_PROMOTED_KINDS = ["devis", "invoice"] as const;
+export type IntakePromotedKind = (typeof INTAKE_PROMOTED_KINDS)[number];
+
+// Lifecycle of the QUEUE row itself:
+export const INTAKE_JOB_STATES = [
+  "pending",
+  "in_flight",
+  "succeeded",
+  "failed",
+  "dead_letter",
+] as const;
+export type IntakeJobState = (typeof INTAKE_JOB_STATES)[number];
+
+export const intakeJobs = pgTable("intake_jobs", {
+  id: serial("id").primaryKey(),
+  intakeDocumentId: integer("intake_document_id")
+    .notNull()
+    .references(() => projectIntakeDocuments.id, { onDelete: "cascade" }),
+  state: text("state").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  lastAttemptAt: timestamp("last_attempt_at"),
+  nextAttemptAt: timestamp("next_attempt_at")
+    .default(sql`CURRENT_TIMESTAMP`)
+    .notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  unique("intake_jobs_doc_unique").on(table.intakeDocumentId),
+  index("intake_jobs_state_next_idx").on(table.state, table.nextAttemptAt),
+]);
+
+export const insertIntakeJobSchema = createInsertSchema(intakeJobs).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertIntakeJob = z.infer<typeof insertIntakeJobSchema>;
+export type IntakeJob = typeof intakeJobs.$inferSelect;
+
 export const projectCommunications = pgTable("project_communications", {
   id: serial("id").primaryKey(),
   projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
