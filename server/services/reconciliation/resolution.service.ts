@@ -177,6 +177,18 @@ export async function applyHumanResolution(args: {
       message: `Overlap case is ${overlapCase.status}; only active cases can be resolved`,
     };
   }
+  // A `proven` overlap reconciles to the exact euro and is auto-superseded by
+  // reconcileAccountingStates. Accepting a human decision here — especially a
+  // `dismiss` — would record dismissal metadata that suppresses the automatic
+  // pass, leaving the duplicate counted in Contracted forever. Only genuinely
+  // ambiguous (`needs_review`) cases require a human verdict.
+  if (overlapCase.verdict !== "needs_review") {
+    return {
+      ok: false,
+      status: 409,
+      message: `Overlap case verdict is '${overlapCase.verdict}'; only needs_review cases accept a human decision (proven cases auto-resolve)`,
+    };
+  }
   const projectId = overlapCase.projectId;
   const note = args.note ?? null;
   const base = { projectId, overlapCaseId: overlapCase.id, actorUserId: args.actorUserId, note };

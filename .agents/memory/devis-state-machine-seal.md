@@ -14,11 +14,15 @@ from the patch body** in the generic `PATCH /api/devis/:id` handler
 Known sealed columns and their owning machines:
 - `acompteState` / `acompteInvoiceId` / `acomptePaidAt` → `/acompte/*` routes.
 - `accountingState` → `reconcileAccountingStates` (auto) +
-  `/api/overlap-cases/:id/resolve` (human), each writing an append-only
-  `accounting_state_changes` row via a compare-and-set transition. Freshly
-  ingested devis start `provisional`; every ingest path (intake queue AND the
-  direct `/devis/upload` route) must `enqueueReconciliation(projectId)` after a
-  successful upload or the row stays out of Contracted indefinitely.
+  `/api/overlap-cases/:id/resolve` (human), each writing an append-only audit
+  row via a compare-and-set transition. Freshly created/ingested devis start
+  `provisional`; every ingest/create path (intake queue, direct upload, AND the
+  manual create route) must seal the initial state to `provisional` and then
+  enqueue reconciliation for the project, or the row stays out of Contracted
+  indefinitely. Human resolution only applies to `needs_review` overlaps:
+  arithmetically `proven` overlaps must be left to the automatic pass — accepting
+  a human `dismiss` on a proven case records dismissal metadata that suppresses
+  auto-supersede and double-counts the duplicate forever.
 
 **Why:** the generic PATCH validates *shape* but not *transition legality*.
 Because these are ordinary columns, an authenticated operator could otherwise
@@ -27,7 +31,7 @@ no CAS, and no overlap-case decision. Validation alone does not seal a state
 machine; the column has to be removed from the writable payload.
 
 **How to apply:** whenever you add a state-machine / lifecycle column to
-`devis`, add a `delete patchBody.<col>` in the generic PATCH handler next to the
-existing `delete patchBody.acompteState` / `delete patchBody.accountingState`
-block, and confirm the create path uses an explicit insert literal (not a
-`...req.body` spread) so the initial value can't be injected either.
+`devis`, strip it from the generic PATCH handler (delete it from the patch body),
+and on every create path either omit it or set the controlled initial value as
+the LAST key of the insert object so it overrides any `...req.body` spread the
+client could inject.

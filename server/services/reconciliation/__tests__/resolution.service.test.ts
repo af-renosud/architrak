@@ -190,6 +190,17 @@ describe("resolution.service — applyHumanResolution", () => {
     expect(mockedStorage.applyAccountingStateTransitions).not.toHaveBeenCalled();
   });
 
+  it("returns 409 for a proven case (only needs_review accepts a human decision) and moves nothing", async () => {
+    mockedStorage.getOverlapCase.mockResolvedValue(
+      overlapCase({ id: 12, verdict: "proven", status: "active", primaryDevisId: 3, memberDevisIds: [1, 2] }),
+    );
+
+    const result = await applyHumanResolution({ caseId: 12, decision: "dismiss", actorUserId: 7 });
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(409);
+    expect(mockedStorage.applyAccountingStateTransitions).not.toHaveBeenCalled();
+  });
+
   it("translates a stale-write conflict into a 409", async () => {
     mockedStorage.getOverlapCase.mockResolvedValue(
       overlapCase({ id: 11, verdict: "needs_review", primaryDevisId: 3, memberDevisIds: [1] }),

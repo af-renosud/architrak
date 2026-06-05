@@ -236,7 +236,17 @@ router.post(
   "/api/projects/:projectId/devis",
   validateRequest({ params: projectIdParams, body: createDevisBodySchema }),
   async (req, res) => {
-    const d = await storage.createDevis({ ...normalizeDevisText({ ...req.body }), projectId: Number(req.params.projectId) });
+    // Seal accountingState: a freshly created devis must start `provisional` and
+    // can only move through the audited reconciliation/resolution state machine.
+    // The explicit `accountingState` below is the LAST key, so it overrides any
+    // client-supplied value in the spread (mirrors the PATCH seal).
+    const projectId = Number(req.params.projectId);
+    const d = await storage.createDevis({
+      ...normalizeDevisText({ ...req.body }),
+      projectId,
+      accountingState: "provisional",
+    });
+    void enqueueReconciliation(projectId);
     res.status(201).json(d);
   },
 );
