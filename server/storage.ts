@@ -53,6 +53,10 @@ import {
   type ProjectDocument, type InsertProjectDocument,
   type ProjectIntakeDocument, type InsertProjectIntakeDocument,
   intakeJobs, type IntakeJob, type InsertIntakeJob,
+  documentEmbeddings, type DocumentEmbedding, type InsertDocumentEmbedding,
+  overlapCases, type OverlapCase, type OverlapCaseStatus,
+  reconciliationJobs, type ReconciliationJob,
+  DEVIS_EMBEDDING_DIMENSIONS,
   type ProjectCommunication, type InsertProjectCommunication,
   type PaymentReminder, type InsertPaymentReminder,
   type ClientPaymentEvidence, type InsertClientPaymentEvidence,
@@ -523,6 +527,20 @@ export interface IStorage {
   reclaimStaleIntakeJobs(maxAgeMs: number): Promise<number>;
   listDueIntakeJobs(limit: number): Promise<IntakeJob[]>;
   listIntakeJobs(filter?: { state?: string; limit?: number; offset?: number }): Promise<Array<IntakeJob & { projectId: number; fileName: string; source: string; analysisState: string; routingState: string; promotedKind: string | null; promotedId: number | null }>>;
+
+  // --- Overlap & supersession detection engine (Task #231) --------------
+  getDocumentEmbedding(devisId: number): Promise<DocumentEmbedding | undefined>;
+  upsertDocumentEmbedding(args: { projectId: number; devisId: number; contentHash: string; model: string; embedding: number[] }): Promise<void>;
+  findSimilarProjectDevis(args: { projectId: number; devisId: number; limit: number; maxDistance: number }): Promise<Array<{ devisId: number; distance: number }>>;
+  getOverlapCasesByProject(projectId: number, status?: OverlapCaseStatus): Promise<OverlapCase[]>;
+  upsertReconciliationJob(projectId: number): Promise<ReconciliationJob>;
+  claimReconciliationJobForAttempt(jobId: number): Promise<ReconciliationJob | null>;
+  markReconciliationJobSucceeded(args: { jobId: number; attempts: number }): Promise<void>;
+  markReconciliationJobDeadLettered(args: { jobId: number; attempts: number; lastError: string }): Promise<void>;
+  markReconciliationJobPendingRetry(args: { jobId: number; attempts: number; lastError: string; nextAttemptAt: Date }): Promise<void>;
+  reclaimStaleReconciliationJobs(maxAgeMs: number): Promise<number>;
+  listDueReconciliationJobs(limit: number): Promise<ReconciliationJob[]>;
+
   getIntakeJob(jobId: number): Promise<IntakeJob | undefined>;
   getIntakeJobByDocumentId(intakeDocumentId: number): Promise<IntakeJob | undefined>;
   resetIntakeJobForRetry(jobId: number): Promise<IntakeJob | undefined>;
@@ -3049,6 +3067,154 @@ export class DatabaseStorage implements IStorage {
       .from(intakeJobs)
       .where(and(eq(intakeJobs.state, "pending"), lte(intakeJobs.nextAttemptAt, new Date())))
       .orderBy(asc(intakeJobs.nextAttemptAt))
+      .limit(limit);
+  }
+
+  // --- Overlap & supersession detection engine (Task #231) --------------
+
+  async getDocumentEmbedding(devisId: number): Promise<DocumentEmbedding | undefined> {
+    const [row] = await db
+      .select()
+      .from(documentEmbeddings)
+      .where(eq(documentEmbeddings.devisId, devisId));
+    return row;
+  }
+
+  async upsertDocumentEmbedding(args: { projectId: number; devisId: number; contentHash: string; model: string; embedding: number[] }): Promise<void> {
+    if (args.embedding.length !== DEVIS_EMBEDDING_DIMENSIONS) {
+      throw new Error(
+        `embedding dimension mismatch: got ${args.embedding.length}, expected ${DEVIS_EMBEDDING_DIMENSIONS}`,
+      );
+    }
+    await db
+      .insert(documentEmbeddings)
+      .values({
+        projectId: args.projectId,
+        devisId: args.devisId,
+        contentHash: args.contentHash,
+        model: args.model,
+        embedding: args.embedding,
+      })
+      .onConflictDoUpdate({
+        target: [documentEmbeddings.devisId],
+        set: {
+          projectId: args.projectId,
+          contentHash: args.contentHash,
+          model: args.model,
+          embedding: args.embedding,
+          updatedAt: sql`CURRENT_TIMESTAMP`,
+        },
+      });
+  }
+
+  // Cosine-distance nearest neighbours within the SAME project (single-tenant
+  // IDOR boundary — never crosses projects). Returns ascending distance
+  // (0 = identical, 2 = opposite); caller filters by maxDistance.
+  async findSimilarProjectDevis(args: { projectId: number; devisId: number; limit: number; maxDistance: number }): Promise<Array<{ devisId: number; distance: number }>> {
+    const [target] = await db
+      .select({ embedding: documentEmbeddings.embedding })
+      .from(documentEmbeddings)
+      .where(eq(documentEmbeddings.devisId, args.devisId));
+    if (!target) return [];
+    const literal = `[${target.embedding.join(",")}]`;
+    const rows = await db.execute<{ devis_id: number; distance: number }>(sql`
+      SELECT devis_id, (embedding <=> ${literal}::vector) AS distance
+      FROM document_embeddings
+      WHERE project_id = ${args.projectId}
+        AND devis_id <> ${args.devisId}
+        AND (embedding <=> ${literal}::vector) <= ${args.maxDistance}
+      ORDER BY distance ASC
+      LIMIT ${args.limit}
+    `);
+    return rows.rows.map((r) => ({ devisId: Number(r.devis_id), distance: Number(r.distance) }));
+  }
+
+  async getOverlapCasesByProject(projectId: number, status?: OverlapCaseStatus): Promise<OverlapCase[]> {
+    return db
+      .select()
+      .from(overlapCases)
+      .where(status
+        ? and(eq(overlapCases.projectId, projectId), eq(overlapCases.status, status))
+        : eq(overlapCases.projectId, projectId))
+      .orderBy(desc(overlapCases.updatedAt));
+  }
+
+  async upsertReconciliationJob(projectId: number): Promise<ReconciliationJob> {
+    const [inserted] = await db
+      .insert(reconciliationJobs)
+      .values({
+        projectId,
+        state: "pending",
+        attempts: 0,
+        lastError: null,
+        lastAttemptAt: null,
+        nextAttemptAt: new Date(),
+      })
+      .onConflictDoNothing({ target: [reconciliationJobs.projectId] })
+      .returning();
+    if (inserted) return inserted;
+    // A row already exists for this project. If a previous run finished
+    // (succeeded/dead_letter) re-arm it so newly-arrived documents get a
+    // fresh pass; otherwise leave the in-flight/pending run to coalesce.
+    const [rearmed] = await db
+      .update(reconciliationJobs)
+      .set({ state: "pending", attempts: 0, lastError: null, nextAttemptAt: new Date(), updatedAt: sql`CURRENT_TIMESTAMP` })
+      .where(and(eq(reconciliationJobs.projectId, projectId), inArray(reconciliationJobs.state, ["succeeded", "dead_letter", "failed"])))
+      .returning();
+    if (rearmed) return rearmed;
+    const [existing] = await db
+      .select()
+      .from(reconciliationJobs)
+      .where(eq(reconciliationJobs.projectId, projectId));
+    return existing;
+  }
+
+  async claimReconciliationJobForAttempt(jobId: number): Promise<ReconciliationJob | null> {
+    const [row] = await db
+      .update(reconciliationJobs)
+      .set({ state: "in_flight", lastAttemptAt: new Date(), updatedAt: sql`CURRENT_TIMESTAMP` })
+      .where(and(eq(reconciliationJobs.id, jobId), eq(reconciliationJobs.state, "pending")))
+      .returning();
+    return row ?? null;
+  }
+
+  async markReconciliationJobSucceeded(args: { jobId: number; attempts: number }): Promise<void> {
+    await db
+      .update(reconciliationJobs)
+      .set({ state: "succeeded", attempts: args.attempts, lastError: null, updatedAt: sql`CURRENT_TIMESTAMP` })
+      .where(eq(reconciliationJobs.id, args.jobId));
+  }
+
+  async markReconciliationJobDeadLettered(args: { jobId: number; attempts: number; lastError: string }): Promise<void> {
+    await db
+      .update(reconciliationJobs)
+      .set({ state: "dead_letter", attempts: args.attempts, lastError: args.lastError, updatedAt: sql`CURRENT_TIMESTAMP` })
+      .where(eq(reconciliationJobs.id, args.jobId));
+  }
+
+  async markReconciliationJobPendingRetry(args: { jobId: number; attempts: number; lastError: string; nextAttemptAt: Date }): Promise<void> {
+    await db
+      .update(reconciliationJobs)
+      .set({ state: "pending", attempts: args.attempts, lastError: args.lastError, nextAttemptAt: args.nextAttemptAt, updatedAt: sql`CURRENT_TIMESTAMP` })
+      .where(eq(reconciliationJobs.id, args.jobId));
+  }
+
+  async reclaimStaleReconciliationJobs(maxAgeMs: number): Promise<number> {
+    const cutoff = new Date(Date.now() - maxAgeMs);
+    const reclaimed = await db
+      .update(reconciliationJobs)
+      .set({ state: "pending", nextAttemptAt: new Date(), updatedAt: sql`CURRENT_TIMESTAMP` })
+      .where(and(eq(reconciliationJobs.state, "in_flight"), lte(reconciliationJobs.lastAttemptAt, cutoff)))
+      .returning({ id: reconciliationJobs.id });
+    return reclaimed.length;
+  }
+
+  async listDueReconciliationJobs(limit: number): Promise<ReconciliationJob[]> {
+    return db
+      .select()
+      .from(reconciliationJobs)
+      .where(and(eq(reconciliationJobs.state, "pending"), lte(reconciliationJobs.nextAttemptAt, new Date())))
+      .orderBy(asc(reconciliationJobs.nextAttemptAt))
       .limit(limit);
   }
 

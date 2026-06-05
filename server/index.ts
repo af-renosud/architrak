@@ -190,6 +190,17 @@ app.use((req, res, next) => {
     console.error("[IntakeQueue] failed to start sweeper:", err);
   }
 
+  // Overlap & supersession detection sweeper (Task #231). Drains pending
+  // reconciliation_jobs (semantic + arithmetic overlap detection per
+  // project) and self-heals transient failures. Honours the
+  // OVERLAP_DETECTION_ENABLED kill switch internally; never moves money.
+  try {
+    const { startReconciliationSweeper } = await import("./services/reconciliation/reconciliation-queue.service");
+    startReconciliationSweeper();
+  } catch (err) {
+    console.error("[Reconciliation] failed to start sweeper:", err);
+  }
+
   // Boot-time backend-swap reconciliation (Task #164). MUST run
   // BEFORE the contractor-auto-sync scheduler and the webhook
   // listeners come online, otherwise a stale dev/legacy mirror row

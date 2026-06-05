@@ -16,6 +16,7 @@ import {
   check,
   doublePrecision,
   bigint,
+  vector,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -970,6 +971,171 @@ export const insertIntakeJobSchema = createInsertSchema(intakeJobs).omit({
 });
 export type InsertIntakeJob = z.infer<typeof insertIntakeJobSchema>;
 export type IntakeJob = typeof intakeJobs.$inferSelect;
+
+// ---------------------------------------------------------------------
+// Overlap & supersession detection engine (Task #231)
+// ---------------------------------------------------------------------
+// A per-project background reconciliation pass that detects dangerous
+// document relationships — above all a consolidated devis that has
+// absorbed earlier individual devis (silent double-counting). It is
+// layered: semantic candidate matching (Gemini embeddings + pgvector)
+// → deterministic subset-sum screening → Gemini reasoning with
+// citations → arithmetic proof + verdict. It produces structured
+// "overlap cases" and NEVER changes a financial total or fires a
+// user-facing alert (those are downstream tasks).
+
+// Embedding dimension for Gemini `text-embedding-004`. Fixed because the
+// pgvector column type is dimension-bound; changing the model means a
+// migration. Kept in shared so the embedding service and schema agree.
+export const DEVIS_EMBEDDING_DIMENSIONS = 768;
+
+// One cached embedding per devis (the unit of semantic comparison). The
+// vector is regenerated only when `contentHash` (a hash of the canonical
+// embedding text) changes, so re-runs don't re-call Gemini for unchanged
+// documents.
+export const documentEmbeddings = pgTable("document_embeddings", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
+  contentHash: text("content_hash").notNull(),
+  model: text("model").notNull(),
+  embedding: vector("embedding", { dimensions: DEVIS_EMBEDDING_DIMENSIONS }).notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  unique("document_embeddings_devis_unique").on(table.devisId),
+  index("document_embeddings_project_idx").on(table.projectId),
+]);
+
+export const insertDocumentEmbeddingSchema = createInsertSchema(documentEmbeddings).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertDocumentEmbedding = z.infer<typeof insertDocumentEmbeddingSchema>;
+export type DocumentEmbedding = typeof documentEmbeddings.$inferSelect;
+
+// Relationship the engine proposes between a primary devis and one or
+// more member devis. `aggregates`/`contains`/`supersedes` describe a
+// consolidator absorbing earlier devis; `duplicate` is an exact re-issue;
+// `unrelated` is never persisted (kept for the reasoning enum only).
+export const OVERLAP_RELATIONSHIP_TYPES = [
+  "supersedes",
+  "contains",
+  "aggregates",
+  "duplicate",
+  "unrelated",
+] as const;
+export type OverlapRelationshipType = (typeof OVERLAP_RELATIONSHIP_TYPES)[number];
+
+// How a case was surfaced. `arithmetic` cases can be proven without any
+// model; `semantic` cases come from embedding similarity; `both` when the
+// two layers agree on the same membership.
+export const OVERLAP_DETECTION_SOURCES = ["semantic", "arithmetic", "both"] as const;
+export type OverlapDetectionSource = (typeof OVERLAP_DETECTION_SOURCES)[number];
+
+// Verdict after arithmetic proof. `proven` = the euros reconcile exactly
+// (safe to auto-resolve in a later task); `needs_review` = a human must
+// judge.
+export const OVERLAP_VERDICTS = ["proven", "needs_review"] as const;
+export type OverlapVerdict = (typeof OVERLAP_VERDICTS)[number];
+
+// Lifecycle of a case across re-runs. `active` = currently detected;
+// `withdrawn` = a prior run raised it but the latest run no longer does
+// (append-only audit — we never hard-delete).
+export const OVERLAP_CASE_STATUSES = ["active", "withdrawn"] as const;
+export type OverlapCaseStatus = (typeof OVERLAP_CASE_STATUSES)[number];
+
+export const overlapCases = pgTable("overlap_cases", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  // Stable identity hash of (projectId, relationshipType, primaryDevisId,
+  // sorted memberDevisIds). Re-runs upsert by this key instead of
+  // duplicating. UNIQUE so concurrent runs collide rather than fork.
+  caseKey: text("case_key").notNull(),
+  relationshipType: text("relationship_type").notNull(),
+  primaryDevisId: integer("primary_devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
+  // Sorted devis ids the primary absorbs/supersedes. jsonb (number[]).
+  memberDevisIds: jsonb("member_devis_ids").$type<number[]>().notNull(),
+  detectionSource: text("detection_source").notNull(),
+  // 0..1 — the reasoning pass's confidence (1 for a clean arithmetic
+  // proof with no model involvement).
+  confidence: numeric("confidence", { precision: 4, scale: 3 }).notNull(),
+  verdict: text("verdict").notNull(),
+  // { primaryCents, memberCents[], sumCents, deltaCents, reconciles }.
+  arithmeticProof: jsonb("arithmetic_proof").$type<{
+    primaryCents: number;
+    memberCents: number[];
+    sumCents: number;
+    deltaCents: number;
+    reconciles: boolean;
+  }>(),
+  // [{ devisId, devisCode, lineNumber, description, totalHt }] — NEVER
+  // banking/sensitive fields (see the portal whitelist convention).
+  citations: jsonb("citations").$type<Array<{
+    devisId: number;
+    devisCode: string | null;
+    lineNumber: number | null;
+    description: string;
+    totalHt: string | null;
+  }>>().notNull(),
+  reasoning: text("reasoning"),
+  status: text("status").notNull().default("active"),
+  lastSeenAt: timestamp("last_seen_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  withdrawnAt: timestamp("withdrawn_at"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  unique("overlap_cases_key_unique").on(table.caseKey),
+  index("overlap_cases_project_idx").on(table.projectId),
+  index("overlap_cases_project_status_idx").on(table.projectId, table.status),
+  index("overlap_cases_primary_devis_idx").on(table.primaryDevisId),
+]);
+
+export const insertOverlapCaseSchema = createInsertSchema(overlapCases).omit({
+  id: true,
+  lastSeenAt: true,
+  withdrawnAt: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertOverlapCase = z.infer<typeof insertOverlapCaseSchema>;
+export type OverlapCase = typeof overlapCases.$inferSelect;
+
+// Queue row for the per-project reconciliation run. One row per project
+// (UNIQUE) so multiple document arrivals coalesce into a single pending
+// run. Mirrors the intake_jobs / drive_uploads retry machinery.
+export const RECONCILIATION_JOB_STATES = [
+  "pending",
+  "in_flight",
+  "succeeded",
+  "failed",
+  "dead_letter",
+] as const;
+export type ReconciliationJobState = (typeof RECONCILIATION_JOB_STATES)[number];
+
+export const reconciliationJobs = pgTable("reconciliation_jobs", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  state: text("state").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  lastAttemptAt: timestamp("last_attempt_at"),
+  nextAttemptAt: timestamp("next_attempt_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  unique("reconciliation_jobs_project_unique").on(table.projectId),
+  index("reconciliation_jobs_state_next_idx").on(table.state, table.nextAttemptAt),
+]);
+
+export const insertReconciliationJobSchema = createInsertSchema(reconciliationJobs).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertReconciliationJob = z.infer<typeof insertReconciliationJobSchema>;
+export type ReconciliationJob = typeof reconciliationJobs.$inferSelect;
 
 export const projectCommunications = pgTable("project_communications", {
   id: serial("id").primaryKey(),

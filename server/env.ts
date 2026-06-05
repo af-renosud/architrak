@@ -140,6 +140,16 @@ const envSchema = z.object({
   GOOGLE_DRIVE_SHARED_DRIVE_ID: optionalString(),
   DRIVE_AUTO_UPLOAD_ENABLED: booleanFlag(false),
 
+  // --- Overlap & supersession detection engine (Task #231) -------------
+  // Per-project background reconciliation pass that detects dangerous
+  // document relationships (e.g. a consolidated devis silently absorbing
+  // earlier individual devis). It changes NO financial total and fires NO
+  // user-facing alert. ON by default; flip to false as a kill switch if
+  // embedding/reasoning cost or load needs to be paused. The AI layers
+  // additionally require GEMINI_API_KEY — absent it, the engine degrades
+  // to deterministic arithmetic-only detection.
+  OVERLAP_DETECTION_ENABLED: booleanFlag(true),
+
   // --- Rate limit store selector ---------------------------------------
   RATE_LIMIT_STORE: optionalEnum(["memory", "postgres"]),
 

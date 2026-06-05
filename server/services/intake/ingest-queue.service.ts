@@ -34,6 +34,7 @@ import { getDocumentBuffer } from "../../storage/object-storage";
 import { assertPdfMagic } from "../../middleware/upload";
 import { processDevisUpload } from "../devis-upload.service";
 import { processInvoiceUpload } from "../invoice-upload.service";
+import { enqueueReconciliation } from "../reconciliation/reconciliation-queue.service";
 import type { ParsedDocument } from "../../gmail/document-parser";
 import type { ProjectIntakeDocument } from "@shared/schema";
 
@@ -323,6 +324,10 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
             promotedKind: "devis",
             promotedId: devisId,
           });
+          // A new typed devis may overlap/supersede earlier ones — trigger
+          // the per-project reconciliation pass (idempotent, coalescing,
+          // never moves money). Fire-and-forget; failures self-retry.
+          void enqueueReconciliation(doc.projectId);
           return;
         }
         // 503 = transient AI failure → retry. Anything else (422 contractor
@@ -367,6 +372,9 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
             promotedKind: "invoice",
             promotedId: invoiceId,
           });
+          // A new invoice can shift a devis's effective scope — re-run the
+          // per-project reconciliation pass (idempotent, coalescing).
+          void enqueueReconciliation(doc.projectId);
           return;
         }
         if (result.status === 503) {
