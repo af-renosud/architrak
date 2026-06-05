@@ -122,6 +122,9 @@ describe("resolution.service — applyHumanResolution", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockedStorage.applyAccountingStateTransitions.mockResolvedValue(undefined);
+    // By default no OTHER cases touch the devis under resolution.
+    mockedStorage.getOverlapCasesByProject.mockResolvedValue([]);
+    mockedStorage.getDismissedOverlapCaseIds.mockResolvedValue([]);
   });
 
   // The single human decision is applied as one atomic batch.
@@ -169,6 +172,51 @@ describe("resolution.service — applyHumanResolution", () => {
     const calls = appliedTransitions();
     // Audit-only row stays superseded → superseded; nothing is reactivated.
     expect(calls.every((c) => c.toState !== "active")).toBe(true);
+  });
+
+  it("dismiss does NOT promote a provisional devis still under review by another active case", async () => {
+    // Case 6 (the one being dismissed) and case 7 (still open, needs_review)
+    // both involve devis 3. Resolving case 6 must leave devis 3 provisional.
+    mockedStorage.getOverlapCase.mockResolvedValue(
+      overlapCase({ id: 6, verdict: "needs_review", primaryDevisId: 3, memberDevisIds: [1] }),
+    );
+    mockedStorage.getOverlapCasesByProject.mockResolvedValue([
+      overlapCase({ id: 6, verdict: "needs_review", primaryDevisId: 3, memberDevisIds: [1] }),
+      overlapCase({ id: 7, verdict: "needs_review", primaryDevisId: 3, memberDevisIds: [9] }),
+    ]);
+    // Devis 3 is the one shared with case 7; member 1 is already active.
+    mockedStorage.getDevis.mockImplementation(async (id: number) =>
+      id === 3 ? devis(3, "provisional") : devis(id, "active"),
+    );
+
+    const result = await applyHumanResolution({ caseId: 6, decision: "dismiss", actorUserId: 7 });
+    expect(result.ok).toBe(true);
+    const calls = appliedTransitions();
+    // Devis 3 is NOT promoted to active (still tied up in case 7).
+    expect(calls.some((c) => c.devisId === 3 && c.toState === "active")).toBe(false);
+    // Still leaves an audit row for the dismissal.
+    expect(calls.some((c) => c.reason === "human_dismiss" && c.overlapCaseId === 6)).toBe(true);
+  });
+
+  it("confirm does NOT promote the provisional primary while another active case still touches it", async () => {
+    mockedStorage.getOverlapCase.mockResolvedValue(
+      overlapCase({ id: 5, verdict: "needs_review", primaryDevisId: 3, memberDevisIds: [1] }),
+    );
+    mockedStorage.getOverlapCasesByProject.mockResolvedValue([
+      overlapCase({ id: 5, verdict: "needs_review", primaryDevisId: 3, memberDevisIds: [1] }),
+      overlapCase({ id: 8, verdict: "needs_review", primaryDevisId: 3, memberDevisIds: [4] }),
+    ]);
+    mockedStorage.getDevis.mockImplementation(async (id: number) =>
+      id === 3 ? devis(3, "provisional") : devis(id, "active"),
+    );
+
+    const result = await applyHumanResolution({ caseId: 5, decision: "confirm", actorUserId: 7 });
+    expect(result.ok).toBe(true);
+    const calls = appliedTransitions();
+    // Member 1 still superseded by the confirm…
+    expect(calls).toContainEqual(expect.objectContaining({ devisId: 1, toState: "superseded" }));
+    // …but primary 3 is NOT promoted to active (case 8 still open).
+    expect(calls.some((c) => c.devisId === 3 && c.toState === "active")).toBe(false);
   });
 
   it("returns 404 for an unknown case", async () => {

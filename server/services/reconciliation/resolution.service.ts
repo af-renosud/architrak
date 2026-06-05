@@ -193,6 +193,24 @@ export async function applyHumanResolution(args: {
   const note = args.note ?? null;
   const base = { projectId, overlapCaseId: overlapCase.id, actorUserId: args.actorUserId, note };
 
+  // A devis can participate in more than one overlap case. Resolving THIS case
+  // must never promote a provisional devis to `active` while another unresolved
+  // (active, non-dismissed, needs_review) case still touches it — that other
+  // case might yet supersede it, and the automatic pass never demotes `active`
+  // back to `provisional`, so the premature promotion would skew Contracted
+  // permanently. Build the set of devis still tied up elsewhere and gate every
+  // promotion on it (mirrors reconcileAccountingStates' `underReview`).
+  const otherActiveCases = await storage.getOverlapCasesByProject(projectId, "active");
+  const dismissedCaseIds = new Set(await storage.getDismissedOverlapCaseIds(projectId));
+  const stillUnderReview = new Set<number>();
+  for (const c of otherActiveCases) {
+    if (c.id === overlapCase.id) continue;
+    if (dismissedCaseIds.has(c.id)) continue;
+    if (c.verdict !== "needs_review") continue;
+    stillUnderReview.add(c.primaryDevisId);
+    for (const memberId of c.memberDevisIds) stillUnderReview.add(memberId);
+  }
+
   const transitions: AccountingStateTransition[] = [];
   const superseded: number[] = [];
   const keptActive: number[] = [];
@@ -212,7 +230,7 @@ export async function applyHumanResolution(args: {
       }
     }
     const primary = await storage.getDevis(overlapCase.primaryDevisId);
-    if (primary && primary.accountingState === "provisional") {
+    if (primary && primary.accountingState === "provisional" && !stillUnderReview.has(primary.id)) {
       transitions.push({
         ...base,
         devisId: primary.id,
@@ -230,7 +248,7 @@ export async function applyHumanResolution(args: {
       if (seen.has(id)) continue;
       seen.add(id);
       const d = await storage.getDevis(id);
-      if (d && d.accountingState === "provisional") {
+      if (d && d.accountingState === "provisional" && !stillUnderReview.has(id)) {
         transitions.push({
           ...base,
           devisId: id,
