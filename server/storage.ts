@@ -175,6 +175,9 @@ export interface IStorage {
   updateMarche(id: number, data: Partial<InsertMarche>): Promise<Marche | undefined>;
 
   getDevisByProject(projectId: number): Promise<Devis[]>;
+  // Batched variant for the projects-list accounting-status rollup: one query
+  // for many projects instead of N per-project queries.
+  getDevisByProjects(projectIds: number[]): Promise<Devis[]>;
   getDevis(id: number): Promise<Devis | undefined>;
   createDevis(data: InsertDevis): Promise<Devis>;
   updateDevis(id: number, data: Partial<InsertDevis>): Promise<Devis | undefined>;
@@ -187,6 +190,8 @@ export interface IStorage {
   deleteDevisLineItem(id: number): Promise<void>;
 
   getAvenantsByDevis(devisId: number): Promise<Avenant[]>;
+  // Batched variant for the projects-list accounting-status rollup.
+  getAvenantsByDevisIds(devisIds: number[]): Promise<Avenant[]>;
   createAvenant(data: InsertAvenant): Promise<Avenant>;
   updateAvenant(id: number, data: Partial<InsertAvenant>): Promise<Avenant | undefined>;
 
@@ -559,6 +564,8 @@ export interface IStorage {
   upsertDocumentEmbedding(args: { projectId: number; devisId: number; contentHash: string; model: string; embedding: number[] }): Promise<void>;
   findSimilarProjectDevis(args: { projectId: number; devisId: number; limit: number; maxDistance: number }): Promise<Array<{ devisId: number; distance: number }>>;
   getOverlapCasesByProject(projectId: number, status?: OverlapCaseStatus): Promise<OverlapCase[]>;
+  // Batched variant for the projects-list accounting-status rollup.
+  getOverlapCasesByProjects(projectIds: number[], status?: OverlapCaseStatus): Promise<OverlapCase[]>;
   getOverlapCase(id: number): Promise<OverlapCase | undefined>;
   // Task #232 — accounting state machine. transitionDevisAccountingState
   // writes the new devis state AND its append-only audit row in one tx.
@@ -573,6 +580,9 @@ export interface IStorage {
   // reconciliation pass never auto-supersedes their members).
   getDismissedOverlapCaseIds(projectId: number): Promise<number[]>;
   getResolvedOverlapCaseIds(projectId: number): Promise<number[]>;
+  // Batched variant for the projects-list accounting-status rollup: returns the
+  // (projectId, overlapCaseId) pairs the architect has humanly resolved.
+  getResolvedOverlapCaseRowsByProjects(projectIds: number[]): Promise<Array<{ projectId: number; overlapCaseId: number }>>;
   getAccountingStateChangesByDevis(devisId: number): Promise<AccountingStateChange[]>;
   getHumanResolvedOverlapDecisions(projectId: number): Promise<AccountingStateChange[]>;
   upsertReconciliationJob(projectId: number): Promise<ReconciliationJob>;
@@ -875,6 +885,11 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(devis).where(eq(devis.projectId, projectId)).orderBy(devis.devisCode);
   }
 
+  async getDevisByProjects(projectIds: number[]): Promise<Devis[]> {
+    if (projectIds.length === 0) return [];
+    return db.select().from(devis).where(inArray(devis.projectId, projectIds)).orderBy(devis.devisCode);
+  }
+
   async getDevis(id: number): Promise<Devis | undefined> {
     const [d] = await db.select().from(devis).where(eq(devis.id, id));
     return d;
@@ -919,6 +934,11 @@ export class DatabaseStorage implements IStorage {
 
   async getAvenantsByDevis(devisId: number): Promise<Avenant[]> {
     return db.select().from(avenants).where(eq(avenants.devisId, devisId)).orderBy(avenants.createdAt);
+  }
+
+  async getAvenantsByDevisIds(devisIds: number[]): Promise<Avenant[]> {
+    if (devisIds.length === 0) return [];
+    return db.select().from(avenants).where(inArray(avenants.devisId, devisIds)).orderBy(avenants.createdAt);
   }
 
   async createAvenant(data: InsertAvenant): Promise<Avenant> {
@@ -3181,6 +3201,17 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(overlapCases.updatedAt));
   }
 
+  async getOverlapCasesByProjects(projectIds: number[], status?: OverlapCaseStatus): Promise<OverlapCase[]> {
+    if (projectIds.length === 0) return [];
+    return db
+      .select()
+      .from(overlapCases)
+      .where(status
+        ? and(inArray(overlapCases.projectId, projectIds), eq(overlapCases.status, status))
+        : inArray(overlapCases.projectId, projectIds))
+      .orderBy(desc(overlapCases.updatedAt));
+  }
+
   async getOverlapCase(id: number): Promise<OverlapCase | undefined> {
     const [row] = await db.select().from(overlapCases).where(eq(overlapCases.id, id));
     return row;
@@ -3253,6 +3284,24 @@ export class DatabaseStorage implements IStorage {
     return rows
       .map((r) => r.overlapCaseId)
       .filter((id): id is number => id != null);
+  }
+
+  async getResolvedOverlapCaseRowsByProjects(
+    projectIds: number[],
+  ): Promise<Array<{ projectId: number; overlapCaseId: number }>> {
+    if (projectIds.length === 0) return [];
+    const rows = await db
+      .selectDistinct({
+        projectId: accountingStateChanges.projectId,
+        overlapCaseId: accountingStateChanges.overlapCaseId,
+      })
+      .from(accountingStateChanges)
+      .where(and(
+        inArray(accountingStateChanges.projectId, projectIds),
+        inArray(accountingStateChanges.reason, ["human_confirm", "human_dismiss"]),
+      ));
+    return rows
+      .filter((r): r is { projectId: number; overlapCaseId: number } => r.overlapCaseId != null);
   }
 
   async getAccountingStateChangesByDevis(devisId: number): Promise<AccountingStateChange[]> {

@@ -23,7 +23,7 @@
 
 import { storage, AccountingStateConflictError, type AccountingStateTransition } from "../../storage";
 import { roundCurrency } from "../../../shared/financial-utils";
-import type { Devis, OverlapCase } from "@shared/schema";
+import type { Avenant, Devis, OverlapCase } from "@shared/schema";
 import type {
   ProjectReviewCasesResponse,
   ResolvedReviewCard,
@@ -351,6 +351,111 @@ export async function getProjectAccountingStatus(
     needsReviewCount: needsReviewCases.length,
     eurosAtRisk,
   };
+}
+
+/**
+ * Batched project-level rollup powering the projects-list status badges.
+ * Computes the SAME verdict/precedence as getProjectAccountingStatus, but with
+ * a constant number of storage queries (4) regardless of how many projects are
+ * requested — no per-project N+1. Every requested projectId is present in the
+ * result; projects with no devis/cases come back `clean`.
+ */
+export async function getProjectsAccountingStatus(
+  projectIds: number[],
+): Promise<ProjectAccountingStatus[]> {
+  if (projectIds.length === 0) return [];
+
+  // 1. All devis (unfiltered map for impact math; non-void list for counts).
+  const allDevis = await storage.getDevisByProjects(projectIds);
+  const devisById = new Map<number, Devis>();
+  for (const d of allDevis) devisById.set(d.id, d);
+  const liveDevis = allDevis.filter((d) => d.status !== "void");
+
+  // 2. Active overlap cases + 3. humanly-resolved case rows.
+  const activeCases = await storage.getOverlapCasesByProjects(projectIds, "active");
+  const resolvedRows = await storage.getResolvedOverlapCaseRowsByProjects(projectIds);
+  // Case ids are globally unique, so one set serves the "exclude humanly-resolved
+  // case" filter across every project.
+  const resolvedCaseIds = new Set(resolvedRows.map((r) => r.overlapCaseId));
+  const resolvedProjectIds = new Set(resolvedRows.map((r) => r.projectId));
+
+  // Open (still-needs-a-human) needs_review cases, grouped per project.
+  const needsReviewByProject = new Map<number, OverlapCase[]>();
+  const memberDevisIds = new Set<number>();
+  for (const c of activeCases) {
+    if (c.verdict !== "needs_review" || resolvedCaseIds.has(c.id)) continue;
+    const list = needsReviewByProject.get(c.projectId) ?? [];
+    list.push(c);
+    needsReviewByProject.set(c.projectId, list);
+    for (const m of c.memberDevisIds) memberDevisIds.add(m);
+  }
+
+  // 4. Avenants for the member devis only (drives euros-at-risk), grouped.
+  const avenantsByDevis = new Map<number, Avenant[]>();
+  if (memberDevisIds.size > 0) {
+    const avs = await storage.getAvenantsByDevisIds(Array.from(memberDevisIds));
+    for (const a of avs) {
+      const list = avenantsByDevis.get(a.devisId) ?? [];
+      list.push(a);
+      avenantsByDevis.set(a.devisId, list);
+    }
+  }
+
+  const adjustedHt = (d: Devis): number => {
+    const approved = (avenantsByDevis.get(d.id) ?? []).filter((a) => a.status === "approved");
+    const pv = approved
+      .filter((a) => a.type === "pv")
+      .reduce((sum, a) => sum + parseFloat(a.amountHt), 0);
+    const mv = approved
+      .filter((a) => a.type === "mv")
+      .reduce((sum, a) => sum + parseFloat(a.amountHt), 0);
+    return roundCurrency(parseFloat(d.amountHt) + pv - mv);
+  };
+
+  // Per-project provisional / superseded counts (non-void devis only).
+  const counts = new Map<number, { provisional: number; superseded: number }>();
+  for (const id of projectIds) counts.set(id, { provisional: 0, superseded: 0 });
+  for (const d of liveDevis) {
+    const agg = counts.get(d.projectId);
+    if (!agg) continue;
+    if (d.accountingState === "provisional") agg.provisional++;
+    else if (d.accountingState === "superseded") agg.superseded++;
+  }
+
+  return projectIds.map((projectId) => {
+    const agg = counts.get(projectId) ?? { provisional: 0, superseded: 0 };
+    const needsReviewCases = needsReviewByProject.get(projectId) ?? [];
+
+    let eurosAtRisk = 0;
+    for (const c of needsReviewCases) {
+      for (const memberId of c.memberDevisIds) {
+        const member = devisById.get(memberId);
+        if (member && member.accountingState === "active") {
+          eurosAtRisk = roundCurrency(eurosAtRisk + adjustedHt(member));
+        }
+      }
+    }
+
+    let status: ProjectAccountingStatus["status"];
+    if (needsReviewCases.length > 0) {
+      status = "needs_review";
+    } else if (agg.provisional > 0) {
+      status = "pending_analysis";
+    } else if (agg.superseded > 0 || resolvedProjectIds.has(projectId)) {
+      status = "resolved";
+    } else {
+      status = "clean";
+    }
+
+    return {
+      projectId,
+      status,
+      provisionalCount: agg.provisional,
+      supersededCount: agg.superseded,
+      needsReviewCount: needsReviewCases.length,
+      eurosAtRisk,
+    };
+  });
 }
 
 /**

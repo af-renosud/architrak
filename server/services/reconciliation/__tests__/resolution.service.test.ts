@@ -12,12 +12,16 @@ vi.mock("../../../storage", () => {
     AccountingStateConflictError,
     storage: {
       getDevisByProject: vi.fn(),
+      getDevisByProjects: vi.fn(),
       getDevis: vi.fn(),
       getAvenantsByDevis: vi.fn(),
+      getAvenantsByDevisIds: vi.fn(),
       getOverlapCasesByProject: vi.fn(),
+      getOverlapCasesByProjects: vi.fn(),
       getOverlapCase: vi.fn(),
       getDismissedOverlapCaseIds: vi.fn(),
       getResolvedOverlapCaseIds: vi.fn(),
+      getResolvedOverlapCaseRowsByProjects: vi.fn(),
       transitionDevisAccountingState: vi.fn(),
       applyAccountingStateTransitions: vi.fn(),
     },
@@ -30,6 +34,7 @@ import {
   applyHumanResolution,
   computeOverlapCaseImpact,
   getProjectAccountingStatus,
+  getProjectsAccountingStatus,
 } from "../resolution.service";
 import { storage } from "../../../storage";
 
@@ -338,5 +343,81 @@ describe("resolution.service — computeOverlapCaseImpact & status rollup", () =
     const status = await getProjectAccountingStatus(1);
     expect(status.needsReviewCount).toBe(0);
     expect(status.status).toBe("resolved");
+  });
+});
+
+describe("resolution.service — getProjectsAccountingStatus (batched rollup, Task #237)", () => {
+  function devisP(id: number, projectId: number, accountingState: string, amountHt = "100.00"): Devis {
+    return {
+      id,
+      projectId,
+      amountHt,
+      amountTtc: amountHt,
+      status: "draft",
+      accountingState,
+    } as unknown as Devis;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedStorage.getDevisByProjects.mockResolvedValue([]);
+    mockedStorage.getOverlapCasesByProjects.mockResolvedValue([]);
+    mockedStorage.getResolvedOverlapCaseRowsByProjects.mockResolvedValue([]);
+    mockedStorage.getAvenantsByDevisIds.mockResolvedValue([]);
+  });
+
+  it("returns an entry for every requested project, defaulting empty ones to clean", async () => {
+    mockedStorage.getDevisByProjects.mockResolvedValue([devisP(1, 1, "active")]);
+
+    const statuses = await getProjectsAccountingStatus([1, 2]);
+    expect(statuses.map((s) => s.projectId)).toEqual([1, 2]);
+    expect(statuses.find((s) => s.projectId === 1)?.status).toBe("clean");
+    expect(statuses.find((s) => s.projectId === 2)?.status).toBe("clean");
+  });
+
+  it("computes the same verdicts per project as the single-project rollup", async () => {
+    mockedStorage.getDevisByProjects.mockResolvedValue([
+      // project 1 — needs_review (active member at risk)
+      devisP(1, 1, "active", "100.00"),
+      devisP(2, 1, "provisional", "200.00"),
+      // project 3 — pending (a lone provisional, no case)
+      devisP(10, 3, "provisional", "50.00"),
+      // project 4 — resolved (a superseded devis)
+      devisP(20, 4, "superseded", "70.00"),
+    ]);
+    mockedStorage.getOverlapCasesByProjects.mockResolvedValue([
+      overlapCase({ id: 1, projectId: 1, verdict: "needs_review", primaryDevisId: 2, memberDevisIds: [1] }),
+    ]);
+
+    const statuses = await getProjectsAccountingStatus([1, 3, 4]);
+    const byId = new Map(statuses.map((s) => [s.projectId, s]));
+    expect(byId.get(1)?.status).toBe("needs_review");
+    expect(byId.get(1)?.needsReviewCount).toBe(1);
+    expect(byId.get(1)?.eurosAtRisk).toBe(100);
+    expect(byId.get(3)?.status).toBe("pending_analysis");
+    expect(byId.get(4)?.status).toBe("resolved");
+  });
+
+  it("excludes humanly-resolved cases and marks the project resolved instead", async () => {
+    mockedStorage.getDevisByProjects.mockResolvedValue([
+      devisP(1, 1, "superseded", "100.00"),
+      devisP(2, 1, "active", "200.00"),
+    ]);
+    mockedStorage.getOverlapCasesByProjects.mockResolvedValue([
+      overlapCase({ id: 5, projectId: 1, verdict: "needs_review", primaryDevisId: 2, memberDevisIds: [1] }),
+    ]);
+    mockedStorage.getResolvedOverlapCaseRowsByProjects.mockResolvedValue([
+      { projectId: 1, overlapCaseId: 5 },
+    ]);
+
+    const [status] = await getProjectsAccountingStatus([1]);
+    expect(status.needsReviewCount).toBe(0);
+    expect(status.status).toBe("resolved");
+  });
+
+  it("returns [] for an empty id list without touching storage", async () => {
+    const statuses = await getProjectsAccountingStatus([]);
+    expect(statuses).toEqual([]);
+    expect(mockedStorage.getDevisByProjects).not.toHaveBeenCalled();
   });
 });

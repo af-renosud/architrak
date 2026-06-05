@@ -20,6 +20,7 @@ import { RetentionBlockedDialog, type RetainedRecordCounts } from "@/components/
 import { ApiError } from "@/lib/queryClient";
 import { formatLotDescription } from "@shared/lot-label";
 import { DesignContractUpload, type ConfirmedDesignContract } from "@/components/projects/DesignContractUpload";
+import { AccountingStatusBadge, type AccountingStatusValue } from "@/components/reconciliation/AccountingStatusBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -28,7 +29,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Project, ArchidocProject, ArchidocSiretIssue } from "@shared/schema";
@@ -51,6 +52,15 @@ interface ArchidocStatus {
   sourceHost?: string | null;
   hostMisconfigured?: boolean;
   nodeEnv?: "development" | "production" | "test";
+}
+
+interface ProjectAccountingStatusSummary {
+  projectId: number;
+  status: AccountingStatusValue;
+  provisionalCount: number;
+  supersededCount: number;
+  needsReviewCount: number;
+  eurosAtRisk: number;
 }
 
 function formatCurrency(value: number): string {
@@ -84,6 +94,27 @@ export default function Projects() {
   const { data: archidocStatus } = useQuery<ArchidocStatus>({
     queryKey: ["/api/archidoc/status"],
   });
+
+  // One batched fetch for the accounting-status badges instead of N per-card
+  // requests. Keyed on the sorted project ids so it refetches when the list
+  // changes (e.g. switching active/archived view).
+  const projectIds = (projects ?? []).map((p) => p.id);
+  const projectIdsKey = [...projectIds].sort((a, b) => a - b).join(",");
+  const { data: accountingStatuses } = useQuery<ProjectAccountingStatusSummary[]>({
+    queryKey: ["/api/projects/accounting-status/batch", projectIdsKey],
+    queryFn: async () => {
+      const res = await fetch(`/api/projects/accounting-status/batch?ids=${projectIdsKey}`, {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
+      return res.json();
+    },
+    enabled: projectIds.length > 0,
+  });
+
+  const accountingStatusByProject = new Map(
+    (accountingStatuses ?? []).map((s) => [s.projectId, s]),
+  );
 
   const { data: siretIssues, isLoading: loadingSiretIssues } = useQuery<ArchidocSiretIssue[]>({
     queryKey: ["/api/archidoc/siret-issues"],
@@ -491,7 +522,11 @@ export default function Projects() {
         ) : projects && projects.length > 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             {projects.map((project) => (
-              <ProjectCard key={project.id} project={project} />
+              <ProjectCard
+                key={project.id}
+                project={project}
+                accountingStatus={accountingStatusByProject.get(project.id)}
+              />
             ))}
           </div>
         ) : (
@@ -574,7 +609,13 @@ export default function Projects() {
   );
 }
 
-function ProjectCard({ project }: { project: Project }) {
+function ProjectCard({
+  project,
+  accountingStatus,
+}: {
+  project: Project;
+  accountingStatus?: ProjectAccountingStatusSummary;
+}) {
   interface FinancialSummary {
     totalContractedHt: number;
     totalCertifiedHt: number;
@@ -582,6 +623,7 @@ function ProjectCard({ project }: { project: Project }) {
   }
 
   const { toast } = useToast();
+  const [, navigate] = useLocation();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [retentionOpen, setRetentionOpen] = useState(false);
   const [retained, setRetained] = useState<RetainedRecordCounts | null>(null);
@@ -720,6 +762,25 @@ function ProjectCard({ project }: { project: Project }) {
               <StatusBadge status={project.status} />
             </div>
           </div>
+          {accountingStatus && accountingStatus.status === "needs_review" && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                navigate(`/projets/${project.id}?tab=review`);
+              }}
+              className="mb-2 cursor-pointer"
+              aria-label={`Review accounting anomalies for ${project.name}`}
+              data-testid={`button-accounting-status-${project.id}`}
+            >
+              <AccountingStatusBadge
+                status={accountingStatus.status}
+                eurosAtRisk={accountingStatus.eurosAtRisk}
+                needsReviewCount={accountingStatus.needsReviewCount}
+              />
+            </button>
+          )}
           <p className="text-[11px] text-muted-foreground mb-1" data-testid={`text-project-client-${project.id}`}>
             {project.clientName}
           </p>

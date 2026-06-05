@@ -7,12 +7,30 @@ import {
   applyHumanResolution,
   computeOverlapCaseImpact,
   getProjectAccountingStatus,
+  getProjectsAccountingStatus,
   getProjectReviewCases,
 } from "../services/reconciliation/resolution.service";
 
 const router = Router();
 
 const projectIdParams = z.object({ projectId: z.coerce.number().int().positive() });
+const accountingStatusBatchQuery = z.object({
+  ids: z
+    .string()
+    .min(1)
+    .transform((raw, ctx) => {
+      const ids = raw
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+        .map((s) => Number(s));
+      if (ids.some((n) => !Number.isInteger(n) || n <= 0)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "ids must be positive integers" });
+        return z.NEVER;
+      }
+      return Array.from(new Set(ids));
+    }),
+});
 const caseIdParams = z.object({ id: z.coerce.number().int().positive() });
 const resolveBody = z.object({
   decision: z.enum(["confirm", "dismiss"]),
@@ -32,6 +50,25 @@ router.get(
       }
       const status = await getProjectAccountingStatus(projectId);
       res.status(200).json(status);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Accounting status failed: ${message}` });
+    }
+  },
+);
+
+// Batched accounting rollup for the projects list — one request for many
+// projects (?ids=1,2,3) instead of N per-project fetches. Returns an array of
+// the same per-project rollup; ids with no devis/cases come back `clean`.
+// NB: 4-segment path (…/batch) so it is not shadowed by `GET /api/projects/:id`.
+router.get(
+  "/api/projects/accounting-status/batch",
+  validateRequest({ query: accountingStatusBatchQuery }),
+  async (req, res) => {
+    try {
+      const { ids } = req.query as unknown as { ids: number[] };
+      const statuses = await getProjectsAccountingStatus(ids);
+      res.status(200).json(statuses);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ message: `Accounting status failed: ${message}` });
