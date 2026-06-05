@@ -22,7 +22,12 @@ Known sealed columns and their owning machines:
   indefinitely. Human resolution only applies to `needs_review` overlaps:
   arithmetically `proven` overlaps must be left to the automatic pass — accepting
   a human `dismiss` on a proven case records dismissal metadata that suppresses
-  auto-supersede and double-counts the duplicate forever.
+  auto-supersede and double-counts the duplicate forever. Two more invariants:
+  (1) resolving one case must NOT promote a provisional devis that is still tied
+  up in another unresolved `needs_review` case (the auto pass never demotes
+  `active`, so the promotion would stick wrongly); (2) arithmetic proof outranks a
+  prior dismissal — a case dismissed while `needs_review` that later flips to
+  `proven` (case identity is stable by caseKey) must still auto-supersede.
 
 **Why:** the generic PATCH validates *shape* but not *transition legality*.
 Because these are ordinary columns, an authenticated operator could otherwise

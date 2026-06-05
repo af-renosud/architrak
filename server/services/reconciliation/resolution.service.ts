@@ -92,12 +92,16 @@ export async function reconcileAccountingStates(projectId: number): Promise<void
   const supersedeTargets = new Map<number, number>(); // devisId -> overlapCaseId
   const underReview = new Set<number>();
   for (const c of activeCases) {
-    if (dismissedCaseIds.has(c.id)) continue; // architect already ruled on it
     if (c.verdict === "proven") {
+      // Arithmetic proof ALWAYS applies — even if this case was dismissed earlier
+      // while it was still `needs_review`. Case identity is stable by caseKey, so
+      // later amount/avenant edits can flip a dismissed case to `proven`; the
+      // stale dismissal must not keep a now-proven duplicate in Contracted.
       for (const memberId of c.memberDevisIds) {
         if (!supersedeTargets.has(memberId)) supersedeTargets.set(memberId, c.id);
       }
-    } else {
+    } else if (!dismissedCaseIds.has(c.id)) {
+      // needs_review and NOT yet ruled on by an architect → leave provisional.
       underReview.add(c.primaryDevisId);
       for (const memberId of c.memberDevisIds) underReview.add(memberId);
     }

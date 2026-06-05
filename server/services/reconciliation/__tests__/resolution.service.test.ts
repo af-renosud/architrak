@@ -96,7 +96,10 @@ describe("resolution.service — reconcileAccountingStates (Task #232)", () => {
     expect(mockedStorage.transitionDevisAccountingState).not.toHaveBeenCalled();
   });
 
-  it("does NOT auto-supersede a proven case the architect dismissed", async () => {
+  it("auto-supersedes a case that became proven even after an earlier dismissal", async () => {
+    // The architect dismissed this case while it was needs_review; later edits
+    // flipped it to proven. Arithmetic proof must win over the stale dismissal —
+    // otherwise a now-proven duplicate stays double-counted in Contracted.
     mockedStorage.getDevisByProject.mockResolvedValue([devis(1, "active"), devis(2, "active")]);
     mockedStorage.getOverlapCasesByProject.mockResolvedValue([
       overlapCase({ id: 9, verdict: "proven", primaryDevisId: 2, memberDevisIds: [1] }),
@@ -104,7 +107,24 @@ describe("resolution.service — reconcileAccountingStates (Task #232)", () => {
     mockedStorage.getDismissedOverlapCaseIds.mockResolvedValue([9]);
 
     await reconcileAccountingStates(1);
-    expect(mockedStorage.transitionDevisAccountingState).not.toHaveBeenCalled();
+    expect(mockedStorage.transitionDevisAccountingState).toHaveBeenCalledWith(
+      expect.objectContaining({ devisId: 1, toState: "superseded", reason: "proven_supersede" }),
+    );
+  });
+
+  it("keeps members provisional when a needs_review case was dismissed (no supersede, allows promotion)", async () => {
+    mockedStorage.getDevisByProject.mockResolvedValue([devis(1, "provisional"), devis(2, "provisional")]);
+    mockedStorage.getOverlapCasesByProject.mockResolvedValue([
+      overlapCase({ id: 9, verdict: "needs_review", primaryDevisId: 2, memberDevisIds: [1] }),
+    ]);
+    mockedStorage.getDismissedOverlapCaseIds.mockResolvedValue([9]);
+
+    await reconcileAccountingStates(1);
+    const calls = mockedStorage.transitionDevisAccountingState.mock.calls.map((c) => c[0]);
+    // Dismissed needs_review → no supersede, and the devis are free to promote.
+    expect(calls.every((c) => c.toState !== "superseded")).toBe(true);
+    expect(calls).toContainEqual(expect.objectContaining({ devisId: 1, toState: "active", reason: "reconciliation_promote" }));
+    expect(calls).toContainEqual(expect.objectContaining({ devisId: 2, toState: "active", reason: "reconciliation_promote" }));
   });
 
   it("promotes a lone provisional devis with no overlap to active", async () => {
