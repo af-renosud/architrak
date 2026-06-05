@@ -699,6 +699,13 @@ router.patch(
     delete patchBody.acompteState;
     delete patchBody.acompteInvoiceId;
     delete patchBody.acomptePaidAt;
+    // Task #232 — keep the accounting state machine sealed too. A devis only
+    // moves between provisional/active/superseded via reconcileAccountingStates
+    // or the authenticated /api/overlap-cases/:id/resolve endpoint, each of
+    // which writes an append-only `accounting_state_changes` audit row through a
+    // compare-and-set transition. Strip it from the generic PATCH so an
+    // operator can't silently move money into/out of Contracted with no audit.
+    delete patchBody.accountingState;
     // When the architect flips `acompteRequired` from false → true on
     // a row whose state was 'none', auto-arm the gate by transitioning
     // to 'pending'. Without this, the gate would silently stay

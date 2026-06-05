@@ -45,6 +45,7 @@ export async function getProjectFinancialSummary(projectId: number) {
         descriptionFr: d.descriptionFr,
         descriptionUk: d.descriptionUk,
         status: d.status,
+        accountingState: d.accountingState,
         signOffStage: d.signOffStage,
         contractorId: d.contractorId,
         invoicingMode: d.invoicingMode,
@@ -64,7 +65,13 @@ export async function getProjectFinancialSummary(projectId: number) {
     })
   );
 
-  const activeDevis = devisSummaries.filter(ds => ds.status !== "void");
+  // Task #232 — Contracted guard. Only genuinely-active devis count toward the
+  // buckets: `provisional` (freshly ingested, not yet reconciled) and
+  // `superseded` (folded into another devis) are excluded, as are `void` ones.
+  // Existing rows backfill to `active`, so historic behaviour is unchanged.
+  const activeDevis = devisSummaries.filter(
+    ds => ds.accountingState === "active" && ds.status !== "void",
+  );
   const totals = activeDevis.reduce(
     (acc, ds) => ({
       totalContractedHt: acc.totalContractedHt + ds.adjustedHt,

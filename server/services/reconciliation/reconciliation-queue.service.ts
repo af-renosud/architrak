@@ -17,6 +17,7 @@
 import { storage } from "../../storage";
 import { env } from "../../env";
 import { runProjectReconciliation } from "./overlap-detection.service";
+import { reconcileAccountingStates } from "./resolution.service";
 
 export const MAX_RECONCILIATION_ATTEMPTS = 5;
 
@@ -65,6 +66,11 @@ export async function attemptReconciliationJob(jobId: number): Promise<void> {
   const attempts = claimed.attempts + 1;
   try {
     const summary = await runProjectReconciliation(claimed.projectId);
+    // Task #232 — apply the accounting-state consequences of this pass:
+    // auto-supersede proven members, promote cleared provisional devis. Kept
+    // OUTSIDE runProjectReconciliation (detection stays money-free) and INSIDE
+    // the attempt so a transient failure here retries with the same backoff.
+    await reconcileAccountingStates(claimed.projectId);
     await storage.markReconciliationJobSucceeded({ jobId, attempts });
     console.log(
       `[Reconciliation] project ${summary.projectId}: ${summary.detected} case(s) ` +

@@ -231,6 +231,10 @@ export async function processDevisUpload(projectId: number, file: UploadedFile, 
     amountTtc,
     invoicingMode: (parsed.lineItems && parsed.lineItems.length > 0) ? "mode_b" : "mode_a",
     status: "draft",
+    // Task #232 — freshly ingested devis are NOT yet counted toward Contracted.
+    // The first reconciliation pass that finds no unresolved overlap promotes
+    // this to `active`; an arithmetic proof / human decision can supersede it.
+    accountingState: "provisional",
     dateSent: parsed.date || null,
     dateSigned: null,
     pvmvRef: null,

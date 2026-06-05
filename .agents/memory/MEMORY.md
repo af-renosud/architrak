@@ -1,2 +1,3 @@
 - [Archisign envelope fields](archisign-envelope-fields.md) — Archisign `/create` renders `subject` in the signer email but NOT `body`; both are undocumented in contract §3.5.1. ArchiTrak persists the note locally.
+- [Devis state-machine seal](devis-state-machine-seal.md) — state-machine columns on devis (acompteState, accountingState) must be `delete`d from the generic PATCH body, not just Zod-validated, or operators move money with no audit.
 - [Reconciliation AI degradation](reconciliation-ai-degradation.md) — overlap-detection must degrade AI-error to deterministic arithmetic, never collapse null-verdict with "unrelated" (silent false-negatives).

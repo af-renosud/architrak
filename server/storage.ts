@@ -56,6 +56,8 @@ import {
   documentEmbeddings, type DocumentEmbedding, type InsertDocumentEmbedding,
   overlapCases, type OverlapCase, type OverlapCaseStatus,
   reconciliationJobs, type ReconciliationJob,
+  accountingStateChanges, type AccountingStateChange,
+  type AccountingState, type AccountingStateChangeReason,
   DEVIS_EMBEDDING_DIMENSIONS,
   type ProjectCommunication, type InsertProjectCommunication,
   type PaymentReminder, type InsertPaymentReminder,
@@ -100,6 +102,30 @@ export interface BenchmarkAggregateRow {
   minPrice: number;
   medianPrice: number;
   maxPrice: number;
+}
+
+// Task #232 — a single accounting-state move (devis state change + its
+// append-only audit row). `fromState` is the expected current state; writes
+// are compare-and-set against it.
+export interface AccountingStateTransition {
+  devisId: number;
+  projectId: number;
+  fromState: string;
+  toState: AccountingState;
+  reason: AccountingStateChangeReason;
+  overlapCaseId?: number | null;
+  actorUserId?: number | null;
+  note?: string | null;
+}
+
+// Thrown when a compare-and-set accounting-state write finds the devis is no
+// longer in its expected `fromState` (a concurrent change raced us). The whole
+// batch is rolled back; callers translate this to HTTP 409.
+export class AccountingStateConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AccountingStateConflictError";
+  }
 }
 
 export interface IStorage {
@@ -533,6 +559,20 @@ export interface IStorage {
   upsertDocumentEmbedding(args: { projectId: number; devisId: number; contentHash: string; model: string; embedding: number[] }): Promise<void>;
   findSimilarProjectDevis(args: { projectId: number; devisId: number; limit: number; maxDistance: number }): Promise<Array<{ devisId: number; distance: number }>>;
   getOverlapCasesByProject(projectId: number, status?: OverlapCaseStatus): Promise<OverlapCase[]>;
+  getOverlapCase(id: number): Promise<OverlapCase | undefined>;
+  // Task #232 — accounting state machine. transitionDevisAccountingState
+  // writes the new devis state AND its append-only audit row in one tx.
+  transitionDevisAccountingState(args: AccountingStateTransition): Promise<void>;
+  // Apply several accounting-state transitions atomically. Used when ONE
+  // human decision must move several devis together (all-or-nothing): every
+  // update is compare-and-set on `fromState`, so a stale read aborts the
+  // whole batch with AccountingStateConflictError rather than partially
+  // moving money.
+  applyAccountingStateTransitions(transitions: AccountingStateTransition[]): Promise<void>;
+  // Overlap case ids the architect has explicitly dismissed (so the
+  // reconciliation pass never auto-supersedes their members).
+  getDismissedOverlapCaseIds(projectId: number): Promise<number[]>;
+  getAccountingStateChangesByDevis(devisId: number): Promise<AccountingStateChange[]>;
   upsertReconciliationJob(projectId: number): Promise<ReconciliationJob>;
   claimReconciliationJobForAttempt(jobId: number): Promise<ReconciliationJob | null>;
   markReconciliationJobSucceeded(args: { jobId: number; attempts: number }): Promise<void>;
@@ -3137,6 +3177,69 @@ export class DatabaseStorage implements IStorage {
         ? and(eq(overlapCases.projectId, projectId), eq(overlapCases.status, status))
         : eq(overlapCases.projectId, projectId))
       .orderBy(desc(overlapCases.updatedAt));
+  }
+
+  async getOverlapCase(id: number): Promise<OverlapCase | undefined> {
+    const [row] = await db.select().from(overlapCases).where(eq(overlapCases.id, id));
+    return row;
+  }
+
+  async transitionDevisAccountingState(args: AccountingStateTransition): Promise<void> {
+    await this.applyAccountingStateTransitions([args]);
+  }
+
+  async applyAccountingStateTransitions(
+    transitions: AccountingStateTransition[],
+  ): Promise<void> {
+    if (transitions.length === 0) return;
+    await db.transaction(async (tx) => {
+      for (const t of transitions) {
+        // Compare-and-set: only move the devis if it is still in the state the
+        // caller read. A 0-row result means a concurrent change raced us, so we
+        // abort the whole batch rather than partially apply one decision.
+        const updated = await tx
+          .update(devis)
+          .set({ accountingState: t.toState, updatedAt: new Date() })
+          .where(and(eq(devis.id, t.devisId), eq(devis.accountingState, t.fromState)))
+          .returning({ id: devis.id });
+        if (updated.length === 0) {
+          throw new AccountingStateConflictError(
+            `Devis ${t.devisId} is no longer in expected state '${t.fromState}'`,
+          );
+        }
+        await tx.insert(accountingStateChanges).values({
+          devisId: t.devisId,
+          projectId: t.projectId,
+          fromState: t.fromState,
+          toState: t.toState,
+          reason: t.reason,
+          overlapCaseId: t.overlapCaseId ?? null,
+          actorUserId: t.actorUserId ?? null,
+          note: t.note ?? null,
+        });
+      }
+    });
+  }
+
+  async getDismissedOverlapCaseIds(projectId: number): Promise<number[]> {
+    const rows = await db
+      .selectDistinct({ overlapCaseId: accountingStateChanges.overlapCaseId })
+      .from(accountingStateChanges)
+      .where(and(
+        eq(accountingStateChanges.projectId, projectId),
+        eq(accountingStateChanges.reason, "human_dismiss"),
+      ));
+    return rows
+      .map((r) => r.overlapCaseId)
+      .filter((id): id is number => id != null);
+  }
+
+  async getAccountingStateChangesByDevis(devisId: number): Promise<AccountingStateChange[]> {
+    return db
+      .select()
+      .from(accountingStateChanges)
+      .where(eq(accountingStateChanges.devisId, devisId))
+      .orderBy(desc(accountingStateChanges.id));
   }
 
   async upsertReconciliationJob(projectId: number): Promise<ReconciliationJob> {

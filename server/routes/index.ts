@@ -43,6 +43,7 @@ import adminPennylaneRouter from "./admin-pennylane";
 import adminSignedPdfRecoveryRouter from "./admin-signed-pdf-recovery";
 import healthzRouter from "./healthz";
 import designContractsRouter from "./design-contracts";
+import reconciliationRouter from "./reconciliation";
 
 // IDOR / Tenancy assumption (single-tenant deployment):
 // ArchiTrak runs as a dedicated single-firm deployment for Renosud
@@ -121,6 +122,7 @@ export async function registerRoutes(
   app.use(adminPennylaneRouter);
   app.use(adminSignedPdfRecoveryRouter);
   app.use(designContractsRouter);
+  app.use(reconciliationRouter);
 
   return httpServer;
 }

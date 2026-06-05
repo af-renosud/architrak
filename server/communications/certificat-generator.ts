@@ -1255,6 +1255,7 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     feePercentageOverride: null,
     invoicingMode: "mode_a",
     status: "approved",
+    accountingState: "active",
     signOffStage: "signed",
     voidReason: null,
     dateSent: null,

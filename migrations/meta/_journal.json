@@ -309,6 +309,13 @@
       "when": 1778660000000,
       "tag": "0043_overlap_detection",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1778670000000,
+      "tag": "0044_devis_accounting_state",
+      "breakpoints": true
     }
   ]
 }

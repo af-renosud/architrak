@@ -281,6 +281,19 @@ export const devis = pgTable("devis", {
   feePercentageOverride: numeric("fee_percentage_override", { precision: 5, scale: 2 }),
   invoicingMode: text("invoicing_mode").notNull().default("mode_a"),
   status: text("status").notNull().default("pending"),
+  // Task #232 — accounting state guard. Controls whether this devis counts
+  // toward the project's Contracted / Certified / Reste-à-Réaliser buckets.
+  //   provisional — freshly ingested (PDF upload / intake); NOT yet counted.
+  //                 Cleared to `active` by the first reconciliation pass that
+  //                 finds no unresolved overlap touching it.
+  //   active       — genuinely contracted; counts toward the buckets. Existing
+  //                 rows backfill to `active` (DB default) so behaviour is
+  //                 unchanged for everything that predates this column.
+  //   superseded   — folded into another devis (arithmetic proof, or a
+  //                 recorded human decision); removed from the buckets.
+  // See ACCOUNTING_STATES + accountingStateChanges (append-only audit). A
+  // devis NEVER leaves Contracted silently — only via proof or human decision.
+  accountingState: text("accounting_state").notNull().default("active"),
   // sign_off_stage: see SIGN_OFF_STAGES tuple below for the canonical
   // 9-value v1.0-contract enum (`docs/INTER_APP_CONTRACT_v1.0.md` §1.1).
   // No DB-level CHECK constraint by convention with the rest of this
@@ -1136,6 +1149,57 @@ export const insertReconciliationJobSchema = createInsertSchema(reconciliationJo
 });
 export type InsertReconciliationJob = z.infer<typeof insertReconciliationJobSchema>;
 export type ReconciliationJob = typeof reconciliationJobs.$inferSelect;
+
+// Task #232 — accounting state of a devis (see devis.accountingState).
+export const ACCOUNTING_STATES = ["provisional", "active", "superseded"] as const;
+export type AccountingState = (typeof ACCOUNTING_STATES)[number];
+
+// Why each accounting-state transition happened. Append-only audit — every
+// row in accountingStateChanges carries exactly one of these.
+//   ingest                 — created `provisional` on PDF upload / intake.
+//   reconciliation_promote — a clean reconciliation pass cleared
+//                            provisional → active (no unresolved overlap).
+//   proven_supersede       — arithmetic proof folded this devis into another
+//                            (auto-applied; safe because the euros reconcile).
+//   human_confirm          — an architect confirmed an overlap → superseded.
+//   human_dismiss          — an architect dismissed an overlap → kept active.
+export const ACCOUNTING_STATE_CHANGE_REASONS = [
+  "ingest",
+  "reconciliation_promote",
+  "proven_supersede",
+  "human_confirm",
+  "human_dismiss",
+] as const;
+export type AccountingStateChangeReason = (typeof ACCOUNTING_STATE_CHANGE_REASONS)[number];
+
+// Append-only audit of every accounting-state transition. NEVER updated or
+// deleted — the latest row per devis is the current rationale. Mirrors the
+// document_advisories / overlap_cases append-only convention. `overlapCaseId`
+// links a supersede/confirm/dismiss to the case that drove it; `actorUserId`
+// is NULL for automatic (ingest / reconciliation / proof) transitions.
+export const accountingStateChanges = pgTable("accounting_state_changes", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  fromState: text("from_state").notNull(),
+  toState: text("to_state").notNull(),
+  reason: text("reason").notNull(),
+  overlapCaseId: integer("overlap_case_id").references(() => overlapCases.id, { onDelete: "set null" }),
+  actorUserId: integer("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+  note: text("note"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("accounting_state_changes_devis_idx").on(table.devisId),
+  index("accounting_state_changes_project_idx").on(table.projectId),
+  index("accounting_state_changes_case_idx").on(table.overlapCaseId),
+]);
+
+export const insertAccountingStateChangeSchema = createInsertSchema(accountingStateChanges).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertAccountingStateChange = z.infer<typeof insertAccountingStateChangeSchema>;
+export type AccountingStateChange = typeof accountingStateChanges.$inferSelect;
 
 export const projectCommunications = pgTable("project_communications", {
   id: serial("id").primaryKey(),
