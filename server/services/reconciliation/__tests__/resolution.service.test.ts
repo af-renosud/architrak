@@ -17,6 +17,7 @@ vi.mock("../../../storage", () => {
       getOverlapCasesByProject: vi.fn(),
       getOverlapCase: vi.fn(),
       getDismissedOverlapCaseIds: vi.fn(),
+      getResolvedOverlapCaseIds: vi.fn(),
       transitionDevisAccountingState: vi.fn(),
       applyAccountingStateTransitions: vi.fn(),
     },
@@ -289,6 +290,7 @@ describe("resolution.service — computeOverlapCaseImpact & status rollup", () =
     vi.clearAllMocks();
     mockedStorage.getAvenantsByDevis.mockResolvedValue([]);
     mockedStorage.getDismissedOverlapCaseIds.mockResolvedValue([]);
+    mockedStorage.getResolvedOverlapCaseIds.mockResolvedValue([]);
   });
 
   it("impact sums only currently-active members' adjusted HT", async () => {
@@ -318,5 +320,23 @@ describe("resolution.service — computeOverlapCaseImpact & status rollup", () =
 
     const status = await getProjectAccountingStatus(1);
     expect(status.status).toBe("clean");
+  });
+
+  it("a confirmed case no longer counts as needs_review (it stays active/needs_review but is humanly resolved)", async () => {
+    // After a confirm, members are superseded but detection re-detects the same
+    // overlap, so the case is still active+needs_review. It must NOT linger in
+    // the rollup — getResolvedOverlapCaseIds returns it as resolved.
+    mockedStorage.getDevisByProject.mockResolvedValue([
+      devis(1, "superseded", "100.00"),
+      devis(2, "active", "200.00"),
+    ]);
+    mockedStorage.getOverlapCasesByProject.mockResolvedValue([
+      overlapCase({ id: 5, verdict: "needs_review", primaryDevisId: 2, memberDevisIds: [1] }),
+    ]);
+    mockedStorage.getResolvedOverlapCaseIds.mockResolvedValue([5]);
+
+    const status = await getProjectAccountingStatus(1);
+    expect(status.needsReviewCount).toBe(0);
+    expect(status.status).toBe("resolved");
   });
 });

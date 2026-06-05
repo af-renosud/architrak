@@ -24,6 +24,12 @@
 import { storage, AccountingStateConflictError, type AccountingStateTransition } from "../../storage";
 import { roundCurrency } from "../../../shared/financial-utils";
 import type { Devis, OverlapCase } from "@shared/schema";
+import type {
+  ProjectReviewCasesResponse,
+  ResolvedReviewCard,
+  ReviewCard,
+  ReviewDevisSummary,
+} from "@shared/reconciliation-dto";
 
 export type HumanResolutionDecision = "confirm" | "dismiss";
 
@@ -312,9 +318,13 @@ export async function getProjectAccountingStatus(
   const supersededCount = allDevis.filter((d) => d.accountingState === "superseded").length;
 
   const activeCases = await storage.getOverlapCasesByProject(projectId, "active");
-  const dismissedCaseIds = new Set(await storage.getDismissedOverlapCaseIds(projectId));
+  // Exclude EVERY humanly-resolved case (confirm or dismiss), not just dismissed
+  // ones: a confirm supersedes members but leaves the case active/needs_review
+  // (detection re-detects it), so a confirmed case would otherwise linger in the
+  // rollup forever even though the architect has already decided it.
+  const resolvedCaseIds = new Set(await storage.getResolvedOverlapCaseIds(projectId));
   const needsReviewCases = activeCases.filter(
-    (c) => c.verdict === "needs_review" && !dismissedCaseIds.has(c.id),
+    (c) => c.verdict === "needs_review" && !resolvedCaseIds.has(c.id),
   );
 
   let eurosAtRisk = 0;
@@ -327,7 +337,7 @@ export async function getProjectAccountingStatus(
     status = "needs_review";
   } else if (provisionalCount > 0) {
     status = "pending_analysis";
-  } else if (supersededCount > 0 || dismissedCaseIds.size > 0) {
+  } else if (supersededCount > 0 || resolvedCaseIds.size > 0) {
     status = "resolved";
   } else {
     status = "clean";
@@ -341,4 +351,119 @@ export async function getProjectAccountingStatus(
     needsReviewCount: needsReviewCases.length,
     eurosAtRisk,
   };
+}
+
+/**
+ * Task #233 — enriched review cards for the Needs Review UI. Returns the open
+ * cases that genuinely need a human decision (active, `needs_review`, not yet
+ * dismissed — proven cases auto-resolve and are intentionally excluded), plus
+ * the cases an architect has already ruled on (for the audit history view).
+ *
+ * Each card carries lightweight devis/contractor summaries (NEVER banking or
+ * sensitive fields) so the front end can render the side-by-side evidence and
+ * the financial-impact line without N+1 fetches.
+ */
+export async function getProjectReviewCases(
+  projectId: number,
+): Promise<ProjectReviewCasesResponse> {
+  const devisCache = new Map<number, Devis | undefined>();
+  const getDevisCached = async (id: number): Promise<Devis | undefined> => {
+    if (!devisCache.has(id)) devisCache.set(id, await storage.getDevis(id));
+    return devisCache.get(id);
+  };
+
+  const contractorNameCache = new Map<number, string>();
+  const contractorName = async (id: number): Promise<string> => {
+    const cached = contractorNameCache.get(id);
+    if (cached != null) return cached;
+    const c = await storage.getContractor(id);
+    const name = c?.name ?? `Contractor #${id}`;
+    contractorNameCache.set(id, name);
+    return name;
+  };
+
+  const summarise = async (id: number): Promise<ReviewDevisSummary | null> => {
+    const d = await getDevisCached(id);
+    if (!d) return null;
+    return {
+      id: d.id,
+      devisCode: d.devisCode,
+      contractorId: d.contractorId,
+      contractorName: await contractorName(d.contractorId),
+      descriptionFr: d.descriptionFr,
+      amountHt: d.amountHt,
+      amountTtc: d.amountTtc,
+      accountingState: d.accountingState as ReviewDevisSummary["accountingState"],
+    };
+  };
+
+  const activeCases = await storage.getOverlapCasesByProject(projectId, "active");
+  // A case stays active/needs_review even after a human confirm (its superseded
+  // members are still re-detected), so exclude every humanly-resolved case —
+  // confirm AND dismiss — to keep the open queue to genuinely-undecided cases.
+  const resolvedCaseIds = new Set(await storage.getResolvedOverlapCaseIds(projectId));
+
+  const openCases: ReviewCard[] = [];
+  for (const c of activeCases) {
+    if (c.verdict !== "needs_review" || resolvedCaseIds.has(c.id)) continue;
+    const members: ReviewDevisSummary[] = [];
+    for (const memberId of c.memberDevisIds) {
+      const s = await summarise(memberId);
+      if (s) members.push(s);
+    }
+    openCases.push({
+      id: c.id,
+      relationshipType: c.relationshipType as ReviewCard["relationshipType"],
+      detectionSource: c.detectionSource as ReviewCard["detectionSource"],
+      confidence: c.confidence,
+      verdict: c.verdict as ReviewCard["verdict"],
+      reasoning: c.reasoning,
+      arithmeticProof: c.arithmeticProof ?? null,
+      citations: c.citations,
+      impactEuros: await computeOverlapCaseImpact(c),
+      primary: await summarise(c.primaryDevisId),
+      members,
+      lastSeenAt: c.lastSeenAt.toISOString(),
+    });
+  }
+
+  // Resolved cards — latest human decision per overlap case. Newest-first rows,
+  // so the first row seen for a case id is its current decision.
+  const decisions = await storage.getHumanResolvedOverlapDecisions(projectId);
+  const actorEmailCache = new Map<number, string | null>();
+  const actorEmail = async (userId: number): Promise<string | null> => {
+    if (actorEmailCache.has(userId)) return actorEmailCache.get(userId) ?? null;
+    const u = await storage.getUser(userId);
+    const email = u?.email ?? null;
+    actorEmailCache.set(userId, email);
+    return email;
+  };
+
+  const resolvedCases: ResolvedReviewCard[] = [];
+  const seenCaseIds = new Set<number>();
+  for (const change of decisions) {
+    const caseId = change.overlapCaseId;
+    if (caseId == null || seenCaseIds.has(caseId)) continue;
+    seenCaseIds.add(caseId);
+    const c = await storage.getOverlapCase(caseId);
+    if (!c) continue;
+    const members: ReviewDevisSummary[] = [];
+    for (const memberId of c.memberDevisIds) {
+      const s = await summarise(memberId);
+      if (s) members.push(s);
+    }
+    resolvedCases.push({
+      id: c.id,
+      relationshipType: c.relationshipType as ResolvedReviewCard["relationshipType"],
+      reasoning: c.reasoning,
+      primary: await summarise(c.primaryDevisId),
+      members,
+      decision: change.reason === "human_confirm" ? "confirm" : "dismiss",
+      decidedAt: change.createdAt.toISOString(),
+      actorEmail: change.actorUserId != null ? await actorEmail(change.actorUserId) : null,
+      note: change.note,
+    });
+  }
+
+  return { projectId, openCases, resolvedCases };
 }

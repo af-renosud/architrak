@@ -572,7 +572,9 @@ export interface IStorage {
   // Overlap case ids the architect has explicitly dismissed (so the
   // reconciliation pass never auto-supersedes their members).
   getDismissedOverlapCaseIds(projectId: number): Promise<number[]>;
+  getResolvedOverlapCaseIds(projectId: number): Promise<number[]>;
   getAccountingStateChangesByDevis(devisId: number): Promise<AccountingStateChange[]>;
+  getHumanResolvedOverlapDecisions(projectId: number): Promise<AccountingStateChange[]>;
   upsertReconciliationJob(projectId: number): Promise<ReconciliationJob>;
   claimReconciliationJobForAttempt(jobId: number): Promise<ReconciliationJob | null>;
   markReconciliationJobSucceeded(args: { jobId: number; attempts: number }): Promise<void>;
@@ -3234,11 +3236,45 @@ export class DatabaseStorage implements IStorage {
       .filter((id): id is number => id != null);
   }
 
+  // Overlap cases an architect has ruled on EITHER way (confirm or dismiss).
+  // Detection never withdraws a case whose members were superseded by a human
+  // confirm (the superseded devis still have status != 'void', so the same
+  // overlap is re-detected and the case stays active/needs_review). Read
+  // surfaces therefore exclude every humanly-resolved case, not just dismissed
+  // ones, so a decision clears the review queue + status badge immediately.
+  async getResolvedOverlapCaseIds(projectId: number): Promise<number[]> {
+    const rows = await db
+      .selectDistinct({ overlapCaseId: accountingStateChanges.overlapCaseId })
+      .from(accountingStateChanges)
+      .where(and(
+        eq(accountingStateChanges.projectId, projectId),
+        inArray(accountingStateChanges.reason, ["human_confirm", "human_dismiss"]),
+      ));
+    return rows
+      .map((r) => r.overlapCaseId)
+      .filter((id): id is number => id != null);
+  }
+
   async getAccountingStateChangesByDevis(devisId: number): Promise<AccountingStateChange[]> {
     return db
       .select()
       .from(accountingStateChanges)
       .where(eq(accountingStateChanges.devisId, devisId))
+      .orderBy(desc(accountingStateChanges.id));
+  }
+
+  // Human confirm/dismiss audit rows for a project (powers the resolved-case
+  // history view). Ordered newest-first so callers can take the latest row per
+  // overlap case as the current decision.
+  async getHumanResolvedOverlapDecisions(projectId: number): Promise<AccountingStateChange[]> {
+    return db
+      .select()
+      .from(accountingStateChanges)
+      .where(and(
+        eq(accountingStateChanges.projectId, projectId),
+        isNotNull(accountingStateChanges.overlapCaseId),
+        inArray(accountingStateChanges.reason, ["human_confirm", "human_dismiss"]),
+      ))
       .orderBy(desc(accountingStateChanges.id));
   }
 

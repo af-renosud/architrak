@@ -27,6 +27,8 @@ import { OutstandingFeesPanel } from "@/components/fees/OutstandingFeesPanel";
 import { OutstandingFeesBanner } from "@/components/fees/OutstandingFeesBanner";
 import { DesignContractCard } from "@/components/projects/DesignContractCard";
 import { FacturesTab } from "@/components/factures/FacturesTab";
+import { NeedsReviewTab } from "@/components/reconciliation/NeedsReviewTab";
+import { AccountingStatusBadge } from "@/components/reconciliation/AccountingStatusBadge";
 import { Receipt, Inbox } from "lucide-react";
 import { z } from "zod";
 
@@ -49,6 +51,15 @@ interface FinancialSummary {
   totalPv: number;
   totalMv: number;
   devis: DevisSummary[];
+}
+
+interface AccountingStatusSummary {
+  projectId: number;
+  status: "clean" | "pending_analysis" | "needs_review" | "resolved";
+  provisionalCount: number;
+  supersededCount: number;
+  needsReviewCount: number;
+  eurosAtRisk: number;
 }
 
 interface DevisSummary {
@@ -399,6 +410,11 @@ export default function ProjectDetail() {
 
   const { data: financialSummary } = useQuery<FinancialSummary>({
     queryKey: ["/api/projects", projectId, "financial-summary"],
+    enabled: !!project,
+  });
+
+  const { data: accountingStatus } = useQuery<AccountingStatusSummary>({
+    queryKey: ["/api/projects", projectId, "accounting-status"],
     enabled: !!project,
   });
 
@@ -944,6 +960,20 @@ export default function ProjectDetail() {
                 {project.name}
               </h1>
               <StatusBadge status={project.status} />
+              {accountingStatus && accountingStatus.status === "needs_review" && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("review")}
+                  className="cursor-pointer"
+                  data-testid="button-header-accounting-status"
+                >
+                  <AccountingStatusBadge
+                    status={accountingStatus.status}
+                    eurosAtRisk={accountingStatus.eurosAtRisk}
+                    needsReviewCount={accountingStatus.needsReviewCount}
+                  />
+                </button>
+              )}
             </div>
             <div className="flex items-center gap-2 mt-1 flex-wrap">
               <TechnicalLabel data-testid="text-project-code">{project.code}</TechnicalLabel>
@@ -1123,6 +1153,10 @@ export default function ProjectDetail() {
             <TabsTrigger value="factures" data-testid="tab-factures">
               <Receipt size={12} className="mr-1" />
               Factures
+            </TabsTrigger>
+            <TabsTrigger value="review" data-testid="tab-review">
+              <AlertTriangle size={12} className="mr-1" />
+              Review{accountingStatus && accountingStatus.needsReviewCount > 0 ? ` (${accountingStatus.needsReviewCount})` : ""}
             </TabsTrigger>
             <TabsTrigger value="lots" data-testid="tab-lots">
               <Layers size={12} className="mr-1" />
@@ -1306,6 +1340,10 @@ export default function ProjectDetail() {
               isArchived={isArchived}
               onGoToIntake={() => setActiveTab("intake")}
             />
+          </TabsContent>
+
+          <TabsContent value="review">
+            <NeedsReviewTab projectId={projectId!} />
           </TabsContent>
 
           <TabsContent value="lots">

@@ -7,6 +7,7 @@ import {
   applyHumanResolution,
   computeOverlapCaseImpact,
   getProjectAccountingStatus,
+  getProjectReviewCases,
 } from "../services/reconciliation/resolution.service";
 
 const router = Router();
@@ -34,6 +35,28 @@ router.get(
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ message: `Accounting status failed: ${message}` });
+    }
+  },
+);
+
+// Enriched overlap cases powering the Needs Review surface: open cases that
+// need a human decision (proven cases auto-resolve and are excluded) plus the
+// already-decided cases for the audit history view.
+router.get(
+  "/api/projects/:projectId/overlap-cases",
+  validateRequest({ params: projectIdParams }),
+  async (req, res) => {
+    try {
+      const projectId = Number(req.params.projectId);
+      const project = await storage.getProject(projectId);
+      if (!project) {
+        return res.status(404).json({ message: "Project not found" });
+      }
+      const cases = await getProjectReviewCases(projectId);
+      res.status(200).json(cases);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Overlap cases lookup failed: ${message}` });
     }
   },
 );
