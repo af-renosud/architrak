@@ -316,6 +316,13 @@
       "when": 1778670000000,
       "tag": "0044_devis_accounting_state",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1778680000000,
+      "tag": "0045_compte_prorata_retenue",
+      "breakpoints": true
     }
   ]
 }

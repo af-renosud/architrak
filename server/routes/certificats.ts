@@ -5,6 +5,7 @@ import { insertCertificatSchema, type InsertCertificat } from "@shared/schema";
 import { generateCertificatPdf, BankingDetailsMissingError, BankingMismatchError } from "../communications/certificat-generator";
 import { sendCertificat } from "../communications/email-sender";
 import { validateRequest } from "../middleware/validate";
+import { resolveCertificatDeductions } from "../services/certificat-deductions.service";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
@@ -15,8 +16,35 @@ const sendCertParams = z.object({
   certId: z.coerce.number().int().positive(),
 });
 
-const createCertificatBodySchema = insertCertificatSchema.omit({ projectId: true, certificateRef: true });
-const updateCertificatSchema = insertCertificatSchema.partial();
+// Task #243 — `retenueOverride` / `prorataOverride` let an architect force a
+// cumulative deduction for edge cases. They are NOT columns: the handler pulls
+// them out and feeds them to the deduction resolver, never to storage.
+const deductionOverrideShape = {
+  retenueOverride: z.string().optional(),
+  prorataOverride: z.string().optional(),
+};
+
+// Task #243 — these are SERVER-DERIVED money fields. The server is the sole
+// authority: they are recomputed by `resolveCertificatDeductions` on every
+// create/update and must NEVER be accepted from the client (a malicious or
+// stale PATCH could otherwise move money directly). Omitting them from the
+// request schemas makes Zod strip them before they reach storage.
+const serverDerivedDeductionFields = {
+  retenueGarantie: true,
+  cumulativeProrataDeduction: true,
+  periodProrataDeduction: true,
+  netToPayHt: true,
+  tvaAmount: true,
+  netToPayTtc: true,
+} as const;
+
+const createCertificatBodySchema = insertCertificatSchema
+  .omit({ projectId: true, certificateRef: true, ...serverDerivedDeductionFields })
+  .extend(deductionOverrideShape);
+const updateCertificatSchema = insertCertificatSchema
+  .omit(serverDerivedDeductionFields)
+  .partial()
+  .extend(deductionOverrideShape);
 
 router.get("/api/projects/:projectId/certificats", async (req, res) => {
   const certs = await storage.getCertificatsByProject(Number(req.params.projectId));
@@ -33,11 +61,29 @@ router.post(
   validateRequest({ params: projectIdParams, body: createCertificatBodySchema }),
   async (req, res) => {
     const projectId = Number(req.params.projectId);
+    const { retenueOverride, prorataOverride, ...body } = req.body as
+      Omit<InsertCertificat, "projectId" | "certificateRef"> & {
+        retenueOverride?: string;
+        prorataOverride?: string;
+      };
+
+    // Task #243 — the server is authoritative for deduction money math.
+    // Recompute Retenue de Garantie + Compte Prorata cumulatively from the
+    // contract, overriding whatever the FE sent for the derived fields.
+    const deductions = await resolveCertificatDeductions({
+      projectId,
+      contractorId: body.contractorId,
+      totalWorksHt: body.totalWorksHt,
+      pvMvAdjustment: body.pvMvAdjustment,
+      previousPayments: body.previousPayments,
+      retenueOverride,
+      prorataOverride,
+    });
+
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const nextRef = await storage.getNextCertificateRef(projectId);
-        const body = req.body as Omit<InsertCertificat, "projectId" | "certificateRef">;
-      const cert = await storage.createCertificat({ ...body, projectId, certificateRef: nextRef });
+        const cert = await storage.createCertificat({ ...body, ...deductions, projectId, certificateRef: nextRef });
         return res.status(201).json(cert);
       } catch (err) {
         const code = (err as { code?: string }).code;
@@ -58,7 +104,39 @@ router.patch(
   "/api/certificats/:id",
   validateRequest({ params: idParams, body: updateCertificatSchema }),
   async (req, res) => {
-    const cert = await storage.updateCertificat(Number(req.params.id), req.body);
+    const id = Number(req.params.id);
+    const { retenueOverride, prorataOverride, ...body } = req.body as
+      Partial<InsertCertificat> & { retenueOverride?: string; prorataOverride?: string };
+
+    const existing = await storage.getCertificat(id);
+    if (!existing) return res.status(404).json({ message: "Certificat not found" });
+
+    // Task #243 — recompute deductions whenever a financial input changes or an
+    // explicit override is supplied. Status-only patches skip the recompute.
+    const touchesFinancials =
+      "totalWorksHt" in body ||
+      "pvMvAdjustment" in body ||
+      "previousPayments" in body ||
+      "contractorId" in body ||
+      retenueOverride !== undefined ||
+      prorataOverride !== undefined;
+
+    let patch: Partial<InsertCertificat> = body;
+    if (touchesFinancials) {
+      const deductions = await resolveCertificatDeductions({
+        projectId: existing.projectId,
+        contractorId: body.contractorId ?? existing.contractorId,
+        totalWorksHt: body.totalWorksHt ?? existing.totalWorksHt,
+        pvMvAdjustment: body.pvMvAdjustment ?? existing.pvMvAdjustment,
+        previousPayments: body.previousPayments ?? existing.previousPayments,
+        retenueOverride,
+        prorataOverride,
+        excludeCertificatId: id,
+      });
+      patch = { ...body, ...deductions };
+    }
+
+    const cert = await storage.updateCertificat(id, patch);
     if (!cert) return res.status(404).json({ message: "Certificat not found" });
     res.json(cert);
   },

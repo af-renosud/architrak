@@ -2,3 +2,4 @@
 - [Overlap-case human resolution](overlap-case-human-resolution.md) — a confirm leaves the case active/needs_review (detection re-detects superseded members); review-queue read surfaces must exclude ALL human-resolved cases, not just dismissed.
 - [Devis state-machine seal](devis-state-machine-seal.md) — state-machine columns on devis (acompteState, accountingState) must be `delete`d from the generic PATCH body, not just Zod-validated, or operators move money with no audit.
 - [Reconciliation AI degradation](reconciliation-ai-degradation.md) — overlap-detection must degrade AI-error to deterministic arithmetic, never collapse null-verdict with "unrelated" (silent false-negatives).
+- [Server-authoritative money fields](server-authoritative-money-fields.md) — omit server-derived money cols from request Zod schemas (not just handler guards); read prior cumulative from the latest prior row, never max()/sum().

@@ -7,6 +7,7 @@ import { TechnicalLabel } from "@/components/ui/technical-label";
 import { FolderOpen, ArrowLeft, MapPin, User, FileText, Layers, ScrollText, Award, Coins, BarChart3, Plus, Eye, EyeOff, ChevronRight, Pencil, Upload, Download, ExternalLink, MessageSquare, Send, Clock, RefreshCw, FileCheck, AlertTriangle, Settings, Loader2, FolderDown, Archive, ArchiveRestore, Mail, Phone, Lock, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -122,6 +123,53 @@ function CommissionInput({ projectId, initialValue }: { projectId: number; initi
         }}
         className="w-20 h-8 text-[13px] font-semibold border-[#c1a27b]/40 focus:border-[#c1a27b]"
         data-testid="input-commission-pct"
+      />
+      <span className="text-[12px] text-muted-foreground">%</span>
+      {saveMutation.isPending && <span className="text-[10px] text-muted-foreground">Saving...</span>}
+    </div>
+  );
+}
+
+// Task #243 — project-wide Compte Prorata levy rate. Applied to every marché's
+// certificats except the prorata-manager marché (which collects the fund).
+function ProrataInput({ projectId, initialValue }: { projectId: number; initialValue: string }) {
+  const { toast } = useToast();
+  const [value, setValue] = useState(initialValue);
+  const [savedValue, setSavedValue] = useState(initialValue);
+
+  useEffect(() => {
+    setValue(initialValue);
+    setSavedValue(initialValue);
+  }, [initialValue]);
+
+  const saveMutation = useMutation({
+    mutationFn: async (newPct: string) => {
+      await apiRequest("PATCH", `/api/projects/${projectId}`, { prorataPercentage: newPct });
+    },
+    onSuccess: (_data, newPct) => {
+      setSavedValue(newPct);
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId)] });
+      toast({ title: "Compte Prorata rate saved" });
+    },
+    onError: (error: Error) => {
+      setValue(savedValue);
+      toast({ title: "Failed to save Compte Prorata rate", description: error.message, variant: "destructive" });
+    },
+  });
+  return (
+    <div className="flex items-center gap-1.5 mt-1">
+      <Input
+        type="number"
+        step="0.1"
+        min="0"
+        max="100"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={() => {
+          if (value !== savedValue) saveMutation.mutate(value);
+        }}
+        className="w-20 h-8 text-[13px] font-semibold border-[#c1a27b]/40 focus:border-[#c1a27b]"
+        data-testid="input-prorata-pct"
       />
       <span className="text-[12px] text-muted-foreground">%</span>
       {saveMutation.isPending && <span className="text-[10px] text-muted-foreground">Saving...</span>}
@@ -500,6 +548,7 @@ export default function ProjectDetail() {
       projectId: parseInt(projectId!), contractorId: 0, marcheNumber: null,
       priceType: "forfaitaire", totalHt: "0.00", totalTtc: "0.00",
       retenueGarantiePercent: "5.00", paymentSchedule: null, signedDate: null, status: "draft",
+      hasBankGuarantee: false, isProrataManager: false,
     },
   });
 
@@ -1119,6 +1168,16 @@ export default function ProjectDetail() {
                 )}
               </div>
               <div>
+                <TechnicalLabel>Compte Prorata %</TechnicalLabel>
+                {isArchived ? (
+                  <p className="text-[13px] font-semibold text-muted-foreground mt-1" data-testid="text-prorata-pct-readonly">
+                    {project.prorataPercentage ?? "0"}%
+                  </p>
+                ) : (
+                  <ProrataInput projectId={parseInt(projectId!)} initialValue={project.prorataPercentage ?? "0"} />
+                )}
+              </div>
+              <div>
                 <TechnicalLabel>Marché</TechnicalLabel>
                 <p className="text-[13px] font-semibold text-foreground mt-1" data-testid="text-has-marche">
                   {project.hasMarche ? "Yes" : "No"}
@@ -1464,6 +1523,7 @@ export default function ProjectDetail() {
                       projectId: parseInt(projectId!), contractorId: 0, marcheNumber: null,
                       priceType: "forfaitaire", totalHt: "0.00", totalTtc: "0.00",
                       retenueGarantiePercent: "5.00", paymentSchedule: null, signedDate: null, status: "draft",
+                      hasBankGuarantee: false, isProrataManager: false,
                     });
                     setMarcheDialogOpen(true);
                   }} disabled={isArchived} data-testid="button-new-marche">
@@ -1563,6 +1623,28 @@ export default function ProjectDetail() {
                           <FormLabel><TechnicalLabel>Retenue de Garantie (%)</TechnicalLabel></FormLabel>
                           <FormControl><Input {...field} value={field.value ?? "5.00"} type="number" step="0.01" data-testid="input-marche-retenue" /></FormControl>
                           <FormMessage />
+                        </FormItem>
+                      )} />
+                      <FormField control={marcheForm.control} name="hasBankGuarantee" render={({ field }) => (
+                        <FormItem className="flex items-center justify-between gap-2 rounded-lg border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] p-3">
+                          <div>
+                            <FormLabel><TechnicalLabel>Caution Bancaire (bank guarantee)</TechnicalLabel></FormLabel>
+                            <p className="text-[10px] text-muted-foreground mt-0.5">Bypasses the Retenue de Garantie (set to 0).</p>
+                          </div>
+                          <FormControl>
+                            <Switch checked={field.value ?? false} onCheckedChange={field.onChange} data-testid="switch-marche-bank-guarantee" />
+                          </FormControl>
+                        </FormItem>
+                      )} />
+                      <FormField control={marcheForm.control} name="isProrataManager" render={({ field }) => (
+                        <FormItem className="flex items-center justify-between gap-2 rounded-lg border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] p-3">
+                          <div>
+                            <FormLabel><TechnicalLabel>Gestionnaire du Compte Prorata</TechnicalLabel></FormLabel>
+                            <p className="text-[10px] text-muted-foreground mt-0.5">This marché collects the fund — exempt from the Compte Prorata levy.</p>
+                          </div>
+                          <FormControl>
+                            <Switch checked={field.value ?? false} onCheckedChange={field.onChange} data-testid="switch-marche-prorata-manager" />
+                          </FormControl>
                         </FormItem>
                       )} />
                       <Button type="submit" className="w-full" disabled={createMarcheMutation.isPending} data-testid="button-submit-marche">

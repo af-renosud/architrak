@@ -19,6 +19,85 @@ export function calculateFeeAmount(invoiceHt: number, feeRate: number): number {
   return roundCurrency(invoiceHt * feeRate / 100);
 }
 
+const DEFAULT_TVA_RATE = 0.2;
+
+/**
+ * Task #243 — Authoritative Certificat de Paiement deduction math.
+ *
+ * A certificat is CUMULATIVE: `totalWorksHt` is the gross approved works to
+ * date and `previousPayments` is the cumulative net already certified. Both the
+ * Retenue de Garantie and the Compte Prorata are computed on the gross
+ * cumulative, then the per-period movement is derived as
+ * `cumulative − Σ(prior certificats' deductions)` so rounding never compounds
+ * across periods (the anti-compounding invariant from the spec).
+ *
+ * - Retenue is bypassed (0) when the contractor furnished a bank guarantee.
+ * - Prorata is bypassed (0) when the marché is the project's prorata manager.
+ * - An explicit architect override replaces the computed cumulative figure for
+ *   either deduction (edge cases); the period delta is recomputed from it.
+ */
+export interface CertificatDeductionInput {
+  totalWorksHt: number;
+  pvMvAdjustment: number;
+  previousPayments: number;
+  retenuePercent: number;
+  hasBankGuarantee: boolean;
+  prorataPercent: number;
+  isProrataManager: boolean;
+  priorCumulativeRetenue: number;
+  priorCumulativeProrata: number;
+  retenueOverride?: number | null;
+  prorataOverride?: number | null;
+  tvaRate?: number;
+}
+
+export interface CertificatDeductionResult {
+  grossCumulativeHt: number;
+  cumulativeRetenue: number;
+  periodRetenue: number;
+  cumulativeProrata: number;
+  periodProrata: number;
+  netToPayHt: number;
+  tvaAmount: number;
+  netToPayTtc: number;
+}
+
+export function computeCertificatDeductions(input: CertificatDeductionInput): CertificatDeductionResult {
+  const tvaRate = input.tvaRate ?? DEFAULT_TVA_RATE;
+  const grossCumulativeHt = roundCurrency(input.totalWorksHt + input.pvMvAdjustment);
+
+  const cumulativeRetenue = input.retenueOverride != null
+    ? roundCurrency(input.retenueOverride)
+    : input.hasBankGuarantee
+      ? 0
+      : roundCurrency(grossCumulativeHt * input.retenuePercent / 100);
+  const periodRetenue = roundCurrency(cumulativeRetenue - input.priorCumulativeRetenue);
+
+  const cumulativeProrata = input.prorataOverride != null
+    ? roundCurrency(input.prorataOverride)
+    : input.isProrataManager
+      ? 0
+      : roundCurrency(grossCumulativeHt * input.prorataPercent / 100);
+  const periodProrata = roundCurrency(cumulativeProrata - input.priorCumulativeProrata);
+
+  const netToPayHt = roundCurrency(
+    grossCumulativeHt - cumulativeRetenue - cumulativeProrata - input.previousPayments,
+  );
+  const tvaAmount = roundCurrency(netToPayHt * tvaRate);
+  const netToPayTtc = roundCurrency(netToPayHt + tvaAmount);
+
+  return {
+    grossCumulativeHt,
+    cumulativeRetenue,
+    periodRetenue,
+    cumulativeProrata,
+    periodProrata,
+    netToPayHt,
+    tvaAmount,
+    netToPayTtc,
+  };
+}
+
 export function formatCurrencyEur(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
 }

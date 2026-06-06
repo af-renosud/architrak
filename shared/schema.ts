@@ -146,6 +146,11 @@ export const projects = pgTable("projects", {
   feeType: text("fee_type").notNull().default("percentage"),
   conceptionFee: numeric("conception_fee", { precision: 12, scale: 2 }),
   planningFee: numeric("planning_fee", { precision: 12, scale: 2 }),
+  // Task #243 — Compte Prorata levy rate (% of gross certified works) charged
+  // on each contractor's certificat and redirected to the prorata-account
+  // manager. 0.00 = no prorata on this project. A marché flagged
+  // is_prorata_manager collects the levy and is itself exempt from paying it.
+  prorataPercentage: numeric("prorata_percentage", { precision: 5, scale: 2 }).notNull().default("0.00"),
   hasMarche: boolean("has_marche").notNull().default(false),
   archidocId: varchar("archidoc_id", { length: 255 }),
   archidocClients: jsonb("archidoc_clients"),
@@ -250,6 +255,13 @@ export const marches = pgTable("marches", {
   totalHt: numeric("total_ht", { precision: 12, scale: 2 }).notNull(),
   totalTtc: numeric("total_ttc", { precision: 12, scale: 2 }).notNull(),
   retenueGarantiePercent: numeric("retenue_garantie_percent", { precision: 5, scale: 2 }).default("5.00"),
+  // Task #243 — when true, this contractor furnished a bank guarantee
+  // (garantie à première demande) in lieu of the cash Retenue de Garantie,
+  // so the holdback is bypassed (computed as 0) on their certificats.
+  hasBankGuarantee: boolean("has_bank_guarantee").notNull().default(false),
+  // Task #243 — when true, this marché is the project's Compte Prorata
+  // manager: it COLLECTS the prorata levy and is itself exempt from paying it.
+  isProrataManager: boolean("is_prorata_manager").notNull().default(false),
   paymentSchedule: jsonb("payment_schedule"),
   signedDate: date("signed_date"),
   status: text("status").notNull().default("draft"),
@@ -583,6 +595,12 @@ export const certificats = pgTable("certificats", {
   pvMvAdjustment: numeric("pv_mv_adjustment", { precision: 12, scale: 2 }).default("0.00"),
   previousPayments: numeric("previous_payments", { precision: 12, scale: 2 }).default("0.00"),
   retenueGarantie: numeric("retenue_garantie", { precision: 12, scale: 2 }).default("0.00"),
+  // Task #243 — Compte Prorata deduction, computed authoritatively server-side.
+  // cumulative = gross certified works × project prorata rate; period =
+  // cumulative − Σ prior certificats' period prorata. Both zero when the
+  // contractor's marché is the prorata manager or the project rate is 0.
+  cumulativeProrataDeduction: numeric("cumulative_prorata_deduction", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  periodProrataDeduction: numeric("period_prorata_deduction", { precision: 12, scale: 2 }).notNull().default("0.00"),
   netToPayHt: numeric("net_to_pay_ht", { precision: 12, scale: 2 }).notNull(),
   tvaAmount: numeric("tva_amount", { precision: 12, scale: 2 }).notNull(),
   netToPayTtc: numeric("net_to_pay_ttc", { precision: 12, scale: 2 }).notNull(),

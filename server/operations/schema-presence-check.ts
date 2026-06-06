@@ -100,6 +100,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0042_intake_jobs", artifact: { kind: "table", table: "intake_jobs" } },
   { tag: "0043_overlap_detection", artifact: { kind: "table", table: "overlap_cases" } },
   { tag: "0044_devis_accounting_state", artifact: { kind: "column", table: "devis", column: "accounting_state" } },
+  { tag: "0045_compte_prorata_retenue", artifact: { kind: "column", table: "projects", column: "prorata_percentage" } },
 ];
 
 interface JournalFile {

@@ -1,0 +1,47 @@
+**Yes, the *Compte Prorata* is exceptionally common in private works.**
+Any time a private project involves more than one contractor on-site simultaneously (known as *allotissement* or separate lots, which is the standard setup for an architect-led build), a *Compte Prorata* is established. It is fully integrated into the private construction standard (**NF P 03-001**).
+For your app’s data schema, the *Compte Prorata* behaves like a cousin to the *Retenue de Garantie*. It is a percentage-based deduction, but instead of holding the money for defects, it acts as a tax-like levy on all contractors to fund shared site expenses (like collective electricity, water, site cleanup, and security scaffolding).
+Here is the update to give directly to your coding AI agent to integrate this into the math engine and relational database.
+# Appendice PRD: Compte Prorata Specifications for Private Works
+### Context for the Coding Agent
+In private multi-contractor chantiers, one contractor (usually Lot 1 - *Gros Œuvre* / Structural works) is designated as the **Gestionnaire du compte prorata** (Prorata Manager). To fund this shared account, a fixed percentage is deducted from *every* contractor’s monthly progress statement. As the Architect/MOE, our tool must automatically calculate and apply this deduction on the **Certificat de Paiement**.
+## 1. Schema Extensions Required
+ * [ ] **Project or Lot Table:** Add a field prorata_percentage (Float/Decimal). Default value: 0.00. Typical real-world values range between 0.01 (1%) and 0.03 (3%).
+ * [ ] **Certificat_de_Paiement Table:** Add fields:
+   * cumulative_prorata_deduction (Currency)
+   * period_prorata_deduction (Currency)
+## 2. Core Math Engine Logic (Sequential Pipeline Update)
+The prorata deduction must be processed **cumulatively** based on gross validated works to prevent compounding rounding errors across months.
+Update the math execution pipeline for generating a Certificat de Paiement:
+```text
+[Gross Cumulative Work Approved (€)]
+       │
+       ├─► Deduct: [Retenue de Garantie] => (Gross × 5% if active)
+       │
+       └─► Deduct: [Compte Prorata]       => (Gross × Project.prorata_percentage)
+
+```
+### Exact Calculation Steps for the Code:
+ 1. **Calculate Cumulative Prorata:**
+   Current Cumulative Prorata = Gross Cumulative Work Approved × Project.prorata_percentage
+ 2. **Isolate Period Prorata:**
+   Prorata This Period = Current Cumulative Prorata - Sum of Prorata Deductions in All Previous Certificates
+ 3. **Apply to Net Payable:** The Prorata This Period reduces the cash amount authorized for payout to the contractor on this specific certificate.
+## 3. Landscape Scenarios to Code
+### Scenario D: The Multi-Contractor Prorata Levy
+ * [ ] **Step 1:** Project is initialized with prorata_percentage = 0.02 (2%). This applies to all structural and secondary lots.
+ * [ ] **Step 2:** Lot 04 (Electrician) submits Situation N°1 for €10,000 gross. Architect validates 100% of it.
+ * [ ] **Step 3 (The Deduction):**
+   * App calculates Prorata: €10,000 × 2% = €200.
+   * If 5% Retenue applies: €10,000 × 5% = €500.
+   * Net certified amount for this period before VAT: €10,000 - €200 - €500 = €9,300.
+ * [ ] **Step 4:** The generated *Certificat de Paiement* clearly displays the €200 deduction so the client’s accounting desk knows to redirect those funds to the prorata escrow/manager instead of paying it to the electrician.
+### Scenario E: The Prorata Manager Exemption (Edge Case)
+The contractor who *manages* the prorata account (*Le Gestionnaire*) pays the shared suppliers directly from their corporate accounts. Therefore, they are sometimes exempt from the monthly automatic deduction, or their deduction is handled via direct credits.
+ * [ ] **Requirement:** The code must allow an override toggle is_prorata_manager (Boolean) on the Contractor/Lot level. If true, the app must allow the Architect to manually bypass or adjust the automatic 2% deduction for this specific contractor's certificate.
+## 4. UI/UX Requirement for the Architect
+ * [ ] **The Breakdown Display:** On the certificate generation screen, the Architect must see a clear sidebar showing the breakdown:
+   * *Montant Brut Cumulé:* €XX,XXX
+   * *Retenue de garantie (5%):* -€X,XXX
+   * *Compte Prorata (X%):* -€X,XXX
+   * *Montant Net Cumulé Autorisé:* €XX,XXX

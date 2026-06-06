@@ -138,74 +138,56 @@ function formatDateFr(date: string | Date | null): string {
   return new Date(date).toLocaleDateString("fr-FR");
 }
 
-function numberToFrenchWords(n: number): string {
-  if (n === 0) return "Z\u00C9RO EUROS";
+// Task #244 — the redesigned certificat is in English, so the legal
+// amount-in-words line is rendered in English (uppercase, short-scale).
+function numberToEnglishWords(n: number): string {
+  if (n === 0) return "ZERO EUROS";
 
-  const units = ["", "UN", "DEUX", "TROIS", "QUATRE", "CINQ", "SIX", "SEPT", "HUIT", "NEUF",
-    "DIX", "ONZE", "DOUZE", "TREIZE", "QUATORZE", "QUINZE", "SEIZE", "DIX-SEPT", "DIX-HUIT", "DIX-NEUF"];
-  const tens = ["", "", "VINGT", "TRENTE", "QUARANTE", "CINQUANTE", "SOIXANTE", "SOIXANTE", "QUATRE-VINGT", "QUATRE-VINGT"];
+  const ones = ["", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE",
+    "TEN", "ELEVEN", "TWELVE", "THIRTEEN", "FOURTEEN", "FIFTEEN", "SIXTEEN", "SEVENTEEN", "EIGHTEEN", "NINETEEN"];
+  const tens = ["", "", "TWENTY", "THIRTY", "FORTY", "FIFTY", "SIXTY", "SEVENTY", "EIGHTY", "NINETY"];
 
-  function chunk(num: number): string {
-    if (num === 0) return "";
-    if (num < 20) return units[num];
-    if (num < 70) {
-      const t = Math.floor(num / 10);
-      const u = num % 10;
-      if (u === 0) return tens[t];
-      if (u === 1 && t !== 8) return `${tens[t]} ET UN`;
-      return `${tens[t]}-${units[u]}`;
+  function below1000(num: number): string {
+    let s = "";
+    if (num >= 100) {
+      s += `${ones[Math.floor(num / 100)]} HUNDRED`;
+      num %= 100;
+      if (num > 0) s += " ";
     }
-    if (num < 80) {
-      const u = num - 60;
-      if (u === 1) return "SOIXANTE ET ONZE";
-      return `SOIXANTE-${units[u]}`;
+    if (num >= 20) {
+      s += tens[Math.floor(num / 10)];
+      if (num % 10 > 0) s += `-${ones[num % 10]}`;
+    } else if (num > 0) {
+      s += ones[num];
     }
-    if (num < 100) {
-      const u = num - 80;
-      if (u === 0) return "QUATRE-VINGTS";
-      return `QUATRE-VINGT-${units[u]}`;
-    }
-    if (num < 200) {
-      const r = num - 100;
-      if (r === 0) return "CENT";
-      return `CENT ${chunk(r)}`;
-    }
-    if (num < 1000) {
-      const h = Math.floor(num / 100);
-      const r = num % 100;
-      if (r === 0) return `${units[h]} CENTS`;
-      return `${units[h]} CENT ${chunk(r)}`;
-    }
-    return "";
-  }
-
-  const euros = Math.floor(n);
-  const cents = Math.round((n - euros) * 100);
-
-  let result = "";
-
-  if (euros >= 1000000) {
-    const millions = Math.floor(euros / 1000000);
-    const remainder = euros % 1000000;
-    result += millions === 1 ? "UN MILLION" : `${chunk(millions)} MILLIONS`;
-    if (remainder > 0) result += " " + buildThousands(remainder);
-  } else {
-    result = buildThousands(euros);
-  }
-
-  function buildThousands(num: number): string {
-    if (num === 0) return "";
-    if (num < 1000) return chunk(num);
-    const thousands = Math.floor(num / 1000);
-    const remainder = num % 1000;
-    let s = thousands === 1 ? "MILLE" : `${chunk(thousands)} MILLE`;
-    if (remainder > 0) s += " " + chunk(remainder);
     return s;
   }
 
-  result += " EURO" + (euros !== 1 ? "S" : "");
+  const totalCents = Math.round(n * 100);
+  const euros = Math.floor(totalCents / 100);
+  const cents = totalCents % 100;
+
+  const scales: { value: number; name: string }[] = [
+    { value: 1_000_000_000, name: "BILLION" },
+    { value: 1_000_000, name: "MILLION" },
+    { value: 1_000, name: "THOUSAND" },
+  ];
+
+  let remaining = euros;
+  let words = "";
+  for (const sc of scales) {
+    if (remaining >= sc.value) {
+      const count = Math.floor(remaining / sc.value);
+      words += `${words ? " " : ""}${below1000(count)} ${sc.name}`;
+      remaining %= sc.value;
+    }
+  }
+  if (remaining > 0) words += `${words ? " " : ""}${below1000(remaining)}`;
+  if (!words) words = "ZERO";
+
+  let result = `${words} EURO${euros === 1 ? "" : "S"}`;
   if (cents > 0) {
-    result += ` ET ${chunk(cents)} CENTIME${cents !== 1 ? "S" : ""}`;
+    result += ` AND ${below1000(cents)} CENT${cents === 1 ? "" : "S"}`;
   }
 
   return result.trim();
@@ -380,7 +362,7 @@ function buildAnnexeHtml(data: AnnexeData): string {
     }
     if (dr.avenants.length > 0) {
       marcheRows += `<tr style="background:#F0F2F5;">
-        <td colspan="3" style="text-align:right;font-weight:700;font-size:6.5pt;color:#7E7F83;text-transform:uppercase;">Sous-total ${dr.devisCode}</td>
+        <td colspan="3" style="text-align:right;font-weight:700;font-size:6.5pt;color:#7E7F83;text-transform:uppercase;">Subtotal ${dr.devisCode}</td>
         <td style="text-align:right;font-size:6.5pt;font-weight:600;">${fmtNum(dr.originalHt)}</td>
         <td style="text-align:right;font-size:6.5pt;font-weight:600;color:#2a7d2e;">${fmtNum(dr.pvTotalHt)}</td>
         <td style="text-align:right;font-size:6.5pt;font-weight:600;color:#c0392b;">${fmtNum(dr.mvTotalHt)}</td>
@@ -404,16 +386,16 @@ function buildAnnexeHtml(data: AnnexeData): string {
 
   return `
   <div class="annexe-section" style="page-break-before:always;">
-    <div style="text-align:center;margin-bottom:6mm;">
-      <div style="font-size:14pt;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:#0B2545;">Annexe Financi\u00E8re</div>
+    <div style="text-align:center;margin-bottom:4mm;">
+      <div style="font-size:13pt;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:#0B2545;">Financial Annexe</div>
       <div style="font-size:8pt;color:#7E7F83;margin-top:2px;">${data.projectName} (${data.projectCode}) — ${data.contractorName}</div>
     </div>
     <div class="accent-bar"></div>
 
-    <div style="font-size:10pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#0B2545;margin-bottom:3mm;padding-bottom:1.5mm;border-bottom:1px solid #E6E6E6;">
-      1. March\u00E9 — R\u00E9capitulatif des Devis &amp; Avenants
+    <div style="font-size:10pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#0B2545;margin-bottom:2.5mm;padding-bottom:1.5mm;border-bottom:1px solid #E6E6E6;">
+      1. March\u00E9 — Devis &amp; Avenants Summary
     </div>
-    <table class="annexe-table" style="width:100%;border-collapse:collapse;margin-bottom:6mm;font-size:7pt;">
+    <table class="annexe-table" style="width:100%;border-collapse:collapse;margin-bottom:4mm;font-size:7pt;">
       <thead>
         <tr>
           <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:left;">Lot</th>
@@ -422,7 +404,7 @@ function buildAnnexeHtml(data: AnnexeData): string {
           <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:right;">Original HT</th>
           <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:right;">PV (+)</th>
           <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:right;">MV (\u2212)</th>
-          <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:right;">Ajust\u00E9 HT</th>
+          <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:right;">Adjusted HT</th>
         </tr>
       </thead>
       <tbody>
@@ -430,41 +412,41 @@ function buildAnnexeHtml(data: AnnexeData): string {
       </tbody>
       <tfoot>
         <tr style="border-top:2px solid #0B2545;background:#E8ECF1;">
-          <td colspan="3" style="font-weight:800;font-size:7pt;color:#0B2545;text-transform:uppercase;padding:6px;">TOTAL G\u00C9N\u00C9RAL</td>
+          <td colspan="3" style="font-weight:800;font-size:7pt;color:#0B2545;text-transform:uppercase;padding:6px;">GRAND TOTAL</td>
           <td style="text-align:right;font-weight:800;font-size:7pt;color:#0B2545;padding:6px;">${fmtNum(data.grandTotalOriginalHt)}</td>
           <td style="text-align:right;font-weight:800;font-size:7pt;color:#2a7d2e;padding:6px;">${fmtNum(data.grandTotalPvHt)}</td>
           <td style="text-align:right;font-weight:800;font-size:7pt;color:#c0392b;padding:6px;">${fmtNum(data.grandTotalMvHt)}</td>
           <td style="text-align:right;font-weight:800;font-size:7pt;color:#0B2545;padding:6px;">${fmtNum(data.grandTotalAdjustedHt)}</td>
         </tr>
         <tr style="background:#E8ECF1;">
-          <td colspan="6" style="text-align:right;font-size:6.5pt;color:#7E7F83;padding:3px 6px;">March\u00E9 Ajust\u00E9 TTC</td>
+          <td colspan="6" style="text-align:right;font-size:6.5pt;color:#7E7F83;padding:3px 6px;">March\u00E9 Adjusted TTC</td>
           <td style="text-align:right;font-weight:700;font-size:7pt;color:#0B2545;padding:3px 6px;">${fmtNum(data.grandTotalAdjustedTtc)}</td>
         </tr>
       </tfoot>
     </table>
 
     <div style="font-size:10pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#0B2545;margin-bottom:3mm;padding-bottom:1.5mm;border-bottom:1px solid #E6E6E6;">
-      2. Situation des Travaux — Historique des Paiements
+      2. Situation — Payment History
     </div>
-    <table class="annexe-table" style="width:100%;border-collapse:collapse;margin-bottom:6mm;font-size:7pt;">
+    <table class="annexe-table" style="width:100%;border-collapse:collapse;margin-bottom:4mm;font-size:7pt;">
       <thead>
         <tr>
-          <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:left;">R\u00E9f\u00E9rence</th>
+          <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:left;">Reference</th>
           <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:center;">Date</th>
-          <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:right;">Montant HT</th>
-          <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:right;">Montant TTC</th>
+          <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:right;">Amount HT</th>
+          <th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:right;">Amount TTC</th>
         </tr>
       </thead>
       <tbody>
-        ${situationRows || `<tr><td colspan="4" style="color:#7E7F83;font-style:italic;padding:6px;">Aucun certificat pr\u00E9c\u00E9dent</td></tr>`}
+        ${situationRows || `<tr><td colspan="4" style="color:#7E7F83;font-style:italic;padding:6px;">No previous certificat</td></tr>`}
         ${data.previousCertificats.length > 0 ? `
         <tr style="border-top:1px solid #C1A27B;background:#FDF8F3;">
-          <td colspan="2" style="font-weight:700;font-size:6.5pt;color:#7E7F83;text-transform:uppercase;padding:4px 6px;">Cumul pr\u00E9c\u00E9dent</td>
+          <td colspan="2" style="font-weight:700;font-size:6.5pt;color:#7E7F83;text-transform:uppercase;padding:4px 6px;">Previous Cumulative</td>
           <td style="text-align:right;font-weight:700;font-size:7pt;color:#34312D;padding:4px 6px;">${fmtNum(data.previousCumulativeHt)}</td>
           <td style="text-align:right;font-weight:700;font-size:7pt;color:#34312D;padding:4px 6px;">${fmtNum(data.previousCumulativeTtc)}</td>
         </tr>` : ""}
         <tr style="background:#FFF9F0;border-left:3px solid #C1A27B;">
-          <td style="font-weight:800;color:#0B2545;padding:6px;">CERTIFICAT ACTUEL</td>
+          <td style="font-weight:800;color:#0B2545;padding:6px;">CURRENT CERTIFICAT</td>
           <td style="text-align:center;font-weight:600;color:#0B2545;padding:6px;">${formatDateFr(null)}</td>
           <td style="text-align:right;font-weight:800;color:#0B2545;padding:6px;">${fmtNum(data.currentCertificatHt)}</td>
           <td style="text-align:right;font-weight:800;color:#0B2545;padding:6px;">${fmtNum(data.currentCertificatTtc)}</td>
@@ -472,12 +454,12 @@ function buildAnnexeHtml(data: AnnexeData): string {
       </tbody>
       <tfoot>
         <tr style="border-top:2px solid #0B2545;background:#E8ECF1;">
-          <td colspan="2" style="font-weight:800;font-size:7pt;color:#0B2545;text-transform:uppercase;padding:6px;">CUMUL TOTAL CERTIFI\u00C9</td>
+          <td colspan="2" style="font-weight:800;font-size:7pt;color:#0B2545;text-transform:uppercase;padding:6px;">TOTAL CERTIFIED</td>
           <td style="text-align:right;font-weight:800;font-size:7pt;color:#0B2545;padding:6px;">${fmtNum(data.cumulativeTotalHt)}</td>
           <td style="text-align:right;font-weight:800;font-size:7pt;color:#0B2545;padding:6px;">${fmtNum(data.cumulativeTotalTtc)}</td>
         </tr>
         <tr style="background:#F8F9FA;">
-          <td colspan="2" style="font-weight:700;font-size:7pt;color:#0B2545;padding:6px;">March\u00E9 Ajust\u00E9</td>
+          <td colspan="2" style="font-weight:700;font-size:7pt;color:#0B2545;padding:6px;">March\u00E9 Adjusted</td>
           <td style="text-align:right;font-weight:700;font-size:7pt;color:#0B2545;padding:6px;">${fmtNum(data.grandTotalAdjustedHt)}</td>
           <td style="text-align:right;font-weight:700;font-size:7pt;color:#0B2545;padding:6px;">${fmtNum(data.grandTotalAdjustedTtc)}</td>
         </tr>
@@ -622,12 +604,12 @@ function escapeHtml(s: string): string {
 function renderBankingBlock(contractor: Contractor): string {
   if (!contractor.iban) return "";
   const holder = contractor.accountHolderName || contractor.name;
-  const bank = contractor.bankName ? `<div class="banking-row"><span class="banking-label">Banque</span><span class="banking-value">${escapeHtml(contractor.bankName)}</span></div>` : "";
+  const bank = contractor.bankName ? `<div class="banking-row"><span class="banking-label">Bank</span><span class="banking-value">${escapeHtml(contractor.bankName)}</span></div>` : "";
   const bic = contractor.bic ? `<div class="banking-row"><span class="banking-label">BIC</span><span class="banking-value">${escapeHtml(contractor.bic)}</span></div>` : "";
   return `
-  <div class="section-title">Coordonn\u00E9es bancaires</div>
+  <div class="section-title">Bank Details</div>
   <div class="banking-card">
-    <div class="banking-row"><span class="banking-label">Titulaire</span><span class="banking-value">${escapeHtml(holder)}</span></div>
+    <div class="banking-row"><span class="banking-label">Account Holder</span><span class="banking-value">${escapeHtml(holder)}</span></div>
     <div class="banking-row"><span class="banking-label">IBAN</span><span class="banking-value banking-mono">${escapeHtml(formatIbanForPrint(contractor.iban))}</span></div>
     ${bic}
     ${bank}
@@ -640,7 +622,16 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   const netTtc = parseFloat(certificat.netToPayTtc);
   const netHt = parseFloat(certificat.netToPayHt);
   const tvaAmount = parseFloat(certificat.tvaAmount);
-  const amountInWords = numberToFrenchWords(netTtc);
+  const amountInWords = numberToEnglishWords(netTtc);
+
+  // Task #243 — authoritative cumulative deduction figures persisted on the
+  // certificat (computed server-side). Rendered as an explicit waterfall.
+  const grossCumulativeHt = roundCurrency(
+    parseFloat(certificat.totalWorksHt) + parseFloat(certificat.pvMvAdjustment ?? "0"),
+  );
+  const cumulativeRetenue = roundCurrency(parseFloat(certificat.retenueGarantie ?? "0"));
+  const cumulativeProrata = roundCurrency(parseFloat(certificat.cumulativeProrataDeduction ?? "0"));
+  const previousPaymentsHt = roundCurrency(parseFloat(certificat.previousPayments ?? "0"));
 
   const primaryLot = devisDetails.find(d => d.lot)?.lot;
   const lotLabel = primaryLot ? `LOT ${primaryLot.lotNumber}` : "LOT";
@@ -670,24 +661,24 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     const worksTtc = parseFloat(dd.devis.amountTtc);
     const invoicedTtc = dd.invoicedTtc;
     const remaining = worksTtc - invoicedTtc;
-    return `<div class="info-box" style="margin-bottom:10px;">
+    return `<div class="info-box" style="margin-bottom:6px;">
       <table style="width:100%;border-collapse:collapse;">
         <tr>
-          <td style="font-weight:700;font-size:10pt;color:#0B2545;padding-bottom:6px;" colspan="2">
+          <td style="font-weight:700;font-size:10pt;color:#0B2545;padding-bottom:4px;" colspan="2">
             ${dd.devis.descriptionFr || dd.devis.descriptionUk || "\u2014"}
             <span style="float:right;font-size:9pt;color:#7E7F83;font-weight:400;">${dd.devis.devisCode}</span>
           </td>
         </tr>
         <tr>
-          <td style="padding:3px 0;font-size:9pt;color:#34312D;">Valeur Travaux TTC</td>
+          <td style="padding:3px 0;font-size:9pt;color:#34312D;">Works Value TTC</td>
           <td class="num">${formatCurrencyNoSymbol(worksTtc)}</td>
         </tr>
         <tr>
-          <td style="padding:3px 0;font-size:9pt;color:#34312D;">Factur\u00E9 \u00E0 ce jour</td>
+          <td style="padding:3px 0;font-size:9pt;color:#34312D;">Invoiced to Date</td>
           <td class="num">${formatCurrencyNoSymbol(invoicedTtc)}</td>
         </tr>
         <tr style="border-top:1px solid #E6E6E6;">
-          <td style="padding:5px 0 3px;font-size:9pt;font-weight:700;color:#0B2545;">Restant</td>
+          <td style="padding:5px 0 3px;font-size:9pt;font-weight:700;color:#0B2545;">Remaining</td>
           <td class="num" style="font-weight:700;color:#0B2545;">${formatCurrencyNoSymbol(remaining)}</td>
         </tr>
       </table>
@@ -727,25 +718,25 @@ function buildCertificatHtml(data: CertificatPdfData): string {
 
   body {
     font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-    font-size: 10pt;
+    font-size: 9.5pt;
     color: #34312D;
-    line-height: 1.55;
+    line-height: 1.28;
   }
 
   .cover-header {
     background: #FFFFFF;
     color: #0B2545;
-    padding: 0 0 10px 0;
+    padding: 0 0 5px 0;
     margin: 0;
   }
   .cover-header-top {
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
-    margin-bottom: 8px;
+    margin-bottom: 4px;
   }
   .cover-header-top img {
-    height: 96px;
+    height: 58px;
     width: auto;
   }
   .cover-header-top .firm-name {
@@ -782,30 +773,30 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   .accent-bar {
     height: 4px;
     background: linear-gradient(90deg, #c1a27b 0%, #FFC482 50%, #c1a27b 100%);
-    margin-bottom: 4mm;
+    margin-bottom: 2.5mm;
   }
 
   .section-title {
-    font-size: 11pt;
+    font-size: 10.5pt;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: #0B2545;
-    margin-bottom: 3mm;
-    padding-bottom: 1.5mm;
+    margin-bottom: 2mm;
+    padding-bottom: 1mm;
     border-bottom: 1px solid #E6E6E6;
   }
 
   .parties-grid {
     display: flex;
     gap: 12px;
-    margin-bottom: 4mm;
+    margin-bottom: 2.5mm;
   }
   .party-card {
     flex: 1;
     background: #F8F9FA;
     border-left: 3pt solid #C1A27B;
-    padding: 8px 12px;
+    padding: 5px 10px;
   }
   .party-label {
     font-size: 8pt;
@@ -831,8 +822,8 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   .banking-card {
     background: #F8F9FA;
     border-left: 3pt solid #0B2545;
-    padding: 8px 12px;
-    margin-bottom: 4mm;
+    padding: 5px 10px;
+    margin-bottom: 2.5mm;
   }
   .banking-row {
     display: flex;
@@ -858,7 +849,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   table.works-table {
     width: 100%;
     border-collapse: collapse;
-    margin-bottom: 4mm;
+    margin-bottom: 2.5mm;
   }
   table.works-table th {
     background: #0B2545;
@@ -867,11 +858,11 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    padding: 6px 8px;
+    padding: 4px 8px;
     text-align: left;
   }
   table.works-table td {
-    padding: 6px 8px;
+    padding: 4px 8px;
     font-size: 8pt;
     border-bottom: 0.5pt solid #E6E6E6;
   }
@@ -915,7 +906,67 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   .info-box {
     background: #F8F9FA;
     border-left: 3pt solid #C1A27B;
-    padding: 8px 12px;
+    padding: 5px 10px;
+  }
+
+  /* Task #244 — single-A4 two-column body */
+  .cert-grid {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 2.5mm;
+    align-items: flex-start;
+  }
+  .cert-col {
+    flex: 1;
+    min-width: 0;
+  }
+  .cert-col .section-title {
+    margin-bottom: 2mm;
+  }
+  table.works-table.waterfall td {
+    font-size: 7.5pt;
+    padding: 4px 8px;
+  }
+  table.works-table.waterfall tr.net-row td {
+    border-top: 1.5pt solid #0B2545;
+    border-bottom: none;
+    background: #F8F9FA;
+  }
+
+  .totals-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .totals-table td {
+    padding: 5px 10px;
+    font-size: 9pt;
+    border-bottom: 0.5pt solid #E6E6E6;
+    color: #34312D;
+  }
+  .totals-table td.num {
+    text-align: right;
+    font-weight: 700;
+    color: #0B2545;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .totals-table .totals-sub {
+    display: block;
+    font-size: 6.5pt;
+    font-weight: 400;
+    color: #7E7F83;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .totals-table tr.grand td {
+    background: linear-gradient(135deg, #f7f9fc 0%, #f0f4f8 100%);
+    border-top: 2px solid #C1A27B;
+    border-bottom: none;
+    font-weight: 800;
+    color: #0B2545;
+  }
+  .totals-table tr.grand td.num {
+    font-size: 13pt;
   }
 
   .num {
@@ -926,16 +977,16 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   }
 
   .payment-section {
-    margin: 4mm 0;
-    padding: 12px 16px;
+    margin: 2.5mm 0;
+    padding: 8px 14px;
     background: linear-gradient(135deg, #f7f9fc 0%, #f0f4f8 100%);
     border-top: 3px solid #C1A27B;
     border-radius: 0 0 8px 8px;
   }
   .payment-propose {
     font-size: 9pt;
-    margin-bottom: 6px;
-    line-height: 1.5;
+    margin-bottom: 4px;
+    line-height: 1.4;
   }
   .payment-propose strong {
     color: #0B2545;
@@ -946,8 +997,8 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     font-weight: 800;
     text-transform: uppercase;
     color: #0B2545;
-    margin: 8px 0;
-    padding: 8px;
+    margin: 5px 0;
+    padding: 6px;
     background: #FFFFFF;
     border: 1px solid #E6E6E6;
     border-left: 3pt solid #C1A27B;
@@ -959,14 +1010,14 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     font-weight: 800;
     text-transform: uppercase;
     color: #c0392b;
-    margin: 6px 0;
+    margin: 4px 0;
     letter-spacing: 0.06em;
   }
   .payment-instructions {
     font-size: 7pt;
     color: #7E7F83;
-    line-height: 1.5;
-    margin-top: 6px;
+    line-height: 1.4;
+    margin-top: 4px;
     text-align: justify;
   }
 
@@ -980,8 +1031,8 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   }
 
   .doc-footer {
-    margin-top: 4mm;
-    padding-top: 3mm;
+    margin-top: 2.5mm;
+    padding-top: 2mm;
     border-top: 0.5pt solid #E6E6E6;
     display: flex;
     justify-content: space-between;
@@ -1098,32 +1149,62 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     </tbody>
   </table>
 
-  <div class="section-title">Financial Summary</div>
-  <div class="kpi-row">
-    <div class="kpi-card">
-      <div class="kpi-label">Net HT</div>
-      <div class="kpi-value">${formatCurrencyNoSymbol(netHt)}</div>
-      <div class="kpi-sub">Hors Taxes</div>
+  <div class="cert-grid">
+    <div class="cert-col">
+      <div class="section-title">Deductions &amp; Net Calculation</div>
+      <table class="works-table waterfall">
+        <tbody>
+          <tr>
+            <td>Gross Cumulative Works HT (incl. PV/MV)</td>
+            <td style="text-align:right;font-weight:600;">${formatCurrencyNoSymbol(grossCumulativeHt)}</td>
+          </tr>
+          <tr>
+            <td>Retenue de Garantie (cumulative holdback)</td>
+            <td style="text-align:right;color:#B23A48;">- ${formatCurrencyNoSymbol(cumulativeRetenue)}</td>
+          </tr>
+          <tr>
+            <td>Compte Prorata (cumulative levy)</td>
+            <td style="text-align:right;color:#B23A48;">- ${formatCurrencyNoSymbol(cumulativeProrata)}</td>
+          </tr>
+          <tr>
+            <td>Previous Payments (cumulative)</td>
+            <td style="text-align:right;color:#B23A48;">- ${formatCurrencyNoSymbol(previousPaymentsHt)}</td>
+          </tr>
+          <tr class="net-row">
+            <td style="font-weight:700;color:#0B2545;">Net to Pay HT (this period)</td>
+            <td style="text-align:right;font-weight:700;color:#0B2545;">${formatCurrencyNoSymbol(netHt)}</td>
+          </tr>
+        </tbody>
+      </table>
+      ${cumulativeProrata > 0 ? `<div class="warning-note">The Compte Prorata (${formatCurrencyNoSymbol(cumulativeProrata)}) is levied on this certificat and paid to the site Compte Prorata manager.</div>` : ""}
     </div>
-    <div class="kpi-card">
-      <div class="kpi-label">TVA</div>
-      <div class="kpi-value">${formatCurrencyNoSymbol(tvaAmount)}</div>
-      <div class="kpi-sub">Taxe sur la Valeur Ajout\u00E9e</div>
-    </div>
-    <div class="kpi-card" style="border-top-color:#C1A27B;">
-      <div class="kpi-label">Net TTC</div>
-      <div class="kpi-value">${formatCurrencyNoSymbol(netTtc)}</div>
-      <div class="kpi-sub">Toutes Taxes Comprises</div>
-    </div>
-  </div>
 
-  ${devisDetails.length > 0 ? `
-  <div class="section-title">Summary by Devis Code</div>
-  ${devisSummaryRows}
-  <div class="warning-note">
-    ATTENTION : Includes all invoices to date. May not reflect actual monies received.
+    <div class="cert-col">
+      <div class="section-title">Financial Summary</div>
+      <table class="totals-table">
+        <tbody>
+          <tr>
+            <td>Net HT <span class="totals-sub">Hors Taxes</span></td>
+            <td class="num">${formatCurrencyNoSymbol(netHt)}</td>
+          </tr>
+          <tr>
+            <td>TVA <span class="totals-sub">Taxe sur la Valeur Ajout\u00E9e</span></td>
+            <td class="num">${formatCurrencyNoSymbol(tvaAmount)}</td>
+          </tr>
+          <tr class="grand">
+            <td>Net TTC <span class="totals-sub">Toutes Taxes Comprises</span></td>
+            <td class="num">${formatCurrencyNoSymbol(netTtc)}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      ${devisDetails.length > 0 ? `
+      <div class="section-title" style="margin-top:4mm;">Summary by Devis Code</div>
+      ${devisSummaryRows}
+      <div class="warning-note">ATTENTION : Includes all invoices to date. May not reflect actual monies received.</div>
+      ` : ""}
+    </div>
   </div>
-  ` : ""}
 
   <div class="payment-section">
     <div class="payment-propose">
@@ -1131,7 +1212,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
       <strong>${formatCurrencyNoSymbol(netTtc)}</strong>
     </div>
     <div class="payment-amount-words">
-      En toutes lettres : ${amountInWords}
+      In words : ${amountInWords}
     </div>
     <div class="payment-attention">
       This Requires Your Payment and Attention.
@@ -1180,6 +1261,7 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     feeType: "percentage",
     conceptionFee: null,
     planningFee: null,
+    prorataPercentage: "0.00",
     hasMarche: false,
     archidocId: null,
     archidocClients: null,
@@ -1337,6 +1419,8 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     pvMvAdjustment: "0.00",
     previousPayments: "12000.00",
     retenueGarantie: "0.00",
+    cumulativeProrataDeduction: "0.00",
+    periodProrataDeduction: "0.00",
     netToPayHt: "12500.00",
     tvaAmount: "2500.00",
     netToPayTtc: "15000.00",

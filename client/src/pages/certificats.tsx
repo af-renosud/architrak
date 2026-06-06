@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
@@ -18,7 +18,8 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { insertCertificatSchema } from "@shared/schema";
-import type { Project, Contractor, Certificat, Invoice } from "@shared/schema";
+import type { Project, Contractor, Certificat, Invoice, Marche } from "@shared/schema";
+import { computeCertificatDeductions } from "@shared/financial-utils";
 import { z } from "zod";
 
 function formatCurrency(value: number): string {
@@ -30,6 +31,10 @@ const certificatFormSchema = insertCertificatSchema.extend({
   netToPayHt: z.string().min(1, "Net to pay HT is required"),
   tvaAmount: z.string().min(1, "TVA amount is required"),
   netToPayTtc: z.string().min(1, "Net to pay TTC is required"),
+  // Task #243 — optional architect overrides of the auto-computed cumulative
+  // deductions. Sent to the server, never persisted as columns.
+  retenueOverride: z.string().optional(),
+  prorataOverride: z.string().optional(),
 });
 
 type CertificatFormValues = z.infer<typeof certificatFormSchema>;
@@ -101,6 +106,12 @@ function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Certifica
                 {formatCurrency(parseFloat(cert.retenueGarantie ?? "0"))}
               </span>
             </div>
+            <div className="flex items-center justify-between gap-2">
+              <TechnicalLabel>Compte Prorata</TechnicalLabel>
+              <span className="text-[13px] font-semibold text-foreground" data-testid="text-cert-detail-prorata">
+                {formatCurrency(parseFloat(cert.cumulativeProrataDeduction ?? "0"))}
+              </span>
+            </div>
             <div className="border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] pt-3">
               <div className="flex items-center justify-between gap-2">
                 <TechnicalLabel>Net to Pay HT</TechnicalLabel>
@@ -164,6 +175,11 @@ export default function Certificats() {
     enabled: !!selectedProjectId,
   });
 
+  const { data: marches } = useQuery<Marche[]>({
+    queryKey: ["/api/projects", selectedProjectId, "marches"],
+    enabled: !!selectedProjectId,
+  });
+
   const form = useForm<CertificatFormValues>({
     resolver: zodResolver(certificatFormSchema),
     defaultValues: {
@@ -175,31 +191,71 @@ export default function Certificats() {
       pvMvAdjustment: "0.00",
       previousPayments: "0.00",
       retenueGarantie: "0.00",
+      cumulativeProrataDeduction: "0.00",
+      periodProrataDeduction: "0.00",
       netToPayHt: "0.00",
       tvaAmount: "0.00",
       netToPayTtc: "0.00",
       status: "draft",
       notes: null,
+      retenueOverride: undefined,
+      prorataOverride: undefined,
     },
   });
 
+  const selectedProject = useMemo(
+    () => projects?.find((p) => String(p.id) === selectedProjectId),
+    [projects, selectedProjectId],
+  );
+
+  const watchContractorId = form.watch("contractorId");
   const watchTotalWorks = form.watch("totalWorksHt");
   const watchPvMv = form.watch("pvMvAdjustment");
   const watchPrevious = form.watch("previousPayments");
-  const watchRetenue = form.watch("retenueGarantie");
+  const watchRetenueOverride = form.watch("retenueOverride");
+  const watchProrataOverride = form.watch("prorataOverride");
 
-  const recalculate = () => {
-    const totalWorks = parseFloat(watchTotalWorks || "0");
-    const pvMv = parseFloat(watchPvMv || "0");
-    const previous = parseFloat(watchPrevious || "0");
-    const retenue = parseFloat(watchRetenue || "0");
-    const netHt = totalWorks + pvMv - previous - retenue;
-    const tva = netHt * 0.2;
-    const netTtc = netHt + tva;
-    form.setValue("netToPayHt", netHt.toFixed(2));
-    form.setValue("tvaAmount", tva.toFixed(2));
-    form.setValue("netToPayTtc", netTtc.toFixed(2));
-  };
+  // Task #243 — the contractor's marché carries the Retenue de Garantie rate,
+  // the bank-guarantee bypass and the prorata-manager exemption; the project
+  // carries the Compte Prorata rate. We feed them to the SAME shared math the
+  // server uses, so this live breakdown matches the authoritative figures.
+  const selectedMarche = useMemo(
+    () => marches?.find((m) => m.contractorId === watchContractorId) ?? null,
+    [marches, watchContractorId],
+  );
+  const retenuePercent = selectedMarche?.retenueGarantiePercent != null
+    ? parseFloat(selectedMarche.retenueGarantiePercent) : 5;
+  const prorataPercent = parseFloat(selectedProject?.prorataPercentage ?? "0") || 0;
+  const hasBankGuarantee = selectedMarche?.hasBankGuarantee ?? false;
+  const isProrataManager = selectedMarche?.isProrataManager ?? false;
+
+  const priorCerts = useMemo(
+    () => (allCertificats ?? []).filter((c) => c.contractorId === watchContractorId),
+    [allCertificats, watchContractorId],
+  );
+
+  const breakdown = useMemo(() => computeCertificatDeductions({
+    totalWorksHt: parseFloat(watchTotalWorks || "0") || 0,
+    pvMvAdjustment: parseFloat(watchPvMv || "0") || 0,
+    previousPayments: parseFloat(watchPrevious || "0") || 0,
+    retenuePercent,
+    hasBankGuarantee,
+    prorataPercent,
+    isProrataManager,
+    priorCumulativeRetenue: priorCerts.reduce((m, c) => Math.max(m, parseFloat(c.retenueGarantie ?? "0")), 0),
+    priorCumulativeProrata: priorCerts.reduce((s, c) => s + parseFloat(c.periodProrataDeduction ?? "0"), 0),
+    retenueOverride: watchRetenueOverride ? parseFloat(watchRetenueOverride) : null,
+    prorataOverride: watchProrataOverride ? parseFloat(watchProrataOverride) : null,
+  }), [watchTotalWorks, watchPvMv, watchPrevious, retenuePercent, hasBankGuarantee, prorataPercent, isProrataManager, priorCerts, watchRetenueOverride, watchProrataOverride]);
+
+  useEffect(() => {
+    form.setValue("retenueGarantie", breakdown.cumulativeRetenue.toFixed(2));
+    form.setValue("cumulativeProrataDeduction", breakdown.cumulativeProrata.toFixed(2));
+    form.setValue("periodProrataDeduction", breakdown.periodProrata.toFixed(2));
+    form.setValue("netToPayHt", breakdown.netToPayHt.toFixed(2));
+    form.setValue("tvaAmount", breakdown.tvaAmount.toFixed(2));
+    form.setValue("netToPayTtc", breakdown.netToPayTtc.toFixed(2));
+  }, [breakdown, form]);
 
   const createMutation = useMutation({
     mutationFn: async (data: CertificatFormValues) => {
@@ -251,11 +307,15 @@ export default function Certificats() {
       pvMvAdjustment: "0.00",
       previousPayments: "0.00",
       retenueGarantie: "0.00",
+      cumulativeProrataDeduction: "0.00",
+      periodProrataDeduction: "0.00",
       netToPayHt: totalInvoicesHt.toFixed(2),
       tvaAmount: (totalInvoicesHt * 0.2).toFixed(2),
       netToPayTtc: (totalInvoicesHt * 1.2).toFixed(2),
       status: "draft",
       notes: null,
+      retenueOverride: undefined,
+      prorataOverride: undefined,
     });
     setDialogOpen(true);
   };
@@ -480,14 +540,13 @@ export default function Certificats() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>
-                          <TechnicalLabel>Total Works HT</TechnicalLabel>
+                          <TechnicalLabel>Total Works HT (Cumulative)</TechnicalLabel>
                         </FormLabel>
                         <FormControl>
                           <Input
                             {...field}
                             type="number"
                             step="0.01"
-                            onBlur={() => recalculate()}
                             data-testid="input-cert-total-works"
                           />
                         </FormControl>
@@ -509,7 +568,6 @@ export default function Certificats() {
                             value={field.value ?? "0.00"}
                             type="number"
                             step="0.01"
-                            onBlur={() => recalculate()}
                             data-testid="input-cert-pvmv"
                           />
                         </FormControl>
@@ -525,7 +583,7 @@ export default function Certificats() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>
-                          <TechnicalLabel>Previous Payments</TechnicalLabel>
+                          <TechnicalLabel>Previous Payments (Cumulative)</TechnicalLabel>
                         </FormLabel>
                         <FormControl>
                           <Input
@@ -533,8 +591,34 @@ export default function Certificats() {
                             value={field.value ?? "0.00"}
                             type="number"
                             step="0.01"
-                            onBlur={() => recalculate()}
                             data-testid="input-cert-previous"
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+
+                {/* Task #243 — optional architect overrides of the auto-computed
+                    cumulative deductions. Leave blank to use the contractual rate. */}
+                <div className="grid grid-cols-2 gap-4">
+                  <FormField
+                    control={form.control}
+                    name="retenueOverride"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>
+                          <TechnicalLabel>Retenue Override (optional)</TechnicalLabel>
+                        </FormLabel>
+                        <FormControl>
+                          <Input
+                            {...field}
+                            value={field.value ?? ""}
+                            type="number"
+                            step="0.01"
+                            placeholder="Auto"
+                            data-testid="input-cert-retenue-override"
                           />
                         </FormControl>
                         <FormMessage />
@@ -543,20 +627,20 @@ export default function Certificats() {
                   />
                   <FormField
                     control={form.control}
-                    name="retenueGarantie"
+                    name="prorataOverride"
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>
-                          <TechnicalLabel>Retenue de Garantie</TechnicalLabel>
+                          <TechnicalLabel>Prorata Override (optional)</TechnicalLabel>
                         </FormLabel>
                         <FormControl>
                           <Input
                             {...field}
-                            value={field.value ?? "0.00"}
+                            value={field.value ?? ""}
                             type="number"
                             step="0.01"
-                            onBlur={() => recalculate()}
-                            data-testid="input-cert-retenue"
+                            placeholder="Auto"
+                            data-testid="input-cert-prorata-override"
                           />
                         </FormControl>
                         <FormMessage />
@@ -566,23 +650,57 @@ export default function Certificats() {
                 </div>
 
                 <div className="p-4 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] space-y-2">
-                  <TechnicalLabel>Calculated Summary</TechnicalLabel>
+                  <TechnicalLabel>Deduction Breakdown (Cumulative)</TechnicalLabel>
                   <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] text-muted-foreground">Montant Brut Cumulé</span>
+                    <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-gross">
+                      {formatCurrency(breakdown.grossCumulativeHt)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] text-muted-foreground">
+                      − Retenue de Garantie{hasBankGuarantee ? " (bypass — caution bancaire)" : ` (${retenuePercent}%)`}
+                    </span>
+                    <span className="text-[13px] font-semibold text-red-600 dark:text-red-400" data-testid="text-calc-retenue">
+                      −{formatCurrency(breakdown.cumulativeRetenue)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] text-muted-foreground">
+                      − Compte Prorata{isProrataManager ? " (exempt — gestionnaire)" : ` (${prorataPercent}%)`}
+                    </span>
+                    <span className="text-[13px] font-semibold text-red-600 dark:text-red-400" data-testid="text-calc-prorata">
+                      −{formatCurrency(breakdown.cumulativeProrata)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
+                    <span className="text-[11px] text-foreground">Montant Net Cumulé Autorisé</span>
+                    <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-net-cumul">
+                      {formatCurrency(breakdown.grossCumulativeHt - breakdown.cumulativeRetenue - breakdown.cumulativeProrata)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] text-muted-foreground">− Previous Payments</span>
+                    <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-previous">
+                      −{formatCurrency(parseFloat(watchPrevious || "0") || 0)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                     <span className="text-[11px] text-muted-foreground">Net to Pay HT</span>
                     <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-net-ht">
-                      {formatCurrency(parseFloat(form.watch("netToPayHt") || "0"))}
+                      {formatCurrency(breakdown.netToPayHt)}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[11px] text-muted-foreground">TVA</span>
                     <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-tva">
-                      {formatCurrency(parseFloat(form.watch("tvaAmount") || "0"))}
+                      {formatCurrency(breakdown.tvaAmount)}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                     <span className="text-[11px] font-black uppercase tracking-widest text-foreground">Net to Pay TTC</span>
                     <span className="text-[16px] font-bold text-foreground" data-testid="text-calc-net-ttc">
-                      {formatCurrency(parseFloat(form.watch("netToPayTtc") || "0"))}
+                      {formatCurrency(breakdown.netToPayTtc)}
                     </span>
                   </div>
                 </div>

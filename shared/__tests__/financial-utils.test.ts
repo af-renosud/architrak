@@ -7,6 +7,7 @@ import {
   calculateFeeAmount,
   formatCurrencyEur,
   formatCurrencyNoSymbol,
+  computeCertificatDeductions,
 } from "../financial-utils";
 
 describe("roundCurrency", () => {
@@ -172,5 +173,113 @@ describe("formatCurrencyNoSymbol", () => {
     expect(result).toContain("567");
     expect(result).toContain("89");
     expect(result).toContain("\u20AC");
+  });
+});
+
+describe("computeCertificatDeductions", () => {
+  const base = {
+    pvMvAdjustment: 0,
+    previousPayments: 0,
+    retenuePercent: 5,
+    hasBankGuarantee: false,
+    prorataPercent: 2,
+    isProrataManager: false,
+    priorCumulativeRetenue: 0,
+    priorCumulativeProrata: 0,
+  };
+
+  it("computes 5% retenue + 2% prorata on the gross cumulative", () => {
+    const r = computeCertificatDeductions({ ...base, totalWorksHt: 100000 });
+    expect(r.grossCumulativeHt).toBe(100000);
+    expect(r.cumulativeRetenue).toBe(5000);
+    expect(r.cumulativeProrata).toBe(2000);
+    expect(r.netToPayHt).toBe(93000);
+    expect(r.tvaAmount).toBe(18600);
+    expect(r.netToPayTtc).toBe(111600);
+  });
+
+  it("includes PV/MV adjustment in the gross base for both deductions", () => {
+    const r = computeCertificatDeductions({ ...base, totalWorksHt: 100000, pvMvAdjustment: 10000 });
+    expect(r.grossCumulativeHt).toBe(110000);
+    expect(r.cumulativeRetenue).toBe(5500);
+    expect(r.cumulativeProrata).toBe(2200);
+  });
+
+  it("bypasses the retenue to 0 when the marché has a bank guarantee", () => {
+    const r = computeCertificatDeductions({ ...base, totalWorksHt: 100000, hasBankGuarantee: true });
+    expect(r.cumulativeRetenue).toBe(0);
+    expect(r.cumulativeProrata).toBe(2000);
+    expect(r.netToPayHt).toBe(98000);
+  });
+
+  it("exempts the prorata to 0 when the marché is the prorata manager", () => {
+    const r = computeCertificatDeductions({ ...base, totalWorksHt: 100000, isProrataManager: true });
+    expect(r.cumulativeProrata).toBe(0);
+    expect(r.cumulativeRetenue).toBe(5000);
+    expect(r.netToPayHt).toBe(95000);
+  });
+
+  it("derives the period movement as cumulative minus prior (no compounding)", () => {
+    // Period 1: gross 100k → retenue 5k, prorata 2k.
+    const p1 = computeCertificatDeductions({ ...base, totalWorksHt: 100000 });
+    expect(p1.periodRetenue).toBe(5000);
+    expect(p1.periodProrata).toBe(2000);
+
+    // Period 2: gross now 150k cumulative; prior cumulatives carried in.
+    const p2 = computeCertificatDeductions({
+      ...base,
+      totalWorksHt: 150000,
+      previousPayments: 93000,
+      priorCumulativeRetenue: p1.cumulativeRetenue,
+      priorCumulativeProrata: p1.cumulativeProrata,
+    });
+    expect(p2.cumulativeRetenue).toBe(7500);
+    expect(p2.cumulativeProrata).toBe(3000);
+    // Movement is only the delta — deductions never re-charge prior periods.
+    expect(p2.periodRetenue).toBe(2500);
+    expect(p2.periodProrata).toBe(1000);
+    expect(p2.netToPayHt).toBe(150000 - 7500 - 3000 - 93000);
+  });
+
+  it("honours an explicit architect override of either cumulative deduction", () => {
+    const r = computeCertificatDeductions({
+      ...base,
+      totalWorksHt: 100000,
+      priorCumulativeRetenue: 1000,
+      priorCumulativeProrata: 500,
+      retenueOverride: 4200,
+      prorataOverride: 1500,
+    });
+    expect(r.cumulativeRetenue).toBe(4200);
+    expect(r.cumulativeProrata).toBe(1500);
+    expect(r.periodRetenue).toBe(3200);
+    expect(r.periodProrata).toBe(1000);
+  });
+
+  it("keeps period = cumulative − prior even when the cumulative drops (downward override)", () => {
+    // Prior cumulative was 5000; architect overrides this period's cumulative
+    // down to 3000 → the period movement is a negative -2000, never re-charged.
+    const r = computeCertificatDeductions({
+      ...base,
+      totalWorksHt: 100000,
+      priorCumulativeRetenue: 5000,
+      priorCumulativeProrata: 2000,
+      retenueOverride: 3000,
+      prorataOverride: 1000,
+    });
+    expect(r.cumulativeRetenue).toBe(3000);
+    expect(r.cumulativeProrata).toBe(1000);
+    expect(r.periodRetenue).toBe(-2000);
+    expect(r.periodProrata).toBe(-1000);
+  });
+
+  it("treats a zero override as a real value, not as 'use the rate'", () => {
+    const r = computeCertificatDeductions({
+      ...base,
+      totalWorksHt: 100000,
+      retenueOverride: 0,
+    });
+    expect(r.cumulativeRetenue).toBe(0);
+    expect(r.cumulativeProrata).toBe(2000);
   });
 });
