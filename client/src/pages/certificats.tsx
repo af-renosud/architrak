@@ -234,6 +234,27 @@ export default function Certificats() {
     [allCertificats, watchContractorId],
   );
 
+  // Mirror the server-authoritative resolver (server/services/certificat-
+  // deductions.service.ts): both retenueGarantie and cumulativeProrataDeduction
+  // store the cumulative-to-date figure, so the *latest* prior certificat carries
+  // the true prior cumulative state. Reading the latest row (not max()/sum())
+  // keeps this live preview consistent with the persisted server values even when
+  // a downward override or a guarantee/exemption transition legitimately lowers
+  // the cumulative. Order by issue date, then id as a stable tiebreaker.
+  const latestPrior = useMemo(
+    () =>
+      priorCerts
+        .slice()
+        .sort((a, b) => {
+          const da = a.dateIssued ?? "";
+          const db = b.dateIssued ?? "";
+          if (da !== db) return da < db ? -1 : 1;
+          return a.id - b.id;
+        })
+        .at(-1) ?? null,
+    [priorCerts],
+  );
+
   const breakdown = useMemo(() => computeCertificatDeductions({
     totalWorksHt: parseFloat(watchTotalWorks || "0") || 0,
     pvMvAdjustment: parseFloat(watchPvMv || "0") || 0,
@@ -242,11 +263,11 @@ export default function Certificats() {
     hasBankGuarantee,
     prorataPercent,
     isProrataManager,
-    priorCumulativeRetenue: priorCerts.reduce((m, c) => Math.max(m, parseFloat(c.retenueGarantie ?? "0")), 0),
-    priorCumulativeProrata: priorCerts.reduce((s, c) => s + parseFloat(c.periodProrataDeduction ?? "0"), 0),
+    priorCumulativeRetenue: latestPrior ? parseFloat(latestPrior.retenueGarantie ?? "0") : 0,
+    priorCumulativeProrata: latestPrior ? parseFloat(latestPrior.cumulativeProrataDeduction ?? "0") : 0,
     retenueOverride: watchRetenueOverride ? parseFloat(watchRetenueOverride) : null,
     prorataOverride: watchProrataOverride ? parseFloat(watchProrataOverride) : null,
-  }), [watchTotalWorks, watchPvMv, watchPrevious, retenuePercent, hasBankGuarantee, prorataPercent, isProrataManager, priorCerts, watchRetenueOverride, watchProrataOverride]);
+  }), [watchTotalWorks, watchPvMv, watchPrevious, retenuePercent, hasBankGuarantee, prorataPercent, isProrataManager, latestPrior, watchRetenueOverride, watchProrataOverride]);
 
   useEffect(() => {
     form.setValue("retenueGarantie", breakdown.cumulativeRetenue.toFixed(2));
