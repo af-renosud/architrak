@@ -104,9 +104,19 @@ const envSchema = z.object({
   // rotation windows (§3.6); the FIRST entry is used for new outbound
   // calls. ARCHISIGN_WEBHOOK_SECRET is the shared HMAC v2 secret for the
   // inbound /api/webhooks/archisign channel — born v2-only (§2.4 P0).
+  //
+  // ARCHISIGN_PDF_TOKEN_SECRET is a dedicated HMAC secret used exclusively
+  // for minting/verifying the short-lived PDF fetch tokens exposed at
+  // /api/public/devis-pdf/:token (AT4). Keeping it separate from
+  // ARCHISIGN_WEBHOOK_SECRET ensures that a webhook-secret compromise does
+  // not automatically grant read access to stored translated contract PDFs.
+  // When unset, the system falls back to ARCHISIGN_WEBHOOK_SECRET for
+  // backward compatibility, but operators SHOULD provision a dedicated
+  // value to achieve full separation of concerns.
   ARCHISIGN_BASE_URL: optionalUrl(),
   ARCHISIGN_API_KEY: optionalString(),
   ARCHISIGN_WEBHOOK_SECRET: optionalString(),
+  ARCHISIGN_PDF_TOKEN_SECRET: optionalString(),
 
   // --- Architrak outbound webhook to Archidoc (AT5) --------------------
   // ARCHITRAK_WEBHOOK_SECRET is the shared HMAC v2 secret AT5 uses to
@@ -399,5 +409,34 @@ export function warnIfArchidocBaseUrlMisconfigured(
 }
 
 warnIfArchidocBaseUrlMisconfigured(parsed.data);
+
+/**
+ * Boot-time WARN: if ARCHISIGN_WEBHOOK_SECRET is configured (meaning
+ * Archisign is active) but ARCHISIGN_PDF_TOKEN_SECRET is absent, the
+ * PDF fetch token endpoint cannot be used and the send-to-signer flow
+ * will fail at mint time. More importantly, leaving these two secrets
+ * unified means a webhook-secret leak would also expose the PDF
+ * download surface. Operators MUST provision a dedicated
+ * ARCHISIGN_PDF_TOKEN_SECRET — distinct from ARCHISIGN_WEBHOOK_SECRET —
+ * before using the Archisign send-to-signer feature.
+ *
+ * Exported for tests; called immediately below for the real boot path.
+ */
+export function warnIfArchisignPdfTokenSecretMissing(
+  cfg: Pick<Env, "ARCHISIGN_WEBHOOK_SECRET" | "ARCHISIGN_PDF_TOKEN_SECRET">,
+  log: (msg: string) => void = (m) => console.warn(m),
+): void {
+  if (cfg.ARCHISIGN_WEBHOOK_SECRET && !cfg.ARCHISIGN_PDF_TOKEN_SECRET) {
+    log(
+      "[env] WARN — ARCHISIGN_WEBHOOK_SECRET is set but ARCHISIGN_PDF_TOKEN_SECRET is not. " +
+        "The Archisign send-to-signer flow requires a dedicated ARCHISIGN_PDF_TOKEN_SECRET " +
+        "to mint PDF fetch tokens. Set this to a distinct secret value (never the same as " +
+        "ARCHISIGN_WEBHOOK_SECRET) to enable the PDF download endpoint and eliminate " +
+        "cross-scope secret reuse.",
+    );
+  }
+}
+
+warnIfArchisignPdfTokenSecretMissing(parsed.data);
 
 export const env: Readonly<Env> = Object.freeze(parsed.data);

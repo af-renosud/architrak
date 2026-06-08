@@ -45,8 +45,27 @@ router.patch(
   "/api/projects/:id",
   validateRequest({ params: idParams, body: updateProjectSchema }),
   async (req, res: Response) => {
-    const project = await storage.updateProject(Number(req.params.id), req.body);
+    const projectId = Number(req.params.id);
+
+    // Load the current state so we can detect client-contact changes that
+    // would leave stale client portal tokens active.
+    const before = await storage.getProject(projectId);
+    if (!before) return res.status(404).json({ message: "Project not found" });
+
+    const project = await storage.updateProject(projectId, req.body);
     if (!project) return res.status(404).json({ message: "Project not found" });
+
+    // When the client contact email is replaced, revoke all active client
+    // check tokens for every devis in this project. The previous recipient
+    // must not be able to read or act on live review data via their old link.
+    const clientEmailChanged =
+      Object.prototype.hasOwnProperty.call(req.body, "clientContactEmail") &&
+      (req.body as UpdateProject).clientContactEmail !== before.clientContactEmail;
+    if (clientEmailChanged) {
+      const devisList = await storage.getDevisByProject(projectId);
+      await Promise.all(devisList.map((d) => storage.revokeClientCheckTokensForDevis(d.id)));
+    }
+
     res.json(project);
   },
 );

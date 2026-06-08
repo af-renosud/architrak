@@ -4,11 +4,16 @@
  *
  * Token format: `${devisId}.${expiresAtMs}.${hexHmacSha256}`
  *
- * The HMAC is keyed off ARCHISIGN_WEBHOOK_SECRET — reusing the existing
- * Archisign secret means there is one fewer secret to provision and
- * rotate, and the threat model is identical (any actor with the secret
- * can already forge inbound webhooks against us). If we ever need
- * separation of concerns we can split into a dedicated PDF_TOKEN_SECRET.
+ * The HMAC is keyed off ARCHISIGN_PDF_TOKEN_SECRET — a dedicated secret
+ * that is intentionally separate from ARCHISIGN_WEBHOOK_SECRET. Keeping
+ * these secrets distinct ensures that a webhook-secret compromise does not
+ * automatically grant read access to stored translated contract PDFs via
+ * forged fetch tokens.
+ *
+ * If ARCHISIGN_PDF_TOKEN_SECRET is not set, getSecret() throws and both
+ * mintPdfFetchToken and verifyPdfFetchToken fail closed — the send-to-signer
+ * flow returns an error rather than silently falling back to the webhook
+ * secret.
  *
  * Stateless because (a) the URL is single-use from Archisign's side
  * within a 1-hour window and (b) we want re-mint to be a pure function
@@ -21,9 +26,13 @@ import { env } from "../env";
 const SEPARATOR = ".";
 
 function getSecret(): string {
-  const s = env.ARCHISIGN_WEBHOOK_SECRET;
+  const s = env.ARCHISIGN_PDF_TOKEN_SECRET;
   if (!s) {
-    throw new Error("ARCHISIGN_WEBHOOK_SECRET not configured — cannot mint PDF fetch token");
+    throw new Error(
+      "ARCHISIGN_PDF_TOKEN_SECRET not configured — cannot mint PDF fetch token. " +
+        "Set a dedicated secret (separate from ARCHISIGN_WEBHOOK_SECRET) to enable " +
+        "the Archisign PDF download endpoint.",
+    );
   }
   return s;
 }

@@ -764,6 +764,10 @@ router.patch(
         editedByUserId: user.id,
         editedByEmail: user.email,
       });
+      // Revoke all active contractor portal tokens for this devis. The
+      // previous contractor must not be able to read or interact with the
+      // live devis data via their old link after a contractor rotation.
+      await storage.revokeDevisCheckTokensForDevis(id);
     }
 
     if (before.status !== "draft") {

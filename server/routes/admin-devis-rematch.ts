@@ -179,6 +179,9 @@ router.post(
         editedByUserId: user.id,
         editedByEmail: user.email,
       });
+      // Revoke active contractor portal tokens so the previous contractor's
+      // link goes dead immediately after a bulk rematch operation.
+      await storage.revokeDevisCheckTokensForDevis(devisId);
       applied.push({ devisId, previousContractorId, newContractorId: target.id });
     }
 
