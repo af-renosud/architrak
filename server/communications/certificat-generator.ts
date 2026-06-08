@@ -330,14 +330,14 @@ function buildAnnexeHtml(data: AnnexeData): string {
   for (const dr of data.devisRows) {
     const zebraClass = rowIdx % 2 === 1 ? ' style="background:#F8F9FA;"' : "";
     const lotLabelHtml = dr.lotDescriptionFr || dr.lotDescriptionUk
-      ? `LOT ${dr.lotNumber}<div style="font-weight:400;font-size:6.5pt;color:#7E7F83;">${formatLotDescription({ descriptionFr: dr.lotDescriptionFr, descriptionUk: dr.lotDescriptionUk })}</div>`
-      : `LOT ${dr.lotNumber}`;
+      ? `LOT ${escapeHtml(dr.lotNumber)}<div style="font-weight:400;font-size:6.5pt;color:#7E7F83;">${escapeHtml(formatLotDescription({ descriptionFr: dr.lotDescriptionFr, descriptionUk: dr.lotDescriptionUk }))}</div>`
+      : `LOT ${escapeHtml(dr.lotNumber)}`;
     const devisDescHtml = dr.descriptionUk && dr.descriptionUk !== dr.descriptionFr
-      ? `${dr.descriptionFr}<div style="font-weight:400;font-size:6.5pt;color:#7E7F83;font-style:italic;">${dr.descriptionUk}</div>`
-      : dr.descriptionFr;
+      ? `${escapeHtml(dr.descriptionFr)}<div style="font-weight:400;font-size:6.5pt;color:#7E7F83;font-style:italic;">${escapeHtml(dr.descriptionUk)}</div>`
+      : escapeHtml(dr.descriptionFr);
     marcheRows += `<tr${zebraClass}>
       <td style="font-weight:700;color:#0B2545;">${lotLabelHtml}</td>
-      <td style="font-weight:700;color:#0B2545;">${dr.devisCode}</td>
+      <td style="font-weight:700;color:#0B2545;">${escapeHtml(dr.devisCode)}</td>
       <td style="font-weight:600;">${devisDescHtml}</td>
       <td style="text-align:right;font-weight:600;">${fmtNum(dr.originalHt)}</td>
       <td style="text-align:right;">—</td>
@@ -348,11 +348,11 @@ function buildAnnexeHtml(data: AnnexeData): string {
       const typeLabel = av.type === "pv" ? "PV" : "MV";
       const typeColor = av.type === "pv" ? "#2a7d2e" : "#c0392b";
       const avDescHtml = av.descriptionUk && av.descriptionUk !== av.descriptionFr
-        ? `${av.descriptionFr} <span style="color:#7E7F83;font-style:italic;">(${av.descriptionUk})</span>`
-        : av.descriptionFr;
+        ? `${escapeHtml(av.descriptionFr)} <span style="color:#7E7F83;font-style:italic;">(${escapeHtml(av.descriptionUk)})</span>`
+        : escapeHtml(av.descriptionFr);
       marcheRows += `<tr style="background:#FAFAFA;">
         <td></td>
-        <td style="padding-left:16px;border-left:3px solid #C1A27B;font-size:6.5pt;color:#7E7F83;">${av.avenantNumber}</td>
+        <td style="padding-left:16px;border-left:3px solid #C1A27B;font-size:6.5pt;color:#7E7F83;">${escapeHtml(av.avenantNumber)}</td>
         <td style="font-size:6.5pt;color:#34312D;">${avDescHtml}</td>
         <td style="text-align:right;font-size:6.5pt;">—</td>
         <td style="text-align:right;font-size:6.5pt;color:${typeColor};font-weight:600;">${av.type === "pv" ? fmtNum(av.amountHt) : "—"}</td>
@@ -362,7 +362,7 @@ function buildAnnexeHtml(data: AnnexeData): string {
     }
     if (dr.avenants.length > 0) {
       marcheRows += `<tr style="background:#F0F2F5;">
-        <td colspan="3" style="text-align:right;font-weight:700;font-size:6.5pt;color:#7E7F83;text-transform:uppercase;">Subtotal ${dr.devisCode}</td>
+        <td colspan="3" style="text-align:right;font-weight:700;font-size:6.5pt;color:#7E7F83;text-transform:uppercase;">Subtotal ${escapeHtml(dr.devisCode)}</td>
         <td style="text-align:right;font-size:6.5pt;font-weight:600;">${fmtNum(dr.originalHt)}</td>
         <td style="text-align:right;font-size:6.5pt;font-weight:600;color:#2a7d2e;">${fmtNum(dr.pvTotalHt)}</td>
         <td style="text-align:right;font-size:6.5pt;font-weight:600;color:#c0392b;">${fmtNum(dr.mvTotalHt)}</td>
@@ -377,8 +377,8 @@ function buildAnnexeHtml(data: AnnexeData): string {
     const pc = data.previousCertificats[i];
     const zClass = i % 2 === 1 ? ' style="background:#F8F9FA;"' : "";
     situationRows += `<tr${zClass}>
-      <td>${pc.certificateRef}</td>
-      <td style="text-align:center;">${pc.dateIssued}</td>
+      <td>${escapeHtml(pc.certificateRef)}</td>
+      <td style="text-align:center;">${escapeHtml(pc.dateIssued)}</td>
       <td style="text-align:right;">${fmtNum(pc.amountHt)}</td>
       <td style="text-align:right;">${fmtNum(pc.amountTtc)}</td>
     </tr>`;
@@ -388,7 +388,7 @@ function buildAnnexeHtml(data: AnnexeData): string {
   <div class="annexe-section" style="page-break-before:always;">
     <div style="text-align:center;margin-bottom:4mm;">
       <div style="font-size:13pt;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:#0B2545;">Financial Annexe</div>
-      <div style="font-size:8pt;color:#7E7F83;margin-top:2px;">${data.projectName} (${data.projectCode}) — ${data.contractorName}</div>
+      <div style="font-size:8pt;color:#7E7F83;margin-top:2px;">${escapeHtml(data.projectName)} (${escapeHtml(data.projectCode)}) — ${escapeHtml(data.contractorName)}</div>
     </div>
     <div class="accent-bar"></div>
 
@@ -601,6 +601,15 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+/**
+ * Escape a string for safe interpolation into a CSS `content: "..."` value.
+ * A literal `"` would break out of the quoted string; a literal `\` must
+ * also be escaped so it cannot start a CSS escape sequence.
+ */
+function escapeCssString(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
 function renderBankingBlock(contractor: Contractor): string {
   if (!contractor.iban) return "";
   const holder = contractor.accountHolderName || contractor.name;
@@ -639,20 +648,20 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   const dateIssued = formatDateFr(certificat.dateIssued);
 
   const worksRows = devisDetails.map((dd, i) => {
-    const lotDesc = dd.lot ? formatLotDescription(dd.lot) : "";
+    const lotDesc = dd.lot ? escapeHtml(formatLotDescription(dd.lot)) : "";
     const lotNum = dd.lot
-      ? `LOT ${dd.lot.lotNumber}${lotDesc ? `<div style="font-weight:400;font-size:7pt;color:#7E7F83;">${lotDesc}</div>` : ""}`
+      ? `LOT ${escapeHtml(dd.lot.lotNumber)}${lotDesc ? `<div style="font-weight:400;font-size:7pt;color:#7E7F83;">${lotDesc}</div>` : ""}`
       : "\u2014";
-    const worksDesc = formatLotDescription(dd.devis) || "\u2014";
+    const worksDesc = escapeHtml(formatLotDescription(dd.devis)) || "\u2014";
     const invoiceNums = dd.invoices.length > 0
-      ? dd.invoices.map(inv => `#${inv.invoiceNumber}`).join(", ")
+      ? dd.invoices.map(inv => `#${escapeHtml(inv.invoiceNumber)}`).join(", ")
       : "\u2014";
     const rowClass = i % 2 === 1 ? ' class="zebra"' : "";
     return `<tr${rowClass}>
       <td>${worksDesc}</td>
-      <td>${contractor.name}</td>
+      <td>${escapeHtml(contractor.name)}</td>
       <td style="text-align:center;">${lotNum}</td>
-      <td style="text-align:center;">${dd.devis.devisCode}</td>
+      <td style="text-align:center;">${escapeHtml(dd.devis.devisCode)}</td>
       <td style="text-align:center;">${invoiceNums}</td>
     </tr>`;
   }).join("");
@@ -665,8 +674,8 @@ function buildCertificatHtml(data: CertificatPdfData): string {
       <table style="width:100%;border-collapse:collapse;">
         <tr>
           <td style="font-weight:700;font-size:10pt;color:#0B2545;padding-bottom:4px;" colspan="2">
-            ${dd.devis.descriptionFr || dd.devis.descriptionUk || "\u2014"}
-            <span style="float:right;font-size:9pt;color:#7E7F83;font-weight:400;">${dd.devis.devisCode}</span>
+            ${escapeHtml(dd.devis.descriptionFr || dd.devis.descriptionUk || "\u2014")}
+            <span style="float:right;font-size:9pt;color:#7E7F83;font-weight:400;">${escapeHtml(dd.devis.devisCode)}</span>
           </td>
         </tr>
         <tr>
@@ -689,13 +698,13 @@ function buildCertificatHtml(data: CertificatPdfData): string {
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>${compositeRef} \u2014 Certificat de Paiement</title>
+<title>${escapeHtml(compositeRef)} \u2014 Certificat de Paiement</title>
 <style>
   @page {
     size: A4;
     margin: 12mm 18mm 18mm 18mm;
     @bottom-left {
-      content: "${project.name} \u2014 ${project.clientName}";
+      content: "${escapeCssString(project.name)} \u2014 ${escapeCssString(project.clientName)}";
       font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       font-size: 7pt;
       color: #7E7F83;
@@ -1062,7 +1071,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   }
   @page annexe {
     @bottom-left {
-      content: "${project.name} \u2014 ${contractor.name}";
+      content: "${escapeCssString(project.name)} \u2014 ${escapeCssString(contractor.name)}";
       font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       font-size: 7pt;
       color: #7E7F83;
@@ -1100,7 +1109,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
       <div class="doc-title">Certificat de Paiement</div>
       <div class="doc-ref">
         Payment Authorisation
-        <strong>${certificat.certificateRef}</strong>
+        <strong>${escapeHtml(certificat.certificateRef)}</strong>
       </div>
     </div>
   </div>
@@ -1117,16 +1126,16 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     </div>
     <div class="party-card">
       <div class="party-label">Ma\u00EEtre d'Ouvrage</div>
-      <div class="party-name">${project.clientName}</div>
+      <div class="party-name">${escapeHtml(project.clientName)}</div>
       <div class="party-detail">
-        ${project.siteAddress || ""}
+        ${project.siteAddress ? escapeHtml(project.siteAddress) : ""}
       </div>
     </div>
     <div class="party-card">
       <div class="party-label">Contractor</div>
-      <div class="party-name">${contractor.name}</div>
+      <div class="party-name">${escapeHtml(contractor.name)}</div>
       <div class="party-detail">
-        ${contractor.address || ""}${contractor.siret ? `<br/>SIRET : ${contractor.siret}` : ""}
+        ${contractor.address ? escapeHtml(contractor.address) : ""}${contractor.siret ? `<br/>SIRET : ${escapeHtml(contractor.siret)}` : ""}
       </div>
     </div>
   </div>
@@ -1232,7 +1241,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
       Architects-France : Registration with the Order of Architects Occitanie S24348
     </div>
     <div class="doc-footer-right">
-      ${compositeRef}
+      ${escapeHtml(compositeRef)}
     </div>
   </div>
 
