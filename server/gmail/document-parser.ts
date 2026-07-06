@@ -427,11 +427,14 @@ export async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Prom
     }
 
     await new Promise<void>((resolve, reject) => {
+      // 120s (was 30s): high-resolution or multi-page scanned quotations
+      // routinely take >30s to rasterise at 200 DPI and were being killed
+      // mid-conversion, leaving the intake document stuck on "analyzing".
       execFile("pdftoppm", [
         "-png", "-r", "200",
         "-l", String(maxPages),
         pdfToProcess, outputPrefix,
-      ], { timeout: 30000 }, (err) => {
+      ], { timeout: 120000 }, (err) => {
         if (err) reject(err);
         else resolve();
       });

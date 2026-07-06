@@ -556,6 +556,7 @@ export interface IStorage {
   markIntakeJobDeadLettered(args: { jobId: number; attempts: number; lastError: string }): Promise<void>;
   markIntakeJobPendingRetry(args: { jobId: number; attempts: number; lastError: string; nextAttemptAt: Date }): Promise<void>;
   reclaimStaleIntakeJobs(maxAgeMs: number): Promise<number>;
+  failOrphanedAnalyzingIntakeDocuments(): Promise<number>;
   listDueIntakeJobs(limit: number): Promise<IntakeJob[]>;
   listIntakeJobs(filter?: { state?: string; limit?: number; offset?: number }): Promise<Array<IntakeJob & { projectId: number; fileName: string; source: string; analysisState: string; routingState: string; promotedKind: string | null; promotedId: number | null }>>;
 
@@ -3121,6 +3122,36 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(intakeJobs.state, "in_flight"), lte(intakeJobs.lastAttemptAt, cutoff)))
       .returning({ id: intakeJobs.id });
     return reclaimed.length;
+  }
+
+  async failOrphanedAnalyzingIntakeDocuments(): Promise<number> {
+    // Self-heal drift between the queue row and the owning document. If a
+    // job reached a terminal error state (dead_letter / failed) but the
+    // paired "mark document failed" write did not land — e.g. a DB blip
+    // between the two writes in attemptIntakeJob's permanent-failure path
+    // — the document is wedged on `analyzing` forever: the in_flight
+    // reclaim never touches it because its job is already terminal. Force
+    // such orphans to a terminal state so the UI stops spinning.
+    const orphans = await db
+      .select({ id: projectIntakeDocuments.id, notes: projectIntakeDocuments.notes })
+      .from(projectIntakeDocuments)
+      .innerJoin(intakeJobs, eq(intakeJobs.intakeDocumentId, projectIntakeDocuments.id))
+      .where(
+        and(
+          eq(projectIntakeDocuments.analysisState, "analyzing"),
+          inArray(intakeJobs.state, ["dead_letter", "failed"]),
+        ),
+      );
+    for (const o of orphans) {
+      const note =
+        "Analysis marked failed by drift repair: the queue job was terminal but the document was left on \"analyzing\".";
+      await this.updateProjectIntakeDocument(o.id, {
+        analysisState: "failed",
+        routingState: "failed",
+        notes: o.notes ? `${o.notes}\n${note}` : note,
+      });
+    }
+    return orphans.length;
   }
 
   async listDueIntakeJobs(limit: number): Promise<IntakeJob[]> {

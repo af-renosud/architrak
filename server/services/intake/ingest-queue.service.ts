@@ -387,8 +387,18 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
       }
       default: {
         // situation / avenant / other / unknown — detected but parked for
-        // manual routing (handled by a later task).
-        await park(doc, fingerprint, `Parked: document type "${parsed.documentType}" is not auto-routed yet.`);
+        // manual routing (handled by a later task). When the "unknown" was
+        // caused by a hard parse/conversion failure (e.g. a PDF that could
+        // not be rasterised), surface that reason so the operator knows to
+        // re-upload a flattened copy rather than seeing a generic note.
+        const parseFailure =
+          parsed.documentType === "unknown" &&
+          typeof parsed.rawText === "string" &&
+          parsed.rawText.startsWith("Parse failed");
+        const reason = parseFailure
+          ? `Parked: could not read this document — ${parsed.rawText}. Re-upload a flattened / unprotected PDF.`
+          : `Parked: document type "${parsed.documentType}" is not auto-routed yet.`;
+        await park(doc, fingerprint, reason);
         return;
       }
     }
@@ -433,6 +443,13 @@ export async function sweepPendingIntakeJobs(): Promise<void> {
     const reclaimed = await storage.reclaimStaleIntakeJobs(STALE_IN_FLIGHT_RECLAIM_MS);
     if (reclaimed > 0) {
       console.warn(`[IntakeQueue] reclaimed ${reclaimed} stale in_flight job(s)`);
+    }
+    // Repair queue/document drift: a document left on "analyzing" whose
+    // job already reached a terminal error state can never be recovered by
+    // the in_flight reclaim above, so force it to a terminal state.
+    const repaired = await storage.failOrphanedAnalyzingIntakeDocuments();
+    if (repaired > 0) {
+      console.warn(`[IntakeQueue] drift-repaired ${repaired} document(s) stuck on "analyzing" with a terminal job`);
     }
     const due = await storage.listDueIntakeJobs(20);
     for (const row of due) {
