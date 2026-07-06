@@ -60,7 +60,6 @@ timeoutMs = 120000
 [userenv]
 
 [userenv.development]
-ENABLE_DEV_LOGIN_FOR_E2E = "true"
 
 [userenv.production]
 PUBLIC_BASE_URL = "https://architrak.replit.app"
