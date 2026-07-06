@@ -235,7 +235,10 @@ export function DesignContractUpload({ confirmed, onConfirmed, onCleared, mode =
   return (
     <div className="space-y-3">
       <Label className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">
-        Design Contract (PDF) <span className="text-destructive">*</span>
+        Design Contract (PDF){" "}
+        {mode === "create" && (
+          <span className="text-muted-foreground normal-case font-normal tracking-normal">(optional)</span>
+        )}
       </Label>
       {confirmed ? (
         <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 space-y-2" data-testid="design-contract-confirmed">

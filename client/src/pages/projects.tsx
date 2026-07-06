@@ -141,23 +141,38 @@ export default function Projects() {
     },
   });
 
-  // Atomic single-call orchestration: the server creates the project AND
-  // persists the design contract in one transaction. On any failure the
-  // server rolls back the project deletion so the user is never left
-  // with a half-created project.
+  // Project tracking. The design contract is optional: when one has been
+  // uploaded and confirmed, we use the atomic track-with-contract endpoint
+  // (the server creates the project AND persists the contract in one
+  // transaction, rolling back the project on any failure). When no contract
+  // is present, we use the plain track endpoint — the project is imported and
+  // a contract can be attached later from the project detail page.
   const trackMutation = useMutation({
     mutationFn: async (archidocId: string) => {
-      if (!designContract) throw new Error("Design contract is required");
-      const res = await apiRequest("POST", `/api/archidoc/track-with-contract/${archidocId}`, {
-        trackOptions: { feeType, feePercentage: feePercentage || null, hasMarche },
-        designContract,
+      if (designContract) {
+        const res = await apiRequest("POST", `/api/archidoc/track-with-contract/${archidocId}`, {
+          trackOptions: { feeType, feePercentage: feePercentage || null, hasMarche },
+          designContract,
+        });
+        return { ...(await res.json()), hadContract: true } as {
+          projectId: number;
+          contractorsCreated: number;
+          lotsCreated: number;
+          contractId: number;
+          hadContract: boolean;
+        };
+      }
+      const res = await apiRequest("POST", `/api/archidoc/track/${archidocId}`, {
+        feeType,
+        feePercentage: feePercentage || undefined,
+        hasMarche,
       });
-      return res.json() as Promise<{
+      return { ...(await res.json()), hadContract: false } as {
         projectId: number;
         contractorsCreated: number;
         lotsCreated: number;
-        contractId: number;
-      }>;
+        hadContract: boolean;
+      };
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
@@ -167,7 +182,7 @@ export default function Projects() {
       resetForm();
       toast({
         title: "Project tracked",
-        description: `Project created with ${data.contractorsCreated} contractor(s) and ${data.lotsCreated} lot(s). Design contract saved.`,
+        description: `Project created with ${data.contractorsCreated} contractor(s) and ${data.lotsCreated} lot(s).${data.hadContract ? " Design contract saved." : ""}`,
       });
     },
     onError: (error: Error) => {
@@ -464,18 +479,14 @@ export default function Projects() {
                     <Button
                       onClick={() => trackMutation.mutate(selectedArchidocId!)}
                       className="w-full"
-                      disabled={trackMutation.isPending || !designContract}
+                      disabled={trackMutation.isPending}
                       data-testid="button-submit-project"
                     >
                       {trackMutation.isPending ? (
                         <Loader2 size={14} className="animate-spin mr-2" />
                       ) : null}
                       <span className="text-[9px] font-bold uppercase tracking-widest">
-                        {trackMutation.isPending
-                          ? "Creating..."
-                          : !designContract
-                            ? "Upload design contract to continue"
-                            : "Create Project"}
+                        {trackMutation.isPending ? "Creating..." : "Create Project"}
                       </span>
                     </Button>
                   </div>
