@@ -403,6 +403,44 @@ async function decryptPdf(inputPath: string, outputPath: string): Promise<{ decr
   });
 }
 
+const PDF_RASTER_TIMEOUT_MS = 120000;
+
+function runRasterCommand(
+  cmd: string,
+  args: string[],
+): Promise<{ ok: boolean; detail: string }> {
+  return new Promise((resolve) => {
+    execFile(
+      cmd,
+      args,
+      { timeout: PDF_RASTER_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 },
+      (err, _stdout, stderr) => {
+        const detail = (stderr || (err ? err.message : "") || "").toString().trim();
+        resolve({ ok: !err, detail });
+      },
+    );
+  });
+}
+
+async function collectPngPages(dir: string, maxPages: number): Promise<Buffer[]> {
+  const files = await readdir(dir);
+  const pngFiles = files.filter((f) => f.endsWith(".png")).sort();
+  const images: Buffer[] = [];
+  for (const pngFile of pngFiles.slice(0, maxPages)) {
+    images.push(await readFile(join(dir, pngFile)));
+  }
+  return images;
+}
+
+async function clearPngPages(dir: string): Promise<void> {
+  const files = await readdir(dir);
+  await Promise.all(
+    files
+      .filter((f) => f.endsWith(".png"))
+      .map((f) => unlink(join(dir, f)).catch(() => undefined)),
+  );
+}
+
 export async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Promise<Buffer[]> {
   const tempDir = await mkdtemp(join(tmpdir(), "architrak-pdf-"));
   const pdfPath = join(tempDir, "input.pdf");
@@ -426,29 +464,64 @@ export async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Prom
       console.warn("[document-parser] qpdf pre-processing failed, proceeding with original PDF:", err);
     }
 
-    await new Promise<void>((resolve, reject) => {
-      // 120s (was 30s): high-resolution or multi-page scanned quotations
-      // routinely take >30s to rasterise at 200 DPI and were being killed
-      // mid-conversion, leaving the intake document stuck on "analyzing".
-      execFile("pdftoppm", [
-        "-png", "-r", "200",
-        "-l", String(maxPages),
-        pdfToProcess, outputPrefix,
-      ], { timeout: 120000 }, (err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
+    // Rasterise with a fallback chain. Some supplier PDFs (protected,
+    // oddly linearised, or with malformed xref tables) crash pdftoppm's
+    // Splash backend even after qpdf decryption. We fall back to poppler's
+    // Cairo backend, then to Ghostscript (repair-and-retry, then direct
+    // render), which tolerates a far wider range of broken PDFs. Each
+    // strategy runs at 200 DPI with a 120s cap (high-res multi-page scans
+    // need >30s) and its stderr is captured so a genuine dead-end is
+    // diagnosable instead of surfacing an opaque "Command failed".
+    const repairedPath = join(tempDir, "repaired.pdf");
+    const gsOutputPattern = join(tempDir, "page-%d.png");
 
-    const files = await readdir(tempDir);
-    const pngFiles = files.filter(f => f.endsWith(".png")).sort();
+    const strategies: Array<{ name: string; run: () => Promise<{ ok: boolean; detail: string }> }> = [
+      {
+        name: "pdftoppm",
+        run: () =>
+          runRasterCommand("pdftoppm", ["-png", "-r", "200", "-l", String(maxPages), pdfToProcess, outputPrefix]),
+      },
+      {
+        name: "pdftocairo",
+        run: () =>
+          runRasterCommand("pdftocairo", ["-png", "-r", "200", "-l", String(maxPages), pdfToProcess, outputPrefix]),
+      },
+      {
+        name: "ghostscript-repair",
+        run: async () => {
+          const repair = await runRasterCommand("gs", ["-q", "-o", repairedPath, "-sDEVICE=pdfwrite", pdfToProcess]);
+          if (!repair.ok) return repair;
+          return runRasterCommand("pdftoppm", ["-png", "-r", "200", "-l", String(maxPages), repairedPath, outputPrefix]);
+        },
+      },
+      {
+        name: "ghostscript-render",
+        run: () =>
+          runRasterCommand("gs", [
+            "-q", "-dNOPAUSE", "-dBATCH", "-dSAFER",
+            "-sDEVICE=png16m", "-r200",
+            "-dFirstPage=1", `-dLastPage=${maxPages}`,
+            `-sOutputFile=${gsOutputPattern}`,
+            pdfToProcess,
+          ]),
+      },
+    ];
 
-    const images: Buffer[] = [];
-    for (const pngFile of pngFiles.slice(0, maxPages)) {
-      images.push(await readFile(join(tempDir, pngFile)));
+    const diagnostics: string[] = [];
+    for (const strategy of strategies) {
+      await clearPngPages(tempDir);
+      const { detail } = await strategy.run();
+      const images = await collectPngPages(tempDir, maxPages);
+      if (images.length > 0) {
+        if (strategy.name !== "pdftoppm") {
+          console.log(`[document-parser] rasterised via "${strategy.name}" fallback (${images.length} page(s))`);
+        }
+        return images;
+      }
+      diagnostics.push(`${strategy.name}: ${detail.slice(0, 300) || "no output"}`);
     }
 
-    return images;
+    throw new Error(`PDF rasterisation failed for all strategies — ${diagnostics.join(" | ")}`);
   } finally {
     try {
       const files = await readdir(tempDir);

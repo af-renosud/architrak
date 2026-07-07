@@ -4,3 +4,4 @@
 - [Reconciliation AI degradation](reconciliation-ai-degradation.md) — overlap-detection must degrade AI-error to deterministic arithmetic, never collapse null-verdict with "unrelated" (silent false-negatives).
 - [Server-authoritative money fields](server-authoritative-money-fields.md) — omit server-derived money cols from request Zod schemas (not just handler guards); read prior cumulative from the latest prior row, never max()/sum().
 - [Intake queue drift](intake-queue-drift.md) — a doc can wedge on "analyzing" if its job goes terminal but the doc-state write fails; in_flight reclaim can't fix it, the sweeper drift-repair pass must.
+- [Intake PDF rasterisation](intake-pdf-rasterisation.md) — a conversion failure masquerades as classification="unknown"; rasterise via a pdftoppm→pdftocairo→ghostscript fallback chain (gs is a nix dep), throw with per-strategy stderr on total failure.

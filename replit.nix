@@ -1,5 +1,6 @@
 {pkgs}: {
   deps = [
+    pkgs.ghostscript
     pkgs.gdk-pixbuf
     pkgs.gtk3
     pkgs.xorg.libXcursor
