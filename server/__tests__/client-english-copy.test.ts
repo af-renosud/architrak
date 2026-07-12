@@ -242,6 +242,57 @@ describe("payment chase reminder emails stay English", () => {
   });
 });
 
+// Task #280 — the pre-filled client message the architect sees in the
+// SigningPanel "send for signature" dialog. It is sent verbatim to the
+// client inside the devis context email, so it must stay English. The
+// builder lives in shared/ precisely so this server-side test can guard it.
+describe("SigningPanel pre-filled client message template stays English", () => {
+  it("greets a named contact and describes the devis in English", async () => {
+    const { buildClientSignatureMessageTemplate } = await import(
+      "@shared/signature-message-template"
+    );
+    const template = buildClientSignatureMessageTemplate({
+      refLabel: "DVT0000941",
+      descriptionFr: "Encastrer un sarco béton s22",
+      amountTtcLabel: "9 435,84",
+      projectName: "SMITH (SAINT PONS DE MAUCHIENS) 1304",
+      clientContactName: "Jane Smith",
+    });
+
+    expect(template).toContain("Dear Jane Smith,");
+    expect(template).toContain(
+      'Devis DVT0000941 (Encastrer un sarco béton s22) for 9 435,84 € TTC on project "SMITH (SAINT PONS DE MAUCHIENS) 1304" is ready for electronic signature.',
+    );
+    expect(template).toContain("You will shortly receive a separate email from Archisign");
+    expect(template).toContain("Kind regards,");
+
+    // descriptionFr is a French *domain value* (the devis' lot description)
+    // interpolated as-is — strip it before running the marker check so we
+    // only guard the template's own copy.
+    expectNoFrenchMarkers(
+      template.replace("Encastrer un sarco béton s22", ""),
+      "SigningPanel client message template (named contact)",
+    );
+  });
+
+  it("falls back to an English generic greeting and omits empty parts", async () => {
+    const { buildClientSignatureMessageTemplate } = await import(
+      "@shared/signature-message-template"
+    );
+    const template = buildClientSignatureMessageTemplate({
+      refLabel: "DVT0000941",
+      descriptionFr: null,
+      amountTtcLabel: null,
+      projectName: null,
+      clientContactName: "   ",
+    });
+
+    expect(template).toContain("Dear Sir or Madam,");
+    expect(template).toContain("Devis DVT0000941 is ready for electronic signature.");
+    expectNoFrenchMarkers(template, "SigningPanel client message template (generic)");
+  });
+});
+
 // Contractor-facing emails are explicitly EXCLUDED from the English guard —
 // they stay French by design (replit.md user prefs):
 //   - queueDevisCheckBundle / formatCheckHead ("Questions sur le devis …",

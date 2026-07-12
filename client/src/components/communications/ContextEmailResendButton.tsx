@@ -74,18 +74,18 @@ export function ContextEmailResendButton({
       toast({
         title:
           data?.contextEmail?.status === "already_sent"
-            ? "E-mail de contexte déjà envoyé"
-            : "E-mail de contexte envoyé",
+            ? "Context email already sent"
+            : "Context email sent",
         description:
           data?.contextEmail?.status === "already_sent"
-            ? "Le client a déjà reçu l'e-mail d'accompagnement pour cette enveloppe."
-            : "L'e-mail d'accompagnement a bien été envoyé au client.",
+            ? "The client has already received the accompanying email for this envelope."
+            : "The accompanying email has been sent to the client.",
       });
       invalidateAfterResend();
     },
     onError: (error: Error) => {
       toast({
-        title: "Échec du renvoi de l'e-mail de contexte",
+        title: "Failed to resend the context email",
         description: error.message,
         variant: "destructive",
       });
@@ -110,12 +110,12 @@ export function ContextEmailResendButton({
       {resendMutation.isPending ? (
         <>
           <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-          Envoi…
+          Sending…
         </>
       ) : (
         <>
           <Send size={12} className="mr-1" />
-          Renvoyer l'e-mail de contexte
+          Resend context email
         </>
       )}
     </Button>

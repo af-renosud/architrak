@@ -3,14 +3,14 @@ import { Client } from "pg";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 /**
- * E2E coverage for the "Renvoyer l'e-mail de contexte" recovery button
+ * E2E coverage for the "Resend context email" recovery button
  * (task #258) inside the SigningPanel:
  *
  *   devis in sent_to_client with an envelope + persisted signer message
  *   and a FAILED `devis_signature_context` communication row
  *     → warning line + resend button render
  *     → click → POST /resend-context-email → fake Gmail send succeeds
- *     → success toast "E-mail de contexte envoyé"
+ *     → success toast "Context email sent"
  *     → the status query is invalidated, refetches canResend=false,
  *       and the warning + button disappear
  *     → DB: the SAME communication row (retried in place via dedupeKey)
@@ -36,7 +36,7 @@ const APP_URL = `http://127.0.0.1:${APP_PORT}`;
 const ENVELOPE_A = "911001";
 const ENVELOPE_B = "911002";
 const SIGNER_MESSAGE_A =
-  "Bonjour Claire, voici le contexte du devis avant la demande de signature. Cordialement.";
+  "Dear Claire, here is the devis context ahead of the signature request. Kind regards.";
 const SIGNER_MESSAGE_B =
   "Bonjour Claire, second devis prêt pour signature électronique. Cordialement.";
 
@@ -297,17 +297,17 @@ test.describe("Resend context email button — SigningPanel recovery flow (task 
       const resendBtn = page.getByTestId(`button-resend-context-email-${devisAId}`);
       await expect(warning).toBeVisible();
       await expect(warning).toContainText(
-        "L'e-mail d'accompagnement n'a pas été envoyé au client.",
+        "The accompanying email was not sent to the client.",
       );
       await expect(resendBtn).toBeVisible();
-      await expect(resendBtn).toContainText("Renvoyer l'e-mail de contexte");
+      await expect(resendBtn).toContainText("Resend context email");
 
       // ---- 2. Click → resend through the fake Gmail → success toast -------
       await resendBtn.click();
-      await expect(page.getByText("E-mail de contexte envoyé")).toBeVisible();
+      await expect(page.getByText("Context email sent", { exact: true })).toBeVisible();
       // The success toast is the fresh-send one, not the already_sent variant.
-      await expect(page.getByText("E-mail de contexte déjà envoyé")).toHaveCount(0);
-      await expect(page.getByText("Échec du renvoi de l'e-mail de contexte")).toHaveCount(0);
+      await expect(page.getByText("Context email already sent")).toHaveCount(0);
+      await expect(page.getByText("Failed to resend the context email")).toHaveCount(0);
 
       // ---- 3. Status query refetches → warning + button disappear ---------
       await expect(warning).toHaveCount(0);

@@ -17,6 +17,13 @@ Rules for running `npx playwright test` here:
   no `playwright install` needed.
 - Hermetic specs must set `ENABLE_DEV_LOGIN_FOR_E2E=true` themselves — the shared :5000 workflow
   only sets `E2E_FAKE_GMAIL`.
+- **Non-hermetic specs** (no self-booted server, e.g. comms-log style) fail dev-login (401) against
+  the shared :5000 server. Boot a side server in the SAME shell call
+  (`PORT=5599 NODE_ENV=development ENABLE_DEV_LOGIN_FOR_E2E=true E2E_FAKE_GMAIL=true npx tsx server/index.ts &`,
+  poll `/healthz`, then run with `E2E_BASE_URL=http://localhost:5599`, kill after). `npm run dev` is
+  blocked by the shell sandbox — invoke `npx tsx server/index.ts` directly.
+- **Toast text assertions need `{ exact: true }` (or `.first()`)** — the toaster mirrors the title
+  into an aria-live announcer span, so `getByText("<toast title>")` hits a strict-mode violation.
 
 **Why:** first attempts at running a new spec burned ~10 minutes on killed background runs and
 silent foreground timeouts before landing on the pattern above.

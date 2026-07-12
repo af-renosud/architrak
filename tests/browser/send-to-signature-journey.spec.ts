@@ -10,13 +10,13 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
  *     → OPEN_SIGNING_SEND_EVENT is dispatched (window CustomEvent — the
  *       exact wiring unit tests cannot exercise)
  *     → SigningPanel scrolls into view and opens the two-step compose dialog
- *     → short-message gating (Continuer disabled + min-length warning)
+ *     → short-message gating (Continue disabled + min-length warning)
  *     → valid message → recap (recipient / devis ref / message echo)
  *     → back-to-compose keeps the draft
  *     → confirm → POST /send-to-signer → Archisign /create + /send fire
  *     → stage advances to sent_to_client, envelope details render
  *     → contextEmail dispatched via the E2E fake Gmail (status "sent",
- *       so NO destructive "E-mail de contexte NON envoyé" toast).
+ *       so NO destructive "Context email NOT sent" toast).
  *
  * Outbound Archisign calls are server-side, so they cannot be intercepted
  * from the browser. This spec therefore boots ITS OWN app instance on a
@@ -342,7 +342,7 @@ test.describe("Send-to-signature journey — stepper → SigningPanel dialog →
       await page.getByTestId(`button-stage-sent_to_client-${devisId}`).click();
       const dialog = page.getByTestId(`dialog-send-to-signer-${devisId}`);
       await expect(dialog).toBeVisible();
-      await expect(dialog).toContainText("Étape 1 / 2 — Message au client");
+      await expect(dialog).toContainText("Step 1 of 2 — Message to the client");
 
       // The panel was scrolled into view by the event handler.
       await expect(panel).toBeInViewport();
@@ -358,7 +358,8 @@ test.describe("Send-to-signature journey — stepper → SigningPanel dialog →
       const textarea = page.getByTestId(`textarea-send-message-${devisId}`);
       await expect(textarea).toBeVisible();
       const prefilled = await textarea.inputValue();
-      expect(prefilled).toContain("Bonjour Claire Client");
+      expect(prefilled).toContain("Dear Claire Client");
+      expect(prefilled).toContain("is ready for electronic signature");
       expect(prefilled).toContain(seeded.devisCode);
 
       // ---- 3. Short-message gating ----------------------------------------
@@ -366,16 +367,16 @@ test.describe("Send-to-signature journey — stepper → SigningPanel dialog →
       await textarea.fill("Trop court."); // 11 chars < 20 min
       await expect(continueBtn).toBeDisabled();
       await expect(page.getByTestId(`text-send-message-min-${devisId}`)).toContainText(
-        "Minimum 20 caractères requis",
+        "Minimum 20 characters required",
       );
 
       // ---- 4. Valid message → recap ----------------------------------------
-      const message = `Bonjour Claire, le devis ${seeded.devisCode} est prêt pour signature. Cordialement.`;
+      const message = `Dear Claire, devis ${seeded.devisCode} is ready for signature. Kind regards.`;
       await textarea.fill(message);
       await expect(continueBtn).toBeEnabled();
       await continueBtn.click();
 
-      await expect(dialog).toContainText("Étape 2 / 2 — Vérification avant envoi");
+      await expect(dialog).toContainText("Step 2 of 2 — Review before sending");
       const recap = page.getByTestId(`recap-send-to-signer-${devisId}`);
       await expect(recap).toBeVisible();
       await expect(page.getByTestId(`text-recap-recipient-${devisId}`)).toContainText(
@@ -401,13 +402,13 @@ test.describe("Send-to-signature journey — stepper → SigningPanel dialog →
 
       // Success toast, and NO destructive context-email failure toast (the
       // fake Gmail path reports "sent").
-      await expect(page.getByText("Envoyé à la signature")).toBeVisible();
-      await expect(page.getByText("E-mail de contexte NON envoyé")).toHaveCount(0);
+      await expect(page.getByText("Sent for signature", { exact: true })).toBeVisible();
+      await expect(page.getByText("Context email NOT sent")).toHaveCount(0);
       await expect(dialog).toBeHidden();
 
       // Panel refreshes with the envelope details from /create.
       await expect(page.getByTestId(`badge-archisign-status-${devisId}`)).toContainText(
-        "Envoyée",
+        "Sent",
       );
       await expect(page.getByTestId(`text-archisign-envelope-${devisId}`)).toContainText(
         String(MOCK_ENVELOPE_ID),

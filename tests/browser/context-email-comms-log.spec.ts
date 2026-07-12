@@ -103,7 +103,7 @@ test.describe("Communications log — devis context email outcome (task #261)", 
       const envelopeId = `env-e2e-${uniq}`;
       await db.query(
         "UPDATE devis SET archisign_envelope_id = $1, archisign_signer_message = $2 WHERE id = $3",
-        [envelopeId, "Bonjour, voici le devis à signer — message de contexte e2e.", devisId],
+        [envelopeId, "Hello, here is the devis to sign — e2e context message.", devisId],
       );
 
       // Insert the FAILED context-email communication row the original
@@ -155,7 +155,7 @@ test.describe("Communications log — devis context email outcome (task #261)", 
       await resendBtn.click();
       // Success toast (fake Gmail in dev makes the send succeed). `.first()`
       // because the toast text also appears in the aria-live announcer.
-      await expect(page.getByText("E-mail de contexte envoyé").first()).toBeVisible();
+      await expect(page.getByText("Context email sent").first()).toBeVisible();
       // List refreshes: the same row flips to SENT and the button disappears.
       await expect(card.getByTestId("status-badge-sent")).toBeVisible();
       await expect(

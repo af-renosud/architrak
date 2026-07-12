@@ -24,6 +24,7 @@ import {
   DEVIS_CLIENT_MESSAGE_MIN_LEN,
   DEVIS_CLIENT_MESSAGE_MAX_LEN,
 } from "@shared/schema";
+import { buildClientSignatureMessageTemplate } from "@shared/signature-message-template";
 
 /**
  * Task #257 — the workflow stepper's "Sent to Client" button no longer
@@ -80,18 +81,18 @@ export function SigningPanel({
     },
     onSuccess: (data) => {
       toast({
-        title: "Envoyé à la signature",
-        description: "L'enveloppe Archisign a été créée et envoyée au signataire.",
+        title: "Sent for signature",
+        description: "The Archisign envelope has been created and sent to the signer.",
       });
       // Task #257 — the contextual email failure never rolls back the
       // envelope, but the architect MUST see that the client did not get
       // the written context.
       if (data?.contextEmail?.status === "failed") {
         toast({
-          title: "E-mail de contexte NON envoyé",
+          title: "Context email NOT sent",
           description:
-            "L'enveloppe Archisign est partie, mais l'e-mail d'accompagnement au client a échoué. " +
-            "Contactez le client directement ou réessayez depuis les communications du projet." +
+            "The Archisign envelope went out, but the accompanying email to the client failed. " +
+            "Contact the client directly or retry from the project communications." +
             (data.contextEmail.error ? ` (${data.contextEmail.error})` : ""),
           variant: "destructive",
         });
@@ -105,7 +106,7 @@ export function SigningPanel({
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "context-email-status"] });
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur d'envoi", description: error.message, variant: "destructive" });
+      toast({ title: "Send failed", description: error.message, variant: "destructive" });
     },
   });
 
@@ -134,18 +135,18 @@ export function SigningPanel({
       toast({
         title:
           data?.contextEmail?.status === "already_sent"
-            ? "E-mail de contexte déjà envoyé"
-            : "E-mail de contexte envoyé",
+            ? "Context email already sent"
+            : "Context email sent",
         description:
           data?.contextEmail?.status === "already_sent"
-            ? "Le client a déjà reçu l'e-mail d'accompagnement pour cette enveloppe."
-            : "L'e-mail d'accompagnement a bien été envoyé au client.",
+            ? "The client has already received the accompanying email for this envelope."
+            : "The accompanying email has been sent to the client.",
       });
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "context-email-status"] });
     },
     onError: (error: Error) => {
       toast({
-        title: "Échec du renvoi de l'e-mail de contexte",
+        title: "Failed to resend the context email",
         description: error.message,
         variant: "destructive",
       });
@@ -185,18 +186,13 @@ export function SigningPanel({
   // architect can rewrite it entirely — only the min length is enforced.
   const messageTemplate = useMemo(() => {
     if (!d) return "";
-    const refLabel = d.devisNumber || d.devisCode;
-    const clientName = (project?.clientContactName ?? "").trim();
-    const greeting = clientName ? `Bonjour ${clientName},` : "Bonjour,";
-    const amountPart = amountTtcLabel ? ` d'un montant de ${amountTtcLabel} € TTC` : "";
-    const projectPart = project?.name ? ` pour le projet « ${project.name} »` : "";
-    return (
-      `${greeting}\n\n` +
-      `Le devis ${refLabel} (${d.descriptionFr})${amountPart}${projectPart} est prêt pour signature électronique.\n\n` +
-      `Vous recevrez dans quelques instants un e-mail d'Archisign contenant le lien de signature sécurisé. ` +
-      `N'hésitez pas à me contacter pour toute question.\n\n` +
-      `Cordialement,`
-    );
+    return buildClientSignatureMessageTemplate({
+      refLabel: d.devisNumber || d.devisCode,
+      descriptionFr: d.descriptionFr,
+      amountTtcLabel,
+      projectName: project?.name,
+      clientContactName: project?.clientContactName,
+    });
   }, [d, project, amountTtcLabel]);
 
   // Task #257 — the workflow stepper dispatches OPEN_SIGNING_SEND_EVENT
@@ -264,7 +260,7 @@ export function SigningPanel({
   //   (c) POST-EXPIRY: handleExpired (§1.2) transitions the devis back to
   //       `approved_for_signing` and clears archisignEnvelopeId, so a click
   //       fires a fresh /create+/send. The historical accessUrl is kept
-  //       struck-through alongside an "Lien expiré" note for audit context;
+  //       struck-through alongside a "Link expired" note for audit context;
   //       AT4's brief excludes any *additional* resend-after-expiry
   //       orchestration (no new endpoints, no reminders), so the CTA
   //       reappearing IS the entire post-expiry surface.
@@ -272,12 +268,12 @@ export function SigningPanel({
   const isResume = canSend && !!d.archisignEnvelopeId;
 
   const statusLabel: Record<string, { label: string; tone: "default" | "secondary" | "destructive" }> = {
-    sent: { label: "Envoyée", tone: "default" },
-    viewed: { label: "Consultée", tone: "default" },
-    queried: { label: "Question ouverte", tone: "secondary" },
-    signed: { label: "Signée", tone: "default" },
-    declined: { label: "Refusée", tone: "destructive" },
-    expired: { label: "Expirée", tone: "destructive" },
+    sent: { label: "Sent", tone: "default" },
+    viewed: { label: "Viewed", tone: "default" },
+    queried: { label: "Question open", tone: "secondary" },
+    signed: { label: "Signed", tone: "default" },
+    declined: { label: "Declined", tone: "destructive" },
+    expired: { label: "Expired", tone: "destructive" },
   };
   const badge = envelopeStatus ? statusLabel[envelopeStatus] ?? { label: envelopeStatus, tone: "secondary" as const } : null;
 
@@ -292,7 +288,7 @@ export function SigningPanel({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Send className="h-4 w-4 text-[#0B2545]" />
-          <TechnicalLabel className="text-sm">Signature électronique</TechnicalLabel>
+          <TechnicalLabel className="text-sm">Electronic signature</TechnicalLabel>
           {badge && (
             <Badge
               variant={badge.tone === "destructive" ? "destructive" : badge.tone === "secondary" ? "secondary" : "default"}
@@ -317,12 +313,12 @@ export function SigningPanel({
             {sendMutation.isPending ? (
               <>
                 <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-                {isResume ? "Reprise…" : "Envoi…"}
+                {isResume ? "Resuming…" : "Sending…"}
               </>
             ) : (
               <>
                 <Send className="h-4 w-4 mr-1.5" />
-                {isResume ? "Réessayer l'envoi" : "Envoyer à la signature"}
+                {isResume ? "Retry send" : "Send for signature"}
               </>
             )}
           </Button>
@@ -341,17 +337,17 @@ export function SigningPanel({
           <AlertDialogHeader>
             <AlertDialogTitle>
               {isResume
-                ? "Réessayer l'envoi à la signature"
+                ? "Retry sending for signature"
                 : dialogStep === "compose"
-                  ? "Étape 1 / 2 — Message au client"
-                  : "Étape 2 / 2 — Vérification avant envoi"}
+                  ? "Step 1 of 2 — Message to the client"
+                  : "Step 2 of 2 — Review before sending"}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {isResume
-                ? "L'enveloppe a déjà été créée chez Archisign — un nouvel essai relance uniquement l'envoi au signataire, puis renvoie l'e-mail d'accompagnement si nécessaire. Le message saisi lors de la création initiale ne peut pas être modifié."
+                ? "The envelope has already been created at Archisign — retrying only re-triggers delivery to the signer, then resends the accompanying email if needed. The message entered when the envelope was first created cannot be changed."
                 : dialogStep === "compose"
-                  ? "Rédigez le message d'accompagnement que le client recevra par e-mail (obligatoire). Le lien de signature lui sera envoyé séparément par Archisign."
-                  : "Vérifiez ce que le client va recevoir. L'envoi créera l'enveloppe Archisign et transmettra ce message au client."}
+                  ? "Write the accompanying message the client will receive by email (required). The signing link will be sent to them separately by Archisign."
+                  : "Review what the client will receive. Sending will create the Archisign envelope and deliver this message to the client."}
             </AlertDialogDescription>
           </AlertDialogHeader>
 
@@ -361,7 +357,7 @@ export function SigningPanel({
                 htmlFor={`textarea-send-message-${devisId}`}
                 className="text-sm font-medium"
               >
-                Message au client (obligatoire)
+                Message to the client (required)
               </label>
               <Textarea
                 id={`textarea-send-message-${devisId}`}
@@ -379,7 +375,7 @@ export function SigningPanel({
                 >
                   {composeValid
                     ? "\u00a0"
-                    : `Minimum ${DEVIS_CLIENT_MESSAGE_MIN_LEN} caractères requis`}
+                    : `Minimum ${DEVIS_CLIENT_MESSAGE_MIN_LEN} characters required`}
                 </span>
                 <span
                   className="text-muted-foreground"
@@ -395,24 +391,24 @@ export function SigningPanel({
             <div className="space-y-3 text-sm" data-testid={`recap-send-to-signer-${devisId}`}>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
                 <div>
-                  <span className="font-semibold text-muted-foreground">Destinataire :</span>{" "}
+                  <span className="font-semibold text-muted-foreground">Recipient:</span>{" "}
                   <span data-testid={`text-recap-recipient-${devisId}`}>
                     {recipientName} ({recipientEmail})
                   </span>
                 </div>
                 <div>
-                  <span className="font-semibold text-muted-foreground">Devis :</span>{" "}
+                  <span className="font-semibold text-muted-foreground">Devis:</span>{" "}
                   <span data-testid={`text-recap-devis-${devisId}`}>{refLabel}</span>
                 </div>
                 <div>
-                  <span className="font-semibold text-muted-foreground">Montant :</span>{" "}
+                  <span className="font-semibold text-muted-foreground">Amount:</span>{" "}
                   <span data-testid={`text-recap-amount-${devisId}`}>
                     {amountTtcLabel ? `${amountTtcLabel} € TTC` : "—"}
                   </span>
                 </div>
               </div>
               <div>
-                <span className="text-xs font-semibold text-muted-foreground">Message au client :</span>
+                <span className="text-xs font-semibold text-muted-foreground">Message to the client:</span>
                 <p
                   className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap rounded border border-border bg-muted/40 p-2 text-xs"
                   data-testid={`text-recap-message-${devisId}`}
@@ -421,8 +417,8 @@ export function SigningPanel({
                 </p>
               </div>
               <p className="text-xs text-muted-foreground">
-                Le client recevra cet e-mail depuis votre adresse Gmail, puis un e-mail
-                séparé d'Archisign contenant le lien de signature sécurisé.
+                The client will receive this email from your Gmail address, then a
+                separate email from Archisign containing the secure signing link.
               </p>
             </div>
           )}
@@ -436,14 +432,14 @@ export function SigningPanel({
                 data-testid={`button-send-to-signer-back-${devisId}`}
               >
                 <ArrowLeft className="h-4 w-4 mr-1.5" />
-                Modifier le message
+                Edit message
               </Button>
             )}
             <AlertDialogCancel
               disabled={sendMutation.isPending}
               data-testid={`button-send-to-signer-cancel-${devisId}`}
             >
-              Annuler
+              Cancel
             </AlertDialogCancel>
             {!isResume && dialogStep === "compose" ? (
               <Button
@@ -451,7 +447,7 @@ export function SigningPanel({
                 disabled={!composeValid || sendMutation.isPending}
                 data-testid={`button-send-to-signer-continue-${devisId}`}
               >
-                Continuer
+                Continue
               </Button>
             ) : (
               <AlertDialogAction
@@ -465,12 +461,12 @@ export function SigningPanel({
                 {sendMutation.isPending ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-                    {isResume ? "Reprise…" : "Envoi…"}
+                    {isResume ? "Resuming…" : "Sending…"}
                   </>
                 ) : (
                   <>
                     <Send className="h-4 w-4 mr-1.5" />
-                    {isResume ? "Réessayer l'envoi" : "Confirmer et envoyer"}
+                    {isResume ? "Retry send" : "Confirm and send"}
                   </>
                 )}
               </AlertDialogAction>
@@ -481,7 +477,7 @@ export function SigningPanel({
 
       {!d.archisignEnvelopeId && !accessUrl && stage === "approved_for_signing" && (
         <p className="text-xs text-muted-foreground" data-testid={`text-signing-empty-${devisId}`}>
-          Aucune enveloppe Archisign créée. Le client recevra un lien de signature après envoi.
+          No Archisign envelope created yet. The client will receive a signing link after sending.
         </p>
       )}
 
@@ -497,7 +493,7 @@ export function SigningPanel({
       {(d.archisignEnvelopeId || accessUrl) && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
           <div>
-            <span className="font-semibold text-muted-foreground">Lien client :</span>{" "}
+            <span className="font-semibold text-muted-foreground">Client link:</span>{" "}
             {accessUrl ? (
               <a
                 href={accessUrl}
@@ -510,7 +506,7 @@ export function SigningPanel({
                 }
                 data-testid={`link-archisign-access-${devisId}`}
               >
-                Ouvrir
+                Open
                 {!accessUrlInvalidated && <ExternalLink className="h-3 w-3" />}
               </a>
             ) : (
@@ -521,22 +517,22 @@ export function SigningPanel({
                 className="mt-1 text-[11px] text-amber-700"
                 data-testid={`text-archisign-expired-note-${devisId}`}
               >
-                Lien expiré — la fonction de renvoi sera disponible dans une prochaine mise à jour.
+                Link expired — resend will be available in a future update.
               </div>
             )}
           </div>
           <div>
-            <span className="font-semibold text-muted-foreground">Destination OTP :</span>{" "}
+            <span className="font-semibold text-muted-foreground">OTP destination:</span>{" "}
             <span data-testid={`text-archisign-otp-${devisId}`}>{otpDestination ?? "—"}</span>
           </div>
           <div>
-            <span className="font-semibold text-muted-foreground">Expire le :</span>{" "}
+            <span className="font-semibold text-muted-foreground">Expires:</span>{" "}
             <span data-testid={`text-archisign-expires-${devisId}`}>
               {expiresAt ? expiresAt.toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
             </span>
           </div>
           <div>
-            <span className="font-semibold text-muted-foreground">Enveloppe :</span>{" "}
+            <span className="font-semibold text-muted-foreground">Envelope:</span>{" "}
             <span
               className="font-mono text-[11px]"
               data-testid={`text-archisign-envelope-${devisId}`}
@@ -549,7 +545,7 @@ export function SigningPanel({
               Archisign renders it in the signer email. */}
           {d.archisignSignerMessage && (
             <div className="sm:col-span-2">
-              <span className="font-semibold text-muted-foreground">Message au signataire :</span>
+              <span className="font-semibold text-muted-foreground">Message to the signer:</span>
               <p
                 className="mt-1 whitespace-pre-wrap rounded border border-border bg-muted/40 p-2 text-[11px] text-foreground"
                 data-testid={`text-archisign-signer-message-${devisId}`}
@@ -567,7 +563,7 @@ export function SigningPanel({
                     className="text-[11px] text-destructive"
                     data-testid={`text-context-email-missing-${devisId}`}
                   >
-                    L'e-mail d'accompagnement n'a pas été envoyé au client.
+                    The accompanying email was not sent to the client.
                   </span>
                   <Button
                     size="sm"
@@ -580,10 +576,10 @@ export function SigningPanel({
                     {resendContextEmailMutation.isPending ? (
                       <>
                         <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                        Envoi…
+                        Sending…
                       </>
                     ) : (
-                      "Renvoyer l'e-mail de contexte"
+                      "Resend context email"
                     )}
                   </Button>
                 </div>
@@ -596,7 +592,7 @@ export function SigningPanel({
               digging through Drive. */}
           {d.signedPdfStorageKey && (
             <div className="sm:col-span-2">
-              <span className="font-semibold text-muted-foreground">PDF signé :</span>{" "}
+              <span className="font-semibold text-muted-foreground">Signed PDF:</span>{" "}
               <a
                 href={`/api/devis/${devisId}/signed-pdf`}
                 target="_blank"
@@ -604,7 +600,7 @@ export function SigningPanel({
                 className="text-[#0B2545] underline hover:no-underline inline-flex items-center gap-1"
                 data-testid={`link-signed-pdf-${devisId}`}
               >
-                Ouvrir le PDF signé
+                Open the signed PDF
                 <ExternalLink className="h-3 w-3" />
               </a>
             </div>
