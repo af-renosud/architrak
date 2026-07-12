@@ -26,6 +26,14 @@ import { Router } from "express";
 import { z } from "zod";
 import { storage } from "../storage";
 import type { InsertDevis } from "@shared/schema";
+import {
+  DEVIS_CLIENT_MESSAGE_MIN_LEN,
+  DEVIS_CLIENT_MESSAGE_MAX_LEN,
+} from "@shared/schema";
+import {
+  sendDevisSignatureContextEmail,
+  type DevisContextEmailResult,
+} from "../communications/email-sender";
 import { requireAuth } from "../auth/middleware";
 import { validateRequest } from "../middleware/validate";
 import {
@@ -42,17 +50,19 @@ const router = Router();
 
 const idParams = z.object({ id: z.coerce.number().int().positive() });
 
-// Optional architect-supplied personalised message forwarded to the signer
-// email. Trimmed and capped at 2000 chars; empty/whitespace-only is treated
-// as absent so the architect doesn't accidentally ship a blank body. On the
-// resume branch (envelopeId already persisted) /create is skipped, so the
-// message — which is only forwarded into /create — is silently ignored.
-// The FE hides the input in that case.
+// Architect-supplied client-context message. Task #257 made it MANDATORY
+// on first send (min length enforced at runtime below, because the resume
+// branch — envelopeId already persisted — legitimately omits it and reuses
+// the message persisted on the devis). Trimmed and capped; empty/
+// whitespace-only is treated as absent.
 const sendBody = z.object({
   message: z
     .string()
     .trim()
-    .max(2000, "Message trop long (2000 caractères maximum).")
+    .max(
+      DEVIS_CLIENT_MESSAGE_MAX_LEN,
+      `Message trop long (${DEVIS_CLIENT_MESSAGE_MAX_LEN} caractères maximum).`,
+    )
     .optional()
     .transform((v) => (v && v.length > 0 ? v : undefined)),
 }).partial();
@@ -94,6 +104,25 @@ router.post(
     // — out of scope for AT4 — so we 409 only on the truly
     // unrecoverable shape: stage advanced but envelopeId still set.
     const resumingExistingEnvelope = Boolean(d.archisignEnvelopeId);
+
+    // Task #257 — the written client context is mandatory on first send.
+    // The Zod schema can't enforce this conditionally (the resume branch
+    // legitimately omits the message and reuses the one persisted on the
+    // devis at /create time), so the requirement is checked here, before
+    // any external call.
+    if (
+      !resumingExistingEnvelope &&
+      (!personalMessage || personalMessage.length < DEVIS_CLIENT_MESSAGE_MIN_LEN)
+    ) {
+      return res.status(422).json({
+        message:
+          `Un message d'accompagnement au client est obligatoire ` +
+          `(minimum ${DEVIS_CLIENT_MESSAGE_MIN_LEN} caractères). ` +
+          `Rédigez le contexte que le client recevra avant la demande de signature.`,
+        code: "client_message_required",
+        minLength: DEVIS_CLIENT_MESSAGE_MIN_LEN,
+      });
+    }
 
     const openCount = await storage.countOpenDevisChecks(devisId);
     if (openCount > 0) {
@@ -295,6 +324,30 @@ router.post(
       });
     }
 
+    // Task #257 — deliver the architect's written context to the client via
+    // the architect's Gmail, logged in project_communications. Runs AFTER
+    // the stage advance: an email failure must never roll back the envelope
+    // — it is surfaced to the architect as a visible warning instead.
+    // Idempotent per (devis, envelope), so the resume path won't double-send.
+    const contextMessage =
+      personalMessage ?? d.archisignSignerMessage ?? null;
+    let contextEmail: DevisContextEmailResult;
+    if (contextMessage) {
+      contextEmail = await sendDevisSignatureContextEmail({
+        devisId,
+        envelopeId,
+        message: contextMessage,
+      });
+    } else {
+      // Only reachable on the resume branch for pre-Task-#257 envelopes
+      // that were created without a message.
+      contextEmail = {
+        communicationId: null,
+        status: "failed",
+        error: "Aucun message d'accompagnement persisté pour ce devis.",
+      };
+    }
+
     return res.status(200).json({
       ok: true,
       devisId,
@@ -304,6 +357,7 @@ router.post(
       expiresAt: expiresAtIso,
       signOffStage: updated?.signOffStage ?? "sent_to_client",
       resumed: resumingExistingEnvelope,
+      contextEmail,
     });
   },
 );

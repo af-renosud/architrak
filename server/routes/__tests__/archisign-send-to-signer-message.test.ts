@@ -3,21 +3,26 @@ import express from "express";
 import type { AddressInfo } from "net";
 
 /**
- * Coverage for the architect-supplied personalised message on
- * POST /api/devis/:id/send-to-signer (Task #227).
+ * Coverage for the architect-supplied message on
+ * POST /api/devis/:id/send-to-signer (Task #227, hardened by Task #257).
  *
  * Pinned behaviours:
  *   (a) Zod body validation rejects messages >2000 chars with 400.
  *   (b) On the first-send branch (no envelopeId persisted) the trimmed
  *       message is forwarded to archisign.createEnvelope({ body }).
  *   (c) On the resume branch (envelopeId already persisted) /create is
- *       skipped entirely — the message is silently dropped and only
+ *       skipped entirely — a fresh message is silently dropped and only
  *       /send is re-invoked, regardless of what the FE sent.
- *   (d) Whitespace-only and empty messages collapse to `undefined`
- *       before reaching the archisign client.
+ *   (d) Task #257 — the message is MANDATORY on first send: missing,
+ *       whitespace-only, or <20-char messages are rejected with 422
+ *       code "client_message_required" BEFORE any external call.
+ *   (e) Task #257 — after a successful send, the contextual client email
+ *       is dispatched (first send: the request message; resume: the
+ *       persisted archisignSignerMessage) and its outcome is surfaced in
+ *       the 200 response as `contextEmail`.
  */
 
-const { storageMock, archisignMock, insuranceMock, tokenMock } = vi.hoisted(() => ({
+const { storageMock, archisignMock, insuranceMock, tokenMock, emailMock } = vi.hoisted(() => ({
   storageMock: {
     getDevis: vi.fn(),
     getProject: vi.fn(),
@@ -36,6 +41,9 @@ const { storageMock, archisignMock, insuranceMock, tokenMock } = vi.hoisted(() =
   },
   tokenMock: {
     mintPdfFetchToken: vi.fn(() => "tok_test"),
+  },
+  emailMock: {
+    sendDevisSignatureContextEmail: vi.fn(),
   },
 }));
 
@@ -73,6 +81,9 @@ vi.mock("../../services/archisign-pdf-token", () => ({
 }));
 vi.mock("../../env", () => ({
   env: { PUBLIC_BASE_URL: "http://test.local" },
+}));
+vi.mock("../../communications/email-sender", () => ({
+  sendDevisSignatureContextEmail: emailMock.sendDevisSignatureContextEmail,
 }));
 
 import archisignEnvelopesRouter from "../archisign-envelopes";
@@ -138,6 +149,10 @@ beforeEach(() => {
     expiresAt: "2026-06-30T00:00:00.000Z",
   });
   archisignMock.sendEnvelope.mockResolvedValue({ envelopeId: "env_42", status: "sent" });
+  emailMock.sendDevisSignatureContextEmail.mockResolvedValue({
+    communicationId: 1,
+    status: "sent",
+  });
 });
 
 async function postSend(devisId: number, body: unknown) {
@@ -185,17 +200,27 @@ describe("POST /api/devis/:id/send-to-signer — personalised message", () => {
     );
   });
 
-  it("persists null when no message is supplied", async () => {
+  it("rejects a first send with no message: 422 client_message_required (Task #257)", async () => {
     const res = await fetch(`${baseUrl}/api/devis/100/send-to-signer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
     });
-    expect(res.status).toBe(200);
-    const persistCall = storageMock.updateDevis.mock.calls.find(
-      (c) => (c[1] as { archisignEnvelopeId?: string }).archisignEnvelopeId === "env_42",
-    );
-    expect(persistCall).toBeDefined();
-    expect((persistCall![1] as { archisignSignerMessage?: string | null }).archisignSignerMessage).toBeNull();
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { code: string; message: string; minLength: number };
+    expect(body.code).toBe("client_message_required");
+    expect(body.message).toMatch(/obligatoire/);
+    expect(body.minLength).toBe(20);
+    expect(archisignMock.createEnvelope).not.toHaveBeenCalled();
+    expect(archisignMock.sendEnvelope).not.toHaveBeenCalled();
+    expect(emailMock.sendDevisSignatureContextEmail).not.toHaveBeenCalled();
+  });
+
+  it("rejects a first send with a message shorter than 20 chars (Task #257)", async () => {
+    const res = await postSend(100, { message: "Trop court." });
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("client_message_required");
+    expect(archisignMock.createEnvelope).not.toHaveBeenCalled();
   });
 
   it("forwards multi-line messages and special characters to createEnvelope verbatim", async () => {
@@ -213,22 +238,70 @@ describe("POST /api/devis/:id/send-to-signer — personalised message", () => {
     expect((persistCall![1] as { archisignSignerMessage?: string | null }).archisignSignerMessage).toBe(raw);
   });
 
-  it("collapses whitespace-only messages to undefined before calling createEnvelope", async () => {
+  it("rejects whitespace-only messages on first send (collapse to absent → 422)", async () => {
     const res = await postSend(100, { message: "   \n\t   " });
-    expect(res.status).toBe(200);
-    expect(archisignMock.createEnvelope).toHaveBeenCalledTimes(1);
-    const args = archisignMock.createEnvelope.mock.calls[0][0];
-    expect(args.body).toBeUndefined();
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("client_message_required");
+    expect(archisignMock.createEnvelope).not.toHaveBeenCalled();
   });
 
-  it("treats a missing body as no message and still succeeds", async () => {
-    const res = await fetch(`${baseUrl}/api/devis/100/send-to-signer`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-    });
+  it("dispatches the contextual client email after a successful first send", async () => {
+    const res = await postSend(100, { message: "  Bonjour, voici le devis pour signature.  " });
     expect(res.status).toBe(200);
-    expect(archisignMock.createEnvelope).toHaveBeenCalledTimes(1);
-    expect(archisignMock.createEnvelope.mock.calls[0][0].body).toBeUndefined();
+    expect(emailMock.sendDevisSignatureContextEmail).toHaveBeenCalledTimes(1);
+    expect(emailMock.sendDevisSignatureContextEmail).toHaveBeenCalledWith({
+      devisId: 100,
+      envelopeId: "env_42",
+      message: "Bonjour, voici le devis pour signature.",
+    });
+    const body = (await res.json()) as { contextEmail: { status: string; communicationId: number } };
+    expect(body.contextEmail).toEqual({ communicationId: 1, status: "sent" });
+  });
+
+  it("resume branch reuses the persisted archisignSignerMessage for the context email", async () => {
+    storageMock.getDevis.mockResolvedValue(
+      makeDevis({
+        archisignEnvelopeId: "env_existing",
+        archisignAccessUrl: "https://archisign.test/e/existing",
+        archisignSignerMessage: "Message persisté lors de la création initiale.",
+      }),
+    );
+    const res = await postSend(100, {});
+    expect(res.status).toBe(200);
+    expect(emailMock.sendDevisSignatureContextEmail).toHaveBeenCalledWith({
+      devisId: 100,
+      envelopeId: "env_existing",
+      message: "Message persisté lors de la création initiale.",
+    });
+  });
+
+  it("resume branch without any persisted message reports a failed contextEmail", async () => {
+    storageMock.getDevis.mockResolvedValue(
+      makeDevis({
+        archisignEnvelopeId: "env_existing",
+        archisignAccessUrl: "https://archisign.test/e/existing",
+        archisignSignerMessage: null,
+      }),
+    );
+    const res = await postSend(100, {});
+    expect(res.status).toBe(200);
+    expect(emailMock.sendDevisSignatureContextEmail).not.toHaveBeenCalled();
+    const body = (await res.json()) as { contextEmail: { status: string } };
+    expect(body.contextEmail.status).toBe("failed");
+  });
+
+  it("surfaces a failed contextual email in the 200 response without rolling back", async () => {
+    emailMock.sendDevisSignatureContextEmail.mockResolvedValue({
+      communicationId: null,
+      status: "failed",
+      error: "gmail down",
+    });
+    const res = await postSend(100, { message: "Bonjour, voici le devis pour signature." });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { contextEmail: { status: string; error?: string } };
+    expect(body.contextEmail.status).toBe("failed");
+    expect(body.contextEmail.error).toBe("gmail down");
   });
 
   it("silently drops the message on the resume branch (envelopeId already persisted)", async () => {

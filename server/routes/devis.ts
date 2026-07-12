@@ -24,6 +24,7 @@ import { checkLotReferencesAgainstCatalog } from "../services/lot-reference-vali
 import type { ParsedDocument } from "../gmail/document-parser";
 import { roundCurrency } from "../../shared/financial-utils";
 import { evaluateInsuranceGate } from "../services/insurance-verdict";
+import { evaluateManualStageTransition } from "../services/devis-stage-guard.service";
 import {
   reconcileAdvisories,
   getAdvisoriesForDevis,
@@ -595,6 +596,23 @@ router.patch(
       const nextStage = String(req.body.signOffStage);
       const nextIdx = STAGE_ORDER.indexOf(nextStage);
       const prevIdx = STAGE_ORDER.indexOf(before.signOffStage);
+
+      // SEAL (Task #257): forward moves into `sent_to_client` /
+      // `client_signed_off` are reserved for the signing orchestration
+      // (send-to-signer route) and the Archisign webhooks — both of which
+      // call storage.updateDevis directly and never pass through this
+      // PATCH. Checked FIRST so the architect gets the "use the signing
+      // flow" message rather than a downstream gate error. Backward
+      // corrections stay allowed.
+      const sealViolation = evaluateManualStageTransition(before.signOffStage, nextStage);
+      if (sealViolation) {
+        return res.status(409).json({
+          message: sealViolation.message,
+          code: sealViolation.code,
+          currentStage: before.signOffStage,
+        });
+      }
+
       if (nextIdx >= SENT_INDEX && nextIdx > prevIdx) {
         const openCount = await storage.countOpenDevisChecks(id);
         if (openCount > 0) {

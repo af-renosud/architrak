@@ -48,7 +48,7 @@ import {
   GenericValidationWarningsList,
   type DraftValidationWarning,
 } from "@/components/devis/draft-warnings";
-import { SigningPanel } from "@/components/devis/SigningPanel";
+import { SigningPanel, OPEN_SIGNING_SEND_EVENT } from "@/components/devis/SigningPanel";
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
@@ -5036,6 +5036,38 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
                   }
                   if (signOffBlocked && idx > 0) {
                     toast({ title: "Sign-off blocked", description: "Lot assignment and English works description are required before advancing", variant: "destructive" });
+                    return;
+                  }
+                  // Task #257 — forward moves into `sent_to_client` /
+                  // `client_signed_off` are sealed server-side (409): the
+                  // ONLY way to send is the SigningPanel's Archisign flow,
+                  // which also delivers the mandatory client-context email.
+                  // Backward clicks (corrections) still PATCH as before.
+                  if (idx >= SENT_TO_CLIENT_INDEX && idx > currentStageIndex) {
+                    if (stage.key === "sent_to_client" && devis.signOffStage === "approved_for_signing") {
+                      toast({
+                        title: "Envoi via signature électronique",
+                        description:
+                          "L'envoi au client passe par le panneau « Signature électronique » : rédigez le message d'accompagnement puis confirmez.",
+                      });
+                      window.dispatchEvent(
+                        new CustomEvent(OPEN_SIGNING_SEND_EVENT, { detail: { devisId: devis.id } }),
+                      );
+                    } else if (stage.key === "client_signed_off") {
+                      toast({
+                        title: "Étape automatique",
+                        description:
+                          "« Client Signed Off » est enregistré automatiquement lorsque le client signe le devis via Archisign.",
+                        variant: "destructive",
+                      });
+                    } else {
+                      toast({
+                        title: "Étape non disponible",
+                        description:
+                          "Le devis doit d'abord atteindre « Approved for Signing » avant l'envoi au client via la signature électronique.",
+                        variant: "destructive",
+                      });
+                    }
                     return;
                   }
                   updateDevisMutation.mutate({ signOffStage: stage.key });

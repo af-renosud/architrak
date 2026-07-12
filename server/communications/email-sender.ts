@@ -315,6 +315,119 @@ export async function queueDevisCheckBundle(opts: {
   };
 }
 
+/**
+ * Task #257 — body of the contextual email ArchiTrak sends to the client
+ * when a devis goes out for signature. Archisign renders the `subject` of
+ * `/envelopes/create` in its signer email but silently drops the `body`
+ * field, so the architect's written context would otherwise never reach
+ * the client — ArchiTrak delivers it itself via the architect's Gmail.
+ *
+ * The architect's message is the primary content (the FE pre-fills a
+ * complete template with greeting + devis references, so we don't add a
+ * second greeting). A fixed bilingual (FR/EN) footer announces the
+ * incoming Archisign signature-link email so the client knows to expect
+ * — and trust — it.
+ *
+ * Exported for unit tests.
+ */
+export function buildDevisContextEmailBody(opts: {
+  architectMessage: string;
+  refLabel: string;
+  projectName: string;
+}): string {
+  const note =
+    `Vous allez recevoir dans quelques instants un e-mail séparé d'Archisign contenant ` +
+    `le lien sécurisé pour signer électroniquement le devis ${opts.refLabel} ` +
+    `(projet « ${opts.projectName} »).\n\n` +
+    `You will shortly receive a separate email from Archisign containing the secure ` +
+    `link to electronically sign devis ${opts.refLabel} (project "${opts.projectName}").`;
+  return `${opts.architectMessage.trim()}\n\n---\n\n${note}\n`;
+}
+
+export interface DevisContextEmailResult {
+  communicationId: number | null;
+  status: "sent" | "failed" | "already_sent";
+  error?: string;
+}
+
+/**
+ * Task #257 — send the mandatory client-context email for a devis
+ * signature request, logged in `project_communications` (type
+ * `devis_signature_context`).
+ *
+ * NEVER throws — envelope send has already succeeded by the time this
+ * runs, and an email failure must not roll it back. The caller surfaces
+ * `status: "failed"` to the architect as a visible warning instead.
+ *
+ * Idempotent per (devis, envelope) via `dedupeKey`: the resume branch of
+ * the send-to-signer route can re-run this freely — an already-sent
+ * context email is not re-sent, while a previously failed one is retried
+ * on the same communication row.
+ *
+ * Respects E2E_FAKE_GMAIL implicitly: `sendCommunication` goes through
+ * `getUncachableGmailClient`, which returns the in-memory fake client in
+ * dev when the flag is set.
+ */
+export async function sendDevisSignatureContextEmail(opts: {
+  devisId: number;
+  envelopeId: string;
+  message: string;
+}): Promise<DevisContextEmailResult> {
+  try {
+    const devis = await storage.getDevis(opts.devisId);
+    if (!devis) throw new Error(`Devis ${opts.devisId} not found`);
+    const project = await storage.getProject(devis.projectId);
+    if (!project) throw new Error(`Project ${devis.projectId} not found`);
+
+    const recipientEmail = (project.clientContactEmail ?? "").trim();
+    const recipientName = (project.clientContactName ?? "").trim();
+    if (!recipientEmail) {
+      throw new Error("Client contact email missing on project");
+    }
+
+    const refLabel = devis.devisNumber || devis.devisCode;
+    const subject = `Devis ${refLabel} — ${project.name} : signature électronique à venir`;
+    const body = buildDevisContextEmailBody({
+      architectMessage: opts.message,
+      refLabel,
+      projectName: project.name,
+    });
+
+    const dedupeKey = `devis-signature-context:${opts.devisId}:${opts.envelopeId}`;
+    const existing = await storage.getProjectCommunicationByDedupeKey(dedupeKey);
+    let communicationId: number;
+    if (existing) {
+      if (existing.status === "sent") {
+        return { communicationId: existing.id, status: "already_sent" };
+      }
+      communicationId = existing.id;
+    } else {
+      const created = await storage.createProjectCommunication({
+        projectId: project.id,
+        type: "devis_signature_context",
+        recipientType: "client",
+        recipientEmail,
+        recipientName: recipientName || project.clientName,
+        subject,
+        body,
+        status: "queued",
+        dedupeKey,
+      });
+      communicationId = created.id;
+    }
+
+    await sendCommunication(communicationId);
+    return { communicationId, status: "sent" };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[EmailSender] Devis context email failed for devis ${opts.devisId} envelope ${opts.envelopeId}:`,
+      message,
+    );
+    return { communicationId: null, status: "failed", error: message };
+  }
+}
+
 export async function sendPaymentChase(reminderId: number): Promise<void> {
   const reminder = await storage.getPaymentReminder(reminderId);
   if (!reminder) throw new Error(`Reminder ${reminderId} not found`);

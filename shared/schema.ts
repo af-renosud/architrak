@@ -55,6 +55,18 @@ export const SIGN_OFF_STAGES = [
 export type SignOffStage = (typeof SIGN_OFF_STAGES)[number];
 
 /**
+ * Task #257 — mandatory client-context message bounds for the devis
+ * send-to-signer flow. The architect MUST write a contextual message to
+ * the client before the envelope goes out (Archisign silently drops the
+ * `body` field of `/envelopes/create`, so ArchiTrak delivers the context
+ * itself via the architect's Gmail). Shared between the SigningPanel
+ * compose step and the server-side validation in
+ * `server/routes/archisign-envelopes.ts` so the two can never drift.
+ */
+export const DEVIS_CLIENT_MESSAGE_MIN_LEN = 20;
+export const DEVIS_CLIENT_MESSAGE_MAX_LEN = 2000;
+
+/**
  * `identityVerification` 8-field block embedded in `envelope.signed`
  * payloads (contract §3.4). Persisted verbatim into a single jsonb column on
  * `devis.identity_verification` and re-emitted verbatim onto the outbound
