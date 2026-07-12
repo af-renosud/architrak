@@ -359,6 +359,21 @@ export async function createEnvelope(payload: CreateEnvelopePayload): Promise<Cr
         `Escalate to the Archisign side per contract §7.2 change control.`,
     );
   }
+  // Task #283 — body half of the same echo. Since §3.5.1.1(b) entered
+  // force with Archisign's RENDERED election (countersigned 2026-07-12,
+  // in force 2026-07-13), bodyApplied=false for a non-empty sent body
+  // means the architect's personal note silently vanished from the
+  // signer email — a contract breach. When no body was sent,
+  // bodyApplied=false is the clause-defined correct echo (no message
+  // block) and raises nothing.
+  const sentBody = (payload.body ?? "").trim();
+  if (sentBody && emailRendering && !emailRendering.bodyApplied) {
+    console.warn(
+      `[archisign] §3.5.1.1(b) rendering drift: /create for envelope ${String(wire.envelopeId)} reported bodyApplied=false — ` +
+        `the architect's personal note will NOT appear in the signer invitation despite the in-force RENDERED election. ` +
+        `Escalate to the Archisign side per contract §7.2 change control.`,
+    );
+  }
   return {
     envelopeId: String(wire.envelopeId),
     accessUrl: signer.accessUrl,

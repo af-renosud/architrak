@@ -533,9 +533,10 @@ export interface IStorage {
     retentionBreachedAt: Date | null;
     retentionIncidentRef: string | null;
   }>>;
-  // Task #279 — devis whose CURRENT Archisign envelope reported
-  // subjectApplied=false on the /create emailRendering echo.
-  listArchisignSubjectDriftDevis(): Promise<Array<{
+  // Task #279 / #283 — devis whose CURRENT Archisign envelope reported
+  // subjectApplied=false and/or bodyApplied=false on the /create
+  // emailRendering echo.
+  listArchisignRenderingDriftDevis(): Promise<Array<{
     id: number;
     devisCode: string | null;
     devisNumber: string | null;
@@ -545,6 +546,7 @@ export interface IStorage {
     archisignEnvelopeStatus: string | null;
     signOffStage: string | null;
     archisignSubjectDriftAt: Date | null;
+    archisignBodyDriftAt: Date | null;
   }>>;
   setInvoiceDriveLink(invoiceId: number, fileId: string, webViewLink: string): Promise<void>;
   setCertificatDriveLink(certificatId: number, fileId: string, webViewLink: string): Promise<void>;
@@ -2867,11 +2869,11 @@ export class DatabaseStorage implements IStorage {
     return rows;
   }
 
-  async listArchisignSubjectDriftDevis() {
-    // Task #279 — rows whose CURRENT envelope reported §3.5.1.1(c)
-    // subject-rendering drift. The flag is reset to NULL on each fresh
-    // /create without drift, so no additional envelope-liveness filter
-    // is needed here.
+  async listArchisignRenderingDriftDevis() {
+    // Task #279 / #283 — rows whose CURRENT envelope reported §3.5.1.1
+    // rendering drift (subject and/or body half of the emailRendering
+    // echo). Both flags are reset to NULL on each fresh /create without
+    // drift, so no additional envelope-liveness filter is needed here.
     const rows = await db
       .select({
         id: devis.id,
@@ -2883,11 +2885,22 @@ export class DatabaseStorage implements IStorage {
         archisignEnvelopeStatus: devis.archisignEnvelopeStatus,
         signOffStage: devis.signOffStage,
         archisignSubjectDriftAt: devis.archisignSubjectDriftAt,
+        archisignBodyDriftAt: devis.archisignBodyDriftAt,
       })
       .from(devis)
       .leftJoin(projects, eq(projects.id, devis.projectId))
-      .where(isNotNull(devis.archisignSubjectDriftAt))
-      .orderBy(desc(devis.archisignSubjectDriftAt), desc(devis.id));
+      .where(
+        or(
+          isNotNull(devis.archisignSubjectDriftAt),
+          isNotNull(devis.archisignBodyDriftAt),
+        ),
+      )
+      .orderBy(
+        desc(
+          sql`GREATEST(${devis.archisignSubjectDriftAt}, ${devis.archisignBodyDriftAt})`,
+        ),
+        desc(devis.id),
+      );
     return rows;
   }
 

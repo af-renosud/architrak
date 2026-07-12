@@ -431,3 +431,106 @@ describe("POST /api/devis/:id/send-to-signer — §3.5.1.1(c) subject-rendering 
     }
   });
 });
+
+describe("POST /api/devis/:id/send-to-signer — §3.5.1.1(b) body-rendering drift (Task #283)", () => {
+  const VALID_MESSAGE = "Bonjour, voici le devis pour signature.";
+
+  function findPersistCall() {
+    return storageMock.updateDevis.mock.calls.find(
+      (c) => (c[1] as { archisignEnvelopeId?: string }).archisignEnvelopeId === "env_42",
+    );
+  }
+
+  function mockCreateWithEcho(echo: { subjectApplied: boolean; bodyApplied: boolean }) {
+    archisignMock.createEnvelope.mockResolvedValue({
+      envelopeId: "env_42",
+      accessUrl: "https://archisign.test/e/42",
+      accessToken: "tok",
+      otpDestination: "+33 6 00 00 00 00",
+      expiresAt: "2026-06-30T00:00:00.000Z",
+      emailRendering: echo,
+    });
+  }
+
+  it("persists archisignBodyDriftAt and returns bodyDrift=true when the echo reports bodyApplied=false for a sent message", async () => {
+    mockCreateWithEcho({ subjectApplied: true, bodyApplied: false });
+    const res = await postSend(100, { message: VALID_MESSAGE });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { subjectDrift: boolean; bodyDrift: boolean };
+    // Non-blocking: envelope proceeded (200) AND /send fired…
+    expect(archisignMock.sendEnvelope).toHaveBeenCalledWith("env_42");
+    // …but the body drift is flagged and persisted; subject is clean.
+    expect(body.bodyDrift).toBe(true);
+    expect(body.subjectDrift).toBe(false);
+    const persistCall = findPersistCall();
+    expect(persistCall).toBeDefined();
+    expect(
+      (persistCall![1] as { archisignBodyDriftAt?: Date | null }).archisignBodyDriftAt,
+    ).toBeInstanceOf(Date);
+    expect(
+      (persistCall![1] as { archisignSubjectDriftAt?: Date | null }).archisignSubjectDriftAt,
+    ).toBeNull();
+  });
+
+  it("persists NULL and returns bodyDrift=false when the echo confirms bodyApplied=true", async () => {
+    mockCreateWithEcho({ subjectApplied: true, bodyApplied: true });
+    const res = await postSend(100, { message: VALID_MESSAGE });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { bodyDrift: boolean }).bodyDrift).toBe(false);
+    const persistCall = findPersistCall();
+    expect(
+      (persistCall![1] as { archisignBodyDriftAt?: Date | null }).archisignBodyDriftAt,
+    ).toBeNull();
+  });
+
+  it("persists NULL when the echo is absent (pre-v1.2 Archisign) — clears stale body drift", async () => {
+    // Default createEnvelope mock has no emailRendering field.
+    const res = await postSend(100, { message: VALID_MESSAGE });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { bodyDrift: boolean }).bodyDrift).toBe(false);
+    const persistCall = findPersistCall();
+    expect(persistCall).toBeDefined();
+    // Explicit null (not undefined/absent): a fresh envelope without drift
+    // must CLEAR any flag left over from a previous, expired envelope.
+    expect(
+      (persistCall![1] as Record<string, unknown>).archisignBodyDriftAt,
+    ).toBeNull();
+  });
+
+  it("flags BOTH drifts independently when subject and body are dropped together", async () => {
+    mockCreateWithEcho({ subjectApplied: false, bodyApplied: false });
+    const res = await postSend(100, { message: VALID_MESSAGE });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { subjectDrift: boolean; bodyDrift: boolean };
+    expect(body.subjectDrift).toBe(true);
+    expect(body.bodyDrift).toBe(true);
+    const persistCall = findPersistCall();
+    expect(
+      (persistCall![1] as { archisignSubjectDriftAt?: Date | null }).archisignSubjectDriftAt,
+    ).toBeInstanceOf(Date);
+    expect(
+      (persistCall![1] as { archisignBodyDriftAt?: Date | null }).archisignBodyDriftAt,
+    ).toBeInstanceOf(Date);
+  });
+
+  it("resume branch reports the persisted body-drift flag without touching it", async () => {
+    storageMock.getDevis.mockResolvedValue(
+      makeDevis({
+        archisignEnvelopeId: "env_existing",
+        archisignAccessUrl: "https://archisign.test/e/existing",
+        archisignSignerMessage: "Message persisté lors de la création initiale.",
+        archisignBodyDriftAt: new Date("2026-07-10T00:00:00.000Z"),
+      }),
+    );
+    const res = await postSend(100, {});
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { resumed: boolean; bodyDrift: boolean };
+    expect(body.resumed).toBe(true);
+    expect(body.bodyDrift).toBe(true);
+    expect(archisignMock.createEnvelope).not.toHaveBeenCalled();
+    // The resume branch never rewrites the drift flag.
+    for (const call of storageMock.updateDevis.mock.calls) {
+      expect(call[1] as Record<string, unknown>).not.toHaveProperty("archisignBodyDriftAt");
+    }
+  });
+});

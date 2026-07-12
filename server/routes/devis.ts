@@ -748,6 +748,8 @@ router.patch(
     // emailRendering echo). Strip it from the generic PATCH so an operator
     // can neither fabricate nor silently clear the drift signal.
     delete patchBody.archisignSubjectDriftAt;
+    // Task #283 — same seal for the body-rendering-drift flag.
+    delete patchBody.archisignBodyDriftAt;
     // When the architect flips `acompteRequired` from false → true on
     // a row whose state was 'none', auto-arm the gate by transitioning
     // to 'pending'. Without this, the gate would silently stay

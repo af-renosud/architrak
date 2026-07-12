@@ -20,8 +20,11 @@ ArchiTrak sends `subject` and `body` to Archisign's `POST /api/v1/envelopes/crea
   ≤ 2 000 code points, `400 body_too_long`.
 - **`emailRendering` echo shipped** on the `/create` 201:
   `{ subjectApplied, bodyApplied }`, absence-tolerant. ArchiTrak's client
-  consumes it and logs an operator-visible warning on `subjectApplied=false`
-  for a non-empty sent subject — this is the drift detector.
+  consumes BOTH halves as the drift detector: `subjectApplied=false` for a
+  sent subject and `bodyApplied=false` for a non-empty sent body each warn,
+  persist a per-devis drift timestamp, and surface in the ops UI. A false
+  `bodyApplied` with NO body sent is clause-correct (no message block) and
+  must never be treated as drift.
 - Change control: any change to the above (incl. framing shape, election,
   limits) requires a further versioned amendment; silent drift is a breach.
 - Lineage quirk: Archisign records this amendment as **v1.4 in its own copy**

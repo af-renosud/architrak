@@ -411,6 +411,19 @@ export const devis = pgTable("devis", {
   // fresh /create whose echo does NOT report drift (or is absent —
   // pre-v1.2 servers), so the flag always describes the CURRENT envelope.
   archisignSubjectDriftAt: timestamp("archisign_subject_drift_at", { withTimezone: true }),
+  // archisignBodyDriftAt — Task #283. Set when Archisign's /create response
+  // carried the §3.5.1.1(c) `emailRendering` echo with `bodyApplied: false`
+  // for a non-empty body we sent. Since the v1.2 amendment entered force
+  // (2026-07-13; Archisign elected RENDERED and countersigned 2026-07-12),
+  // this means the architect's personal note silently vanished from the
+  // signer-invitation email — a contract breach. Non-blocking by design
+  // (the envelope proceeds; our own context email still delivers the note);
+  // this timestamp is the persisted operator-visible signal, surfaced on
+  // the SigningPanel and the /admin/ops/archisign-rendering-drift page.
+  // Reset to NULL on each fresh /create whose echo does NOT report body
+  // drift (or is absent — pre-v1.2 servers), so the flag always describes
+  // the CURRENT envelope.
+  archisignBodyDriftAt: timestamp("archisign_body_drift_at", { withTimezone: true }),
   // Structured devis-code (Task #176). The architect supplies three parts:
   //   1. lotRef    — picked from `lot_catalog` (then `lotCatalogId` is set
   //                   and `lotRefText` mirrors the catalog code) OR typed

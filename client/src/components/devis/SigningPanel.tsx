@@ -78,6 +78,7 @@ export function SigningPanel({
       return res.json() as Promise<{
         contextEmail?: { status?: "sent" | "failed" | "already_sent"; error?: string };
         subjectDrift?: boolean;
+        bodyDrift?: boolean;
       }>;
     },
     onSuccess: (data) => {
@@ -98,6 +99,21 @@ export function SigningPanel({
           description:
             "Archisign sent the invitation under its default subject instead of the custom one. " +
             "The signing request itself went out normally. Recurring drift is tracked under Admin ops → Archisign rendering.",
+          variant: "destructive",
+        });
+      }
+      // Task #283 — the body half of the same echo: Archisign reported
+      // that the architect's personal note was NOT rendered in the signer
+      // invitation, despite the in-force contract requiring it. Our own
+      // context email still delivers the note (redundancy), so this is a
+      // warning, not a rollback.
+      if (data?.bodyDrift) {
+        toast({
+          title: "Personal message not shown in the invitation",
+          description:
+            "Archisign reported that your message to the client was not included in its invitation email. " +
+            "The client still receives your message via the separate context email. " +
+            "Recurring drift is tracked under Admin ops → Archisign rendering.",
           variant: "destructive",
         });
       }
@@ -177,6 +193,7 @@ export function SigningPanel({
     archisignOtpDestination?: string | null;
     archisignSignerMessage?: string | null;
     archisignSubjectDriftAt?: string | null;
+    archisignBodyDriftAt?: string | null;
     signedPdfStorageKey?: string | null;
   }) | undefined;
 
@@ -267,6 +284,13 @@ export function SigningPanel({
   const subjectDriftAt = d.archisignSubjectDriftAt
     ? new Date(d.archisignSubjectDriftAt)
     : null;
+  // Task #283 — bodyApplied=false for the CURRENT envelope: the architect's
+  // personal note was NOT rendered in the signer invitation despite the
+  // in-force §3.5.1.1(b) RENDERED election. Non-blocking (the context email
+  // still delivers the note), but the architect must know.
+  const bodyDriftAt = d.archisignBodyDriftAt
+    ? new Date(d.archisignBodyDriftAt)
+    : null;
 
   // Gate logic — the CTA is available whenever the devis is in
   // `approved_for_signing` and not archived. This single condition naturally
@@ -328,6 +352,17 @@ export function SigningPanel({
             >
               <MailWarning className="h-3 w-3" />
               Default subject used
+            </Badge>
+          )}
+          {bodyDriftAt && (
+            <Badge
+              variant="outline"
+              className="border-amber-500 bg-amber-50 text-amber-900 dark:bg-amber-950 dark:text-amber-200 gap-1"
+              data-testid={`badge-body-drift-${devisId}`}
+              title={`Reported by Archisign on ${bodyDriftAt.toLocaleString()}`}
+            >
+              <MailWarning className="h-3 w-3" />
+              Message not shown
             </Badge>
           )}
         </div>

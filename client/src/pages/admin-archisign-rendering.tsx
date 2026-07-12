@@ -17,6 +17,7 @@ interface DriftRow {
   archisignEnvelopeStatus: string | null;
   signOffStage: string | null;
   archisignSubjectDriftAt: string | null;
+  archisignBodyDriftAt: string | null;
 }
 
 interface ListResponse {
@@ -46,12 +47,15 @@ export default function AdminArchisignRendering() {
             <h1 className="text-2xl font-bold">Archisign rendering drift</h1>
             <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
               Devis whose current Archisign envelope reported{" "}
-              <code>subjectApplied: false</code> on creation — the signer received
+              <code>subjectApplied: false</code> and/or{" "}
+              <code>bodyApplied: false</code> on creation — the signer received
               the invitation under Archisign&apos;s <strong>default</strong> email
-              subject instead of the custom one we sent. The envelope itself went
-              out normally (non-blocking). Escalate persistent drift to Archisign
-              per contract §7.2 change control; the flag clears automatically when
-              a fresh envelope for the same devis renders correctly.
+              subject, and/or <strong>without</strong> the architect&apos;s
+              personal note that the in-force contract requires to be rendered.
+              The envelope itself went out normally (non-blocking). Escalate
+              persistent drift to Archisign per contract §7.2 change control;
+              each flag clears automatically when a fresh envelope for the same
+              devis renders correctly.
             </p>
           </div>
           <Button
@@ -72,7 +76,7 @@ export default function AdminArchisignRendering() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <MailWarning className="size-5 text-amber-600" />
-              Dropped custom subjects ({rows.length})
+              Rendering drift ({rows.length})
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -84,7 +88,8 @@ export default function AdminArchisignRendering() {
                 data-testid="text-empty"
               >
                 No rendering drift reported — every envelope&apos;s custom subject
-                was applied (or Archisign has not yet shipped the v1.2 echo).
+                and message were applied (or Archisign has not yet shipped the
+                v1.2 echo).
               </div>
             ) : (
               <table className="w-full text-sm">
@@ -95,7 +100,8 @@ export default function AdminArchisignRendering() {
                     <th>Envelope</th>
                     <th>Envelope status</th>
                     <th>Stage</th>
-                    <th>Detected</th>
+                    <th>Subject dropped</th>
+                    <th>Message dropped</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -136,6 +142,12 @@ export default function AdminArchisignRendering() {
                         data-testid={`text-drift-at-${row.id}`}
                       >
                         {formatDate(row.archisignSubjectDriftAt)}
+                      </td>
+                      <td
+                        className="text-xs"
+                        data-testid={`text-body-drift-at-${row.id}`}
+                      >
+                        {formatDate(row.archisignBodyDriftAt)}
                       </td>
                     </tr>
                   ))}

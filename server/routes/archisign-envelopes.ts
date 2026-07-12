@@ -315,6 +315,10 @@ router.post(
     // warning toast when Archisign dropped the custom subject. On the
     // resume branch we report the persisted flag from the original create.
     let subjectDrift = Boolean(d.archisignSubjectDriftAt);
+    // Task #283 — same for the body half of the echo (in-force §3.5.1.1(b)
+    // RENDERED election): the architect's personal note vanished from the
+    // signer invitation.
+    let bodyDrift = Boolean(d.archisignBodyDriftAt);
 
     if (!resumingExistingEnvelope) {
       let createResp;
@@ -392,8 +396,23 @@ router.post(
           createResp.emailRendering && createResp.emailRendering.subjectApplied === false
             ? new Date()
             : null,
+        // Task #283 — body half of the same echo. Drift ONLY when a
+        // non-empty body was actually sent: with no body, bodyApplied=false
+        // is the clause-defined correct echo (§3.5.1.1(b): empty/omitted
+        // body shows no message block) and must not raise anything. Since
+        // the RENDERED election entered force (2026-07-13), bodyApplied=
+        // false for a sent body means the architect's note silently
+        // vanished from the signer email. Absent echo or bodyApplied=true
+        // → NULL, clearing any stale flag from a previous envelope.
+        archisignBodyDriftAt:
+          Boolean((personalMessage ?? "").trim()) &&
+          createResp.emailRendering &&
+          createResp.emailRendering.bodyApplied === false
+            ? new Date()
+            : null,
       };
       subjectDrift = Boolean(persistCreate.archisignSubjectDriftAt);
+      bodyDrift = Boolean(persistCreate.archisignBodyDriftAt);
       await storage.updateDevis(devisId, persistCreate);
       envelopeId = createResp.envelopeId;
       accessUrl = createResp.accessUrl;
@@ -484,6 +503,7 @@ router.post(
       resumed: resumingExistingEnvelope,
       contextEmail,
       subjectDrift,
+      bodyDrift,
     });
   },
 );

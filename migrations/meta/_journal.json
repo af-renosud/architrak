@@ -344,6 +344,13 @@
       "when": 1778710000000,
       "tag": "0048_devis_archisign_subject_drift",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1778720000000,
+      "tag": "0049_devis_archisign_body_drift",
+      "breakpoints": true
     }
   ]
 }
