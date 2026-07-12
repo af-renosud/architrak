@@ -30,6 +30,13 @@ import { env } from "../env";
  * "devis" stays lowercase as a preserved French domain term.
  * Exported for the English-copy regression guard
  * (server/__tests__/client-english-copy.test.ts).
+ *
+ * Contract status (§3.5.1 / proposed §3.5.1.1): rendering is live-confirmed
+ * (July 2026 inbox check) but only becomes a versioned guarantee once
+ * Archisign countersigns the v1.2 amendment in contract §7.2. Until then a
+ * silent fallback to Archisign's default subject would not breach the
+ * contract — the emailRendering echo consumed in createEnvelope() below is
+ * the detection mechanism once v1.2 lands.
  */
 export function buildArchisignEnvelopeSubject(devisCode: string): string {
   return `Electronic signature request — devis ${devisCode}`;
@@ -63,7 +70,11 @@ interface CreateEnvelopePayload {
   webhookUrl: string;
   // Optional override of the 30-day default (§G5: ≥ now()+1min).
   expiresAt?: Date;
-  // Free-form subject/body for the signer-facing email.
+  // Free-form subject/body for the signer-facing email (contract §3.5.1;
+  // rendering guarantee proposed as §3.5.1.1 v1.2, pending Archisign
+  // countersign). Live-observed: subject IS rendered verbatim; body is
+  // accepted but NOT rendered (July 2026 inbox check) — the architect's
+  // note reaches the client via Architrak's own context email instead.
   subject?: string;
   body?: string;
 }
@@ -96,6 +107,9 @@ export interface CreateEnvelopeResponse {
   accessToken: string;
   otpDestination: string;
   expiresAt: string;        // ISO 8601 — Archisign's authoritative value (echoed for storage)
+  // Proposed contract §3.5.1.1(c) echo — absent until Archisign ships the
+  // v1.2 amendment. Absence MUST be tolerated (pre-v1.2 servers).
+  emailRendering?: { subjectApplied: boolean; bodyApplied: boolean };
 }
 
 // Zod guard for the actual wire shape. We parse defensively so a future
@@ -112,6 +126,19 @@ const createEnvelopeWireSchema = z.object({
       otpDestination: z.string().min(1),
     }),
   ).min(1),
+  // Proposed §3.5.1.1(c) rendering echo. Deliberately lenient — the clause
+  // requires us to tolerate absence AND extra keys, and a malformed echo
+  // from a future server must never fail the whole /create (the envelope
+  // was still created). `.catch(undefined)` degrades any bad shape to
+  // "echo not present".
+  emailRendering: z
+    .object({
+      subjectApplied: z.boolean(),
+      bodyApplied: z.boolean(),
+    })
+    .passthrough()
+    .optional()
+    .catch(undefined),
 }).passthrough();
 
 export interface SendEnvelopeResponse {
@@ -310,12 +337,30 @@ export async function createEnvelope(payload: CreateEnvelopePayload): Promise<Cr
   }
   const wire = parsed.data;
   const signer = wire.signers[0];
+  // Proposed §3.5.1.1(c) — the anti-silent-drift check. Non-fatal by
+  // design: the envelope exists and the flow must proceed; the warning is
+  // the operator-visible signal that the custom subject was dropped.
+  const emailRendering = wire.emailRendering
+    ? {
+        subjectApplied: wire.emailRendering.subjectApplied,
+        bodyApplied: wire.emailRendering.bodyApplied,
+      }
+    : undefined;
+  const sentSubject = (payload.subject ?? "").trim();
+  if (sentSubject && emailRendering && !emailRendering.subjectApplied) {
+    console.warn(
+      `[archisign] §3.5.1.1(c) rendering drift: /create for envelope ${String(wire.envelopeId)} reported subjectApplied=false — ` +
+        `the signer invitation will NOT carry the custom subject (fell back to Archisign's default). ` +
+        `Escalate to the Archisign side per contract §7.2 change control.`,
+    );
+  }
   return {
     envelopeId: String(wire.envelopeId),
     accessUrl: signer.accessUrl,
     accessToken: signer.accessToken,
     otpDestination: signer.otpDestination,
     expiresAt: wire.expiresAt,
+    emailRendering,
   };
 }
 

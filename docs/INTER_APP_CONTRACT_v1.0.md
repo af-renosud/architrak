@@ -1,6 +1,8 @@
 > **AMENDED v1.1 AS OF 2026-05-03** — single substantive amendment to v1.0-rc3: §5.3.2.1 added (canonical ISO-8601 timestamp form mandated for `signedAt` / `originalSignedAt` on the Architrak↔Archidoc boundary, motivated by the 2026-05-02 joint live E2E webhook test). Three example payloads updated in §5.3.1 / §5.3.2 to model the canonical form. Title bumped from v1.0-rc3 → v1.1. New §7.1 sign-off block tracks the v1.1 amendment countersign dates and anchors the §5.3.2.1 cutover trigger. All other content is byte-identical to v1.0-rc3 frozen below.
 >
 > **Filename note:** this file remains named `INTER_APP_CONTRACT_v1.0.md` for stability of downstream references (route handlers, test fixtures, the joint live-test thread `.local/architrak_messages_2026_05_02.md`). Treat the filename as a historical artifact; the authoritative version marker is the title below.
+>
+> **PROPOSED v1.2 AS OF 2026-07-12 (not yet in force)** — §3.5.1.1 signer-invitation email rendering guarantee (`subject` MUST-render mandate, `body` RENDERED/NOT-RENDERED election, additive `emailRendering` echo on `/create` 201), proposed by Architrak, pending Archisign countersign in §7.2. A companion factual correction was applied to the §3.5.1 descriptive paragraph (the 2026-05-30 "body is rendered" claim was disproved by a July 2026 live inbox check). The contract remains at v1.1 until §7.2 records the Archisign countersign.
 
 # DEVIS SIGN-OFF WORKFLOW — INTER-APP CONTRACT v1.1
 
@@ -439,16 +441,94 @@ Errors:
 
 `pdfFetchUrl` is fetched server-side by Archisign within 60s. Architrak/Archidoc must serve a signed URL with TTL ≥ 60s (Architrak uses 15-min TTL by convention, comfortably above the budget).
 
-`subject` and `body` are optional signer-facing email fields, both invitation-email
-only — they appear in neither the `/create` response, any webhook payload, nor the
-signed PDF. `subject` overrides the email subject line. `body` is rendered to the
-signer under a "Message from the sender:" heading, between the standard intro line
-and the Subject/Reference box. Senders MUST pass plain text: line breaks are
-preserved and the content is HTML-escaped by Archisign, so markup will not render.
-An empty / whitespace-only / null / omitted `body` shows no message block (email
-unchanged). Architrak sends `body` only on first `/create` (the resume branch skips
-`/create`), sourced from the architect's optional note in the send-to-signer dialog
-and persisted locally in `devis.archisign_signer_message`.
+`subject` and `body` are optional signer-facing email fields accepted by `/create`
+(both invitation-email only — they appear in neither the `/create` response, any
+webhook payload, nor the signed PDF).
+
+**Observed behaviour (descriptive only — corrected 2026-07-12).** Live-confirmed
+against a real signer inbox (July 2026):
+
+- `subject`, when present, replaces the invitation-email subject line verbatim
+  (UTF-8 content incl. em-dash confirmed intact).
+- `body` is accepted on the wire but **NOT rendered** anywhere in the signer
+  email — Archisign's current template has no custom-message slot, so the
+  content is silently discarded on Archisign's side. (An earlier revision of
+  this paragraph, added 2026-05-30 from an Archisign-side written description,
+  claimed `body` was rendered under a "Message from the sender:" heading; the
+  July 2026 live inbox check disproved that claim for the running production
+  template. That earlier text is superseded by this correction.)
+
+This paragraph documents observation, not guarantee: neither behaviour is a
+versioned obligation, and Archisign could change either without breaching the
+frozen wire shapes. The guaranteed rendering semantics are the subject of the
+**proposed v1.2 clause §3.5.1.1** below — until that clause is countersigned in
+§7.2, senders MUST NOT rely on `subject` or `body` reaching the signer.
+
+Architrak's sender-side behaviour: `subject` is always sent (English copy,
+`buildArchisignEnvelopeSubject`); `body` is sent only on first `/create` (the
+resume branch skips `/create`), sourced from the architect's optional note in
+the send-to-signer dialog. Because `body` does not reach the signer, Architrak
+persists the note locally in `devis.archisign_signer_message` and delivers it
+to the client itself via a separate context email sent from the architect's
+Gmail (independent of Archisign).
+
+#### §3.5.1.1 Signer-invitation email rendering guarantee (PROPOSED v1.2 — pending Archisign countersign, see §7.2)
+
+**Status: PROPOSED by Architrak 2026-07-12.** Not in force until Archisign
+records its countersign (and `body` election) in §7.2. Until then, the
+descriptive paragraph in §3.5.1 governs — i.e. no rendering guarantee exists.
+
+**(a) `subject` — MUST render.** When `/create` receives a `subject` that is a
+non-empty string after trimming, Archisign MUST set the signer-invitation
+email's RFC 5322 `Subject` header to that string verbatim — no prefixing,
+suffixing, truncation, or re-casing — applying RFC 2047 encoding as required
+for non-ASCII content (UTF-8 accents and em-dashes MUST survive intact). The
+same subject MUST be reused on every subsequent invitation email for that
+envelope (idempotent re-send per §3.5.2 and resend-on-expiry per §3.5.4).
+When `subject` is absent, null, or empty/whitespace after trimming, Archisign
+uses its default subject. Sender constraints: plain text, no line breaks,
+≤ 256 Unicode code points. Archisign MAY reject longer values with
+`400 subject_too_long`; it MUST NOT silently truncate.
+
+**(b) `body` — Archisign MUST elect exactly one behaviour at countersign time
+and record the election in §7.2:**
+
+- **RENDERED** — `body` is rendered in the signer-invitation email under a
+  "Message from the sender:" heading, between the standard intro line and the
+  Subject/Reference box. Plain text only: line breaks preserved, content
+  HTML-escaped by Archisign (markup will not render). Empty / whitespace-only
+  / null / omitted `body` shows no message block. Sender constraints:
+  ≤ 2 000 Unicode code points; `400 body_too_long` rather than silent
+  truncation.
+- **NOT-RENDERED** — `body` is accepted for wire compatibility but never
+  rendered; this contract then records the field as accepted-but-ignored, and
+  Architrak continues delivering the architect's note via its own context
+  email. (This is the status quo; electing it costs Archisign no engineering.)
+
+Architrak's preference is RENDERED — the architect's personalised note
+currently reaches the client only via Architrak's separate context email.
+
+**(c) Rendering echo — anti-silent-drift mechanism.** The `/create` 201
+response gains one **additive, backward-compatible** field:
+
+```jsonc
+"emailRendering": {
+  "subjectApplied": true,   // true iff clause (a) will use the sender's subject on the invitation email
+  "bodyApplied": false      // true iff (b) election is RENDERED and a non-empty body was supplied
+}
+```
+
+Receivers MUST tolerate the field's absence (pre-v1.2 servers) and any
+additional keys inside it. Architrak's consumer behaviour: when a non-empty
+`subject` was sent and `subjectApplied` comes back `false`, Architrak logs an
+operator-visible warning — this is what turns a silent rendering regression
+into a detectable event, since `GET /envelopes/:id` does not echo `subject`.
+
+**(d) Change control.** Once countersigned, any change to (a)–(c) — including
+dropping the subject override, changing the `body` election, moving the
+template position, or altering the length limits — requires a further
+versioned amendment through the §7 protocol. Silent behavioural drift is a
+contract breach even when the wire shapes are unchanged.
 
 #### §3.5.2 `POST /api/v1/envelopes/:envelopeId/send`
 
@@ -829,6 +909,10 @@ These pre-date this contract. Their continued operation is a precondition; their
 
 - 2026-05-03 — §5.3.2.1 canonical ISO-8601 timestamp form mandate (sender-side `.SSS`-always for `signedAt` and `originalSignedAt` on the Architrak↔Archidoc boundary). Motivating incident: 2026-05-02 joint live E2E webhook test, T+breach-success fixture pre-fire patch. Decision-of-record: sender-side normalization preferred over receiver-side canonicalization-before-compare. Cutover trigger is anchored to §7.1 dual countersign + 1 day + 14-day compatibility tail (deterministic; no "date TBD"). See §5.3.2.1 for full clause text and §7.1 for the sign-off status.
 
+**v1.2 proposals (in flight):**
+
+- 2026-07-12 — §3.5.1.1 signer-invitation email rendering guarantee, proposed by Architrak. Scope: `subject` MUST-render-verbatim mandate (incl. re-send reuse and RFC 2047 survival), `body` RENDERED / NOT-RENDERED election recorded at countersign, additive `emailRendering` echo on the `/create` 201 response as the anti-silent-drift mechanism, and change-control clause. Motivating risk: Architrak's client-facing English subject line (live-confirmed July 2026) rides an undocumented behaviour Archisign could drop without breaching the frozen wire shapes — no error would surface, the email would silently fall back to Archisign's default subject. Companion correction applied to the §3.5.1 descriptive paragraph (2026-05-30 "body is rendered" claim disproved by the July 2026 live inbox check). Pending Archisign countersign in §7.2; relay package at `docs/AMENDMENT_PROPOSAL_v1.2_signer_email_fields.md`.
+
 **v1.2 candidates (deferred):**
 
 - Archisign-side `signedAt` canonicalization on §5.2 / §3.3 webhook emissions (would let Architrak skip the relay-boundary canonicalization mandated by §5.3.2.1's "Architrak relay note"). Requires Archisign sign-off; not blocking for v1.1.
@@ -867,6 +951,25 @@ Contract amendment freezes at v1.1 when both parties record their countersign da
 - 14-day MAY-accept-with-warn compatibility tail through **2026-05-18 inclusive**
 - Day 15 = MUST-422 from **00:00:00 UTC 2026-05-19** (receiver-side strict-cutover marker)
 
+### §7.2 v1.2 amendment sign-off (§3.5.1.1 — proposed 2026-07-12, NOT yet in force)
+
+§3.5.1.1 comes into force at 00:00:00 UTC on the day following the later of the
+two countersign dates below. The `body` behaviour election (RENDERED /
+NOT-RENDERED, per §3.5.1.1(b)) MUST be recorded in the Archisign row at
+countersign time — a countersign without an election is incomplete and does
+not trigger the clause.
+
+| App | v1.2 amendment scope reviewed | Countersigned? | `body` election | Countersigned by | Date (UTC) |
+|---|---|---|---|---|---|
+| Architrak | §3.5.1.1 (drafter; sender of `subject`/`body`; consumer of the `emailRendering` echo) | yes | n/a (sender) | Architrak team | 2026-07-12 |
+| Archisign | §3.5.1.1 (renderer; owner of the invitation-email template and the `/create` response shape) | pending | pending | -- | -- |
+
+Archidoc is not in scope for this v1.2 amendment: it does not send `subject`
+or `body` on `/create` today. If it starts doing so, §3.5.1.1 applies to it
+identically as a sender — no separate Archidoc countersign is required.
+
+Relay package for the Archisign side: `docs/AMENDMENT_PROPOSAL_v1.2_signer_email_fields.md`.
+
 ---
 
-## End of consolidated contract v1.1 (amends v1.0-rc3 — see top preamble for the v1.1 amendment frame and §7.1 for sign-off status)
+## End of consolidated contract v1.1 (amends v1.0-rc3 — see top preamble for the v1.1 amendment frame and §7.1 for sign-off status; v1.2 §3.5.1.1 proposed — see §7.2)

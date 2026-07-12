@@ -5,10 +5,20 @@ description: How Archisign treats the undocumented subject/body fields on envelo
 
 # Archisign envelope `subject` / `body` on `/create`
 
-ArchiTrak sends `subject` and `body` to Archisign's `POST /api/v1/envelopes/create`,
-but **neither field is documented** in the inter-app contract §3.5.1 (the documented
-body is `{ pdfFetchUrl, externalRef?, metadata?, signers[], fields[], webhookUrl,
-expiresAt?, identityVerification }`).
+ArchiTrak sends `subject` and `body` to Archisign's `POST /api/v1/envelopes/create`.
+As of 2026-07-12 the contract §3.5.1 accurately documents the *observed* behaviour
+(subject rendered / body NOT rendered), and a **v1.2 amendment (§3.5.1.1) is
+PROPOSED but not countersigned** — it would make subject rendering a versioned
+MUST, force Archisign to elect RENDERED/NOT-RENDERED for `body`, and add an
+additive `emailRendering` echo to the `/create` 201 so drift is detectable
+(ArchiTrak's client already consumes the echo tolerantly and warns on
+`subjectApplied=false`). Until Archisign records its countersign + body election
+in contract §7.2 (relay package: `docs/AMENDMENT_PROPOSAL_v1.2_signer_email_fields.md`),
+there is still NO guarantee — Archisign can change rendering without breach.
+
+**Trust caution:** the 2026-05-30 contract text claiming body was rendered came
+from an Archisign-side *written description* and was disproved by a live inbox
+check — for signer-email behaviour, only a human inbox check is evidence.
 
 Empirically (confirmed from a recovered live "Document Ready for Signing" email):
 - **`subject` IS rendered** in the signer email (appears in the Subject/Reference box).
