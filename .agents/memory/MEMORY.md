@@ -5,3 +5,4 @@
 - [Server-authoritative money fields](server-authoritative-money-fields.md) — omit server-derived money cols from request Zod schemas (not just handler guards); read prior cumulative from the latest prior row, never max()/sum().
 - [Intake queue drift](intake-queue-drift.md) — a doc can wedge on "analyzing" if its job goes terminal but the doc-state write fails; in_flight reclaim can't fix it, the sweeper drift-repair pass must.
 - [Intake PDF rasterisation](intake-pdf-rasterisation.md) — a conversion failure masquerades as classification="unknown"; rasterise via a pdftoppm→pdftocairo→ghostscript fallback chain (gs is a nix dep), throw with per-strategy stderr on total failure.
+- [Prod one-shot actions](prod-side-actions-via-data-migrations.md) — when you can't publish or click in prod, a tightly-guarded data-only migration fires the action exactly once at first boot after the user publishes.

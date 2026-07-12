@@ -101,6 +101,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0043_overlap_detection", artifact: { kind: "table", table: "overlap_cases" } },
   { tag: "0044_devis_accounting_state", artifact: { kind: "column", table: "devis", column: "accounting_state" } },
   { tag: "0045_compte_prorata_retenue", artifact: { kind: "column", table: "projects", column: "prorata_percentage" } },
+  { tag: "0046_reanalyze_smith_1304_intake", artifact: { kind: "data_only", reason: "One-shot re-queue of the parked SMITH 1304 intake document after the rasteriser fix; no schema artifact" } },
 ];
 
 interface JournalFile {
