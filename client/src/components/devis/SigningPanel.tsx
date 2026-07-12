@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Send, Loader2, ExternalLink, ArrowLeft } from "lucide-react";
+import { Send, Loader2, ExternalLink, ArrowLeft, MailWarning } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -102,9 +102,54 @@ export function SigningPanel({
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId] });
       queryClient.invalidateQueries({ queryKey: ["/api/devis"] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "context-email-status"] });
     },
     onError: (error: Error) => {
       toast({ title: "Erreur d'envoi", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Task #258 — resend recovery for a failed context email. The status
+  // query keys off the same dedupeKey the original dispatch used, so
+  // `canResend` is true only when the CURRENT envelope has a persisted
+  // architect message but no successfully-sent `devis_signature_context`
+  // communication row.
+  const contextEmailStatusQuery = useQuery<{
+    canResend: boolean;
+    emailStatus: string | null;
+    reason: string | null;
+  }>({
+    queryKey: ["/api/devis", devisId, "context-email-status"],
+    enabled: Boolean(devisQuery.data?.archisignEnvelopeId && devisQuery.data?.archisignSignerMessage),
+  });
+
+  const resendContextEmailMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/devis/${devisId}/resend-context-email`, {});
+      return res.json() as Promise<{
+        contextEmail?: { status?: "sent" | "failed" | "already_sent" };
+      }>;
+    },
+    onSuccess: (data) => {
+      toast({
+        title:
+          data?.contextEmail?.status === "already_sent"
+            ? "E-mail de contexte déjà envoyé"
+            : "E-mail de contexte envoyé",
+        description:
+          data?.contextEmail?.status === "already_sent"
+            ? "Le client a déjà reçu l'e-mail d'accompagnement pour cette enveloppe."
+            : "L'e-mail d'accompagnement a bien été envoyé au client.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "context-email-status"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Échec du renvoi de l'e-mail de contexte",
+        description: error.message,
+        variant: "destructive",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "context-email-status"] });
     },
   });
 
@@ -511,6 +556,38 @@ export function SigningPanel({
               >
                 {d.archisignSignerMessage}
               </p>
+              {/* Task #258 — one-click recovery when the contextual client
+                  email failed on the original send. Visible only when the
+                  status endpoint confirms no successful communication row
+                  exists for the CURRENT envelope. */}
+              {contextEmailStatusQuery.data?.canResend && (
+                <div className="mt-2 flex items-center gap-2">
+                  <MailWarning className="h-3.5 w-3.5 text-destructive shrink-0" />
+                  <span
+                    className="text-[11px] text-destructive"
+                    data-testid={`text-context-email-missing-${devisId}`}
+                  >
+                    L'e-mail d'accompagnement n'a pas été envoyé au client.
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs"
+                    onClick={() => resendContextEmailMutation.mutate()}
+                    disabled={resendContextEmailMutation.isPending}
+                    data-testid={`button-resend-context-email-${devisId}`}
+                  >
+                    {resendContextEmailMutation.isPending ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                        Envoi…
+                      </>
+                    ) : (
+                      "Renvoyer l'e-mail de contexte"
+                    )}
+                  </Button>
+                </div>
+              )}
             </div>
           )}
           {/* Task #206 — once the signed PDF has been persisted locally,

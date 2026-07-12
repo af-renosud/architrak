@@ -69,6 +69,95 @@ const sendBody = z.object({
 
 const PDF_FETCH_URL_TTL_HOURS = 1; // 1h is comfortably above the §G2 5-min floor
 
+/**
+ * Task #258 — architect-facing recovery for a failed devis-signature
+ * context email (Task #257 surfaces the failure as a destructive toast,
+ * but until now the only fix was re-running the whole send-to-signer
+ * resume flow).
+ *
+ * GET  /api/devis/:id/context-email-status  → is a resend warranted?
+ * POST /api/devis/:id/resend-context-email  → re-dispatch it.
+ *
+ * Both key off the SAME dedupeKey the original dispatch used
+ * (`devis-signature-context:{devisId}:{envelopeId}`), so a resend can
+ * never double-send: an `already_sent` row short-circuits inside
+ * sendDevisSignatureContextEmail, and a previously failed row is retried
+ * in place on the same communication row.
+ */
+router.get(
+  "/api/devis/:id/context-email-status",
+  requireAuth,
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    const devisId = Number(req.params.id);
+    const d = await storage.getDevis(devisId);
+    if (!d) return res.status(404).json({ message: "Devis not found" });
+
+    const envelopeId = d.archisignEnvelopeId ?? null;
+    const hasMessage = Boolean((d.archisignSignerMessage ?? "").trim());
+    if (!envelopeId || !hasMessage) {
+      return res.status(200).json({
+        canResend: false,
+        emailStatus: null as string | null,
+        reason: !envelopeId ? "no_envelope" : "no_message",
+      });
+    }
+
+    const dedupeKey = `devis-signature-context:${devisId}:${envelopeId}`;
+    const existing = await storage.getProjectCommunicationByDedupeKey(dedupeKey);
+    const emailStatus = existing?.status ?? null;
+    // Resend is warranted when the context email for the CURRENT envelope
+    // was never successfully sent: either no communication row exists at
+    // all (dispatch crashed before logging) or the row is not `sent`.
+    const canResend = emailStatus !== "sent";
+    return res.status(200).json({ canResend, emailStatus, reason: null });
+  },
+);
+
+router.post(
+  "/api/devis/:id/resend-context-email",
+  requireAuth,
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    const devisId = Number(req.params.id);
+    const d = await storage.getDevis(devisId);
+    if (!d) return res.status(404).json({ message: "Devis not found" });
+
+    const envelopeId = d.archisignEnvelopeId ?? null;
+    if (!envelopeId) {
+      return res.status(409).json({
+        message:
+          "Aucune enveloppe Archisign active pour ce devis — rien à renvoyer.",
+        code: "no_envelope",
+      });
+    }
+    const message = (d.archisignSignerMessage ?? "").trim();
+    if (!message) {
+      return res.status(409).json({
+        message:
+          "Aucun message d'accompagnement persisté pour ce devis — impossible de renvoyer l'e-mail de contexte.",
+        code: "no_message",
+      });
+    }
+
+    const result = await sendDevisSignatureContextEmail({
+      devisId,
+      envelopeId,
+      message,
+    });
+    if (result.status === "failed") {
+      return res.status(502).json({
+        message:
+          "L'envoi de l'e-mail de contexte a de nouveau échoué." +
+          (result.error ? ` (${result.error})` : ""),
+        code: "context_email_failed",
+        contextEmail: result,
+      });
+    }
+    return res.status(200).json({ ok: true, contextEmail: result });
+  },
+);
+
 router.post(
   "/api/devis/:id/send-to-signer",
   requireAuth,
