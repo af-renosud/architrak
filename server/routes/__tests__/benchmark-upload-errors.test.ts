@@ -20,19 +20,22 @@ vi.mock("../../middleware/upload", () => ({
   assertPdfMagic: () => {},
 }));
 
-vi.mock("../../storage", () => ({
-  storage: {
-    getBenchmarkTags: vi.fn(),
-    getBenchmarkDocuments: vi.fn(),
-    getBenchmarkDocument: vi.fn(),
-    deleteBenchmarkDocument: vi.fn(),
-    searchBenchmarkItems: vi.fn(),
-    aggregateBenchmarkPrices: vi.fn(),
-    setBenchmarkItemTags: vi.fn(),
-    getBenchmarkItemTags: vi.fn(),
-    deleteBenchmarkItem: vi.fn(),
-  },
-}));
+vi.mock("../../storage", async () => {
+  const { createStorageMock } = await import("./helpers/mock-storage");
+  return {
+    storage: createStorageMock([
+      "getBenchmarkTags",
+      "getBenchmarkDocuments",
+      "getBenchmarkDocument",
+      "deleteBenchmarkDocument",
+      "searchBenchmarkItems",
+      "aggregateBenchmarkPrices",
+      "setBenchmarkItemTags",
+      "getBenchmarkItemTags",
+      "deleteBenchmarkItem",
+    ]),
+  };
+});
 
 vi.mock("../../services/benchmark-ingest.service", () => ({
   processStandaloneBenchmarkUpload: vi.fn(),

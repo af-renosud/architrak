@@ -2,16 +2,19 @@ import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vites
 import express from "express";
 import type { AddressInfo } from "net";
 
-vi.mock("../../storage", () => ({
-  storage: {
-    getContractors: vi.fn(),
-    getContractor: vi.fn(),
-    createContractor: vi.fn(),
-    updateContractor: vi.fn(),
-    getDevisByContractor: vi.fn(),
-    getInvoicesByContractor: vi.fn(),
-  },
-}));
+vi.mock("../../storage", async () => {
+  const { createStorageMock } = await import("./helpers/mock-storage");
+  return {
+    storage: createStorageMock([
+      "getContractors",
+      "getContractor",
+      "createContractor",
+      "updateContractor",
+      "getDevisByContractor",
+      "getInvoicesByContractor",
+    ]),
+  };
+});
 
 vi.mock("../../archidoc/contractor-auto-sync", () => ({
   runContractorAutoSync: vi.fn(),

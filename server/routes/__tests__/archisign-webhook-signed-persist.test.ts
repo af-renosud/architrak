@@ -26,17 +26,7 @@ vi.mock("../../env", () => ({
   },
 }));
 
-const { storageMock, persistMock, deliveryMock } = vi.hoisted(() => ({
-  storageMock: {
-    claimWebhookEventIn: vi.fn(async () => true),
-    getDevisByArchisignEnvelopeId: vi.fn(),
-    updateDevis: vi.fn(async () => undefined),
-    getDevis: vi.fn(),
-    getProject: vi.fn(async () => ({ id: 7, archidocId: "ad_7" })),
-    getContractor: vi.fn(async () => undefined),
-    getLatestInsuranceOverrideForDevis: vi.fn(async () => undefined),
-    armSignedPdfPersistRetry: vi.fn(async () => {}),
-  },
+const { persistMock, deliveryMock } = vi.hoisted(() => ({
   persistMock: {
     persistSignedDevisPdf: vi.fn(),
   },
@@ -48,7 +38,21 @@ const { storageMock, persistMock, deliveryMock } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("../../storage", () => ({ storage: storageMock }));
+vi.mock("../../storage", async () => {
+  const { createStorageMock } = await import("./helpers/mock-storage");
+  return {
+    storage: createStorageMock([
+      "claimWebhookEventIn",
+      "getDevisByArchisignEnvelopeId",
+      "updateDevis",
+      "getDevis",
+      "getProject",
+      "getContractor",
+      "getLatestInsuranceOverrideForDevis",
+      "armSignedPdfPersistRetry",
+    ]),
+  };
+});
 vi.mock("../../services/devis-signed-pdf.service", () => ({
   persistSignedDevisPdf: persistMock.persistSignedDevisPdf,
 }));
@@ -58,6 +62,15 @@ vi.mock("../../services/webhook-delivery", () => ({
 vi.mock("../../lib/uuidv7", () => ({ uuidv7: () => "00000000-0000-7000-8000-000000000000" }));
 
 import archisignWebhooksRouter from "../archisign-webhooks";
+import { storage } from "../../storage";
+import { asStorageMock } from "./helpers/mock-storage";
+
+const storageMock = asStorageMock(storage);
+storageMock.updateDevis.mockImplementation(async () => undefined);
+storageMock.getProject.mockImplementation(async () => ({ id: 7, archidocId: "ad_7" }));
+storageMock.getContractor.mockImplementation(async () => undefined);
+storageMock.getLatestInsuranceOverrideForDevis.mockImplementation(async () => undefined);
+storageMock.armSignedPdfPersistRetry.mockImplementation(async () => {});
 
 const baseDevis = {
   id: 42,

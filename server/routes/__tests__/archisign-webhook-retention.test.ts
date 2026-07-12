@@ -7,12 +7,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // and capture the payload sent to enqueueOutboundDelivery.
 // ---------------------------------------------------------------------
 
-const { storageMock, deliveryMock } = vi.hoisted(() => ({
-  storageMock: {
-    getDevisByArchisignEnvelopeId: vi.fn(),
-    recordSignedPdfRetentionBreach: vi.fn(async (b: { devisId: number }) => ({ id: 1, ...b })),
-    getProject: vi.fn(async () => ({ id: 7, archidocProjectId: "ad_7" })),
-  },
+const { deliveryMock } = vi.hoisted(() => ({
   deliveryMock: {
     // Match the real EnqueueResult shape: { delivery, enqueued, skipped? }.
     // Returning a clean enqueued result lets us assert no error path was taken.
@@ -23,7 +18,16 @@ const { storageMock, deliveryMock } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("../../storage", () => ({ storage: storageMock }));
+vi.mock("../../storage", async () => {
+  const { createStorageMock } = await import("./helpers/mock-storage");
+  return {
+    storage: createStorageMock([
+      "getDevisByArchisignEnvelopeId",
+      "recordSignedPdfRetentionBreach",
+      "getProject",
+    ]),
+  };
+});
 vi.mock("../../services/webhook-delivery", () => ({
   enqueueWebhookDelivery: deliveryMock.enqueueWebhookDelivery,
 }));
@@ -33,6 +37,14 @@ vi.mock("../../services/devis-signed-pdf.service", () => ({
 vi.mock("../../lib/uuidv7", () => ({ uuidv7: () => "00000000-0000-7000-8000-000000000000" }));
 
 import { handleRetentionBreach, type RetentionBreachPayload } from "../archisign-webhooks";
+import { storage } from "../../storage";
+import { asStorageMock } from "./helpers/mock-storage";
+
+const storageMock = asStorageMock(storage);
+storageMock.recordSignedPdfRetentionBreach.mockImplementation(
+  async (b: { devisId: number }) => ({ id: 1, ...b }),
+);
+storageMock.getProject.mockImplementation(async () => ({ id: 7, archidocProjectId: "ad_7" }));
 
 const basePayload: RetentionBreachPayload = {
   event: "envelope.retention_breach",

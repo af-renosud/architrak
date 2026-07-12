@@ -13,13 +13,16 @@ vi.mock("../../env", () => ({
   },
 }));
 
-vi.mock("../../storage", () => ({
-  storage: {
-    getDevis: vi.fn(),
-    getDevisTranslation: vi.fn(),
-    updateDevisTranslation: vi.fn(),
-  },
-}));
+vi.mock("../../storage", async () => {
+  const { createStorageMock } = await import("./helpers/mock-storage");
+  return {
+    storage: createStorageMock([
+      "getDevis",
+      "getDevisTranslation",
+      "updateDevisTranslation",
+    ]),
+  };
+});
 
 vi.mock("../../storage/object-storage", () => ({
   getDocumentStream: vi.fn(),

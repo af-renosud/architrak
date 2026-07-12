@@ -18,18 +18,22 @@ import type { AddressInfo } from "net";
 //   4. 200 + { recovered: false, signedPdfLastError } when persist fails
 // ---------------------------------------------------------------------
 
-const { storageMock, persistMock } = vi.hoisted(() => ({
-  storageMock: {
-    listSignedPdfRecoveryCandidates: vi.fn(),
-    clearSignedPdfRetry: vi.fn(async () => undefined),
-    getDevis: vi.fn(),
-  },
+const { persistMock } = vi.hoisted(() => ({
   persistMock: {
     persistSignedDevisPdf: vi.fn(),
   },
 }));
 
-vi.mock("../../storage", () => ({ storage: storageMock }));
+vi.mock("../../storage", async () => {
+  const { createStorageMock } = await import("./helpers/mock-storage");
+  return {
+    storage: createStorageMock([
+      "listSignedPdfRecoveryCandidates",
+      "clearSignedPdfRetry",
+      "getDevis",
+    ]),
+  };
+});
 vi.mock("../../services/devis-signed-pdf.service", () => ({
   persistSignedDevisPdf: persistMock.persistSignedDevisPdf,
 }));
@@ -45,6 +49,11 @@ vi.mock("../../auth/middleware", () => ({
 }));
 
 import adminSignedPdfRecoveryRouter from "../admin-signed-pdf-recovery";
+import { storage } from "../../storage";
+import { asStorageMock } from "./helpers/mock-storage";
+
+const storageMock = asStorageMock(storage);
+storageMock.clearSignedPdfRetry.mockImplementation(async () => undefined);
 
 const baseCandidate = {
   id: 42,

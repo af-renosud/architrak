@@ -2,32 +2,35 @@ import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vites
 import express from "express";
 import type { AddressInfo } from "net";
 
-vi.mock("../../storage", () => ({
-  storage: {
-    getUser: vi.fn(),
-    getDevis: vi.fn(),
-    getProject: vi.fn(),
-    getContractor: vi.fn(),
-    updateDevis: vi.fn(),
-    createDevisRefEdit: vi.fn(),
-    getDevisRefEdits: vi.fn(),
-    getDevisByProject: vi.fn(),
-    getDevisTranslation: vi.fn(),
-    updateDevisTranslation: vi.fn(),
-    createDevis: vi.fn(),
-    getDevisLineItems: vi.fn(),
-    createDevisLineItem: vi.fn(),
-    updateDevisLineItem: vi.fn(),
-    deleteDevisLineItem: vi.fn(),
-    getAvenantsByDevis: vi.fn(),
-    createAvenant: vi.fn(),
-    updateAvenant: vi.fn(),
-    countOpenDevisChecks: vi.fn(),
-    getLatestInsuranceOverrideForDevis: vi.fn(),
-    revokeDevisCheckTokenIfFullyInvoiced: vi.fn(),
-    revokeDevisCheckTokensForDevis: vi.fn(),
-  },
-}));
+vi.mock("../../storage", async () => {
+  const { createStorageMock } = await import("./helpers/mock-storage");
+  return {
+    storage: createStorageMock([
+      "getUser",
+      "getDevis",
+      "getProject",
+      "getContractor",
+      "updateDevis",
+      "createDevisRefEdit",
+      "getDevisRefEdits",
+      "getDevisByProject",
+      "getDevisTranslation",
+      "updateDevisTranslation",
+      "createDevis",
+      "getDevisLineItems",
+      "createDevisLineItem",
+      "updateDevisLineItem",
+      "deleteDevisLineItem",
+      "getAvenantsByDevis",
+      "createAvenant",
+      "updateAvenant",
+      "countOpenDevisChecks",
+      "getLatestInsuranceOverrideForDevis",
+      "revokeDevisCheckTokenIfFullyInvoiced",
+      "revokeDevisCheckTokensForDevis",
+    ]),
+  };
+});
 
 vi.mock("../../auth/middleware", () => ({
   requireAuth: (req: express.Request, _res: express.Response, next: express.NextFunction) => {

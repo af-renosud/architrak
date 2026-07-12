@@ -2,16 +2,19 @@ import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vites
 import express from "express";
 import type { AddressInfo } from "net";
 
-vi.mock("../../storage", () => ({
-  storage: {
-    getReachedUninvoicedMilestones: vi.fn(),
-    getDesignContractMilestone: vi.fn(),
-    getDesignContract: vi.fn(),
-    getDesignContractByProjectId: vi.fn(),
-    updateDesignContractMilestone: vi.fn(),
-    replaceDesignContractForProject: vi.fn(),
-  },
-}));
+vi.mock("../../storage", async () => {
+  const { createStorageMock } = await import("./helpers/mock-storage");
+  return {
+    storage: createStorageMock([
+      "getReachedUninvoicedMilestones",
+      "getDesignContractMilestone",
+      "getDesignContract",
+      "getDesignContractByProjectId",
+      "updateDesignContractMilestone",
+      "replaceDesignContractForProject",
+    ]),
+  };
+});
 
 vi.mock("../../middleware/auth", () => ({
   requireAuth: (req: express.Request, _res: express.Response, next: express.NextFunction) => {

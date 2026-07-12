@@ -24,17 +24,20 @@ vi.mock("../../auth/middleware", () => ({
   requireAuth: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
 }));
 
-vi.mock("../../storage", () => ({
-  storage: {
-    getInvoicesByDevis: vi.fn(),
-    getInvoice: vi.fn(),
-    createInvoice: vi.fn(),
-    updateInvoice: vi.fn(),
-    deleteInvoice: vi.fn(),
-    getInvoicesByProject: vi.fn(),
-    revokeDevisCheckTokenIfFullyInvoiced: vi.fn(),
-  },
-}));
+vi.mock("../../storage", async () => {
+  const { createStorageMock } = await import("./helpers/mock-storage");
+  return {
+    storage: createStorageMock([
+      "getInvoicesByDevis",
+      "getInvoice",
+      "createInvoice",
+      "updateInvoice",
+      "deleteInvoice",
+      "getInvoicesByProject",
+      "revokeDevisCheckTokenIfFullyInvoiced",
+    ]),
+  };
+});
 
 vi.mock("../../services/invoice-upload.service", () => ({
   processInvoiceUpload: vi.fn(),

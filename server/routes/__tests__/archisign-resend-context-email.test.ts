@@ -23,22 +23,26 @@ import type { AddressInfo } from "net";
  *       `failed`.
  */
 
-const { storageMock, emailMock } = vi.hoisted(() => ({
-  storageMock: {
-    getDevis: vi.fn(),
-    getProject: vi.fn(),
-    countOpenDevisChecks: vi.fn(),
-    getLatestInsuranceOverrideForDevis: vi.fn(),
-    getDevisTranslation: vi.fn(),
-    updateDevis: vi.fn(),
-    getProjectCommunicationByDedupeKey: vi.fn(),
-  },
+const { emailMock } = vi.hoisted(() => ({
   emailMock: {
     sendDevisSignatureContextEmail: vi.fn(),
   },
 }));
 
-vi.mock("../../storage", () => ({ storage: storageMock }));
+vi.mock("../../storage", async () => {
+  const { createStorageMock } = await import("./helpers/mock-storage");
+  return {
+    storage: createStorageMock([
+      "getDevis",
+      "getProject",
+      "countOpenDevisChecks",
+      "getLatestInsuranceOverrideForDevis",
+      "getDevisTranslation",
+      "updateDevis",
+      "getProjectCommunicationByDedupeKey",
+    ]),
+  };
+});
 vi.mock("../../auth/middleware", () => ({
   requireAuth: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
     (req as unknown as { session: { userId: number } }).session = { userId: 1 };
@@ -78,6 +82,10 @@ vi.mock("../../communications/email-sender", () => ({
 }));
 
 import archisignEnvelopesRouter from "../archisign-envelopes";
+import { storage } from "../../storage";
+import { asStorageMock } from "./helpers/mock-storage";
+
+const storageMock = asStorageMock(storage);
 
 let baseUrl: string;
 let server: import("http").Server;
