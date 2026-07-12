@@ -22,6 +22,19 @@
 import { z } from "zod";
 import { env } from "../env";
 
+/**
+ * Task #269 — subject line of the Archisign signing-invitation email.
+ *
+ * Archisign renders this `subject` in the signer-facing email (the client),
+ * so it must be English per the client-facing copy rules (Task #266).
+ * "devis" stays lowercase as a preserved French domain term.
+ * Exported for the English-copy regression guard
+ * (server/__tests__/client-english-copy.test.ts).
+ */
+export function buildArchisignEnvelopeSubject(devisCode: string): string {
+  return `Electronic signature request — devis ${devisCode}`;
+}
+
 export class ArchisignError extends Error {
   constructor(
     message: string,

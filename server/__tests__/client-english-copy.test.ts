@@ -64,6 +64,12 @@ const FRENCH_MARKERS = [
   "ci-joint",
   "expiré",
   "n'hésitez pas",
+  // Task #269 — the Archisign signing-invitation subject used to be
+  // "Signature électronique — …"; "électronique" never appears in
+  // intentional English copy.
+  "électronique",
+  "Nous avons",
+  "concernant votre",
 ] as const;
 
 function expectNoFrenchMarkers(text: string, surface: string) {
@@ -149,5 +155,106 @@ describe("Pennylane fee invoice email body stays English", () => {
 
     expect(body).toContain("Dear Client,");
     expectNoFrenchMarkers(body, "Pennylane fee invoice email (generic greeting)");
+  });
+
+  it("subject is English (Honoraires is an allowed domain term)", async () => {
+    const { buildClientEmailSubject } = await import("../services/pennylane/push-queue.service");
+    const subject = buildClientEmailSubject(
+      { name: "Villa Test", code: "VT-01" } as unknown as Project,
+    );
+
+    expect(subject).toBe("Architect fee invoice (Honoraires) — Villa Test (VT-01)");
+    expectNoFrenchMarkers(subject, "Pennylane fee invoice email subject");
+  });
+});
+
+// Task #269 — remaining client-facing outbound email surfaces.
+
+describe("Archisign signing-invitation subject stays English", () => {
+  it("renders the English subject with no French markers", async () => {
+    const { buildArchisignEnvelopeSubject } = await import("../services/archisign");
+    const subject = buildArchisignEnvelopeSubject("DVT0000941");
+
+    expect(subject).toBe("Electronic signature request — devis DVT0000941");
+    expectNoFrenchMarkers(subject, "Archisign signing-invitation subject");
+  });
+});
+
+describe("devis signature-context client email stays English", () => {
+  it("subject is English with the devis ref and project name", async () => {
+    const { buildDevisContextEmailSubject } = await import("../communications/email-sender");
+    const subject = buildDevisContextEmailSubject({
+      refLabel: "DVT0000941",
+      projectName: "Villa Test",
+    });
+
+    expect(subject).toBe("Devis DVT0000941 — Villa Test: electronic signature to follow");
+    expectNoFrenchMarkers(subject, "devis signature-context email subject");
+  });
+
+  it("fixed footer announcing the Archisign email is English", async () => {
+    const { buildDevisContextEmailBody } = await import("../communications/email-sender");
+    const body = buildDevisContextEmailBody({
+      architectMessage: "Here is the devis for your approval.",
+      refLabel: "DVT0000941",
+      projectName: "Villa Test",
+    });
+
+    expect(body).toContain("You will shortly receive a separate email from Archisign");
+    expect(body).toContain('devis DVT0000941 (project "Villa Test")');
+    expectNoFrenchMarkers(body, "devis signature-context email body (fixed footer)");
+  });
+});
+
+describe("certificat client email subject stays English", () => {
+  it("keeps only the allowed domain term Certificat de Paiement", async () => {
+    const { buildCertificatEmailSubject } = await import("../communications/email-sender");
+    const subject = buildCertificatEmailSubject({
+      certificateRef: "CERT-2026-001",
+      projectName: "Villa Test",
+    });
+
+    expect(subject).toBe("Certificat de Paiement CERT-2026-001 - Villa Test");
+    expectNoFrenchMarkers(subject, "certificat client email subject");
+  });
+});
+
+describe("payment chase reminder emails stay English", () => {
+  const reminderTypes = ["first", "second", "final", "overdue"] as const;
+
+  it.each(reminderTypes)("%s reminder subject + body are English", async (reminderType) => {
+    const { buildPaymentChaseTemplate } = await import("../communications/email-sender");
+    const { subject, body } = buildPaymentChaseTemplate(reminderType, "Villa Test");
+
+    expect(body).toContain("Dear Client,");
+    expect(body).toContain('project "Villa Test"');
+    expect(body).toContain("Kind regards,");
+    expectNoFrenchMarkers(subject, `payment chase subject (${reminderType})`);
+    expectNoFrenchMarkers(body, `payment chase body (${reminderType})`);
+  });
+
+  it("unknown reminder types fall back to the English first-reminder template", async () => {
+    const { buildPaymentChaseTemplate } = await import("../communications/email-sender");
+    const { subject, body } = buildPaymentChaseTemplate("mystery", "Villa Test");
+
+    expect(subject).toBe("Payment Reminder - Villa Test");
+    expectNoFrenchMarkers(body, "payment chase body (fallback)");
+  });
+});
+
+// Contractor-facing emails are explicitly EXCLUDED from the English guard —
+// they stay French by design (replit.md user prefs):
+//   - queueDevisCheckBundle / formatCheckHead ("Questions sur le devis …",
+//     "Bonjour …", "Cordialement") in server/communications/email-sender.ts
+//   - the contractor portal (server/routes/public-checks.ts)
+// Internal/operator digests (outstanding-fees digest, design-contract
+// milestone digest, ops alerts) are architect-facing, not client-facing,
+// so they are also out of scope here.
+describe("contractor-facing bundle email is intentionally French (sanity anchor)", () => {
+  it("formatCheckHead keeps its French copy", async () => {
+    const { formatCheckHead } = await import("../communications/email-sender");
+    expect(
+      formatCheckHead({ lineDescription: null, lineNumber: null, totalHt: null }),
+    ).toBe("Question générale");
   });
 });

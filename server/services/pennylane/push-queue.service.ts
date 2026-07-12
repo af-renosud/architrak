@@ -625,7 +625,7 @@ async function runEmailSendPush(
     pdfBuffer = await getDocumentBuffer(storageKey);
   }
 
-  const subject = `Architect fee invoice (Honoraires) — ${project.name} (${project.code})`;
+  const subject = buildClientEmailSubject(project);
   const body = buildClientEmailBody(project, feeEntry);
   const filename = `Honoraires-${project.code}-FE${feeEntry.id}.pdf`;
 
@@ -637,6 +637,15 @@ async function runEmailSendPush(
     pdfFilename: filename,
   });
   return { kind: "ok", gmailMessageId };
+}
+
+/**
+ * Task #269 — subject of the Pennylane fee-invoice email sent to the
+ * client. English copy ("Honoraires" is a preserved French domain term).
+ * Exported for the English-copy regression guard.
+ */
+export function buildClientEmailSubject(project: Project): string {
+  return `Architect fee invoice (Honoraires) — ${project.name} (${project.code})`;
 }
 
 export function buildClientEmailBody(project: Project, feeEntry: FeeEntry): string {

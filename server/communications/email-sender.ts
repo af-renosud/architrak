@@ -51,6 +51,19 @@ async function mirrorRibForAttachment(args: {
   }
 }
 
+/**
+ * Task #269 — subject of the certificat email sent to the client.
+ * "Certificat de Paiement" is a preserved French domain term (see
+ * replit.md user prefs); everything else stays English. Exported for
+ * the English-copy regression guard.
+ */
+export function buildCertificatEmailSubject(opts: {
+  certificateRef: string;
+  projectName: string;
+}): string {
+  return `Certificat de Paiement ${opts.certificateRef} - ${opts.projectName}`;
+}
+
 export async function sendCertificat(certificatId: number): Promise<number> {
   const certificat = await storage.getCertificat(certificatId);
   if (!certificat) throw new Error(`Certificat ${certificatId} not found`);
@@ -63,7 +76,10 @@ export async function sendCertificat(certificatId: number): Promise<number> {
 
   const { storageKey } = await generateCertificatPdf(certificatId);
 
-  const subject = `Certificat de Paiement ${certificat.certificateRef} - ${project.name}`;
+  const subject = buildCertificatEmailSubject({
+    certificateRef: certificat.certificateRef,
+    projectName: project.name,
+  });
   const body = buildCertificatEmailBody({ certificat, project, contractor });
 
   // Task #225 — attach the contractor's RIB alongside the certificat so
@@ -316,6 +332,18 @@ export async function queueDevisCheckBundle(opts: {
 }
 
 /**
+ * Task #269 — subject of the client-context email sent alongside an
+ * Archisign signature request. Client-facing → English ("Devis" is a
+ * preserved domain term). Exported for the English-copy regression guard.
+ */
+export function buildDevisContextEmailSubject(opts: {
+  refLabel: string;
+  projectName: string;
+}): string {
+  return `Devis ${opts.refLabel} — ${opts.projectName}: electronic signature to follow`;
+}
+
+/**
  * Task #257 — body of the contextual email ArchiTrak sends to the client
  * when a devis goes out for signature. Archisign renders the `subject` of
  * `/envelopes/create` in its signer email but silently drops the `body`
@@ -383,7 +411,7 @@ export async function sendDevisSignatureContextEmail(opts: {
     }
 
     const refLabel = devis.devisNumber || devis.devisCode;
-    const subject = `Devis ${refLabel} — ${project.name}: electronic signature to follow`;
+    const subject = buildDevisContextEmailSubject({ refLabel, projectName: project.name });
     const body = buildDevisContextEmailBody({
       architectMessage: opts.message,
       refLabel,
@@ -425,6 +453,37 @@ export async function sendDevisSignatureContextEmail(opts: {
   }
 }
 
+/**
+ * Task #269 — payment-chase reminder templates sent to the client.
+ * Client-facing → English copy only. Falls back to the "first" template
+ * for unknown reminder types (preserves historic behaviour). Exported
+ * for the English-copy regression guard.
+ */
+export function buildPaymentChaseTemplate(
+  reminderType: string,
+  projectName: string,
+): { subject: string; body: string } {
+  const templates: Record<string, { subject: string; body: string }> = {
+    first: {
+      subject: `Payment Reminder - ${projectName}`,
+      body: `Dear Client,\n\nThis is a friendly reminder regarding the outstanding payment for project "${projectName}".\n\nPlease arrange payment at your earliest convenience.\n\nKind regards,\nSAS Architects-France`,
+    },
+    second: {
+      subject: `Second Payment Reminder - ${projectName}`,
+      body: `Dear Client,\n\nWe are writing to follow up on our previous reminder regarding the outstanding payment for project "${projectName}".\n\nWe would appreciate if you could arrange payment promptly.\n\nKind regards,\nSAS Architects-France`,
+    },
+    final: {
+      subject: `Final Payment Reminder - ${projectName}`,
+      body: `Dear Client,\n\nThis is our final reminder regarding the outstanding payment for project "${projectName}".\n\nPlease arrange payment immediately to avoid further action.\n\nKind regards,\nSAS Architects-France`,
+    },
+    overdue: {
+      subject: `OVERDUE: Payment Required - ${projectName}`,
+      body: `Dear Client,\n\nThe payment for project "${projectName}" is now overdue.\n\nPlease contact us immediately to discuss payment arrangements.\n\nKind regards,\nSAS Architects-France`,
+    },
+  };
+  return templates[reminderType] || templates.first;
+}
+
 export async function sendPaymentChase(reminderId: number): Promise<void> {
   const reminder = await storage.getPaymentReminder(reminderId);
   if (!reminder) throw new Error(`Reminder ${reminderId} not found`);
@@ -436,26 +495,7 @@ export async function sendPaymentChase(reminderId: number): Promise<void> {
   const project = await storage.getProject(reminder.projectId);
   if (!project) throw new Error(`Project not found`);
 
-  const templates: Record<string, { subject: string; body: string }> = {
-    first: {
-      subject: `Payment Reminder - ${project.name}`,
-      body: `Dear Client,\n\nThis is a friendly reminder regarding the outstanding payment for project "${project.name}".\n\nPlease arrange payment at your earliest convenience.\n\nKind regards,\nSAS Architects-France`,
-    },
-    second: {
-      subject: `Second Payment Reminder - ${project.name}`,
-      body: `Dear Client,\n\nWe are writing to follow up on our previous reminder regarding the outstanding payment for project "${project.name}".\n\nWe would appreciate if you could arrange payment promptly.\n\nKind regards,\nSAS Architects-France`,
-    },
-    final: {
-      subject: `Final Payment Reminder - ${project.name}`,
-      body: `Dear Client,\n\nThis is our final reminder regarding the outstanding payment for project "${project.name}".\n\nPlease arrange payment immediately to avoid further action.\n\nKind regards,\nSAS Architects-France`,
-    },
-    overdue: {
-      subject: `OVERDUE: Payment Required - ${project.name}`,
-      body: `Dear Client,\n\nThe payment for project "${project.name}" is now overdue.\n\nPlease contact us immediately to discuss payment arrangements.\n\nKind regards,\nSAS Architects-France`,
-    },
-  };
-
-  const template = templates[reminder.reminderType] || templates.first;
+  const template = buildPaymentChaseTemplate(reminder.reminderType, project.name);
 
   const comm: InsertProjectCommunication = {
     projectId: project.id,

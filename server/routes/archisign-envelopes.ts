@@ -41,6 +41,7 @@ import {
   sendEnvelope,
   ArchisignError,
   assertPdfFetchUrlTtl,
+  buildArchisignEnvelopeSubject,
 } from "../services/archisign";
 import { evaluateInsuranceGate } from "../services/insurance-verdict";
 import { mintPdfFetchToken } from "../services/archisign-pdf-token";
@@ -320,7 +321,9 @@ router.post(
           pdfFetchUrl,
           webhookUrl: `${baseUrl}/api/webhooks/archisign`,
           // Default expiresAt = now + 30d (handled inside the client).
-          subject: `Signature électronique — devis ${d.devisCode}`,
+          // Client-facing (rendered by Archisign in the signer email) —
+          // English copy, see buildArchisignEnvelopeSubject (Task #269).
+          subject: buildArchisignEnvelopeSubject(d.devisCode),
           // Optional architect note (already trimmed + length-capped by sendBody).
           // On the resume branch we never reach this block, so the message is
           // silently dropped — the FE hides the input in that case.

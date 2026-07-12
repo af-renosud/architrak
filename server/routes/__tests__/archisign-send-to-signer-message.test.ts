@@ -71,6 +71,10 @@ vi.mock("../../services/archisign", () => {
     createEnvelope: archisignMock.createEnvelope,
     sendEnvelope: archisignMock.sendEnvelope,
     assertPdfFetchUrlTtl: archisignMock.assertPdfFetchUrlTtl,
+    // Task #269 — real (English) subject builder, not a stub, so the
+    // subject forwarded to createEnvelope stays asserted here.
+    buildArchisignEnvelopeSubject: (devisCode: string) =>
+      `Electronic signature request — devis ${devisCode}`,
   };
 });
 vi.mock("../../services/insurance-verdict", () => ({
