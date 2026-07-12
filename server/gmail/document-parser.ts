@@ -405,18 +405,80 @@ async function decryptPdf(inputPath: string, outputPath: string): Promise<{ decr
 
 const PDF_RASTER_TIMEOUT_MS = 120000;
 
+// Rendering DPI ladder. 200 DPI is the quality target; when a rasteriser hits
+// the per-strategy time cap (huge page boxes / pathologically heavy vector
+// content) or the rendered pages blow past Gemini's inline-image budget, we
+// drop a rung and re-render instead of dead-ending. 72 DPI is still readable
+// for the vision model and renders ~8x faster than 200 DPI.
+const PDF_RASTER_DPI_LADDER = [200, 100, 72] as const;
+
+// Overall wall-clock budget for the whole rasterisation attempt (all
+// strategies, all DPI rungs). The intake sweeper reclaims stale in_flight
+// jobs after 10 minutes — if rasterisation could outlive that window the
+// job would be reclaimed and re-run concurrently. 8 minutes leaves headroom
+// for the Gemini call and DB writes that follow.
+const PDF_RASTER_TOTAL_BUDGET_MS = 8 * 60 * 1000;
+
+// Guard rails for what we hand to Gemini as inlineData. Oversized images are
+// one documented cause of an opaque "[400 Bad Request] Unable to process
+// input image" — which is classified permanent and parks the document.
+const MAX_IMAGE_DIMENSION_PX = 6000;
+const MAX_TOTAL_IMAGE_BYTES = 14 * 1024 * 1024;
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+// A rasteriser killed at the time cap can leave a partially-written PNG on
+// disk. Sending such a truncated file to Gemini yields a permanent-looking
+// 400 ("Unable to process input image") and parks the document, so every
+// collected page must prove it is a complete PNG: correct 8-byte signature
+// AND the mandatory IEND trailer chunk (always the last 12 bytes of a
+// well-formed PNG stream).
+function isCompletePng(buf: Buffer): boolean {
+  if (buf.length < 33) return false; // signature (8) + IHDR chunk (25) minimum
+  if (!buf.subarray(0, 8).equals(PNG_SIGNATURE)) return false;
+  return buf.subarray(buf.length - 8, buf.length - 4).toString("latin1") === "IEND";
+}
+
+function pngDimensions(buf: Buffer): { width: number; height: number } | null {
+  // IHDR is required to be the first chunk: length at 8-11, type at 12-15,
+  // then 4-byte big-endian width and height.
+  if (buf.length < 24) return null;
+  if (buf.subarray(12, 16).toString("latin1") !== "IHDR") return null;
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+}
+
+function exceedsGeminiImageLimits(images: Buffer[]): string | null {
+  let totalBytes = 0;
+  for (const img of images) {
+    totalBytes += img.length;
+    const dims = pngDimensions(img);
+    if (dims && (dims.width > MAX_IMAGE_DIMENSION_PX || dims.height > MAX_IMAGE_DIMENSION_PX)) {
+      return `page image ${dims.width}x${dims.height}px exceeds the ${MAX_IMAGE_DIMENSION_PX}px limit`;
+    }
+  }
+  if (totalBytes > MAX_TOTAL_IMAGE_BYTES) {
+    const mb = (totalBytes / (1024 * 1024)).toFixed(1);
+    return `rendered pages total ${mb}MB exceeds the ${MAX_TOTAL_IMAGE_BYTES / (1024 * 1024)}MB budget`;
+  }
+  return null;
+}
+
 function runRasterCommand(
   cmd: string,
   args: string[],
-): Promise<{ ok: boolean; detail: string }> {
+): Promise<{ ok: boolean; timedOut: boolean; detail: string }> {
   return new Promise((resolve) => {
     execFile(
       cmd,
       args,
       { timeout: PDF_RASTER_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 },
       (err, _stdout, stderr) => {
+        // execFile sets killed=true when it SIGTERMs the child at the
+        // timeout. A timed-out rasteriser may have written partial output,
+        // and lowering the DPI (not switching backend) is the right retry.
+        const timedOut = Boolean(err && (err.killed || err.signal === "SIGTERM"));
         const detail = (stderr || (err ? err.message : "") || "").toString().trim();
-        resolve({ ok: !err, detail });
+        resolve({ ok: !err, timedOut, detail });
       },
     );
   });
@@ -469,29 +531,48 @@ export async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Prom
     // Splash backend even after qpdf decryption. We fall back to poppler's
     // Cairo backend, then to Ghostscript (repair-and-retry, then direct
     // render), which tolerates a far wider range of broken PDFs. Each
-    // strategy runs at 200 DPI with a 120s cap (high-res multi-page scans
-    // need >30s) and its stderr is captured so a genuine dead-end is
-    // diagnosable instead of surfacing an opaque "Command failed".
+    // strategy runs with a 120s cap (high-res multi-page scans need >30s)
+    // and its stderr is captured so a genuine dead-end is diagnosable
+    // instead of surfacing an opaque "Command failed".
+    //
+    // Two failure modes get a DPI downgrade instead of a backend switch:
+    //  - a strategy TIMED OUT (the page is too heavy to render at this DPI —
+    //    every other backend would burn its own 120s on the same content), or
+    //  - the rendered pages exceed Gemini's inline-image limits.
+    // In both cases we drop to the next rung of PDF_RASTER_DPI_LADDER and
+    // re-run the chain. Hard failures (crash / no output) at a given DPI stay
+    // at that DPI and try the next backend; if the whole chain hard-fails,
+    // lowering the DPI cannot help and we throw with the diagnostics.
+    //
+    // A strategy only counts as successful when every collected page is a
+    // COMPLETE PNG (signature + IEND). A rasteriser killed at the time cap
+    // can leave a truncated PNG on disk; accepting it sends garbage to Gemini
+    // which answers with a permanent 400 and parks the document (this is
+    // exactly what happened to a production devis rendered at 200 DPI in
+    // ~121s — pdftoppm was killed at 120s mid-write and its partial page was
+    // treated as success).
     const repairedPath = join(tempDir, "repaired.pdf");
     const gsOutputPattern = join(tempDir, "page-%d.png");
 
-    const strategies: Array<{ name: string; run: () => Promise<{ ok: boolean; detail: string }> }> = [
+    const buildStrategies = (
+      dpi: number,
+    ): Array<{ name: string; run: () => Promise<{ ok: boolean; timedOut: boolean; detail: string }> }> => [
       {
         name: "pdftoppm",
         run: () =>
-          runRasterCommand("pdftoppm", ["-png", "-r", "200", "-l", String(maxPages), pdfToProcess, outputPrefix]),
+          runRasterCommand("pdftoppm", ["-png", "-r", String(dpi), "-l", String(maxPages), pdfToProcess, outputPrefix]),
       },
       {
         name: "pdftocairo",
         run: () =>
-          runRasterCommand("pdftocairo", ["-png", "-r", "200", "-l", String(maxPages), pdfToProcess, outputPrefix]),
+          runRasterCommand("pdftocairo", ["-png", "-r", String(dpi), "-l", String(maxPages), pdfToProcess, outputPrefix]),
       },
       {
         name: "ghostscript-repair",
         run: async () => {
           const repair = await runRasterCommand("gs", ["-q", "-o", repairedPath, "-sDEVICE=pdfwrite", pdfToProcess]);
           if (!repair.ok) return repair;
-          return runRasterCommand("pdftoppm", ["-png", "-r", "200", "-l", String(maxPages), repairedPath, outputPrefix]);
+          return runRasterCommand("pdftoppm", ["-png", "-r", String(dpi), "-l", String(maxPages), repairedPath, outputPrefix]);
         },
       },
       {
@@ -499,7 +580,7 @@ export async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Prom
         run: () =>
           runRasterCommand("gs", [
             "-q", "-dNOPAUSE", "-dBATCH", "-dSAFER",
-            "-sDEVICE=png16m", "-r200",
+            "-sDEVICE=png16m", `-r${dpi}`,
             "-dFirstPage=1", `-dLastPage=${maxPages}`,
             `-sOutputFile=${gsOutputPattern}`,
             pdfToProcess,
@@ -508,17 +589,83 @@ export async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Prom
     ];
 
     const diagnostics: string[] = [];
-    for (const strategy of strategies) {
-      await clearPngPages(tempDir);
-      const { detail } = await strategy.run();
-      const images = await collectPngPages(tempDir, maxPages);
-      if (images.length > 0) {
-        if (strategy.name !== "pdftoppm") {
-          console.log(`[document-parser] rasterised via "${strategy.name}" fallback (${images.length} page(s))`);
+    const rasterStartedAt = Date.now();
+    for (let rung = 0; rung < PDF_RASTER_DPI_LADDER.length; rung++) {
+      const dpi = PDF_RASTER_DPI_LADDER[rung];
+      const isLastRung = rung === PDF_RASTER_DPI_LADDER.length - 1;
+      let descendDpi = false;
+
+      for (const strategy of buildStrategies(dpi)) {
+        if (Date.now() - rasterStartedAt > PDF_RASTER_TOTAL_BUDGET_MS) {
+          diagnostics.push(
+            `raster time budget of ${PDF_RASTER_TOTAL_BUDGET_MS}ms exhausted before "${strategy.name}"@${dpi}dpi`,
+          );
+          throw new Error(`PDF rasterisation failed for all strategies — ${diagnostics.join(" | ")}`);
         }
-        return images;
+
+        await clearPngPages(tempDir);
+        const { detail, timedOut } = await strategy.run();
+        const images = await collectPngPages(tempDir, maxPages);
+        const allComplete = images.length > 0 && images.every(isCompletePng);
+
+        if (allComplete) {
+          // A timed-out strategy that still left complete PNGs was killed
+          // AFTER finishing some pages but possibly BEFORE rendering all of
+          // them — page coverage may be partial. Prefer a full re-render at
+          // a lower DPI; only accept at the lowest rung (partial coverage
+          // beats a dead end there).
+          if (timedOut && !isLastRung) {
+            diagnostics.push(
+              `${strategy.name}@${dpi}dpi: timed out after ${PDF_RASTER_TIMEOUT_MS}ms with ${images.length} complete page(s) — coverage may be partial, retrying at lower DPI`,
+            );
+            descendDpi = true;
+            break;
+          }
+          const limitViolation = exceedsGeminiImageLimits(images);
+          if (!limitViolation || isLastRung) {
+            if (timedOut) {
+              console.warn(
+                `[document-parser] "${strategy.name}" timed out at ${dpi} DPI (lowest rung) — accepting ${images.length} complete page(s), coverage may be partial`,
+              );
+            }
+            if (limitViolation) {
+              console.warn(
+                `[document-parser] ${limitViolation} even at ${dpi} DPI — sending anyway (lowest rung)`,
+              );
+            }
+            if (strategy.name !== "pdftoppm" || dpi !== PDF_RASTER_DPI_LADDER[0]) {
+              console.log(
+                `[document-parser] rasterised via "${strategy.name}" at ${dpi} DPI (${images.length} page(s))`,
+              );
+            }
+            return images;
+          }
+          diagnostics.push(`${strategy.name}@${dpi}dpi: ${limitViolation} — retrying at lower DPI`);
+          descendDpi = true;
+          break;
+        }
+
+        if (images.length > 0) {
+          diagnostics.push(
+            `${strategy.name}@${dpi}dpi: produced truncated/corrupt PNG output${timedOut ? ` after ${PDF_RASTER_TIMEOUT_MS}ms timeout` : ""} — discarded`,
+          );
+        } else {
+          diagnostics.push(
+            `${strategy.name}@${dpi}dpi: ${timedOut ? `timed out after ${PDF_RASTER_TIMEOUT_MS}ms` : detail.slice(0, 300) || "no output"}`,
+          );
+        }
+
+        if (timedOut) {
+          descendDpi = true;
+          break;
+        }
       }
-      diagnostics.push(`${strategy.name}: ${detail.slice(0, 300) || "no output"}`);
+
+      if (!descendDpi) {
+        // Every backend hard-failed at this DPI (crashes, not slowness) —
+        // rendering smaller cannot fix a structurally unreadable PDF.
+        break;
+      }
     }
 
     throw new Error(`PDF rasterisation failed for all strategies — ${diagnostics.join(" | ")}`);
