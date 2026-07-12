@@ -5,20 +5,27 @@ import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 /**
- * FE coverage for the Send-to-Signature dialog (Task #227).
+ * FE coverage for the Send-to-Signature dialog (Task #227, reworked by
+ * Task #257 into a mandatory two-step flow).
  *
  * Pins:
- *   - Dialog opens when the architect clicks the panel CTA, and the
- *     textarea is visible on the first-send branch.
- *   - Confirming the dialog forwards the trimmed message to the
- *     send-to-signer endpoint as { message: "..." }.
- *   - On the resume branch (archisignEnvelopeId already persisted) the
- *     textarea is HIDDEN and the resume-specific copy is rendered; the
- *     mutation fires without a body.
+ *   - First-send branch opens a two-step dialog: compose (pre-filled
+ *     editable template, min 20 chars enforced) → recap (recipient /
+ *     devis / message) → confirm.
+ *   - "Continuer" is disabled while the trimmed message is under the
+ *     minimum, and the min-length hint is shown.
+ *   - Confirming from the recap forwards the trimmed message as
+ *     { message: "..." }; there is no way to send without one.
+ *   - The back button returns to compose with the text preserved.
+ *   - A `contextEmail.status === "failed"` in the response raises a
+ *     destructive toast (envelope NOT rolled back).
+ *   - Resume branch (archisignEnvelopeId persisted): textarea hidden,
+ *     resume copy shown, single confirm fires with an empty body.
  */
 
+const toastSpy = vi.fn();
 vi.mock("@/hooks/use-toast", () => ({
-  useToast: () => ({ toast: vi.fn() }),
+  useToast: () => ({ toast: toastSpy }),
 }));
 
 const apiRequestMock = vi.fn();
@@ -39,16 +46,25 @@ function jsonResponse(body: unknown) {
   } as unknown as Response;
 }
 
-function renderWithDevis(devis: Record<string, unknown>, isArchived = false) {
+function renderWithDevis(
+  devis: Record<string, unknown>,
+  opts: { isArchived?: boolean; project?: Record<string, unknown> } = {},
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   client.setQueryData(["/api/devis", (devis as { id: number }).id], devis);
+  if (opts.project) {
+    client.setQueryData(
+      ["/api/projects", (devis as { projectId: number }).projectId],
+      opts.project,
+    );
+  }
   return render(
     <QueryClientProvider client={client}>
       <SigningPanel
         devisId={(devis as { id: number }).id}
-        isArchived={isArchived}
+        isArchived={opts.isArchived ?? false}
       />
     </QueryClientProvider>,
   );
@@ -57,6 +73,9 @@ function renderWithDevis(devis: Record<string, unknown>, isArchived = false) {
 const baseDevis = {
   id: 42,
   devisCode: "LOT01-001",
+  devisNumber: "DVT0000042",
+  descriptionFr: "Plomberie générale",
+  amountTtc: "1200.00",
   signOffStage: "approved_for_signing",
   archisignEnvelopeId: null,
   archisignAccessUrl: null,
@@ -64,53 +83,131 @@ const baseDevis = {
   archisignEnvelopeStatus: null,
   archisignEnvelopeExpiresAt: null,
   archisignAccessUrlInvalidatedAt: null,
+  archisignSignerMessage: null,
   signedPdfStorageKey: null,
 };
 
+const VALID_MESSAGE = "Bonjour, voici le devis pour signature électronique.";
+
 beforeEach(() => {
   apiRequestMock.mockReset();
+  toastSpy.mockReset();
   apiRequestMock.mockResolvedValue(jsonResponse({ ok: true }));
 });
 
-describe("SigningPanel — first-send branch", () => {
-  it("opens the dialog with the personalised-message textarea on click", () => {
+describe("SigningPanel — first-send branch (two-step, Task #257)", () => {
+  it("opens on step 1 with the pre-filled template and no confirm button yet", () => {
     renderWithDevis(baseDevis);
     fireEvent.click(screen.getByTestId("button-send-to-signer-42"));
+
     const dialog = screen.getByTestId("dialog-send-to-signer-42");
     expect(dialog).toBeVisible();
-    expect(screen.getByTestId("textarea-send-message-42")).toBeVisible();
-    expect(screen.getByTestId("text-send-message-count-42")).toHaveTextContent("0 / 2000");
+    expect(dialog).toHaveTextContent(/Étape 1 \/ 2/);
+
+    const textarea = screen.getByTestId("textarea-send-message-42") as HTMLTextAreaElement;
+    expect(textarea).toBeVisible();
+    // Template is pre-filled with the devis reference.
+    expect(textarea.value).toContain("DVT0000042");
+    expect(textarea.value).toMatch(/^Bonjour/);
+
+    expect(screen.getByTestId("button-send-to-signer-continue-42")).toBeEnabled();
+    // The final confirm only exists on the recap step.
+    expect(screen.queryByTestId("button-send-to-signer-confirm-42")).toBeNull();
   });
 
-  it("forwards the trimmed message to send-to-signer on confirm", async () => {
+  it("disables Continuer and shows the min-length hint under 20 chars", () => {
     renderWithDevis(baseDevis);
     fireEvent.click(screen.getByTestId("button-send-to-signer-42"));
 
-    const textarea = screen.getByTestId("textarea-send-message-42") as HTMLTextAreaElement;
-    fireEvent.change(textarea, {
-      target: { value: "  Bonjour, voici le devis pour signature.  " },
+    const textarea = screen.getByTestId("textarea-send-message-42");
+    fireEvent.change(textarea, { target: { value: "Trop court" } });
+
+    expect(screen.getByTestId("button-send-to-signer-continue-42")).toBeDisabled();
+    expect(screen.getByTestId("text-send-message-min-42")).toHaveTextContent(
+      /Minimum 20 caractères/,
+    );
+
+    // Whitespace padding must not count.
+    fireEvent.change(textarea, { target: { value: "Court" + " ".repeat(40) } });
+    expect(screen.getByTestId("button-send-to-signer-continue-42")).toBeDisabled();
+  });
+
+  it("recap shows the message + devis ref, and confirm sends { message } trimmed", async () => {
+    renderWithDevis(
+      { ...baseDevis, projectId: 9 },
+      {
+        project: {
+          id: 9,
+          name: "Villa Sophia",
+          clientContactName: "Marie Dupont",
+          clientContactEmail: "marie@example.test",
+        },
+      },
+    );
+    fireEvent.click(screen.getByTestId("button-send-to-signer-42"));
+
+    fireEvent.change(screen.getByTestId("textarea-send-message-42"), {
+      target: { value: `  ${VALID_MESSAGE}  ` },
     });
+    fireEvent.click(screen.getByTestId("button-send-to-signer-continue-42"));
+
+    const dialog = screen.getByTestId("dialog-send-to-signer-42");
+    expect(dialog).toHaveTextContent(/Étape 2 \/ 2/);
+    expect(screen.getByTestId("text-recap-message-42")).toHaveTextContent(VALID_MESSAGE);
+    expect(screen.getByTestId("text-recap-devis-42")).toHaveTextContent("DVT0000042");
+    expect(screen.getByTestId("text-recap-recipient-42")).toHaveTextContent(
+      "Marie Dupont (marie@example.test)",
+    );
+    // The textarea is gone on the recap step.
+    expect(screen.queryByTestId("textarea-send-message-42")).toBeNull();
 
     fireEvent.click(screen.getByTestId("button-send-to-signer-confirm-42"));
-
     await waitFor(() => expect(apiRequestMock).toHaveBeenCalledTimes(1));
     expect(apiRequestMock).toHaveBeenCalledWith(
       "POST",
       "/api/devis/42/send-to-signer",
-      { message: "Bonjour, voici le devis pour signature." },
+      { message: VALID_MESSAGE },
     );
   });
 
-  it("sends an empty body when the textarea is left blank", async () => {
+  it("back button returns to compose with the text preserved", () => {
     renderWithDevis(baseDevis);
     fireEvent.click(screen.getByTestId("button-send-to-signer-42"));
+
+    fireEvent.change(screen.getByTestId("textarea-send-message-42"), {
+      target: { value: VALID_MESSAGE },
+    });
+    fireEvent.click(screen.getByTestId("button-send-to-signer-continue-42"));
+    fireEvent.click(screen.getByTestId("button-send-to-signer-back-42"));
+
+    const textarea = screen.getByTestId("textarea-send-message-42") as HTMLTextAreaElement;
+    expect(textarea.value).toBe(VALID_MESSAGE);
+    expect(apiRequestMock).not.toHaveBeenCalled();
+  });
+
+  it("raises a destructive toast when the response reports contextEmail failed", async () => {
+    apiRequestMock.mockResolvedValue(
+      jsonResponse({
+        ok: true,
+        contextEmail: { status: "failed", error: "gmail down" },
+      }),
+    );
+    renderWithDevis(baseDevis);
+    fireEvent.click(screen.getByTestId("button-send-to-signer-42"));
+    fireEvent.change(screen.getByTestId("textarea-send-message-42"), {
+      target: { value: VALID_MESSAGE },
+    });
+    fireEvent.click(screen.getByTestId("button-send-to-signer-continue-42"));
     fireEvent.click(screen.getByTestId("button-send-to-signer-confirm-42"));
 
     await waitFor(() => expect(apiRequestMock).toHaveBeenCalledTimes(1));
-    expect(apiRequestMock).toHaveBeenCalledWith(
-      "POST",
-      "/api/devis/42/send-to-signer",
-      {},
+    await waitFor(() =>
+      expect(toastSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          variant: "destructive",
+          title: expect.stringMatching(/contexte NON envoyé/),
+        }),
+      ),
     );
   });
 });
@@ -132,8 +229,9 @@ describe("SigningPanel — resume branch", () => {
     fireEvent.click(screen.getByTestId("button-send-to-signer-42"));
     const dialog = screen.getByTestId("dialog-send-to-signer-42");
     expect(dialog).toBeVisible();
-    // The personalised-message textarea must not be present on resume.
+    // No compose step on resume — the persisted message cannot be changed.
     expect(screen.queryByTestId("textarea-send-message-42")).toBeNull();
+    expect(screen.queryByTestId("button-send-to-signer-continue-42")).toBeNull();
     expect(dialog).toHaveTextContent(
       /enveloppe a déjà été créée chez Archisign/i,
     );
