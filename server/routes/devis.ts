@@ -743,6 +743,11 @@ router.patch(
     // compare-and-set transition. Strip it from the generic PATCH so an
     // operator can't silently move money into/out of Contracted with no audit.
     delete patchBody.accountingState;
+    // Task #279 — the Archisign subject-rendering-drift flag is written
+    // exclusively by the send-to-signer orchestration (from the /create
+    // emailRendering echo). Strip it from the generic PATCH so an operator
+    // can neither fabricate nor silently clear the drift signal.
+    delete patchBody.archisignSubjectDriftAt;
     // When the architect flips `acompteRequired` from false → true on
     // a row whose state was 'none', auto-arm the gate by transitioning
     // to 'pending'. Without this, the gate would silently stay

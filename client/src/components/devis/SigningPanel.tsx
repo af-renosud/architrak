@@ -77,6 +77,7 @@ export function SigningPanel({
       const res = await apiRequest("POST", `/api/devis/${devisId}/send-to-signer`, body);
       return res.json() as Promise<{
         contextEmail?: { status?: "sent" | "failed" | "already_sent"; error?: string };
+        subjectDrift?: boolean;
       }>;
     },
     onSuccess: (data) => {
@@ -87,6 +88,19 @@ export function SigningPanel({
       // Task #257 — the contextual email failure never rolls back the
       // envelope, but the architect MUST see that the client did not get
       // the written context.
+      // Task #279 — Archisign confirmed the envelope but reported that our
+      // custom email subject was DROPPED (fell back to their default). The
+      // envelope still went out; the architect just needs to know the
+      // client saw a generic subject line.
+      if (data?.subjectDrift) {
+        toast({
+          title: "Custom email subject not applied",
+          description:
+            "Archisign sent the invitation under its default subject instead of the custom one. " +
+            "The signing request itself went out normally. Recurring drift is tracked under Admin ops → Archisign rendering.",
+          variant: "destructive",
+        });
+      }
       if (data?.contextEmail?.status === "failed") {
         toast({
           title: "Context email NOT sent",
@@ -162,6 +176,7 @@ export function SigningPanel({
     archisignEnvelopeExpiresAt?: string | null;
     archisignOtpDestination?: string | null;
     archisignSignerMessage?: string | null;
+    archisignSubjectDriftAt?: string | null;
     signedPdfStorageKey?: string | null;
   }) | undefined;
 
@@ -245,6 +260,13 @@ export function SigningPanel({
   const accessUrlInvalidated = Boolean(d.archisignAccessUrlInvalidatedAt);
   const expiresAt = d.archisignEnvelopeExpiresAt ? new Date(d.archisignEnvelopeExpiresAt) : null;
   const otpDestination = d.archisignOtpDestination ?? null;
+  // Task #279 — Archisign's /create echo reported subjectApplied=false for
+  // the CURRENT envelope: the signer invitation went out under Archisign's
+  // default email subject, not our custom one. Non-blocking, but the
+  // architect must know the client saw a generic subject line.
+  const subjectDriftAt = d.archisignSubjectDriftAt
+    ? new Date(d.archisignSubjectDriftAt)
+    : null;
 
   // Gate logic — the CTA is available whenever the devis is in
   // `approved_for_signing` and not archived. This single condition naturally
@@ -295,6 +317,17 @@ export function SigningPanel({
               data-testid={`badge-archisign-status-${devisId}`}
             >
               {badge.label}
+            </Badge>
+          )}
+          {subjectDriftAt && (
+            <Badge
+              variant="outline"
+              className="border-amber-500 bg-amber-50 text-amber-900 dark:bg-amber-950 dark:text-amber-200 gap-1"
+              data-testid={`badge-subject-drift-${devisId}`}
+              title={`Reported by Archisign on ${subjectDriftAt.toLocaleString()}`}
+            >
+              <MailWarning className="h-3 w-3" />
+              Default subject used
             </Badge>
           )}
         </div>

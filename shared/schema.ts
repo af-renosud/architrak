@@ -401,6 +401,16 @@ export const devis = pgTable("devis", {
   // first send only — the resume branch skips /create, so it is never
   // overwritten on retry. NULL when the architect left the field empty.
   archisignSignerMessage: text("archisign_signer_message"),
+  // archisignSubjectDriftAt — Task #279. Set when Archisign's /create
+  // response carried the (proposed v1.2 §3.5.1.1) `emailRendering` echo
+  // with `subjectApplied: false` for a subject we sent: the signer
+  // invitation went out under Archisign's DEFAULT subject, not ours.
+  // Non-blocking by design (the envelope proceeds); this timestamp is the
+  // persisted operator-visible signal, surfaced on the SigningPanel and
+  // the /admin/ops/archisign-rendering-drift page. Reset to NULL on each
+  // fresh /create whose echo does NOT report drift (or is absent —
+  // pre-v1.2 servers), so the flag always describes the CURRENT envelope.
+  archisignSubjectDriftAt: timestamp("archisign_subject_drift_at", { withTimezone: true }),
   // Structured devis-code (Task #176). The architect supplies three parts:
   //   1. lotRef    — picked from `lot_catalog` (then `lotCatalogId` is set
   //                   and `lotRefText` mirrors the catalog code) OR typed

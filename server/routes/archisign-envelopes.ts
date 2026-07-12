@@ -311,6 +311,10 @@ router.post(
     let expiresAtIso: string | null = d.archisignEnvelopeExpiresAt
       ? d.archisignEnvelopeExpiresAt.toISOString()
       : null;
+    // Task #279 — echoed back to the FE so the architect sees an immediate
+    // warning toast when Archisign dropped the custom subject. On the
+    // resume branch we report the persisted flag from the original create.
+    let subjectDrift = Boolean(d.archisignSubjectDriftAt);
 
     if (!resumingExistingEnvelope) {
       let createResp;
@@ -376,7 +380,20 @@ router.post(
         // the context-email redundancy both read from it. Written only here
         // (the resume branch skips /create), never overwritten on retry.
         archisignSignerMessage: personalMessage ?? null,
+        // Task #279 — persist the §3.5.1.1(c) rendering-drift signal so it
+        // survives restarts and is operator-visible (SigningPanel warning +
+        // /admin/ops/archisign-rendering-drift), not just a console.warn.
+        // Non-blocking by design: the envelope proceeds regardless. The
+        // subject is ALWAYS sent (buildArchisignEnvelopeSubject above), so
+        // subjectApplied=false on the echo is always drift. Absent echo
+        // (pre-v1.2 Archisign) or subjectApplied=true → NULL, which also
+        // clears any drift flag left over from a previous, expired envelope.
+        archisignSubjectDriftAt:
+          createResp.emailRendering && createResp.emailRendering.subjectApplied === false
+            ? new Date()
+            : null,
       };
+      subjectDrift = Boolean(persistCreate.archisignSubjectDriftAt);
       await storage.updateDevis(devisId, persistCreate);
       envelopeId = createResp.envelopeId;
       accessUrl = createResp.accessUrl;
@@ -466,6 +483,7 @@ router.post(
       signOffStage: updated?.signOffStage ?? "sent_to_client",
       resumed: resumingExistingEnvelope,
       contextEmail,
+      subjectDrift,
     });
   },
 );

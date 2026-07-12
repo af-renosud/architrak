@@ -104,6 +104,10 @@ sequence (`assertNoDevLoginBackdoorInProduction`) hard-fails if either is truthy
   echo shipped — `subjectApplied=false` triggers an operator warning. Open verification item:
   confirm the rendered body block on the next real envelope (our July 2026 inbox check
   disputed it — see contract §3.5.1 dispute note).
+  A `subjectApplied: false` echo on /create is persisted as `devis.archisign_subject_drift_at`
+  (non-blocking) and surfaced as a SigningPanel badge + send-time toast + the read-only
+  `/admin/ops/archisign-rendering-drift` page; the flag auto-clears on a fresh
+  drift-free /create and is sealed against the generic devis PATCH.
 - **AT5 — Outbound Architrak → Archidoc webhook delivery**: signed `/work-authorisations`
   delivery with retry orchestrator, DLQ at `/admin/ops/webhook-dlq`, UUIDv7 idempotency,
   canonical-form timestamps per contract §5.3.2.1.

@@ -103,6 +103,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0045_compte_prorata_retenue", artifact: { kind: "column", table: "projects", column: "prorata_percentage" } },
   { tag: "0046_reanalyze_smith_1304_intake", artifact: { kind: "data_only", reason: "One-shot re-queue of the parked SMITH 1304 intake document after the rasteriser fix; no schema artifact" } },
   { tag: "0047_revert_dvt0000941_false_sent", artifact: { kind: "data_only", reason: "One-shot revert of devis DVT0000941 falsely marked sent_to_client without an Archisign envelope (Task #257); no schema artifact" } },
+  { tag: "0048_devis_archisign_subject_drift", artifact: { kind: "column", table: "devis", column: "archisign_subject_drift_at" } },
 ];
 
 interface JournalFile {

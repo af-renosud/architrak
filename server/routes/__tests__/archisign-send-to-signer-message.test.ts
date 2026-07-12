@@ -345,3 +345,89 @@ describe("POST /api/devis/:id/send-to-signer — personalised message", () => {
     }
   });
 });
+
+describe("POST /api/devis/:id/send-to-signer — §3.5.1.1(c) subject-rendering drift (Task #279)", () => {
+  const VALID_MESSAGE = "Bonjour, voici le devis pour signature.";
+
+  function findPersistCall() {
+    return storageMock.updateDevis.mock.calls.find(
+      (c) => (c[1] as { archisignEnvelopeId?: string }).archisignEnvelopeId === "env_42",
+    );
+  }
+
+  it("persists archisignSubjectDriftAt and returns subjectDrift=true when the echo reports subjectApplied=false", async () => {
+    archisignMock.createEnvelope.mockResolvedValue({
+      envelopeId: "env_42",
+      accessUrl: "https://archisign.test/e/42",
+      accessToken: "tok",
+      otpDestination: "+33 6 00 00 00 00",
+      expiresAt: "2026-06-30T00:00:00.000Z",
+      emailRendering: { subjectApplied: false, bodyApplied: false },
+    });
+    const res = await postSend(100, { message: VALID_MESSAGE });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { subjectDrift: boolean };
+    // Non-blocking: envelope proceeded (200) AND /send fired…
+    expect(archisignMock.sendEnvelope).toHaveBeenCalledWith("env_42");
+    // …but the drift is flagged in the response and persisted.
+    expect(body.subjectDrift).toBe(true);
+    const persistCall = findPersistCall();
+    expect(persistCall).toBeDefined();
+    expect(
+      (persistCall![1] as { archisignSubjectDriftAt?: Date | null }).archisignSubjectDriftAt,
+    ).toBeInstanceOf(Date);
+  });
+
+  it("persists NULL and returns subjectDrift=false when the echo confirms subjectApplied=true", async () => {
+    archisignMock.createEnvelope.mockResolvedValue({
+      envelopeId: "env_42",
+      accessUrl: "https://archisign.test/e/42",
+      accessToken: "tok",
+      otpDestination: "+33 6 00 00 00 00",
+      expiresAt: "2026-06-30T00:00:00.000Z",
+      emailRendering: { subjectApplied: true, bodyApplied: false },
+    });
+    const res = await postSend(100, { message: VALID_MESSAGE });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { subjectDrift: boolean }).subjectDrift).toBe(false);
+    const persistCall = findPersistCall();
+    expect(
+      (persistCall![1] as { archisignSubjectDriftAt?: Date | null }).archisignSubjectDriftAt,
+    ).toBeNull();
+  });
+
+  it("persists NULL when the echo is absent (pre-v1.2 Archisign) — clears stale drift from a previous envelope", async () => {
+    // Default createEnvelope mock has no emailRendering field.
+    const res = await postSend(100, { message: VALID_MESSAGE });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { subjectDrift: boolean }).subjectDrift).toBe(false);
+    const persistCall = findPersistCall();
+    expect(persistCall).toBeDefined();
+    // Explicit null (not undefined/absent): a fresh envelope without drift
+    // must CLEAR any flag left over from a previous, expired envelope.
+    expect(
+      (persistCall![1] as Record<string, unknown>).archisignSubjectDriftAt,
+    ).toBeNull();
+  });
+
+  it("resume branch reports the persisted drift flag without touching it", async () => {
+    storageMock.getDevis.mockResolvedValue(
+      makeDevis({
+        archisignEnvelopeId: "env_existing",
+        archisignAccessUrl: "https://archisign.test/e/existing",
+        archisignSignerMessage: "Message persisté lors de la création initiale.",
+        archisignSubjectDriftAt: new Date("2026-07-01T00:00:00.000Z"),
+      }),
+    );
+    const res = await postSend(100, {});
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { resumed: boolean; subjectDrift: boolean };
+    expect(body.resumed).toBe(true);
+    expect(body.subjectDrift).toBe(true);
+    expect(archisignMock.createEnvelope).not.toHaveBeenCalled();
+    // The resume branch never rewrites the drift flag.
+    for (const call of storageMock.updateDevis.mock.calls) {
+      expect(call[1] as Record<string, unknown>).not.toHaveProperty("archisignSubjectDriftAt");
+    }
+  });
+});

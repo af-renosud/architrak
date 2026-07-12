@@ -41,6 +41,7 @@ import adminDriveUploadsRouter from "./admin-drive-uploads";
 import adminIntakeJobsRouter from "./admin-intake-jobs";
 import adminPennylaneRouter from "./admin-pennylane";
 import adminSignedPdfRecoveryRouter from "./admin-signed-pdf-recovery";
+import adminArchisignRenderingRouter from "./admin-archisign-rendering";
 import healthzRouter from "./healthz";
 import designContractsRouter from "./design-contracts";
 import reconciliationRouter from "./reconciliation";
@@ -121,6 +122,7 @@ export async function registerRoutes(
   app.use(adminIntakeJobsRouter);
   app.use(adminPennylaneRouter);
   app.use(adminSignedPdfRecoveryRouter);
+  app.use(adminArchisignRenderingRouter);
   app.use(designContractsRouter);
   app.use(reconciliationRouter);
 

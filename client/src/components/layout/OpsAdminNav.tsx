@@ -10,6 +10,7 @@ const OPS_NAV_ITEMS = [
   { path: "/admin/ops/intake-jobs", label: "Intake routing" },
   { path: "/admin/ops/pennylane-pushes", label: "Pennylane pushes" },
   { path: "/admin/ops/signed-pdf-recovery", label: "Signed PDF recovery" },
+  { path: "/admin/ops/archisign-rendering-drift", label: "Archisign rendering" },
 ] as const;
 
 interface DriveStatusResponse {

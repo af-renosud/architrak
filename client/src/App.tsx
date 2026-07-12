@@ -25,6 +25,7 @@ import AdminDriveUploads from "@/pages/admin-drive-uploads";
 import AdminIntakeJobs from "@/pages/admin-intake-jobs";
 import AdminPennylanePushes from "@/pages/admin-pennylane-pushes";
 import AdminSignedPdfRecovery from "@/pages/admin-signed-pdf-recovery";
+import AdminArchisignRendering from "@/pages/admin-archisign-rendering";
 import { Loader2 } from "lucide-react";
 
 function Router() {
@@ -49,6 +50,7 @@ function Router() {
       <Route path="/admin/ops/intake-jobs" component={AdminIntakeJobs} />
       <Route path="/admin/ops/pennylane-pushes" component={AdminPennylanePushes} />
       <Route path="/admin/ops/signed-pdf-recovery" component={AdminSignedPdfRecovery} />
+      <Route path="/admin/ops/archisign-rendering-drift" component={AdminArchisignRendering} />
       <Route component={NotFound} />
     </Switch>
   );
