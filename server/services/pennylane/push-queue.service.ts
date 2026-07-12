@@ -639,7 +639,7 @@ async function runEmailSendPush(
   return { kind: "ok", gmailMessageId };
 }
 
-function buildClientEmailBody(project: Project, feeEntry: FeeEntry): string {
+export function buildClientEmailBody(project: Project, feeEntry: FeeEntry): string {
   const greeting = project.clientContactName ? `Dear ${project.clientContactName},` : "Dear Client,";
   const amount = Number(feeEntry.feeAmount).toFixed(2);
   return [
