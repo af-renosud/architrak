@@ -24,3 +24,17 @@ entirely (not shown to the client, not stored by us).
 (resume branch skips `/create`, never overwrites). Making the note actually reach
 the client still depends on Archisign rendering `body` in their signer-email
 template — that is a change on the Archisign side, not ours.
+
+## Live verification recipe (July 2026 — English subject confirmed)
+
+The English subject ("Electronic signature request — devis …", UTF-8 em-dash)
+was confirmed rendering correctly in a real signer email by a human inspecting
+the inbox. Useful facts for re-verifying:
+- `/create` alone leaves the envelope in `draft` and sends NO email — safe probe.
+  `/send` triggers the invitation email. Short `expiresAt` (15 min) self-cleans.
+- There is no API echo of `subject`: `GET /api/v1/envelopes/:id` on the live
+  Archisign returns the SPA HTML, not JSON. Only a human inbox check works.
+- The workspace Gmail connector token carries only `gmail.send` + labels scopes —
+  it CANNOT read any inbox (`messages.list`/`getProfile` → 403), so end-to-end
+  email inspection must go through the user. Also, the connector API's
+  `connector_names=google-mail` filter returns 0 items — query unfiltered.
