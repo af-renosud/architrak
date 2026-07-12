@@ -22,6 +22,10 @@ vi.mock("../../storage", () => ({
     getAvenantsByDevis: vi.fn(),
     createAvenant: vi.fn(),
     updateAvenant: vi.fn(),
+    countOpenDevisChecks: vi.fn(),
+    getLatestInsuranceOverrideForDevis: vi.fn(),
+    revokeDevisCheckTokenIfFullyInvoiced: vi.fn(),
+    revokeDevisCheckTokensForDevis: vi.fn(),
   },
 }));
 

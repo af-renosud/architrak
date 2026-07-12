@@ -201,12 +201,17 @@ describe("PATCH /api/devis/:id/translation", () => {
     expect(byNum.get(2)?.edited).toBe(false);
   });
 
-  it("returns 409 when the translation is finalised and cannot be edited", async () => {
+  it("accepts edits on a finalised translation and preserves the finalised status", async () => {
+    // Intended contract: architects can make inline tweaks to an approved
+    // (finalised) translation without re-translating everything. The edit is
+    // accepted, cached PDFs are invalidated, and the status stays "finalised"
+    // (approval metadata untouched) rather than dropping back to "edited".
     getDevisTranslation.mockResolvedValue({
       status: "finalised",
       headerTranslated: {},
       lineTranslations: [],
     });
+    updateDevisTranslation.mockImplementation(async (_id: number, patch: Record<string, unknown>) => patch);
 
     const res = await fetch(`${baseUrl}/api/devis/11/translation`, {
       method: "PATCH",
@@ -214,8 +219,16 @@ describe("PATCH /api/devis/:id/translation", () => {
       body: JSON.stringify({ header: { description: "x" } }),
     });
 
-    expect(res.status).toBe(409);
-    expect(updateDevisTranslation).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(updateDevisTranslation).toHaveBeenCalledTimes(1);
+    const [calledId, patch] = updateDevisTranslation.mock.calls[0];
+    expect(calledId).toBe(11);
+    expect(patch).toMatchObject({
+      status: "finalised",
+      translatedPdfStorageKey: null,
+      combinedPdfStorageKey: null,
+      headerTranslated: { description: "x" },
+    });
   });
 
   it("returns 404 when there is no translation row to update", async () => {
