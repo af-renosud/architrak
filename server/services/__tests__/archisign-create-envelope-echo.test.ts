@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 /**
- * Coverage for the proposed contract §3.5.1.1(c) `emailRendering` echo on
+ * Coverage for the contract §3.5.1.1(c) `emailRendering` echo (in force
+ * since 2026-07-13, countersigned 2026-07-12) on
  * createEnvelope (Task #277).
  *
  * Pinned behaviours:

@@ -323,18 +323,24 @@ router.post(
           // Default expiresAt = now + 30d (handled inside the client).
           // Client-facing (rendered by Archisign in the signer email) —
           // English copy, see buildArchisignEnvelopeSubject (Task #269).
-          // Rendering is live-confirmed but only becomes a contractual
-          // guarantee once the v1.2 §3.5.1.1 amendment is countersigned
-          // (contract §7.2) — until then Archisign could silently fall back
-          // to its default subject.
+          // GUARANTEED since v1.2 §3.5.1.1 entered force (countersigned
+          // 2026-07-12, in force 2026-07-13 — contract §7.2): our string
+          // appears verbatim as a contiguous substring of the Subject
+          // header. Archisign frames the header "[<firm>] <prefix> <our
+          // subject>" — permitted by the rev2 clause; dropping our subject
+          // is now a contract breach, detectable via the emailRendering
+          // echo (subjectApplied=false triggers our operator warning).
           subject: buildArchisignEnvelopeSubject(d.devisCode),
           // Optional architect note (already trimmed + length-capped by sendBody).
-          // Archisign does NOT render this today (live-confirmed July 2026,
-          // contract §3.5.1) — the note reaches the client via our own
-          // context email below. Revisit if Archisign elects RENDERED under
-          // the proposed §3.5.1.1(b). On the resume branch we never reach
-          // this block, so the message is silently dropped — the FE hides
-          // the input in that case.
+          // GUARANTEED rendered since v1.2 §3.5.1.1(b): Archisign elected
+          // RENDERED and countersigned 2026-07-12 (in force 2026-07-13) —
+          // rendered under "Message from the sender:" in the signer email.
+          // Historical note: our July 2026 inbox check saw NO rendered block
+          // (dispute recorded at contract §3.5.1; a fresh-envelope inbox
+          // re-check remains a worthwhile verification). We still send our
+          // own context email below as delivery redundancy + audit trail.
+          // On the resume branch we never reach this block, so the message
+          // is silently dropped — the FE hides the input in that case.
           body: personalMessage,
         });
       } catch (err) {
@@ -363,13 +369,12 @@ router.post(
         archisignOtpDestination: createResp.otpDestination,
         archisignEnvelopeExpiresAt: createResp.expiresAt ? new Date(createResp.expiresAt) : null,
         archisignEnvelopeStatus: "sent",
-        // Persist the architect's personalised note on first send. We keep our
-        // own copy because Archisign does not echo it back and does NOT render
-        // it in the signer email (live-confirmed July 2026; contract §3.5.1) —
-        // this closes the audit loop. Local persistence stays REQUIRED even if
-        // Archisign later elects RENDERED under the proposed §3.5.1.1(b): the
-        // audit copy and the context-email fallback both read from it. Written
-        // only here (the resume branch skips /create), never overwritten on retry.
+        // Persist the architect's personalised note on first send. We keep
+        // our own copy because Archisign does not echo it back. Local
+        // persistence stays REQUIRED even under the in-force §3.5.1.1(b)
+        // RENDERED guarantee (countersigned 2026-07-12): the audit copy and
+        // the context-email redundancy both read from it. Written only here
+        // (the resume branch skips /create), never overwritten on retry.
         archisignSignerMessage: personalMessage ?? null,
       };
       await storage.updateDevis(devisId, persistCreate);

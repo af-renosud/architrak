@@ -131,3 +131,101 @@ countersign needed).
   reads an optional `emailRendering` object and logs an operator-visible
   warning when `subjectApplied === false` for a non-empty sent subject. This
   is inert until you ship the echo.
+
+---
+
+# Round 2 relay (2026-07-12) — Architrak response to Archisign's first reply
+
+Archisign's 2026-07-12 reply (no countersign; RENDERED elected; clause (a)
+counter-proposed; lineage question; body-observation dispute) is recorded in
+our contract copy at §7.2. Our response, relayed back:
+
+## 1. Clause (a) — your counter-proposal is ACCEPTED and folded as rev2
+
+The clause now requires the caller's subject **verbatim and unmodified as a
+contiguous substring** of the RFC 5322 Subject header, and explicitly permits
+your `[<firm name>] <configurable prefix> <caller subject>` framing (default
+prefix "Signature Required:"). Constraints kept: no truncation/re-casing/
+internal alteration, RFC 2047 survival for UTF-8, framing must not alter,
+split, or duplicate the caller's subject, dropping it entirely is a breach,
+same framed construction on every re-send, ≤ 256 code points,
+`400 subject_too_long` rather than silent truncation. We do NOT require a
+bare unframed subject — no engineering ask on your side for (a).
+
+Full rev2 text is in §3.5.1.1(a) of our copy; the version reproduced in the
+Round-2 relay message is authoritative for your review.
+
+## 2. Clause (b) — RENDERED election noted (provisional until countersign)
+
+Recorded in our §7.2 as provisional. On the factual dispute: our July 2026
+check was performed by a human against a recovered live signer email and
+found no rendered message block; you assert the "Message from the sender:"
+rendering is live. One of the two observations is wrong, or the template
+changed between the two checks. We will re-verify against a fresh envelope
+from our side. Either way the dispute is moot once the amendment is in force:
+RENDERED becomes a MUST, and your `bodyApplied` echo plus an inbox check
+verify it. This dispute does not block the countersign.
+
+## 3. Clause (c) — agreed; ship whenever ready
+
+Our `/create` client already tolerates the echo's absence, so you can ship
+it before or after countersign without coordination.
+
+## 4. Version lineage — resolved, no drift on this boundary
+
+You hold v1.0 + your bilateral v1.3/v1.3.1; you hold no v1.1. That is
+CORRECT, not drift: v1.1 (§5.3.2.1, canonical timestamp form) amended only
+the Architrak↔Archidoc boundary, and our §7.1 explicitly records "Archisign
+is not in scope for this v1.1 amendment." Symmetrically, we do not hold your
+bilateral v1.3/v1.3.1. Our §7 history for your records:
+
+- v1.0 — frozen 2026-04-25, tri-party confirm (you confirmed at rc2 with
+  pre-commitment to higher rc tags).
+- v1.1 — 2026-05-03/04, §5.3.2.1 canonical ISO-8601 timestamp mandate,
+  Architrak↔Archidoc boundary only, countersigned by those two parties in
+  §7.1. You were explicitly out of scope.
+- v1.2 (this proposal) — 2026-07-12, §3.5.1.1.
+
+Version tags are per-copy lineage. The cross-copy authoritative identifiers
+are the **clause anchor (§3.5.1.1) and the proposal date (2026-07-12)**.
+Record this amendment under the next free tag in your lineage (v1.4 in your
+copy is fine); both sides' sign-off tables cross-reference by anchor + date.
+
+## 5. What we need back
+
+A completed countersign block against the rev2 text:
+
+```
+ARCHISIGN COUNTERSIGN — §3.5.1.1 rev2 (proposed 2026-07-12; your lineage tag: ____)
+Countersigned: yes / no
+Date (UTC, YYYY-MM-DD): <date>
+body election: RENDERED / NOT-RENDERED
+Countersigned by: <team/agent name>
+Remaining objections (or "none"): <details>
+emailRendering echo implementation status: <shipped / planned date>
+```
+
+The clause enters force at 00:00:00 UTC the day after the later countersign
+date (ours is recorded 2026-07-12, reaffirmed for rev2).
+
+---
+
+# RESOLVED — Archisign countersigned (2026-07-12)
+
+Round-2 countersign block received via the relay channel:
+
+```
+ARCHISIGN COUNTERSIGN — §3.5.1.1 rev2 (proposed 2026-07-12; your lineage tag: v1.4)
+Countersigned: yes
+Date (UTC, YYYY-MM-DD): 2026-07-12
+body election: RENDERED
+Countersigned by: Archisign engineering
+Remaining objections (or "none"): none
+emailRendering echo implementation status: shipped
+```
+
+Recorded in contract §7.2. Later countersign date = 2026-07-12 →
+**§3.5.1.1 in force from 00:00:00 UTC 2026-07-13.** Contract title bumped
+v1.1 → v1.2 (Archisign's copy records the amendment as v1.4 in its own
+lineage; cross-copy identifiers are the clause anchor §3.5.1.1 + proposal
+date 2026-07-12). This document is now historical negotiation record.

@@ -31,12 +31,14 @@ import { env } from "../env";
  * Exported for the English-copy regression guard
  * (server/__tests__/client-english-copy.test.ts).
  *
- * Contract status (§3.5.1 / proposed §3.5.1.1): rendering is live-confirmed
- * (July 2026 inbox check) but only becomes a versioned guarantee once
- * Archisign countersigns the v1.2 amendment in contract §7.2. Until then a
- * silent fallback to Archisign's default subject would not breach the
- * contract — the emailRendering echo consumed in createEnvelope() below is
- * the detection mechanism once v1.2 lands.
+ * Contract status (§3.5.1.1, IN FORCE since 2026-07-13 — countersigned by
+ * Archisign 2026-07-12, contract §7.2): this subject is GUARANTEED to appear
+ * verbatim as a contiguous substring of the invitation email's Subject
+ * header. Archisign frames the header "[<firm>] <prefix> <subject>" (default
+ * prefix "Signature Required:") — permitted by the rev2 clause. A silent
+ * fallback to Archisign's default subject is now a contract breach; the
+ * emailRendering echo consumed in createEnvelope() below is the detection
+ * mechanism (subjectApplied=false → operator warning).
  */
 export function buildArchisignEnvelopeSubject(devisCode: string): string {
   return `Electronic signature request — devis ${devisCode}`;
@@ -70,11 +72,12 @@ interface CreateEnvelopePayload {
   webhookUrl: string;
   // Optional override of the 30-day default (§G5: ≥ now()+1min).
   expiresAt?: Date;
-  // Free-form subject/body for the signer-facing email (contract §3.5.1;
-  // rendering guarantee proposed as §3.5.1.1 v1.2, pending Archisign
-  // countersign). Live-observed: subject IS rendered verbatim; body is
-  // accepted but NOT rendered (July 2026 inbox check) — the architect's
-  // note reaches the client via Architrak's own context email instead.
+  // Free-form subject/body for the signer-facing email. Guaranteed by the
+  // in-force contract §3.5.1.1 (countersigned 2026-07-12): subject appears
+  // verbatim as a contiguous substring of the Subject header; body is
+  // RENDERED under "Message from the sender:" per Archisign's §7.2
+  // election. The architect's note is ALSO delivered via Architrak's own
+  // context email (redundancy + audit — see routes/archisign-envelopes.ts).
   subject?: string;
   body?: string;
 }
@@ -107,8 +110,9 @@ export interface CreateEnvelopeResponse {
   accessToken: string;
   otpDestination: string;
   expiresAt: string;        // ISO 8601 — Archisign's authoritative value (echoed for storage)
-  // Proposed contract §3.5.1.1(c) echo — absent until Archisign ships the
-  // v1.2 amendment. Absence MUST be tolerated (pre-v1.2 servers).
+  // Contract §3.5.1.1(c) echo — in force since 2026-07-13; Archisign shipped
+  // it at countersign time. Absence MUST still be tolerated (pre-v1.2
+  // servers / clause requirement).
   emailRendering?: { subjectApplied: boolean; bodyApplied: boolean };
 }
 
@@ -126,7 +130,7 @@ const createEnvelopeWireSchema = z.object({
       otpDestination: z.string().min(1),
     }),
   ).min(1),
-  // Proposed §3.5.1.1(c) rendering echo. Deliberately lenient — the clause
+  // §3.5.1.1(c) rendering echo (in force). Deliberately lenient — the clause
   // requires us to tolerate absence AND extra keys, and a malformed echo
   // from a future server must never fail the whole /create (the envelope
   // was still created). `.catch(undefined)` degrades any bad shape to
@@ -337,9 +341,10 @@ export async function createEnvelope(payload: CreateEnvelopePayload): Promise<Cr
   }
   const wire = parsed.data;
   const signer = wire.signers[0];
-  // Proposed §3.5.1.1(c) — the anti-silent-drift check. Non-fatal by
-  // design: the envelope exists and the flow must proceed; the warning is
-  // the operator-visible signal that the custom subject was dropped.
+  // §3.5.1.1(c) (in force since 2026-07-13) — the anti-silent-drift check.
+  // Non-fatal by design: the envelope exists and the flow must proceed; the
+  // warning is the operator-visible signal that the custom subject was
+  // dropped, which is now a contract breach.
   const emailRendering = wire.emailRendering
     ? {
         subjectApplied: wire.emailRendering.subjectApplied,

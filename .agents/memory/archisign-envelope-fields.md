@@ -1,49 +1,63 @@
 ---
 name: Archisign /create subject & body behaviour
-description: How Archisign treats the undocumented subject/body fields on envelope create, and why ArchiTrak persists the signer note locally.
+description: The in-force v1.2 §3.5.1.1 rendering guarantee for subject/body on envelope create, the negotiation history, and why ArchiTrak still persists the signer note locally.
 ---
 
 # Archisign envelope `subject` / `body` on `/create`
 
 ArchiTrak sends `subject` and `body` to Archisign's `POST /api/v1/envelopes/create`.
-As of 2026-07-12 the contract §3.5.1 accurately documents the *observed* behaviour
-(subject rendered / body NOT rendered), and a **v1.2 amendment (§3.5.1.1) is
-PROPOSED but not countersigned** — it would make subject rendering a versioned
-MUST, force Archisign to elect RENDERED/NOT-RENDERED for `body`, and add an
-additive `emailRendering` echo to the `/create` 201 so drift is detectable
-(ArchiTrak's client already consumes the echo tolerantly and warns on
-`subjectApplied=false`). Until Archisign records its countersign + body election
-in contract §7.2 (relay package: `docs/AMENDMENT_PROPOSAL_v1.2_signer_email_fields.md`),
-there is still NO guarantee — Archisign can change rendering without breach.
 
-**Trust caution:** the 2026-05-30 contract text claiming body was rendered came
-from an Archisign-side *written description* and was disproved by a live inbox
-check — for signer-email behaviour, only a human inbox check is evidence.
+## Contract state: v1.2 §3.5.1.1 IN FORCE since 2026-07-13 (countersigned 2026-07-12)
 
-Empirically (confirmed from a recovered live "Document Ready for Signing" email):
-- **`subject` IS rendered** in the signer email (appears in the Subject/Reference box).
-- **`body` is NOT rendered** — Archisign's email template has no slot for a custom
-  message, so the architect's personalised note silently disappears on their side.
+- **`subject` — guaranteed rendered** verbatim as a **contiguous substring** of
+  the invitation email's RFC 5322 Subject header. Archisign frames the header
+  `[<firm name>] <configurable prefix> <our subject>` (default prefix
+  "Signature Required:") — the framing is permitted; altering/splitting/dropping
+  our string is a breach. Same framed construction on every re-send. ≤ 256 code
+  points, `400 subject_too_long`, no silent truncation.
+- **`body` — Archisign elected RENDERED** (countersign 2026-07-12): rendered
+  under a "Message from the sender:" heading, plain text, HTML-escaped,
+  ≤ 2 000 code points, `400 body_too_long`.
+- **`emailRendering` echo shipped** on the `/create` 201:
+  `{ subjectApplied, bodyApplied }`, absence-tolerant. ArchiTrak's client
+  consumes it and logs an operator-visible warning on `subjectApplied=false`
+  for a non-empty sent subject — this is the drift detector.
+- Change control: any change to the above (incl. framing shape, election,
+  limits) requires a further versioned amendment; silent drift is a breach.
+- Lineage quirk: Archisign records this amendment as **v1.4 in its own copy**
+  (it holds v1.0 + bilateral v1.3/v1.3.1, no v1.1 — v1.1 was
+  Architrak↔Archidoc-only). Cross-copy identifiers are the clause anchor
+  §3.5.1.1 + proposal date 2026-07-12. Version tags are per-copy — expect
+  numbering mismatches with counterparties and reconcile by anchor + date.
 
-**Why this matters:** the personalised note typed in the "Envoyer à la signature"
-dialog was previously *only* forwarded as `body` and kept nowhere, so it was lost
-entirely (not shown to the client, not stored by us).
+## Unresolved factual dispute (verification item, not a contract gap)
 
-**How ArchiTrak handles it now:** the note is persisted locally in
-`devis.archisign_signer_message`, written one-shot in the post-`/create` block
-(resume branch skips `/create`, never overwrites). Making the note actually reach
-the client still depends on Archisign rendering `body` in their signer-email
-template — that is a change on the Archisign side, not ours.
+Our July 2026 human inbox check saw NO rendered `body` block; Archisign's
+2026-07-12 reply asserts the "Message from the sender:" rendering was live all
+along. One observation is wrong or the template changed. Recorded as a dispute
+note at contract §3.5.1. Since RENDERED is now a MUST, verify on the next real
+envelope: check `bodyApplied: true` on the 201 AND that the message block
+appears in the signer email. `bodyApplied: false` on a non-empty body = breach.
 
-## Live verification recipe (July 2026 — English subject confirmed)
+**Trust caution (still valid):** Archisign written descriptions have been
+contradicted by live inbox checks before — for signer-email behaviour, a human
+inbox check is the only definitive evidence. The echo now gives a machine
+signal, but the email itself is the ground truth.
 
-The English subject ("Electronic signature request — devis …", UTF-8 em-dash)
-was confirmed rendering correctly in a real signer email by a human inspecting
-the inbox. Useful facts for re-verifying:
+## How ArchiTrak handles the architect's note
+
+Persisted locally in `devis.archisign_signer_message`, written one-shot in the
+post-`/create` block (resume branch skips `/create`, never overwrites), and
+ALSO delivered via ArchiTrak's own context email from the architect's Gmail.
+Local persistence + context email stay REQUIRED under the RENDERED guarantee
+(audit copy + delivery redundancy).
+
+## Live verification recipe
+
 - `/create` alone leaves the envelope in `draft` and sends NO email — safe probe.
   `/send` triggers the invitation email. Short `expiresAt` (15 min) self-cleans.
-- There is no API echo of `subject`: `GET /api/v1/envelopes/:id` on the live
-  Archisign returns the SPA HTML, not JSON. Only a human inbox check works.
+- `GET /api/v1/envelopes/:id` on the live Archisign returns SPA HTML, not JSON —
+  no API echo of `subject` besides the create-time `emailRendering` object.
 - The workspace Gmail connector token carries only `gmail.send` + labels scopes —
   it CANNOT read any inbox (`messages.list`/`getProfile` → 403), so end-to-end
   email inspection must go through the user. Also, the connector API's

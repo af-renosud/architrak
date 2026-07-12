@@ -2,9 +2,9 @@
 >
 > **Filename note:** this file remains named `INTER_APP_CONTRACT_v1.0.md` for stability of downstream references (route handlers, test fixtures, the joint live-test thread `.local/architrak_messages_2026_05_02.md`). Treat the filename as a historical artifact; the authoritative version marker is the title below.
 >
-> **PROPOSED v1.2 AS OF 2026-07-12 (not yet in force)** — §3.5.1.1 signer-invitation email rendering guarantee (`subject` MUST-render mandate, `body` RENDERED/NOT-RENDERED election, additive `emailRendering` echo on `/create` 201), proposed by Architrak, pending Archisign countersign in §7.2. A companion factual correction was applied to the §3.5.1 descriptive paragraph (the 2026-05-30 "body is rendered" claim was disproved by a July 2026 live inbox check). The contract remains at v1.1 until §7.2 records the Archisign countersign.
+> **AMENDED v1.2 AS OF 2026-07-12 — IN FORCE 2026-07-13 00:00:00 UTC** — §3.5.1.1 signer-invitation email rendering guarantee (`subject` verbatim-as-contiguous-substring MUST-render mandate at rev2, `body` election **RENDERED**, additive `emailRendering` echo on `/create` 201 — shipped by Archisign at countersign time). Proposed by Architrak 2026-07-12; rev2 issued same day after Archisign's first response (clause (a) rewritten to permit Archisign's firm-name/prefix Subject-header framing); **Archisign countersigned the rev2 text 2026-07-12** (recorded in §7.2; Archisign records the amendment as v1.4 in its own lineage — cross-copy identifiers are the clause anchor §3.5.1.1 + proposal date, per the §7.2 lineage resolution). Both countersign dates are 2026-07-12, so the clause entered force at 00:00:00 UTC 2026-07-13. A companion factual correction was applied to the §3.5.1 descriptive paragraph (the 2026-05-30 "body is rendered" claim vs. the July 2026 live inbox check — the residual factual dispute is recorded at §3.5.1 and is moot now that RENDERED is a versioned MUST). Title bumped v1.1 → v1.2.
 
-# DEVIS SIGN-OFF WORKFLOW — INTER-APP CONTRACT v1.1
+# DEVIS SIGN-OFF WORKFLOW — INTER-APP CONTRACT v1.2
 
 **Status:** **FROZEN at v1.0 as of 2026-04-25.** All three apps have confirmed (Architrak self-attested as drafter; Archisign `confirmed v1.0-rc2` with explicit pre-commitment to higher rc tags; Archidoc `confirmed v1.0-rc3`). v1.0 is byte-identical to v1.0-rc3 except for this status block, the §7 sign-off table, and the file header/footer rc-tag cleanup. See §7 sign-off block for full confirmation record.
 **Drafted by:** Architrak, transcribing from the three Round-3 §7 contributions.
@@ -458,40 +458,70 @@ against a real signer inbox (July 2026):
   July 2026 live inbox check disproved that claim for the running production
   template. That earlier text is superseded by this correction.)
 
-This paragraph documents observation, not guarantee: neither behaviour is a
-versioned obligation, and Archisign could change either without breaching the
-frozen wire shapes. The guaranteed rendering semantics are the subject of the
-**proposed v1.2 clause §3.5.1.1** below — until that clause is countersigned in
-§7.2, senders MUST NOT rely on `subject` or `body` reaching the signer.
+**Dispute note (2026-07-12).** Archisign's v1.2 response (§7.2) disputes the
+`body` observation above, asserting the "Message from the sender:" rendering
+is and has been live in its production template, and asks for re-verification
+against a fresh envelope. The two `subject` accounts are compatible (Architrak's
+live check confirmed the subject string verbatim inside the email; Archisign
+frames the RFC 5322 `Subject` header as `[<firm name>] <prefix> <subject>`).
+The `body` accounts are not compatible and a joint fresh-envelope inbox check
+remains open as a verification item. Because Archisign elected RENDERED under
+§3.5.1.1(b) **and countersigned (2026-07-12, §7.2)**, the dispute is moot as a
+contract matter: rendering is now a versioned MUST, and the clause-(c)
+`bodyApplied` echo (shipped by Archisign at countersign time) plus an inbox
+check verify it. A `bodyApplied: false` on a non-empty sent `body`, or a
+missing message block in a fresh signer email, is now a breach — not an
+ambiguity.
+
+The paragraphs above document historical observation. As of 2026-07-13
+(v1.2 in force) the rendering semantics are **guaranteed by clause §3.5.1.1**
+below: senders MAY rely on `subject` reaching the signer verbatim as a
+contiguous substring of the Subject header, and on `body` being rendered per
+the RENDERED election.
 
 Architrak's sender-side behaviour: `subject` is always sent (English copy,
 `buildArchisignEnvelopeSubject`); `body` is sent only on first `/create` (the
 resume branch skips `/create`), sourced from the architect's optional note in
-the send-to-signer dialog. Because `body` does not reach the signer, Architrak
-persists the note locally in `devis.archisign_signer_message` and delivers it
-to the client itself via a separate context email sent from the architect's
-Gmail (independent of Archisign).
+the send-to-signer dialog. Architrak persists the note locally in
+`devis.archisign_signer_message` (audit copy) and additionally delivers it to
+the client via a separate context email sent from the architect's Gmail —
+retained deliberately even under the RENDERED guarantee, as audit trail and
+delivery redundancy.
 
-#### §3.5.1.1 Signer-invitation email rendering guarantee (PROPOSED v1.2 — pending Archisign countersign, see §7.2)
+#### §3.5.1.1 Signer-invitation email rendering guarantee (v1.2 — IN FORCE 2026-07-13, countersigned §7.2)
 
-**Status: PROPOSED by Architrak 2026-07-12.** Not in force until Archisign
-records its countersign (and `body` election) in §7.2. Until then, the
-descriptive paragraph in §3.5.1 governs — i.e. no rendering guarantee exists.
+**Status: IN FORCE since 00:00:00 UTC 2026-07-13.** Proposed by Architrak
+2026-07-12; rev2 issued 2026-07-12 (clause (a) rewritten per Archisign's
+same-day counter-proposal — see the §7.2 response record); countersigned by
+Archisign 2026-07-12 with `body` election **RENDERED** (§7.2). Archisign
+records this amendment as v1.4 in its own lineage.
 
-**(a) `subject` — MUST render.** When `/create` receives a `subject` that is a
-non-empty string after trimming, Archisign MUST set the signer-invitation
-email's RFC 5322 `Subject` header to that string verbatim — no prefixing,
-suffixing, truncation, or re-casing — applying RFC 2047 encoding as required
-for non-ASCII content (UTF-8 accents and em-dashes MUST survive intact). The
-same subject MUST be reused on every subsequent invitation email for that
-envelope (idempotent re-send per §3.5.2 and resend-on-expiry per §3.5.4).
-When `subject` is absent, null, or empty/whitespace after trimming, Archisign
-uses its default subject. Sender constraints: plain text, no line breaks,
-≤ 256 Unicode code points. Archisign MAY reject longer values with
-`400 subject_too_long`; it MUST NOT silently truncate.
+**(a) `subject` — MUST render (rev2, per Archisign 2026-07-12
+counter-proposal).** When `/create` receives a `subject` that is a non-empty
+string after trimming, Archisign MUST include that string **verbatim and
+unmodified as a contiguous substring** of the signer-invitation email's
+RFC 5322 `Subject` header — no truncation, re-casing, or internal alteration —
+applying RFC 2047 encoding as required for non-ASCII content (UTF-8 accents
+and em-dashes MUST survive intact). Archisign MAY frame the caller's subject
+with its firm-name/prefix framing (as of 2026-07-12:
+`[<firm name>] <configurable prefix> <caller subject>`, default prefix
+"Signature Required:"); the framing MUST NOT alter, split, or duplicate the
+caller's subject string, and dropping the caller's subject from the header
+entirely is a breach. The same framed subject construction MUST be applied on
+every subsequent invitation email for that envelope (idempotent re-send per
+§3.5.2 and resend-on-expiry per §3.5.4). When `subject` is absent, null, or
+empty/whitespace after trimming, Archisign uses its default subject. Sender
+constraints: plain text, no line breaks, ≤ 256 Unicode code points. Archisign
+MAY reject longer values with `400 subject_too_long`; it MUST NOT silently
+truncate. *(rev1 of this clause required the bare caller subject as the entire
+header — withdrawn 2026-07-12: it would have put Archisign's existing framed
+template in breach on day one, and the framing does not threaten the guarantee
+Architrak needs, which is that the client-facing subject text reaches the
+signer intact and its disappearance is detectable.)*
 
 **(b) `body` — Archisign MUST elect exactly one behaviour at countersign time
-and record the election in §7.2:**
+and record the election in §7.2.** *(Election recorded 2026-07-12: **RENDERED**
+— see §7.2.)*
 
 - **RENDERED** — `body` is rendered in the signer-invitation email under a
   "Message from the sender:" heading, between the standard intro line and the
@@ -909,15 +939,15 @@ These pre-date this contract. Their continued operation is a precondition; their
 
 - 2026-05-03 — §5.3.2.1 canonical ISO-8601 timestamp form mandate (sender-side `.SSS`-always for `signedAt` and `originalSignedAt` on the Architrak↔Archidoc boundary). Motivating incident: 2026-05-02 joint live E2E webhook test, T+breach-success fixture pre-fire patch. Decision-of-record: sender-side normalization preferred over receiver-side canonicalization-before-compare. Cutover trigger is anchored to §7.1 dual countersign + 1 day + 14-day compatibility tail (deterministic; no "date TBD"). See §5.3.2.1 for full clause text and §7.1 for the sign-off status.
 
-**v1.2 proposals (in flight):**
+**v1.2 amendments (logged here per §6 placeholder convention):**
 
-- 2026-07-12 — §3.5.1.1 signer-invitation email rendering guarantee, proposed by Architrak. Scope: `subject` MUST-render-verbatim mandate (incl. re-send reuse and RFC 2047 survival), `body` RENDERED / NOT-RENDERED election recorded at countersign, additive `emailRendering` echo on the `/create` 201 response as the anti-silent-drift mechanism, and change-control clause. Motivating risk: Architrak's client-facing English subject line (live-confirmed July 2026) rides an undocumented behaviour Archisign could drop without breaching the frozen wire shapes — no error would surface, the email would silently fall back to Archisign's default subject. Companion correction applied to the §3.5.1 descriptive paragraph (2026-05-30 "body is rendered" claim disproved by the July 2026 live inbox check). Pending Archisign countersign in §7.2; relay package at `docs/AMENDMENT_PROPOSAL_v1.2_signer_email_fields.md`.
+- 2026-07-12 — §3.5.1.1 signer-invitation email rendering guarantee, proposed by Architrak; **countersigned by Archisign 2026-07-12 (rev2 text, `body` election RENDERED); IN FORCE 00:00:00 UTC 2026-07-13.** Scope: `subject` MUST-render mandate (rev2: verbatim as a contiguous substring of the Subject header, Archisign firm-name/prefix framing permitted; incl. re-send reuse and RFC 2047 survival), `body` RENDERED election, additive `emailRendering` echo on the `/create` 201 response as the anti-silent-drift mechanism (shipped by Archisign at countersign time), and change-control clause. Motivating risk: Architrak's client-facing English subject line rode an undocumented behaviour Archisign could drop without breaching the frozen wire shapes. Companion correction applied to the §3.5.1 descriptive paragraph. Negotiation history: Archisign's first 2026-07-12 response withheld countersign pending a clause (a) rewrite (its Subject headers are framed `[<firm name>] <prefix> <subject>` — rev1's "no prefixing" was unratifiable), a version-lineage reconciliation (resolved: v1.1 was Architrak↔Archidoc-boundary-only per §7.1; Archisign records this amendment as v1.4 in its own lineage; cross-copy identifiers are clause anchor + proposal date), and disputed the §3.5.1 `body` observation (dispute note retained at §3.5.1; moot as a contract matter now that RENDERED is a versioned MUST). Full response record in §7.2; relay history in `docs/AMENDMENT_PROPOSAL_v1.2_signer_email_fields.md`.
 
 **v1.2 candidates (deferred):**
 
 - Archisign-side `signedAt` canonicalization on §5.2 / §3.3 webhook emissions (would let Architrak skip the relay-boundary canonicalization mandated by §5.3.2.1's "Architrak relay note"). Requires Archisign sign-off; not blocking for v1.1.
 
-**v2 deferrals:** None today beyond v1.2 candidates above. The contract remains complete and consistent at v1.1. Any new design content raised at Step 3 review must be queued here rather than modifying §1–§5.
+**v2 deferrals:** None today beyond v1.2 candidates above. The contract remains complete and consistent at v1.2. Any new design content raised at Step 3 review must be queued here rather than modifying §1–§5.
 
 ---
 
@@ -951,7 +981,7 @@ Contract amendment freezes at v1.1 when both parties record their countersign da
 - 14-day MAY-accept-with-warn compatibility tail through **2026-05-18 inclusive**
 - Day 15 = MUST-422 from **00:00:00 UTC 2026-05-19** (receiver-side strict-cutover marker)
 
-### §7.2 v1.2 amendment sign-off (§3.5.1.1 — proposed 2026-07-12, NOT yet in force)
+### §7.2 v1.2 amendment sign-off (§3.5.1.1 — proposed 2026-07-12, countersigned 2026-07-12, IN FORCE 2026-07-13)
 
 §3.5.1.1 comes into force at 00:00:00 UTC on the day following the later of the
 two countersign dates below. The `body` behaviour election (RENDERED /
@@ -961,15 +991,51 @@ not trigger the clause.
 
 | App | v1.2 amendment scope reviewed | Countersigned? | `body` election | Countersigned by | Date (UTC) |
 |---|---|---|---|---|---|
-| Architrak | §3.5.1.1 (drafter; sender of `subject`/`body`; consumer of the `emailRendering` echo) | yes | n/a (sender) | Architrak team | 2026-07-12 |
-| Archisign | §3.5.1.1 (renderer; owner of the invitation-email template and the `/create` response shape) | pending | pending | -- | -- |
+| Architrak | §3.5.1.1 rev2 (drafter; sender of `subject`/`body`; consumer of the `emailRendering` echo) | yes (rev1 2026-07-12; reaffirmed for rev2) | n/a (sender) | Architrak team | 2026-07-12 |
+| Archisign | §3.5.1.1 rev2 (renderer; owner of the invitation-email template and the `/create` response shape; records the amendment as **v1.4** in its own lineage) | **yes — rev2 text, no remaining objections; `emailRendering` echo shipped** | **RENDERED** | Archisign engineering | 2026-07-12 |
+
+**Derived in-force schedule (both rows recorded as of 2026-07-12):**
+
+- Later countersign date = max(2026-07-12, 2026-07-12) = **2026-07-12**
+- §3.5.1.1 **in force from 00:00:00 UTC 2026-07-13**
+- `emailRendering` echo: shipped by Archisign at countersign time (no
+  compatibility tail needed — the echo is additive and Architrak already
+  tolerated its absence)
+
+**Archisign first-response record (2026-07-12, earlier same day — NOT the countersign; retained as negotiation history):**
+
+- **Clause (a) counter-proposal — accepted, folded as rev2.** Archisign reports
+  every invitation Subject header is framed `[<firm name>] <configurable
+  prefix> <caller subject>` (default prefix "Signature Required:"), so rev1's
+  "no prefixing" wording would have been breached on day one. Clause (a) is
+  now verbatim-as-contiguous-substring with the framing explicitly permitted.
+- **Clause (b) — RENDERED elected.** Recorded above as provisional; per the
+  rule below the table, the election only counts alongside a countersign.
+  Archisign asserts the RENDERED template position already matches the spec
+  and disputes Architrak's §3.5.1 "body not rendered" observation — dispute
+  note recorded at §3.5.1; joint fresh-envelope re-verification pending.
+- **Clause (c) + limits — accepted as proposed.** `emailRendering` echo does
+  not exist yet; Archisign plans to ship it (with the ≤ 2 000 body cap and
+  `400 body_too_long`) within days of the amendment text being finalised.
+- **Version-lineage question — resolved, no drift on this boundary.**
+  Archisign holds v1.0 (frozen 2026-04-25) plus bilateral v1.3/v1.3.1
+  ("Contacts Channel" + handshake) amendments at its §8; it holds no v1.1.
+  That is correct and expected: v1.1 (§5.3.2.1) amended only the
+  Architrak↔Archidoc boundary and §7.1 explicitly records "Archisign is not
+  in scope for this v1.1 amendment". Symmetrically, Architrak does not hold
+  Archisign's bilateral v1.3/v1.3.1. Version tags are per-copy lineage;
+  **the clause anchor §3.5.1.1 and the amendment date 2026-07-12 are the
+  cross-copy authoritative identifiers.** Archisign MAY record this amendment
+  under the next free tag in its own lineage (e.g. v1.4) — the §7.2/§8
+  sign-off rows on each side cross-reference by clause anchor + date.
+
+Relay package for the Archisign side: `docs/AMENDMENT_PROPOSAL_v1.2_signer_email_fields.md`
+(rev2 relay appended 2026-07-12).
 
 Archidoc is not in scope for this v1.2 amendment: it does not send `subject`
 or `body` on `/create` today. If it starts doing so, §3.5.1.1 applies to it
 identically as a sender — no separate Archidoc countersign is required.
 
-Relay package for the Archisign side: `docs/AMENDMENT_PROPOSAL_v1.2_signer_email_fields.md`.
-
 ---
 
-## End of consolidated contract v1.1 (amends v1.0-rc3 — see top preamble for the v1.1 amendment frame and §7.1 for sign-off status; v1.2 §3.5.1.1 proposed — see §7.2)
+## End of consolidated contract v1.2 (amends v1.1 — see top preamble for the v1.1/v1.2 amendment frames, §7.1 for the v1.1 sign-off, and §7.2 for the v1.2 §3.5.1.1 sign-off, countersigned 2026-07-12, in force 2026-07-13)

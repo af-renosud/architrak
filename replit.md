@@ -97,10 +97,13 @@ sequence (`assertNoDevLoginBackdoorInProduction`) hard-fails if either is truthy
   with audit row in `insurance_overrides`.
 - **AT4 — Archisign envelope orchestration**: outbound `/envelopes/create` + `/envelopes/send`,
   inbound HMAC-v2 webhook (`/api/webhooks/archisign`) drives the devis sign-off lifecycle.
-  The custom invitation-email `subject` (and non-rendered `body`) are documented in contract
-  §3.5.1; a v1.2 rendering-guarantee amendment (§3.5.1.1 + `emailRendering` echo) is PROPOSED,
-  pending Archisign countersign in §7.2 — relay package at
-  `docs/AMENDMENT_PROPOSAL_v1.2_signer_email_fields.md`.
+  The invitation-email rendering guarantee (§3.5.1.1 + `emailRendering` echo) is **IN FORCE
+  since 2026-07-13** (Archisign countersigned rev2 on 2026-07-12; contract now v1.2, recorded
+  as v1.4 in Archisign's lineage): `subject` guaranteed verbatim as a contiguous substring of
+  the Subject header (Archisign firm-prefix framing permitted), `body` election RENDERED,
+  echo shipped — `subjectApplied=false` triggers an operator warning. Open verification item:
+  confirm the rendered body block on the next real envelope (our July 2026 inbox check
+  disputed it — see contract §3.5.1 dispute note).
 - **AT5 — Outbound Architrak → Archidoc webhook delivery**: signed `/work-authorisations`
   delivery with retry orchestrator, DLQ at `/admin/ops/webhook-dlq`, UUIDv7 idempotency,
   canonical-form timestamps per contract §5.3.2.1.
