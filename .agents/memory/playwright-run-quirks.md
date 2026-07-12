@@ -28,3 +28,7 @@ Rules for running `npx playwright test` here:
 **Why:** first attempts at running a new spec burned ~10 minutes on killed background runs and
 silent foreground timeouts before landing on the pattern above.
 **How to apply:** any time you run or debug `tests/browser/*.spec.ts`.
+
+- **TOAST_LIMIT is 1** — the shadcn toaster keeps only the most recent toast, so a flow that
+  fires success-then-warning shows ONLY the warning. Never assert two toasts visible at once;
+  assert the last-fired one.
