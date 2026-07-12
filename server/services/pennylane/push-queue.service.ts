@@ -625,7 +625,7 @@ async function runEmailSendPush(
     pdfBuffer = await getDocumentBuffer(storageKey);
   }
 
-  const subject = `Facture honoraires — ${project.name} (${project.code})`;
+  const subject = `Architect fee invoice (Honoraires) — ${project.name} (${project.code})`;
   const body = buildClientEmailBody(project, feeEntry);
   const filename = `Honoraires-${project.code}-FE${feeEntry.id}.pdf`;
 
@@ -640,20 +640,20 @@ async function runEmailSendPush(
 }
 
 function buildClientEmailBody(project: Project, feeEntry: FeeEntry): string {
-  const greeting = project.clientContactName ? `Bonjour ${project.clientContactName},` : "Bonjour,";
+  const greeting = project.clientContactName ? `Dear ${project.clientContactName},` : "Dear Client,";
   const amount = Number(feeEntry.feeAmount).toFixed(2);
   return [
     greeting,
     "",
-    `Veuillez trouver ci-joint la facture d'honoraires d'architecte pour le projet « ${project.name} » (${project.code}).`,
+    `Please find attached the architect's fee invoice (Honoraires) for project "${project.name}" (${project.code}).`,
     "",
-    `Montant : ${amount} € HT`,
+    `Amount: ${amount} € HT`,
     "",
-    "Vous pouvez régler cette facture par virement bancaire selon les coordonnées indiquées sur le document.",
+    "You can settle this invoice by bank transfer using the details shown on the document.",
     "",
-    "Pour toute question, n'hésitez pas à nous répondre par retour de mail.",
+    "If you have any questions, please feel free to reply to this email.",
     "",
-    "Cordialement,",
+    "Kind regards,",
   ].join("\r\n");
 }
 

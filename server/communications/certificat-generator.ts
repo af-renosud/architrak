@@ -1502,16 +1502,16 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
 
 export function buildCertificatEmailBody(data: { certificat: Certificat; project: Project; contractor: Contractor }): string {
   const { certificat, project, contractor } = data;
-  return `Madame, Monsieur,
+  return `Dear Client,
 
-Veuillez trouver ci-joint le Certificat de Paiement n\u00B0 ${certificat.certificateRef} relatif au projet "${project.name}" (${project.code}).
+Please find attached Certificat de Paiement no. ${certificat.certificateRef} for project "${project.name}" (${project.code}).
 
-Ce certificat concerne les travaux r\u00E9alis\u00E9s par l'entreprise ${contractor.name}.
+This certificat covers the works carried out by the contractor ${contractor.name}.
 
-Montant net \u00E0 payer TTC: ${formatCurrency(certificat.netToPayTtc)}
+Net amount payable TTC: ${formatCurrency(certificat.netToPayTtc)}
 
-Nous vous remercions de bien vouloir proc\u00E9der au r\u00E8glement dans les meilleurs d\u00E9lais.
+We kindly ask you to arrange payment at your earliest convenience.
 
-Cordialement,
+Kind regards,
 SAS Architects-France`;
 }

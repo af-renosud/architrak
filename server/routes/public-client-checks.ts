@@ -255,35 +255,35 @@ const portalReadIpLimiter = rateLimit({
   windowMs: 60_000,
   max: 240,
   keyer: ipKeyer,
-  message: "Trop de requêtes. Veuillez réessayer dans une minute.",
+  message: "Too many requests. Please try again in a minute.",
 });
 const portalReadTokenLimiter = rateLimit({
   name: "client-portal-read-tok",
   windowMs: 60_000,
   max: 60,
   keyer: tokenOnlyKeyer,
-  message: "Trop de requêtes. Veuillez réessayer dans une minute.",
+  message: "Too many requests. Please try again in a minute.",
 });
 const portalWriteIpLimiter = rateLimit({
   name: "client-portal-write-ip",
   windowMs: 60_000,
   max: 30,
   keyer: ipKeyer,
-  message: "Trop de requêtes. Veuillez réessayer dans une minute.",
+  message: "Too many requests. Please try again in a minute.",
 });
 const portalWriteTokenLimiter = rateLimit({
   name: "client-portal-write-tok",
   windowMs: 60_000,
   max: 10,
   keyer: tokenOnlyKeyer,
-  message: "Trop de requêtes. Veuillez réessayer dans une minute.",
+  message: "Too many requests. Please try again in a minute.",
 });
 
 async function touchToken(token: ClientCheckToken): Promise<void> {
   await storage.touchClientCheckTokenUsed(token.id, computeTokenExpiry());
 }
 
-/** HTML shell — vanilla JS, French labels, draggable PDF iframe. */
+/** HTML shell — vanilla JS, English labels (clients are English speakers), draggable PDF iframe. */
 router.get(
   "/p/client/:token",
   portalReadIpLimiter, portalReadTokenLimiter,
@@ -312,20 +312,20 @@ router.get(
     if (!lookup.ok) {
       const status = lookup.reason === "expired" ? 410 : 404;
       const message = lookup.reason === "expired"
-        ? "Lien expiré. Veuillez contacter votre interlocuteur Renosud."
-        : "Lien invalide ou expiré";
+        ? "This link has expired. Please contact your Renosud representative."
+        : "Invalid or expired link";
       return res.status(status).json({ message, expired: lookup.reason === "expired" });
     }
     const t = lookup.token;
     await touchToken(t);
 
     const devis = await storage.getDevis(t.devisId);
-    if (!devis) return res.status(404).json({ message: "Devis introuvable" });
+    if (!devis) return res.status(404).json({ message: "Devis not found" });
     const payload = await buildClientPortalPayload(devis, {
       clientName: t.clientName,
       clientEmail: t.clientEmail,
     });
-    if (!payload) return res.status(404).json({ message: "Devis introuvable" });
+    if (!payload) return res.status(404).json({ message: "Devis not found" });
     res.json(payload);
   },
 );
@@ -340,17 +340,17 @@ router.post(
     if (!lookup.ok) {
       const status = lookup.reason === "expired" ? 410 : 404;
       const message = lookup.reason === "expired"
-        ? "Lien expiré. Veuillez contacter votre interlocuteur Renosud."
-        : "Lien invalide ou expiré";
+        ? "This link has expired. Please contact your Renosud representative."
+        : "Invalid or expired link";
       return res.status(status).json({ message, expired: lookup.reason === "expired" });
     }
     const t = lookup.token;
     const check = await storage.getClientCheck(req.body.checkId);
     if (!check || check.devisId !== t.devisId) {
-      return res.status(404).json({ message: "Question introuvable" });
+      return res.status(404).json({ message: "Question not found" });
     }
     if (check.status === "resolved" || check.status === "cancelled") {
-      return res.status(409).json({ message: "Cette question est clôturée" });
+      return res.status(409).json({ message: "This question is closed" });
     }
     // Sanitise: never let user-supplied free text masquerade as a verdict
     // marker. The marker is a dedicated channel reserved for /agree and
@@ -381,8 +381,8 @@ router.post(
     if (!lookup.ok) {
       const status = lookup.reason === "expired" ? 410 : 404;
       const message = lookup.reason === "expired"
-        ? "Lien expiré. Veuillez contacter votre interlocuteur Renosud."
-        : "Lien invalide ou expiré";
+        ? "This link has expired. Please contact your Renosud representative."
+        : "Invalid or expired link";
       return res.status(status).json({ message, expired: lookup.reason === "expired" });
     }
     const t = lookup.token;
@@ -428,8 +428,8 @@ router.post(
     if (!lookup.ok) {
       const status = lookup.reason === "expired" ? 410 : 404;
       const message = lookup.reason === "expired"
-        ? "Lien expiré. Veuillez contacter votre interlocuteur Renosud."
-        : "Lien invalide ou expiré";
+        ? "This link has expired. Please contact your Renosud representative."
+        : "Invalid or expired link";
       return res.status(status).json({ message, expired: lookup.reason === "expired" });
     }
     const t = lookup.token;
@@ -451,7 +451,7 @@ router.post(
     await storage.createClientCheckMessage({
       checkId: check.id,
       authorType: "system",
-      body: `Le client (${t.clientName || t.clientEmail}) a confirmé son accord sur le devis.${note ? `\n\nNote : ${note}` : ""}`,
+      body: `The client (${t.clientName || t.clientEmail}) has confirmed their approval of the devis.${note ? `\n\nNote: ${note}` : ""}`,
       channel: "system",
     });
     await touchToken(t);
@@ -468,8 +468,8 @@ router.post(
     if (!lookup.ok) {
       const status = lookup.reason === "expired" ? 410 : 404;
       const message = lookup.reason === "expired"
-        ? "Lien expiré. Veuillez contacter votre interlocuteur Renosud."
-        : "Lien invalide ou expiré";
+        ? "This link has expired. Please contact your Renosud representative."
+        : "Invalid or expired link";
       return res.status(status).json({ message, expired: lookup.reason === "expired" });
     }
     const t = lookup.token;
@@ -489,7 +489,7 @@ router.post(
     await storage.createClientCheckMessage({
       checkId: check.id,
       authorType: "system",
-      body: `Le client (${t.clientName || t.clientEmail}) a indiqué un refus du devis.${note ? `\n\nMotif : ${note}` : ""}`,
+      body: `The client (${t.clientName || t.clientEmail}) has declined the devis.${note ? `\n\nReason: ${note}` : ""}`,
       channel: "system",
     });
     await touchToken(t);
@@ -507,13 +507,13 @@ router.get(
     if (!lookup.ok) {
       const status = lookup.reason === "expired" ? 410 : 404;
       const message = lookup.reason === "expired"
-        ? "Lien expiré. Veuillez contacter votre interlocuteur Renosud."
-        : "Lien invalide ou expiré";
+        ? "This link has expired. Please contact your Renosud representative."
+        : "Invalid or expired link";
       return res.status(status).json({ message, expired: lookup.reason === "expired" });
     }
     const t = lookup.token;
     const devis = await storage.getDevis(t.devisId);
-    if (!devis?.pdfStorageKey) return res.status(404).json({ message: "PDF indisponible" });
+    if (!devis?.pdfStorageKey) return res.status(404).json({ message: "PDF unavailable" });
     try {
       const doc = await getDocumentStream(devis.pdfStorageKey);
       res.setHeader("Content-Type", doc.contentType || "application/pdf");
@@ -522,22 +522,22 @@ router.get(
       await touchToken(t);
       doc.stream.pipe(res);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Erreur lecture PDF";
+      const msg = err instanceof Error ? err.message : "PDF read error";
       res.status(500).json({ message: msg });
     }
   },
 );
 
 function renderClientInvalid(): string {
-  return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Lien invalide</title>
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Invalid link</title>
 <style>body{font-family:system-ui,sans-serif;max-width:480px;margin:80px auto;padding:0 20px;color:#1f2937}</style>
-</head><body data-testid="page-client-invalid"><h1>Lien invalide</h1>
-<p>Ce lien n'est plus valable. Merci de contacter votre interlocuteur Renosud pour obtenir un nouveau lien.</p>
+</head><body data-testid="page-client-invalid"><h1>Invalid link</h1>
+<p>This link is no longer valid. Please contact your Renosud representative to obtain a new link.</p>
 </body></html>`;
 }
 
 function renderClientExpired(): string {
-  return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Lien expiré</title>
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Link expired</title>
 <style>
 body{font-family:system-ui,sans-serif;max-width:520px;margin:80px auto;padding:0 24px;color:#0f172a;line-height:1.5}
 h1{font-size:22px;margin:0 0 12px;color:#b45309}
@@ -545,10 +545,10 @@ h1{font-size:22px;margin:0 0 12px;color:#b45309}
 p{margin:8px 0}
 </style>
 </head><body data-testid="page-client-expired">
-<h1>Lien expiré</h1>
-<div class="note">Ce lien d'accès au portail de revue client a expiré pour des raisons de sécurité.</div>
-<p>Pour reprendre la revue de ce devis, merci de contacter votre interlocuteur Renosud (l'architecte qui vous a transmis ce lien). Il pourra vous générer un nouveau lien d'accès.</p>
-<p>Vos précédents messages et décisions sont conservés et restent accessibles à l'équipe Renosud.</p>
+<h1>Link expired</h1>
+<div class="note">This client review portal link has expired for security reasons.</div>
+<p>To resume reviewing this devis, please contact your Renosud representative (the architect who sent you this link). They can generate a new access link for you.</p>
+<p>Your previous messages and decisions are kept and remain available to the Renosud team.</p>
 </body></html>`;
 }
 
@@ -561,7 +561,7 @@ p{margin:8px 0}
  *
  * Kept in this module (rather than reusing renderPortalShell) because the
  * client and contractor portals have distinct action sets (Agree/Reject +
- * "Pose une question" instead of just "Reply"), distinct French copy, and
+ * "Ask a question" instead of just "Reply"), distinct English client copy, and
  * distinct data shapes — sharing a template would push branching deep into
  * the rendering JS and obscure the contract between the two portals.
  */
@@ -581,11 +581,11 @@ export function renderClientPortalShell(opts:
   const agreeUrl = opts.mode === "preview" ? null : `/p/client/${encodeURIComponent(opts.token)}/agree`;
   const rejectUrl = opts.mode === "preview" ? null : `/p/client/${encodeURIComponent(opts.token)}/reject`;
   return `<!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>${isPreview ? "Aperçu architecte — " : ""}Espace client — Renosud</title>
+<title>${isPreview ? "Architect preview — " : ""}Client portal — Renosud</title>
 <style>
   :root { color-scheme: light; }
   body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
@@ -658,18 +658,18 @@ export function renderClientPortalShell(opts:
 </style>
 </head>
 <body${isPreview ? ` data-preview="1"` : ""}>
-${isPreview ? `<div class="preview-banner" data-testid="banner-client-preview">Aperçu architecte — les actions ne seront pas envoyées.</div>` : ""}
+${isPreview ? `<div class="preview-banner" data-testid="banner-client-preview">Architect preview — actions will not be sent.</div>` : ""}
 <header>
-  <h1>Espace client — Renosud</h1>
-  <div class="meta" id="meta">Chargement…</div>
+  <h1>Client portal — Renosud</h1>
+  <div class="meta" id="meta">Loading…</div>
 </header>
-<main id="root"><div class="empty">Chargement…</div></main>
+<main id="root"><div class="empty">Loading…</div></main>
 
-<button class="pdf-toggle" id="pdfToggle" type="button" data-testid="button-client-pdf-toggle">Voir le devis (PDF)</button>
+<button class="pdf-toggle" id="pdfToggle" type="button" data-testid="button-client-pdf-toggle">View the devis (PDF)</button>
 <div class="pdf-panel" id="pdfPanel">
   <div class="pdf-handle" id="pdfHandle">
     <span>Devis — PDF</span>
-    <button id="pdfClose" type="button" aria-label="Fermer">×</button>
+    <button id="pdfClose" type="button" aria-label="Close">×</button>
   </div>
   <iframe id="pdfFrame" class="pdf-frame" title="Devis PDF" src="about:blank" data-testid="iframe-client-pdf"></iframe>
   <div class="pdf-resize" id="pdfResize"></div>
@@ -679,11 +679,11 @@ ${isPreview ? `<div class="preview-banner" data-testid="banner-client-preview">A
   <form method="dialog" class="dlg-body" id="verdictForm">
     <h3 id="verdictTitle"></h3>
     <p id="verdictBody"></p>
-    <textarea id="verdictNote" placeholder="Note ou motif (optionnel)" maxlength="5000" data-testid="textarea-verdict-note"></textarea>
+    <textarea id="verdictNote" placeholder="Note or reason (optional)" maxlength="5000" data-testid="textarea-verdict-note"></textarea>
     <div class="err" id="verdictErr"></div>
     <div class="dlg-actions">
-      <button type="button" class="btn-secondary" id="verdictCancel" data-testid="button-verdict-cancel">Annuler</button>
-      <button type="button" id="verdictConfirm" data-testid="button-verdict-confirm">Confirmer</button>
+      <button type="button" class="btn-secondary" id="verdictCancel" data-testid="button-verdict-cancel">Cancel</button>
+      <button type="button" id="verdictConfirm" data-testid="button-verdict-confirm">Confirm</button>
     </div>
   </form>
 </dialog>
@@ -697,9 +697,9 @@ const AGREE_URL = ${agreeUrl === null ? "null" : JSON.stringify(agreeUrl)};
 const REJECT_URL = ${rejectUrl === null ? "null" : JSON.stringify(rejectUrl)};
 const PREVIEW_MODE = ${isPreview ? "true" : "false"};
 const STATUS_LABELS = {
-  open: "Ouvert",
-  resolved: "Clôturé",
-  cancelled: "Annulé",
+  open: "Open",
+  resolved: "Closed",
+  cancelled: "Cancelled",
 };
 
 async function loadData() {
@@ -708,12 +708,12 @@ async function loadData() {
     const j = await r.json().catch(() => ({}));
     document.getElementById("root").innerHTML =
       '<div class="empty" data-testid="text-client-expired">' +
-      escapeHtml(j.message || "Lien expiré. Veuillez contacter votre interlocuteur Renosud.") +
+      escapeHtml(j.message || "This link has expired. Please contact your Renosud representative.") +
       '</div>';
     return null;
   }
   if (!r.ok) {
-    document.getElementById("root").innerHTML = '<div class="empty">Lien invalide ou expiré.</div>';
+    document.getElementById("root").innerHTML = '<div class="empty">Invalid or expired link.</div>';
     return null;
   }
   return r.json();
@@ -732,7 +732,7 @@ function render(data) {
   const devisInfo = renderDevisInfo(data);
   const verdictStrip = renderVerdictStrip(data);
   const askBlock = PREVIEW_MODE ? renderAskBlockPreview() : renderAskBlock();
-  const checksBlock = data.checks.length ? data.checks.map(renderCheck).join("") : '<div class="empty" data-testid="text-no-checks">Aucune question pour l\\'instant.</div>';
+  const checksBlock = data.checks.length ? data.checks.map(renderCheck).join("") : '<div class="empty" data-testid="text-no-checks">No questions yet.</div>';
 
   root.innerHTML = devisInfo + verdictStrip + askBlock + checksBlock;
 
@@ -751,11 +751,11 @@ function renderDevisInfo(data) {
   const title = titleBits.length ? '<h3 data-testid="text-devis-ref">' + titleBits.join(' — ') + '</h3>' : '';
   const descFr = d.description ? '<p class="devis-desc" data-testid="text-devis-description-fr">' + escapeHtml(d.description) + '</p>' : '';
   const descEn = d.descriptionEn ? '<p class="devis-desc devis-desc-en" data-testid="text-devis-description-en"><em>' + escapeHtml(d.descriptionEn) + '</em></p>' : '';
-  const total = d.amountHt ? '<p class="devis-total" data-testid="text-devis-amount-ht"><strong>Montant HT :</strong> ' + escapeHtml(d.amountHt) + ' €</p>' : '';
+  const total = d.amountHt ? '<p class="devis-total" data-testid="text-devis-amount-ht"><strong>Amount HT:</strong> ' + escapeHtml(d.amountHt) + ' €</p>' : '';
   const items = Array.isArray(data.lineItems) ? data.lineItems : [];
   const itemsBlock = items.length
     ? '<table class="devis-lines" data-testid="table-devis-line-items">'
-      + '<thead><tr><th>N°</th><th>Description</th><th>Qté</th><th>Unité</th><th>PU HT</th><th>Total HT</th></tr></thead>'
+      + '<thead><tr><th>No.</th><th>Description</th><th>Qty</th><th>Unit</th><th>Unit price HT</th><th>Total HT</th></tr></thead>'
       + '<tbody>'
       + items.map((li) => '<tr data-testid="row-line-item-' + li.id + '">'
           + '<td>' + escapeHtml(li.lineNumber || '') + '</td>'
@@ -774,26 +774,26 @@ function renderDevisInfo(data) {
 
 function renderVerdictStrip(data) {
   const agreeStatus = data.agreed
-    ? '<div class="verdict-status agreed" data-testid="status-agreed">✓ Accord enregistré</div>'
+    ? '<div class="verdict-status agreed" data-testid="status-agreed">✓ Approval recorded</div>'
     : '';
   const rejectStatus = data.rejected
-    ? '<div class="verdict-status rejected" data-testid="status-rejected">✗ Refus enregistré</div>'
+    ? '<div class="verdict-status rejected" data-testid="status-rejected">✗ Rejection recorded</div>'
     : '';
   const agreeBtn = PREVIEW_MODE
-    ? '<button type="button" class="btn-agree" disabled data-testid="button-agree-disabled">Approuver le devis</button>'
-    : '<button type="button" class="btn-agree" id="btnAgree" data-testid="button-agree">Approuver le devis</button>';
+    ? '<button type="button" class="btn-agree" disabled data-testid="button-agree-disabled">Approve the devis</button>'
+    : '<button type="button" class="btn-agree" id="btnAgree" data-testid="button-agree">Approve the devis</button>';
   const rejectBtn = PREVIEW_MODE
-    ? '<button type="button" class="btn-reject" disabled data-testid="button-reject-disabled">Refuser le devis</button>'
-    : '<button type="button" class="btn-reject" id="btnReject" data-testid="button-reject">Refuser le devis</button>';
+    ? '<button type="button" class="btn-reject" disabled data-testid="button-reject-disabled">Decline the devis</button>'
+    : '<button type="button" class="btn-reject" id="btnReject" data-testid="button-reject">Decline the devis</button>';
   return '<div class="verdict-strip" data-testid="section-verdict-strip">'
     + '<div class="verdict-card ' + (data.agreed ? 'agreed' : '') + '">'
-    + '<h3>Validation du devis</h3>'
-    + '<p>Cliquez pour confirmer votre accord sur ce devis. Vous pouvez ajouter une note explicative.</p>'
+    + '<h3>Approve this devis</h3>'
+    + '<p>Click to confirm your approval of this devis. You may add an explanatory note.</p>'
     + agreeBtn + agreeStatus
     + '</div>'
     + '<div class="verdict-card ' + (data.rejected ? 'rejected' : '') + '">'
-    + '<h3>Refus du devis</h3>'
-    + '<p>Si vous souhaitez refuser ou demander une révision, signalez-le ici. Votre architecte sera notifié.</p>'
+    + '<h3>Decline this devis</h3>'
+    + '<p>If you wish to decline or request a revision, let us know here. Your architect will be notified.</p>'
     + rejectBtn + rejectStatus
     + '</div>'
     + '</div>';
@@ -801,12 +801,12 @@ function renderVerdictStrip(data) {
 
 function renderAskBlock() {
   return '<div class="ask-section" data-testid="section-ask">'
-    + '<h3>Poser une nouvelle question</h3>'
-    + '<p class="hint">Votre architecte recevra votre question et y répondra dans le fil de discussion ci-dessous.</p>'
+    + '<h3>Ask a new question</h3>'
+    + '<p class="hint">Your architect will receive your question and reply in the thread below.</p>'
     + '<form id="askForm">'
-    + '<textarea id="askBody" required maxlength="5000" placeholder="Votre question…" data-testid="textarea-new-query"></textarea>'
+    + '<textarea id="askBody" required maxlength="5000" placeholder="Your question…" data-testid="textarea-new-query"></textarea>'
     + '<div style="margin-top:8px;display:flex;gap:8px;align-items:center;">'
-    + '<button type="submit" data-testid="button-send-new-query">Envoyer la question</button>'
+    + '<button type="submit" data-testid="button-send-new-query">Send the question</button>'
     + '<span class="err" id="askErr"></span>'
     + '</div>'
     + '</form>'
@@ -815,17 +815,17 @@ function renderAskBlock() {
 
 function renderAskBlockPreview() {
   return '<div class="ask-section">'
-    + '<h3>Poser une nouvelle question</h3>'
-    + '<p class="hint">Aperçu architecte — formulaire désactivé.</p>'
-    + '<textarea disabled placeholder="Votre question…" data-testid="textarea-new-query-disabled"></textarea>'
-    + '<div style="margin-top:8px"><button type="button" disabled data-testid="button-send-new-query-disabled">Envoyer la question</button></div>'
+    + '<h3>Ask a new question</h3>'
+    + '<p class="hint">Architect preview — form disabled.</p>'
+    + '<textarea disabled placeholder="Your question…" data-testid="textarea-new-query-disabled"></textarea>'
+    + '<div style="margin-top:8px"><button type="button" disabled data-testid="button-send-new-query-disabled">Send the question</button></div>'
     + '</div>';
 }
 
 function renderCheck(c) {
   const verdictTag = c.verdict
     ? '<span class="verdict-tag ' + c.verdict + '" data-testid="tag-verdict-' + c.verdict + '-' + c.id + '">'
-        + (c.verdict === 'agree' ? 'Accord client' : 'Refus client') + '</span>'
+        + (c.verdict === 'agree' ? 'Client approval' : 'Client rejection') + '</span>'
     : '';
   const head = c.verdict
     ? verdictTag
@@ -837,14 +837,14 @@ function renderCheck(c) {
     : '<p class="query">' + escapeHtml(c.query) + '</p>';
   const msgs = c.messages.map((m) => {
     let author;
-    if (m.authorType === 'client') author = m.authorName || 'Vous';
-    else if (m.authorType === 'system') author = 'Système';
+    if (m.authorType === 'client') author = m.authorName || 'You';
+    else if (m.authorType === 'system') author = 'System';
     else author = 'Renosud';
     return '<div class="msg msg-' + m.authorType + '"><div class="msg-meta">' + escapeHtml(author) + '</div>' + escapeHtml(m.body) + '</div>';
   }).join('');
   const canReply = c.status === 'open' && !c.verdict && !PREVIEW_MODE;
   const replyForm = canReply
-    ? '<form data-check="' + c.id + '" data-testid="form-reply-' + c.id + '"><textarea required maxlength="5000" data-testid="textarea-reply-' + c.id + '" placeholder="Votre réponse…"></textarea><div style="margin-top:8px;display:flex;gap:8px;align-items:center;"><button type="submit" data-testid="button-send-reply-' + c.id + '">Envoyer</button><span class="err" data-err="' + c.id + '"></span></div></form>'
+    ? '<form data-check="' + c.id + '" data-testid="form-reply-' + c.id + '"><textarea required maxlength="5000" data-testid="textarea-reply-' + c.id + '" placeholder="Your reply…"></textarea><div style="margin-top:8px;display:flex;gap:8px;align-items:center;"><button type="submit" data-testid="button-send-reply-' + c.id + '">Send</button><span class="err" data-err="' + c.id + '"></span></div></form>'
     : '';
   const cls = c.verdict ? 'check verdict-' + c.verdict : 'check';
   return '<section class="' + cls + '" data-testid="check-' + c.id + '">' + head
@@ -868,13 +868,13 @@ function wireAskForm() {
       const r = await fetch(QUERIES_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }) });
       if (!r.ok) {
         const j = await r.json().catch(() => ({}));
-        err.textContent = j.message || 'Erreur lors de l\\'envoi.';
+        err.textContent = j.message || 'Error while sending.';
       } else {
         ta.value = '';
         await refresh();
       }
     } catch (_e) {
-      err.textContent = 'Erreur réseau.';
+      err.textContent = 'Network error.';
     } finally {
       btn.disabled = false;
     }
@@ -897,13 +897,13 @@ function wireReplyForms() {
         const r = await fetch(MESSAGES_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ checkId, body }) });
         if (!r.ok) {
           const j = await r.json().catch(() => ({}));
-          if (errEl) errEl.textContent = j.message || 'Erreur lors de l\\'envoi.';
+          if (errEl) errEl.textContent = j.message || 'Error while sending.';
         } else {
           ta.value = '';
           await refresh();
         }
       } catch (_e) {
-        if (errEl) errEl.textContent = 'Erreur réseau.';
+        if (errEl) errEl.textContent = 'Network error.';
       } finally {
         btn.disabled = false;
       }
@@ -923,15 +923,15 @@ function wireVerdictButtons(data) {
 
   function open(kind) {
     pendingUrl = kind === 'agree' ? AGREE_URL : REJECT_URL;
-    titleEl.textContent = kind === 'agree' ? 'Confirmer votre accord' : 'Confirmer votre refus';
+    titleEl.textContent = kind === 'agree' ? 'Confirm your approval' : 'Confirm your rejection';
     bodyEl.textContent = kind === 'agree'
-      ? 'Vous allez signaler à votre architecte que vous approuvez ce devis. Une note est optionnelle.'
-      : 'Vous allez signaler à votre architecte que vous refusez ou souhaitez modifier ce devis. Précisez le motif si possible.';
+      ? 'You are about to let your architect know that you approve this devis. A note is optional.'
+      : 'You are about to let your architect know that you decline or would like changes to this devis. Please give a reason if possible.';
     noteEl.value = '';
     errEl.textContent = '';
     confirmBtn.classList.remove('btn-agree', 'btn-reject');
     confirmBtn.classList.add(kind === 'agree' ? 'btn-agree' : 'btn-reject');
-    confirmBtn.textContent = kind === 'agree' ? 'Approuver' : 'Refuser';
+    confirmBtn.textContent = kind === 'agree' ? 'Approve' : 'Decline';
     if (typeof dialog.showModal === 'function') dialog.showModal();
     else dialog.setAttribute('open', '');
   }
@@ -945,13 +945,13 @@ function wireVerdictButtons(data) {
       const r = await fetch(pendingUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note: noteEl.value || undefined }) });
       if (!r.ok) {
         const j = await r.json().catch(() => ({}));
-        errEl.textContent = j.message || 'Erreur lors de l\\'envoi.';
+        errEl.textContent = j.message || 'Error while sending.';
       } else {
         dialog.close();
         await refresh();
       }
     } catch (_e) {
-      errEl.textContent = 'Erreur réseau.';
+      errEl.textContent = 'Network error.';
     } finally {
       confirmBtn.disabled = false;
     }

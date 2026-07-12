@@ -336,9 +336,6 @@ export function buildDevisContextEmailBody(opts: {
   projectName: string;
 }): string {
   const note =
-    `Vous allez recevoir dans quelques instants un e-mail séparé d'Archisign contenant ` +
-    `le lien sécurisé pour signer électroniquement le devis ${opts.refLabel} ` +
-    `(projet « ${opts.projectName} »).\n\n` +
     `You will shortly receive a separate email from Archisign containing the secure ` +
     `link to electronically sign devis ${opts.refLabel} (project "${opts.projectName}").`;
   return `${opts.architectMessage.trim()}\n\n---\n\n${note}\n`;
@@ -386,7 +383,7 @@ export async function sendDevisSignatureContextEmail(opts: {
     }
 
     const refLabel = devis.devisNumber || devis.devisCode;
-    const subject = `Devis ${refLabel} — ${project.name} : signature électronique à venir`;
+    const subject = `Devis ${refLabel} — ${project.name}: electronic signature to follow`;
     const body = buildDevisContextEmailBody({
       architectMessage: opts.message,
       refLabel,

@@ -3351,12 +3351,12 @@ function ClientPortalPanel({
       try {
         await navigator.clipboard.writeText(resp.portalUrl);
         toast({
-          title: "Lien client copié",
-          description: `Le lien pour ${resp.clientName ? resp.clientName + " " : ""}<${resp.clientEmail}> est dans le presse-papiers.`,
+          title: "Client link copied",
+          description: `The link for ${resp.clientName ? resp.clientName + " " : ""}<${resp.clientEmail}> is in your clipboard.`,
         });
       } catch {
         toast({
-          title: "Lien client généré (copie manuelle)",
+          title: "Client link generated (copy manually)",
           description: resp.portalUrl,
         });
       }
@@ -3364,7 +3364,7 @@ function ClientPortalPanel({
       setIssueOpen(false);
     },
     onError: (error: Error) => {
-      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -3373,8 +3373,8 @@ function ClientPortalPanel({
       const res = await apiRequest("POST", `/api/devis/${devisId}/client-check-token/extend`, {});
       return res.json();
     },
-    onSuccess: () => { invalidate(); toast({ title: "Lien client prolongé" }); },
-    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+    onSuccess: () => { invalidate(); toast({ title: "Client link extended" }); },
+    onError: (error: Error) => toast({ title: "Error", description: error.message, variant: "destructive" }),
   });
 
   const revokeMutation = useMutation({
@@ -3382,8 +3382,8 @@ function ClientPortalPanel({
       const res = await apiRequest("POST", `/api/devis/${devisId}/client-check-token/revoke`, {});
       return res.json();
     },
-    onSuccess: () => { invalidate(); toast({ title: "Lien client révoqué" }); },
-    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+    onSuccess: () => { invalidate(); toast({ title: "Client link revoked" }); },
+    onError: (error: Error) => toast({ title: "Error", description: error.message, variant: "destructive" }),
   });
 
   if (isLoading) return null;
@@ -3392,12 +3392,12 @@ function ClientPortalPanel({
   const isExpired = !!(token?.expiresAt && new Date(token.expiresAt).getTime() <= Date.now());
   const hasActiveLink = !!token && !isRevoked && !isExpired;
   const stateLabel = !token
-    ? "Aucun lien émis"
+    ? "No link issued"
     : isRevoked
-      ? "Révoqué"
+      ? "Revoked"
       : isExpired
-        ? "Expiré"
-        : "Actif";
+        ? "Expired"
+        : "Active";
   const stateColor = !token || isRevoked || isExpired
     ? "bg-slate-100 text-slate-600 border-slate-300"
     : "bg-emerald-50 text-emerald-700 border-emerald-200";
@@ -3413,7 +3413,7 @@ function ClientPortalPanel({
     const email = emailDraft.trim();
     const name = nameDraft.trim();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-      setEmailErr("Adresse e-mail invalide");
+      setEmailErr("Invalid email address");
       return;
     }
     setEmailErr(null);
@@ -3427,7 +3427,7 @@ function ClientPortalPanel({
     >
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
-          <span className="text-[11px] font-semibold text-slate-700">Lien client</span>
+          <span className="text-[11px] font-semibold text-slate-700">Client link</span>
           <span
             className={`px-2 py-0.5 rounded-full border text-[9px] font-bold uppercase tracking-wide ${stateColor}`}
             data-testid={`status-client-token-${devisId}`}
@@ -3451,7 +3451,7 @@ function ClientPortalPanel({
               data-testid={`button-preview-client-portal-${devisId}`}
             >
               <Eye size={10} />
-              Aperçu côté client
+              Client-side preview
             </Button>
             <Button
               variant="outline"
@@ -3462,7 +3462,7 @@ function ClientPortalPanel({
               data-testid={`button-send-to-client-${devisId}`}
             >
               <Send size={10} />
-              {issueMutation.isPending ? "…" : "Envoyer au client"}
+              {issueMutation.isPending ? "…" : "Send to client"}
             </Button>
             {token && !isRevoked && !isExpired && (
               <Button
@@ -3473,7 +3473,7 @@ function ClientPortalPanel({
                 disabled={extendMutation.isPending}
                 data-testid={`button-extend-client-token-${devisId}`}
               >
-                {extendMutation.isPending ? "…" : "Prolonger"}
+                {extendMutation.isPending ? "…" : "Extend"}
               </Button>
             )}
             {token && !isRevoked && (
@@ -3485,7 +3485,7 @@ function ClientPortalPanel({
                 disabled={revokeMutation.isPending}
                 data-testid={`button-revoke-client-token-${devisId}`}
               >
-                {revokeMutation.isPending ? "…" : "Révoquer"}
+                {revokeMutation.isPending ? "…" : "Revoke"}
               </Button>
             )}
           </div>
@@ -3495,32 +3495,32 @@ function ClientPortalPanel({
       {token && (
         <div className="grid grid-cols-3 gap-2 text-[10px] text-slate-600">
           <div>
-            <div className="text-slate-400 uppercase tracking-wide text-[9px]">Destinataire</div>
+            <div className="text-slate-400 uppercase tracking-wide text-[9px]">Recipient</div>
             <div data-testid={`text-client-token-recipient-${devisId}`}>
               {token.clientName ? `${token.clientName} ` : ""}&lt;{token.clientEmail}&gt;
             </div>
           </div>
           <div>
-            <div className="text-slate-400 uppercase tracking-wide text-[9px]">Dernier accès</div>
+            <div className="text-slate-400 uppercase tracking-wide text-[9px]">Last accessed</div>
             <div data-testid={`text-client-token-last-used-${devisId}`}>{formatDateTime(token.lastUsedAt)}</div>
           </div>
           <div>
             <div className="text-slate-400 uppercase tracking-wide text-[9px]">
-              {isRevoked ? "Révoqué" : "Expire"}
+              {isRevoked ? "Revoked" : "Expires"}
             </div>
             <div data-testid={`text-client-token-expires-${devisId}`}>
               {isRevoked
                 ? formatDateTime(token.revokedAt)
                 : token.expiresAt
                   ? formatDateTime(token.expiresAt)
-                  : "Jamais"}
+                  : "Never"}
             </div>
           </div>
         </div>
       )}
       {!token && (
         <p className="text-[10px] text-slate-500" data-testid={`text-no-client-token-${devisId}`}>
-          Aucun lien client n'a encore été émis pour ce devis. Cliquez sur « Envoyer au client » pour générer un lien à partager (e-mail / WhatsApp / SMS).
+          No client link has been issued for this devis yet. Click "Send to client" to generate a link to share (email / WhatsApp / SMS).
         </p>
       )}
 
@@ -3528,24 +3528,24 @@ function ClientPortalPanel({
         <DialogContent data-testid={`dialog-send-to-client-${devisId}`}>
           <DialogHeader>
             <DialogTitle>
-              {hasActiveLink ? "Régénérer et copier le lien client" : "Émettre un lien pour le client"}
+              {hasActiveLink ? "Regenerate and copy the client link" : "Issue a link for the client"}
             </DialogTitle>
             <DialogDescription>
               {hasActiveLink
-                ? "Un nouveau lien sera généré et copié dans le presse-papiers. Le lien actif actuel cessera immédiatement de fonctionner."
-                : "Renseignez l'adresse e-mail du client. Le lien sera copié dans votre presse-papiers — vous pourrez le partager via votre canal préféré (e-mail, WhatsApp, SMS)."}
+                ? "A new link will be generated and copied to your clipboard. The current active link will stop working immediately."
+                : "Enter the client's email address. The link will be copied to your clipboard — you can share it via your preferred channel (email, WhatsApp, SMS)."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1">
               <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
-                Adresse e-mail du client
+                Client email address
               </label>
               <Input
                 type="email"
                 value={emailDraft}
                 onChange={(e) => setEmailDraft(e.target.value)}
-                placeholder="client@exemple.fr"
+                placeholder="client@example.com"
                 data-testid={`input-client-email-${devisId}`}
                 disabled={issueMutation.isPending}
                 autoFocus
@@ -3558,12 +3558,12 @@ function ClientPortalPanel({
             </div>
             <div className="space-y-1">
               <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
-                Nom du client (optionnel)
+                Client name (optional)
               </label>
               <Input
                 value={nameDraft}
                 onChange={(e) => setNameDraft(e.target.value)}
-                placeholder="Mme / M. Dupont"
+                placeholder="Mr / Mrs Smith"
                 data-testid={`input-client-name-${devisId}`}
                 disabled={issueMutation.isPending}
               />
@@ -3576,7 +3576,7 @@ function ClientPortalPanel({
               disabled={issueMutation.isPending}
               data-testid={`button-cancel-send-to-client-${devisId}`}
             >
-              Annuler
+              Cancel
             </Button>
             <Button
               onClick={submitIssue}
@@ -3584,10 +3584,10 @@ function ClientPortalPanel({
               data-testid={`button-confirm-send-to-client-${devisId}`}
             >
               {issueMutation.isPending
-                ? "Génération…"
+                ? "Generating…"
                 : hasActiveLink
-                  ? "Régénérer et copier"
-                  : "Émettre et copier"}
+                  ? "Regenerate and copy"
+                  : "Issue and copy"}
             </Button>
           </div>
         </DialogContent>

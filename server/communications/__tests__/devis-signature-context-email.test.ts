@@ -6,7 +6,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  *
  * Pinned behaviours:
  *   (a) buildDevisContextEmailBody = architect message + separator +
- *       bilingual FR/EN Archisign notice referencing the devis + project.
+ *       English Archisign notice referencing the devis + project
+ *       (Task #266 — all client-facing copy is English).
  *   (b) Happy path logs a `devis_signature_context` communication with the
  *       (devis, envelope) dedupeKey and reports status "sent".
  *   (c) Same (devis, envelope) with an already-sent row → "already_sent",
@@ -92,15 +93,15 @@ beforeEach(() => {
 });
 
 describe("buildDevisContextEmailBody", () => {
-  it("keeps the architect message first and appends the bilingual Archisign notice", () => {
+  it("keeps the architect message first and appends the English Archisign notice", () => {
     const body = buildDevisContextEmailBody({
-      architectMessage: "  Bonjour Marie,\n\nVoici le devis.\n\nCordialement,  ",
+      architectMessage: "  Dear Marie,\n\nHere is the devis.\n\nKind regards,  ",
       refLabel: "DVT0000941",
       projectName: "Villa Sophia",
     });
-    expect(body.startsWith("Bonjour Marie,")).toBe(true);
+    expect(body.startsWith("Dear Marie,")).toBe(true);
     expect(body).toContain("\n\n---\n\n");
-    expect(body).toContain("e-mail séparé d'Archisign");
+    expect(body).not.toContain("e-mail séparé d'Archisign");
     expect(body).toContain("separate email from Archisign");
     expect(body).toContain("DVT0000941");
     expect(body).toContain("Villa Sophia");
