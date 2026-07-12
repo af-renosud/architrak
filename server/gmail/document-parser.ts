@@ -639,7 +639,7 @@ export async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Prom
         }
 
         await clearPngPages(tempDir);
-        const { detail, timedOut } = await strategy.run();
+        const { ok, detail, timedOut } = await strategy.run();
         const images = await collectPngPages(tempDir, maxPages);
         const allComplete = images.length > 0 && images.every(isCompletePng);
 
@@ -653,6 +653,17 @@ export async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Prom
           );
           descendDpi = true;
           break;
+        }
+
+        if (allComplete && !ok) {
+          // The command exited non-zero without being killed at the cap: it
+          // failed on something AFTER writing these pages (later page, font,
+          // resource). Exit status is honoured — the output is discarded and
+          // the next backend runs at the same DPI.
+          diagnostics.push(
+            `${strategy.name}@${dpi}dpi: exited non-zero with ${images.length} complete page(s) on disk — output discarded (${detail.slice(0, 300) || "no stderr"})`,
+          );
+          continue;
         }
 
         if (allComplete) {

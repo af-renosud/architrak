@@ -15,8 +15,10 @@ pdftoppm → pdftocairo (poppler Cairo backend) → Ghostscript repair
 (`gs -sDEVICE=pdfwrite` then pdftoppm on the rewritten file) → Ghostscript direct
 render (`gs -sDEVICE=png16m`). Ghostscript (`gs`) is NOT in the base image — it must
 be installed as a nix system dependency (`ghostscript`); pdftocairo ships with
-poppler-utils. Determine success by counting produced *complete* PNGs (8-byte
-signature + IEND trailer), not exit status, and clear stale PNGs between attempts.
+poppler-utils. Success requires BOTH a zero exit status AND all produced PNGs being
+*complete* (8-byte signature + IEND trailer); a non-zero exit with complete PNGs on
+disk means the tool crashed after writing some pages — discard and try the next
+backend. Clear stale PNGs between attempts.
 A rasteriser killed at the time cap leaves a TRUNCATED PNG on disk — accepting it
 sends garbage to Gemini, which answers a permanent-looking 400 ("Unable to process
 input image") and parks the doc. Timed-out output is NEVER accepted — even complete

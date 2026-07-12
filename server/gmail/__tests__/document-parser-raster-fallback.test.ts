@@ -28,6 +28,7 @@ type MockBehavior =
   | "ok-huge"
   | "corrupt-ok"
   | "fail"
+  | "fail-complete"
   | "timeout"
   | "timeout-partial"
   | "timeout-complete";
@@ -153,6 +154,13 @@ vi.mock("child_process", () => {
         writeOutput(cmd, args, tag, makePng());
         cb(timeoutError(), "", "");
         return;
+      case "fail-complete":
+        // Exits non-zero (NOT a timeout) after writing a complete PNG —
+        // e.g. crashed on page 2 after finishing page 1. Exit status must
+        // be honoured: this output is never accepted.
+        writeOutput(cmd, args, tag, makePng());
+        cb(new Error(`sim fail ${tag}`), "", `stderr-${tag}`);
+        return;
       case "fail":
       default:
         cb(new Error(`sim fail ${tag}`), "", `stderr-${tag}`);
@@ -272,6 +280,29 @@ describe("pdfToImages — rasteriser fallback chain", () => {
     // rung — the returned image comes from the 100 DPI full re-render.
     expect(state.calls).toContain("pdftoppm@100");
     expect(state.calls).not.toContain("pdftocairo@200");
+  });
+
+  it("honours exit status: non-zero exit with a COMPLETE PNG on disk falls through to the next backend", async () => {
+    setBehaviors({
+      "pdftoppm@200": "fail-complete",
+      "pdftocairo@200": "ok",
+    });
+    const imgs = await pdfToImages(fakePdf);
+    expect(imgs).toHaveLength(1);
+    // The failed strategy's output was discarded; the next backend ran at
+    // the SAME DPI (hard failure, not a render-weight problem).
+    expect(state.calls).toContain("pdftocairo@200");
+    expect(state.calls).not.toContain("pdftoppm@100");
+  });
+
+  it("throws with 'exited non-zero' diagnostics when every backend exits non-zero despite complete PNGs", async () => {
+    setBehaviors({
+      pdftoppm: "fail-complete",
+      pdftocairo: "fail-complete",
+      "repair-pdfwrite": "fail",
+      render: "fail-complete",
+    });
+    await expect(pdfToImages(fakePdf)).rejects.toThrow(/exited non-zero/);
   });
 
   it("never accepts timed-out output — even complete pages at the lowest rung fail with diagnostics", async () => {
