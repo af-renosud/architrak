@@ -9,7 +9,7 @@ import {
  *
  * Pinned behaviours:
  *   (a) Forward moves into `sent_to_client` / `client_signed_off` are
- *       rejected with a French message + machine code.
+ *       rejected with an English message + machine code.
  *   (b) Backward moves (operator corrections) stay allowed, including
  *       backward INTO a sealed stage (client_signed_off → sent_to_client).
  *   (c) Same-stage no-op writes are allowed.

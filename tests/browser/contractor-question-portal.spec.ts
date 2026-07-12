@@ -17,12 +17,14 @@ import { test, expect, type APIRequestContext, type BrowserContext } from "@play
  *   - Bundled send -> check flips to awaiting_contractor.
  *   - Idempotent re-send: clicking Send twice with no new messages reuses
  *     the prior bundle (no duplicate Gmail send, no duplicate audit row).
- *   - Sign-off-stage gate: trying to advance signOffStage to 'sent_to_client'
- *     while the check is open returns 409 with a French/error message.
+ *   - Stage seal (Task #257): manually advancing signOffStage to
+ *     'sent_to_client' via the generic PATCH returns 409 (manual_send_sealed)
+ *     with an English architect-facing message.
  *   - Contractor opens the portal link, sees the question in French, posts
  *     a reply -> check flips to awaiting_architect.
- *   - Architect resolves the check via the UI -> status 'resolved', sign-off
- *     gate now allows advance to 'sent_to_client'.
+ *   - Architect resolves the check via the UI -> status 'resolved'; the
+ *     manual advance stays sealed (only the signing flow may enter
+ *     'sent_to_client').
  */
 
 interface Seed {
@@ -171,16 +173,16 @@ test.describe("Contractor question portal — end-to-end", () => {
         "1 question",
       );
 
-      // -------- 2. Sign-off gate: cannot advance to sent_to_client while open.
+      // -------- 2. Manual advance to sent_to_client is sealed (Task #257):
+      // the generic PATCH rejects every forward move into that stage and
+      // points the architect at the signing flow (English, architect-facing).
       const blocked = await archCtx.request.patch(`/api/devis/${data.devisId}`, {
         data: { signOffStage: "sent_to_client" },
       });
       expect(blocked.status()).toBe(409);
-      const blockedBody = (await blocked.json()) as { message: string; openChecks?: number };
-      // The error MUST be French (architect-facing UI is FR-only).
-      expect(blockedBody.message).toContain("Impossible d'envoyer le devis au client");
-      expect(blockedBody.message).toContain("1 question contractant");
-      expect(blockedBody.openChecks).toBe(1);
+      const blockedBody = (await blocked.json()) as { message: string; code?: string };
+      expect(blockedBody.code).toBe("manual_send_sealed");
+      expect(blockedBody.message).toContain("cannot be marked as \"Sent to Client\" manually");
 
       // -------- 3. First bundled send via the UI → captures portal URL.
       const sendBtn = page.getByTestId(`button-send-checks-${data.devisId}`);
@@ -278,13 +280,16 @@ test.describe("Contractor question portal — end-to-end", () => {
         .poll(async () => (await listChecks(archCtx.request, data.devisId))[0].status, { timeout: 5_000 })
         .toBe("resolved");
 
-      // -------- 8. Sign-off gate now lets the architect advance the stage.
-      const okAdvance = await archCtx.request.patch(`/api/devis/${data.devisId}`, {
+      // -------- 8. Even with all checks resolved, the manual advance stays
+      // sealed (Task #257) — only the signing orchestration may enter
+      // sent_to_client. The seal message is architect-facing English.
+      const stillSealed = await archCtx.request.patch(`/api/devis/${data.devisId}`, {
         data: { signOffStage: "sent_to_client" },
       });
-      expect(okAdvance.ok(), `advance to sent_to_client should now succeed: ${okAdvance.status()}`).toBe(
-        true,
-      );
+      expect(stillSealed.status()).toBe(409);
+      const sealedBody = (await stillSealed.json()) as { message: string; code?: string };
+      expect(sealedBody.code).toBe("manual_send_sealed");
+      expect(sealedBody.message).toContain("Signature électronique");
     } finally {
       await archCtx.close();
     }

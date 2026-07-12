@@ -51,7 +51,7 @@ export const SEALED_FORWARD_STAGES = new Set<string>([
 ]);
 
 export interface StageSealViolation {
-  /** Architect-facing French message pointing at the correct flow. */
+  /** Architect-facing English message pointing at the correct flow. */
   message: string;
   /** Stable machine-readable code for the 409 payload. */
   code: "manual_send_sealed" | "manual_signoff_sealed";
@@ -87,16 +87,16 @@ export function evaluateManualStageTransition(
     return {
       code: "manual_send_sealed",
       message:
-        "Impossible de marquer ce devis comme « Envoyé au client » manuellement. " +
-        "Utilisez le panneau « Signature électronique » (bouton « Envoyer à la signature ») : " +
-        "il crée l'enveloppe Archisign, envoie le lien de signature au client et " +
-        "transmet votre message d'accompagnement.",
+        "This devis cannot be marked as \"Sent to Client\" manually. " +
+        "Use the \"Signature électronique\" panel (\"Send for signature\" button): " +
+        "it creates the Archisign envelope, sends the signing link to the client and " +
+        "delivers your accompanying message.",
     };
   }
   return {
     code: "manual_signoff_sealed",
     message:
-      "Impossible de marquer ce devis comme « Signé par le client » manuellement. " +
-      "Cette étape est enregistrée automatiquement lorsque le client signe le devis via Archisign.",
+      "This devis cannot be marked as \"Signed by client\" manually. " +
+      "This stage is recorded automatically when the client signs the devis via Archisign.",
   };
 }

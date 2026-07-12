@@ -619,8 +619,8 @@ router.patch(
           return res.status(409).json({
             message:
               openCount === 1
-                ? "Impossible d'envoyer le devis au client : 1 question contractant est encore ouverte."
-                : `Impossible d'envoyer le devis au client : ${openCount} questions contractant sont encore ouvertes.`,
+                ? "Cannot send the devis to the client: 1 contractor question is still open."
+                : `Cannot send the devis to the client: ${openCount} contractor questions are still open.`,
             openChecks: openCount,
           });
         }
@@ -669,7 +669,7 @@ router.patch(
               : null;
           if (!existingOverride) {
             return res.status(409).json({
-              message: "Impossible d'envoyer le devis au client : verdict d'assurance défavorable.",
+              message: "Cannot send the devis to the client: unfavourable insurance verdict.",
               code: "insurance_gate",
               decision: {
                 arm: decision.arm,

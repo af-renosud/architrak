@@ -82,13 +82,13 @@ export function evaluateAcompteGate(
   const pctFr = pctStr ? `${Number(pctStr).toLocaleString("fr-FR")}\u00A0%` : null;
   const spec = amountFr && pctFr ? `${pctFr} (${amountFr})` : amountFr ?? pctFr ?? "Acompte requis";
   const stateMsg = state === "pending"
-    ? "facture d'acompte non encore reçue"
-    : "facture d'acompte non encore payée";
+    ? "facture d'acompte not yet received"
+    : "facture d'acompte not yet paid";
 
   return {
     blocked: true,
     code: "acompte_unpaid",
-    message: `Impossible de créer une situation/facture de progression : ${spec} doit être réglé avant facturation. État actuel : ${stateMsg}. Pour passer outre exceptionnellement, activez « Autoriser la facturation avant acompte » sur le devis.`,
+    message: `Cannot create a progress situation/invoice: the acompte of ${spec} must be settled before invoicing. Current state: ${stateMsg}. To exceptionally bypass this, enable "Autoriser la facturation avant acompte" on the devis.`,
     state,
     acompteAmountHt: amountStr,
     acomptePercent: pctStr,

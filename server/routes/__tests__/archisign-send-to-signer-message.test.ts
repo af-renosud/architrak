@@ -173,7 +173,7 @@ describe("POST /api/devis/:id/send-to-signer — personalised message", () => {
     const res = await postSend(100, { message: tooLong });
     expect(res.status).toBe(400);
     const body = (await res.json()) as { message: string };
-    expect(body.message).toMatch(/2000 caractères/);
+    expect(body.message).toMatch(/2000 characters/);
     expect(archisignMock.createEnvelope).not.toHaveBeenCalled();
     expect(archisignMock.sendEnvelope).not.toHaveBeenCalled();
   });
@@ -212,7 +212,7 @@ describe("POST /api/devis/:id/send-to-signer — personalised message", () => {
     expect(res.status).toBe(422);
     const body = (await res.json()) as { code: string; message: string; minLength: number };
     expect(body.code).toBe("client_message_required");
-    expect(body.message).toMatch(/obligatoire/);
+    expect(body.message).toMatch(/required/);
     expect(body.minLength).toBe(20);
     expect(archisignMock.createEnvelope).not.toHaveBeenCalled();
     expect(archisignMock.sendEnvelope).not.toHaveBeenCalled();

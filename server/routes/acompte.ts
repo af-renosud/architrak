@@ -39,7 +39,7 @@ router.post(
     const target = nextAcompteState(devis.acompteState, "link_invoice");
     if (!target) {
       return res.status(409).json({
-        message: `Impossible de lier la facture d'acompte depuis l'état "${devis.acompteState}"`,
+        message: `Cannot link the facture d'acompte from state "${devis.acompteState}"`,
         code: "acompte_invalid_transition",
         currentState: devis.acompteState,
       });
@@ -81,7 +81,7 @@ router.post(
     const target = nextAcompteState(devis.acompteState, "mark_paid");
     if (!target) {
       return res.status(409).json({
-        message: `Impossible de marquer l'acompte payé depuis l'état "${devis.acompteState}". Lier d'abord la facture d'acompte.`,
+        message: `Cannot mark the acompte as paid from state "${devis.acompteState}". Link the facture d'acompte first.`,
         code: "acompte_invalid_transition",
         currentState: devis.acompteState,
       });

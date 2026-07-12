@@ -62,7 +62,7 @@ const sendBody = z.object({
     .trim()
     .max(
       DEVIS_CLIENT_MESSAGE_MAX_LEN,
-      `Message trop long (${DEVIS_CLIENT_MESSAGE_MAX_LEN} caractères maximum).`,
+      `Message too long (${DEVIS_CLIENT_MESSAGE_MAX_LEN} characters maximum).`,
     )
     .optional()
     .transform((v) => (v && v.length > 0 ? v : undefined)),
@@ -128,7 +128,7 @@ router.post(
     if (!envelopeId) {
       return res.status(409).json({
         message:
-          "Aucune enveloppe Archisign active pour ce devis — rien à renvoyer.",
+          "No active Archisign envelope for this devis — nothing to resend.",
         code: "no_envelope",
       });
     }
@@ -136,7 +136,7 @@ router.post(
     if (!message) {
       return res.status(409).json({
         message:
-          "Aucun message d'accompagnement persisté pour ce devis — impossible de renvoyer l'e-mail de contexte.",
+          "No client message stored for this devis — cannot resend the context email.",
         code: "no_message",
       });
     }
@@ -149,7 +149,7 @@ router.post(
     if (result.status === "failed") {
       return res.status(502).json({
         message:
-          "L'envoi de l'e-mail de contexte a de nouveau échoué." +
+          "Sending the context email failed again." +
           (result.error ? ` (${result.error})` : ""),
         code: "context_email_failed",
         contextEmail: result,
@@ -176,7 +176,7 @@ router.post(
     if (d.signOffStage !== "approved_for_signing") {
       return res.status(409).json({
         message:
-          "Le devis doit être au stade « Approuvé pour signature » avant l'envoi à la signature.",
+          "The devis must be at the \"Approved for signing\" stage before it can be sent for signature.",
         code: "wrong_stage",
         currentStage: d.signOffStage,
       });
@@ -206,9 +206,9 @@ router.post(
     ) {
       return res.status(422).json({
         message:
-          `Un message d'accompagnement au client est obligatoire ` +
-          `(minimum ${DEVIS_CLIENT_MESSAGE_MIN_LEN} caractères). ` +
-          `Rédigez le contexte que le client recevra avant la demande de signature.`,
+          `A message to the client is required ` +
+          `(minimum ${DEVIS_CLIENT_MESSAGE_MIN_LEN} characters). ` +
+          `Write the context the client will receive ahead of the signature request.`,
         code: "client_message_required",
         minLength: DEVIS_CLIENT_MESSAGE_MIN_LEN,
       });
@@ -219,8 +219,8 @@ router.post(
       return res.status(409).json({
         message:
           openCount === 1
-            ? "Impossible d'envoyer le devis : 1 question contractant est encore ouverte."
-            : `Impossible d'envoyer le devis : ${openCount} questions contractant sont encore ouvertes.`,
+            ? "Cannot send the devis: 1 contractor question is still open."
+            : `Cannot send the devis: ${openCount} contractor questions are still open.`,
         code: "open_contractor_checks",
         openChecks: openCount,
       });
@@ -237,7 +237,7 @@ router.post(
       if (!override) {
         return res.status(409).json({
           message:
-            "Impossible d'envoyer le devis : verdict d'assurance défavorable.",
+            "Cannot send the devis: unfavourable insurance verdict.",
           code: "insurance_gate",
           decision: { arm: decision.arm, reason: decision.reason },
         });
@@ -248,7 +248,7 @@ router.post(
     const project = await storage.getProject(d.projectId);
     if (!project) {
       return res.status(409).json({
-        message: "Projet introuvable pour ce devis.",
+        message: "Project not found for this devis.",
         code: "project_missing",
       });
     }
@@ -257,7 +257,7 @@ router.post(
     if (!signerName || !signerEmail) {
       return res.status(409).json({
         message:
-          "Coordonnées du client manquantes : renseignez le nom et l'e-mail du contact client sur le projet.",
+          "Client contact details missing: fill in the client contact name and email on the project.",
         code: "client_contact_missing",
       });
     }
@@ -267,7 +267,7 @@ router.post(
     if (!translation || (translation.status !== "draft" && translation.status !== "edited" && translation.status !== "finalised")) {
       return res.status(409).json({
         message:
-          "Le PDF traduit doit être généré avant l'envoi à la signature.",
+          "The translated PDF must be generated before sending for signature.",
         code: "pdf_not_ready",
         translationStatus: translation?.status ?? "missing",
       });
@@ -276,7 +276,7 @@ router.post(
     const baseUrl = (env.PUBLIC_BASE_URL ?? "").replace(/\/+$/, "");
     if (!baseUrl) {
       return res.status(503).json({
-        message: "PUBLIC_BASE_URL non configuré : impossible d'exposer le PDF à Archisign.",
+        message: "PUBLIC_BASE_URL is not configured: cannot expose the PDF to Archisign.",
         code: "public_base_url_missing",
       });
     }
@@ -332,14 +332,14 @@ router.post(
       } catch (err) {
         if (err instanceof ArchisignError && err.httpStatus === 503) {
           return res.status(503).json({
-            message: "Archisign non configuré (clé API ou URL de base manquante).",
+            message: "Archisign is not configured (missing API key or base URL).",
             code: "archisign_unconfigured",
           });
         }
         const detail = err instanceof Error ? err.message : String(err);
         console.error(`[Archisign] createEnvelope failed for devis ${devisId}:`, detail);
         return res.status(502).json({
-          message: "Échec de la création de l'enveloppe Archisign.",
+          message: "Failed to create the Archisign envelope.",
           code: "archisign_create_failed",
           detail,
         });
@@ -385,7 +385,7 @@ router.post(
       // endpoint and we will resume from /send (envelopeId is persisted,
       // stage is still approved_for_signing).
       return res.status(502).json({
-        message: "Enveloppe créée mais l'envoi à Archisign a échoué. Réessayez.",
+        message: "Envelope created but sending it via Archisign failed. Please retry.",
         code: "archisign_send_failed",
         archisignEnvelopeId: envelopeId,
         detail,
@@ -409,7 +409,7 @@ router.post(
       console.error(`[Archisign] stage advance failed for devis ${devisId}:`, detail);
       return res.status(502).json({
         message:
-          "Enveloppe envoyée à Archisign mais la mise à jour du devis a échoué. Réessayez.",
+          "Envelope sent via Archisign but updating the devis failed. Please retry.",
         code: "stage_advance_failed",
         archisignEnvelopeId: envelopeId,
         detail,
@@ -436,7 +436,7 @@ router.post(
       contextEmail = {
         communicationId: null,
         status: "failed",
-        error: "Aucun message d'accompagnement persisté pour ce devis.",
+        error: "No client message stored for this devis.",
       };
     }
 

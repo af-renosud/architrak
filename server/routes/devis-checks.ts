@@ -30,7 +30,7 @@ const architectReplySchema = z.object({
 
 const updateCheckQuerySchema = z.object({
   query: z.string().max(2000).transform((s) => s.trim()).refine((s) => s.length > 0, {
-    message: "La question ne peut pas être vide.",
+    message: "The question cannot be empty.",
   }),
 }).strict();
 
@@ -102,7 +102,7 @@ router.get(
   async (req, res) => {
     const devisId = Number(req.params.devisId);
     const devis = await storage.getDevis(devisId);
-    if (!devis) return res.status(404).type("html").send("Devis introuvable");
+    if (!devis) return res.status(404).type("html").send("Devis not found");
     res.type("html").send(renderPortalShell({ mode: "preview", devisId }));
   },
 );
@@ -114,9 +114,9 @@ router.get(
   async (req, res) => {
     const devisId = Number(req.params.devisId);
     const devis = await storage.getDevis(devisId);
-    if (!devis) return res.status(404).json({ message: "Devis introuvable" });
+    if (!devis) return res.status(404).json({ message: "Devis not found" });
     const payload = await buildPortalPayload(devis);
-    if (!payload) return res.status(404).json({ message: "Devis introuvable" });
+    if (!payload) return res.status(404).json({ message: "Devis not found" });
     res.json(payload);
   },
 );
@@ -180,7 +180,7 @@ router.patch(
     if (!existing) return res.status(404).json({ message: "Check not found" });
     if (existing.status !== "open") {
       return res.status(409).json({
-        message: "Cette question a déjà été envoyée à l'entreprise — modifiez-la via le fil de messages.",
+        message: "This question has already been sent to the contractor — edit it via the message thread.",
       });
     }
     const updated = await storage.updateDevisCheck(checkId, { query: req.body.query });
@@ -486,16 +486,16 @@ router.post(
     const devisId = Number(req.params.devisId);
     const userId = req.session?.userId ?? null;
     const active = await storage.getActiveDevisCheckToken(devisId);
-    if (!active) return res.status(409).json({ message: "Aucun lien actif à prolonger" });
+    if (!active) return res.status(409).json({ message: "No active link to extend" });
     // Prolonger is for still-valid tokens only. An expired-but-not-revoked
     // token must be re-issued (rotated) via /checks/send instead, otherwise
     // we'd silently revive a link the contractor was already told had lapsed.
     if (isTokenExpired(active)) {
-      return res.status(409).json({ message: "Lien expiré — émettre un nouveau lien via Envoyer" });
+      return res.status(409).json({ message: "Link expired — issue a new link via Send" });
     }
     const newExpiry = computeTokenExpiry();
     const updated = await storage.extendDevisCheckTokenExpiry(active.id, newExpiry);
-    if (!updated) return res.status(409).json({ message: "Lien révoqué entre-temps" });
+    if (!updated) return res.status(409).json({ message: "Link was revoked in the meantime" });
     const user = (userId ? await storage.getUser(Number(userId)) : null) ?? null;
     const expiryNote = newExpiry
       ? `nouvelle expiration le ${newExpiry.toLocaleString("fr-FR")}`
@@ -527,9 +527,9 @@ router.post(
     const devisId = Number(req.params.devisId);
     const userId = req.session?.userId ?? null;
     const active = await storage.getActiveDevisCheckToken(devisId);
-    if (!active) return res.status(409).json({ message: "Aucun lien actif à révoquer" });
+    if (!active) return res.status(409).json({ message: "No active link to revoke" });
     const revoked = await storage.revokeDevisCheckTokenById(active.id);
-    if (!revoked) return res.status(409).json({ message: "Lien déjà révoqué" });
+    if (!revoked) return res.status(409).json({ message: "Link already revoked" });
     const user = (userId ? await storage.getUser(Number(userId)) : null) ?? null;
     await auditTokenAction(devisId, `Lien contractant révoqué par ${describeUser(user)}.`);
     res.json({ revoked: true });
@@ -558,11 +558,11 @@ router.post(
     const devisId = Number(req.params.devisId);
     const userId = req.session?.userId ?? null;
     const devis = await storage.getDevis(devisId);
-    if (!devis) return res.status(404).json({ message: "Devis introuvable" });
+    if (!devis) return res.status(404).json({ message: "Devis not found" });
     const contractor = await storage.getContractor(devis.contractorId);
-    if (!contractor) return res.status(404).json({ message: "Entreprise introuvable" });
+    if (!contractor) return res.status(404).json({ message: "Contractor not found" });
     if (!contractor.email) {
-      return res.status(409).json({ message: "L'entreprise n'a pas d'email enregistré" });
+      return res.status(409).json({ message: "The contractor has no email on record" });
     }
     if (!env.PUBLIC_BASE_URL) {
       return res.status(500).json({ message: "PUBLIC_BASE_URL is not configured" });

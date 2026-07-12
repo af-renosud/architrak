@@ -92,14 +92,14 @@ router.post("/api/devis/:id/insurance-overrides", requireAuth, async (req, res) 
   if ("error" in fresh) return res.status(404).json({ message: "Devis not found" });
   if (fresh.proceed) {
     return res.status(409).json({
-      message: "L'assurance est désormais valide — aucun override nécessaire.",
+      message: "The insurance verdict is now valid — no override needed.",
       decision: decisionToWire(fresh),
     });
   }
   if (!fresh.overridable) {
     return res.status(409).json({
       message:
-        "Cette situation n'est pas surchargeable depuis Architrak (ex. 404 Archidoc) — corriger l'affectation côté Archidoc.",
+        "This case cannot be overridden from Architrak (e.g. 404 from Archidoc) — fix the assignment on the Archidoc side.",
       decision: decisionToWire(fresh),
     });
   }

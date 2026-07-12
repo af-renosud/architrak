@@ -63,7 +63,7 @@ router.get(
   async (req, res) => {
     const devisId = Number(req.params.devisId);
     const devis = await storage.getDevis(devisId);
-    if (!devis) return res.status(404).type("html").send("Devis introuvable");
+    if (!devis) return res.status(404).type("html").send("Devis not found");
     res.type("html").send(renderClientPortalShell({ mode: "preview", devisId }));
   },
 );
@@ -74,9 +74,9 @@ router.get(
   async (req, res) => {
     const devisId = Number(req.params.devisId);
     const devis = await storage.getDevis(devisId);
-    if (!devis) return res.status(404).json({ message: "Devis introuvable" });
+    if (!devis) return res.status(404).json({ message: "Devis not found" });
     const payload = await buildClientPortalPayload(devis, null);
-    if (!payload) return res.status(404).json({ message: "Devis introuvable" });
+    if (!payload) return res.status(404).json({ message: "Devis not found" });
     res.json(payload);
   },
 );
@@ -236,7 +236,7 @@ router.post(
     const devisId = Number(req.params.devisId);
     const userId = req.session?.userId ?? null;
     const devis = await storage.getDevis(devisId);
-    if (!devis) return res.status(404).json({ message: "Devis introuvable" });
+    if (!devis) return res.status(404).json({ message: "Devis not found" });
     if (!env.PUBLIC_BASE_URL) {
       return res.status(500).json({ message: "PUBLIC_BASE_URL is not configured" });
     }
@@ -267,15 +267,15 @@ router.post(
     const devisId = Number(req.params.devisId);
     const userId = req.session?.userId ?? null;
     const active = await storage.getActiveClientCheckToken(devisId);
-    if (!active) return res.status(409).json({ message: "Aucun lien actif à prolonger" });
+    if (!active) return res.status(409).json({ message: "No active link to extend" });
     if (isTokenExpired(active)) {
       return res.status(409).json({
-        message: "Lien expiré — émettre un nouveau lien via Envoyer au client.",
+        message: "Link expired — issue a new link via Send to Client.",
       });
     }
     const newExpiry = computeTokenExpiry();
     const updated = await storage.extendClientCheckTokenExpiry(active.id, newExpiry);
-    if (!updated) return res.status(409).json({ message: "Lien révoqué entre-temps" });
+    if (!updated) return res.status(409).json({ message: "Link was revoked in the meantime" });
     const user = (userId ? await storage.getUser(Number(userId)) : null) ?? null;
     const expiryNote = newExpiry
       ? `expire le ${newExpiry.toLocaleString("fr-FR")}`
@@ -295,9 +295,9 @@ router.post(
     const devisId = Number(req.params.devisId);
     const userId = req.session?.userId ?? null;
     const active = await storage.getActiveClientCheckToken(devisId);
-    if (!active) return res.status(409).json({ message: "Aucun lien actif à révoquer" });
+    if (!active) return res.status(409).json({ message: "No active link to revoke" });
     const revoked = await storage.revokeClientCheckTokenById(active.id);
-    if (!revoked) return res.status(409).json({ message: "Lien déjà révoqué" });
+    if (!revoked) return res.status(409).json({ message: "Link already revoked" });
     const user = (userId ? await storage.getUser(Number(userId)) : null) ?? null;
     await auditClientTokenAction(devisId, `Lien client révoqué par ${describeUser(user)}.`);
     res.json({ ok: true });
