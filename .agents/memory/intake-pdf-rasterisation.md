@@ -19,12 +19,16 @@ poppler-utils. Determine success by counting produced *complete* PNGs (8-byte
 signature + IEND trailer), not exit status, and clear stale PNGs between attempts.
 A rasteriser killed at the time cap leaves a TRUNCATED PNG on disk — accepting it
 sends garbage to Gemini, which answers a permanent-looking 400 ("Unable to process
-input image") and parks the doc. When a strategy TIMES OUT, do not burn the cap on
+input image") and parks the doc. Timed-out output is NEVER accepted — even complete
+PNGs may be missing later pages. When a strategy TIMES OUT, do not burn the cap on
 the other backends: descend the DPI ladder (200 → 100 → 72) and re-run the chain
 (timeouts are render-weight problems, not backend problems; hard crashes stay at
-the same DPI and try the next backend). Also guard Gemini inline-image limits
-(per-page pixel dimension + total bytes) by descending DPI, accepting at the
-lowest rung.
+the same DPI and try the next backend). Gemini inline-image limits (per-page pixel
+dimension + total bytes) are hard: on violation descend DPI, and at the lowest
+static rung extend the ladder with a COMPUTED fit DPI (dimensions scale linearly
+with DPI, bytes ~quadratically); if compliance is impossible, throw — never send an
+oversized payload. An overall wall-clock budget keeps rasterisation inside the
+intake sweeper's 10-minute in_flight reclaim window.
 
 **Why:** `execFile` only surfaces a generic "Command failed"; the real reason lives in
 stderr. Capture per-strategy stderr and, when ALL strategies fail, throw an Error with

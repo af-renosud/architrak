@@ -274,11 +274,12 @@ describe("pdfToImages — rasteriser fallback chain", () => {
     expect(state.calls).not.toContain("pdftocairo@200");
   });
 
-  it("accepts complete pages from a timed-out strategy at the LOWEST rung instead of dead-ending", async () => {
+  it("never accepts timed-out output — even complete pages at the lowest rung fail with diagnostics", async () => {
     setBehaviors({ pdftoppm: "timeout-complete" });
-    // 200 and 100 descend; at 72 (lowest rung) the complete pages are kept.
-    const imgs = await pdfToImages(fakePdf);
-    expect(imgs).toHaveLength(1);
+    // A timed-out strategy may have been killed before rendering all pages,
+    // so its output is never trusted at ANY rung. 200 and 100 descend; at 72
+    // (lowest rung) it still fails and the whole run throws.
+    await expect(pdfToImages(fakePdf)).rejects.toThrow(/coverage may be partial/);
     expect(state.calls).toContain("pdftoppm@72");
   });
 
@@ -305,5 +306,34 @@ describe("pdfToImages — rasteriser fallback chain", () => {
     // The oversized 8000x11000 page from 200 DPI must not be returned.
     expect(imgs[0].readUInt32BE(16)).toBe(100);
     expect(state.calls).toContain("pdftoppm@100");
+  });
+
+  it("extends the ladder with a computed fit DPI when pages are still oversized at the lowest static rung", async () => {
+    setBehaviors({
+      // Every static rung renders oversized; the dynamically computed fit
+      // rung (below 72) falls back to the plain-tag behavior and succeeds.
+      pdftoppm: "ok",
+      "pdftoppm@200": "ok-huge",
+      "pdftoppm@100": "ok-huge",
+      "pdftoppm@72": "ok-huge",
+    });
+    const imgs = await pdfToImages(fakePdf);
+    expect(imgs).toHaveLength(1);
+    // The returned image is the compliant one, not the 8000x11000 page.
+    expect(imgs[0].readUInt32BE(16)).toBe(100);
+    // A dynamic rung below the static ladder must have been used.
+    const dynamicRung = state.calls.find((c) => {
+      const m = c.match(/^pdftoppm@(\d+)$/);
+      return m !== null && Number(m[1]) < 72;
+    });
+    expect(dynamicRung).toBeDefined();
+  });
+
+  it("throws rather than sending oversized images when no DPI can achieve compliance", async () => {
+    // ok-huge at EVERY rung, including the dynamic fit rungs: the ladder is
+    // extended at most MAX_EXTRA_FIT_RUNGS times, then the run fails loudly
+    // instead of sending a size-violating payload to Gemini.
+    setBehaviors({ pdftoppm: "ok-huge" });
+    await expect(pdfToImages(fakePdf)).rejects.toThrow(/exceeds the .* limit/);
   });
 });

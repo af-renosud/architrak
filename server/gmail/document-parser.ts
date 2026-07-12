@@ -412,6 +412,11 @@ const PDF_RASTER_TIMEOUT_MS = 120000;
 // for the vision model and renders ~8x faster than 200 DPI.
 const PDF_RASTER_DPI_LADDER = [200, 100, 72] as const;
 
+// Floor for dynamically computed "fit" DPI rungs (see computeFitDpi) and cap
+// on how many such extra rungs may be appended — keeps the ladder finite.
+const MIN_RASTER_DPI = 24;
+const MAX_EXTRA_FIT_RUNGS = 2;
+
 // Overall wall-clock budget for the whole rasterisation attempt (all
 // strategies, all DPI rungs). The intake sweeper reclaims stale in_flight
 // jobs after 10 minutes — if rasterisation could outlive that window the
@@ -461,6 +466,31 @@ function exceedsGeminiImageLimits(images: Buffer[]): string | null {
     return `rendered pages total ${mb}MB exceeds the ${MAX_TOTAL_IMAGE_BYTES / (1024 * 1024)}MB budget`;
   }
   return null;
+}
+
+// Given complete-but-oversized pages rendered at `currentDpi`, compute a
+// smaller DPI at which the SAME pages will deterministically fit Gemini's
+// limits: pixel dimensions scale linearly with DPI and PNG byte size scales
+// roughly quadratically. A 10% safety margin avoids landing exactly on the
+// boundary. Returns null when no smaller rung can help (already at/below the
+// floor).
+function computeFitDpi(images: Buffer[], currentDpi: number): number | null {
+  let scale = 1;
+  let maxDim = 0;
+  let totalBytes = 0;
+  for (const img of images) {
+    totalBytes += img.length;
+    const dims = pngDimensions(img);
+    if (dims) maxDim = Math.max(maxDim, dims.width, dims.height);
+  }
+  if (maxDim > MAX_IMAGE_DIMENSION_PX) {
+    scale = Math.min(scale, MAX_IMAGE_DIMENSION_PX / maxDim);
+  }
+  if (totalBytes > MAX_TOTAL_IMAGE_BYTES) {
+    scale = Math.min(scale, Math.sqrt(MAX_TOTAL_IMAGE_BYTES / totalBytes));
+  }
+  const fit = Math.max(Math.floor(currentDpi * scale * 0.9), MIN_RASTER_DPI);
+  return fit < currentDpi ? fit : null;
 }
 
 function runRasterCommand(
@@ -590,9 +620,14 @@ export async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Prom
 
     const diagnostics: string[] = [];
     const rasterStartedAt = Date.now();
-    for (let rung = 0; rung < PDF_RASTER_DPI_LADDER.length; rung++) {
-      const dpi = PDF_RASTER_DPI_LADDER[rung];
-      const isLastRung = rung === PDF_RASTER_DPI_LADDER.length - 1;
+    // The ladder starts at the static rungs and may be EXTENDED with
+    // dynamically computed "fit" DPIs when complete pages still exceed
+    // Gemini's image limits at the lowest static rung (bounded by
+    // MAX_EXTRA_FIT_RUNGS). Oversized images are never returned.
+    const ladder: number[] = [...PDF_RASTER_DPI_LADDER];
+    let extraFitRungs = 0;
+    for (let rung = 0; rung < ladder.length; rung++) {
+      const dpi = ladder[rung];
       let descendDpi = false;
 
       for (const strategy of buildStrategies(dpi)) {
@@ -608,31 +643,21 @@ export async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Prom
         const images = await collectPngPages(tempDir, maxPages);
         const allComplete = images.length > 0 && images.every(isCompletePng);
 
+        if (allComplete && timedOut) {
+          // The rasteriser was killed at the cap AFTER finishing these pages
+          // but possibly BEFORE rendering the rest — coverage may be partial.
+          // Timed-out output is never accepted; re-render at a lower DPI (or,
+          // past the last rung, fail with diagnostics).
+          diagnostics.push(
+            `${strategy.name}@${dpi}dpi: timed out after ${PDF_RASTER_TIMEOUT_MS}ms with ${images.length} complete page(s) — coverage may be partial, discarded`,
+          );
+          descendDpi = true;
+          break;
+        }
+
         if (allComplete) {
-          // A timed-out strategy that still left complete PNGs was killed
-          // AFTER finishing some pages but possibly BEFORE rendering all of
-          // them — page coverage may be partial. Prefer a full re-render at
-          // a lower DPI; only accept at the lowest rung (partial coverage
-          // beats a dead end there).
-          if (timedOut && !isLastRung) {
-            diagnostics.push(
-              `${strategy.name}@${dpi}dpi: timed out after ${PDF_RASTER_TIMEOUT_MS}ms with ${images.length} complete page(s) — coverage may be partial, retrying at lower DPI`,
-            );
-            descendDpi = true;
-            break;
-          }
           const limitViolation = exceedsGeminiImageLimits(images);
-          if (!limitViolation || isLastRung) {
-            if (timedOut) {
-              console.warn(
-                `[document-parser] "${strategy.name}" timed out at ${dpi} DPI (lowest rung) — accepting ${images.length} complete page(s), coverage may be partial`,
-              );
-            }
-            if (limitViolation) {
-              console.warn(
-                `[document-parser] ${limitViolation} even at ${dpi} DPI — sending anyway (lowest rung)`,
-              );
-            }
+          if (!limitViolation) {
             if (strategy.name !== "pdftoppm" || dpi !== PDF_RASTER_DPI_LADDER[0]) {
               console.log(
                 `[document-parser] rasterised via "${strategy.name}" at ${dpi} DPI (${images.length} page(s))`,
@@ -640,7 +665,14 @@ export async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Prom
             }
             return images;
           }
-          diagnostics.push(`${strategy.name}@${dpi}dpi: ${limitViolation} — retrying at lower DPI`);
+          diagnostics.push(`${strategy.name}@${dpi}dpi: ${limitViolation} — retrying at reduced DPI`);
+          if (rung === ladder.length - 1 && extraFitRungs < MAX_EXTRA_FIT_RUNGS) {
+            const fitDpi = computeFitDpi(images, dpi);
+            if (fitDpi !== null) {
+              ladder.push(fitDpi);
+              extraFitRungs++;
+            }
+          }
           descendDpi = true;
           break;
         }
