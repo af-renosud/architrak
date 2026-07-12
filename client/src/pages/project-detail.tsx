@@ -22,6 +22,10 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { insertCertificatSchema, insertFeeSchema, insertFeeEntrySchema, insertLotSchema, insertMarcheSchema } from "@shared/schema";
 import type { Project, Devis, Lot, Marche, Certificat, Fee, FeeEntry, Contractor, Invoice, ProjectDocument, ProjectCommunication, PaymentReminder } from "@shared/schema";
+import {
+  ContextEmailResendButton,
+  parseDevisIdFromContextEmailDedupeKey,
+} from "@/components/communications/ContextEmailResendButton";
 import { DevisTab } from "@/components/devis/DevisTab";
 import { IntakeTab } from "@/components/intake/IntakeTab";
 import { OutstandingFeesPanel } from "@/components/fees/OutstandingFeesPanel";
@@ -2387,6 +2391,10 @@ export default function ProjectDetail() {
                     const typeIcon = comm.type === "certificat_sent" ? FileCheck :
                       comm.type === "payment_chase" ? Clock : MessageSquare;
                     const TypeIcon = typeIcon;
+                    const contextEmailDevisId =
+                      comm.type === "devis_signature_context" && comm.status !== "sent"
+                        ? parseDevisIdFromContextEmailDedupeKey(comm.dedupeKey)
+                        : null;
                     return (
                       <LuxuryCard key={comm.id} className="p-4" data-testid={`card-comm-${comm.id}`}>
                         <div className="flex items-start justify-between gap-3">
@@ -2409,7 +2417,14 @@ export default function ProjectDetail() {
                               </span>
                             </div>
                           </div>
-                          {(comm.status === "draft" || comm.status === "queued") && (
+                          {contextEmailDevisId !== null ? (
+                            <ContextEmailResendButton
+                              devisId={contextEmailDevisId}
+                              communicationId={comm.id}
+                              projectId={comm.projectId}
+                            />
+                          ) : (comm.status === "draft" || comm.status === "queued") &&
+                            comm.type !== "devis_signature_context" && (
                             <Button
                               variant="outline"
                               size="sm"

@@ -4,7 +4,11 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { MessageSquare, Send, FileCheck, Clock, AlertTriangle, Filter, ChevronDown, ChevronUp } from "lucide-react";
+import { MessageSquare, Send, FileCheck, Clock, AlertTriangle, Filter, ChevronDown, ChevronUp, PenLine } from "lucide-react";
+import {
+  ContextEmailResendButton,
+  parseDevisIdFromContextEmailDedupeKey,
+} from "@/components/communications/ContextEmailResendButton";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useQuery } from "@tanstack/react-query";
@@ -22,6 +26,7 @@ const typeIcons: Record<string, typeof Send> = {
   payment_chase: Clock,
   contractor_query: MessageSquare,
   client_update: Send,
+  devis_signature_context: PenLine,
   general: MessageSquare,
 };
 
@@ -30,6 +35,7 @@ const typeLabels: Record<string, string> = {
   payment_chase: "Payment Chase",
   contractor_query: "Contractor Query",
   client_update: "Client Update",
+  devis_signature_context: "Devis Signature Context",
   general: "General",
 };
 
@@ -106,6 +112,7 @@ export default function Communications() {
               <SelectItem value="payment_chase">Payment Chase</SelectItem>
               <SelectItem value="contractor_query">Contractor Query</SelectItem>
               <SelectItem value="client_update">Client Update</SelectItem>
+              <SelectItem value="devis_signature_context">Devis Signature Context</SelectItem>
               <SelectItem value="general">General</SelectItem>
             </SelectContent>
           </Select>
@@ -135,6 +142,10 @@ export default function Communications() {
               const project = projectMap.get(comm.projectId);
               const IconComp = typeIcons[comm.type] || MessageSquare;
               const isExpanded = expandedId === comm.id;
+              const contextEmailDevisId =
+                comm.type === "devis_signature_context" && comm.status !== "sent"
+                  ? parseDevisIdFromContextEmailDedupeKey(comm.dedupeKey)
+                  : null;
 
               return (
                 <LuxuryCard key={comm.id} className="p-4" data-testid={`card-comm-${comm.id}`}>
@@ -169,9 +180,18 @@ export default function Communications() {
                         </div>
                       </div>
                     </div>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 flex-shrink-0" data-testid={`button-toggle-comm-${comm.id}`}>
-                      {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                    </Button>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      {contextEmailDevisId !== null && (
+                        <ContextEmailResendButton
+                          devisId={contextEmailDevisId}
+                          communicationId={comm.id}
+                          projectId={comm.projectId}
+                        />
+                      )}
+                      <Button variant="ghost" size="icon" className="h-8 w-8 flex-shrink-0" data-testid={`button-toggle-comm-${comm.id}`}>
+                        {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                      </Button>
+                    </div>
                   </div>
                   {isExpanded && (
                     <div className="mt-4 pl-12 border-t pt-4">
