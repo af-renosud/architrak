@@ -273,6 +273,8 @@ export interface IStorage {
   getProjectIntakeDocument(id: number): Promise<ProjectIntakeDocument | undefined>;
   createProjectIntakeDocument(data: InsertProjectIntakeDocument): Promise<ProjectIntakeDocument>;
   getProjectIntakeDocumentByEmailDocumentId(emailDocumentId: number): Promise<ProjectIntakeDocument | undefined>;
+  deleteProjectIntakeDocument(id: number): Promise<void>;
+  tombstoneEmailDocumentIntake(emailDocumentId: number): Promise<void>;
 
   getProjectCommunications(projectId: number): Promise<ProjectCommunication[]>;
   getAllCommunications(): Promise<ProjectCommunication[]>;
@@ -1505,6 +1507,9 @@ export class DatabaseStorage implements IStorage {
    */
   private async mirrorEmailDocumentToIntake(doc: EmailDocument): Promise<void> {
     if (doc.projectId == null || !doc.storageKey) return;
+    // Tombstoned: an operator deliberately deleted the mirrored intake row —
+    // do not resurrect it on subsequent email-document updates.
+    if (doc.intakeDeletedAt) return;
     const [inserted] = await db.insert(projectIntakeDocuments).values({
       projectId: doc.projectId,
       fileName: doc.attachmentFileName ?? "document.pdf",
@@ -1566,6 +1571,18 @@ export class DatabaseStorage implements IStorage {
   async getProjectIntakeDocumentByEmailDocumentId(emailDocumentId: number): Promise<ProjectIntakeDocument | undefined> {
     const [doc] = await db.select().from(projectIntakeDocuments).where(eq(projectIntakeDocuments.sourceEmailDocumentId, emailDocumentId));
     return doc;
+  }
+
+  async deleteProjectIntakeDocument(id: number): Promise<void> {
+    // intake_jobs rows cascade via their FK; promoted records are guarded at
+    // the route level (a routed doc cannot be deleted from intake).
+    await db.delete(projectIntakeDocuments).where(eq(projectIntakeDocuments.id, id));
+  }
+
+  async tombstoneEmailDocumentIntake(emailDocumentId: number): Promise<void> {
+    await db.update(emailDocuments)
+      .set({ intakeDeletedAt: new Date() })
+      .where(eq(emailDocuments.id, emailDocumentId));
   }
 
   async getProjectCommunications(projectId: number): Promise<ProjectCommunication[]> {

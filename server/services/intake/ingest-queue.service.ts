@@ -312,7 +312,14 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
       mimetype: doc.mimeType ?? "application/pdf",
     };
 
-    // 6. Route by documentType.
+    // 6. Route by documentType. The user may have DELETED the intake
+    // document while analysis was running — re-check existence immediately
+    // before any draft-creation side effect so a deleted doc can't still
+    // spawn a typed devis/invoice.
+    if (!(await storage.getProjectIntakeDocument(doc.id))) {
+      console.log(`[intake-queue] Intake document ${doc.id} was deleted mid-analysis — skipping routing`);
+      return;
+    }
     switch (parsed.documentType) {
       case "quotation": {
         const result = await processDevisUpload(doc.projectId, file, parsed);
@@ -361,6 +368,12 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
             fingerprint,
             `Invoice parked: ${candidates.length === 0 ? "no" : `${candidates.length}`} devis match for this contractor — attach manually.`,
           );
+          return;
+        }
+        // Second existence check: the matching lookups above take time and
+        // a delete may have landed since the pre-switch check.
+        if (!(await storage.getProjectIntakeDocument(doc.id))) {
+          console.log(`[intake-queue] Intake document ${doc.id} was deleted mid-analysis — skipping invoice routing`);
           return;
         }
         const result = await processInvoiceUpload(candidates[0].id, file, parsed);

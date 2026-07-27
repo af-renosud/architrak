@@ -4,6 +4,7 @@
 - [Reconciliation AI degradation](reconciliation-ai-degradation.md) — overlap-detection must degrade AI-error to deterministic arithmetic, never collapse null-verdict with "unrelated" (silent false-negatives).
 - [Server-authoritative money fields](server-authoritative-money-fields.md) — omit server-derived money cols from request Zod schemas (not just handler guards); read prior cumulative from the latest prior row, never max()/sum().
 - [Intake queue drift](intake-queue-drift.md) — a doc can wedge on "analyzing" if its job goes terminal but the doc-state write fails; in_flight reclaim can't fix it, the sweeper drift-repair pass must.
+- [SIRET extraction safeguard](siret-extraction-safeguard.md) — vision models hallucinate SIRET digits; cross-check vs PDF text layer + Luhn, override only invalid/missing AI reads, never valid ones.
 - [Intake PDF rasterisation](intake-pdf-rasterisation.md) — a conversion failure masquerades as classification="unknown"; rasterise via a pdftoppm→pdftocairo→ghostscript fallback chain (gs is a nix dep), throw with per-strategy stderr on total failure.
 - [Prod one-shot actions](prod-side-actions-via-data-migrations.md) — when you can't publish or click in prod, a tightly-guarded data-only migration fires the action exactly once at first boot after the user publishes.
 - [Playwright run quirks](playwright-run-quirks.md) — run e2e specs in ONE shell call with `timeout -k` + file redirect; detached runs get killed between calls; hermetic specs must set the dev-login flag.

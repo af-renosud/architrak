@@ -937,6 +937,10 @@ export const emailDocuments = pgTable("email_documents", {
   matchConfidence: numeric("match_confidence", { precision: 5, scale: 2 }),
   matchedFields: jsonb("matched_fields"),
   gmailLabelApplied: boolean("gmail_label_applied").notNull().default(false),
+  // Tombstone: set when an operator deletes the mirrored intake document.
+  // Blocks mirrorEmailDocumentToIntake from silently recreating the intake
+  // row on the next email-document update. NULL = never intentionally deleted.
+  intakeDeletedAt: timestamp("intake_deleted_at"),
   contractorId: integer("contractor_id").references(() => contractors.id),
   devisId: integer("devis_id").references(() => devis.id),
   invoiceId: integer("invoice_id").references(() => invoices.id),

@@ -4,7 +4,7 @@ import type { Request, Response, NextFunction } from "express";
 import { MulterError } from "multer";
 import { storage } from "../storage";
 import { intakeUpload } from "../middleware/upload";
-import { uploadDocument, getDocumentStream } from "../storage/object-storage";
+import { uploadDocument, getDocumentStream, deleteDocument } from "../storage/object-storage";
 import { validateRequest } from "../middleware/validate";
 
 /**
@@ -123,6 +123,48 @@ router.post(
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ message: `Re-analysis failed: ${message}` });
+    }
+  },
+);
+
+router.delete(
+  "/api/intake-documents/:id",
+  validateRequest({ params: intakeIdParams }),
+  async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const doc = await storage.getProjectIntakeDocument(id);
+      if (!doc) return res.status(404).json({ message: "Document not found" });
+
+      // A document that has already been routed into a typed record (devis /
+      // invoice) is the source file of that record — deleting it from intake
+      // would orphan the draft. The user must delete the typed record first.
+      if (doc.promotedId) {
+        return res.status(409).json({
+          message: `This document was routed into ${doc.promotedKind ?? "a record"} #${doc.promotedId}. Delete that record first, then remove the intake document.`,
+        });
+      }
+
+      // Gmail-mirrored docs: tombstone the source email document FIRST so a
+      // concurrent/later email-document update cannot resurrect this intake
+      // row via mirrorEmailDocumentToIntake.
+      if (doc.sourceEmailDocumentId) {
+        await storage.tombstoneEmailDocumentIntake(doc.sourceEmailDocumentId);
+      }
+
+      // Best-effort storage cleanup — a missing/failed object delete must not
+      // block removing the row (the object is unreachable without it anyway).
+      try {
+        await deleteDocument(doc.storageKey);
+      } catch (err) {
+        console.warn(`[intake] Failed to delete storage object for intake doc ${id} (continuing):`, err);
+      }
+      await storage.deleteProjectIntakeDocument(id);
+      console.log(`[intake] Deleted intake document ${id} ("${doc.fileName}") from project ${doc.projectId}`);
+      res.json({ id, deleted: true });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Delete failed: ${message}` });
     }
   },
 );

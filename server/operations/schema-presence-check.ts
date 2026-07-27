@@ -106,6 +106,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0048_devis_archisign_subject_drift", artifact: { kind: "column", table: "devis", column: "archisign_subject_drift_at" } },
   { tag: "0049_devis_archisign_body_drift", artifact: { kind: "column", table: "devis", column: "archisign_body_drift_at" } },
   { tag: "0050_devis_manual_signoff", artifact: { kind: "column", table: "devis", column: "signed_off_via" } },
+  { tag: "0051_email_documents_intake_tombstone", artifact: { kind: "column", table: "email_documents", column: "intake_deleted_at" } },
 ];
 
 interface JournalFile {

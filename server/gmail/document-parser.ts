@@ -51,6 +51,15 @@ export interface ParsedDocument {
   devisNumber?: string;
   siret?: string;
   tvaIntracom?: string;
+  // Audit trail of the deterministic text-layer safeguard (not AI-produced):
+  // records whether the extracted SIRET was verified/corrected against the
+  // PDF's embedded text layer, and why.
+  siretCrossCheck?: {
+    corrected: boolean;
+    originalSiret?: string | null;
+    originalTvaIntracom?: string | null;
+    reason: string;
+  };
   date?: string;
   amountHt?: number;
   amountTtc?: number;
@@ -110,6 +119,30 @@ interface MatchResult {
 export function normalizeSiret(raw: string | null | undefined): string {
   if (!raw) return "";
   return raw.replace(/\D/g, "");
+}
+
+// French SIRET/SIREN numbers are Luhn-validated. A 14-digit number that
+// fails the checksum CANNOT be a real SIRET — it is almost certainly an
+// AI/OCR misread (e.g. 5→2, 6→8), which is exactly the failure mode that
+// parked a valid AT PISCINES devis as "unknown contractor".
+export function luhnValid(digits: string): boolean {
+  if (!/^\d+$/.test(digits)) return false;
+  let sum = 0;
+  for (let i = 0; i < digits.length; i++) {
+    let d = digits.charCodeAt(digits.length - 1 - i) - 48;
+    if (i % 2 === 1) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+  }
+  return sum % 10 === 0;
+}
+
+// FR intracom VAT key is derivable from the SIREN: (12 + 3 × (SIREN mod 97)) mod 97.
+export function tvaIntracomFromSiren(siren: string): string {
+  const key = (12 + 3 * (Number(siren) % 97)) % 97;
+  return `FR${String(key).padStart(2, "0")}${siren}`;
 }
 
 export function extractSirenFromTva(raw: string | null | undefined): string {
@@ -533,6 +566,130 @@ async function clearPngPages(dir: string): Promise<void> {
   );
 }
 
+// ── SIRET cross-check against the PDF text layer ──────────────────────────
+// The vision models occasionally hallucinate digits when reading a SIRET off
+// a page image. Most French devis PDFs are digitally generated and carry an
+// embedded text layer with the exact characters — a deterministic secondary
+// source we can trust over the model. Returns "" when there is no usable
+// text layer (scanned documents) or pdftotext is unavailable.
+export async function extractPdfTextLayer(pdfBuffer: Buffer): Promise<string> {
+  const tempDir = await mkdtemp(join(tmpdir(), "architrak-pdftext-"));
+  const pdfPath = join(tempDir, "input.pdf");
+  const txtPath = join(tempDir, "output.txt");
+  try {
+    await writeFile(pdfPath, pdfBuffer);
+    const ok = await new Promise<boolean>((resolve) => {
+      execFile(
+        "pdftotext",
+        ["-q", pdfPath, txtPath],
+        { timeout: 20_000, maxBuffer: 16 * 1024 * 1024 },
+        (err) => resolve(!err),
+      );
+    });
+    if (!ok) return "";
+    return await readFile(txtPath, "utf8").catch(() => "");
+  } catch {
+    return "";
+  } finally {
+    await unlink(pdfPath).catch(() => undefined);
+    await unlink(txtPath).catch(() => undefined);
+  }
+}
+
+// All Luhn-valid 14-digit numbers present in the text, tolerating the usual
+// "905 077 673 00010" spacing. Only MAXIMAL digit runs are considered so a
+// 14-digit window inside a longer number (IBAN, phone+ref concatenations)
+// can't produce a false candidate.
+export function findSiretCandidatesInText(text: string): string[] {
+  const out = new Set<string>();
+  const runs = text.match(/\d(?:[ .\u00A0\u202F-]?\d)*/g) ?? [];
+  for (const run of runs) {
+    const digits = run.replace(/\D/g, "");
+    if (digits.length === 14 && luhnValid(digits) && luhnValid(digits.slice(0, 9))) {
+      out.add(digits);
+    }
+  }
+  return Array.from(out);
+}
+
+// Verify (and where possible correct) the AI-extracted SIRET against the
+// PDF's own text layer. Mutates `parsed` in place and records what happened
+// in parsed.siretCrossCheck so the decision is auditable in extractedData.
+export async function crossCheckSiretAgainstTextLayer(
+  parsed: ParsedDocument,
+  pdfBuffer: Buffer,
+  textLayerOverride?: string,
+): Promise<void> {
+  try {
+    const text = textLayerOverride ?? (await extractPdfTextLayer(pdfBuffer));
+    const aiSiret = normalizeSiret(parsed.siret);
+    const aiValid = aiSiret.length === 14 && luhnValid(aiSiret);
+    if (!text.trim()) {
+      if (aiSiret.length === 14 && !aiValid) {
+        parsed.siretCrossCheck = {
+          corrected: false,
+          reason: "AI-extracted SIRET fails the Luhn checksum and the PDF has no text layer to verify against (scanned document).",
+        };
+      }
+      return;
+    }
+    const candidates = findSiretCandidatesInText(text);
+    if (aiValid && candidates.includes(aiSiret)) {
+      parsed.siretCrossCheck = { corrected: false, reason: "Verified against the PDF text layer." };
+      return;
+    }
+    if (candidates.length === 1) {
+      const candidate = candidates[0];
+      // Only OVERRIDE when the AI value is missing or checksum-invalid — a
+      // checksum-valid AI SIRET that simply isn't in the text layer might be
+      // legitimate (e.g. printed only in a scanned header image); replacing
+      // it would risk swapping a correct read for a wrong candidate.
+      if (aiValid && aiSiret !== candidate) {
+        parsed.siretCrossCheck = {
+          corrected: false,
+          reason: `AI-extracted SIRET ${aiSiret} is checksum-valid but was not found in the PDF text layer, which prints ${candidate}. Kept the AI value — verify manually if the contractor match looks wrong.`,
+        };
+        return;
+      }
+      if (aiSiret !== candidate) {
+        const originalSiret = parsed.siret;
+        const originalTva = parsed.tvaIntracom;
+        parsed.siret = candidate;
+        // Keep the TVA number coherent: if the extracted one doesn't carry
+        // the corrected SIREN, derive the correct FR key deterministically.
+        if (extractSirenFromTva(parsed.tvaIntracom) !== candidate.slice(0, 9)) {
+          parsed.tvaIntracom = tvaIntracomFromSiren(candidate.slice(0, 9));
+        }
+        parsed.siretCrossCheck = {
+          corrected: true,
+          originalSiret: originalSiret ?? null,
+          originalTvaIntracom: originalTva ?? null,
+          reason: aiSiret.length === 14
+            ? `AI-extracted SIRET ${aiSiret} fails the Luhn checksum and was not found in the PDF text layer; replaced with the checksum-valid SIRET printed on the document.`
+            : "AI extraction missed or mangled the SIRET; filled in from the checksum-valid SIRET printed on the document.",
+        };
+        console.warn(
+          `[DocumentParser] SIRET cross-check corrected ${originalSiret ?? "(none)"} → ${candidate} from the PDF text layer`,
+        );
+      } else {
+        parsed.siretCrossCheck = { corrected: false, reason: "Verified against the PDF text layer." };
+      }
+      return;
+    }
+    if (aiSiret.length === 14 && !aiValid) {
+      parsed.siretCrossCheck = {
+        corrected: false,
+        reason: candidates.length === 0
+          ? "AI-extracted SIRET fails the Luhn checksum; no checksum-valid SIRET found in the PDF text layer."
+          : `AI-extracted SIRET fails the Luhn checksum; multiple checksum-valid SIRETs found in the PDF text layer (${candidates.join(", ")}) — ambiguous, left unchanged.`,
+      };
+    }
+  } catch (err) {
+    // Never let the safeguard break extraction itself.
+    console.warn("[DocumentParser] SIRET cross-check failed (non-fatal):", err);
+  }
+}
+
 export async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Promise<Buffer[]> {
   const tempDir = await mkdtemp(join(tmpdir(), "architrak-pdf-"));
   const pdfPath = join(tempDir, "input.pdf");
@@ -922,7 +1079,11 @@ export async function parseDocument(
   }
 
   if (parsed) {
-    console.log(`[DocumentParser] Extracted: type=${parsed.documentType}, contractor=${parsed.contractorName}, HT=${parsed.amountHt}, TTC=${parsed.amountTtc}, autoLiq=${parsed.autoLiquidation}, lines=${parsed.lineItems?.length ?? 0}`);
+    // Secondary safeguard: the vision models occasionally misread SIRET
+    // digits off page images. Cross-check (and correct) against the PDF's
+    // deterministic text layer before anything downstream matches on it.
+    await crossCheckSiretAgainstTextLayer(parsed, pdfBuffer);
+    console.log(`[DocumentParser] Extracted: type=${parsed.documentType}, contractor=${parsed.contractorName}, siret=${parsed.siret}, HT=${parsed.amountHt}, TTC=${parsed.amountTtc}, autoLiq=${parsed.autoLiquidation}, lines=${parsed.lineItems?.length ?? 0}`);
     return parsed;
   }
 
@@ -1015,7 +1176,11 @@ export async function matchToProject(
       field: "unknown_contractor",
       expected: "known contractor",
       actual: parsed.siret ?? parsed.tvaIntracom ?? effectiveSiren,
-      message: `SIRET ${parsed.siret ?? parsed.tvaIntracom ?? effectiveSiren} was found on the document but no contractor with this identifier exists in ArchiTrak. Sync from ArchiDoc or create the contractor first.`,
+      message: `SIRET ${parsed.siret ?? parsed.tvaIntracom ?? effectiveSiren} was found on the document but no contractor with this identifier exists in ArchiTrak. Sync from ArchiDoc or create the contractor first.${
+        extractedSiret.length === 14 && !luhnValid(extractedSiret)
+          ? " Note: this number fails the French SIRET checksum, so it is likely an extraction misread — try Re-analyze before creating a contractor."
+          : ""
+      }`,
       severity: "warning",
     });
   }

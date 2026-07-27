@@ -1,6 +1,17 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Upload, FileText, Download, Mail, HardDriveUpload, Inbox, ArrowRight, RotateCw } from "lucide-react";
+import { useState } from "react";
+import { Upload, FileText, Download, Mail, HardDriveUpload, Inbox, ArrowRight, RotateCw, Trash2 } from "lucide-react";
 import { Link } from "wouter";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LuxuryCard } from "@/components/ui/luxury-card";
@@ -94,6 +105,23 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
     },
     onError: (error: Error) => {
       toast({ title: "Re-analysis failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const [deleteTarget, setDeleteTarget] = useState<ProjectIntakeDocument | null>(null);
+
+  const deleteMutation = useMutation({
+    mutationFn: async (intakeDocumentId: number) => {
+      return apiRequest("DELETE", `/api/intake-documents/${intakeDocumentId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "intake"] });
+      toast({ title: "Document deleted", description: "The intake document and its stored file were removed." });
+      setDeleteTarget(null);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Delete failed", description: error.message, variant: "destructive" });
+      setDeleteTarget(null);
     },
   });
 
@@ -218,6 +246,19 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
                         <Download size={14} />
                       </Button>
                     </a>
+                    {!isArchived && !doc.promotedId && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-muted-foreground hover:text-red-600"
+                        onClick={() => setDeleteTarget(doc)}
+                        disabled={deleteMutation.isPending}
+                        title="Delete document"
+                        data-testid={`button-delete-intake-${doc.id}`}
+                      >
+                        <Trash2 size={14} />
+                      </Button>
+                    )}
                   </div>
                 </div>
               </LuxuryCard>
@@ -235,6 +276,29 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
           </div>
         </LuxuryCard>
       )}
+
+      <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+        <AlertDialogContent data-testid="dialog-delete-intake">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this document?</AlertDialogTitle>
+            <AlertDialogDescription>
+              "{deleteTarget?.fileName}" will be permanently removed from intake, along with its stored file.
+              This cannot be undone. If it was uploaded in error, you can simply upload the correct document afterwards.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-delete-intake">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
+              disabled={deleteMutation.isPending}
+              className="bg-red-600 hover:bg-red-700 text-white"
+              data-testid="button-confirm-delete-intake"
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
