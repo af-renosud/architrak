@@ -15,7 +15,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Send, Loader2, ExternalLink, ArrowLeft, MailWarning } from "lucide-react";
+import { Send, Loader2, ExternalLink, ArrowLeft, MailWarning, FileUp } from "lucide-react";
+import { Input } from "@/components/ui/input";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -69,6 +70,57 @@ export function SigningPanel({
   const [personalMessage, setPersonalMessage] = useState("");
   const [dialogStep, setDialogStep] = useState<"compose" | "recap">("compose");
   const [openRequested, setOpenRequested] = useState(false);
+
+  // Manual signed-copy pathway — secondary to Archisign. Dialog state for
+  // "Record signed copy": the operator uploads the signed PDF, writes a
+  // mandatory audit note, and can attach an external reference (e.g. an
+  // Archisign envelope signed outside the ArchiDoc↔Archisign integration).
+  const [manualDialogOpen, setManualDialogOpen] = useState(false);
+  const [manualFile, setManualFile] = useState<File | null>(null);
+  const [manualNote, setManualNote] = useState("");
+  const [manualExternalRef, setManualExternalRef] = useState("");
+
+  const manualSignoffMutation = useMutation({
+    mutationFn: async () => {
+      if (!manualFile) throw new Error("Select the signed PDF first.");
+      const form = new FormData();
+      form.append("file", manualFile);
+      form.append("note", manualNote.trim());
+      if (manualExternalRef.trim()) form.append("externalReference", manualExternalRef.trim());
+      const res = await fetch(`/api/devis/${devisId}/record-signed-copy`, {
+        method: "POST",
+        body: form,
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { message?: string } | null;
+        throw new Error(body?.message || `${res.status}: ${res.statusText}`);
+      }
+      return res.json() as Promise<{ ok: boolean; workAuthorisationSent: boolean }>;
+    },
+    onSuccess: () => {
+      toast({
+        title: "Signed copy recorded",
+        description:
+          "The devis is now marked as signed by the client (manual upload). " +
+          "Note: the Archidoc work authorisation is NOT sent automatically for manually recorded signatures.",
+      });
+      setManualDialogOpen(false);
+      setManualFile(null);
+      setManualNote("");
+      setManualExternalRef("");
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/devis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Could not record the signed copy",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
 
   const sendMutation = useMutation({
     mutationFn: async (message: string | undefined) => {
@@ -195,6 +247,10 @@ export function SigningPanel({
     archisignSubjectDriftAt?: string | null;
     archisignBodyDriftAt?: string | null;
     signedPdfStorageKey?: string | null;
+    signedOffVia?: string | null;
+    manualSignoffAt?: string | null;
+    manualSignoffNote?: string | null;
+    manualSignoffExternalRef?: string | null;
   }) | undefined;
 
   // Project data feeds the pre-filled message template and the recap step
@@ -354,6 +410,21 @@ export function SigningPanel({
               Default subject used
             </Badge>
           )}
+          {stage === "client_signed_off" && d.signedOffVia === "manual_upload" && (
+            <Badge
+              variant="outline"
+              className="border-blue-500 bg-blue-50 text-blue-900 dark:bg-blue-950 dark:text-blue-200 gap-1"
+              data-testid={`badge-manual-signoff-${devisId}`}
+              title={
+                (d.manualSignoffAt ? `Recorded ${new Date(d.manualSignoffAt).toLocaleString()}` : "Manually recorded") +
+                (d.manualSignoffNote ? ` — ${d.manualSignoffNote}` : "") +
+                (d.manualSignoffExternalRef ? ` (ref: ${d.manualSignoffExternalRef})` : "")
+              }
+            >
+              <FileUp className="h-3 w-3" />
+              Signed — manual upload
+            </Badge>
+          )}
           {bodyDriftAt && (
             <Badge
               variant="outline"
@@ -366,6 +437,19 @@ export function SigningPanel({
             </Badge>
           )}
         </div>
+        <div className="flex items-center gap-2">
+        {(stage === "approved_for_signing" || stage === "sent_to_client") && !isArchived && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setManualDialogOpen(true)}
+            disabled={manualSignoffMutation.isPending}
+            data-testid={`button-record-signed-copy-${devisId}`}
+          >
+            <FileUp className="h-4 w-4 mr-1.5" />
+            Record signed copy
+          </Button>
+        )}
         {canSend && (
           <Button
             size="sm"
@@ -391,6 +475,7 @@ export function SigningPanel({
             )}
           </Button>
         )}
+        </div>
       </div>
 
       <AlertDialog
@@ -539,6 +624,90 @@ export function SigningPanel({
                 )}
               </AlertDialogAction>
             )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Manual signed-copy dialog — the secondary pathway. Upload the
+          signed PDF + mandatory audit note + optional external reference
+          (e.g. an Archisign envelope signed outside this integration). */}
+      <AlertDialog
+        open={manualDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && !manualSignoffMutation.isPending) setManualDialogOpen(false);
+        }}
+      >
+        <AlertDialogContent data-testid={`dialog-record-signed-copy-${devisId}`}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Record an externally signed copy</AlertDialogTitle>
+            <AlertDialogDescription>
+              Use this when the devis was signed outside the standard Archisign flow — on paper,
+              via another provider, or in Archisign but outside this integration. The devis will
+              be marked as signed by the client with a "manual upload" provenance, distinct from a
+              verified Archisign signature. The Archidoc work authorisation is not sent
+              automatically for manually recorded signatures.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground">Signed PDF (required)</label>
+              <Input
+                type="file"
+                accept="application/pdf,.pdf"
+                className="mt-1"
+                onChange={(e) => setManualFile(e.target.files?.[0] ?? null)}
+                data-testid={`input-signed-copy-file-${devisId}`}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground">
+                Justification note (required, min 10 characters)
+              </label>
+              <Textarea
+                value={manualNote}
+                onChange={(e) => setManualNote(e.target.value)}
+                placeholder="e.g. Client signed in Archisign directly (outside the ArchiDoc workflow); envelope ref below."
+                className="mt-1 min-h-[70px] text-sm"
+                data-testid={`input-signed-copy-note-${devisId}`}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground">
+                External reference (optional — e.g. Archisign envelope ID)
+              </label>
+              <Input
+                value={manualExternalRef}
+                onChange={(e) => setManualExternalRef(e.target.value)}
+                placeholder="Envelope ID or other signing reference"
+                className="mt-1"
+                data-testid={`input-signed-copy-ref-${devisId}`}
+              />
+            </div>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={manualSignoffMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                manualSignoffMutation.mutate();
+              }}
+              disabled={
+                manualSignoffMutation.isPending || !manualFile || manualNote.trim().length < 10
+              }
+              data-testid={`button-record-signed-copy-confirm-${devisId}`}
+            >
+              {manualSignoffMutation.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                  Recording…
+                </>
+              ) : (
+                <>
+                  <FileUp className="h-4 w-4 mr-1.5" />
+                  Record as signed
+                </>
+              )}
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

@@ -105,6 +105,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0047_revert_dvt0000941_false_sent", artifact: { kind: "data_only", reason: "One-shot revert of devis DVT0000941 falsely marked sent_to_client without an Archisign envelope (Task #257); no schema artifact" } },
   { tag: "0048_devis_archisign_subject_drift", artifact: { kind: "column", table: "devis", column: "archisign_subject_drift_at" } },
   { tag: "0049_devis_archisign_body_drift", artifact: { kind: "column", table: "devis", column: "archisign_body_drift_at" } },
+  { tag: "0050_devis_manual_signoff", artifact: { kind: "column", table: "devis", column: "signed_off_via" } },
 ];
 
 interface JournalFile {

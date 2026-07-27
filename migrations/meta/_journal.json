@@ -351,6 +351,13 @@
       "when": 1778720000000,
       "tag": "0049_devis_archisign_body_drift",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1778730000000,
+      "tag": "0050_devis_manual_signoff",
+      "breakpoints": true
     }
   ]
 }

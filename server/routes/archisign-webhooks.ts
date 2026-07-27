@@ -266,6 +266,16 @@ async function handleDeclined(p: DeclinedPayload): Promise<HandlerResult> {
   if (!d) {
     return { status: 410, body: { message: "Unknown envelope", envelopeId: p.envelopeId } };
   }
+  // A manually attested sign-off outranks a late decline on the (now
+  // stale) envelope: the operator has the signed copy in hand. Record
+  // the envelope status for audit but do NOT void the devis.
+  if (d.signOffStage === "client_signed_off") {
+    await storage.updateDevis(d.id, { archisignEnvelopeStatus: "declined" });
+    return {
+      status: 200,
+      body: { ok: true, devisId: d.id, transition: "none", reason: "already client_signed_off" },
+    };
+  }
   const update: Partial<InsertDevis> = {
     signOffStage: "void",
     voidReason: p.declineReason,
@@ -292,6 +302,20 @@ async function handleExpired(p: ExpiredPayload): Promise<HandlerResult> {
   const d = await storage.getDevisByArchisignEnvelopeId(p.envelopeId);
   if (!d) {
     return { status: 410, body: { message: "Unknown envelope", envelopeId: p.envelopeId } };
+  }
+  // A devis already at client_signed_off (e.g. via the manual signed-copy
+  // pathway while the envelope was still live) must NOT be rolled back to
+  // approved_for_signing by the stale envelope expiring. Record the expiry
+  // bookkeeping only.
+  if (d.signOffStage === "client_signed_off") {
+    await storage.updateDevis(d.id, {
+      archisignEnvelopeStatus: "expired",
+      archisignAccessUrlInvalidatedAt: new Date(p.expiredAt),
+    });
+    return {
+      status: 200,
+      body: { ok: true, devisId: d.id, transition: "none", reason: "already client_signed_off" },
+    };
   }
   const update: Partial<InsertDevis> = {
     signOffStage: "approved_for_signing",
@@ -322,10 +346,24 @@ async function handleSigned(p: SignedPayload): Promise<HandlerResult> {
   if (!d) {
     return { status: 410, body: { message: "Unknown envelope", envelopeId: p.envelopeId } };
   }
-  const isFreshTransition = d.signOffStage !== "client_signed_off";
+  // "Fresh" covers two cases:
+  //   (a) the normal sent_to_client → client_signed_off transition;
+  //   (b) an UPGRADE of a manual attestation: an operator recorded a
+  //       signed copy by hand (signedOffVia = "manual_upload") while the
+  //       real Archisign envelope was still live, and the genuine
+  //       envelope.signed arrived afterwards. The verified event is
+  //       authoritative — persist identityVerification, flip provenance
+  //       to "archisign", and fire the §5.3.1 work_authorised delivery
+  //       that the manual path deliberately skipped. After the upgrade
+  //       signedOffVia is "archisign", so webhook redeliveries fall back
+  //       to no-ops as before.
+  const isManualUpgrade =
+    d.signOffStage === "client_signed_off" && d.signedOffVia === "manual_upload";
+  const isFreshTransition = d.signOffStage !== "client_signed_off" || isManualUpgrade;
   if (isFreshTransition) {
     const update: Partial<InsertDevis> = {
       signOffStage: "client_signed_off",
+      signedOffVia: "archisign",
       archisignEnvelopeStatus: "signed",
       identityVerification: p.identityVerification,
       signedPdfFetchUrlSnapshot: p.signedPdfFetchUrl,

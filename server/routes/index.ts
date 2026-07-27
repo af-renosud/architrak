@@ -41,6 +41,7 @@ import adminDriveUploadsRouter from "./admin-drive-uploads";
 import adminIntakeJobsRouter from "./admin-intake-jobs";
 import adminPennylaneRouter from "./admin-pennylane";
 import adminSignedPdfRecoveryRouter from "./admin-signed-pdf-recovery";
+import devisManualSignoffRouter from "./devis-manual-signoff";
 import adminArchisignRenderingRouter from "./admin-archisign-rendering";
 import healthzRouter from "./healthz";
 import designContractsRouter from "./design-contracts";
@@ -80,7 +81,7 @@ export async function registerRoutes(
   app.use(healthzRouter);
 
   app.use("/api/webhooks", webhookLimiter);
-  app.use(["/api/devis/:devisId/invoices/upload", "/api/projects/:projectId/devis/upload", "/api/projects/:projectId/intake/upload", "/api/design-contracts/preview"], uploadLimiter);
+  app.use(["/api/devis/:devisId/invoices/upload", "/api/projects/:projectId/devis/upload", "/api/projects/:projectId/intake/upload", "/api/design-contracts/preview", "/api/devis/:id/record-signed-copy"], uploadLimiter);
   app.use("/api", apiLimiter);
 
   app.use(projectsRouter);
@@ -90,6 +91,7 @@ export async function registerRoutes(
   app.use(lotCatalogRouter);
   app.use(wishListRouter);
   app.use(devisRouter);
+  app.use(devisManualSignoffRouter);
   app.use(acompteRouter);
   app.use(devisChecksRouter);
   app.use(clientChecksRouter);

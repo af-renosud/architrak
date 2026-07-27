@@ -424,6 +424,25 @@ export const devis = pgTable("devis", {
   // drift (or is absent — pre-v1.2 servers), so the flag always describes
   // the CURRENT envelope.
   archisignBodyDriftAt: timestamp("archisign_body_drift_at", { withTimezone: true }),
+  // Manual sign-off provenance (secondary signing pathway). The primary
+  // path stays the Archisign webhook; this records a devis authenticated
+  // by an operator uploading the signed copy directly (paper signature,
+  // envelope signed inside Archisign but OUTSIDE the ArchiDoc↔Archisign
+  // integration, another e-sign provider, …).
+  //   signedOffVia        — "archisign" | "manual_upload"; NULL for rows
+  //                         signed before this column existed (treat as
+  //                         archisign when stage is client_signed_off).
+  //   manualSignoffAt/By  — when + which operator recorded it.
+  //   manualSignoffNote   — REQUIRED operator justification (audit).
+  //   manualSignoffExternalRef — optional reference correlating the copy
+  //                         to an external signing event (e.g. an Archisign
+  //                         envelope id created outside the integration).
+  // All are server-written only; the generic PATCH strips them.
+  signedOffVia: text("signed_off_via"),
+  manualSignoffAt: timestamp("manual_signoff_at", { withTimezone: true }),
+  manualSignoffBy: text("manual_signoff_by"),
+  manualSignoffNote: text("manual_signoff_note"),
+  manualSignoffExternalRef: text("manual_signoff_external_ref"),
   // Structured devis-code (Task #176). The architect supplies three parts:
   //   1. lotRef    — picked from `lot_catalog` (then `lotCatalogId` is set
   //                   and `lotRefText` mirrors the catalog code) OR typed

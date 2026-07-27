@@ -96,7 +96,9 @@ export function evaluateManualStageTransition(
   return {
     code: "manual_signoff_sealed",
     message:
-      "This devis cannot be marked as \"Signed by client\" manually. " +
-      "This stage is recorded automatically when the client signs the devis via Archisign.",
+      "This devis cannot be marked as \"Signed by client\" from the stepper. " +
+      "It is recorded automatically when the client signs via Archisign — or, if the devis " +
+      "was signed outside that flow, use \"Record signed copy\" in the Electronic signature " +
+      "panel to upload the signed PDF with an audit note.",
   };
 }

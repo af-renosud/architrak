@@ -750,6 +750,15 @@ router.patch(
     delete patchBody.archisignSubjectDriftAt;
     // Task #283 — same seal for the body-rendering-drift flag.
     delete patchBody.archisignBodyDriftAt;
+    // Manual sign-off provenance is written exclusively by the
+    // POST /api/devis/:id/record-signed-copy route (which enforces
+    // auth + note + PDF upload). Strip it from the generic PATCH so an
+    // operator can't fabricate or alter a manual attestation record.
+    delete patchBody.signedOffVia;
+    delete patchBody.manualSignoffAt;
+    delete patchBody.manualSignoffBy;
+    delete patchBody.manualSignoffNote;
+    delete patchBody.manualSignoffExternalRef;
     // When the architect flips `acompteRequired` from false → true on
     // a row whose state was 'none', auto-arm the gate by transitioning
     // to 'pending'. Without this, the gate would silently stay
