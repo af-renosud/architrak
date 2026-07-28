@@ -142,6 +142,83 @@ describe("extraction-validator (TVA-neutral)", () => {
       expect(warning!.severity).toBe("warning");
     });
 
+    it("does not warn when line items sum matches TTC (VAT-inclusive lines, DVP0000785 case)", () => {
+      const input = doc({
+        documentType: "quotation",
+        amountHt: 5369.60,
+        amountTtc: 6443.52,
+        tvaAmount: 1073.92,
+        lineItems: [
+          { description: "Raccordement éclairages", total: 392.35 },
+          { description: "Raccordement circuits", total: 2825.76 },
+          { description: "Avaloir de sol", total: 1864.7 },
+          { description: "Rebouchement trémie", total: 1360.7 },
+        ],
+      });
+      const result = validateExtraction(input);
+      expect(result.warnings.find(w => w.field === "lineItems")).toBeUndefined();
+      expect(result.correctedValues.lineItemsVatCheck).toBeDefined();
+      expect(result.correctedValues.lineItemsVatCheck!.vatInclusive).toBe(true);
+      expect(result.correctedValues.lineItemsVatCheck!.matchedAgainst).toBe("ttc");
+      expect(input.lineItemsVatCheck).toBeDefined(); // persisted via aiExtractedData: parsed
+      expect(input.lineItemsVatCheck!.matchedAgainst).toBe("ttc");
+      // Counts as a passed check, not a silent skip.
+      expect(result.confidenceScore).toBe(100);
+    });
+
+    it("recognises VAT-inclusive lines via HT + document TVA when TTC was misread", () => {
+      const result = validateExtraction(doc({
+        amountHt: 1000,
+        tvaAmount: 200,
+        lineItems: [{ description: "Travaux", total: 1200 }],
+      }));
+      expect(result.warnings.find(w => w.field === "lineItems")).toBeUndefined();
+      expect(result.correctedValues.lineItemsVatCheck!.matchedAgainst).toBe("ht_plus_tva");
+    });
+
+    it("recognises VAT-inclusive lines via common French VAT rate when TTC and TVA are absent", () => {
+      const result = validateExtraction(doc({
+        amountHt: 2000,
+        lineItems: [{ description: "Travaux", total: 2110 }], // 2000 × 1.055
+      }));
+      expect(result.warnings.find(w => w.field === "lineItems")).toBeUndefined();
+      expect(result.correctedValues.lineItemsVatCheck!.matchedAgainst).toBe("ht_times_rate");
+    });
+
+    it("still warns when line items sum matches neither HT nor TTC", () => {
+      const result = validateExtraction(doc({
+        amountHt: 3000,
+        amountTtc: 3600,
+        lineItems: [
+          { description: "Plomberie", total: 1500 },
+          { description: "Electricite", total: 1800 },
+        ],
+      }));
+      const warning = result.warnings.find(w => w.field === "lineItems");
+      expect(warning).toBeDefined();
+      expect(warning!.severity).toBe("warning");
+      expect(result.correctedValues.lineItemsVatCheck).toBeUndefined();
+    });
+
+    it("respects the ±1.00 tolerance on the TTC comparison", () => {
+      const result = validateExtraction(doc({
+        amountHt: 3000,
+        amountTtc: 3600,
+        lineItems: [{ description: "Travaux", total: 3599.05 }],
+      }));
+      expect(result.warnings.find(w => w.field === "lineItems")).toBeUndefined();
+      expect(result.correctedValues.lineItemsVatCheck!.matchedAgainst).toBe("ttc");
+    });
+
+    it("warns when the sum is just outside the TTC tolerance", () => {
+      const result = validateExtraction(doc({
+        amountHt: 3000,
+        amountTtc: 3600,
+        lineItems: [{ description: "Travaux", total: 3601.50 }],
+      }));
+      expect(result.warnings.find(w => w.field === "lineItems")).toBeDefined();
+    });
+
     it("passes when line items total differs from HT by less than 1.00", () => {
       const result = validateExtraction(doc({
         amountHt: 3000,

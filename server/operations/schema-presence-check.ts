@@ -107,6 +107,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0049_devis_archisign_body_drift", artifact: { kind: "column", table: "devis", column: "archisign_body_drift_at" } },
   { tag: "0050_devis_manual_signoff", artifact: { kind: "column", table: "devis", column: "signed_off_via" } },
   { tag: "0051_email_documents_intake_tombstone", artifact: { kind: "column", table: "email_documents", column: "intake_deleted_at" } },
+  { tag: "0052_resolve_false_line_items_advisory", artifact: { kind: "data_only", reason: "one-shot resolve of false line_items_total_mismatch advisory on DVP0000785; no schema artifact" } },
 ];
 
 interface JournalFile {

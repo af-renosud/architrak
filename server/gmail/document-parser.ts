@@ -60,6 +60,15 @@ export interface ParsedDocument {
     originalTvaIntracom?: string | null;
     reason: string;
   };
+  // Audit note set by the validator when the line-item totals sum to the TTC
+  // (VAT-inclusive) figure rather than HT — a common quotation layout, not an
+  // extraction error. Recorded so operators can see why no advisory was raised.
+  lineItemsVatCheck?: {
+    vatInclusive: boolean;
+    lineItemsTotal: number;
+    matchedAgainst: "ttc" | "ht_plus_tva" | "ht_times_rate";
+    note: string;
+  };
   date?: string;
   amountHt?: number;
   amountTtc?: number;
@@ -211,7 +220,7 @@ const USER_PROMPT = `Analyze this French construction document and extract the f
 - paymentTerms: payment conditions text if visible (e.g., "30 jours fin de mois")
 - lotReferences: array of lot codes/references visible on the document (e.g., ["Lot 1", "Lot 7 - Electricite"])
 - description: brief description of the work/service
-- lineItems: array of line items, each with {description, quantity, unit, unitPrice, total, pageHint, bbox}
+- lineItems: array of line items, each with {description, quantity, unit, unitPrice, total, pageHint, bbox}. IMPORTANT: unitPrice and total must be the pre-tax (HT / hors taxes) amounts for each line — French quotations list line amounts HT in the body and only add TVA at the bottom, where the final total is TTC (tax-inclusive). Never copy TTC/tax-inclusive figures into line items.
 - iban: contractor IBAN printed on the document if visible (typically in a "Coordonnées bancaires" / RIB block). Copy verbatim — preserve all characters including spaces; downstream code normalises and validates.
 - bic: contractor BIC / SWIFT code printed on the document if visible. Copy verbatim.
 
