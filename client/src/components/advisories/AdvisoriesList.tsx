@@ -81,9 +81,15 @@ export function AdvisoriesList({ subject }: AdvisoriesListProps) {
     const tone =
       kind === "open"
         ? a.severity === "error"
-          ? "border-rose-200 bg-rose-50 dark:border-rose-800 dark:bg-rose-950/30"
-          : "border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30"
+          ? "border-2 border-red-500 border-l-4 bg-red-100 text-red-950 dark:border-red-500 dark:bg-red-950/60 dark:text-red-100"
+          : "border-2 border-rose-400 border-l-4 bg-rose-100 text-rose-950 dark:border-rose-500 dark:bg-rose-950/50 dark:text-rose-100"
         : "border-muted bg-muted/40";
+    const iconTone =
+      kind === "open"
+        ? a.severity === "error"
+          ? "text-red-600 dark:text-red-400"
+          : "text-rose-600 dark:text-rose-400"
+        : "";
     return (
       <div
         key={a.id}
@@ -91,9 +97,9 @@ export function AdvisoriesList({ subject }: AdvisoriesListProps) {
         data-testid={`advisory-row-${a.id}`}
       >
         {kind === "open" ? (
-          <ShieldAlert size={12} className="mt-0.5" />
+          <ShieldAlert size={14} className={`mt-0.5 shrink-0 ${iconTone}`} />
         ) : (
-          <ShieldCheck size={12} className="mt-0.5" />
+          <ShieldCheck size={12} className="mt-0.5 shrink-0" />
         )}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap">
@@ -193,8 +199,8 @@ export function AdvisoryBadge({ subject }: AdvisoryBadgeProps) {
       variant="outline"
       className={`text-[9px] gap-1 ${
         hasError
-          ? "border-rose-300 text-rose-600 bg-rose-50"
-          : "border-amber-300 text-amber-600 bg-amber-50"
+          ? "border-red-500 text-red-700 bg-red-100 font-bold dark:border-red-500 dark:text-red-300 dark:bg-red-950/60"
+          : "border-rose-400 text-rose-700 bg-rose-100 font-bold dark:border-rose-500 dark:text-rose-300 dark:bg-rose-950/50"
       }`}
       data-testid={`badge-advisories-${subject.type}-${subject.id}`}
     >
