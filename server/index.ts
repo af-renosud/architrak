@@ -230,6 +230,16 @@ app.use((req, res, next) => {
   startContractorAutoSyncScheduler(60 * 60 * 1000);
   startDevisCheckTokenCleanup(6 * 60 * 60 * 1000);
 
+  // Orphaned context-image cleanup: hourly sweep that deletes context
+  // asset rows + stored objects no longer referenced by their line's
+  // current context document (24h grace since upload).
+  try {
+    const { startContextAssetSweeper } = await import("./services/devis-line-context");
+    startContextAssetSweeper(60 * 60_000);
+  } catch (err) {
+    console.error("[LineContext] failed to start orphan sweeper:", err);
+  }
+
   // AT5 (Task #153): outbound webhook delivery sweeper. Drains
   // `webhook_deliveries_out` rows whose next_attempt_at is due. The
   // sweeper is idempotent and safe to start in dev — it will simply

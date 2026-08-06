@@ -54,6 +54,7 @@ import {
   saveLineContext,
   uploadLineContextAsset,
   getOwnedContextAsset,
+  deleteContextAssetObjects,
   LineContextError,
 } from "../services/devis-line-context";
 import { CONTEXT_ASSET_MAX_BYTES } from "@shared/context-doc";
@@ -1044,7 +1045,13 @@ router.delete(
   "/api/line-items/:id",
   validateRequest({ params: idParams }),
   async (req, res) => {
-    await storage.deleteDevisLineItem(Number(req.params.id));
+    const lineItemId = Number(req.params.id);
+    // Snapshot the context-asset storage keys BEFORE the delete — the FK
+    // cascade removes the rows, after which the keys are unrecoverable.
+    const contextAssets = await storage.getDevisLineContextAssets(lineItemId);
+    await storage.deleteDevisLineItem(lineItemId);
+    // Best-effort object cleanup (rows already cascaded); never blocks the 204.
+    if (contextAssets.length > 0) void deleteContextAssetObjects(contextAssets);
     res.status(204).send();
   },
 );

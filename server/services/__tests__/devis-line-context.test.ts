@@ -16,19 +16,25 @@ vi.mock("../../storage", () => ({
     getDevisLineContextAsset: vi.fn(),
     getDevisLineContextAssets: vi.fn(),
     getDevisLineContextAssetsByDevis: vi.fn(),
+    listStaleDevisLineContextAssets: vi.fn(),
+    deleteDevisLineContextAsset: vi.fn(),
   },
 }));
 
 vi.mock("../../storage/object-storage", () => ({
   uploadDocument: vi.fn(),
+  deleteDocument: vi.fn(),
 }));
 
 import { storage } from "../../storage";
-import { uploadDocument } from "../../storage/object-storage";
+import { uploadDocument, deleteDocument } from "../../storage/object-storage";
 import {
   saveLineContext,
   uploadLineContextAsset,
   getOwnedContextAsset,
+  sweepOrphanedContextAssets,
+  deleteContextAssetObjects,
+  CONTEXT_ASSET_ORPHAN_GRACE_MS,
   LineContextError,
 } from "../devis-line-context";
 
@@ -250,5 +256,92 @@ describe("getOwnedContextAsset", () => {
   it("returns the asset when ownership matches", async () => {
     s.getDevisLineContextAsset.mockResolvedValue({ id: 5, devisId: 7, storageKey: "k" });
     await expect(getOwnedContextAsset(7, 5)).resolves.toMatchObject({ id: 5 });
+  });
+});
+
+describe("sweepOrphanedContextAssets", () => {
+  const deleteDocumentMock = deleteDocument as unknown as ReturnType<typeof vi.fn>;
+
+  const docReferencing = (assetId: number) => ({
+    type: "doc",
+    content: [{ type: "image", attrs: { assetId } }],
+  });
+
+  it("passes the grace-period cutoff to storage", async () => {
+    s.listStaleDevisLineContextAssets.mockResolvedValue([]);
+    const now = new Date("2026-08-06T12:00:00Z");
+    await sweepOrphanedContextAssets(now);
+    const [cutoff] = s.listStaleDevisLineContextAssets.mock.calls[0];
+    expect(cutoff.getTime()).toBe(now.getTime() - CONTEXT_ASSET_ORPHAN_GRACE_MS);
+  });
+
+  it("deletes an asset that its line's context document no longer references (row first, then object)", async () => {
+    s.listStaleDevisLineContextAssets.mockResolvedValue([
+      { asset: { id: 9, storageKey: "/b/old.png" }, document: docReferencing(5) },
+    ]);
+    s.deleteDevisLineContextAsset.mockResolvedValue({ id: 9, storageKey: "/b/old.png" });
+    const res = await sweepOrphanedContextAssets();
+    expect(res).toMatchObject({ scanned: 1, deleted: 1, failures: 0 });
+    expect(s.deleteDevisLineContextAsset).toHaveBeenCalledWith(9);
+    expect(deleteDocumentMock).toHaveBeenCalledWith("/b/old.png");
+  });
+
+  it("deletes an abandoned upload whose line has NO context document at all", async () => {
+    s.listStaleDevisLineContextAssets.mockResolvedValue([
+      { asset: { id: 3, storageKey: "/b/abandoned.png" }, document: null },
+    ]);
+    s.deleteDevisLineContextAsset.mockResolvedValue({ id: 3, storageKey: "/b/abandoned.png" });
+    const res = await sweepOrphanedContextAssets();
+    expect(res.deleted).toBe(1);
+    expect(deleteDocumentMock).toHaveBeenCalledWith("/b/abandoned.png");
+  });
+
+  it("keeps an asset that IS referenced by the current document", async () => {
+    s.listStaleDevisLineContextAssets.mockResolvedValue([
+      { asset: { id: 5, storageKey: "/b/kept.png" }, document: docReferencing(5) },
+    ]);
+    const res = await sweepOrphanedContextAssets();
+    expect(res).toMatchObject({ scanned: 1, deleted: 0, failures: 0 });
+    expect(s.deleteDevisLineContextAsset).not.toHaveBeenCalled();
+    expect(deleteDocumentMock).not.toHaveBeenCalled();
+  });
+
+  it("skips the object delete when the row was already gone (concurrent cascade)", async () => {
+    s.listStaleDevisLineContextAssets.mockResolvedValue([
+      { asset: { id: 4, storageKey: "/b/x.png" }, document: null },
+    ]);
+    s.deleteDevisLineContextAsset.mockResolvedValue(undefined);
+    const res = await sweepOrphanedContextAssets();
+    expect(res.deleted).toBe(0);
+    expect(deleteDocumentMock).not.toHaveBeenCalled();
+  });
+
+  it("counts (but survives) a failed object delete after the row is removed", async () => {
+    s.listStaleDevisLineContextAssets.mockResolvedValue([
+      { asset: { id: 6, storageKey: "/b/flaky.png" }, document: null },
+      { asset: { id: 7, storageKey: "/b/ok.png" }, document: null },
+    ]);
+    s.deleteDevisLineContextAsset.mockImplementation(async (id: number) => ({
+      id,
+      storageKey: id === 6 ? "/b/flaky.png" : "/b/ok.png",
+    }));
+    deleteDocumentMock.mockRejectedValueOnce(new Error("storage down"));
+    const res = await sweepOrphanedContextAssets();
+    expect(res).toMatchObject({ scanned: 2, deleted: 2, failures: 1 });
+  });
+});
+
+describe("deleteContextAssetObjects", () => {
+  const deleteDocumentMock = deleteDocument as unknown as ReturnType<typeof vi.fn>;
+
+  it("deletes every object and never throws on individual failures", async () => {
+    deleteDocumentMock.mockRejectedValueOnce(new Error("boom"));
+    await expect(
+      deleteContextAssetObjects([
+        { id: 1, storageKey: "/b/a.png" },
+        { id: 2, storageKey: "/b/b.png" },
+      ]),
+    ).resolves.toBeUndefined();
+    expect(deleteDocumentMock).toHaveBeenCalledTimes(2);
   });
 });

@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, ne, desc, asc, and, or, inArray, isNotNull, isNull, lte, gte, like, ilike, sql, type SQL } from "drizzle-orm";
+import { eq, ne, desc, asc, and, or, inArray, isNotNull, isNull, lt, lte, gte, like, ilike, sql, type SQL } from "drizzle-orm";
 import {
   devisLineContexts, devisLineContextAssets,
   type DevisLineContext, type InsertDevisLineContext,
@@ -342,6 +342,18 @@ export interface IStorage {
   getDevisLineContextAsset(id: number): Promise<DevisLineContextAsset | undefined>;
   getDevisLineContextAssets(devisLineItemId: number): Promise<DevisLineContextAsset[]>;
   getDevisLineContextAssetsByDevis(devisId: number): Promise<DevisLineContextAsset[]>;
+  /**
+   * Orphan-sweep candidates: assets uploaded before `cutoff`, paired with
+   * their line's CURRENT context document (null when the line has no
+   * context row at all). The caller decides referenced-ness by walking the
+   * document — the raw jsonb is returned untouched.
+   */
+  listStaleDevisLineContextAssets(
+    cutoff: Date,
+    limit: number,
+  ): Promise<Array<{ asset: DevisLineContextAsset; document: unknown | null }>>;
+  /** Deletes one asset row; returns the deleted row, or undefined when already gone. */
+  deleteDevisLineContextAsset(id: number): Promise<DevisLineContextAsset | undefined>;
 
   getAiModelSettings(): Promise<AiModelSetting[]>;
   getAiModelSetting(taskType: string): Promise<AiModelSetting | undefined>;
@@ -1913,6 +1925,34 @@ export class DatabaseStorage implements IStorage {
 
   async getDevisLineContextAssetsByDevis(devisId: number): Promise<DevisLineContextAsset[]> {
     return db.select().from(devisLineContextAssets).where(eq(devisLineContextAssets.devisId, devisId));
+  }
+
+  async listStaleDevisLineContextAssets(
+    cutoff: Date,
+    limit: number,
+  ): Promise<Array<{ asset: DevisLineContextAsset; document: unknown | null }>> {
+    const rows = await db
+      .select({
+        asset: devisLineContextAssets,
+        document: devisLineContexts.document,
+      })
+      .from(devisLineContextAssets)
+      .leftJoin(
+        devisLineContexts,
+        eq(devisLineContexts.devisLineItemId, devisLineContextAssets.devisLineItemId),
+      )
+      .where(lt(devisLineContextAssets.createdAt, cutoff))
+      .orderBy(asc(devisLineContextAssets.createdAt))
+      .limit(limit);
+    return rows;
+  }
+
+  async deleteDevisLineContextAsset(id: number): Promise<DevisLineContextAsset | undefined> {
+    const [row] = await db
+      .delete(devisLineContextAssets)
+      .where(eq(devisLineContextAssets.id, id))
+      .returning();
+    return row;
   }
 
   async getAiModelSettings(): Promise<AiModelSetting[]> {

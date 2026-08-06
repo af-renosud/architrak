@@ -11,6 +11,7 @@ import { enqueueDriveUpload } from "./drive/upload-queue.service";
 import { safeExtractIban, safeExtractBic } from "../../shared/iban";
 import { toSentenceCase } from "../lib/sentence-case";
 import { coerceBbox } from "./devis-upload.service";
+import { deleteContextAssetObjects } from "./devis-line-context";
 import {
   devis as devisTable,
   devisLineItems as devisLineItemsTable,
@@ -133,6 +134,11 @@ export async function rescrapeDevis(devisId: number): Promise<RescrapeResult> {
     | { kind: "ok"; lineItemsCreated: number; lineItemsRemoved: number }
     | { kind: "blocked"; status: number; data: Record<string, unknown> };
 
+  // Context-asset rows cascade away with the line delete inside the
+  // transaction; this snapshot (taken under the row lock) keeps their
+  // storage keys so phase 3 can clean the stored objects post-commit.
+  let contextAssetsToClean: Awaited<ReturnType<typeof storage.getDevisLineContextAssetsByDevis>> = [];
+
   const txResult: TxResult = await db.transaction(async (tx) => {
     // Pessimistic lock on the devis row — serialises concurrent rescrape /
     // confirm / status mutations on the same devis.
@@ -240,6 +246,12 @@ export async function rescrapeDevis(devisId: number): Promise<RescrapeResult> {
       })
       .where(sql`${devisTable.id} = ${devisId}`);
 
+    // Snapshot context-asset storage keys BEFORE the wholesale line delete:
+    // the FK cascade removes devis_line_context_assets rows with the lines,
+    // after which the stored objects would be unrecoverable orphans. The
+    // objects themselves are deleted post-commit (phase 3, best-effort).
+    contextAssetsToClean = await storage.getDevisLineContextAssetsByDevis(devisId);
+
     // Replace line items in a single delete + bulk insert. Any error
     // here throws and rolls the whole transaction back.
     const delResult = await tx.execute<{ id: number }>(
@@ -284,6 +296,12 @@ export async function rescrapeDevis(devisId: number): Promise<RescrapeResult> {
   }
 
   // ----- Phase 3: best-effort post-commit hooks. -----
+  // The line delete cascaded the context-asset rows; remove their stored
+  // objects too (best-effort — deleteContextAssetObjects never throws).
+  if (contextAssetsToClean.length > 0) {
+    void deleteContextAssetObjects(contextAssetsToClean);
+  }
+
   try {
     await reconcileAdvisories({ devisId }, allWarnings, "extractor");
   } catch (advErr) {

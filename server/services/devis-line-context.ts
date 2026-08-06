@@ -1,5 +1,5 @@
 import { storage } from "../storage";
-import { uploadDocument } from "../storage/object-storage";
+import { uploadDocument, deleteDocument } from "../storage/object-storage";
 import {
   contextDocSchema,
   collectContextAssetIds,
@@ -218,6 +218,138 @@ export async function getOwnedContextAsset(
     throw new LineContextError(`Asset ${assetId} not found on devis ${devisId}`, 404);
   }
   return asset;
+}
+
+// ---------------------------------------------------------------------------
+// Orphaned-asset cleanup (Task: clean up context images removed from notes).
+//
+// An asset row + stored object become orphans when the user deletes the
+// image from the editor (the saved document no longer references the id) or
+// abandons an upload without ever saving. Two complementary mechanisms:
+//   1. a periodic sweeper deletes assets older than the grace period that
+//      are not referenced by their line's CURRENT context document;
+//   2. explicit deletion paths (line-item delete, rescrape's wholesale line
+//      replacement) delete the stored objects for the rows the DB cascade
+//      is about to remove / just removed.
+// ---------------------------------------------------------------------------
+
+/**
+ * Grace period before an unreferenced asset is eligible for deletion. Long
+ * enough that an in-progress edit (image uploaded, save not yet clicked)
+ * can never race the sweeper.
+ */
+export const CONTEXT_ASSET_ORPHAN_GRACE_MS = 24 * 60 * 60 * 1000;
+
+/** Upper bound of candidate rows examined per sweep pass. */
+export const CONTEXT_ASSET_SWEEP_BATCH = 200;
+
+/**
+ * Best-effort deletion of the stored objects behind a set of asset rows.
+ * Used by the deletion paths where the DB rows are (about to be) removed
+ * by FK cascade — object-storage failures are logged, never thrown, so a
+ * flaky storage backend cannot block the user-facing delete.
+ */
+export async function deleteContextAssetObjects(
+  assets: ReadonlyArray<Pick<DevisLineContextAsset, "id" | "storageKey">>,
+): Promise<void> {
+  for (const asset of assets) {
+    try {
+      await deleteDocument(asset.storageKey);
+    } catch (err) {
+      console.error(
+        `[LineContext] Failed to delete stored object for context asset ${asset.id} (${asset.storageKey}):`,
+        err,
+      );
+    }
+  }
+}
+
+export interface ContextAssetSweepResult {
+  scanned: number;
+  deleted: number;
+  failures: number;
+}
+
+/**
+ * One sweep pass: delete asset rows (and their stored objects) that are
+ * older than the grace period and no longer referenced by their line's
+ * current context document.
+ *
+ * Ordering is deliberate — the ROW is deleted first. Save-time ownership
+ * validation derives the allowed ids from the asset rows, so once the row
+ * is gone a racing save that still references this id fails with 400
+ * instead of committing a dangling image reference into the document.
+ * A failed object delete after a successful row delete is logged loudly
+ * (that one object leaks); the reverse order would instead risk documents
+ * pointing at vanished objects.
+ */
+export async function sweepOrphanedContextAssets(
+  now: Date = new Date(),
+): Promise<ContextAssetSweepResult> {
+  const cutoff = new Date(now.getTime() - CONTEXT_ASSET_ORPHAN_GRACE_MS);
+  const candidates = await storage.listStaleDevisLineContextAssets(cutoff, CONTEXT_ASSET_SWEEP_BATCH);
+  const result: ContextAssetSweepResult = { scanned: candidates.length, deleted: 0, failures: 0 };
+
+  for (const { asset, document } of candidates) {
+    try {
+      let referenced = false;
+      if (document != null) {
+        try {
+          referenced = collectContextAssetIds(document as ContextDoc).includes(asset.id);
+        } catch {
+          // Unwalkable document (should never happen — it was schema-validated
+          // at save time). Be conservative: treat the asset as referenced.
+          referenced = true;
+        }
+      }
+      if (referenced) continue;
+
+      const removed = await storage.deleteDevisLineContextAsset(asset.id);
+      if (!removed) continue; // concurrently deleted (cascade or another sweep)
+
+      try {
+        await deleteDocument(removed.storageKey);
+      } catch (err) {
+        result.failures++;
+        console.error(
+          `[LineContext] Orphan sweep: asset row ${asset.id} deleted but stored object ${removed.storageKey} could not be removed:`,
+          err,
+        );
+      }
+      result.deleted++;
+    } catch (err) {
+      result.failures++;
+      console.error(`[LineContext] Orphan sweep failed for asset ${asset.id}:`, err);
+    }
+  }
+
+  if (result.deleted > 0 || result.failures > 0) {
+    console.log(
+      `[LineContext] Orphan sweep: scanned=${result.scanned} deleted=${result.deleted} failures=${result.failures}`,
+    );
+  }
+  return result;
+}
+
+let sweepTimer: NodeJS.Timeout | null = null;
+
+/** Idempotent process-local starter, mirroring the other sweepers. */
+export function startContextAssetSweeper(intervalMs: number = 60 * 60_000): void {
+  if (sweepTimer) return;
+  sweepTimer = setInterval(() => {
+    sweepOrphanedContextAssets().catch((err) =>
+      console.error("[LineContext] Orphan sweep pass crashed:", err),
+    );
+  }, intervalMs);
+  sweepTimer.unref?.();
+  console.log(`[LineContext] Orphaned context-asset sweeper started (every ${intervalMs / 1000}s)`);
+}
+
+export function stopContextAssetSweeper(): void {
+  if (sweepTimer) {
+    clearInterval(sweepTimer);
+    sweepTimer = null;
+  }
 }
 
 export { isContextDocEmpty };
