@@ -4,6 +4,7 @@ import { storage } from "../storage";
 import { getGmailMonitorStatus, pollInbox } from "../gmail/monitor";
 import { processEmailDocument } from "../gmail/document-parser";
 import { insertEmailDocumentSchema, type InsertEmailDocument } from "@shared/schema";
+import { classifyGmailPollHealth, type GmailPollHealth } from "@shared/gmail-poll-health";
 import { validateRequest } from "../middleware/validate";
 
 const router = Router();
@@ -16,7 +17,42 @@ const emailDocsQuerySchema = z.object({
 });
 
 router.get("/api/gmail/status", async (_req, res) => {
-  res.json(getGmailMonitorStatus());
+  // Poll-health is classified from the PERSISTED per-user poll columns
+  // (users.gmail_last_poll_*), NOT the monitor's in-memory state — the
+  // in-memory state resets to "idle / Never" on every restart, which is
+  // exactly how a dead poller went unnoticed for two months in production.
+  let pollHealth: GmailPollHealth;
+  try {
+    const users = await storage.listGmailPollingUsers();
+    if (users.length === 0) {
+      pollHealth = classifyGmailPollHealth({
+        linked: false,
+        lastPollAt: null,
+        lastPollStatus: null,
+        now: new Date(),
+      });
+    } else {
+      // If ANY linked account lost its Google authorization, surface that
+      // first — it needs a human to re-link. Otherwise judge staleness by
+      // the freshest account: if even the freshest is stale, the scanning
+      // loop itself is down.
+      const revoked = users.find((u) => u.gmailLastPollStatus === "auth_revoked");
+      const freshest = users.reduce((a, b) =>
+        (b.gmailLastPollAt?.getTime() ?? 0) > (a.gmailLastPollAt?.getTime() ?? 0) ? b : a,
+      );
+      const subject = revoked ?? freshest;
+      pollHealth = classifyGmailPollHealth({
+        linked: true,
+        lastPollAt: subject.gmailLastPollAt,
+        lastPollStatus: subject.gmailLastPollStatus,
+        now: new Date(),
+      });
+    }
+  } catch (err) {
+    console.error("[Gmail] poll-health classification failed:", err);
+    pollHealth = { level: "never", ageMs: null, message: "Could not determine inbox scan health." };
+  }
+  res.json({ ...getGmailMonitorStatus(), pollHealth });
 });
 
 router.post("/api/gmail/poll", validateRequest({ body: z.object({}).strict().optional() }), async (_req, res) => {

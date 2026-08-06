@@ -101,6 +101,11 @@ function GmailStatusBar({
       });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/summary"] });
       queryClient.invalidateQueries({ queryKey: ["/api/email-documents"] });
+      // A successful manual scan persists a fresh poll timestamp — refetch
+      // the poll-health classification and the per-user fallback timestamp
+      // so a stale/auth warning clears immediately instead of staying cached.
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/status"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
     },
     onError: (err: Error) => {
       toast({
@@ -114,9 +119,25 @@ function GmailStatusBar({
   // After the Path 1 (per-user OAuth) refactor, "linkedUserCount" tells us
   // whether anyone has actually granted gmail.readonly via /api/auth/link-gmail.
   // The current user's own link state lives on /api/auth/user (gmailLinked).
-  const { data: me } = useQuery<{ id: number; email: string; gmailLinked?: boolean }>({
+  const { data: me } = useQuery<{
+    id: number;
+    email: string;
+    gmailLinked?: boolean;
+    gmailLastPollAt?: string | null;
+  }>({
     queryKey: ["/api/auth/user"],
   });
+  // Persisted poll-health from the server (classified from
+  // users.gmail_last_poll_* — survives restarts, unlike the monitor's
+  // in-memory status which resets to "Never" and hid a dead poller for
+  // two months in production).
+  const { data: gmailStatus } = useQuery<{
+    pollHealth?: { level: string; ageMs: number | null; message: string | null };
+  }>({
+    queryKey: ["/api/gmail/status"],
+  });
+  const pollHealth = gmailStatus?.pollHealth;
+  const isStaleScan = pollHealth?.level === "stale" || pollHealth?.level === "never";
   const status = data?.gmailLastPollStatus ?? "idle";
   const isPermsError = status === "insufficient_permissions"; // legacy — superseded by no_linked_users
   const isNoLinkedUsers = status === "no_linked_users";
@@ -126,7 +147,10 @@ function GmailStatusBar({
   const pollingDisabled = data && data.gmailConfigured && !data.gmailPolling;
   const meLinked = me?.gmailLinked === true;
   const showLinkCta = !notConfigured && (isNoLinkedUsers || isPermsError || (!meLinked && me !== undefined));
-  const hasIssue = notConfigured || isPermsError || isNoLinkedUsers || isAuthRevoked || isOtherError || pollingDisabled || !meLinked;
+  const isHealthAuthRevoked = pollHealth?.level === "auth_revoked";
+  const hasIssue =
+    notConfigured || isPermsError || isNoLinkedUsers || isAuthRevoked || isOtherError ||
+    pollingDisabled || !meLinked || isStaleScan || isHealthAuthRevoked;
 
   const tone = hasIssue
     ? "border-amber-300 bg-amber-50/70 dark:border-amber-700 dark:bg-amber-950/30"
@@ -146,8 +170,26 @@ function GmailStatusBar({
         Last Gmail Check:
       </span>
       <span className="text-[11px] font-bold text-foreground" data-testid="text-gmail-last-check">
-        {isLoading ? "..." : formatTimeAgo(data?.gmailLastCheck ?? null)}
+        {isLoading ? "..." : formatTimeAgo(data?.gmailLastCheck ?? me?.gmailLastPollAt ?? null)}
       </span>
+
+      {isStaleScan && pollHealth?.message && (
+        <span
+          className="text-[10px] font-semibold text-amber-700 dark:text-amber-300 ml-1"
+          data-testid="text-gmail-stale-warning"
+        >
+          {pollHealth.message}
+        </span>
+      )}
+      {isHealthAuthRevoked && !showLinkCta && (
+        <a
+          href="/api/auth/link-gmail"
+          className="text-[10px] font-semibold text-amber-700 dark:text-amber-300 underline ml-1 hover:no-underline"
+          data-testid="link-relink-gmail-revoked"
+        >
+          {pollHealth?.message ?? "Google access was revoked — reconnect Gmail."} →
+        </a>
+      )}
 
       {notConfigured && (
         <a
