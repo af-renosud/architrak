@@ -300,11 +300,43 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
 
     // Persist provenance (fingerprint + extraction + content hash) before
     // routing so a crash mid-route still leaves an auditable record.
-    const extractedData = { ...parsed, contentHash };
+    const extractedData: Record<string, unknown> = { ...parsed, contentHash };
     await storage.updateProjectIntakeDocument(doc.id, {
       contentFingerprint: fingerprint,
       extractedData,
     });
+
+    // 5b. System-wide dedup against ALL existing typed devis/invoice records
+    // in the project (not just intake documents) by business identity:
+    // document number, contractor, HT amount. Catches re-scraped copies of
+    // records loaded before the intake system existed. Pure comparison logic
+    // lives in shared/intake-dedup.ts; still inside the per-project lock.
+    if (parsed.documentType === "quotation" || parsed.documentType === "invoice" || parsed.documentType === "acompte") {
+      const { evaluateIntakeDedup } = await import("@shared/intake-dedup");
+      const [projectDevis, projectInvoices, allContractorRows] = await Promise.all([
+        storage.getDevisByProject(doc.projectId),
+        storage.getInvoicesByProject(doc.projectId),
+        storage.getContractors(),
+      ]);
+      const contractorNames: Record<number, string> = {};
+      for (const c of allContractorRows) contractorNames[c.id] = c.name;
+      const dedup = evaluateIntakeDedup(parsed, projectDevis, projectInvoices, contractorNames);
+      if (dedup.verdict === "duplicate") {
+        const refKey = dedup.matchKind === "devis" ? "duplicateOfDevisId" : "duplicateOfInvoiceId";
+        await storage.updateProjectIntakeDocument(doc.id, {
+          contentFingerprint: fingerprint,
+          analysisState: "analyzed",
+          routingState: "duplicate",
+          extractedData: { ...extractedData, [refKey]: dedup.matchId },
+          notes: appendNote(doc.notes, dedup.reason),
+        });
+        return;
+      }
+      if (dedup.verdict === "review") {
+        await park(doc, fingerprint, dedup.reason);
+        return;
+      }
+    }
 
     const file = {
       originalname: doc.fileName,
