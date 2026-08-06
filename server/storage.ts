@@ -1,6 +1,9 @@
 import { db } from "./db";
 import { eq, ne, desc, asc, and, or, inArray, isNotNull, isNull, lte, gte, like, ilike, sql, type SQL } from "drizzle-orm";
 import {
+  devisLineContexts, devisLineContextAssets,
+  type DevisLineContext, type InsertDevisLineContext,
+  type DevisLineContextAsset, type InsertDevisLineContextAsset,
   projects, contractors, lots, lotCatalog, marches, devis, devisLineItems,
   avenants, invoices, situations, situationLines, certificats, fees, feeEntries,
   driveUploads,
@@ -294,6 +297,51 @@ export interface IStorage {
   getDevisTranslation(devisId: number): Promise<DevisTranslation | undefined>;
   upsertDevisTranslation(data: InsertDevisTranslation): Promise<DevisTranslation>;
   updateDevisTranslation(devisId: number, data: Partial<InsertDevisTranslation>): Promise<DevisTranslation | undefined>;
+  /** Atomically bump contexts_version and clear both cached PDF keys (one UPDATE). */
+  bumpContextsVersionAndClearPdfCache(devisId: number): Promise<void>;
+  /** Version-guarded cache publish — returns false (no-op) when contexts_version moved. */
+  updateDevisTranslationIfContextsVersion(
+    devisId: number,
+    data: Partial<InsertDevisTranslation>,
+    expectedContextsVersion: number,
+  ): Promise<boolean>;
+
+  getDevisLineContexts(devisId: number): Promise<DevisLineContext[]>;
+  getDevisLineContext(devisLineItemId: number): Promise<DevisLineContext | undefined>;
+  /** Race-safe first insert — returns undefined when another writer won the unique slot. */
+  createDevisLineContext(data: InsertDevisLineContext): Promise<DevisLineContext | undefined>;
+  /**
+   * Optimistic-concurrency update: only applies when the stored revision
+   * equals `expectedRevision`; bumps revision by 1. Returns undefined on
+   * a stale revision (caller maps this to HTTP 409).
+   */
+  updateDevisLineContextIfRevision(
+    devisLineItemId: number,
+    expectedRevision: number,
+    document: unknown,
+  ): Promise<DevisLineContext | undefined>;
+  /**
+   * Whole context save in ONE transaction, serialized against finalisation
+   * via FOR UPDATE on the translation row: rejects when finalised, applies
+   * the create-or-optimistic-update, and bumps contexts_version + clears the
+   * PDF cache keys atomically with the write.
+   */
+  saveDevisLineContextGuarded(
+    devisId: number,
+    devisLineItemId: number,
+    document: unknown,
+    baseRevision: number,
+  ): Promise<
+    | { outcome: "finalised" }
+    | { outcome: "stale_create" }
+    | { outcome: "stale_update" }
+    | { outcome: "saved"; row: DevisLineContext }
+  >;
+  /** Returns undefined when the translation is finalised (asset insert refused). */
+  createDevisLineContextAsset(data: InsertDevisLineContextAsset): Promise<DevisLineContextAsset | undefined>;
+  getDevisLineContextAsset(id: number): Promise<DevisLineContextAsset | undefined>;
+  getDevisLineContextAssets(devisLineItemId: number): Promise<DevisLineContextAsset[]>;
+  getDevisLineContextAssetsByDevis(devisId: number): Promise<DevisLineContextAsset[]>;
 
   getAiModelSettings(): Promise<AiModelSetting[]>;
   getAiModelSetting(taskType: string): Promise<AiModelSetting | undefined>;
@@ -1686,6 +1734,185 @@ export class DatabaseStorage implements IStorage {
       .where(eq(devisTranslations.devisId, devisId))
       .returning();
     return row;
+  }
+
+  async bumpContextsVersionAndClearPdfCache(devisId: number): Promise<void> {
+    // Single atomic statement: nobody can observe the new version with the
+    // old cache keys still set (or vice versa).
+    await db
+      .update(devisTranslations)
+      .set({
+        contextsVersion: sql`${devisTranslations.contextsVersion} + 1`,
+        translatedPdfStorageKey: null,
+        combinedPdfStorageKey: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(devisTranslations.devisId, devisId));
+  }
+
+  async updateDevisTranslationIfContextsVersion(
+    devisId: number,
+    data: Partial<InsertDevisTranslation>,
+    expectedContextsVersion: number,
+  ): Promise<boolean> {
+    // Conditional publish: the WHERE guard is on the same row being updated,
+    // so under READ COMMITTED a concurrent version bump makes this a no-op
+    // (Postgres re-evaluates the qual against the updated row version).
+    const rows = await db
+      .update(devisTranslations)
+      .set({ ...data, updatedAt: new Date() })
+      .where(
+        and(
+          eq(devisTranslations.devisId, devisId),
+          eq(devisTranslations.contextsVersion, expectedContextsVersion),
+        ),
+      )
+      .returning({ devisId: devisTranslations.devisId });
+    return rows.length > 0;
+  }
+
+  async getDevisLineContexts(devisId: number): Promise<DevisLineContext[]> {
+    return db.select().from(devisLineContexts).where(eq(devisLineContexts.devisId, devisId));
+  }
+
+  async getDevisLineContext(devisLineItemId: number): Promise<DevisLineContext | undefined> {
+    const [row] = await db
+      .select()
+      .from(devisLineContexts)
+      .where(eq(devisLineContexts.devisLineItemId, devisLineItemId));
+    return row;
+  }
+
+  async createDevisLineContext(data: InsertDevisLineContext): Promise<DevisLineContext | undefined> {
+    // ON CONFLICT DO NOTHING makes concurrent first-saves race-safe: exactly
+    // one insert wins; the loser gets `undefined` (mapped to 409 upstream)
+    // instead of a unique-violation 500.
+    const [row] = await db
+      .insert(devisLineContexts)
+      .values(data)
+      .onConflictDoNothing({ target: devisLineContexts.devisLineItemId })
+      .returning();
+    return row;
+  }
+
+  async updateDevisLineContextIfRevision(
+    devisLineItemId: number,
+    expectedRevision: number,
+    document: unknown,
+  ): Promise<DevisLineContext | undefined> {
+    const [row] = await db
+      .update(devisLineContexts)
+      .set({
+        document,
+        revision: sql`${devisLineContexts.revision} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(devisLineContexts.devisLineItemId, devisLineItemId),
+          eq(devisLineContexts.revision, expectedRevision),
+        ),
+      )
+      .returning();
+    return row;
+  }
+
+  async saveDevisLineContextGuarded(
+    devisId: number,
+    devisLineItemId: number,
+    document: unknown,
+    baseRevision: number,
+  ): Promise<
+    | { outcome: "finalised" }
+    | { outcome: "stale_create" }
+    | { outcome: "stale_update" }
+    | { outcome: "saved"; row: DevisLineContext }
+  > {
+    // Whole save in ONE transaction, serialized against finalisation via a
+    // FOR UPDATE row lock on the translation row: the finalise path updates
+    // that same row (status = 'finalised'), so either it commits first and
+    // we see it here (reject), or we hold the lock and it waits until our
+    // context write + version bump are committed. No check-then-write window.
+    return db.transaction(async (tx) => {
+      const [translation] = await tx
+        .select({ status: devisTranslations.status })
+        .from(devisTranslations)
+        .where(eq(devisTranslations.devisId, devisId))
+        .for("update");
+      if (translation?.status === "finalised") {
+        return { outcome: "finalised" as const };
+      }
+
+      let row: DevisLineContext | undefined;
+      if (baseRevision === 0) {
+        const [created] = await tx
+          .insert(devisLineContexts)
+          .values({ devisLineItemId, devisId, document, revision: 1 })
+          .onConflictDoNothing({ target: devisLineContexts.devisLineItemId })
+          .returning();
+        if (!created) return { outcome: "stale_create" as const };
+        row = created;
+      } else {
+        const [updated] = await tx
+          .update(devisLineContexts)
+          .set({ document, revision: sql`${devisLineContexts.revision} + 1`, updatedAt: new Date() })
+          .where(
+            and(
+              eq(devisLineContexts.devisLineItemId, devisLineItemId),
+              eq(devisLineContexts.revision, baseRevision),
+            ),
+          )
+          .returning();
+        if (!updated) return { outcome: "stale_update" as const };
+        row = updated;
+      }
+
+      // Same transaction: version bump + cache-key clear commit atomically
+      // with the context write (no-op when there is no translation row yet).
+      if (translation) {
+        await tx
+          .update(devisTranslations)
+          .set({
+            contextsVersion: sql`${devisTranslations.contextsVersion} + 1`,
+            translatedPdfStorageKey: null,
+            combinedPdfStorageKey: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(devisTranslations.devisId, devisId));
+      }
+      return { outcome: "saved" as const, row };
+    });
+  }
+
+  async createDevisLineContextAsset(data: InsertDevisLineContextAsset): Promise<DevisLineContextAsset | undefined> {
+    // Guarded like the context save: the asset row only commits while the
+    // translation is not finalised, serialized via the same row lock.
+    return db.transaction(async (tx) => {
+      const [translation] = await tx
+        .select({ status: devisTranslations.status })
+        .from(devisTranslations)
+        .where(eq(devisTranslations.devisId, data.devisId))
+        .for("update");
+      if (translation?.status === "finalised") return undefined;
+      const [row] = await tx.insert(devisLineContextAssets).values(data).returning();
+      return row;
+    });
+  }
+
+  async getDevisLineContextAsset(id: number): Promise<DevisLineContextAsset | undefined> {
+    const [row] = await db.select().from(devisLineContextAssets).where(eq(devisLineContextAssets.id, id));
+    return row;
+  }
+
+  async getDevisLineContextAssets(devisLineItemId: number): Promise<DevisLineContextAsset[]> {
+    return db
+      .select()
+      .from(devisLineContextAssets)
+      .where(eq(devisLineContextAssets.devisLineItemId, devisLineItemId));
+  }
+
+  async getDevisLineContextAssetsByDevis(devisId: number): Promise<DevisLineContextAsset[]> {
+    return db.select().from(devisLineContextAssets).where(eq(devisLineContextAssets.devisId, devisId));
   }
 
   async getAiModelSettings(): Promise<AiModelSetting[]> {

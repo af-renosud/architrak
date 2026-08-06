@@ -3,6 +3,13 @@ import { storage } from "../storage";
 import { uploadDocument, getDocumentBuffer } from "../storage/object-storage";
 import { convertHtmlToPdf } from "../services/docraptor";
 import { roundCurrency } from "@shared/financial-utils";
+import {
+  contextDocSchema,
+  collectContextAssetIds,
+  isContextDocEmpty,
+  type ContextDoc,
+} from "@shared/context-doc";
+import { renderContextDocHtml, CONTEXT_DOC_PDF_CSS } from "./context-doc-renderer";
 import type {
   Devis,
   DevisLineItem,
@@ -51,6 +58,11 @@ function formatDate(value: string | Date | null): string {
   return new Date(value).toLocaleDateString("en-GB");
 }
 
+interface LineContextRender {
+  /** Pre-rendered, escaped HTML for the line's context block. */
+  html: string;
+}
+
 interface BuildHtmlInput {
   devis: Devis;
   project: Project;
@@ -62,10 +74,60 @@ interface BuildHtmlInput {
   companyLogoBase64: string | null;
   approvedAt: Date | null;
   approvedByEmail: string | null;
+  /** Keyed by devis_line_items.id — architect-authored context per line. */
+  lineContexts: Map<number, LineContextRender>;
+}
+
+/**
+ * Loads, validates, and pre-renders the per-line context documents for a
+ * devis into safe HTML, inlining referenced OWNED image assets as base64
+ * data URIs (same self-contained pattern as the company logo — DocRaptor
+ * never fetches external URLs). Invalid or empty documents are skipped;
+ * a missing image degrades to a placeholder rather than failing the PDF.
+ */
+async function loadLineContextRenders(devisId: number): Promise<Map<number, LineContextRender>> {
+  const out = new Map<number, LineContextRender>();
+  const contexts = await storage.getDevisLineContexts(devisId);
+  if (contexts.length === 0) return out;
+
+  const assets = await storage.getDevisLineContextAssetsByDevis(devisId);
+  const assetsById = new Map(assets.map((a) => [a.id, a]));
+
+  for (const ctx of contexts) {
+    const parsed = contextDocSchema.safeParse(ctx.document);
+    if (!parsed.success) {
+      console.warn(
+        `[DevisTranslationPdf] Skipping invalid context document for line item ${ctx.devisLineItemId}:`,
+        parsed.error.issues[0]?.message,
+      );
+      continue;
+    }
+    const doc: ContextDoc = parsed.data;
+    if (isContextDocEmpty(doc)) continue;
+
+    const dataUris = new Map<number, string>();
+    for (const assetId of collectContextAssetIds(doc)) {
+      const asset = assetsById.get(assetId);
+      // Ownership: only assets registered for this exact line are inlined.
+      if (!asset || asset.devisLineItemId !== ctx.devisLineItemId) continue;
+      try {
+        const buffer = await getDocumentBuffer(asset.storageKey);
+        dataUris.set(assetId, `data:${asset.mimeType};base64,${buffer.toString("base64")}`);
+      } catch (err) {
+        console.warn(
+          `[DevisTranslationPdf] Failed to load context asset ${assetId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    out.set(ctx.devisLineItemId, { html: renderContextDocHtml(doc, dataUris) });
+  }
+  return out;
 }
 
 function buildHtml(input: BuildHtmlInput): string {
-  const { devis, project, contractor, lines, header, translatedLines, includeExplanations, companyLogoBase64, approvedAt, approvedByEmail } = input;
+  const { devis, project, contractor, lines, header, translatedLines, includeExplanations, companyLogoBase64, approvedAt, approvedByEmail, lineContexts } = input;
   const isApproved = !!approvedAt;
 
   const byLineNumber = new Map<number, DevisTranslationLine>();
@@ -75,6 +137,8 @@ function buildHtml(input: BuildHtmlInput): string {
     ? `<th>#</th><th>French (original)</th><th>English (literal)</th><th>Plain English</th><th>Qty</th><th>Unit</th><th>Unit HT</th><th>Total HT</th>`
     : `<th>#</th><th>French (original)</th><th>English (literal)</th><th>Qty</th><th>Unit</th><th>Unit HT</th><th>Total HT</th>`;
 
+  const columnCount = includeExplanations ? 8 : 7;
+
   const rows = lines
     .map((li) => {
       const t = byLineNumber.get(li.lineNumber);
@@ -82,7 +146,7 @@ function buildHtml(input: BuildHtmlInput): string {
       const en = escapeHtml(t?.translation || "");
       const expl = escapeHtml(t?.explanation || "");
       const explCell = includeExplanations ? `<td class="expl">${expl}</td>` : "";
-      return `<tr>
+      const mainRow = `<tr>
         <td class="num">${li.lineNumber}</td>
         <td>${fr}</td>
         <td>${en}</td>
@@ -92,6 +156,17 @@ function buildHtml(input: BuildHtmlInput): string {
         <td class="num">${formatCurrency(li.unitPriceHt)}</td>
         <td class="num">${formatCurrency(li.totalHt)}</td>
       </tr>`;
+      const ctx = lineContexts.get(li.id);
+      // Context HTML is pre-rendered by the whitelisting serializer
+      // (context-doc-renderer.ts) from a validated document — it is the one
+      // deliberate non-escapeHtml interpolation in this template.
+      const ctxRow = ctx
+        ? `<tr class="ctx-row">
+        <td class="num"></td>
+        <td colspan="${columnCount - 1}" class="ctx-cell"><div class="ctx-lbl">Context — line ${li.lineNumber}</div>${ctx.html}</td>
+      </tr>`
+        : "";
+      return mainRow + ctxRow;
     })
     .join("");
 
@@ -134,6 +209,7 @@ tbody tr:nth-child(even) td { background: #FAFAFA; }
 .expl { color: #6B5B3E; font-style: italic; font-size: 8pt; }
 .footer { margin-top: 6mm; padding-top: 3mm; border-top: 1px solid #E6E6E6; font-size: 7pt; color: #7E7F83; }
 .disclaimer { background: #FFF9F0; border: 1px solid #C1A27B; padding: 3mm; margin-top: 4mm; font-size: 7.5pt; color: #6B5B3E; border-radius: 2px; }
+${CONTEXT_DOC_PDF_CSS}
 </style>
 </head>
 <body>
@@ -210,8 +286,14 @@ export async function generateDevisTranslationPdf(
 
   const lines = await storage.getDevisLineItems(devisId);
   const companyLogoBase64 = await loadLogoAsBase64("company_logo");
+  // contexts_version read (with the translation row above) BEFORE loading
+  // the contexts — the version-guarded publish below then makes stale
+  // caching impossible under any interleaving with a context save.
+  const contextsVersionBefore = translation.contextsVersion ?? 0;
+  const lineContexts = await loadLineContextRenders(devisId);
 
   const html = buildHtml({
+    lineContexts,
     devis,
     project,
     contractor,
@@ -231,13 +313,48 @@ export async function generateDevisTranslationPdf(
   const storageKey = await uploadDocument(project.id, fileName, pdfBuffer, "application/pdf");
 
   if (!opts.includeExplanations) {
-    await storage.updateDevisTranslation(devisId, {
-      translatedPdfStorageKey: storageKey,
-      combinedPdfStorageKey: null,
-    });
+    // Version-guarded cache publish: a single conditional UPDATE that only
+    // lands while contexts_version still equals the value read before the
+    // contexts were loaded. A concurrent context save bumps the version
+    // atomically with clearing the keys, so this publish becomes a no-op —
+    // there is no check-then-write window. The PDF itself is still returned;
+    // the next request regenerates with the fresh context.
+    const published = await storage.updateDevisTranslationIfContextsVersion(
+      devisId,
+      { translatedPdfStorageKey: storageKey, combinedPdfStorageKey: null },
+      contextsVersionBefore,
+    );
+    if (!published) {
+      console.warn(
+        `[DevisTranslationPdf] Context changed during generation for devis ${devisId} — not caching this PDF.`,
+      );
+    }
   }
 
   return { storageKey, pdfBuffer };
+}
+
+/**
+ * Read a cached PDF storage key for serving. Correctness relies on two
+ * database-level invariants, not on re-checking around this read:
+ *   1. a context save clears both keys atomically with bumping
+ *      contexts_version (single UPDATE), and cache publication is a
+ *      version-guarded conditional UPDATE — so a non-null key in the row is
+ *      NEVER stale relative to the committed context state;
+ *   2. storage objects are immutable (upload keys are timestamped-unique),
+ *      so streaming a key read from a committed row snapshot serves exactly
+ *      the state at row-read time — a save that commits mid-response ordered
+ *      after this request simply invalidates the key for the NEXT request.
+ * Returns null when there is no cached key (caller regenerates).
+ */
+export async function getValidatedCachedPdfKey(
+  devisId: number,
+  kind: "translated" | "combined",
+): Promise<string | null> {
+  const translation = await storage.getDevisTranslation(devisId);
+  const key =
+    kind === "translated" ? translation?.translatedPdfStorageKey : translation?.combinedPdfStorageKey;
+  return key ?? null;
 }
 
 export async function generateCombinedPdf(
@@ -250,6 +367,13 @@ export async function generateCombinedPdf(
 
   const translation = await storage.getDevisTranslation(devisId);
   if (!translation) throw new Error(`No translation for devis ${devisId}`);
+
+  // Same save-vs-generation guard as the translated PDF: the row read above
+  // atomically captures contexts_version together with any cached
+  // translatedPdfStorageKey we may reuse (keys are never stale in the row —
+  // saves clear them atomically with the version bump). The publish below is
+  // conditional on this version.
+  const contextsVersionBefore = translation.contextsVersion ?? 0;
 
   let translatedBufPromise: Promise<Buffer>;
   if (opts.includeExplanations) {
@@ -284,7 +408,16 @@ export async function generateCombinedPdf(
   const storageKey = await uploadDocument(devis.projectId, fileName, pdfBuffer, "application/pdf");
 
   if (!opts.includeExplanations) {
-    await storage.updateDevisTranslation(devisId, { combinedPdfStorageKey: storageKey });
+    const published = await storage.updateDevisTranslationIfContextsVersion(
+      devisId,
+      { combinedPdfStorageKey: storageKey },
+      contextsVersionBefore,
+    );
+    if (!published) {
+      console.warn(
+        `[DevisTranslationPdf] Context changed during combined generation for devis ${devisId} — not caching this PDF.`,
+      );
+    }
   }
 
   return { storageKey, pdfBuffer };

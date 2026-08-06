@@ -18,6 +18,9 @@ vi.mock("../../storage", () => ({
     getDevisLineItems: vi.fn(),
     getTemplateAssetByType: vi.fn(),
     updateDevisTranslation: vi.fn(),
+    updateDevisTranslationIfContextsVersion: vi.fn(),
+    getDevisLineContexts: vi.fn(),
+    getDevisLineContextAssets: vi.fn(),
   },
 }));
 
@@ -32,11 +35,12 @@ vi.mock("../../services/docraptor", () => ({
 
 import { storage } from "../../storage";
 import { getDocumentBuffer, uploadDocument } from "../../storage/object-storage";
-import { generateCombinedPdf } from "../devis-translation-generator";
+import { generateCombinedPdf, getValidatedCachedPdfKey } from "../devis-translation-generator";
 
 const getDevis = storage.getDevis as unknown as ReturnType<typeof vi.fn>;
 const getDevisTranslation = storage.getDevisTranslation as unknown as ReturnType<typeof vi.fn>;
 const updateDevisTranslation = storage.updateDevisTranslation as unknown as ReturnType<typeof vi.fn>;
+const updateIfVersion = storage.updateDevisTranslationIfContextsVersion as unknown as ReturnType<typeof vi.fn>;
 const getDocumentBufferMock = getDocumentBuffer as unknown as ReturnType<typeof vi.fn>;
 const uploadDocumentMock = uploadDocument as unknown as ReturnType<typeof vi.fn>;
 
@@ -52,10 +56,14 @@ async function buildPdf(pages: Array<[number, number]>): Promise<Buffer> {
 }
 
 describe("generateCombinedPdf — page ordering", () => {
+  const getDevisLineContexts = storage.getDevisLineContexts as unknown as ReturnType<typeof vi.fn>;
+
   beforeEach(() => {
     vi.clearAllMocks();
     updateDevisTranslation.mockResolvedValue({});
+    updateIfVersion.mockResolvedValue(true);
     uploadDocumentMock.mockResolvedValue("storage/key/combined.pdf");
+    getDevisLineContexts.mockResolvedValue([]);
   });
 
   it("merges translated pages first, then original, preserving page counts and source order", async () => {
@@ -112,10 +120,80 @@ describe("generateCombinedPdf — page ordering", () => {
     expect(sizes[3]).toEqual([Math.round(aw), Math.round(ah)]);
     expect(sizes[4]).toEqual([Math.round(aw), Math.round(ah)]);
 
-    // Combined PDF storage key is persisted on the translation row
-    expect(updateDevisTranslation).toHaveBeenCalledWith(
+    // Combined PDF storage key is published via the version-guarded update,
+    // conditional on the contexts_version read with the translation row.
+    expect(updateIfVersion).toHaveBeenCalledWith(
       7,
       expect.objectContaining({ combinedPdfStorageKey: "storage/key/combined.pdf" }),
+      0,
+    );
+    expect(updateDevisTranslation).not.toHaveBeenCalled();
+  });
+
+  it("does NOT cache the combined PDF when a context save lands during generation (version-guarded publish no-ops)", async () => {
+    getDevis.mockResolvedValue({
+      id: 7,
+      devisCode: "D-7",
+      pdfStorageKey: "storage/key/original.pdf",
+      projectId: 1,
+    });
+    getDevisTranslation.mockResolvedValue({
+      status: "draft",
+      translatedPdfStorageKey: "storage/key/translated.pdf",
+      contextsVersion: 4,
+      headerTranslated: {},
+      lineTranslations: [],
+    });
+    const [aw, ah] = PageSizes.A4;
+    const originalPdf = await buildPdf([[aw, ah]]);
+    const translatedPdf = await buildPdf([[ah, aw]]);
+    getDocumentBufferMock.mockImplementation(async (key: string) =>
+      key === "storage/key/original.pdf" ? originalPdf : translatedPdf,
+    );
+
+    // Deterministic race: the concurrent context save bumped
+    // contexts_version (atomically clearing the cache keys), so the
+    // conditional UPDATE matches no row — the DB itself refuses the publish.
+    updateIfVersion.mockResolvedValue(false);
+
+    const { storageKey, pdfBuffer } = await generateCombinedPdf(7);
+    expect(storageKey).toBe("storage/key/combined.pdf");
+    expect(pdfBuffer.length).toBeGreaterThan(0);
+    // Publish attempted with the version captured at the row read...
+    expect(updateIfVersion).toHaveBeenCalledWith(7, expect.anything(), 4);
+    // ...and no unconditional write bypasses the guard.
+    expect(updateDevisTranslation).not.toHaveBeenCalled();
+  });
+
+  it("guards the publish with the contexts_version captured at the translation-row read", async () => {
+    getDevis.mockResolvedValue({
+      id: 7,
+      devisCode: "D-7",
+      pdfStorageKey: "storage/key/original.pdf",
+      projectId: 1,
+    });
+    getDevisTranslation.mockResolvedValue({
+      status: "draft",
+      translatedPdfStorageKey: "storage/key/translated.pdf",
+      contextsVersion: 9,
+      headerTranslated: {},
+      lineTranslations: [],
+    });
+    const [aw, ah] = PageSizes.A4;
+    const originalPdf = await buildPdf([[aw, ah]]);
+    const translatedPdf = await buildPdf([[ah, aw]]);
+    getDocumentBufferMock.mockImplementation(async (key: string) =>
+      key === "storage/key/original.pdf" ? originalPdf : translatedPdf,
+    );
+
+    await generateCombinedPdf(7);
+
+    // The cached translated key and the guard version come from the SAME
+    // atomic row read, so the reused buffer and the guard can never diverge.
+    expect(updateIfVersion).toHaveBeenCalledWith(
+      7,
+      expect.objectContaining({ combinedPdfStorageKey: "storage/key/combined.pdf" }),
+      9,
     );
   });
 
@@ -128,5 +206,30 @@ describe("generateCombinedPdf — page ordering", () => {
     getDevis.mockResolvedValue({ id: 11, devisCode: "D-11", pdfStorageKey: "k", projectId: 1 });
     getDevisTranslation.mockResolvedValue(null);
     await expect(generateCombinedPdf(11)).rejects.toThrow(/No translation/);
+  });
+});
+
+describe("getValidatedCachedPdfKey — cached key reads (keys are never stale in the row)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    ["translated", { translatedPdfStorageKey: "k-translated", combinedPdfStorageKey: null }, "k-translated"],
+    ["combined", { translatedPdfStorageKey: null, combinedPdfStorageKey: "k-combined" }, "k-combined"],
+  ] as const)("returns the cached %s key from the row", async (kind, row, expected) => {
+    getDevisTranslation.mockResolvedValue(row);
+    await expect(getValidatedCachedPdfKey(7, kind)).resolves.toBe(expected);
+  });
+
+  it("returns null when no cached key exists (concurrent save cleared it atomically)", async () => {
+    getDevisTranslation.mockResolvedValue({ translatedPdfStorageKey: null, combinedPdfStorageKey: null });
+    await expect(getValidatedCachedPdfKey(7, "translated")).resolves.toBeNull();
+    await expect(getValidatedCachedPdfKey(7, "combined")).resolves.toBeNull();
+  });
+
+  it("returns null when there is no translation row", async () => {
+    getDevisTranslation.mockResolvedValue(null);
+    await expect(getValidatedCachedPdfKey(7, "translated")).resolves.toBeNull();
   });
 });

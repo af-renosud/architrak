@@ -33,6 +33,7 @@ vi.mock("../../storage/object-storage", () => ({
 vi.mock("../../communications/devis-translation-generator", () => ({
   generateDevisTranslationPdf: vi.fn(),
   generateCombinedPdf: vi.fn(),
+  getValidatedCachedPdfKey: vi.fn(),
 }));
 
 vi.mock("../../services/devis-translation", () => ({
@@ -46,6 +47,7 @@ import { getDocumentStream } from "../../storage/object-storage";
 import {
   generateDevisTranslationPdf,
   generateCombinedPdf,
+  getValidatedCachedPdfKey,
 } from "../../communications/devis-translation-generator";
 
 const getDevis = storage.getDevis as unknown as ReturnType<typeof vi.fn>;
@@ -54,6 +56,7 @@ const updateDevisTranslation = storage.updateDevisTranslation as unknown as Retu
 const getDocumentStreamMock = getDocumentStream as unknown as ReturnType<typeof vi.fn>;
 const generateDevisTranslationPdfMock = generateDevisTranslationPdf as unknown as ReturnType<typeof vi.fn>;
 const generateCombinedPdfMock = generateCombinedPdf as unknown as ReturnType<typeof vi.fn>;
+const getValidatedCachedPdfKeyMock = getValidatedCachedPdfKey as unknown as ReturnType<typeof vi.fn>;
 
 let baseUrl: string;
 let server: import("http").Server;
@@ -111,12 +114,56 @@ describe("GET /api/devis/:id/pdf?variant=...", () => {
       translatedPdfStorageKey: "k/translated.pdf",
       combinedPdfStorageKey: null,
     });
+    getValidatedCachedPdfKeyMock.mockResolvedValue("k/translated.pdf");
 
     const res = await fetch(`${baseUrl}/api/devis/2/pdf?variant=translation`);
     expect(res.status).toBe(200);
     expect(getDocumentStreamMock).toHaveBeenCalledWith("k/translated.pdf");
     // Cached key was used: PDF generator must NOT have been called.
     expect(generateDevisTranslationPdfMock).not.toHaveBeenCalled();
+  });
+
+  it("regenerates the translation PDF when the cached key fails fingerprint validation (context saved mid-request)", async () => {
+    getDevis.mockResolvedValue({ id: 2, devisCode: "D-2", pdfStorageKey: "k/orig" });
+    getDevisTranslation.mockResolvedValue({
+      status: "draft",
+      translatedPdfStorageKey: "k/stale-translated.pdf",
+      combinedPdfStorageKey: null,
+    });
+    // Fingerprint changed between the cache-key read and the object read.
+    getValidatedCachedPdfKeyMock.mockResolvedValue(null);
+    generateDevisTranslationPdfMock.mockResolvedValue({
+      storageKey: "k/fresh-translated.pdf",
+      pdfBuffer: Buffer.from("ignored"),
+    });
+
+    const res = await fetch(`${baseUrl}/api/devis/2/pdf?variant=translation`);
+    expect(res.status).toBe(200);
+    expect(getValidatedCachedPdfKeyMock).toHaveBeenCalledWith(2, "translated");
+    expect(generateDevisTranslationPdfMock).toHaveBeenCalledWith(2, { includeExplanations: false });
+    expect(getDocumentStreamMock).toHaveBeenCalledWith("k/fresh-translated.pdf");
+    expect(getDocumentStreamMock).not.toHaveBeenCalledWith("k/stale-translated.pdf");
+  });
+
+  it("regenerates the combined PDF when the cached key fails fingerprint validation (context saved mid-request)", async () => {
+    getDevis.mockResolvedValue({ id: 3, devisCode: "D-3", pdfStorageKey: "k/orig" });
+    getDevisTranslation.mockResolvedValue({
+      status: "draft",
+      translatedPdfStorageKey: null,
+      combinedPdfStorageKey: "k/stale-combined.pdf",
+    });
+    getValidatedCachedPdfKeyMock.mockResolvedValue(null);
+    generateCombinedPdfMock.mockResolvedValue({
+      storageKey: "k/fresh-combined.pdf",
+      pdfBuffer: Buffer.from("ignored"),
+    });
+
+    const res = await fetch(`${baseUrl}/api/devis/3/pdf?variant=combined`);
+    expect(res.status).toBe(200);
+    expect(getValidatedCachedPdfKeyMock).toHaveBeenCalledWith(3, "combined");
+    expect(generateCombinedPdfMock).toHaveBeenCalledWith(3, { includeExplanations: false });
+    expect(getDocumentStreamMock).toHaveBeenCalledWith("k/fresh-combined.pdf");
+    expect(getDocumentStreamMock).not.toHaveBeenCalledWith("k/stale-combined.pdf");
   });
 
   it("regenerates and streams the combined PDF when variant=combined", async () => {
@@ -126,6 +173,7 @@ describe("GET /api/devis/:id/pdf?variant=...", () => {
       translatedPdfStorageKey: "k/translated",
       combinedPdfStorageKey: null,
     });
+    getValidatedCachedPdfKeyMock.mockResolvedValue(null);
     generateCombinedPdfMock.mockResolvedValue({
       storageKey: "k/combined.pdf",
       pdfBuffer: Buffer.from("ignored"),

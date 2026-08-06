@@ -20,7 +20,9 @@ import type {
   DevisLineItem,
   DevisTranslationLine,
   DevisTranslationHeader,
+  DevisLineContext,
 } from "@shared/schema";
+import { DevisLineContextEditor } from "./DevisLineContextEditor";
 
 interface DevisTranslationSectionProps {
   devisId: number;
@@ -55,6 +57,15 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
       initialisedFor.current = key;
     }
   }, [translation, devisId]);
+
+  const { data: lineContextsData, isLoading: lineContextsLoading } = useQuery<{ contexts: DevisLineContext[] }>({
+    queryKey: ["/api/devis", devisId, "line-contexts"],
+  });
+  const contextsByLineItemId = useMemo(() => {
+    const m = new Map<number, DevisLineContext>();
+    for (const c of lineContextsData?.contexts ?? []) m.set(c.devisLineItemId, c);
+    return m;
+  }, [lineContextsData]);
 
   const status = translation?.status ?? "missing";
   const isProcessing = status === "processing" || status === "pending";
@@ -465,6 +476,19 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
                             data-testid={`input-explanation-${devisId}-${li.lineNumber}`}
                           />
                         </>
+                      )}
+                      {/* Mount the editor only once contexts have loaded so the
+                          revision baseline is correct on first save. */}
+                      {!lineContextsLoading && (
+                        <div className="pt-1">
+                          <DevisLineContextEditor
+                            devisId={devisId}
+                            lineItemId={li.id}
+                            lineNumber={li.lineNumber}
+                            context={contextsByLineItemId.get(li.id) ?? null}
+                            readOnly={isFinalised}
+                          />
+                        </div>
                       )}
                     </div>
                     {!isFinalised && (

@@ -1,4 +1,4 @@
-import { Router } from "express";
+import express, { Router } from "express";
 import { z } from "zod";
 import { storage } from "../storage";
 import { requireAuth } from "../auth/middleware";
@@ -43,11 +43,20 @@ import {
 import {
   generateDevisTranslationPdf,
   generateCombinedPdf,
+  getValidatedCachedPdfKey,
 } from "../communications/devis-translation-generator";
 import {
   devisTranslationLineSchema,
   devisTranslationHeaderSchema,
 } from "@shared/schema";
+import {
+  getLineContextsForDevis,
+  saveLineContext,
+  uploadLineContextAsset,
+  getOwnedContextAsset,
+  LineContextError,
+} from "../services/devis-line-context";
+import { CONTEXT_ASSET_MAX_BYTES } from "@shared/context-doc";
 
 const router = Router();
 
@@ -336,8 +345,13 @@ router.get(
         if (!t || !ready) {
           return res.status(409).json({ message: "Translation not ready", status: t?.status ?? "missing" });
         }
-        if (t.translatedPdfStorageKey && !includeExplanations) {
-          storageKey = t.translatedPdfStorageKey;
+        // Fingerprint-validated cache read: a per-line context save racing
+        // this request must force regeneration, never serve the stale PDF.
+        const cachedTranslated = includeExplanations
+          ? null
+          : await getValidatedCachedPdfKey(devisId, "translated");
+        if (cachedTranslated) {
+          storageKey = cachedTranslated;
         } else {
           const generated = await generateDevisTranslationPdf(devisId, { includeExplanations });
           storageKey = generated.storageKey;
@@ -349,8 +363,11 @@ router.get(
         if (!t || !ready) {
           return res.status(409).json({ message: "Translation not ready", status: t?.status ?? "missing" });
         }
-        if (t.combinedPdfStorageKey && !includeExplanations) {
-          storageKey = t.combinedPdfStorageKey;
+        const cachedCombined = includeExplanations
+          ? null
+          : await getValidatedCachedPdfKey(devisId, "combined");
+        if (cachedCombined) {
+          storageKey = cachedCombined;
         } else {
           const merged = await generateCombinedPdf(devisId, { includeExplanations });
           storageKey = merged.storageKey;
@@ -570,6 +587,125 @@ router.patch(
       status: wasFinalised ? "finalised" : "edited",
     });
     res.json(updated);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Per-line rich-text "context" boxes (rendered into the translated PDF).
+// Thin routes — all validation/ownership/concurrency logic lives in
+// server/services/devis-line-context.ts.
+// ---------------------------------------------------------------------------
+
+function handleLineContextError(res: import("express").Response, err: unknown, fallback: string) {
+  if (err instanceof LineContextError) {
+    return res.status(err.status).json({ message: err.message });
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(`[LineContext] ${fallback}:`, message);
+  return res.status(500).json({ message: `${fallback}: ${message}` });
+}
+
+const lineContextParams = z.object({
+  id: z.coerce.number().int().positive(),
+  lineItemId: z.coerce.number().int().positive(),
+});
+
+const saveLineContextBody = z
+  .object({
+    // The document is fully re-validated against the strict shared schema in
+    // the service; here we only require a JSON object envelope.
+    document: z.record(z.unknown()),
+    baseRevision: z.number().int().nonnegative(),
+  })
+  .strict();
+
+router.get(
+  "/api/devis/:id/line-contexts",
+  requireAuth,
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    try {
+      const devisId = Number(req.params.id);
+      const d = await storage.getDevis(devisId);
+      if (!d) return res.status(404).json({ message: "Devis not found" });
+      const contexts = await getLineContextsForDevis(devisId);
+      res.json({ contexts });
+    } catch (err) {
+      handleLineContextError(res, err, "Failed to load line contexts");
+    }
+  },
+);
+
+router.put(
+  "/api/devis/:id/line-contexts/:lineItemId",
+  requireAuth,
+  validateRequest({ params: lineContextParams, body: saveLineContextBody }),
+  async (req, res) => {
+    try {
+      const saved = await saveLineContext({
+        devisId: Number(req.params.id),
+        devisLineItemId: Number(req.params.lineItemId),
+        document: req.body.document,
+        baseRevision: req.body.baseRevision,
+      });
+      res.json(saved);
+    } catch (err) {
+      handleLineContextError(res, err, "Failed to save line context");
+    }
+  },
+);
+
+// Raw image body (paste/upload from the context editor). The service sniffs
+// magic bytes — the Content-Type header is not trusted. Limit slightly above
+// the service cap so the service returns the descriptive 413.
+const contextImageRaw = express.raw({
+  type: ["image/png", "image/jpeg", "image/webp"],
+  limit: CONTEXT_ASSET_MAX_BYTES + 1024 * 1024,
+});
+
+router.post(
+  "/api/devis/:id/line-contexts/:lineItemId/assets",
+  requireAuth,
+  contextImageRaw,
+  validateRequest({ params: lineContextParams }),
+  async (req, res) => {
+    try {
+      const body = req.body as unknown;
+      if (!Buffer.isBuffer(body)) {
+        return res.status(400).json({ message: "Expected a raw image body (PNG, JPEG or WebP)" });
+      }
+      const asset = await uploadLineContextAsset(
+        Number(req.params.id),
+        Number(req.params.lineItemId),
+        body,
+      );
+      res.status(201).json({ id: asset.id, mimeType: asset.mimeType, sizeBytes: asset.sizeBytes });
+    } catch (err) {
+      handleLineContextError(res, err, "Failed to upload context image");
+    }
+  },
+);
+
+const contextAssetParams = z.object({
+  id: z.coerce.number().int().positive(),
+  assetId: z.coerce.number().int().positive(),
+});
+
+router.get(
+  "/api/devis/:id/context-assets/:assetId",
+  requireAuth,
+  validateRequest({ params: contextAssetParams }),
+  async (req, res) => {
+    try {
+      const asset = await getOwnedContextAsset(Number(req.params.id), Number(req.params.assetId));
+      const { stream, size } = await getDocumentStream(asset.storageKey);
+      res.setHeader("Content-Type", asset.mimeType);
+      if (size) res.setHeader("Content-Length", String(size));
+      res.setHeader("Cache-Control", "private, max-age=3600");
+      stream.pipe(res);
+    } catch (err) {
+      handleLineContextError(res, err, "Failed to load context image");
+    }
   },
 );
 

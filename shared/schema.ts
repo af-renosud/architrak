@@ -1840,6 +1840,11 @@ export const devisTranslations = pgTable("devis_translations", {
   errorMessage: text("error_message"),
   translatedPdfStorageKey: text("translated_pdf_storage_key"),
   combinedPdfStorageKey: text("combined_pdf_storage_key"),
+  // Monotonic counter bumped (atomically with clearing the two cache keys
+  // above) on every per-line context save. PDF cache publication is a
+  // conditional UPDATE guarded by this version, so a stale key can never be
+  // (re)published — see server/services/devis-line-context.ts.
+  contextsVersion: integer("contexts_version").notNull().default(0),
   approvedAt: timestamp("approved_at"),
   approvedBy: integer("approved_by"),
   approvedByEmail: text("approved_by_email"),
@@ -1884,6 +1889,75 @@ export const insertDevisTranslationSchema = createInsertSchema(devisTranslations
 });
 export type DevisTranslation = typeof devisTranslations.$inferSelect;
 export type InsertDevisTranslation = z.infer<typeof insertDevisTranslationSchema>;
+
+/**
+ * Per-line rich-text "context" documents rendered into the translated
+ * devis PDF. Keyed by the STABLE devis_line_items.id (NOT lineNumber, and
+ * deliberately NOT stored inside devis_translations.lineTranslations) so a
+ * force re-translation — which rebuilds the lineTranslations jsonb — can
+ * never wipe an architect's context content.
+ *
+ * `document` holds a validated rich-text JSON document (see
+ * shared/context-doc.ts for the strict schema: paragraphs, bold/italic,
+ * lists, https/mailto links, and image nodes referencing owned assets).
+ *
+ * `revision` implements optimistic concurrency: every save must present
+ * the revision it was based on; a mismatch is rejected with 409 so two
+ * concurrent editors cannot silently overwrite each other.
+ */
+export const devisLineContexts = pgTable("devis_line_contexts", {
+  id: serial("id").primaryKey(),
+  devisLineItemId: integer("devis_line_item_id")
+    .notNull()
+    .unique()
+    .references(() => devisLineItems.id, { onDelete: "cascade" }),
+  devisId: integer("devis_id")
+    .notNull()
+    .references(() => devis.id, { onDelete: "cascade" }),
+  document: jsonb("document").notNull(),
+  revision: integer("revision").notNull().default(1),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("devis_line_contexts_devis_id_idx").on(table.devisId),
+]);
+
+/**
+ * Ownership registry for images uploaded into a line context. The rich
+ * document references assets by id only; at render time the server
+ * verifies each referenced asset belongs to the same devis line before
+ * inlining its bytes as a base64 data URI. Storage keys never appear in
+ * user-editable JSON.
+ */
+export const devisLineContextAssets = pgTable("devis_line_context_assets", {
+  id: serial("id").primaryKey(),
+  devisLineItemId: integer("devis_line_item_id")
+    .notNull()
+    .references(() => devisLineItems.id, { onDelete: "cascade" }),
+  devisId: integer("devis_id")
+    .notNull()
+    .references(() => devis.id, { onDelete: "cascade" }),
+  storageKey: text("storage_key").notNull(),
+  mimeType: text("mime_type").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("devis_line_context_assets_line_item_idx").on(table.devisLineItemId),
+]);
+
+export const insertDevisLineContextSchema = createInsertSchema(devisLineContexts).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export const insertDevisLineContextAssetSchema = createInsertSchema(devisLineContextAssets).omit({
+  id: true,
+  createdAt: true,
+});
+export type DevisLineContext = typeof devisLineContexts.$inferSelect;
+export type InsertDevisLineContext = z.infer<typeof insertDevisLineContextSchema>;
+export type DevisLineContextAsset = typeof devisLineContextAssets.$inferSelect;
+export type InsertDevisLineContextAsset = z.infer<typeof insertDevisLineContextAssetSchema>;
 
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),

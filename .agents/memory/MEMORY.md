@@ -8,4 +8,6 @@
 - [Intake PDF rasterisation](intake-pdf-rasterisation.md) — a conversion failure masquerades as classification="unknown"; rasterise via a pdftoppm→pdftocairo→ghostscript fallback chain (gs is a nix dep), throw with per-strategy stderr on total failure.
 - [Prod one-shot actions](prod-side-actions-via-data-migrations.md) — when you can't publish or click in prod, a tightly-guarded data-only migration fires the action exactly once at first boot after the user publishes.
 - [Playwright run quirks](playwright-run-quirks.md) — run e2e specs in ONE shell call with `timeout -k` + file redirect; detached runs get killed between calls; hermetic specs must set the dev-login flag.
+- [Hand-written migrations checklist](hand-written-migrations.md) — every new migration needs SQL + manual journal entry + MIGRATION_ARTIFACTS entry, or boot and replay tests hard-fail.
+- [PDF cache race guard](pdf-cache-race-guard.md) — never fingerprint-check-then-write cache keys; edits bump a version atomically with clearing keys, publish via version-guarded conditional UPDATE.
 - [Restore via cp, not git checkout](restore-via-cp-not-git-checkout.md) — `git checkout --` reverts to the last platform commit and silently wipes uncommitted session edits; snapshot with cp before temporary file mutations.

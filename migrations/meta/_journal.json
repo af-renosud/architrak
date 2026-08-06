@@ -372,6 +372,20 @@
       "when": 1778750000000,
       "tag": "0052_resolve_false_line_items_advisory",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1778760000000,
+      "tag": "0053_devis_line_contexts",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1778760001000,
+      "tag": "0054_devis_translations_contexts_version",
+      "breakpoints": true
     }
   ]
 }

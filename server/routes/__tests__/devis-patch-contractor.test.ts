@@ -59,6 +59,7 @@ vi.mock("../../services/devis-translation", () => ({
 vi.mock("../../communications/devis-translation-generator", () => ({
   generateDevisTranslationPdf: vi.fn(),
   generateCombinedPdf: vi.fn(),
+  getValidatedCachedPdfKey: vi.fn(),
 }));
 vi.mock("../../storage/object-storage", () => ({ getDocumentStream: vi.fn() }));
 vi.mock("../../middleware/upload", () => ({ upload: { single: () => (_req: unknown, _res: unknown, next: () => void) => next() } }));

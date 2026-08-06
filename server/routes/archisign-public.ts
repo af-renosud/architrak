@@ -22,7 +22,11 @@ import { Router } from "express";
 import { storage } from "../storage";
 import { verifyPdfFetchToken } from "../services/archisign-pdf-token";
 import { getDocumentStream } from "../storage/object-storage";
-import { generateCombinedPdf, generateDevisTranslationPdf } from "../communications/devis-translation-generator";
+import {
+  generateCombinedPdf,
+  generateDevisTranslationPdf,
+  getValidatedCachedPdfKey,
+} from "../communications/devis-translation-generator";
 
 const router = Router();
 
@@ -47,7 +51,9 @@ router.get("/api/public/devis-pdf/:token", async (req, res) => {
     return res.status(409).json({ message: "Translation not ready", status: translation.status });
   }
 
-  let storageKey = translation.combinedPdfStorageKey;
+  // Fingerprint-validated cache reads — a per-line context save racing this
+  // request must force regeneration rather than serving a stale PDF.
+  let storageKey = await getValidatedCachedPdfKey(devisId, "combined");
   if (!storageKey) {
     try {
       const merged = await generateCombinedPdf(devisId, { includeExplanations: false });
@@ -57,7 +63,7 @@ router.get("/api/public/devis-pdf/:token", async (req, res) => {
     }
   }
   if (!storageKey) {
-    storageKey = translation.translatedPdfStorageKey;
+    storageKey = await getValidatedCachedPdfKey(devisId, "translated");
   }
   if (!storageKey) {
     try {
