@@ -99,6 +99,14 @@ const envSchema = z.object({
   ARCHIDOC_WEBHOOK_SECRET: optionalString(),
   ARCHIDOC_POLLING_ENABLED: booleanFlag(false),
 
+  // --- Gmail inbox scanning (per-user OAuth monitor) --------------------
+  // Task #305: Gmail inbox scanning used to be (mis)gated behind
+  // ARCHIDOC_POLLING_ENABLED — switching ArchiDoc to webhook mode silently
+  // killed Gmail scanning in production for two months. Gmail scanning now
+  // has its own flag, defaulting ON; the monitor itself still no-ops when
+  // object storage is not configured.
+  GMAIL_POLLING_ENABLED: booleanFlag(true),
+
   // --- Archisign envelope orchestration + webhook (AT4) ----------------
   // ARCHISIGN_API_KEY is a CSV of one or more keys to support overlapping
   // rotation windows (§3.6); the FIRST entry is used for new outbound

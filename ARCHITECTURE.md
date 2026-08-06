@@ -327,7 +327,7 @@ Projects and Contractors flow FROM ArchiDoc TO ArchiTrak. Never the reverse.
 | `sync.full` | Full re-sync of all data |
 
 **Environment controls:**
-- `ARCHIDOC_POLLING_ENABLED=true` — re-enables legacy polling (default: disabled, webhook mode)
+- `ARCHIDOC_POLLING_ENABLED=true` — re-enables legacy polling (default: disabled, webhook mode). Affects ArchiDoc sync only — Gmail inbox scanning is gated by its own `GMAIL_POLLING_ENABLED` flag (default ON).
 - `ARCHIDOC_BASE_URL` — ArchiDoc API base URL
 - `ARCHIDOC_SYNC_API_KEY` — API key for pull-mode sync
 
@@ -627,6 +627,7 @@ shared/
 | `ARCHIDOC_SYNC_API_KEY` | ArchiDoc API authentication key |
 | `ARCHIDOC_WEBHOOK_SECRET` | HMAC-SHA256 shared secret for webhook signature verification |
 | `ARCHIDOC_POLLING_ENABLED` | Set to `"true"` to enable legacy polling (default: webhook mode) |
+| `GMAIL_POLLING_ENABLED` | Gmail inbox scanning kill switch — defaults ON; set `"false"` to disable the 15-minute inbox monitor |
 | `DEFAULT_OBJECT_STORAGE_BUCKET_ID` | Replit Object Storage bucket identifier |
 | `PRIVATE_OBJECT_DIR` | Object Storage directory prefix for private documents |
 | `PUBLIC_OBJECT_SEARCH_PATHS` | Object Storage public asset search paths |

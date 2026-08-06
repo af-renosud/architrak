@@ -214,11 +214,24 @@ app.use((req, res, next) => {
     console.error("[ArchiDoc] Boot reconciliation failed (continuing):", err);
   }
 
+  // ArchiDoc sync mode log (informational — the ArchiDoc flag no longer
+  // gates anything else at boot).
   if (env.ARCHIDOC_POLLING_ENABLED) {
-    startPolling(15 * 60 * 1000);
     console.log("[ArchiDoc] Polling mode active (ARCHIDOC_POLLING_ENABLED=true)");
   } else {
     console.log("[ArchiDoc] Webhook mode active, polling disabled. Set ARCHIDOC_POLLING_ENABLED=true to re-enable polling.");
+  }
+
+  // Gmail inbox scanning (Task #305). Historically this was gated behind
+  // ARCHIDOC_POLLING_ENABLED, so switching ArchiDoc to webhook mode
+  // silently killed Gmail scanning in production. It now has its own
+  // flag, defaulting ON. startPolling() itself still no-ops (with a log)
+  // when object storage is not configured.
+  if (env.GMAIL_POLLING_ENABLED) {
+    console.log("[Gmail Monitor] Inbox scanning ENABLED (GMAIL_POLLING_ENABLED) — starting 15-minute polling.");
+    startPolling(15 * 60 * 1000);
+  } else {
+    console.log("[Gmail Monitor] Inbox scanning DISABLED via GMAIL_POLLING_ENABLED=false — emailed documents will NOT be captured.");
   }
   startScheduler(60 * 60 * 1000);
   // Task #206 — durable retry queue for signed-PDF persistence
