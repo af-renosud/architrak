@@ -10,4 +10,5 @@
 - [Playwright run quirks](playwright-run-quirks.md) — run e2e specs in ONE shell call with `timeout -k` + file redirect; detached runs get killed between calls; hermetic specs must set the dev-login flag.
 - [Hand-written migrations checklist](hand-written-migrations.md) — every new migration needs SQL + manual journal entry + MIGRATION_ARTIFACTS entry, or boot and replay tests hard-fail.
 - [PDF cache race guard](pdf-cache-race-guard.md) — never fingerprint-check-then-write cache keys; edits bump a version atomically with clearing keys, publish via version-guarded conditional UPDATE.
+- [Prince CSS limits](prince-css-limits.md) — DocRaptor/Prince ignores display:grid (renders stacked); flexbox/tables fine; check PDF links via qpdf --qdf, raw grep misses them.
 - [Restore via cp, not git checkout](restore-via-cp-not-git-checkout.md) — `git checkout --` reverts to the last platform commit and silently wipes uncommitted session edits; snapshot with cp before temporary file mutations.

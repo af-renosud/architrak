@@ -190,7 +190,10 @@ body { font-family: 'Inter', 'Helvetica', sans-serif; font-size: 8.5pt; color: #
 .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #0B2545; padding-bottom: 6mm; margin-bottom: 5mm; }
 .title { font-size: 14pt; font-weight: 800; color: #0B2545; text-transform: uppercase; letter-spacing: 0.05em; }
 .subtitle { font-size: 9pt; color: #7E7F83; margin-top: 2mm; }
-.meta { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3mm 6mm; margin-bottom: 5mm; font-size: 8pt; }
+/* PrinceXML (DocRaptor) does not support display:grid — it degrades to a
+   stacked column. inline-block cells give the same 4-across layout. */
+.meta { margin-bottom: 5mm; font-size: 8pt; }
+.meta .cell { display: inline-block; width: 24%; vertical-align: top; margin-bottom: 3mm; }
 .meta .k { color: #7E7F83; text-transform: uppercase; font-size: 7pt; letter-spacing: 0.05em; }
 .meta .v { color: #0B2545; font-weight: 600; }
 .summary { background: #F8F9FA; border-left: 3px solid #C1A27B; padding: 4mm; margin-bottom: 5mm; font-size: 9pt; }
@@ -222,13 +225,13 @@ ${CONTEXT_DOC_PDF_CSS}
   </div>
 
   <div class="meta">
-    <div><div class="k">Project</div><div class="v">${escapeHtml(project.name)} (${escapeHtml(project.code)})</div></div>
-    <div><div class="k">Contractor</div><div class="v">${escapeHtml(contractor.name)}</div></div>
-    <div><div class="k">Devis №</div><div class="v">${escapeHtml(devis.devisNumber || devis.devisCode)}</div></div>
-    <div><div class="k">Date</div><div class="v">${formatDate(devis.dateSent)}</div></div>
-    <div><div class="k">Amount HT</div><div class="v">${formatCurrency(devis.amountHt)}</div></div>
-    <div><div class="k">Amount TTC</div><div class="v">${formatCurrency(devis.amountTtc)}</div></div>
-    <div><div class="k">Status</div><div class="v">${escapeHtml(devis.status)}</div></div>
+    <div class="cell"><div class="k">Project</div><div class="v">${escapeHtml(project.name)} (${escapeHtml(project.code)})</div></div>
+    <div class="cell"><div class="k">Contractor</div><div class="v">${escapeHtml(contractor.name)}</div></div>
+    <div class="cell"><div class="k">Devis №</div><div class="v">${escapeHtml(devis.devisNumber || devis.devisCode)}</div></div>
+    <div class="cell"><div class="k">Date</div><div class="v">${formatDate(devis.dateSent)}</div></div>
+    <div class="cell"><div class="k">Amount HT</div><div class="v">${formatCurrency(devis.amountHt)}</div></div>
+    <div class="cell"><div class="k">Amount TTC</div><div class="v">${formatCurrency(devis.amountTtc)}</div></div>
+    <div class="cell"><div class="k">Status</div><div class="v">${escapeHtml(devis.status)}</div></div>
   </div>
 
   ${headerSummary ? `<div class="summary"><div class="lbl">Document overview</div><p>${headerSummary}</p></div>` : ""}
