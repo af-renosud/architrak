@@ -386,6 +386,13 @@
       "when": 1778760001000,
       "tag": "0054_devis_translations_contexts_version",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1778760002000,
+      "tag": "0055_email_documents_processing_retry",
+      "breakpoints": true
     }
   ]
 }

@@ -267,6 +267,11 @@ export interface IStorage {
   updateEmailDocument(id: number, data: Partial<InsertEmailDocument>): Promise<EmailDocument | undefined>;
   updateEmailDocumentLabelStatus(messageId: string): Promise<void>;
   getPendingEmailDocuments(): Promise<EmailDocument[]>;
+  listDueEmailDocuments(limit: number, cutoff: Date): Promise<EmailDocument[]>;
+  claimEmailDocumentForProcessing(id: number): Promise<EmailDocument | undefined>;
+  reclaimStaleProcessingEmailDocuments(staleMs: number): Promise<number>;
+  getProjectDocumentBySourceEmailDocumentId(sourceEmailDocumentId: number): Promise<ProjectDocument | undefined>;
+  setEmailDocumentRetryState(id: number, data: { extractionStatus: string; processingAttempts: number; nextProcessAttemptAt: Date | null; notes?: string }): Promise<void>;
 
   getProjectDocuments(projectId: number): Promise<ProjectDocument[]>;
   getProjectDocument(id: number): Promise<ProjectDocument | undefined>;
@@ -1570,6 +1575,15 @@ export class DatabaseStorage implements IStorage {
     // Tombstoned: an operator deliberately deleted the mirrored intake row —
     // do not resurrect it on subsequent email-document updates.
     if (doc.intakeDeletedAt) return;
+    // Task #310 — hand the email-side extraction down to the intake
+    // pipeline so Gemini is not called a second time for the same bytes.
+    // Marked explicitly so the pipeline only trusts payloads that came
+    // through this door.
+    const emailParsed = doc.extractedData as Record<string, unknown> | null;
+    const preParsed =
+      emailParsed && typeof emailParsed === "object" && typeof emailParsed.documentType === "string"
+        ? { ...emailParsed, preParsedFromEmail: true }
+        : undefined;
     const [inserted] = await db.insert(projectIntakeDocuments).values({
       projectId: doc.projectId,
       fileName: doc.attachmentFileName ?? "document.pdf",
@@ -1579,6 +1593,7 @@ export class DatabaseStorage implements IStorage {
       analysisState: "pending",
       routingState: "unrouted",
       sourceEmailDocumentId: doc.id,
+      ...(preParsed ? { extractedData: preParsed } : {}),
     }).onConflictDoNothing().returning();
     // Task #230 — enqueue background dedup → classify → route for the
     // newly-mirrored doc. Skip when ON CONFLICT swallowed the insert (the
@@ -1600,12 +1615,104 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(emailDocuments).where(eq(emailDocuments.extractionStatus, "pending")).orderBy(emailDocuments.createdAt);
   }
 
+  /**
+   * Task #310 — pending email documents due for automatic processing:
+   * captured on/after the backlog cutoff, retry backoff elapsed (or never
+   * attempted), and with a stored file. Oldest received first so the
+   * backlog drains chronologically.
+   */
+  async listDueEmailDocuments(limit: number, cutoff: Date): Promise<EmailDocument[]> {
+    return db
+      .select()
+      .from(emailDocuments)
+      .where(
+        and(
+          eq(emailDocuments.extractionStatus, "pending"),
+          isNotNull(emailDocuments.storageKey),
+          gte(emailDocuments.emailReceivedAt, cutoff),
+          or(isNull(emailDocuments.nextProcessAttemptAt), lte(emailDocuments.nextProcessAttemptAt, new Date())),
+        ),
+      )
+      .orderBy(asc(emailDocuments.emailReceivedAt))
+      .limit(limit);
+  }
+
+  /**
+   * Task #310 — atomic claim: flips a document to 'processing' only if it is
+   * not already being processed. Both the background sweeper and the manual
+   * admin route must go through this, so a manual click racing a sweep (or
+   * two app instances sharing the DB) can never double-process the same doc
+   * and duplicate its side effects (project document, Drive upload).
+   * Returns the claimed row, or undefined when another worker holds it.
+   */
+  async claimEmailDocumentForProcessing(id: number): Promise<EmailDocument | undefined> {
+    const [doc] = await db
+      .update(emailDocuments)
+      .set({ extractionStatus: "processing", updatedAt: new Date() })
+      .where(and(eq(emailDocuments.id, id), ne(emailDocuments.extractionStatus, "processing")))
+      .returning();
+    return doc;
+  }
+
+  /**
+   * Task #310 — a crash/restart mid-extraction leaves a document wedged on
+   * "processing" forever (nothing else touches that status). Reclaim rows
+   * whose last update is older than the stale window back to "pending".
+   * A reclaim consumes an attempt so a doc that wedges every time still
+   * terminates at the 5-attempt bound instead of looping forever.
+   */
+  async reclaimStaleProcessingEmailDocuments(staleMs: number): Promise<number> {
+    const threshold = new Date(Date.now() - staleMs);
+    const rows = await db
+      .update(emailDocuments)
+      .set({
+        processingAttempts: sql`${emailDocuments.processingAttempts} + 1`,
+        extractionStatus: sql`CASE WHEN ${emailDocuments.processingAttempts} + 1 >= 5 THEN 'failed' ELSE 'pending' END`,
+        notes: sql`CASE WHEN ${emailDocuments.processingAttempts} + 1 >= 5 THEN 'Traitement interrompu à répétition (5 tentatives) — abandon.' ELSE ${emailDocuments.notes} END`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(emailDocuments.extractionStatus, "processing"), lt(emailDocuments.updatedAt, threshold)))
+      .returning({ id: emailDocuments.id });
+    return rows.length;
+  }
+
+  /**
+   * Task #310 — direct retry-state write. Bypasses updateEmailDocument on
+   * purpose: retry columns are excluded from InsertEmailDocument (server-
+   * authoritative) and a pure bookkeeping write must not re-trigger the
+   * intake mirror.
+   */
+  async setEmailDocumentRetryState(
+    id: number,
+    data: { extractionStatus: string; processingAttempts: number; nextProcessAttemptAt: Date | null; notes?: string },
+  ): Promise<void> {
+    await db
+      .update(emailDocuments)
+      .set({
+        extractionStatus: data.extractionStatus,
+        processingAttempts: data.processingAttempts,
+        nextProcessAttemptAt: data.nextProcessAttemptAt,
+        ...(data.notes !== undefined ? { notes: data.notes } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(emailDocuments.id, id));
+  }
+
   async getProjectDocuments(projectId: number): Promise<ProjectDocument[]> {
     return db.select().from(projectDocuments).where(eq(projectDocuments.projectId, projectId)).orderBy(desc(projectDocuments.createdAt));
   }
 
   async getProjectDocument(id: number): Promise<ProjectDocument | undefined> {
     const [doc] = await db.select().from(projectDocuments).where(eq(projectDocuments.id, id));
+    return doc;
+  }
+
+  /** Task #310 — idempotency probe: has this email doc already been filed? */
+  async getProjectDocumentBySourceEmailDocumentId(sourceEmailDocumentId: number): Promise<ProjectDocument | undefined> {
+    const [doc] = await db
+      .select()
+      .from(projectDocuments)
+      .where(eq(projectDocuments.sourceEmailDocumentId, sourceEmailDocumentId));
     return doc;
   }
 

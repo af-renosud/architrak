@@ -11,6 +11,7 @@ import { writeFile, readFile, readdir, unlink, mkdtemp } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { env } from "../env";
+import { decideEmailDocRetry, EMAIL_DOC_MAX_ATTEMPTS } from "../services/email-doc-retry";
 
 const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
@@ -1283,14 +1284,19 @@ export async function matchToProject(
 }
 
 export async function processEmailDocument(emailDocumentId: number): Promise<void> {
-  const emailDoc = await storage.getEmailDocument(emailDocumentId);
-  if (!emailDoc) {
+  const exists = await storage.getEmailDocument(emailDocumentId);
+  if (!exists) {
     throw new Error(`Email document ${emailDocumentId} not found`);
   }
 
-  await storage.updateEmailDocument(emailDocumentId, {
-    extractionStatus: "processing",
-  });
+  // Task #310 — atomic claim. Only the claim winner proceeds; a manual
+  // "process" click racing the background sweeper (or a second app
+  // instance) becomes a no-op instead of duplicating side effects.
+  const emailDoc = await storage.claimEmailDocumentForProcessing(emailDocumentId);
+  if (!emailDoc) {
+    console.log(`[DocumentParser] Document ${emailDocumentId} already being processed — skipping.`);
+    return;
+  }
 
   try {
     if (!emailDoc.storageKey) {
@@ -1328,7 +1334,12 @@ export async function processEmailDocument(emailDocumentId: number): Promise<voi
       matchedFields: match.matchedFields,
     });
 
-    if (match.projectId && emailDoc.storageKey) {
+    // Idempotency guard (Task #310): a retry after a crash between the
+    // project-document insert and the final status write must not file the
+    // same attachment (and enqueue its Drive upload) a second time.
+    const alreadyFiled = await storage.getProjectDocumentBySourceEmailDocumentId(emailDocumentId);
+
+    if (match.projectId && emailDoc.storageKey && !alreadyFiled) {
       const newStorageKey = await uploadDocument(
         match.projectId,
         emailDoc.attachmentFileName || "document.pdf",
@@ -1381,11 +1392,23 @@ export async function processEmailDocument(emailDocumentId: number): Promise<voi
     } else {
       console.error(`[DocumentParser] Failed to process document ${emailDocumentId}:`, err);
     }
-    await storage.updateEmailDocument(emailDocumentId, {
-      extractionStatus: "failed",
+    // Task #310 — transient failures (AI 503s, network blips) go back to
+    // "pending" with backoff so the background sweeper retries them;
+    // permanent failures (password-protected PDFs, exhausted retries) are
+    // terminal "failed". Retry columns are server-authoritative, hence the
+    // dedicated storage write instead of updateEmailDocument.
+    const attempts = (emailDoc.processingAttempts ?? 0) + 1;
+    const transient = !isPasswordProtected && isTransientGeminiError(err);
+    const decision = decideEmailDocRetry(attempts, transient);
+    await storage.setEmailDocumentRetryState(emailDocumentId, {
+      extractionStatus: decision.status,
+      processingAttempts: attempts,
+      nextProcessAttemptAt: decision.retryInMs != null ? new Date(Date.now() + decision.retryInMs) : null,
       notes: isPasswordProtected
         ? `PDF protégé par mot de passe: ${err.message}`
-        : err.message,
+        : decision.status === "pending"
+          ? `Erreur transitoire (tentative ${attempts}/${EMAIL_DOC_MAX_ATTEMPTS}), nouvelle tentative planifiée: ${err.message}`
+          : err.message,
     });
   }
 }

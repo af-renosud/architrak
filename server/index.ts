@@ -230,6 +230,15 @@ app.use((req, res, next) => {
   if (env.GMAIL_POLLING_ENABLED) {
     console.log("[Gmail Monitor] Inbox scanning ENABLED (GMAIL_POLLING_ENABLED) — starting 15-minute polling.");
     startPolling(15 * 60 * 1000);
+    // Task #310 — background processor for captured email documents:
+    // extraction → project match → intake mirror, with retry/backoff.
+    // Same flag as scanning: both halves of the same pipeline.
+    try {
+      const { startEmailDocumentSweeper } = await import("./services/email-document-processor.service");
+      startEmailDocumentSweeper();
+    } catch (err) {
+      console.error("[EmailDocProcessor] failed to start sweeper:", err);
+    }
   } else {
     console.log("[Gmail Monitor] Inbox scanning DISABLED via GMAIL_POLLING_ENABLED=false — emailed documents will NOT be captured.");
   }

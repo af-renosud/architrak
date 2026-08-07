@@ -274,7 +274,15 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
     const { parseDocument, matchToProject, isTransientParseFailure, getParseFailureMessage } = await import(
       "../../gmail/document-parser"
     );
-    const parsed: ParsedDocument = await parseDocument(buffer, doc.fileName);
+    // Task #310 — gmail-mirrored docs arrive with the email-side extraction
+    // already attached (marked preParsedFromEmail). Reuse it instead of
+    // paying for a second identical Gemini call; everything downstream
+    // (dedup, routing) is agnostic to where the parse came from.
+    const prior = doc.extractedData as (ParsedDocument & { preParsedFromEmail?: boolean }) | null;
+    const parsed: ParsedDocument =
+      prior && prior.preParsedFromEmail === true && typeof prior.documentType === "string"
+        ? prior
+        : await parseDocument(buffer, doc.fileName);
 
     // A total extraction whiff: if the parser produced nothing usable AND
     // signals a transient backend failure, retry; otherwise it's a real

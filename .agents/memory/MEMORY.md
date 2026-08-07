@@ -3,6 +3,7 @@
 - [Devis state-machine seal](devis-state-machine-seal.md) — state-machine columns on devis (acompteState, accountingState) must be `delete`d from the generic PATCH body, not just Zod-validated, or operators move money with no audit.
 - [Reconciliation AI degradation](reconciliation-ai-degradation.md) — overlap-detection must degrade AI-error to deterministic arithmetic, never collapse null-verdict with "unrelated" (silent false-negatives).
 - [Server-authoritative money fields](server-authoritative-money-fields.md) — omit server-derived money cols from request Zod schemas (not just handler guards); read prior cumulative from the latest prior row, never max()/sum().
+- [Email-doc pipeline](email-doc-pipeline.md) — setting projectId on an email doc mirrors it into intake (side-effectful); processing must go through the atomic claim; 5-attempt bound incl. wedge reclaims; pre-2026-07 backlog written off.
 - [Intake queue drift](intake-queue-drift.md) — a doc can wedge on "analyzing" if its job goes terminal but the doc-state write fails; in_flight reclaim can't fix it, the sweeper drift-repair pass must.
 - [SIRET extraction safeguard](siret-extraction-safeguard.md) — vision models hallucinate SIRET digits; cross-check vs PDF text layer + Luhn, override only invalid/missing AI reads, never valid ones.
 - [Intake PDF rasterisation](intake-pdf-rasterisation.md) — a conversion failure masquerades as classification="unknown"; rasterise via a pdftoppm→pdftocairo→ghostscript fallback chain (gs is a nix dep), throw with per-strategy stderr on total failure.

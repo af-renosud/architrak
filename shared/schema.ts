@@ -941,6 +941,11 @@ export const emailDocuments = pgTable("email_documents", {
   // Blocks mirrorEmailDocumentToIntake from silently recreating the intake
   // row on the next email-document update. NULL = never intentionally deleted.
   intakeDeletedAt: timestamp("intake_deleted_at"),
+  // Task #310 — retry bookkeeping for the background email-document
+  // processor. Server-authoritative: excluded from insertEmailDocumentSchema
+  // so the generic PATCH route cannot manipulate retry state.
+  processingAttempts: integer("processing_attempts").notNull().default(0),
+  nextProcessAttemptAt: timestamp("next_process_attempt_at"),
   contractorId: integer("contractor_id").references(() => contractors.id),
   devisId: integer("devis_id").references(() => devis.id),
   invoiceId: integer("invoice_id").references(() => invoices.id),
@@ -1718,6 +1723,10 @@ export const insertEmailDocumentSchema = createInsertSchema(emailDocuments).omit
   id: true,
   createdAt: true,
   updatedAt: true,
+  // Server-authoritative retry bookkeeping (Task #310) — must not be
+  // settable through the generic PATCH body.
+  processingAttempts: true,
+  nextProcessAttemptAt: true,
 });
 
 export const insertProjectDocumentSchema = createInsertSchema(projectDocuments).omit({
