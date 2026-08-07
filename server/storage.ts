@@ -521,13 +521,13 @@ export interface IStorage {
     gmailAccessToken?: string | null;
     gmailTokenExpiresAt?: Date | null;
     gmailScopeGranted?: string | null;
-
   }): Promise<void>;
 
   updateUserGmailPollStatus(userId: number, status: {
     gmailLastPollAt: Date;
     gmailLastPollStatus: string;
     gmailLastPollError: string | null;
+  }): Promise<void>;
 
   setUserGmailPollingEnabled(userId: number, enabled: boolean): Promise<void>;
 
@@ -832,6 +832,7 @@ export interface IStorage {
     dateSigned: string | null;
     retentionBreachedAt: Date | null;
     retentionIncidentRef: string | null;
+  }>>;
 
   listArchisignRenderingDriftDevis(): Promise<Array<{
     id: number;
@@ -844,6 +845,7 @@ export interface IStorage {
     signOffStage: string | null;
     archisignSubjectDriftAt: Date | null;
     archisignBodyDriftAt: Date | null;
+  }>>;
 
   setInvoiceDriveLink(invoiceId: number, fileId: string, webViewLink: string): Promise<void>;
 
@@ -1005,12 +1007,14 @@ export interface IStorage {
     pennylaneInvoiceId: string;
     pennylanePdfStorageKey: string | null;
     pennylaneStatus: string | null;
+  }): Promise<void>;
 
   setFeeEntryPennylanePaid(args: {
     feeEntryId: number;
     paidAt: Date | null;
     paidAmount: number | null;
     pennylaneStatus: string;
+  }): Promise<void>;
 
   getFeeEntryByPennylaneInvoiceId(invoiceId: string): Promise<FeeEntry | undefined>;
 
