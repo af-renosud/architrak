@@ -111,6 +111,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0053_devis_line_contexts", artifact: { kind: "table", table: "devis_line_contexts" } },
   { tag: "0054_devis_translations_contexts_version", artifact: { kind: "column", table: "devis_translations", column: "contexts_version" } },
   { tag: "0055_email_documents_processing_retry", artifact: { kind: "column", table: "email_documents", column: "processing_attempts" } },
+  { tag: "0056_project_documents_source_unique", artifact: { kind: "data_only", reason: "dedupe + partial unique index swap on project_documents.source_email_document_id; no table/column artifact" } },
 ];
 
 interface JournalFile {

@@ -969,7 +969,10 @@ export const projectDocuments = pgTable("project_documents", {
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   index("project_documents_project_id_idx").on(table.projectId),
-  index("project_documents_source_email_doc_idx").on(table.sourceEmailDocumentId),
+  // Partial unique in SQL (migration 0056: WHERE source_email_document_id IS
+  // NOT NULL) — hard backstop so two servers can't file the same emailed
+  // attachment twice. Manual uploads carry NULL and never collide.
+  uniqueIndex("project_documents_source_email_doc_idx").on(table.sourceEmailDocumentId).where(sql`${table.sourceEmailDocumentId} IS NOT NULL`),
 ]);
 
 // Unified document intake (Task #229). The single "front door" for every
