@@ -158,6 +158,9 @@ function seedEmailDoc(overrides: Partial<EmailDocument> = {}): void {
     attachmentFileName: "devis.pdf",
     storageKey: "email-docs/devis.pdf",
     extractionStatus: "pending",
+    // Task #322 — must be on/after the intake watermark (2026-08-10 07:00Z)
+    // or processEmailDocument refuses the document at the boundary guard.
+    emailReceivedAt: new Date("2026-08-11T09:00:00Z"),
     processingAttempts: 0,
     projectId: null,
     contractorId: null,
@@ -230,6 +233,25 @@ describe("processEmailDocument — double-filing guards (Task #312)", () => {
     const doc = state.emailDocs.get(1)!;
     expect(["completed", "needs_review"]).toContain(doc.extractionStatus);
   }, 120_000);
+
+  it("refuses to process a dumped ('skipped') document — even manually (Task #322)", async () => {
+    seedEmailDoc({ extractionStatus: "skipped" });
+
+    await expect(processEmailDocument(1)).rejects.toThrow(/abandonné/);
+
+    // No claim, no AI extraction, no side effects.
+    expect(storageSpy.claimEmailDocumentForProcessing).not.toHaveBeenCalled();
+    expect(objectStorageSpy.getDocumentBuffer).not.toHaveBeenCalled();
+    expect(state.emailDocs.get(1)!.extractionStatus).toBe("skipped");
+  });
+
+  it("refuses documents received before the intake watermark (Task #322)", async () => {
+    seedEmailDoc({ emailReceivedAt: new Date("2026-08-07T10:00:00Z") });
+
+    await expect(processEmailDocument(1)).rejects.toThrow(/point de reprise/);
+    expect(storageSpy.claimEmailDocumentForProcessing).not.toHaveBeenCalled();
+    expect(objectStorageSpy.getDocumentBuffer).not.toHaveBeenCalled();
+  });
 
   it("no-ops a manual process click on a doc another worker holds", async () => {
     seedEmailDoc({ extractionStatus: "processing" });

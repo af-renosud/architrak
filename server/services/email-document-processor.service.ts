@@ -8,8 +8,8 @@
  *
  * This sweeper drains pending email documents in the background:
  *   - picks up to SWEEP_BATCH_SIZE due docs per tick (oldest received
- *     first), captured on/after EMAIL_DOC_BACKLOG_CUTOFF (the older
- *     backlog was explicitly written off by the user);
+ *     first), received on/after the intake watermark (Task #322 — the
+ *     beta-reset cutoff; older mail was explicitly written off);
  *   - runs processEmailDocument sequentially — extraction is the rate
  *     limiter, so backlog drain stays gentle on the AI quota;
  *   - transient failures self-heal via the retry/backoff bookkeeping in
@@ -23,7 +23,7 @@
  *     'pending' after PROCESSING_STALE_MS.
  */
 import { storage } from "../storage";
-import { EMAIL_DOC_BACKLOG_CUTOFF } from "./email-doc-retry";
+import { getEmailIntakeCutoff } from "./email-intake-cutoff";
 
 const SWEEP_INTERVAL_MS = 60_000;
 const SWEEP_BATCH_SIZE = 3;
@@ -42,7 +42,7 @@ export async function sweepPendingEmailDocuments(): Promise<void> {
       console.warn(`[EmailDocProcessor] Reclaimed ${reclaimed} document(s) wedged on 'processing' back to 'pending'.`);
     }
 
-    const due = await storage.listDueEmailDocuments(SWEEP_BATCH_SIZE, EMAIL_DOC_BACKLOG_CUTOFF);
+    const due = await storage.listDueEmailDocuments(SWEEP_BATCH_SIZE, getEmailIntakeCutoff());
     if (due.length === 0) return;
 
     const { processEmailDocument } = await import("../gmail/document-parser");
@@ -64,7 +64,7 @@ export async function sweepPendingEmailDocuments(): Promise<void> {
 
 export function startEmailDocumentSweeper(intervalMs: number = SWEEP_INTERVAL_MS): void {
   if (timer) return;
-  console.log(`[EmailDocProcessor] Background email-document processing started (every ${Math.round(intervalMs / 1000)}s, batch ${SWEEP_BATCH_SIZE}, backlog cutoff ${EMAIL_DOC_BACKLOG_CUTOFF.toISOString().slice(0, 10)}).`);
+  console.log(`[EmailDocProcessor] Background email-document processing started (every ${Math.round(intervalMs / 1000)}s, batch ${SWEEP_BATCH_SIZE}, intake watermark ${getEmailIntakeCutoff().toISOString()}).`);
   // First sweep shortly after boot so a restart doesn't delay the queue.
   setTimeout(() => void sweepPendingEmailDocuments(), 5_000);
   timer = setInterval(() => void sweepPendingEmailDocuments(), intervalMs);

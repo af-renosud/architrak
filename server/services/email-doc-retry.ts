@@ -17,14 +17,6 @@ export const EMAIL_DOC_BACKOFF_MS: readonly number[] = [
   60 * 60_000, // after attempt 4 → 1 h
 ];
 
-/**
- * Only documents captured on/after this date are auto-processed. The
- * pre-existing backlog of ~40 documents from before the May 2026 polling
- * outage was explicitly written off by the user; auto-draining them would
- * burn AI extraction cost on stale paperwork.
- */
-export const EMAIL_DOC_BACKLOG_CUTOFF = new Date("2026-07-01T00:00:00Z");
-
 export interface EmailDocRetryDecision {
   /** Next extraction_status to persist. */
   status: "pending" | "failed";

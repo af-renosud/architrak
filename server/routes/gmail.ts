@@ -9,7 +9,12 @@ import { validateRequest } from "../middleware/validate";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
-const updateEmailDocSchema = insertEmailDocumentSchema.partial();
+// Task #322 — extractionStatus is server-authoritative (state machine:
+// claim/retry/terminal transitions only). Exposing it on the generic PATCH
+// would let a caller revive a dumped ('skipped') document back to 'pending'
+// and defeat the beta reset. Omit from the schema AND delete from the body
+// (devis state-machine seal pattern).
+const updateEmailDocSchema = insertEmailDocumentSchema.partial().omit({ extractionStatus: true });
 const emailDocsQuerySchema = z.object({
   projectId: z.coerce.number().int().positive().optional(),
   status: z.string().optional(),
@@ -100,6 +105,8 @@ router.patch(
   "/api/email-documents/:id",
   validateRequest({ params: idParams, body: updateEmailDocSchema }),
   async (req, res) => {
+    // Belt-and-braces: never let status transitions ride the generic PATCH.
+    delete (req.body as Record<string, unknown>).extractionStatus;
     const doc = await storage.updateEmailDocument(Number(req.params.id), req.body);
     if (!doc) return res.status(404).json({ message: "Document not found" });
     res.json(doc);

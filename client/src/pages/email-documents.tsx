@@ -26,6 +26,7 @@ const statusColors: Record<string, string> = {
   completed: "success",
   failed: "error",
   needs_review: "warning",
+  skipped: "neutral",
 };
 
 const typeLabels: Record<string, string> = {
@@ -196,6 +197,7 @@ export default function EmailDocuments() {
               <SelectItem value="needs_review">Needs Review</SelectItem>
               <SelectItem value="needs_project">Needs Project</SelectItem>
               <SelectItem value="failed">Failed</SelectItem>
+              <SelectItem value="skipped">Skipped</SelectItem>
             </SelectContent>
           </Select>
           <Select value={typeFilter} onValueChange={setTypeFilter}>

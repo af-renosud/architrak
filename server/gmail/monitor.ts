@@ -13,6 +13,7 @@
 import { getUncachableGmailClient, isGmailConfigured, isFakeGmailMode } from "./client";
 import { getGmailClientForUser } from "./user-client";
 import { uploadDocument, isObjectStorageConfigured } from "../storage/object-storage";
+import { getEmailIntakeCutoff } from "../services/email-intake-cutoff";
 import { storage } from "../storage";
 import type { gmail_v1 } from "googleapis";
 import type { InsertEmailDocument, User } from "@shared/schema";
@@ -279,8 +280,28 @@ async function processMessage(
   const subject = getHeader("Subject");
   const dateStr = getHeader("Date");
   const threadId = msgDetail.data.threadId || "";
-  const emailReceivedAt = dateStr ? new Date(dateStr) : new Date();
+  // Task #322 — prefer Gmail's authoritative internalDate (server-side
+  // arrival time, epoch ms) over the forgeable/malformed RFC Date header;
+  // fall back to the header, then to "now".
+  const internalMs = Number(msgDetail.data.internalDate);
+  const headerDate = dateStr ? new Date(dateStr) : null;
+  const emailReceivedAt =
+    Number.isFinite(internalMs) && internalMs > 0
+      ? new Date(internalMs)
+      : headerDate && !Number.isNaN(headerDate.getTime())
+        ? headerDate
+        : new Date();
   const emailLink = `https://mail.google.com/mail/u/0/#inbox/${messageId}`;
+
+  // Task #322 — intake watermark. Emails received before the beta-reset
+  // cutoff are never captured, even if Gmail's search surfaces them again
+  // (e.g. label loss, re-link, restart). Label the message so it stops
+  // matching the unprocessed query, but store nothing.
+  if (emailReceivedAt < getEmailIntakeCutoff()) {
+    console.log(`[Gmail Monitor] User ${userId}: skipping pre-watermark email ${messageId} (received ${emailReceivedAt.toISOString()})`);
+    if (canModify) await applyLabel(gmail, messageId, userId);
+    return;
+  }
 
   const parts = flattenParts(msgDetail.data.payload);
   const pdfParts = parts.filter(

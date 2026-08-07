@@ -11,3 +11,9 @@ description: How captured Gmail attachments flow into intake, and the concurrenc
 
 **Why:** the original outage was captured-but-never-processed docs piling up silently; the fixes above are the load-bearing guarantees.
 **How to apply:** any new code path that processes or re-processes an email document must claim first and respect the attempt bound.
+
+## Intake watermark & terminal skipped state
+- An intake watermark (env-configurable minimum received-at) is enforced in FOUR places: Gmail capture, sweeper selection, the processEmailDocument boundary, AND the atomic claim's SQL predicate — a boundary-only check can be raced or bypassed by future callers.
+- 'skipped' is a terminal email-doc status: unclaimable at the SQL level, immutable via the generic PATCH (schema omit + body delete + storage guard), never mirrored into intake, and retry bookkeeping only applies to rows currently 'processing'.
+- Dumping a backlog needs TWO data migrations worth of cleanup: the status flip AND removing already-created intake mirrors/jobs (mirrors created via projectId assignment predate the flip).
+- Gmail receipt time must come from internalDate (authoritative), never the forgeable RFC Date header.

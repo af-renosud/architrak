@@ -1289,10 +1289,22 @@ export async function processEmailDocument(emailDocumentId: number): Promise<voi
     throw new Error(`Email document ${emailDocumentId} not found`);
   }
 
+  // Task #322 — intake watermark is enforced at the processing boundary so
+  // EVERY caller (background sweeper, manual admin route) respects the
+  // beta reset: dumped ('skipped') documents and anything received before
+  // the watermark must never consume AI extraction.
+  const { getEmailIntakeCutoff } = await import("../services/email-intake-cutoff");
+  if (exists.extractionStatus === "skipped") {
+    throw new Error("Document abandonné (reset du 2026-08-10) — traitement automatique et manuel désactivé.");
+  }
+  if (!exists.emailReceivedAt || exists.emailReceivedAt < getEmailIntakeCutoff()) {
+    throw new Error("Email reçu avant le point de reprise (2026-08-10 09:00 Europe/Paris) — non traité.");
+  }
+
   // Task #310 — atomic claim. Only the claim winner proceeds; a manual
   // "process" click racing the background sweeper (or a second app
   // instance) becomes a no-op instead of duplicating side effects.
-  const emailDoc = await storage.claimEmailDocumentForProcessing(emailDocumentId);
+  const emailDoc = await storage.claimEmailDocumentForProcessing(emailDocumentId, getEmailIntakeCutoff());
   if (!emailDoc) {
     console.log(`[DocumentParser] Document ${emailDocumentId} already being processed — skipping.`);
     return;

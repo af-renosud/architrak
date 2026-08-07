@@ -107,6 +107,18 @@ const envSchema = z.object({
   // object storage is not configured.
   GMAIL_POLLING_ENABLED: booleanFlag(true),
 
+  // Task #322 — global intake watermark. Emails received BEFORE this
+  // instant are never captured by the Gmail monitor and never picked up by
+  // the background email-document processor, even across restarts. Default
+  // is Monday 2026-08-10 09:00 Europe/Paris (CEST, UTC+2): the beta reset
+  // point after the 428-doc backlog was written off.
+  EMAIL_INTAKE_MIN_RECEIVED_AT: z
+    .string()
+    .default("2026-08-10T07:00:00Z")
+    .refine((v) => !Number.isNaN(Date.parse(v)), {
+      message: "EMAIL_INTAKE_MIN_RECEIVED_AT must be an ISO date-time string",
+    }),
+
   // --- Archisign envelope orchestration + webhook (AT4) ----------------
   // ARCHISIGN_API_KEY is a CSV of one or more keys to support overlapping
   // rotation windows (§3.6); the FIRST entry is used for new outbound

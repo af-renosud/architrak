@@ -3,8 +3,8 @@ import {
   decideEmailDocRetry,
   EMAIL_DOC_MAX_ATTEMPTS,
   EMAIL_DOC_BACKOFF_MS,
-  EMAIL_DOC_BACKLOG_CUTOFF,
 } from "../services/email-doc-retry";
+import { getEmailIntakeCutoff } from "../services/email-intake-cutoff";
 
 describe("decideEmailDocRetry", () => {
   it("retries transient failures with escalating backoff", () => {
@@ -29,9 +29,13 @@ describe("decideEmailDocRetry", () => {
     expect(decideEmailDocRetry(EMAIL_DOC_MAX_ATTEMPTS - 1, true).retryInMs).toBe(last);
   });
 
-  it("backlog cutoff excludes the written-off pre-July-2026 documents", () => {
-    expect(EMAIL_DOC_BACKLOG_CUTOFF.getTime()).toBe(Date.parse("2026-07-01T00:00:00Z"));
-    expect(new Date("2026-05-28T12:00:00Z") < EMAIL_DOC_BACKLOG_CUTOFF).toBe(true);
-    expect(new Date("2026-08-04T12:00:00Z") >= EMAIL_DOC_BACKLOG_CUTOFF).toBe(true);
+  it("intake watermark defaults to Monday 2026-08-10 09:00 Europe/Paris (07:00 UTC)", () => {
+    const cutoff = getEmailIntakeCutoff();
+    expect(cutoff.getTime()).toBe(Date.parse("2026-08-10T07:00:00Z"));
+    // everything from the written-off backlog is before the watermark…
+    expect(new Date("2026-08-07T12:00:00Z") < cutoff).toBe(true);
+    // …and Monday-morning mail is on/after it
+    expect(new Date("2026-08-10T07:00:00Z") >= cutoff).toBe(true);
+    expect(new Date("2026-08-10T09:30:00Z") >= cutoff).toBe(true);
   });
 });

@@ -268,7 +268,7 @@ export interface IStorage {
   updateEmailDocumentLabelStatus(messageId: string): Promise<void>;
   getPendingEmailDocuments(): Promise<EmailDocument[]>;
   listDueEmailDocuments(limit: number, cutoff: Date): Promise<EmailDocument[]>;
-  claimEmailDocumentForProcessing(id: number): Promise<EmailDocument | undefined>;
+  claimEmailDocumentForProcessing(id: number, minReceivedAt: Date): Promise<EmailDocument | undefined>;
   reclaimStaleProcessingEmailDocuments(staleMs: number): Promise<number>;
   getProjectDocumentBySourceEmailDocumentId(sourceEmailDocumentId: number): Promise<ProjectDocument | undefined>;
   setEmailDocumentRetryState(id: number, data: { extractionStatus: string; processingAttempts: number; nextProcessAttemptAt: Date | null; notes?: string }): Promise<void>;
@@ -1554,7 +1554,16 @@ export class DatabaseStorage implements IStorage {
     return doc;
   }
 
-  async updateEmailDocument(id: number, data: Partial<InsertEmailDocument>): Promise<EmailDocument | undefined> {
+  async updateEmailDocument(id: number, data: Partial<InsertEmailDocument> & { extractionStatus?: string }): Promise<EmailDocument | undefined> {
+    // Task #322 — 'skipped' is terminal: the dumped beta backlog must never
+    // be revived through a generic update. Status changes for skipped docs
+    // are refused at the storage layer regardless of caller.
+    if (data.extractionStatus !== undefined) {
+      const existing = await this.getEmailDocument(id);
+      if (existing?.extractionStatus === "skipped") {
+        delete data.extractionStatus;
+      }
+    }
     const [doc] = await db.update(emailDocuments).set({ ...data, updatedAt: new Date() }).where(eq(emailDocuments.id, id)).returning();
     // Unified intake (Task #229): the moment an email attachment is matched to
     // a project (and has a stored file), mirror it into the project-scoped
@@ -1572,6 +1581,10 @@ export class DatabaseStorage implements IStorage {
    */
   private async mirrorEmailDocumentToIntake(doc: EmailDocument): Promise<void> {
     if (doc.projectId == null || !doc.storageKey) return;
+    // Task #322 — dumped backlog documents ('skipped') were written off in
+    // the beta reset; assigning them a project must not resurrect them into
+    // the intake pipeline.
+    if (doc.extractionStatus === "skipped") return;
     // Tombstoned: an operator deliberately deleted the mirrored intake row —
     // do not resurrect it on subsequent email-document updates.
     if (doc.intakeDeletedAt) return;
@@ -1645,11 +1658,20 @@ export class DatabaseStorage implements IStorage {
    * and duplicate its side effects (project document, Drive upload).
    * Returns the claimed row, or undefined when another worker holds it.
    */
-  async claimEmailDocumentForProcessing(id: number): Promise<EmailDocument | undefined> {
+  async claimEmailDocumentForProcessing(id: number, minReceivedAt: Date): Promise<EmailDocument | undefined> {
+    // Task #322 — the claim predicate itself enforces the terminal 'skipped'
+    // state and the intake watermark, so no caller (present or future) can
+    // revive a dumped or pre-reset document, even racing the boundary checks.
     const [doc] = await db
       .update(emailDocuments)
       .set({ extractionStatus: "processing", updatedAt: new Date() })
-      .where(and(eq(emailDocuments.id, id), ne(emailDocuments.extractionStatus, "processing")))
+      .where(and(
+        eq(emailDocuments.id, id),
+        ne(emailDocuments.extractionStatus, "processing"),
+        ne(emailDocuments.extractionStatus, "skipped"),
+        isNotNull(emailDocuments.emailReceivedAt),
+        gte(emailDocuments.emailReceivedAt, minReceivedAt),
+      ))
       .returning();
     return doc;
   }
@@ -1695,7 +1717,9 @@ export class DatabaseStorage implements IStorage {
         ...(data.notes !== undefined ? { notes: data.notes } : {}),
         updatedAt: new Date(),
       })
-      .where(eq(emailDocuments.id, id));
+      // Task #322 — retry bookkeeping only applies to a row currently held
+      // by a claim; it must never move a terminal 'skipped' doc anywhere.
+      .where(and(eq(emailDocuments.id, id), eq(emailDocuments.extractionStatus, "processing")));
   }
 
   async getProjectDocuments(projectId: number): Promise<ProjectDocument[]> {
