@@ -52,7 +52,18 @@ router.get("/api/gmail/status", async (_req, res) => {
     console.error("[Gmail] poll-health classification failed:", err);
     pollHealth = { level: "never", ageMs: null, message: "Could not determine inbox scan health." };
   }
-  res.json({ ...getGmailMonitorStatus(), pollHealth });
+  // Task #313: surface how many emailed documents finished extraction but
+  // could not be matched to a project (needs_review + projectId null) so the
+  // dashboard can flag them instead of leaving them buried in the queue page.
+  let needsProjectCount = 0;
+  try {
+    const needsReview = await storage.getEmailDocuments({ status: "needs_review" });
+    needsProjectCount = needsReview.filter((d) => d.projectId == null).length;
+  } catch (err) {
+    console.error("[Gmail] needs-project count failed:", err);
+  }
+
+  res.json({ ...getGmailMonitorStatus(), pollHealth, needsProjectCount });
 });
 
 router.post("/api/gmail/poll", validateRequest({ body: z.object({}).strict().optional() }), async (_req, res) => {

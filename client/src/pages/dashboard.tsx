@@ -133,10 +133,12 @@ function GmailStatusBar({
   // two months in production).
   const { data: gmailStatus } = useQuery<{
     pollHealth?: { level: string; ageMs: number | null; message: string | null };
+    needsProjectCount?: number;
   }>({
     queryKey: ["/api/gmail/status"],
   });
   const pollHealth = gmailStatus?.pollHealth;
+  const needsProjectCount = gmailStatus?.needsProjectCount ?? 0;
   const isStaleScan = pollHealth?.level === "stale" || pollHealth?.level === "never";
   const status = data?.gmailLastPollStatus ?? "idle";
   const isPermsError = status === "insufficient_permissions"; // legacy — superseded by no_linked_users
@@ -231,6 +233,22 @@ function GmailStatusBar({
         <span className="text-[10px] text-amber-700 dark:text-amber-300 ml-1">
           (Polling paused)
         </span>
+      )}
+
+      {needsProjectCount > 0 && (
+        <Link
+          href="/documents?filter=needs_project"
+          className="flex items-center gap-1.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300 underline ml-1 hover:no-underline"
+          data-testid="link-email-docs-need-project"
+        >
+          <span
+            className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold no-underline"
+            data-testid="badge-email-docs-need-project"
+          >
+            {needsProjectCount}
+          </span>
+          emailed document{needsProjectCount === 1 ? "" : "s"} need{needsProjectCount === 1 ? "s" : ""} a project →
+        </Link>
       )}
 
       <div className="ml-auto">

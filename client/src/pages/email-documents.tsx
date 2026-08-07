@@ -39,7 +39,12 @@ const typeLabels: Record<string, string> = {
 
 export default function EmailDocuments() {
   const { toast } = useToast();
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+  // Task #313: the dashboard badge deep-links here with ?filter=needs_project
+  // so the queue opens pre-filtered to reviewed-but-unassigned documents.
+  const [statusFilter, setStatusFilter] = useState<string>(() => {
+    const param = new URLSearchParams(window.location.search).get("filter");
+    return param === "needs_project" ? "needs_project" : "all";
+  });
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [viewingDoc, setViewingDoc] = useState<EmailDocument | null>(null);
@@ -99,7 +104,11 @@ export default function EmailDocuments() {
   projects?.forEach(p => projectMap.set(p.id, p));
 
   const filtered = emailDocs?.filter(doc => {
-    if (statusFilter !== "all" && doc.extractionStatus !== statusFilter) return false;
+    if (statusFilter === "needs_project") {
+      if (doc.extractionStatus !== "needs_review" || doc.projectId != null) return false;
+    } else if (statusFilter !== "all" && doc.extractionStatus !== statusFilter) {
+      return false;
+    }
     if (typeFilter !== "all" && doc.documentType !== typeFilter) return false;
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
@@ -185,6 +194,7 @@ export default function EmailDocuments() {
               <SelectItem value="processing">Processing</SelectItem>
               <SelectItem value="completed">Completed</SelectItem>
               <SelectItem value="needs_review">Needs Review</SelectItem>
+              <SelectItem value="needs_project">Needs Project</SelectItem>
               <SelectItem value="failed">Failed</SelectItem>
             </SelectContent>
           </Select>
