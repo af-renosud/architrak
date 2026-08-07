@@ -10,8 +10,10 @@
  *   - picks up to SWEEP_BATCH_SIZE due docs per tick (oldest received
  *     first), received on/after the intake watermark (Task #322 — the
  *     beta-reset cutoff; older mail was explicitly written off);
- *   - runs processEmailDocument sequentially — extraction is the rate
- *     limiter, so backlog drain stays gentle on the AI quota;
+ *   - runs processEmailDocument concurrently within the batch (Task #317),
+ *     capped by MAX_CONCURRENT_EXTRACTIONS — same total AI calls per tick
+ *     (same quota), but a ~45 s extraction no longer serialises the batch,
+ *     lifting drain speed from ~1/min to ~5/min;
  *   - transient failures self-heal via the retry/backoff bookkeeping in
  *     processEmailDocument (decideEmailDocRetry); permanent ones land on
  *     terminal 'failed';
@@ -22,11 +24,14 @@
  *   - reclaims docs wedged on 'processing' (crash mid-extraction) back to
  *     'pending' after PROCESSING_STALE_MS.
  */
+import pLimit from "p-limit";
 import { storage } from "../storage";
 import { getEmailIntakeCutoff } from "./email-intake-cutoff";
 
 const SWEEP_INTERVAL_MS = 60_000;
-const SWEEP_BATCH_SIZE = 3;
+const SWEEP_BATCH_SIZE = 5;
+
+export const MAX_CONCURRENT_EXTRACTIONS = 5;
 const PROCESSING_STALE_MS = 15 * 60_000;
 
 let timer: NodeJS.Timeout | null = null;
@@ -46,15 +51,18 @@ export async function sweepPendingEmailDocuments(): Promise<void> {
     if (due.length === 0) return;
 
     const { processEmailDocument } = await import("../gmail/document-parser");
-    for (const doc of due) {
-      try {
-        await processEmailDocument(doc.id);
-      } catch (err) {
-        // processEmailDocument persists its own failure state; this guard
-        // only keeps one crashing doc from aborting the rest of the batch.
-        console.error(`[EmailDocProcessor] Unexpected error processing email document ${doc.id}:`, err);
+    const limit = pLimit(MAX_CONCURRENT_EXTRACTIONS);
+    // Concurrent within the batch (Task #317): allSettled so one crashing
+    // doc never aborts the rest — processEmailDocument persists its own
+    // failure state; we only log the unexpected ones.
+    const results = await Promise.allSettled(
+      due.map((doc) => limit(() => processEmailDocument(doc.id))),
+    );
+    results.forEach((result, i) => {
+      if (result.status === "rejected") {
+        console.error(`[EmailDocProcessor] Unexpected error processing email document ${due[i].id}:`, result.reason);
       }
-    }
+    });
   } catch (err) {
     console.error("[EmailDocProcessor] Sweep failed:", err);
   } finally {
