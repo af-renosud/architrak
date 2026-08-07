@@ -133,197 +133,314 @@ export class AccountingStateConflictError extends Error {
 
 export interface IStorage {
   getProjects(options?: { includeArchived?: boolean; archivedOnly?: boolean }): Promise<Project[]>;
+
   getProject(id: number): Promise<Project | undefined>;
+
   createProject(data: InsertProject): Promise<Project>;
+
   updateProject(id: number, data: Partial<InsertProject>): Promise<Project | undefined>;
+
   archiveProject(id: number): Promise<Project | undefined>;
+
   unarchiveProject(id: number): Promise<Project | undefined>;
+
   deleteProject(id: number): Promise<void>;
 
   getAllInvoices(): Promise<Invoice[]>;
+
   getAllCertificats(): Promise<Certificat[]>;
+
   getRecentInvoices(limit: number): Promise<Invoice[]>;
+
   getRecentCertificats(limit: number): Promise<Certificat[]>;
 
   getContractors(): Promise<Contractor[]>;
+
   getContractor(id: number): Promise<Contractor | undefined>;
+
   createContractor(data: InsertContractor): Promise<Contractor>;
+
   updateContractor(id: number, data: Partial<InsertContractor>): Promise<Contractor | undefined>;
+
   getDevisByContractor(contractorId: number): Promise<Devis[]>;
+
   getInvoicesByContractor(contractorId: number): Promise<Invoice[]>;
 
   getLotsByProject(projectId: number): Promise<Lot[]>;
+
   createLot(data: InsertLot): Promise<Lot>;
+
   updateLot(id: number, data: Partial<InsertLot>): Promise<Lot | undefined>;
+
   deleteLot(id: number): Promise<void>;
 
   getLotCatalog(): Promise<LotCatalog[]>;
+
   getLotCatalogByCode(code: string): Promise<LotCatalog | undefined>;
+
   getLotCatalogEntry(id: number): Promise<LotCatalog | undefined>;
+
   createLotCatalogEntry(data: InsertLotCatalog): Promise<LotCatalog>;
+
   updateLotCatalogEntry(id: number, data: Partial<InsertLotCatalog>): Promise<LotCatalog | undefined>;
+
   deleteLotCatalogEntry(id: number): Promise<void>;
 
   getWishListItems(): Promise<WishListItem[]>;
+
   getWishListItem(id: number): Promise<WishListItem | undefined>;
+
   createWishListItem(data: InsertWishListItem): Promise<WishListItem>;
+
   updateWishListItem(id: number, data: UpdateWishListItem): Promise<WishListItem | undefined>;
+
   deleteWishListItem(id: number): Promise<void>;
+
   countProjectLotsByCode(code: string): Promise<number>;
+
   ensureProjectLotFromCatalog(projectId: number, catalogCode: string): Promise<Lot | undefined>;
 
   getMarchesByProject(projectId: number): Promise<Marche[]>;
+
   getMarche(id: number): Promise<Marche | undefined>;
+
   createMarche(data: InsertMarche): Promise<Marche>;
+
   updateMarche(id: number, data: Partial<InsertMarche>): Promise<Marche | undefined>;
 
   getDevisByProject(projectId: number): Promise<Devis[]>;
   // Batched variant for the projects-list accounting-status rollup: one query
   // for many projects instead of N per-project queries.
+
   getDevisByProjects(projectIds: number[]): Promise<Devis[]>;
+
   getDevis(id: number): Promise<Devis | undefined>;
+
   createDevis(data: InsertDevis): Promise<Devis>;
+
   updateDevis(id: number, data: Partial<InsertDevis>): Promise<Devis | undefined>;
+
   getDevisRefEdits(devisId: number): Promise<DevisRefEdit[]>;
+
   createDevisRefEdit(data: InsertDevisRefEdit): Promise<DevisRefEdit>;
 
   getDevisLineItems(devisId: number): Promise<DevisLineItem[]>;
+
   createDevisLineItem(data: InsertDevisLineItem): Promise<DevisLineItem>;
+
   updateDevisLineItem(id: number, data: Partial<InsertDevisLineItem>): Promise<DevisLineItem | undefined>;
+
   deleteDevisLineItem(id: number): Promise<void>;
 
   getAvenantsByDevis(devisId: number): Promise<Avenant[]>;
   // Batched variant for the projects-list accounting-status rollup.
+
   getAvenantsByDevisIds(devisIds: number[]): Promise<Avenant[]>;
+
   createAvenant(data: InsertAvenant): Promise<Avenant>;
+
   updateAvenant(id: number, data: Partial<InsertAvenant>): Promise<Avenant | undefined>;
 
   getInvoice(id: number): Promise<Invoice | undefined>;
+
   getInvoicesByDevis(devisId: number): Promise<Invoice[]>;
+
   getInvoicesByProject(projectId: number): Promise<Invoice[]>;
+
   createInvoice(data: InsertInvoice): Promise<Invoice>;
+
   updateInvoice(id: number, data: Partial<InsertInvoice>): Promise<Invoice | undefined>;
+
   deleteInvoice(id: number): Promise<boolean>;
+
   getInvoiceRefEdits(invoiceId: number): Promise<InvoiceRefEdit[]>;
+
   createInvoiceRefEdit(data: InsertInvoiceRefEdit): Promise<InvoiceRefEdit>;
 
   getSituationsByDevis(devisId: number): Promise<Situation[]>;
+
   getSituation(id: number): Promise<Situation | undefined>;
+
   createSituation(data: InsertSituation): Promise<Situation>;
+
   updateSituation(id: number, data: Partial<InsertSituation>): Promise<Situation | undefined>;
 
   getSituationLines(situationId: number): Promise<SituationLine[]>;
+
   createSituationLine(data: InsertSituationLine): Promise<SituationLine>;
 
   getCertificatsByProject(projectId: number): Promise<Certificat[]>;
+
   getCertificatsByProjectAndContractor(projectId: number, contractorId: number): Promise<Certificat[]>;
+
   getCertificat(id: number): Promise<Certificat | undefined>;
+
   createCertificat(data: InsertCertificat): Promise<Certificat>;
+
   updateCertificat(id: number, data: Partial<InsertCertificat>): Promise<Certificat | undefined>;
 
   getFeesByProject(projectId: number): Promise<Fee[]>;
+
   getFee(id: number): Promise<Fee | undefined>;
+
   getFeeEntry(id: number): Promise<FeeEntry | undefined>;
+
   createFee(data: InsertFee): Promise<Fee>;
+
   updateFee(id: number, data: Partial<InsertFee>): Promise<Fee | undefined>;
 
   getFeeEntries(feeId: number): Promise<FeeEntry[]>;
+
   getFeeEntriesByProject(projectId: number): Promise<FeeEntry[]>;
+
   createFeeEntry(data: InsertFeeEntry): Promise<FeeEntry>;
+
   updateFeeEntry(id: number, data: Partial<InsertFeeEntry>): Promise<FeeEntry | undefined>;
 
   getProjectByArchidocId(archidocId: string): Promise<Project | undefined>;
+
   getProjectByName(name: string): Promise<Project | undefined>;
+
   getContractorByArchidocId(archidocId: string): Promise<Contractor | undefined>;
+
   getTrackedArchidocProjectIds(): Promise<string[]>;
 
   getArchidocProjects(options?: { includeDeleted?: boolean }): Promise<ArchidocProject[]>;
+
   getSoftDeletedArchidocProjects(): Promise<ArchidocProject[]>;
+
   getArchidocProject(archidocId: string): Promise<ArchidocProject | undefined>;
+
   upsertArchidocProject(data: Omit<ArchidocProject, "syncedAt">): Promise<ArchidocProject>;
+
   restoreArchidocProject(archidocId: string): Promise<ArchidocProject | undefined>;
 
   getArchidocContractors(options?: { includeDeleted?: boolean }): Promise<ArchidocContractor[]>;
+
   getSoftDeletedArchidocContractors(): Promise<ArchidocContractor[]>;
+
   getArchidocContractor(archidocId: string): Promise<ArchidocContractor | undefined>;
+
   upsertArchidocContractor(data: Omit<ArchidocContractor, "syncedAt">): Promise<ArchidocContractor>;
+
   restoreArchidocContractor(archidocId: string): Promise<ArchidocContractor | undefined>;
 
   getArchidocTrades(): Promise<ArchidocTrade[]>;
+
   upsertArchidocTrade(data: Omit<ArchidocTrade, "syncedAt">): Promise<ArchidocTrade>;
 
   getArchidocProposalFees(archidocProjectId: string): Promise<ArchidocProposalFee[]>;
+
   upsertArchidocProposalFee(data: Omit<ArchidocProposalFee, "id" | "syncedAt">): Promise<ArchidocProposalFee>;
 
   createSyncLogEntry(data: { syncType: string; status: string; errorMessage?: string }): Promise<ArchidocSyncLogEntry>;
+
   updateSyncLogEntry(id: number, data: Partial<{ status: string; completedAt: Date; recordsUpdated: number; errorMessage: string }>): Promise<ArchidocSyncLogEntry | undefined>;
+
   getRecentSyncLogs(limit: number): Promise<ArchidocSyncLogEntry[]>;
+
   getArchidocSiretIssues(): Promise<ArchidocSiretIssue[]>;
 
   getEmailDocuments(filters?: { projectId?: number; status?: string; documentType?: string }): Promise<EmailDocument[]>;
+
   getEmailDocument(id: number): Promise<EmailDocument | undefined>;
+
   getEmailDocumentByMessageId(messageId: string): Promise<EmailDocument | undefined>;
+
   createEmailDocument(data: InsertEmailDocument): Promise<EmailDocument>;
+
   updateEmailDocument(id: number, data: Partial<InsertEmailDocument>): Promise<EmailDocument | undefined>;
+
   updateEmailDocumentLabelStatus(messageId: string): Promise<void>;
+
   getPendingEmailDocuments(): Promise<EmailDocument[]>;
+
   listDueEmailDocuments(limit: number, cutoff: Date): Promise<EmailDocument[]>;
+
   claimEmailDocumentForProcessing(id: number, minReceivedAt: Date): Promise<EmailDocument | undefined>;
+
   reclaimStaleProcessingEmailDocuments(staleMs: number): Promise<number>;
+
   getProjectDocumentBySourceEmailDocumentId(sourceEmailDocumentId: number): Promise<ProjectDocument | undefined>;
+
   setEmailDocumentRetryState(id: number, data: { extractionStatus: string; processingAttempts: number; nextProcessAttemptAt: Date | null; notes?: string }): Promise<void>;
 
   getProjectDocuments(projectId: number): Promise<ProjectDocument[]>;
+
   getProjectDocument(id: number): Promise<ProjectDocument | undefined>;
+
   createProjectDocument(data: InsertProjectDocument): Promise<ProjectDocument>;
 
   getProjectIntakeDocuments(projectId: number): Promise<ProjectIntakeDocument[]>;
+
   getProjectIntakeDocument(id: number): Promise<ProjectIntakeDocument | undefined>;
+
   createProjectIntakeDocument(data: InsertProjectIntakeDocument): Promise<ProjectIntakeDocument>;
+
   getProjectIntakeDocumentByEmailDocumentId(emailDocumentId: number): Promise<ProjectIntakeDocument | undefined>;
+
   deleteProjectIntakeDocument(id: number): Promise<void>;
+
   tombstoneEmailDocumentIntake(emailDocumentId: number): Promise<void>;
 
   getProjectCommunications(projectId: number): Promise<ProjectCommunication[]>;
+
   getAllCommunications(): Promise<ProjectCommunication[]>;
+
   getProjectCommunication(id: number): Promise<ProjectCommunication | undefined>;
+
   createProjectCommunication(data: InsertProjectCommunication): Promise<ProjectCommunication>;
+
   updateProjectCommunication(id: number, data: Partial<InsertProjectCommunication>): Promise<ProjectCommunication | undefined>;
 
   getPaymentReminders(projectId: number): Promise<PaymentReminder[]>;
+
   getPaymentReminder(id: number): Promise<PaymentReminder | undefined>;
+
   createPaymentReminder(data: InsertPaymentReminder): Promise<PaymentReminder>;
+
   updatePaymentReminder(id: number, data: Partial<InsertPaymentReminder>): Promise<PaymentReminder | undefined>;
+
   getDuePaymentReminders(dateStr: string): Promise<PaymentReminder[]>;
 
   getClientPaymentEvidence(projectId: number): Promise<ClientPaymentEvidence[]>;
+
   createClientPaymentEvidence(data: InsertClientPaymentEvidence): Promise<ClientPaymentEvidence>;
 
   getDevisTranslation(devisId: number): Promise<DevisTranslation | undefined>;
+
   upsertDevisTranslation(data: InsertDevisTranslation): Promise<DevisTranslation>;
+
   updateDevisTranslation(devisId: number, data: Partial<InsertDevisTranslation>): Promise<DevisTranslation | undefined>;
   /** Atomically bump contexts_version and clear both cached PDF keys (one UPDATE). */
+
   bumpContextsVersionAndClearPdfCache(devisId: number): Promise<void>;
   /** Version-guarded cache publish — returns false (no-op) when contexts_version moved. */
+
   updateDevisTranslationIfContextsVersion(
     devisId: number,
     data: Partial<InsertDevisTranslation>,
     expectedContextsVersion: number,
+
   ): Promise<boolean>;
 
   getDevisLineContexts(devisId: number): Promise<DevisLineContext[]>;
+
   getDevisLineContext(devisLineItemId: number): Promise<DevisLineContext | undefined>;
   /** Race-safe first insert — returns undefined when another writer won the unique slot. */
+
   createDevisLineContext(data: InsertDevisLineContext): Promise<DevisLineContext | undefined>;
   /**
    * Optimistic-concurrency update: only applies when the stored revision
    * equals `expectedRevision`; bumps revision by 1. Returns undefined on
    * a stale revision (caller maps this to HTTP 409).
    */
+
   updateDevisLineContextIfRevision(
     devisLineItemId: number,
     expectedRevision: number,
     document: unknown,
+
   ): Promise<DevisLineContext | undefined>;
   /**
    * Whole context save in ONE transaction, serialized against finalisation
@@ -331,21 +448,28 @@ export interface IStorage {
    * the create-or-optimistic-update, and bumps contexts_version + clears the
    * PDF cache keys atomically with the write.
    */
+
   saveDevisLineContextGuarded(
     devisId: number,
     devisLineItemId: number,
     document: unknown,
     baseRevision: number,
+
   ): Promise<
     | { outcome: "finalised" }
     | { outcome: "stale_create" }
     | { outcome: "stale_update" }
     | { outcome: "saved"; row: DevisLineContext }
+
   >;
   /** Returns undefined when the translation is finalised (asset insert refused). */
+
   createDevisLineContextAsset(data: InsertDevisLineContextAsset): Promise<DevisLineContextAsset | undefined>;
+
   getDevisLineContextAsset(id: number): Promise<DevisLineContextAsset | undefined>;
+
   getDevisLineContextAssets(devisLineItemId: number): Promise<DevisLineContextAsset[]>;
+
   getDevisLineContextAssetsByDevis(devisId: number): Promise<DevisLineContextAsset[]>;
   /**
    * Orphan-sweep candidates: assets uploaded before `cutoff`, paired with
@@ -353,83 +477,130 @@ export interface IStorage {
    * context row at all). The caller decides referenced-ness by walking the
    * document — the raw jsonb is returned untouched.
    */
+
   listStaleDevisLineContextAssets(
     cutoff: Date,
     limit: number,
+
   ): Promise<Array<{ asset: DevisLineContextAsset; document: unknown | null }>>;
   /** Deletes one asset row; returns the deleted row, or undefined when already gone. */
+
   deleteDevisLineContextAsset(id: number): Promise<DevisLineContextAsset | undefined>;
 
   getAiModelSettings(): Promise<AiModelSetting[]>;
+
   getAiModelSetting(taskType: string): Promise<AiModelSetting | undefined>;
+
   upsertAiModelSetting(taskType: string, provider: string, modelId: string): Promise<AiModelSetting>;
 
   getTemplateAssets(): Promise<TemplateAsset[]>;
+
   getTemplateAssetByType(assetType: string): Promise<TemplateAsset | undefined>;
+
   upsertTemplateAsset(data: InsertTemplateAsset): Promise<TemplateAsset>;
+
   deleteTemplateAsset(id: number): Promise<void>;
 
   getNextCertificateRef(projectId: number): Promise<string>;
+
   getDevisByProjectAndContractor(projectId: number, contractorId: number): Promise<Devis[]>;
+
   getLot(id: number): Promise<import("@shared/schema").Lot | undefined>;
 
   getUser(id: number): Promise<User | undefined>;
+
   getUserByGoogleId(googleId: string): Promise<User | undefined>;
+
   upsertUser(data: InsertUser): Promise<User>;
   // Gmail polling (per-user OAuth path — see migration 0030).
+
   listGmailPollingUsers(): Promise<User[]>;
+
   updateUserGmailTokens(userId: number, tokens: {
     gmailRefreshToken?: string | null;
     gmailAccessToken?: string | null;
     gmailTokenExpiresAt?: Date | null;
     gmailScopeGranted?: string | null;
+
   }): Promise<void>;
+
   updateUserGmailPollStatus(userId: number, status: {
     gmailLastPollAt: Date;
     gmailLastPollStatus: string;
     gmailLastPollError: string | null;
-  }): Promise<void>;
+
   setUserGmailPollingEnabled(userId: number, enabled: boolean): Promise<void>;
+
   unlinkUserGmail(userId: number): Promise<void>;
 
   getBenchmarkTags(): Promise<BenchmarkTag[]>;
+
   upsertBenchmarkTag(data: InsertBenchmarkTag): Promise<BenchmarkTag>;
 
   getBenchmarkDocuments(): Promise<BenchmarkDocument[]>;
+
   getBenchmarkDocument(id: number): Promise<BenchmarkDocument | undefined>;
+
   getBenchmarkDocumentBySourceDevis(devisId: number): Promise<BenchmarkDocument | undefined>;
+
   createBenchmarkDocument(data: InsertBenchmarkDocument): Promise<BenchmarkDocument>;
+
   updateBenchmarkDocument(id: number, data: Partial<InsertBenchmarkDocument>): Promise<BenchmarkDocument | undefined>;
+
   deleteBenchmarkDocument(id: number): Promise<void>;
 
   createBenchmarkItem(data: InsertBenchmarkItem): Promise<BenchmarkItem>;
+
   deleteBenchmarkItem(id: number): Promise<void>;
+
   deleteBenchmarkItemsByDocument(documentId: number): Promise<void>;
+
   setBenchmarkItemTags(itemId: number, tagIds: number[]): Promise<void>;
+
   getBenchmarkItemTags(itemId: number): Promise<BenchmarkTag[]>;
 
   searchBenchmarkItems(filters: BenchmarkSearchFilters): Promise<BenchmarkSearchRow[]>;
+
   aggregateBenchmarkPrices(filters: BenchmarkSearchFilters): Promise<BenchmarkAggregateRow[]>;
 
   listDevisChecks(devisId: number): Promise<DevisCheck[]>;
+
   getDevisCheck(id: number): Promise<DevisCheck | undefined>;
+
   createDevisCheck(data: InsertDevisCheck): Promise<DevisCheck>;
+
   updateDevisCheck(id: number, data: Partial<InsertDevisCheck> & { resolvedAt?: Date | null; resolvedByUserId?: number | null }): Promise<DevisCheck | undefined>;
+
   upsertLineItemCheck(devisId: number, lineItemId: number, query: string, userId: number | null): Promise<DevisCheck>;
+
   countOpenDevisChecks(devisId: number): Promise<number>;
+
   isDevisChecking(devisId: number): Promise<boolean>;
+
   listDevisCheckMessages(checkId: number): Promise<DevisCheckMessage[]>;
+
   listAwaitingArchitectInbox(limit: number): Promise<InboxContractorResponseRow[]>;
+
   countAwaitingArchitectInbox(): Promise<number>;
+
   createDevisCheckMessage(data: InsertDevisCheckMessage): Promise<DevisCheckMessage>;
+
   getActiveDevisCheckToken(devisId: number): Promise<DevisCheckToken | undefined>;
+
   getLatestDevisCheckToken(devisId: number): Promise<DevisCheckToken | undefined>;
+
   createDevisCheckToken(data: InsertDevisCheckToken): Promise<DevisCheckToken>;
+
   revokeDevisCheckTokensForDevis(devisId: number): Promise<void>;
+
   getDevisCheckTokenByHash(hash: string): Promise<DevisCheckToken | undefined>;
+
   touchDevisCheckTokenUsed(id: number, expiresAt: Date | null): Promise<void>;
+
   extendDevisCheckTokenExpiry(id: number, expiresAt: Date | null): Promise<DevisCheckToken | undefined>;
+
   revokeDevisCheckTokenById(id: number): Promise<DevisCheckToken | undefined>;
+
   revokeExpiredDevisCheckTokens(now?: Date): Promise<number>;
   /**
    * Lifecycle-bound auto-revoke. Revokes the active portal token for any
@@ -439,6 +610,7 @@ export interface IStorage {
    * self-heals if any invoice mutation path forgets to call the
    * per-devis variant. Returns the count of tokens revoked.
    */
+
   revokeDevisCheckTokensForFullyInvoicedDevis(now?: Date): Promise<number>;
   /**
    * Per-devis variant of the above. Cheap to call after every invoice
@@ -446,6 +618,7 @@ export interface IStorage {
    * devis has no active token, or if it isn't fully invoiced yet.
    * Returns 1 if a token was revoked, 0 otherwise.
    */
+
   revokeDevisCheckTokenIfFullyInvoiced(devisId: number, now?: Date): Promise<number>;
 
   // --- AT2 client review portal (mirror of devis-check methods, scoped to ---
@@ -453,29 +626,52 @@ export interface IStorage {
   // --- "fully invoiced" auto-revoke are intentionally NOT mirrored — the ---
   // --- client portal lifecycle is governed by Archisign envelope state, ---
   // --- not invoicing progress.                                           ---
+
   listClientChecks(devisId: number): Promise<ClientCheck[]>;
+
   getClientCheck(id: number): Promise<ClientCheck | undefined>;
+
   createClientCheck(data: InsertClientCheck): Promise<ClientCheck>;
+
   updateClientCheck(id: number, data: Partial<InsertClientCheck> & { resolvedAt?: Date | null }): Promise<ClientCheck | undefined>;
+
   listClientCheckMessages(checkId: number): Promise<ClientCheckMessage[]>;
+
   createClientCheckMessage(data: InsertClientCheckMessage): Promise<ClientCheckMessage>;
+
   getActiveClientCheckToken(devisId: number): Promise<ClientCheckToken | undefined>;
+
   getLatestClientCheckToken(devisId: number): Promise<ClientCheckToken | undefined>;
+
   createClientCheckToken(data: InsertClientCheckToken): Promise<ClientCheckToken>;
+
   revokeClientCheckTokensForDevis(devisId: number): Promise<void>;
+
   getClientCheckTokenByHash(hash: string): Promise<ClientCheckToken | undefined>;
+
   touchClientCheckTokenUsed(id: number, expiresAt: Date | null): Promise<void>;
+
   extendClientCheckTokenExpiry(id: number, expiresAt: Date | null): Promise<ClientCheckToken | undefined>;
+
   revokeClientCheckTokenById(id: number): Promise<ClientCheckToken | undefined>;
+
   revokeExpiredClientCheckTokens(now?: Date): Promise<number>;
+
   getProjectCommunicationByDedupeKey(key: string): Promise<ProjectCommunication | undefined>;
+
   getLatestSentDevisCheckBundle(devisId: number): Promise<ProjectCommunication | undefined>;
+
   countSentDevisCheckBundles(devisId: number): Promise<number>;
+
   getMaxMessageIdForChecks(checkIds: number[]): Promise<number>;
+
   countOpenDevisChecksForProject(projectId: number): Promise<Record<number, number>>;
   // Insurance gate (AT3, contract §1.3 / §2.1.4)
+
   createInsuranceOverride(data: InsertInsuranceOverride): Promise<InsuranceOverride>;
+
   listInsuranceOverridesForDevis(devisId: number): Promise<InsuranceOverride[]>;
+
   getLatestInsuranceOverrideForDevis(devisId: number): Promise<InsuranceOverride | undefined>;
 
   // -- Archisign envelope tracking + inbound webhook (AT4) -----------------
@@ -483,17 +679,21 @@ export interface IStorage {
   // if a duplicate `(source, event_id)` already existed. Receivers MUST
   // check this BEFORE running any side-effecting handler, so duplicate
   // deliveries from Archisign collapse to 200 {deduplicated:true} per §1.5.
+
   claimWebhookEventIn(data: InsertWebhookEventIn): Promise<boolean>;
   // Lookup by Archisign envelope id — used by every webhook handler to
   // resolve the affected devis. Returns undefined if no devis owns this
   // envelope (handler responds 410 per §1.5: "non-retryable from sender").
+
   getDevisByArchisignEnvelopeId(envelopeId: string): Promise<Devis | undefined>;
   // Persist a `signed_pdf_retention_breach` row. Idempotent on
   // `(archisign_envelope_id, incident_ref)` per the unique index — caller
   // can replay the handler safely; downstream re-notify (AT5) is gated on
   // a fresh insert returning a row.
+
   recordSignedPdfRetentionBreach(
     data: InsertSignedPdfRetentionBreach,
+
   ): Promise<SignedPdfRetentionBreach | undefined>;
 
   // -- Outbound webhook deliveries (AT5, §2.1.6) ---------------------------
@@ -501,25 +701,33 @@ export interface IStorage {
   // the unique violation hits, returns the existing row so the caller can
   // distinguish "I won the claim" (act + dispatch) from "another worker /
   // a redelivery already enqueued it" (no-op).
+
   claimWebhookDeliveryOut(
     data: InsertWebhookDeliveryOut,
+
   ): Promise<{ row: WebhookDeliveryOut; created: boolean }>;
+
   getWebhookDeliveryOutById(id: number): Promise<WebhookDeliveryOut | undefined>;
   // Lookup by the wire-level eventId (UUIDv7). Used by the AT5 smoke
   // CLI (scripts/at5-smoke.ts) to read row state after a fire and to
   // resolve the persisted payload for the dedup re-POST scenario.
   // Backed by the unique index on event_id.
+
   getWebhookDeliveryOutByEventId(eventId: string): Promise<WebhookDeliveryOut | undefined>;
+
   listWebhookDeliveriesOut(filter?: {
     state?: WebhookDeliveryState;
     limit?: number;
     offset?: number;
+
   }): Promise<WebhookDeliveryOut[]>;
   // List rows whose state=pending and (next_attempt_at IS NULL OR
   // next_attempt_at <= now()). Drives the retry sweeper.
+
   listDueWebhookDeliveries(limit: number): Promise<WebhookDeliveryOut[]>;
   // Record one attempt outcome. Caller is responsible for computing
   // nextAttemptAt and the destination state.
+
   updateWebhookDeliveryAttempt(
     id: number,
     patch: {
@@ -531,19 +739,29 @@ export interface IStorage {
       succeededAt?: Date | null;
       deadLetteredAt?: Date | null;
     },
+
   ): Promise<WebhookDeliveryOut | undefined>;
   // Admin manual retry: clear terminal flags + arm for immediate attempt.
   // Preserves event_id (G6: receivers dedup on it).
+
   resetWebhookDeliveryForRetry(id: number): Promise<WebhookDeliveryOut | undefined>;
 
   // Design contracts (one per project; re-upload archives prior).
+
   getDesignContractByProject(projectId: number): Promise<DesignContract | undefined>;
+
   getDesignContract(id: number): Promise<DesignContract | undefined>;
+
   createDesignContract(data: InsertDesignContract): Promise<DesignContract>;
+
   deleteDesignContract(id: number): Promise<void>;
+
   getDesignContractMilestone(id: number): Promise<DesignContractMilestone | undefined>;
+
   getDesignContractMilestones(contractId: number): Promise<DesignContractMilestone[]>;
+
   createDesignContractMilestones(rows: InsertDesignContractMilestone[]): Promise<DesignContractMilestone[]>;
+
   updateDesignContractMilestone(id: number, data: Partial<InsertDesignContractMilestone>): Promise<DesignContractMilestone | undefined>;
   /**
    * Replace the contract+milestones for a project atomically. If a prior
@@ -551,6 +769,7 @@ export interface IStorage {
    * new rows inserted; the caller is responsible for archiving the prior PDF
    * blob in object storage before invoking this.
    */
+
   replaceDesignContractForProject(
     projectId: number,
     contract: InsertDesignContract,
@@ -559,6 +778,7 @@ export interface IStorage {
       projectFeeMirror?: { conceptionFee: string | null; planningFee: string | null };
       feeMirrors?: Array<{ feeType: "conception" | "planning"; amountHt: string }>;
     },
+
   ): Promise<{ contract: DesignContract; milestones: DesignContractMilestone[]; previousStorageKey: string | null }>;
   /**
    * For the daily reminder digest + dashboard strip: milestones whose status
@@ -567,26 +787,39 @@ export interface IStorage {
    * project + contract context so the digest mailer can compose without
    * extra round-trips.
    */
+
   getReachedUninvoicedMilestones(opts: {
     staleAfterMs?: number;
     reminderQuietMs?: number;
     architectUserId?: number;
+
   }): Promise<Array<{
     milestone: DesignContractMilestone;
     contract: DesignContract;
     project: Project;
+
   }>>;
+
   markDesignContractMilestoneReminderSent(id: number): Promise<void>;
 
   // --- Task #198: Drive auto-upload ----------------------------------
+
   setProjectDriveFolderId(projectId: number, folderId: string): Promise<void>;
+
   setLotDriveFolderId(lotId: number, folderId: string): Promise<void>;
+
   setDevisDriveLink(devisId: number, fileId: string, webViewLink: string): Promise<void>;
+
   setDevisSignedPdfStorageKey(devisId: number, storageKey: string): Promise<void>;
+
   recordSignedPdfPersistFailure(devisId: number, errorMessage: string, nextAttemptAt: Date | null): Promise<void>;
+
   armSignedPdfPersistRetry(devisId: number, nextAttemptAt: Date): Promise<void>;
+
   clearSignedPdfRetry(devisId: number): Promise<void>;
+
   listDueSignedPdfRetries(limit: number): Promise<Array<{ id: number }>>;
+
   listSignedPdfRecoveryCandidates(): Promise<Array<{
     id: number;
     devisCode: string | null;
@@ -599,10 +832,7 @@ export interface IStorage {
     dateSigned: string | null;
     retentionBreachedAt: Date | null;
     retentionIncidentRef: string | null;
-  }>>;
-  // Task #279 / #283 — devis whose CURRENT Archisign envelope reported
-  // subjectApplied=false and/or bodyApplied=false on the /create
-  // emailRendering echo.
+
   listArchisignRenderingDriftDevis(): Promise<Array<{
     id: number;
     devisCode: string | null;
@@ -614,82 +844,137 @@ export interface IStorage {
     signOffStage: string | null;
     archisignSubjectDriftAt: Date | null;
     archisignBodyDriftAt: Date | null;
-  }>>;
+
   setInvoiceDriveLink(invoiceId: number, fileId: string, webViewLink: string): Promise<void>;
+
   setCertificatDriveLink(certificatId: number, fileId: string, webViewLink: string): Promise<void>;
+
   upsertDriveUpload(data: InsertDriveUpload): Promise<DriveUpload>;
+
   claimDriveUploadForAttempt(uploadId: number): Promise<DriveUpload | null>;
+
   markDriveUploadSucceeded(args: { uploadId: number; attempts: number; driveFileId: string; driveWebViewLink: string }): Promise<void>;
+
   markDriveUploadDeadLettered(args: { uploadId: number; attempts: number; lastError: string }): Promise<void>;
+
   markDriveUploadPendingRetry(args: { uploadId: number; attempts: number; lastError: string; nextAttemptAt: Date }): Promise<void>;
+
   listDueDriveUploads(limit: number): Promise<DriveUpload[]>;
+
   reclaimStaleDriveUploads(maxAgeMs: number): Promise<number>;
+
   listDriveUploads(filter?: { state?: string; limit?: number; offset?: number }): Promise<DriveUpload[]>;
+
   getDriveUpload(uploadId: number): Promise<DriveUpload | undefined>;
+
   resetDriveUploadForRetry(uploadId: number): Promise<DriveUpload | undefined>;
 
   // --- Intake ingest queue + routing (Task #230) ------------------------
+
   updateProjectIntakeDocument(id: number, data: Partial<InsertProjectIntakeDocument>): Promise<ProjectIntakeDocument | undefined>;
+
   findProcessedIntakeDuplicateByFingerprint(projectId: number, fingerprint: string, excludeId: number): Promise<ProjectIntakeDocument | undefined>;
+
   findProcessedIntakeDuplicateByTextHash(projectId: number, textHash: string, excludeId: number): Promise<ProjectIntakeDocument | undefined>;
+
   upsertIntakeJob(intakeDocumentId: number): Promise<IntakeJob>;
+
   claimIntakeJobForAttempt(jobId: number): Promise<IntakeJob | null>;
+
   markIntakeJobSucceeded(args: { jobId: number; attempts: number }): Promise<void>;
+
   markIntakeJobDeadLettered(args: { jobId: number; attempts: number; lastError: string }): Promise<void>;
+
   markIntakeJobPendingRetry(args: { jobId: number; attempts: number; lastError: string; nextAttemptAt: Date }): Promise<void>;
+
   reclaimStaleIntakeJobs(maxAgeMs: number): Promise<number>;
+
   failOrphanedAnalyzingIntakeDocuments(): Promise<number>;
+
   listDueIntakeJobs(limit: number): Promise<IntakeJob[]>;
+
   listIntakeJobs(filter?: { state?: string; limit?: number; offset?: number }): Promise<Array<IntakeJob & { projectId: number; fileName: string; source: string; analysisState: string; routingState: string; promotedKind: string | null; promotedId: number | null }>>;
 
   // --- Overlap & supersession detection engine (Task #231) --------------
+
   getDocumentEmbedding(devisId: number): Promise<DocumentEmbedding | undefined>;
+
   upsertDocumentEmbedding(args: { projectId: number; devisId: number; contentHash: string; model: string; embedding: number[] }): Promise<void>;
+
   findSimilarProjectDevis(args: { projectId: number; devisId: number; limit: number; maxDistance: number }): Promise<Array<{ devisId: number; distance: number }>>;
+
   getOverlapCasesByProject(projectId: number, status?: OverlapCaseStatus): Promise<OverlapCase[]>;
   // Batched variant for the projects-list accounting-status rollup.
+
   getOverlapCasesByProjects(projectIds: number[], status?: OverlapCaseStatus): Promise<OverlapCase[]>;
+
   getOverlapCase(id: number): Promise<OverlapCase | undefined>;
   // Task #232 — accounting state machine. transitionDevisAccountingState
   // writes the new devis state AND its append-only audit row in one tx.
+
   transitionDevisAccountingState(args: AccountingStateTransition): Promise<void>;
   // Apply several accounting-state transitions atomically. Used when ONE
   // human decision must move several devis together (all-or-nothing): every
   // update is compare-and-set on `fromState`, so a stale read aborts the
   // whole batch with AccountingStateConflictError rather than partially
   // moving money.
+
   applyAccountingStateTransitions(transitions: AccountingStateTransition[]): Promise<void>;
   // Overlap case ids the architect has explicitly dismissed (so the
   // reconciliation pass never auto-supersedes their members).
+
   getDismissedOverlapCaseIds(projectId: number): Promise<number[]>;
+
   getResolvedOverlapCaseIds(projectId: number): Promise<number[]>;
   // Batched variant for the projects-list accounting-status rollup: returns the
   // (projectId, overlapCaseId) pairs the architect has humanly resolved.
+
   getResolvedOverlapCaseRowsByProjects(projectIds: number[]): Promise<Array<{ projectId: number; overlapCaseId: number }>>;
+
   getAccountingStateChangesByDevis(devisId: number): Promise<AccountingStateChange[]>;
+
   getHumanResolvedOverlapDecisions(projectId: number): Promise<AccountingStateChange[]>;
+
   upsertReconciliationJob(projectId: number): Promise<ReconciliationJob>;
+
   claimReconciliationJobForAttempt(jobId: number): Promise<ReconciliationJob | null>;
+
   markReconciliationJobSucceeded(args: { jobId: number; attempts: number }): Promise<void>;
+
   markReconciliationJobDeadLettered(args: { jobId: number; attempts: number; lastError: string }): Promise<void>;
+
   markReconciliationJobPendingRetry(args: { jobId: number; attempts: number; lastError: string; nextAttemptAt: Date }): Promise<void>;
+
   reclaimStaleReconciliationJobs(maxAgeMs: number): Promise<number>;
+
   listDueReconciliationJobs(limit: number): Promise<ReconciliationJob[]>;
 
   getIntakeJob(jobId: number): Promise<IntakeJob | undefined>;
+
   getIntakeJobByDocumentId(intakeDocumentId: number): Promise<IntakeJob | undefined>;
+
   resetIntakeJobForRetry(jobId: number): Promise<IntakeJob | undefined>;
 
   // --- Pennylane push queue (Task #214) ---------------------------------
+
   upsertPennylanePush(data: InsertPennylanePush): Promise<PennylanePush>;
+
   claimPennylanePushForAttempt(pushId: number): Promise<PennylanePush | null>;
+
   markPennylanePushSucceeded(args: { pushId: number; attempts: number; pennylaneId: string | null; dryRun?: boolean }): Promise<void>;
+
   markPennylanePushDeadLettered(args: { pushId: number; attempts: number; lastError: string }): Promise<void>;
+
   markPennylanePushPendingRetry(args: { pushId: number; attempts: number; lastError: string; nextAttemptAt: Date }): Promise<void>;
+
   listDuePennylanePushes(limit: number): Promise<PennylanePush[]>;
+
   reclaimStalePennylanePushes(maxAgeMs: number): Promise<number>;
+
   listPennylanePushes(filter?: { state?: PennylanePushState; kind?: PennylanePushKind; limit?: number; offset?: number }): Promise<PennylanePush[]>;
+
   getPennylanePush(pushId: number): Promise<PennylanePush | undefined>;
+
   resetPennylanePushForRetry(pushId: number): Promise<PennylanePush | undefined>;
 
   // --- Banking mismatch overrides (Task #225) ----------------------------
@@ -698,31 +983,40 @@ export interface IStorage {
   // doc_iban, archidoc_iban) so re-uploading the same doc with the same
   // IBAN does NOT need a fresh override, but switching to a different
   // suspicious IBAN does.
+
   createBankingMismatchOverride(data: InsertBankingMismatchOverride): Promise<BankingMismatchOverride>;
+
   findBankingMismatchOverride(args: {
     docKind: "devis" | "invoice";
     docId: number;
     docIban: string;
     archidocIban: string;
+
   }): Promise<BankingMismatchOverride | undefined>;
+
   listBankingMismatchOverridesByContractor(contractorId: number): Promise<BankingMismatchOverride[]>;
 
   // --- Pennylane mirror columns (Task #214) -----------------------------
+
   setProjectPennylaneCustomerId(projectId: number, customerId: string): Promise<void>;
+
   setFeeEntryPennylaneInvoice(args: {
     feeEntryId: number;
     pennylaneInvoiceId: string;
     pennylanePdfStorageKey: string | null;
     pennylaneStatus: string | null;
-  }): Promise<void>;
+
   setFeeEntryPennylanePaid(args: {
     feeEntryId: number;
     paidAt: Date | null;
     paidAmount: number | null;
     pennylaneStatus: string;
-  }): Promise<void>;
+
   getFeeEntryByPennylaneInvoiceId(invoiceId: string): Promise<FeeEntry | undefined>;
+
   listFeeEntriesWithPennylaneInvoice(args?: { onlyUnpaid?: boolean; limit?: number }): Promise<FeeEntry[]>;
+
+  getEmailQueueStats(): Promise<{ pending: number; processing: number; needsReview: number; oldestPendingAt: Date | null; processedLast5Min: number }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1648,6 +1942,33 @@ export class DatabaseStorage implements IStorage {
       )
       .orderBy(asc(emailDocuments.emailReceivedAt))
       .limit(limit);
+  }
+
+  /**
+   * Task #318 — queue drain stats for the email queue page banner.
+   * `processedLast5Min` counts docs that reached a terminal extraction state
+   * (completed / needs_review / failed) in the last 5 minutes, judged by
+   * updatedAt — the sweeper writes updatedAt on every state change, so it is
+   * a usable throughput proxy without a dedicated history table.
+   */
+  async getEmailQueueStats(): Promise<{ pending: number; processing: number; needsReview: number; oldestPendingAt: Date | null; processedLast5Min: number }> {
+    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const [row] = await db
+      .select({
+        pending: sql<number>`COUNT(*) FILTER (WHERE ${emailDocuments.extractionStatus} = 'pending')`,
+        processing: sql<number>`COUNT(*) FILTER (WHERE ${emailDocuments.extractionStatus} = 'processing')`,
+        needsReview: sql<number>`COUNT(*) FILTER (WHERE ${emailDocuments.extractionStatus} = 'needs_review')`,
+        oldestPendingAt: sql<Date | null>`MIN(${emailDocuments.createdAt}) FILTER (WHERE ${emailDocuments.extractionStatus} = 'pending')`,
+        processedLast5Min: sql<number>`COUNT(*) FILTER (WHERE ${emailDocuments.extractionStatus} IN ('completed', 'needs_review', 'failed') AND ${emailDocuments.updatedAt} >= ${fiveMinAgo})`,
+      })
+      .from(emailDocuments);
+    return {
+      pending: Number(row?.pending ?? 0),
+      processing: Number(row?.processing ?? 0),
+      needsReview: Number(row?.needsReview ?? 0),
+      oldestPendingAt: row?.oldestPendingAt ? new Date(row.oldestPendingAt) : null,
+      processedLast5Min: Number(row?.processedLast5Min ?? 0),
+    };
   }
 
   /**

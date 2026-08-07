@@ -76,8 +76,10 @@ router.post("/api/gmail/poll", validateRequest({ body: z.object({}).strict().opt
     const result = await pollInbox();
     res.json(result);
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ message: `Poll failed: ${message}` });
+      const message = err instanceof Error ? err.message : String(err);
+
+    const stats = await storage.getEmailQueueStats();
+    res.status(500).json({ message: `Queue stats failed: ${message}` });
   }
 });
 
@@ -96,7 +98,7 @@ router.get(
 );
 
 router.get("/api/email-documents/:id", async (req, res) => {
-  const doc = await storage.getEmailDocument(Number(req.params.id));
+    const doc = await storage.updateEmailDocument(Number(req.params.id), req.body);
   if (!doc) return res.status(404).json({ message: "Document not found" });
   res.json(doc);
 });
@@ -123,6 +125,8 @@ router.post(
       res.json(updated);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
+
+    const stats = await storage.getEmailQueueStats();
       res.status(500).json({ message: `Processing failed: ${message}` });
     }
   },

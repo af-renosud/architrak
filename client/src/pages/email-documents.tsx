@@ -62,6 +62,19 @@ export default function EmailDocuments() {
     queryKey: ["/api/gmail/status"],
   });
 
+  // Task #318 — drain progress banner: polls queue stats every 30 s while the
+  // backlog sweeper works through pending emails.
+  const { data: queueStats } = useQuery<{
+    pending: number;
+    processing: number;
+    needsReview: number;
+    oldestPendingAt: string | null;
+    processedLast5Min: number;
+  }>({
+    queryKey: ["/api/admin/email-documents/queue-stats"],
+    refetchInterval: 30_000,
+  });
+
   const pollMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/gmail/poll");
@@ -161,6 +174,32 @@ export default function EmailDocuments() {
             </Button>
           </div>
         </div>
+
+        {queueStats && queueStats.pending > 0 && (
+          <div
+            className="bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-xl px-4 py-3 flex items-center gap-3"
+            data-testid="banner-drain-progress"
+          >
+            <div className="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center flex-shrink-0">
+              <RefreshCw size={14} className="text-blue-600 animate-spin" style={{ animationDuration: "3s" }} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <span className="text-sm font-medium text-blue-800 dark:text-blue-200" data-testid="text-drain-status">
+                {queueStats.pending} pending
+                {queueStats.processing > 0 ? ` · ${queueStats.processing} processing` : ""}
+                {" · "}
+                {queueStats.processedLast5Min > 0
+                  ? `~${Math.max(1, Math.ceil(queueStats.pending / (queueStats.processedLast5Min / 5)))} min remaining`
+                  : "estimating drain time…"}
+              </span>
+              {queueStats.oldestPendingAt && (
+                <div className="text-xs text-blue-700/70 dark:text-blue-300/70 mt-0.5">
+                  Oldest pending since {formatDate(queueStats.oldestPendingAt)} · updates every 30 s
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {pendingCount > 0 && (
           <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-xl px-4 py-3 flex items-center gap-3">
