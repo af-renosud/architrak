@@ -14,6 +14,7 @@ import { getUncachableGmailClient, isGmailConfigured, isFakeGmailMode } from "./
 import { getGmailClientForUser } from "./user-client";
 import { uploadDocument, isObjectStorageConfigured } from "../storage/object-storage";
 import { getEmailIntakeCutoff } from "../services/email-intake-cutoff";
+import { evaluateEmailPrefilter, UNMATCHED_SENDER_STATUS, type PrefilterContext } from "./email-prefilter";
 import { storage } from "../storage";
 import type { gmail_v1 } from "googleapis";
 import type { InsertEmailDocument, User } from "@shared/schema";
@@ -85,6 +86,7 @@ export function stopPolling() {
   }
   isPolling = false;
   labelIdByUserId.clear();
+  prefilterCtxCache = null;
 }
 
 export async function pollInbox(): Promise<{ processed: number; errors: number }> {
@@ -209,6 +211,30 @@ async function pollOneInbox(
   }
 
   return { processed, errors };
+}
+
+// Task #323 — capture-time pre-filter context (contractors, projects, linked
+// inboxes), cached briefly so one poll pass doesn't reload it per message.
+let prefilterCtxCache: { ctx: PrefilterContext; fetchedAt: number } | null = null;
+const PREFILTER_CTX_TTL_MS = 60_000;
+
+async function getPrefilterContext(): Promise<PrefilterContext> {
+  const now = Date.now();
+  if (prefilterCtxCache && now - prefilterCtxCache.fetchedAt < PREFILTER_CTX_TTL_MS) {
+    return prefilterCtxCache.ctx;
+  }
+  const [contractors, projects, linkedUsers] = await Promise.all([
+    storage.getContractors(),
+    storage.getProjects({ includeArchived: true }),
+    storage.listGmailPollingUsers().catch(() => []),
+  ]);
+  const ctx: PrefilterContext = {
+    contractors,
+    projects,
+    knownEmails: linkedUsers.map((u) => u.email),
+  };
+  prefilterCtxCache = { ctx, fetchedAt: now };
+  return ctx;
 }
 
 async function ensureLabelSafe(gmail: gmail_v1.Gmail, userId: number): Promise<boolean> {
@@ -336,6 +362,18 @@ async function processMessage(
 
     const storageKey = await uploadDocument(null, fileName, buffer, "application/pdf");
 
+    // Task #323 — cheap deterministic pre-filter at capture time. Docs with
+    // no sender/subject/filename signal are stored as 'unmatched_sender' so
+    // the background sweeper (which only drains 'pending') never spends AI
+    // tokens on them. They remain visible + rescuable in the email queue.
+    const prefilter = evaluateEmailPrefilter(
+      { emailFrom: from, emailSubject: subject, attachmentFileName: fileName },
+      await getPrefilterContext(),
+    );
+    if (!prefilter.pass) {
+      console.log(`[Gmail Monitor] User ${userId}: parking ${messageId}/${fileName} as ${UNMATCHED_SENDER_STATUS} (no AI call): ${prefilter.reason}`);
+    }
+
     const doc: InsertEmailDocument = {
       emailMessageId: `${messageId}_${fileName}`,
       emailThreadId: threadId,
@@ -346,7 +384,8 @@ async function processMessage(
       attachmentFileName: fileName,
       storageKey,
       documentType: "unknown",
-      extractionStatus: "pending",
+      extractionStatus: prefilter.pass ? "pending" : UNMATCHED_SENDER_STATUS,
+      ...(prefilter.pass ? {} : { notes: prefilter.reason }),
       gmailLabelApplied: canModify,
     };
 

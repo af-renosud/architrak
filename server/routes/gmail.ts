@@ -117,10 +117,15 @@ router.patch(
 
 router.post(
   "/api/email-documents/:id/process",
-  validateRequest({ params: idParams }),
+  validateRequest({ params: idParams, body: z.object({ force: z.boolean().optional() }).optional() }),
   async (req, res) => {
     try {
-      await processEmailDocument(Number(req.params.id));
+      // Task #323 — `force: true` bypasses the deterministic sender
+      // pre-filter so an operator can rescue a doc parked as
+      // 'unmatched_sender' and run the AI extraction anyway.
+      await processEmailDocument(Number(req.params.id), {
+        bypassPrefilter: (req.body as { force?: boolean } | undefined)?.force === true,
+      });
       const updated = await storage.getEmailDocument(Number(req.params.id));
       res.json(updated);
     } catch (err: unknown) {

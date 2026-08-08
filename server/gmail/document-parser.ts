@@ -12,6 +12,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { env } from "../env";
 import { decideEmailDocRetry, EMAIL_DOC_MAX_ATTEMPTS } from "../services/email-doc-retry";
+import { evaluateEmailPrefilter, UNMATCHED_SENDER_STATUS } from "./email-prefilter";
 
 const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
@@ -1283,7 +1284,10 @@ export async function matchToProject(
   };
 }
 
-export async function processEmailDocument(emailDocumentId: number): Promise<void> {
+export async function processEmailDocument(
+  emailDocumentId: number,
+  opts?: { bypassPrefilter?: boolean },
+): Promise<void> {
   const exists = await storage.getEmailDocument(emailDocumentId);
   if (!exists) {
     throw new Error(`Email document ${emailDocumentId} not found`);
@@ -1315,11 +1319,41 @@ export async function processEmailDocument(emailDocumentId: number): Promise<voi
       throw new Error("No storage key for document");
     }
 
+    const projects = await storage.getProjects({ includeArchived: true });
+    const contractors = await storage.getContractors();
+
+    // Task #323 — cheap deterministic pre-filter BEFORE any AI call. Docs
+    // with no sender/subject signal tying them to a client project are
+    // parked as 'unmatched_sender' (visible + rescuable in the email queue)
+    // without spending extraction tokens. Enforced at the processing
+    // boundary so every caller respects it; the manual re-analyze route can
+    // bypass it explicitly (operator judgement wins).
+    if (!opts?.bypassPrefilter) {
+      // Linked inboxes are a nice-to-have signal — never let their lookup
+      // failure (or absence in a test double) fail the whole document.
+      const linkedUsers = await Promise.resolve()
+        .then(() => storage.listGmailPollingUsers())
+        .catch(() => [] as { email: string | null }[]);
+      const pre = evaluateEmailPrefilter(emailDoc, {
+        contractors,
+        projects,
+        knownEmails: linkedUsers.map((u) => u.email),
+      });
+      if (!pre.pass) {
+        await storage.setEmailDocumentRetryState(emailDocumentId, {
+          extractionStatus: UNMATCHED_SENDER_STATUS,
+          processingAttempts: emailDoc.processingAttempts ?? 0,
+          nextProcessAttemptAt: null,
+          notes: pre.reason,
+        });
+        console.log(`[DocumentParser] Document ${emailDocumentId} parked as ${UNMATCHED_SENDER_STATUS} (no AI call): ${pre.reason}`);
+        return;
+      }
+    }
+
     const buffer = await getDocumentBuffer(emailDoc.storageKey);
     const parsed = await parseDocument(buffer, emailDoc.attachmentFileName || "document.pdf");
 
-    const projects = await storage.getProjects({ includeArchived: true });
-    const contractors = await storage.getContractors();
     const match = await matchToProject(parsed, projects, contractors);
 
     const validation = validateExtraction(parsed);

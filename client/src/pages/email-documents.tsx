@@ -27,6 +27,7 @@ const statusColors: Record<string, string> = {
   failed: "error",
   needs_review: "warning",
   skipped: "neutral",
+  unmatched_sender: "neutral",
 };
 
 const typeLabels: Record<string, string> = {
@@ -90,8 +91,10 @@ export default function EmailDocuments() {
   });
 
   const processMutation = useMutation({
-    mutationFn: async (id: number) => {
-      const res = await apiRequest("POST", `/api/email-documents/${id}/process`);
+    // Task #323 — `force` bypasses the deterministic sender pre-filter so an
+    // operator can rescue a doc parked as 'unmatched_sender'.
+    mutationFn: async ({ id, force }: { id: number; force?: boolean }) => {
+      const res = await apiRequest("POST", `/api/email-documents/${id}/process`, force ? { force: true } : undefined);
       return res.json();
     },
     onSuccess: () => {
@@ -236,6 +239,7 @@ export default function EmailDocuments() {
               <SelectItem value="needs_review">Needs Review</SelectItem>
               <SelectItem value="needs_project">Needs Project</SelectItem>
               <SelectItem value="failed">Failed</SelectItem>
+              <SelectItem value="unmatched_sender">Unmatched Sender</SelectItem>
               <SelectItem value="skipped">Skipped</SelectItem>
             </SelectContent>
           </Select>
@@ -332,12 +336,13 @@ export default function EmailDocuments() {
                           </Button>
                         </a>
                       )}
-                      {(doc.extractionStatus === "failed" || doc.extractionStatus === "pending") && (
+                      {(doc.extractionStatus === "failed" || doc.extractionStatus === "pending" || doc.extractionStatus === "unmatched_sender") && (
                         <Button
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8"
-                          onClick={() => processMutation.mutate(doc.id)}
+                          title={doc.extractionStatus === "unmatched_sender" ? "Force AI analysis (bypass sender pre-filter)" : "Re-process"}
+                          onClick={() => processMutation.mutate({ id: doc.id, force: doc.extractionStatus === "unmatched_sender" })}
                           disabled={processMutation.isPending}
                           data-testid={`button-reprocess-${doc.id}`}
                         >
