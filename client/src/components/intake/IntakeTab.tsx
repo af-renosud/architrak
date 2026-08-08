@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Upload, FileText, Download, Mail, HardDriveUpload, Inbox, ArrowRight, RotateCw, Trash2, Eye, EyeOff } from "lucide-react";
 import { Link } from "wouter";
 import {
@@ -70,9 +70,19 @@ function promotedHref(projectId: string, doc: ProjectIntakeDocument): string | n
   return null;
 }
 
+const ACCEPTED_EXTENSIONS = [".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".doc", ".docx", ".xls", ".xlsx"];
+
+function isAcceptedFile(file: File): boolean {
+  const dot = file.name.lastIndexOf(".");
+  if (dot === -1) return false;
+  return ACCEPTED_EXTENSIONS.includes(file.name.slice(dot).toLowerCase());
+}
+
 export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
   const { toast } = useToast();
   const [showVoid, setShowVoid] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dragDepth = useRef(0);
 
   const { data: intakeDocs, isLoading } = useQuery<IntakeListItem[]>({
     queryKey: ["/api/projects", projectId, "intake", showVoid ? "?includeVoid=true" : ""],
@@ -152,7 +162,7 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
     const input = document.createElement("input");
     input.type = "file";
     input.multiple = true;
-    input.accept = ".pdf,.jpg,.jpeg,.png,.gif,.webp,.heic,.heif,.doc,.docx,.xls,.xlsx";
+    input.accept = ACCEPTED_EXTENSIONS.join(",");
     input.onchange = (e) => {
       const files = Array.from((e.target as HTMLInputElement).files ?? []);
       if (files.length > 0) uploadMutation.mutate(files);
@@ -160,9 +170,58 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
     input.click();
   };
 
+  const handleDroppedFiles = (files: File[]) => {
+    const accepted = files.filter(isAcceptedFile);
+    const rejected = files.filter((f) => !isAcceptedFile(f));
+    if (rejected.length > 0) {
+      toast({
+        title: rejected.length === 1 ? "Unsupported file type" : `${rejected.length} unsupported files`,
+        description: `${rejected.map((f) => f.name).join(", ")} — supported types: ${ACCEPTED_EXTENSIONS.join(", ")}`,
+        variant: "destructive",
+      });
+    }
+    if (accepted.length > 0) uploadMutation.mutate(accepted);
+  };
+
+  const dragHasFiles = (e: React.DragEvent) => Array.from(e.dataTransfer.types).includes("Files");
+
+  const onDragEnter = (e: React.DragEvent) => {
+    if (isArchived || uploadMutation.isPending || !dragHasFiles(e)) return;
+    e.preventDefault();
+    dragDepth.current += 1;
+    setIsDragOver(true);
+  };
+  const onDragOver = (e: React.DragEvent) => {
+    if (isArchived || uploadMutation.isPending || !dragHasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  };
+  const onDragLeave = (e: React.DragEvent) => {
+    if (!dragHasFiles(e)) return;
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setIsDragOver(false);
+  };
+  const onDrop = (e: React.DragEvent) => {
+    if (!dragHasFiles(e)) return;
+    e.preventDefault();
+    dragDepth.current = 0;
+    setIsDragOver(false);
+    if (isArchived || uploadMutation.isPending) return;
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) handleDroppedFiles(files);
+  };
+
   return (
     <div className="space-y-4" data-testid="tab-content-intake">
-      <LuxuryCard className="p-5">
+      <LuxuryCard
+        className={`p-5 transition-colors ${isDragOver ? "ring-2 ring-primary bg-primary/5 border-primary" : ""}`}
+        onDragEnter={onDragEnter}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+        data-testid="card-intake-upload"
+        data-dragover={isDragOver ? "true" : "false"}
+      >
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="min-w-0">
             <h3 className="text-[14px] font-black uppercase tracking-tight text-foreground">
