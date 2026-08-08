@@ -545,6 +545,29 @@ router.post(
   },
 );
 
+router.post(
+  "/api/devis/:id/translation/unlock",
+  requireAuth,
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    const devisId = Number(req.params.id);
+    const existing = await storage.getDevisTranslation(devisId);
+    if (!existing) return res.status(404).json({ message: "No translation to unlock" });
+    if (existing.status !== "finalised") {
+      return res.status(409).json({ message: `Cannot unlock translation in status ${existing.status}` });
+    }
+    const updated = await storage.updateDevisTranslation(devisId, {
+      status: "edited",
+      translatedPdfStorageKey: null,
+      combinedPdfStorageKey: null,
+      approvedAt: null,
+      approvedBy: null,
+      approvedByEmail: null,
+    });
+    res.json(updated);
+  },
+);
+
 const patchTranslationSchema = z.object({
   header: devisTranslationHeaderSchema.optional(),
   lines: z.array(devisTranslationLineSchema).optional(),

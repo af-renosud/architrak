@@ -12,7 +12,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Languages, Loader2, RefreshCw, FileDown, ChevronDown, AlertTriangle, Lock, CheckCircle2 } from "lucide-react";
+import { Languages, Loader2, RefreshCw, FileDown, ChevronDown, AlertTriangle, Lock, Unlock, CheckCircle2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type {
@@ -125,6 +125,21 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
     },
     onError: (err: Error) => {
       toast({ title: "Approve failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const unlockMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/devis/${devisId}/translation/unlock`, {});
+      return res.json();
+    },
+    onSuccess: () => {
+      initialisedFor.current = null;
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "translation"] });
+      toast({ title: "Translation unlocked", description: "Translation reopened for editing. All existing text is preserved." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Unlock failed", description: err.message, variant: "destructive" });
     },
   });
 
@@ -293,6 +308,24 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
                 <CheckCircle2 className="h-3 w-3 mr-1" />
               )}
               Approve translation
+            </Button>
+          )}
+
+          {isFinalised && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => unlockMutation.mutate()}
+              disabled={unlockMutation.isPending}
+              data-testid={`button-unlock-${devisId}`}
+              title="Reopen the approved translation for editing. All translated text is preserved — no AI retranslation happens."
+            >
+              {unlockMutation.isPending ? (
+                <Loader2 className="h-3 w-3 animate-spin mr-1" />
+              ) : (
+                <Unlock className="h-3 w-3 mr-1" />
+              )}
+              Unlock
             </Button>
           )}
 
