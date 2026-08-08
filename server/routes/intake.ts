@@ -32,7 +32,8 @@ router.get(
   "/api/projects/:projectId/intake",
   validateRequest({ params: projectIdParams }),
   async (req, res) => {
-    const docs = await storage.getProjectIntakeDocuments(Number(req.params.projectId));
+    const includeVoid = req.query.includeVoid === "true";
+    const docs = await storage.getProjectIntakeDocuments(Number(req.params.projectId), { includeVoid });
     res.json(docs);
   },
 );

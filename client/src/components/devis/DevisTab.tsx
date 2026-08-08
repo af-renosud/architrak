@@ -2266,6 +2266,7 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis"] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "intake"] });
       toast({ title: "Draft discarded", description: "The draft devis has been voided" });
       onClose();
     },
@@ -4601,6 +4602,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis"] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "intake"] });
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id] });
     },
   });

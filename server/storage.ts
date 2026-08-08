@@ -371,7 +371,7 @@ export interface IStorage {
 
   createProjectDocument(data: InsertProjectDocument): Promise<ProjectDocument>;
 
-  getProjectIntakeDocuments(projectId: number): Promise<ProjectIntakeDocument[]>;
+  getProjectIntakeDocuments(projectId: number, opts?: { includeVoid?: boolean }): Promise<(ProjectIntakeDocument & { isVoid: boolean })[]>;
 
   getProjectIntakeDocument(id: number): Promise<ProjectIntakeDocument | undefined>;
 
@@ -2070,8 +2070,20 @@ export class DatabaseStorage implements IStorage {
     return doc;
   }
 
-  async getProjectIntakeDocuments(projectId: number): Promise<ProjectIntakeDocument[]> {
-    return db.select().from(projectIntakeDocuments).where(eq(projectIntakeDocuments.projectId, projectId)).orderBy(desc(projectIntakeDocuments.createdAt));
+  async getProjectIntakeDocuments(projectId: number, opts?: { includeVoid?: boolean }): Promise<(ProjectIntakeDocument & { isVoid: boolean })[]> {
+    // Left-join the promoted devis (when promotedKind = "devis") so voided
+    // quotations can be hidden from the intake list by default (Task #326).
+    const rows = await db
+      .select({ doc: projectIntakeDocuments, promotedDevisStatus: devis.status })
+      .from(projectIntakeDocuments)
+      .leftJoin(
+        devis,
+        and(eq(projectIntakeDocuments.promotedKind, "devis"), eq(projectIntakeDocuments.promotedId, devis.id)),
+      )
+      .where(eq(projectIntakeDocuments.projectId, projectId))
+      .orderBy(desc(projectIntakeDocuments.createdAt));
+    const docs = rows.map((r) => ({ ...r.doc, isVoid: r.promotedDevisStatus === "void" }));
+    return opts?.includeVoid ? docs : docs.filter((d) => !d.isVoid);
   }
 
   async getProjectIntakeDocument(id: number): Promise<ProjectIntakeDocument | undefined> {

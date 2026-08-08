@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { Upload, FileText, Download, Mail, HardDriveUpload, Inbox, ArrowRight, RotateCw, Trash2 } from "lucide-react";
+import { Upload, FileText, Download, Mail, HardDriveUpload, Inbox, ArrowRight, RotateCw, Trash2, Eye, EyeOff } from "lucide-react";
 import { Link } from "wouter";
 import {
   AlertDialog,
@@ -18,6 +18,8 @@ import { LuxuryCard } from "@/components/ui/luxury-card";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { ProjectIntakeDocument } from "@shared/schema";
+
+type IntakeListItem = ProjectIntakeDocument & { isVoid?: boolean };
 
 interface IntakeTabProps {
   projectId: string;
@@ -70,25 +72,46 @@ function promotedHref(projectId: string, doc: ProjectIntakeDocument): string | n
 
 export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
   const { toast } = useToast();
+  const [showVoid, setShowVoid] = useState(false);
 
-  const { data: intakeDocs, isLoading } = useQuery<ProjectIntakeDocument[]>({
-    queryKey: ["/api/projects", projectId, "intake"],
+  const { data: intakeDocs, isLoading } = useQuery<IntakeListItem[]>({
+    queryKey: ["/api/projects", projectId, "intake", showVoid ? "?includeVoid=true" : ""],
   });
 
   const uploadMutation = useMutation({
-    mutationFn: async (file: File) => {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch(`/api/projects/${projectId}/intake/upload`, { method: "POST", body: formData });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.message || "Upload failed");
+    mutationFn: async (files: File[]) => {
+      // Upload sequentially so each file gets its own intake row and a
+      // per-file error message; one failure doesn't abort the rest.
+      const failures: string[] = [];
+      let uploaded = 0;
+      for (const file of files) {
+        const formData = new FormData();
+        formData.append("file", file);
+        const res = await fetch(`/api/projects/${projectId}/intake/upload`, { method: "POST", body: formData });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          failures.push(`${file.name}: ${body.message || "Upload failed"}`);
+        } else {
+          uploaded += 1;
+        }
       }
-      return res.json();
+      return { uploaded, failures };
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "intake"] });
-      toast({ title: "Document uploaded", description: "Parked in intake for analysis." });
+    onSuccess: ({ uploaded, failures }) => {
+      if (uploaded > 0) {
+        queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "intake"] });
+        toast({
+          title: uploaded === 1 ? "Document uploaded" : `${uploaded} documents uploaded`,
+          description: "Parked in intake for analysis.",
+        });
+      }
+      if (failures.length > 0) {
+        toast({
+          title: failures.length === 1 ? "1 upload failed" : `${failures.length} uploads failed`,
+          description: failures.join(" — "),
+          variant: "destructive",
+        });
+      }
     },
     onError: (error: Error) => {
       toast({ title: "Upload failed", description: error.message, variant: "destructive" });
@@ -128,10 +151,11 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
   const handleUpload = () => {
     const input = document.createElement("input");
     input.type = "file";
+    input.multiple = true;
     input.accept = ".pdf,.jpg,.jpeg,.png,.gif,.webp,.heic,.heif,.doc,.docx,.xls,.xlsx";
     input.onchange = (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (file) uploadMutation.mutate(file);
+      const files = Array.from((e.target as HTMLInputElement).files ?? []);
+      if (files.length > 0) uploadMutation.mutate(files);
     };
     input.click();
   };
@@ -163,6 +187,21 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
         </div>
       </LuxuryCard>
 
+      <div className="flex justify-end">
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8"
+          onClick={() => setShowVoid((v) => !v)}
+          data-testid="button-toggle-show-void"
+        >
+          {showVoid ? <EyeOff size={12} /> : <Eye size={12} />}
+          <span className="text-[9px] font-bold uppercase tracking-widest">
+            {showVoid ? "Hide void" : "Show void"}
+          </span>
+        </Button>
+      </div>
+
       {isLoading ? (
         <LuxuryCard><Skeleton className="h-40 w-full" /></LuxuryCard>
       ) : intakeDocs && intakeDocs.length > 0 ? (
@@ -192,6 +231,14 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
                         >
                           {status.label}
                         </span>
+                        {doc.isVoid && (
+                          <span
+                            className="text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300"
+                            data-testid={`badge-void-intake-${doc.id}`}
+                          >
+                            Void
+                          </span>
+                        )}
                         {routing && (
                           <span
                             className={`text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full ${routing.className}`}
