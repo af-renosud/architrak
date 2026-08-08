@@ -86,6 +86,16 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
 
   const { data: intakeDocs, isLoading } = useQuery<IntakeListItem[]>({
     queryKey: ["/api/projects", projectId, "intake", showVoid ? "?includeVoid=true" : ""],
+    // Task #327 — poll while any document is still being processed so the
+    // status badge advances (pending → analyzing → analyzed/failed) without
+    // a manual page refresh. Once every doc is terminal, polling stops.
+    refetchInterval: (query) => {
+      const docs = query.state.data;
+      const active = docs?.some(
+        (d) => d.analysisState === "pending" || d.analysisState === "analyzing",
+      );
+      return active ? 3000 : false;
+    },
   });
 
   const uploadMutation = useMutation({
