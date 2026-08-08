@@ -67,6 +67,7 @@ export function validateExtraction(parsed: ParsedDocument): ValidationResult {
   const correctedValues: Partial<ParsedDocument> = {};
   let checksRun = 0;
   let checksPassed = 0;
+  let derivedTotalsFromLineItems = false;
 
   const ht = parsed.amountHt;
   const ttc = parsed.amountTtc;
@@ -117,6 +118,49 @@ export function validateExtraction(parsed: ParsedDocument): ValidationResult {
       passed = false;
     }
     if (passed) checksPassed++;
+  }
+
+  // Task #338 — Derive missing document totals from line items.
+  // Seen in production (DVP0000661 / DVT0000959): the AI extracted every line
+  // item correctly but returned null for amountHt/amountTtc, and the draft was
+  // silently persisted as €0.00 with no warning. When BOTH document totals are
+  // missing (or zero) and line items are present, derive HT from the line-item
+  // sum, derive TVA/TTC when the rate is known, and attach a visible warning
+  // so the operator verifies the derived figures before confirming the draft.
+  // (If only one of HT/TTC is missing the existing TVA-neutral defaulting in
+  // the upload services applies; this block covers the both-missing case only.)
+  const htMissing = ht == null || roundCurrency(ht) === 0;
+  const ttcMissing = ttc == null || roundCurrency(ttc) === 0;
+  if (htMissing && ttcMissing && parsed.lineItems && parsed.lineItems.length > 0) {
+    const lineSum = roundCurrency(
+      parsed.lineItems.reduce((sum, item) => sum + (item.total ?? 0), 0),
+    );
+    if (lineSum > 0) {
+      correctedValues.amountHt = lineSum;
+      let derivedTtc: number | null = null;
+      if (parsed.autoLiquidation === true) {
+        correctedValues.tvaAmount = 0;
+        derivedTtc = lineSum;
+      } else if (parsed.tvaRate != null && parsed.tvaRate >= 0) {
+        const derivedTva = roundCurrency(lineSum * parsed.tvaRate / 100);
+        correctedValues.tvaAmount = derivedTva;
+        derivedTtc = roundCurrency(lineSum + derivedTva);
+      }
+      if (derivedTtc != null) correctedValues.amountTtc = derivedTtc;
+      derivedTotalsFromLineItems = true;
+      warnings.push({
+        field: "amountHt",
+        expected: lineSum,
+        actual: ht ?? 0,
+        message:
+          `Document totals were missing from the extraction — HT derived from the sum of ${parsed.lineItems.length} line items (${lineSum})` +
+          (derivedTtc != null
+            ? `, TTC derived as ${derivedTtc}${parsed.autoLiquidation === true ? " (auto-liquidation)" : ` (${parsed.tvaRate}% TVA)`}`
+            : "; TTC could not be derived (no TVA rate extracted)") +
+          ". Verify the amounts against the PDF before confirming (line amounts may be VAT-inclusive).",
+        severity: "warning",
+      });
+    }
   }
 
   if (parsed.lineItems && parsed.lineItems.length > 0 && ht != null) {
@@ -202,8 +246,12 @@ export function validateExtraction(parsed: ParsedDocument): ValidationResult {
     }
   }
 
-  const confidenceScore =
+  let confidenceScore =
     checksRun > 0 ? Math.round((checksPassed / checksRun) * 100) : 50;
+  // Derived totals are a best-effort reconstruction, not an extraction the
+  // cross-checks could verify — cap confidence below the no-check default so
+  // the draft visibly demands review.
+  if (derivedTotalsFromLineItems) confidenceScore = Math.min(confidenceScore, 40);
 
   const hasErrors = warnings.some((w) => w.severity === "error");
 

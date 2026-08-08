@@ -291,6 +291,106 @@ describe("extraction-validator (TVA-neutral)", () => {
     });
   });
 
+  describe("derived totals from line items (Task #338)", () => {
+    it("derives amountHt from line items when both document totals are null", () => {
+      const result = validateExtraction(doc({
+        tvaRate: 20,
+        lineItems: [
+          { description: "Terrassement", total: 2354.11 },
+          { description: "VRD", total: 4943.25 },
+        ],
+      }));
+      expect(result.correctedValues.amountHt).toBe(7297.36);
+      expect(result.correctedValues.tvaAmount).toBe(1459.47);
+      expect(result.correctedValues.amountTtc).toBe(8756.83);
+      const warning = result.warnings.find(w => w.field === "amountHt");
+      expect(warning).toBeDefined();
+      expect(warning!.severity).toBe("warning");
+      expect(warning!.message).toContain("derived");
+    });
+
+    it("derives amountHt but not TTC when no TVA rate is available", () => {
+      const result = validateExtraction(doc({
+        lineItems: [{ description: "Travaux", total: 1000 }],
+      }));
+      expect(result.correctedValues.amountHt).toBe(1000);
+      expect(result.correctedValues.amountTtc).toBeUndefined();
+      expect(result.warnings.find(w => w.field === "amountHt")).toBeDefined();
+    });
+
+    it("derives TTC == HT with zero TVA under auto-liquidation", () => {
+      const result = validateExtraction(doc({
+        autoLiquidation: true,
+        lineItems: [{ description: "Sous-traitance", total: 5000 }],
+      }));
+      expect(result.correctedValues.amountHt).toBe(5000);
+      expect(result.correctedValues.amountTtc).toBe(5000);
+      expect(result.correctedValues.tvaAmount).toBe(0);
+    });
+
+    it("also derives when totals are extracted as zero (not just null)", () => {
+      const result = validateExtraction(doc({
+        amountHt: 0,
+        amountTtc: 0,
+        tvaRate: 10,
+        lineItems: [{ description: "Travaux", total: 800 }],
+      }));
+      expect(result.correctedValues.amountHt).toBe(800);
+      expect(result.correctedValues.amountTtc).toBe(880);
+    });
+
+    it("caps confidence below the no-check default when totals were derived", () => {
+      const result = validateExtraction(doc({
+        tvaRate: 20,
+        lineItems: [{ description: "Travaux", total: 1000 }],
+      }));
+      expect(result.confidenceScore).toBeLessThanOrEqual(40);
+    });
+
+    it("does not derive when there are no line items", () => {
+      const result = validateExtraction(doc({}));
+      expect(result.correctedValues.amountHt).toBeUndefined();
+      expect(result.warnings).toHaveLength(0);
+      expect(result.confidenceScore).toBe(50);
+    });
+
+    it("does not derive when line items sum to zero", () => {
+      const result = validateExtraction(doc({
+        lineItems: [{ description: "Ligne vide", total: 0 }],
+      }));
+      expect(result.correctedValues.amountHt).toBeUndefined();
+    });
+
+    it("does not derive when a real amountHt exists", () => {
+      const result = validateExtraction(doc({
+        amountHt: 3000,
+        amountTtc: 3600,
+        lineItems: [
+          { description: "Plomberie", total: 1500 },
+          { description: "Electricite", total: 1500 },
+        ],
+      }));
+      expect(result.correctedValues.amountHt).toBeUndefined();
+      expect(result.warnings.find(w => w.field === "amountHt")).toBeUndefined();
+    });
+
+    it("does not derive when only TTC is present (existing defaulting applies)", () => {
+      const result = validateExtraction(doc({
+        amountTtc: 1200,
+        lineItems: [{ description: "Travaux", total: 1000 }],
+      }));
+      expect(result.correctedValues.amountHt).toBeUndefined();
+    });
+
+    it("remains a warning, not an error — the draft stays confirmable", () => {
+      const result = validateExtraction(doc({
+        tvaRate: 20,
+        lineItems: [{ description: "Travaux", total: 1000 }],
+      }));
+      expect(result.isValid).toBe(true);
+    });
+  });
+
   describe("confidence score", () => {
     it("returns 100 when all checks pass", () => {
       const result = validateExtraction(doc({
