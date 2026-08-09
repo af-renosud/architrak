@@ -109,10 +109,18 @@ function UploadPanel() {
       return data;
     },
     onSuccess: (data) => {
-      toast({
-        title: "Benchmark added",
-        description: `Document #${data.document.id} • ${data.itemsCreated} line items ingested`,
-      });
+      if (data.needsReview && data.reviewReasons?.length) {
+        toast({
+          title: "Benchmark added — flagged for review",
+          description: `Document #${data.document.id} • ${data.itemsCreated} line items ingested. ${data.reviewReasons[0]}`,
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Benchmark added",
+          description: `Document #${data.document.id} • ${data.itemsCreated} line items ingested`,
+        });
+      }
       queryClient.invalidateQueries({ queryKey: ["/api/benchmarks/documents"] });
       queryClient.invalidateQueries({ queryKey: ["/api/benchmarks/search"] });
       setFile(null);

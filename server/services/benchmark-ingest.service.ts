@@ -6,6 +6,7 @@ import { uploadDocument } from "../storage/object-storage";
 import { parseDocument, type ParsedDocument, isTransientParseFailure, getParseFailureMessage } from "../gmail/document-parser";
 import { BENCHMARK_UPLOAD_ERROR_CODES } from "../../shared/benchmark-upload-errors";
 import { validateExtraction } from "./extraction-validator";
+import { findBlockingCompletenessWarnings } from "./extraction-completeness";
 import { roundCurrency } from "../../shared/financial-utils";
 import { normalizeUnit } from "./benchmark-tags";
 import OpenAI from "openai";
@@ -127,7 +128,16 @@ export async function ingestParsedAsBenchmark(opts: {
 
   const validation = validateExtraction(parsed);
   const docConfidence = Math.min(validationConfidence, validation.confidenceScore);
-  const docNeedsReview = docConfidence < 70 || (validation.warnings || []).some(w => w.severity === "error");
+  // Blocking completeness errors (missing page coverage, evidenced page with
+  // no extracted lines) never hard-gate benchmark ingestion — but they MUST
+  // force review so proven-partial data never quietly enters comparisons.
+  // This is deliberately explicit rather than relying on the generic
+  // "any error-severity warning" clause below staying in sync.
+  const blockingCompleteness = findBlockingCompletenessWarnings(validation.warnings || []);
+  const docNeedsReview =
+    blockingCompleteness.length > 0 ||
+    docConfidence < 70 ||
+    (validation.warnings || []).some(w => w.severity === "error");
 
   const totalHt = parsed.amountHt != null ? String(roundCurrency(parsed.amountHt)) : null;
 
@@ -172,9 +182,11 @@ export async function ingestParsedAsBenchmark(opts: {
     });
   }
 
+  const reviewReasons = blockingCompleteness.map(w => w.message);
+
   const lineItems = parsed.lineItems ?? [];
   if (lineItems.length === 0) {
-    return { document: benchmarkDoc, itemsCreated: 0 };
+    return { document: benchmarkDoc, itemsCreated: 0, needsReview: docNeedsReview, reviewReasons };
   }
 
   const allTags = await storage.getBenchmarkTags();
@@ -244,7 +256,7 @@ export async function ingestParsedAsBenchmark(opts: {
     }
   }
 
-  return { document: benchmarkDoc, itemsCreated };
+  return { document: benchmarkDoc, itemsCreated, needsReview: docNeedsReview, reviewReasons };
 }
 
 export async function processStandaloneBenchmarkUpload(file: UploadedFile, input: BenchmarkUploadInput) {
@@ -307,6 +319,8 @@ export async function processStandaloneBenchmarkUpload(file: UploadedFile, input
     data: {
       document: result.document,
       itemsCreated: result.itemsCreated,
+      needsReview: result.needsReview,
+      reviewReasons: result.reviewReasons,
       extraction: { documentType: parsed.documentType, contractorName: parsed.contractorName },
       validation: {
         warnings: validation.warnings,
@@ -359,7 +373,12 @@ export async function confirmDevisAndMirror(
 
     const validation = validateExtraction(aiData);
     const docConfidence = Math.min(updatedDevis.aiConfidence ?? 50, validation.confidenceScore);
-    const docNeedsReview = docConfidence < 70 || (validation.warnings || []).some(w => w.severity === "error");
+    // Same explicit rule as ingestParsedAsBenchmark: proven-incomplete
+    // extractions always land in the review queue.
+    const docNeedsReview =
+      findBlockingCompletenessWarnings(validation.warnings || []).length > 0 ||
+      docConfidence < 70 ||
+      (validation.warnings || []).some(w => w.severity === "error");
     const totalHt = aiData.amountHt != null ? String(roundCurrency(aiData.amountHt)) : null;
 
     const docPayload = {

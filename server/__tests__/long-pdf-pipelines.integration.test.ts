@@ -404,6 +404,54 @@ describe("benchmark ingest — long-PDF parse flows coverage into the benchmark 
     // this path (benchmarks are review-queued via needsReview, not blocked).
     const warnings = (result.data as { validation: { warnings: WarningShape[] } }).validation.warnings;
     expectAdvisoriesWithoutBlocking(warnings);
+
+    // Full-coverage, hinted parse ⇒ no completeness-forced review flag.
+    expect((result.data as { needsReview: boolean }).needsReview).toBe(false);
+    expect((result.data as { reviewReasons: string[] }).reviewReasons).toEqual([]);
+  });
+
+  it("blocking completeness error (missing page coverage) is NOT hard-gated but ALWAYS forces needsReview with a surfaced reason (Task #354)", async () => {
+    parseDocumentMock.mockResolvedValue({
+      ...realParsed,
+      extractionCoverage: { ...realParsed.extractionCoverage!, renderedPageCount: 5 },
+    });
+
+    const result = await processStandaloneBenchmarkUpload(
+      {
+        buffer: FIXTURE_PDF,
+        originalname: "seven-page-benchmark.pdf",
+        mimetype: "application/pdf",
+      },
+      { contractorId: 11 },
+    );
+
+    // No completeness hard gate on this path — persistence succeeds…
+    expect(result.success).toBe(true);
+    expect(result.status).toBe(201);
+    expect(storageSpy.createBenchmarkDocument).toHaveBeenCalledTimes(1);
+
+    // …but the document row is force-flagged for review with the blocking
+    // pageCoverage error persisted in its warnings.
+    const row = storageSpy.createBenchmarkDocument.mock.calls[0][0] as {
+      needsReview: boolean;
+      validationWarnings: WarningShape[];
+    };
+    expect(row.needsReview).toBe(true);
+    const coverageWarning = row.validationWarnings.find((w) => w.field === "pageCoverage");
+    expect(coverageWarning).toBeDefined();
+    expect(coverageWarning!.severity).toBe("error");
+
+    // Every created item inherits the review flag — partial data never
+    // quietly enters price comparisons.
+    for (const call of storageSpy.createBenchmarkItem.mock.calls) {
+      expect((call[0] as { needsReview: boolean }).needsReview).toBe(true);
+    }
+
+    // The reason is surfaced in the API response for the UI.
+    const data = result.data as { needsReview: boolean; reviewReasons: string[] };
+    expect(data.needsReview).toBe(true);
+    expect(data.reviewReasons.length).toBeGreaterThan(0);
+    expect(data.reviewReasons[0]).toContain("5 of 7");
   });
 });
 
