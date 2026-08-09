@@ -115,6 +115,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0057_email_backlog_dump", artifact: { kind: "data_only", reason: "one-shot beta-reset backlog dump: pending/processing email_documents received before 2026-08-10 07:00Z moved to terminal 'skipped'" } },
   { tag: "0058_email_backlog_intake_cleanup", artifact: { kind: "data_only", reason: "tombstone skipped email docs and delete their un-routed intake mirrors (+cascaded intake_jobs) so dumped backlog cannot flow through the intake pipeline" } },
   { tag: "0059_draft_reopen_events", artifact: { kind: "table", table: "draft_reopen_events" } },
+  { tag: "0060_dvp0000661_merge_fragment_line7", artifact: { kind: "data_only", reason: "One-shot line-fragment merge on prod devis DVP0000661 (Task #357, guarded no-op elsewhere); no schema artifact" } },
 ];
 
 interface JournalFile {

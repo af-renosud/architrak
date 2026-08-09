@@ -15,7 +15,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import pg from "pg";
-import crypto from "node:crypto";
+
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,12 +50,6 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function hashOf(tag: string): string {
-  const sql = fs
-    .readFileSync(path.join(migrationsFolder, `${tag}.sql`))
-    .toString();
-  return crypto.createHash("sha256").update(sql).digest("hex");
-}
 
 interface Ctx {
   adminPool?: pg.Pool;
@@ -178,16 +172,17 @@ describe.skipIf(skipModule !== null)("schema-presence check (Task #136)", () => 
     }
   }, 60_000);
 
-  it("throws when artifact exists but the tracker has no row for it", async (t) => {
+  it("self-heals when artifact exists but the tracker has no row for it", async (t) => {
     if (ctx.skipReason || !ctx.replayPool) {
       t.skip();
       return;
     }
     // Delete the tracker row for 0020 (pdf_bbox column). The column
     // is still present; the tracker now disagrees. This is the
-    // "partial reconciliation / manual deletion" drift. Match by
-    // created_at because that's the journal's stable identifier (the
-    // assertion matches by that too — see schema-presence-check.ts).
+    // "tracker behind, schema forward" drift — the recoverable
+    // direction: assertSchemaMatchesTracker now self-heals it via
+    // reconcileTracker instead of aborting boot. Match by created_at
+    // because that's the journal's stable identifier.
     const journalPath = path.join(migrationsFolder, "meta", "_journal.json");
     const journal = JSON.parse(fs.readFileSync(journalPath, "utf-8")) as {
       entries: Array<{ tag: string; when: number }>;
@@ -196,7 +191,6 @@ describe.skipIf(skipModule !== null)("schema-presence check (Task #136)", () => 
       (e) => e.tag === "0020_per_line_pdf_bbox",
     );
     if (!entry) throw new Error("0020 missing from journal");
-    const hash = hashOf("0020_per_line_pdf_bbox");
 
     const del = await ctx.replayPool.query(
       `DELETE FROM drizzle.__drizzle_migrations WHERE created_at = $1`,
@@ -204,23 +198,27 @@ describe.skipIf(skipModule !== null)("schema-presence check (Task #136)", () => 
     );
     expect(del.rowCount).toBe(1);
 
-    try {
-      await expect(
-        assertSchemaMatchesTracker({
-          pool: ctx.replayPool,
-          migrationsFolder,
-        }),
-      ).rejects.toThrow(/pdf_bbox.*0020_per_line_pdf_bbox/);
-    } finally {
-      // Restore tracker row so the test suite leaves a clean DB.
-      await ctx.replayPool.query(
-        `INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)`,
-        [hash, entry.when],
-      );
-    }
+    await expect(
+      assertSchemaMatchesTracker({
+        pool: ctx.replayPool,
+        migrationsFolder,
+      }),
+    ).resolves.toBeUndefined();
+
+    // The self-heal must have re-inserted exactly the missing row —
+    // no duplicates, tracker back in sync with the journal.
+    const restored = await ctx.replayPool.query(
+      `SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations WHERE created_at = $1`,
+      [entry.when],
+    );
+    expect(restored.rows[0].n).toBe(1);
+    const total = await ctx.replayPool.query(
+      `SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations`,
+    );
+    expect(total.rows[0].n).toBe(journal.entries.length);
   }, 60_000);
 
-  it("runMigrationsWith aborts BEFORE drizzle migrate() when tracker is behind, so we get the schema-presence message instead of `column already exists`", async (t) => {
+  it("runMigrationsWith self-heals a tracker-behind drift BEFORE drizzle migrate(), avoiding `column already exists`", async (t) => {
     if (ctx.skipReason || !ctx.replayPool) {
       t.skip();
       return;
@@ -230,13 +228,13 @@ describe.skipIf(skipModule !== null)("schema-presence check (Task #136)", () => 
     // devis_line_items ADD COLUMN pdf_page_hint integer` (NO IF NOT
     // EXISTS) — if the schema-presence check ran AFTER migrate(),
     // drizzle would crash with `column "pdf_page_hint" already
-    // exists` and our precise message would never surface.
+    // exists`. The pre-migrate check must self-heal the tracker so
+    // migrate() never re-runs 0019.
     const journalPath = path.join(migrationsFolder, "meta", "_journal.json");
     const journal = JSON.parse(fs.readFileSync(journalPath, "utf-8")) as {
       entries: Array<{ tag: string; when: number }>;
     };
     const entry = journal.entries.find((e) => e.tag === "0019_numerous_drax")!;
-    const hash = hashOf("0019_numerous_drax");
 
     await ctx.replayPool.query(
       `DELETE FROM drizzle.__drizzle_migrations WHERE created_at = $1`,
@@ -251,24 +249,22 @@ describe.skipIf(skipModule !== null)("schema-presence check (Task #136)", () => 
       });
     } catch (err) {
       caught = err instanceof Error ? err : new Error(String(err));
-    } finally {
-      // Restore the tracker row so other tests start clean.
-      await ctx.replayPool.query(
-        `INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)`,
-        [hash, entry.when],
-      );
     }
 
-    expect(caught).not.toBeNull();
-    // Must be OUR message, not drizzle's "column already exists".
-    expect(caught!.message).toMatch(/schema drift/);
-    expect(caught!.message).toMatch(/0019_numerous_drax/);
-    expect(caught!.message).toMatch(/pdf_page_hint/);
     // Drizzle's native duplicate-column error reads like:
     //   `column "pdf_page_hint" of relation "devis_line_items" already exists`
-    // — assert we did NOT bubble up that signature, proving the
-    // pre-migrate ordering caught the drift.
-    expect(caught!.message).not.toMatch(/of relation/);
+    // — a clean run proves the pre-migrate self-heal restored the
+    // tracker before drizzle could re-run 0019.
+    expect(caught).toBeNull();
+    const restored = await ctx.replayPool.query(
+      `SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations WHERE created_at = $1`,
+      [entry.when],
+    );
+    expect(restored.rows[0].n).toBe(1);
+    const total = await ctx.replayPool.query(
+      `SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations`,
+    );
+    expect(total.rows[0].n).toBe(journal.entries.length);
   }, 60_000);
 
   it("MIGRATION_ARTIFACTS covers every journal entry exactly once", () => {
