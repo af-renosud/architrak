@@ -8,6 +8,7 @@ import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Zap, Sparkles, Crown, Gauge, DollarSign, Brain, Check, Upload, Trash2, Image, Building2, Scale, Layers, Plus, Pencil, Wand2, Loader2, RefreshCw, Users, FileText, ExternalLink, Lightbulb, Bug } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -265,6 +266,7 @@ export default function SettingsPage() {
         <InvoiceRematchSection />
         <PageHintBackfillSection />
         <ExtractionAuditSection />
+        <FragmentRepairSection />
       </main>
     </div>
   );
@@ -2802,6 +2804,118 @@ function ExtractionAuditSection() {
           )}
         </LuxuryCard>
       )}
+    </div>
+  );
+}
+
+// Task #356 — targeted repair for a continuation-paragraph fragment that was
+// extracted as its own numbered line (e.g. DVP0000661 line 7). Merges the
+// fragment back into the previous line, renumbers, and realigns translations
+// while preserving manual edits. The server refuses priced lines, lines with
+// their own item reference, lines with progress, and lines used by situations.
+function FragmentRepairSection() {
+  const { toast } = useToast();
+  const [devisNumber, setDevisNumber] = useState("");
+  const [fragmentLine, setFragmentLine] = useState("");
+  const [cleanedTranslation, setCleanedTranslation] = useState("");
+
+  const repairMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/admin/extraction-audit/merge-line-fragment", {
+        devisNumber: devisNumber.trim(),
+        fragmentLineNumber: Number(fragmentLine),
+        ...(cleanedTranslation.trim() ? { cleanedTranslation: cleanedTranslation.trim() } : {}),
+      });
+      return (await res.json()) as { success: boolean; message: string };
+    },
+    onSuccess: (result) => {
+      toast({
+        title: result.success ? "Fragment merged" : "Repair refused",
+        description: result.message,
+        variant: result.success ? undefined : "destructive",
+      });
+      if (result.success) {
+        setDevisNumber("");
+        setFragmentLine("");
+        setCleanedTranslation("");
+        queryClient.invalidateQueries({ queryKey: ["/api/devis"] });
+      }
+    },
+    onError: (err: Error) => {
+      toast({ title: "Repair failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const valid = devisNumber.trim().length >= 3 && Number(fragmentLine) >= 2;
+
+  return (
+    <div className="mt-10">
+      <div className="mb-4">
+        <h2
+          className="text-[16px] font-black uppercase tracking-tight mb-1"
+          style={{ color: "#0B2545" }}
+          data-testid="text-fragment-repair-title"
+        >
+          Merge Fragment Line
+        </h2>
+        <p className="text-[11px] text-muted-foreground">
+          When the AI split one quotation item into two lines (a continuation paragraph became its own
+          0,00&nbsp;€ numbered entry), merge the fragment back into the previous line. Later lines are
+          renumbered and the translation tab stays aligned — manual translation edits are preserved.
+          The server refuses anything that is not demonstrably a fragment.
+        </p>
+      </div>
+      <LuxuryCard>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div>
+            <label className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">Devis number</label>
+            <Input
+              value={devisNumber}
+              onChange={(e) => setDevisNumber(e.target.value)}
+              placeholder="DVP0000661"
+              data-testid="input-fragment-repair-devis"
+            />
+          </div>
+          <div>
+            <label className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">Fragment line #</label>
+            <Input
+              value={fragmentLine}
+              onChange={(e) => setFragmentLine(e.target.value)}
+              placeholder="7"
+              inputMode="numeric"
+              data-testid="input-fragment-repair-line"
+            />
+          </div>
+          <div className="flex items-end">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => repairMutation.mutate()}
+              disabled={!valid || repairMutation.isPending}
+              data-testid="button-fragment-repair-merge"
+            >
+              {repairMutation.isPending ? (
+                <Loader2 size={12} className="mr-1.5 animate-spin" />
+              ) : (
+                <Wand2 size={12} className="mr-1.5" />
+              )}
+              <span className="text-[10px] font-bold uppercase tracking-widest">Merge into previous line</span>
+            </Button>
+          </div>
+        </div>
+        <div className="mt-3">
+          <label className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">
+            Corrected English translation for the merged line (optional)
+          </label>
+          <Textarea
+            value={cleanedTranslation}
+            onChange={(e) => setCleanedTranslation(e.target.value)}
+            placeholder="Leave empty to keep the existing translation text unchanged"
+            rows={3}
+            data-testid="input-fragment-repair-translation"
+          />
+        </div>
+      </LuxuryCard>
     </div>
   );
 }

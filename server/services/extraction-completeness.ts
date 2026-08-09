@@ -50,6 +50,114 @@ export function countItemRowCandidates(pageText: string): number {
   return count;
 }
 
+// ── Task #356 — continuation-paragraph fragment handling ────────────────────
+//
+// Seen on prod DVP0000661: the AI split the PDF's item 6 in two — the
+// description's continuation paragraph ("Inspection, relevé de cotes…")
+// became a standalone line with no price, shifting every later line number
+// and desynchronising the translation tab.
+
+/** Matches a description that starts with its own item/lot reference:
+ *  "GO.05 …", "Ps.11-ps.22 …", "DM.04 …", "1. …", "24) …", "3.2 …". A line
+ *  carrying such a reference is a real item even when zero-priced. */
+export const LEADING_ITEM_REF = /^(?:[A-Za-z]{1,4}\.\s?\d|\d{1,3}(?:\.\d{1,2})*\s*[).\-]\s)/;
+
+// A previous description that ends "open" — with a colon/semicolon or a
+// French connector announcing an enumeration — invites a continuation. A
+// trailing comma alone is deliberately NOT enough: too many legitimate
+// descriptions end with one, and the automatic merge is irreversible.
+const OPEN_ENDING = /(?:[;:]|\b(?:comprenant|incluant|dont|y compris|notamment|suivant(?:es?)?|ci-dessous|à savoir|soit)\s*)$/i;
+
+type LineItem = NonNullable<
+  import("../gmail/document-parser").ParsedDocument["lineItems"]
+>[number];
+
+function hasOwnAmounts(li: LineItem): boolean {
+  const total = li.total;
+  const unitPrice = li.unitPrice;
+  return (total != null && total !== 0) || (unitPrice != null && unitPrice !== 0);
+}
+
+/** True when this extracted line looks like the continuation paragraph of the
+ *  previous line's description rather than a real quotation item.
+ *
+ *  Deliberately conservative — the automatic fold is irreversible, so only
+ *  rows with NO amounts at all (an explicit printed 0,00 € — "offert",
+ *  "inclus" — is evidence of a real row and stays advisory-only) and no item
+ *  reference, following a predecessor that ends mid-enumeration, qualify. */
+export function isContinuationFragment(item: LineItem, previous: LineItem | undefined): boolean {
+  if (!previous) return false;
+  // Any explicit amount — including an explicit zero — means "real row".
+  if (item.total != null || item.unitPrice != null) return false;
+  const desc = (item.description ?? "").trim();
+  if (desc.length === 0) return true; // empty rows always fold away
+  if (LEADING_ITEM_REF.test(desc)) return false;
+  const prevDesc = (previous.description ?? "").trim();
+  return OPEN_ENDING.test(prevDesc);
+}
+
+export interface FragmentMergeResult {
+  lineItems: LineItem[];
+  /** 0-based indices (in the ORIGINAL array) that were merged away. */
+  mergedIndices: number[];
+}
+
+/**
+ * Deterministic post-extraction pass: folds continuation-paragraph fragments
+ * back into their predecessor's description. The predecessor keeps its own
+ * amounts, pageHint and bbox — a fragment is descriptive text, not a priced
+ * row, so its best-effort geometry would mislead the highlight viewer.
+ * Chains fold into the same primary line (fragment-of-fragment).
+ */
+export function mergeContinuationFragments(lineItems: LineItem[]): FragmentMergeResult {
+  const out: LineItem[] = [];
+  const mergedIndices: number[] = [];
+  for (let i = 0; i < lineItems.length; i++) {
+    const item = lineItems[i];
+    const prev = out[out.length - 1];
+    if (isContinuationFragment(item, prev)) {
+      const fragText = (item.description ?? "").trim();
+      out[out.length - 1] = {
+        ...prev,
+        description: fragText.length > 0 ? `${prev.description ?? ""}\n${fragText}`.trim() : prev.description,
+      };
+      mergedIndices.push(i);
+    } else {
+      out.push({ ...item });
+    }
+  }
+  return { lineItems: out, mergedIndices };
+}
+
+/**
+ * Advisory for zero-priced, reference-less lines that survived the merge pass
+ * (previous line did not end "open", so the deterministic fold refused to
+ * guess). These are likely fragments and must surface for operator review.
+ */
+export function checkFragmentLines(
+  lineItems: Array<{ description?: string; total?: number | null; unitPrice?: number | null }>,
+): ValidationWarning[] {
+  const suspects: number[] = [];
+  lineItems.forEach((li, idx) => {
+    if (idx === 0) return; // first line has no predecessor to belong to
+    const desc = (li.description ?? "").trim();
+    if (desc.length === 0) return;
+    if (LEADING_ITEM_REF.test(desc)) return;
+    if (hasOwnAmounts(li as LineItem)) return;
+    suspects.push(idx + 1);
+  });
+  if (suspects.length === 0) return [];
+  return [
+    {
+      field: "lineFragment",
+      expected: 0,
+      actual: suspects.length,
+      message: `Line${suspects.length > 1 ? "s" : ""} ${suspects.join(", ")} ha${suspects.length > 1 ? "ve" : "s"} no price and no item reference — likely a continuation of the previous line's description that was extracted as a separate item. Verify the numbering against the PDF before confirming.`,
+      severity: "warning",
+    },
+  ];
+}
+
 export interface CompletenessInput {
   coverage: ExtractionCoverage | undefined;
   lineItems: Array<{ description?: string; pageHint?: number | null }>;

@@ -184,4 +184,52 @@ router.post(
   },
 );
 
+// ── Task #356 — targeted fragment-line repair ───────────────────────────────
+// Merges a phantom continuation-paragraph line back into its predecessor,
+// renumbers the following lines, and realigns translations. Heavily guarded
+// in the service: refuses priced lines, lines with their own item reference,
+// lines with progress, and lines referenced by situations. Accepts a devis
+// number (e.g. "DVP0000661") so the operator can run it on the live server
+// without knowing internal ids.
+const fragmentRepairSchema = z
+  .object({
+    devisNumber: z.string().min(3).max(40),
+    fragmentLineNumber: z.coerce.number().int().min(2),
+    cleanedTranslation: z.string().max(5000).optional(),
+  })
+  .strict();
+
+router.post(
+  "/api/admin/extraction-audit/merge-line-fragment",
+  requireAuth,
+  validateRequest({ body: fragmentRepairSchema }),
+  async (req, res) => {
+    const { devisNumber, fragmentLineNumber, cleanedTranslation } = req.body as z.infer<typeof fragmentRepairSchema>;
+    try {
+      // devis_number has no uniqueness constraint — resolve ALL matches and
+      // refuse ambiguous input rather than silently repairing the wrong devis.
+      const matches = await db
+        .select({ id: devis.id, devisCode: devis.devisCode, projectId: devis.projectId })
+        .from(devis)
+        .where(sql`${devis.devisNumber} = ${devisNumber}`);
+      if (matches.length === 0) {
+        res.status(404).json({ message: `No devis with number ${devisNumber}` });
+        return;
+      }
+      if (matches.length > 1) {
+        res.status(409).json({
+          message: `Devis number ${devisNumber} matches ${matches.length} devis (ids ${matches.map((m) => m.id).join(", ")}) — ambiguous; contact support to repair by internal id.`,
+        });
+        return;
+      }
+      const [row] = matches;
+      const { repairLineFragment } = await import("../services/line-fragment-repair.service");
+      const result = await repairLineFragment({ devisId: row.id, fragmentLineNumber, cleanedTranslation });
+      res.status(result.status).json(result);
+    } catch (err: unknown) {
+      res.status(500).json({ message: err instanceof Error ? err.message : String(err) });
+    }
+  },
+);
+
 export default router;

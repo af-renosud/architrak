@@ -13,6 +13,9 @@ export const ADVISORY_CODES = {
   PAGE_WITHOUT_LINE_ITEMS: "page_without_line_items",
   LINE_NUMBERING_GAP: "line_numbering_gap",
   DERIVED_TOTALS_UNVERIFIED: "derived_totals_unverified",
+  // Task #356 — a zero-priced, reference-less line that is likely the
+  // continuation paragraph of the previous item's description.
+  LINE_FRAGMENT_SUSPECTED: "line_fragment_suspected",
   GENERIC: "generic",
 } as const;
 
@@ -55,6 +58,7 @@ export function deriveAdvisoryCode(w: ValidatorWarningLike): AdvisoryCode {
   if (w.field === "pageLineItems") return ADVISORY_CODES.PAGE_WITHOUT_LINE_ITEMS;
   if (w.field === "lineNumbering") return ADVISORY_CODES.LINE_NUMBERING_GAP;
   if (w.field === "derivedTotals") return ADVISORY_CODES.DERIVED_TOTALS_UNVERIFIED;
+  if (w.field === "lineFragment") return ADVISORY_CODES.LINE_FRAGMENT_SUSPECTED;
   if (w.field === "retenueDeGarantie") return ADVISORY_CODES.RETENUE_GARANTIE_DEVIATION;
   if (w.field === "netAPayer") return ADVISORY_CODES.NET_A_PAYER_MISMATCH;
   return ADVISORY_CODES.GENERIC;

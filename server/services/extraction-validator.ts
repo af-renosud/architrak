@@ -1,6 +1,6 @@
 import type { ParsedDocument } from "../gmail/document-parser";
 import { roundCurrency, deriveTvaAmount } from "../../shared/financial-utils";
-import { checkExtractionCompleteness } from "./extraction-completeness";
+import { checkExtractionCompleteness, checkFragmentLines } from "./extraction-completeness";
 
 export interface ValidationWarning {
   field: string;
@@ -76,6 +76,10 @@ export function validateExtraction(parsed: ParsedDocument): ValidationResult {
       lineItems: parsed.lineItems ?? [],
     }),
   );
+
+  // Task #356 — zero-priced reference-less lines that survived the
+  // deterministic continuation-fragment merge are flagged for review.
+  warnings.push(...checkFragmentLines(parsed.lineItems ?? []));
 
   let checksRun = 0;
   let checksPassed = 0;

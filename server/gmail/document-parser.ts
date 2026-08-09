@@ -13,7 +13,7 @@ import { join } from "path";
 import { env } from "../env";
 import { decideEmailDocRetry, EMAIL_DOC_MAX_ATTEMPTS } from "../services/email-doc-retry";
 import { evaluateEmailPrefilter, UNMATCHED_SENDER_STATUS } from "./email-prefilter";
-import { countItemRowCandidates } from "../services/extraction-completeness";
+import { countItemRowCandidates, mergeContinuationFragments } from "../services/extraction-completeness";
 
 const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
@@ -213,6 +213,7 @@ Extraction Rules:
 - For line items, extract description, quantity, unit (e.g. m2, m3, ml, u, forfait), unitPrice, and total for each visible line.
 - For each line item, also populate "pageHint": the 1-indexed page number of the PDF on which that line appears. Pages are provided to you as separate images in order — the first image is page 1, the second is page 2, and so on. If you cannot determine the page with confidence, omit pageHint for that line.
 - For each line item, also populate "bbox": the rectangle on the page image that visually contains that line's row in the table. Coordinates MUST be normalized to the [0, 1] range of the page image (x and w as a fraction of the image width; y and h as a fraction of the image height; origin at the top-left of the image). Make the box tight to the line row, including the description and the amount, but not neighbouring rows. If you cannot determine the box with confidence, omit bbox for that line — do not guess.
+- A single numbered item's description often spans MULTIPLE paragraphs or wrapped lines. All descriptive text between one priced row and the next belongs to the SAME line item — append it to that item's description. NEVER emit a separate line item for a continuation paragraph: a row that has no printed unit price and no printed total of its own is not a new line item.
 - If a field is not visible on the document, omit it (do not guess).`;
 
 const USER_PROMPT = `Analyze this French construction document and extract the following fields:
@@ -241,7 +242,7 @@ const USER_PROMPT = `Analyze this French construction document and extract the f
 - paymentTerms: payment conditions text if visible (e.g., "30 jours fin de mois")
 - lotReferences: array of lot codes/references visible on the document (e.g., ["Lot 1", "Lot 7 - Electricite"])
 - description: brief description of the work/service
-- lineItems: array of line items, each with {description, quantity, unit, unitPrice, total, pageHint, bbox}. IMPORTANT: unitPrice and total must be the pre-tax (HT / hors taxes) amounts for each line — French quotations list line amounts HT in the body and only add TVA at the bottom, where the final total is TTC (tax-inclusive). Never copy TTC/tax-inclusive figures into line items.
+- lineItems: array of line items, each with {description, quantity, unit, unitPrice, total, pageHint, bbox}. IMPORTANT: unitPrice and total must be the pre-tax (HT / hors taxes) amounts for each line — French quotations list line amounts HT in the body and only add TVA at the bottom, where the final total is TTC (tax-inclusive). Never copy TTC/tax-inclusive figures into line items. Multi-paragraph descriptions belong to ONE item: only create a new array entry when the document shows a new priced row — a paragraph without its own price is part of the previous item's description, never a new entry.
 - iban: contractor IBAN printed on the document if visible (typically in a "Coordonnées bancaires" / RIB block). Copy verbatim — preserve all characters including spaces; downstream code normalises and validates.
 - bic: contractor BIC / SWIFT code printed on the document if visible. Copy verbatim.
 
@@ -1405,6 +1406,17 @@ export async function parseDocument(
   }
 
   if (parsed) {
+    // Task #356 — fold continuation-paragraph fragments (a "line" with no
+    // price and no item reference whose predecessor ends mid-enumeration)
+    // back into the previous item's description. Prevents phantom numbered
+    // entries that shift every later line out of sync (prod DVP0000661).
+    if (parsed.lineItems && parsed.lineItems.length > 1) {
+      const { lineItems: foldedItems, mergedIndices } = mergeContinuationFragments(parsed.lineItems);
+      if (mergedIndices.length > 0) {
+        console.log(`[DocumentParser] Merged ${mergedIndices.length} continuation fragment(s) into previous line descriptions (original indices: ${mergedIndices.join(", ")})`);
+        parsed.lineItems = foldedItems;
+      }
+    }
     // Task #350 — stamp deterministic coverage metadata (persisted via
     // aiExtractedData) so completeness validation is auditable downstream.
     let pageEvidence: ExtractionCoverage["pageEvidence"];
