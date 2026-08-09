@@ -7,6 +7,9 @@ export type DraftValidationWarning = {
   actual: any;
   message: string;
   severity: "error" | "warning";
+  /** Optional structured 1-based line numbers the warning refers to
+   *  (emitted by the server for `lineFragment` warnings). */
+  lines?: number[];
 };
 
 /**
@@ -29,6 +32,7 @@ export const CONTRACTOR_ADVISORY_FIELDS: ReadonlySet<string> = new Set([
 export type PartitionedDraftWarnings = {
   lotRefWarnings: DraftValidationWarning[];
   contractorAdvisories: DraftValidationWarning[];
+  lineFragmentWarnings: DraftValidationWarning[];
   generic: DraftValidationWarning[];
 };
 
@@ -47,11 +51,34 @@ export function partitionDraftWarnings(
   const contractorAdvisories = all.filter((w) =>
     CONTRACTOR_ADVISORY_FIELDS.has(w.field),
   );
+  const lineFragmentWarnings = all.filter((w) => w.field === "lineFragment");
   const generic = all.filter(
     (w) =>
-      w.field !== "lotReferences" && !CONTRACTOR_ADVISORY_FIELDS.has(w.field),
+      w.field !== "lotReferences" &&
+      w.field !== "lineFragment" &&
+      !CONTRACTOR_ADVISORY_FIELDS.has(w.field),
   );
-  return { lotRefWarnings, contractorAdvisories, generic };
+  return { lotRefWarnings, contractorAdvisories, lineFragmentWarnings, generic };
+}
+
+/**
+ * 1-based line numbers a `lineFragment` warning points at. Prefers the
+ * structured `lines` array the server now emits; falls back to parsing the
+ * enumeration out of the message ("Lines 2, 5 have no price…") for warnings
+ * persisted before the structured field existed. Message parsing only reads
+ * the number list BEFORE the "ha(s|ve) no price" clause so unrelated digits
+ * in descriptions can never leak in.
+ */
+export function suspectFragmentLineNumbers(w: DraftValidationWarning): number[] {
+  if (Array.isArray(w.lines) && w.lines.length > 0) {
+    return w.lines.filter((n) => Number.isInteger(n) && n >= 1);
+  }
+  const m = /^Lines?\s+([\d,\s]+)\s+ha(?:s|ve)\b/.exec(w.message ?? "");
+  if (!m) return [];
+  return m[1]
+    .split(",")
+    .map((s) => parseInt(s.trim(), 10))
+    .filter((n) => Number.isInteger(n) && n >= 1);
 }
 
 /**
@@ -155,6 +182,93 @@ export function ContractorAdvisoryBanner({
           </Button>
         </div>
       )}
+    </div>
+  );
+}
+
+export interface FragmentLineItemLike {
+  lineNumber: number;
+  description: string;
+}
+
+interface LineFragmentWarningBannerProps {
+  warnings: DraftValidationWarning[];
+  devisId: number;
+  /** Persisted line items of the draft, used to show the suspect line's text
+   *  and the previous line it should probably be merged into. Optional —
+   *  the banner still renders the line numbers while they load. */
+  lineItems?: FragmentLineItemLike[];
+}
+
+/**
+ * Amber banner shown in the draft review dialog when the extraction carries a
+ * `lineFragment` advisory (code `line_fragment_suspected`): zero-priced,
+ * reference-less lines that are likely a continuation paragraph of the
+ * previous item's description, mis-split into a standalone line. Flags each
+ * suspect line and suggests merging it into the previous line BEFORE the
+ * architect confirms the draft.
+ *
+ * Renders nothing when there are no lineFragment warnings.
+ */
+export function LineFragmentWarningBanner({
+  warnings,
+  devisId,
+  lineItems,
+}: LineFragmentWarningBannerProps) {
+  if (warnings.length === 0) return null;
+  const suspectNumbers = Array.from(
+    new Set(warnings.flatMap((w) => suspectFragmentLineNumbers(w))),
+  ).sort((a, b) => a - b);
+  const byNumber = new Map<number, FragmentLineItemLike>(
+    (lineItems ?? []).map((li) => [li.lineNumber, li]),
+  );
+  return (
+    <div
+      className="rounded-lg border-2 border-amber-400 bg-amber-50 dark:bg-amber-950/40 p-3 space-y-2"
+      data-testid={`banner-line-fragment-${devisId}`}
+    >
+      <div className="flex items-start gap-2">
+        <AlertTriangle size={16} className="text-amber-600 mt-0.5 shrink-0" />
+        <div className="flex-1 min-w-0">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-amber-800 dark:text-amber-300">
+            Suspected split line{suspectNumbers.length > 1 ? "s" : ""}
+          </p>
+          <p className="text-[10px] mt-0.5 text-amber-800/90 dark:text-amber-300/90">
+            {suspectNumbers.length > 0
+              ? `Line${suspectNumbers.length > 1 ? "s" : ""} ${suspectNumbers.join(", ")} ha${suspectNumbers.length > 1 ? "ve" : "s"} no price and no item reference — likely a continuation of the previous line's description that was extracted as a separate item.`
+              : warnings[0].message}{" "}
+            Consider merging {suspectNumbers.length > 1 ? "each one" : "it"} into the
+            previous line and verifying the numbering against the PDF before confirming.
+          </p>
+          {suspectNumbers.length > 0 && (
+            <ul className="mt-1.5 space-y-1">
+              {suspectNumbers.map((n) => {
+                const suspect = byNumber.get(n);
+                const previous = byNumber.get(n - 1);
+                return (
+                  <li
+                    key={n}
+                    className="text-[10px] text-amber-900/90 dark:text-amber-200/90 rounded-md border border-amber-300 dark:border-amber-800 bg-amber-100/60 dark:bg-amber-900/30 px-2 py-1"
+                    data-testid={`line-fragment-suspect-${devisId}-${n}`}
+                  >
+                    <span className="font-bold">Line {n}</span>
+                    {suspect ? <>: “{suspect.description}”</> : null}
+                    {previous ? (
+                      <span className="block text-amber-800/80 dark:text-amber-300/80">
+                        → suggest merging into line {n - 1}: “{previous.description}”
+                      </span>
+                    ) : (
+                      <span className="block text-amber-800/80 dark:text-amber-300/80">
+                        → suggest merging into line {n - 1}
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

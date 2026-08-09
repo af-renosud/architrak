@@ -108,6 +108,7 @@ describe("checkFragmentLines advisory + code mapping", () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0].severity).toBe("warning");
     expect(warnings[0].field).toBe("lineFragment");
+    expect(warnings[0].lines).toEqual([2]);
     expect(deriveAdvisoryCode(warnings[0])).toBe(ADVISORY_CODES.LINE_FRAGMENT_SUSPECTED);
   });
 

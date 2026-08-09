@@ -8,6 +8,10 @@ export interface ValidationWarning {
   actual: number | string | boolean | undefined;
   message: string;
   severity: "error" | "warning";
+  /** Optional structured 1-based line numbers the warning refers to (e.g.
+   *  suspected fragment lines). Lets the review UI flag the exact rows
+   *  without parsing the human-readable message. */
+  lines?: number[];
 }
 
 export interface ValidationResult {

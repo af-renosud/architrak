@@ -46,7 +46,9 @@ import {
   focusContractorSelect,
   ContractorAdvisoryBanner,
   GenericValidationWarningsList,
+  LineFragmentWarningBanner,
   type DraftValidationWarning,
+  type FragmentLineItemLike,
 } from "@/components/devis/draft-warnings";
 import { SigningPanel, OPEN_SIGNING_SEND_EVENT } from "@/components/devis/SigningPanel";
 
@@ -2261,8 +2263,15 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
   const initialContractorId: number = devis.contractorId ?? extraction?.contractorId ?? 0;
   const [draftContractorId, setDraftContractorId] = useState<number>(initialContractorId);
   const contractorSectionRef = useRef<HTMLDivElement>(null);
-  const { lotRefWarnings, contractorAdvisories, generic: warnings } =
+  const { lotRefWarnings, contractorAdvisories, lineFragmentWarnings, generic: warnings } =
     partitionDraftWarnings(validation?.warnings as DraftValidationWarning[] | undefined);
+
+  // Persisted line items — fetched only when a lineFragment advisory needs to
+  // show the suspect lines' text alongside their line numbers.
+  const { data: fragmentLineItems } = useQuery<FragmentLineItemLike[]>({
+    queryKey: ["/api/devis", devisId, "line-items"],
+    enabled: lineFragmentWarnings.length > 0,
+  });
 
   const handleChooseContractor = () => {
     focusContractorSelect(contractorSectionRef.current);
@@ -2429,6 +2438,11 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
             devisId={devisId}
             isArchived={isArchived}
             onChooseContractor={handleChooseContractor}
+          />
+          <LineFragmentWarningBanner
+            warnings={lineFragmentWarnings}
+            devisId={devisId}
+            lineItems={fragmentLineItems}
           />
           <GenericValidationWarningsList warnings={warnings} />
 

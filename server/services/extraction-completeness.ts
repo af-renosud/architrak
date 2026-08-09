@@ -152,6 +152,7 @@ export function checkFragmentLines(
       field: "lineFragment",
       expected: 0,
       actual: suspects.length,
+      lines: suspects,
       message: `Line${suspects.length > 1 ? "s" : ""} ${suspects.join(", ")} ha${suspects.length > 1 ? "ve" : "s"} no price and no item reference — likely a continuation of the previous line's description that was extracted as a separate item. Verify the numbering against the PDF before confirming.`,
       severity: "warning",
     },

@@ -9,8 +9,10 @@ import {
   ContractorAdvisoryBanner,
   FOCUS_CONTRACTOR_SELECT_DELAY_MS,
   GenericValidationWarningsList,
+  LineFragmentWarningBanner,
   focusContractorSelect,
   partitionDraftWarnings,
+  suspectFragmentLineNumbers,
   type DraftValidationWarning,
   type FocusableSection,
 } from "../draft-warnings";
@@ -53,7 +55,7 @@ describe("partitionDraftWarnings", () => {
     }
   });
 
-  it("never duplicates contractor or lotRef warnings into the generic list", () => {
+  it("never duplicates contractor, lotRef or lineFragment warnings into the generic list", () => {
     const warnings: DraftValidationWarning[] = [
       makeWarning("contractor_identity_mismatch"),
       makeWarning("contractor_siret_collision"),
@@ -61,20 +63,93 @@ describe("partitionDraftWarnings", () => {
       makeWarning("contractorSiret"),
       makeWarning("contractorName"),
       makeWarning("lotReferences"),
+      makeWarning("lineFragment"),
       makeWarning("amountHt"),
       makeWarning("dateSent"),
     ];
-    const { lotRefWarnings, contractorAdvisories, generic } =
+    const { lotRefWarnings, contractorAdvisories, lineFragmentWarnings, generic } =
       partitionDraftWarnings(warnings);
     expect(contractorAdvisories).toHaveLength(5);
     expect(lotRefWarnings).toHaveLength(1);
+    expect(lineFragmentWarnings).toHaveLength(1);
     expect(generic.map((w) => w.field).sort()).toEqual(
       ["amountHt", "dateSent"].sort(),
     );
     for (const w of generic) {
       expect(CONTRACTOR_ADVISORY_FIELDS.has(w.field)).toBe(false);
       expect(w.field).not.toBe("lotReferences");
+      expect(w.field).not.toBe("lineFragment");
     }
+  });
+});
+
+describe("suspectFragmentLineNumbers", () => {
+  it("prefers the structured lines array when present", () => {
+    const w = makeWarning("lineFragment", {
+      lines: [2, 5],
+      message: "Lines 2, 5 have no price and no item reference — …",
+    });
+    expect(suspectFragmentLineNumbers(w)).toEqual([2, 5]);
+  });
+
+  it("falls back to parsing the message for legacy warnings without `lines`", () => {
+    const single = makeWarning("lineFragment", {
+      message:
+        "Line 3 has no price and no item reference — likely a continuation of the previous line's description that was extracted as a separate item. Verify the numbering against the PDF before confirming.",
+    });
+    expect(suspectFragmentLineNumbers(single)).toEqual([3]);
+    const plural = makeWarning("lineFragment", {
+      message: "Lines 2, 7, 11 have no price and no item reference — …",
+    });
+    expect(suspectFragmentLineNumbers(plural)).toEqual([2, 7, 11]);
+  });
+
+  it("returns [] when nothing can be extracted, never guessing from description digits", () => {
+    expect(
+      suspectFragmentLineNumbers(makeWarning("lineFragment", { message: "Ragréage 12,5 cm" })),
+    ).toEqual([]);
+  });
+});
+
+describe("LineFragmentWarningBanner (rendered)", () => {
+  const warning = makeWarning("lineFragment", {
+    lines: [2],
+    message:
+      "Line 2 has no price and no item reference — likely a continuation of the previous line's description that was extracted as a separate item. Verify the numbering against the PDF before confirming.",
+  });
+  const lineItems = [
+    { lineNumber: 1, description: "Dm.03 dépose du réseau hydraulique" },
+    { lineNumber: 2, description: "Inspection, relevé de cotes" },
+    { lineNumber: 3, description: "Ps.25 pose de deux skimmers" },
+  ];
+
+  it("renders nothing when there are no lineFragment warnings", () => {
+    const { container } = render(
+      <LineFragmentWarningBanner warnings={[]} devisId={9} lineItems={lineItems} />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("flags each suspect line and suggests merging into the previous line", () => {
+    render(
+      <LineFragmentWarningBanner warnings={[warning]} devisId={9} lineItems={lineItems} />,
+    );
+    const banner = screen.getByTestId("banner-line-fragment-9");
+    expect(banner).toBeVisible();
+    expect(banner.className).toMatch(/border-amber-400/);
+    const suspect = within(banner).getByTestId("line-fragment-suspect-9-2");
+    expect(suspect).toHaveTextContent("Line 2");
+    expect(suspect).toHaveTextContent("Inspection, relevé de cotes");
+    expect(suspect).toHaveTextContent("merging into line 1");
+    expect(suspect).toHaveTextContent("Dm.03 dépose du réseau hydraulique");
+  });
+
+  it("still renders line numbers while line items are loading", () => {
+    render(<LineFragmentWarningBanner warnings={[warning]} devisId={9} />);
+    const banner = screen.getByTestId("banner-line-fragment-9");
+    expect(within(banner).getByTestId("line-fragment-suspect-9-2")).toHaveTextContent(
+      "merging into line 1",
+    );
   });
 });
 
