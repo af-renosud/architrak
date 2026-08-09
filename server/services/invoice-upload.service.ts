@@ -1,6 +1,7 @@
 import { storage } from "../storage";
 import { uploadDocument } from "../storage/object-storage";
 import { validateExtraction } from "./extraction-validator";
+import { findBlockingCompletenessWarnings } from "./extraction-completeness";
 import { roundCurrency, deriveTvaAmount } from "../../shared/financial-utils";
 import { reconcileAdvisories } from "./advisory-reconciler";
 import { enqueueDriveUpload } from "./drive/upload-queue.service";
@@ -51,6 +52,24 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile, 
     };
   }
 
+  // Task #350 — extraction completeness hard gate, applied BEFORE object
+  // storage so no orphaned PDF/document row is left behind: an invoice must
+  // never persist when pages were missing from the extraction or a
+  // text-evidenced page produced no line items.
+  const validation = validateExtraction(parsed);
+  const blockingCompleteness = findBlockingCompletenessWarnings(validation.warnings);
+  if (blockingCompleteness.length > 0) {
+    return {
+      success: false,
+      status: 422,
+      data: {
+        message: `Extraction appears incomplete: ${blockingCompleteness.map((w) => w.message).join(" ")}`,
+        code: INVOICE_UPLOAD_ERROR_CODES.EXTRACTION_INCOMPLETE,
+        extraction: parsed,
+      },
+    };
+  }
+
   const storageKey = await uploadDocument(devis.projectId, file.originalname, file.buffer, file.mimetype);
 
   await storage.createProjectDocument({
@@ -61,8 +80,6 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile, 
     uploadedBy: "manual",
     description: `Invoice PDF upload for devis ${devis.devisCode}: ${file.originalname}`,
   });
-
-  const validation = validateExtraction(parsed);
 
   const effectiveHt = validation.correctedValues.amountHt ?? parsed.amountHt;
   const effectiveTtc = validation.correctedValues.amountTtc ?? parsed.amountTtc;

@@ -3,6 +3,7 @@ export const INVOICE_UPLOAD_ERROR_CODES = {
   PDF_PASSWORD_PROTECTED: "PDF_PASSWORD_PROTECTED",
   NO_FILE_PROVIDED: "NO_FILE_PROVIDED",
   INVOICE_DEVIS_NOT_FOUND: "INVOICE_DEVIS_NOT_FOUND",
+  EXTRACTION_INCOMPLETE: "EXTRACTION_INCOMPLETE",
   INVOICE_UPLOAD_FAILED: "INVOICE_UPLOAD_FAILED",
 } as const;
 
@@ -14,6 +15,7 @@ const TITLES: Record<InvoiceUploadErrorCode, string> = {
   PDF_PASSWORD_PROTECTED: "PDF is password-protected",
   NO_FILE_PROVIDED: "No file provided",
   INVOICE_DEVIS_NOT_FOUND: "Devis not found",
+  EXTRACTION_INCOMPLETE: "Extraction incomplete — line items may be missing",
   INVOICE_UPLOAD_FAILED: "Invoice upload failed",
 };
 

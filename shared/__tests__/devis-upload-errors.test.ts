@@ -11,6 +11,7 @@ describe("getDevisUploadErrorTitle", () => {
       PDF_PASSWORD_PROTECTED: "PDF is password-protected",
       AI_TRANSIENT: "AI extraction temporarily unavailable",
       DEVIS_PARSE_FAILED: "Could not extract devis data",
+      EXTRACTION_INCOMPLETE: "Extraction incomplete — line items may be missing",
       NO_CONTRACTORS_SYNCED: "No contractors synced from ArchiDoc",
       DEVIS_CONTRACTOR_NOT_FOUND: "Contractor not found in ArchiTrak",
       NO_FILE_PROVIDED: "No file provided",

@@ -264,6 +264,7 @@ export default function SettingsPage() {
         <DevisRematchSection />
         <InvoiceRematchSection />
         <PageHintBackfillSection />
+        <ExtractionAuditSection />
       </main>
     </div>
   );
@@ -2600,5 +2601,207 @@ function TemplateAssetSlot({
         data-testid={`input-file-${slot.assetType}`}
       />
     </LuxuryCard>
+  );
+}
+
+interface ExtractionAuditRow {
+  devisId: number;
+  devisCode: string | null;
+  devisNumber: string | null;
+  status: string;
+  projectId: number;
+  projectName: string | null;
+  pdfPageCount: number | null;
+  coveredPageCount: number | null;
+  maxPageHint: number | null;
+  lineItemCount: number;
+  derivedTotals: boolean;
+  suspectTruncated: boolean;
+  reasons: string[];
+}
+
+interface ExtractionAuditResponse {
+  rows: ExtractionAuditRow[];
+  scanned: number;
+  errors: Array<{ devisId: number; message: string }>;
+}
+
+// Task #350 — surfaces devis whose stored extraction may be silently partial
+// (legacy 5-page rasterisation cap, derived totals) and lets the operator
+// batch re-extract them through the safeguarded rescrape path.
+function ExtractionAuditSection() {
+  const { toast } = useToast();
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [enabled, setEnabled] = useState(false);
+
+  const { data, isFetching, refetch } = useQuery<ExtractionAuditResponse>({
+    queryKey: ["/api/admin/extraction-audit"],
+    enabled,
+    staleTime: Infinity,
+  });
+
+  const rows = data?.rows ?? [];
+  // Only drafts are safe candidates for a wholesale re-extraction; the server
+  // rescrape path additionally refuses devis with invoices or situations.
+  const eligibleRows = rows.filter((r) => r.status === "draft");
+
+  const toggle = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const rescrapeMutation = useMutation({
+    mutationFn: async (devisIds: number[]) => {
+      const res = await apiRequest("POST", "/api/admin/extraction-audit/rescrape", { devisIds });
+      return (await res.json()) as { results: Array<{ devisId: number; success: boolean; code?: string; message?: string }> };
+    },
+    onSuccess: ({ results }) => {
+      const ok = results.filter((r) => r.success).length;
+      const failed = results.filter((r) => !r.success);
+      toast({
+        title: `Re-extraction finished: ${ok} succeeded, ${failed.length} refused/failed`,
+        description: failed.length > 0
+          ? failed.slice(0, 3).map((f) => `#${f.devisId}: ${f.code ?? f.message ?? "failed"}`).join(" · ")
+          : "All selected devis were re-extracted with full page coverage.",
+        variant: failed.length > 0 ? "destructive" : undefined,
+      });
+      setSelected(new Set());
+      refetch();
+      queryClient.invalidateQueries({ queryKey: ["/api/devis"] });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Re-extraction failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <div className="mt-10">
+      <div className="mb-6 flex items-start justify-between gap-3">
+        <div>
+          <h2
+            className="text-[16px] font-black uppercase tracking-tight mb-1"
+            style={{ color: "#0B2545" }}
+            data-testid="text-extraction-audit-title"
+          >
+            Extraction Completeness Audit
+          </h2>
+          <p className="text-[11px] text-muted-foreground">
+            Finds devis whose stored extraction may be missing pages (older extractions only rendered
+            the first 5 PDF pages) or whose totals were derived from line items instead of being read
+            from the document. Draft devis can be re-extracted in place; devis with invoices or
+            progress claims are refused by the server to protect financial history.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              if (!enabled) setEnabled(true);
+              else refetch();
+            }}
+            disabled={isFetching}
+            data-testid="button-extraction-audit-scan"
+          >
+            <RefreshCw size={12} className={cn("mr-1.5", isFetching && "animate-spin")} />
+            <span className="text-[10px] font-bold uppercase tracking-widest">
+              {isFetching ? "Scanning..." : enabled ? "Rescan" : "Scan"}
+            </span>
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => rescrapeMutation.mutate(Array.from(selected))}
+            disabled={selected.size === 0 || rescrapeMutation.isPending}
+            data-testid="button-extraction-audit-rescrape"
+          >
+            {rescrapeMutation.isPending ? (
+              <Loader2 size={12} className="mr-1.5 animate-spin" />
+            ) : (
+              <Wand2 size={12} className="mr-1.5" />
+            )}
+            <span className="text-[10px] font-bold uppercase tracking-widest">
+              {rescrapeMutation.isPending ? "Re-extracting..." : `Re-extract selected (${selected.size})`}
+            </span>
+          </Button>
+        </div>
+      </div>
+
+      {enabled && data && (
+        <LuxuryCard>
+          <p className="text-[10px] text-muted-foreground mb-3" data-testid="text-extraction-audit-summary">
+            Scanned {data.scanned} devis with a PDF on file — {rows.length} flagged
+            {data.errors.length > 0 ? ` · ${data.errors.length} could not be checked` : ""}.
+          </p>
+          {rows.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground" data-testid="text-extraction-audit-empty">
+              No devis flagged — every stored extraction covers its full PDF.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr className="text-left text-muted-foreground uppercase text-[9px] tracking-widest">
+                    <th className="py-1.5 pr-2 w-8"></th>
+                    <th className="py-1.5 pr-3">Devis</th>
+                    <th className="py-1.5 pr-3">Project</th>
+                    <th className="py-1.5 pr-3">Status</th>
+                    <th className="py-1.5 pr-3">Pages</th>
+                    <th className="py-1.5 pr-3">Lines</th>
+                    <th className="py-1.5">Why flagged</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => {
+                    const eligible = r.status === "draft";
+                    return (
+                      <tr key={r.devisId} className="border-t border-[rgba(0,0,0,0.05)]" data-testid={`row-extraction-audit-${r.devisId}`}>
+                        <td className="py-1.5 pr-2">
+                          <Checkbox
+                            checked={selected.has(r.devisId)}
+                            disabled={!eligible}
+                            onCheckedChange={() => toggle(r.devisId)}
+                            data-testid={`checkbox-extraction-audit-${r.devisId}`}
+                          />
+                        </td>
+                        <td className="py-1.5 pr-3 font-semibold">{r.devisCode ?? r.devisNumber ?? `#${r.devisId}`}</td>
+                        <td className="py-1.5 pr-3">{r.projectName ?? r.projectId}</td>
+                        <td className="py-1.5 pr-3">
+                          {r.status}
+                          {!eligible && <span className="text-muted-foreground"> (not re-extractable)</span>}
+                        </td>
+                        <td className="py-1.5 pr-3">
+                          {r.coveredPageCount ?? (r.maxPageHint != null ? `≤${Math.max(r.maxPageHint, 5)}` : "?")} / {r.pdfPageCount ?? "?"}
+                        </td>
+                        <td className="py-1.5 pr-3">{r.lineItemCount}</td>
+                        <td className="py-1.5 text-muted-foreground">{r.reasons.join("; ")}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {eligibleRows.length > 0 && (
+            <div className="mt-3">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setSelected(new Set(eligibleRows.map((r) => r.devisId)))}
+                data-testid="button-extraction-audit-select-all"
+              >
+                <span className="text-[10px] font-bold uppercase tracking-widest">
+                  Select all drafts ({eligibleRows.length})
+                </span>
+              </Button>
+            </div>
+          )}
+        </LuxuryCard>
+      )}
+    </div>
   );
 }

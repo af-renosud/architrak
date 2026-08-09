@@ -8,6 +8,11 @@ export const ADVISORY_CODES = {
   LINE_ITEMS_TOTAL_MISMATCH: "line_items_total_mismatch",
   RETENUE_GARANTIE_DEVIATION: "retenue_garantie_deviation",
   NET_A_PAYER_MISMATCH: "net_a_payer_mismatch",
+  // Task #350 — extraction completeness verification.
+  PAGE_COVERAGE_INCOMPLETE: "page_coverage_incomplete",
+  PAGE_WITHOUT_LINE_ITEMS: "page_without_line_items",
+  LINE_NUMBERING_GAP: "line_numbering_gap",
+  DERIVED_TOTALS_UNVERIFIED: "derived_totals_unverified",
   GENERIC: "generic",
 } as const;
 
@@ -46,6 +51,10 @@ export function deriveAdvisoryCode(w: ValidatorWarningLike): AdvisoryCode {
     return ADVISORY_CODES.AUTO_LIQUIDATION_TVA_RATE_NONZERO;
   }
   if (w.field === "lineItems") return ADVISORY_CODES.LINE_ITEMS_TOTAL_MISMATCH;
+  if (w.field === "pageCoverage") return ADVISORY_CODES.PAGE_COVERAGE_INCOMPLETE;
+  if (w.field === "pageLineItems") return ADVISORY_CODES.PAGE_WITHOUT_LINE_ITEMS;
+  if (w.field === "lineNumbering") return ADVISORY_CODES.LINE_NUMBERING_GAP;
+  if (w.field === "derivedTotals") return ADVISORY_CODES.DERIVED_TOTALS_UNVERIFIED;
   if (w.field === "retenueDeGarantie") return ADVISORY_CODES.RETENUE_GARANTIE_DEVIATION;
   if (w.field === "netAPayer") return ADVISORY_CODES.NET_A_PAYER_MISMATCH;
   return ADVISORY_CODES.GENERIC;

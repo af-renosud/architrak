@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { storage } from "../storage";
 import { getDocumentBuffer } from "../storage/object-storage";
 import { validateExtraction } from "./extraction-validator";
+import { findBlockingCompletenessWarnings } from "./extraction-completeness";
 import { checkLotReferencesAgainstCatalog } from "./lot-reference-validator";
 import { roundCurrency } from "../../shared/financial-utils";
 import { reconcileAdvisories } from "./advisory-reconciler";
@@ -26,6 +27,7 @@ export const RESCRAPE_ERROR_CODES = {
   HAS_INVOICES: "DEVIS_HAS_INVOICES",
   HAS_SITUATIONS: "DEVIS_HAS_SITUATIONS",
   PDF_REPLACED_DURING_RESCRAPE: "PDF_REPLACED_DURING_RESCRAPE",
+  EXTRACTION_INCOMPLETE: "EXTRACTION_INCOMPLETE",
 } as const;
 
 interface RescrapeResult {
@@ -125,6 +127,22 @@ export async function rescrapeDevis(devisId: number): Promise<RescrapeResult> {
   }
 
   const validation = validateExtraction(parsed);
+
+  // Task #350 — completeness hard gate, mirrored from the upload path: never
+  // overwrite existing line items with a demonstrably partial extraction.
+  const blockingCompleteness = findBlockingCompletenessWarnings(validation.warnings);
+  if (blockingCompleteness.length > 0) {
+    return {
+      success: false,
+      status: 422,
+      data: {
+        message: `Extraction appears incomplete: ${blockingCompleteness.map((w) => w.message).join(" ")}`,
+        code: RESCRAPE_ERROR_CODES.EXTRACTION_INCOMPLETE,
+        extraction: parsed,
+      },
+    };
+  }
+
   const lotWarnings = await checkLotReferencesAgainstCatalog(parsed);
   const corrected = { ...parsed, ...validation.correctedValues };
   const allWarnings = [...validation.warnings, ...lotWarnings];

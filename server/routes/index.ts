@@ -34,6 +34,7 @@ import benchmarksRouter from "./benchmarks";
 import adminDevisRematchRouter from "./admin-devis-rematch";
 import adminInvoiceRematchRouter from "./admin-invoice-rematch";
 import adminPageHintBackfillRouter from "./admin-page-hint-backfill";
+import adminExtractionAuditRouter from "./admin-extraction-audit";
 import adminTransientFailuresRouter from "./admin-transient-failures";
 import adminWebhookDlqRouter from "./admin-webhook-dlq";
 import adminMirrorRestoreRouter from "./admin-mirror-restore";
@@ -117,6 +118,7 @@ export async function registerRoutes(
   app.use(adminDevisRematchRouter);
   app.use(adminInvoiceRematchRouter);
   app.use(adminPageHintBackfillRouter);
+  app.use(adminExtractionAuditRouter);
   app.use(adminTransientFailuresRouter);
   app.use(adminWebhookDlqRouter);
   app.use(adminMirrorRestoreRouter);

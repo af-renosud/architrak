@@ -1,5 +1,6 @@
 import type { ParsedDocument } from "../gmail/document-parser";
 import { roundCurrency, deriveTvaAmount } from "../../shared/financial-utils";
+import { checkExtractionCompleteness } from "./extraction-completeness";
 
 export interface ValidationWarning {
   field: string;
@@ -65,6 +66,17 @@ function detectVatInclusiveLineTotal(
 export function validateExtraction(parsed: ParsedDocument): ValidationResult {
   const warnings: ValidationWarning[] = [];
   const correctedValues: Partial<ParsedDocument> = {};
+
+  // Task #350 — deterministic completeness back-checks (page coverage,
+  // text-layer evidence, numbering continuity). Runs first so blocking
+  // coverage errors are always present in the returned warnings.
+  warnings.push(
+    ...checkExtractionCompleteness({
+      coverage: parsed.extractionCoverage,
+      lineItems: parsed.lineItems ?? [],
+    }),
+  );
+
   let checksRun = 0;
   let checksPassed = 0;
   let derivedTotalsFromLineItems = false;
@@ -148,6 +160,18 @@ export function validateExtraction(parsed: ParsedDocument): ValidationResult {
       }
       if (derivedTtc != null) correctedValues.amountTtc = derivedTtc;
       derivedTotalsFromLineItems = true;
+      // Task #350 — explicit advisory: derived totals are circular evidence.
+      // The line-sum-vs-HT cross-check below would trivially "pass" against
+      // an HT that IS the line sum, so it must never count as verification;
+      // this advisory keeps that fact visible on the draft.
+      warnings.push({
+        field: "derivedTotals",
+        expected: null as unknown as number,
+        actual: lineSum,
+        message:
+          "Document totals were derived from the extracted line items, so the usual line-sum cross-check cannot verify them. If any line items are missing from the extraction, these totals are wrong. Verify against the PDF.",
+        severity: "warning",
+      });
       warnings.push({
         field: "amountHt",
         expected: lineSum,
@@ -163,7 +187,11 @@ export function validateExtraction(parsed: ParsedDocument): ValidationResult {
     }
   }
 
-  if (parsed.lineItems && parsed.lineItems.length > 0 && ht != null) {
+  // Task #350 — when the HT was derived from the line-item sum, comparing
+  // the line sum back against it is circular: skip the check entirely (it
+  // can neither pass nor fail meaningfully). The derivedTotals advisory
+  // above already flags the situation.
+  if (parsed.lineItems && parsed.lineItems.length > 0 && ht != null && !derivedTotalsFromLineItems) {
     checksRun++;
     const lineTotal = parsed.lineItems.reduce(
       (sum, item) => sum + (item.total ?? 0),

@@ -2,6 +2,7 @@ import { storage } from "../storage";
 import { uploadDocument } from "../storage/object-storage";
 import { validateExtraction } from "./extraction-validator";
 import { checkLotReferencesAgainstCatalog } from "./lot-reference-validator";
+import { findBlockingCompletenessWarnings } from "./extraction-completeness";
 import { roundCurrency } from "../../shared/financial-utils";
 import { reconcileAdvisories } from "./advisory-reconciler";
 import { assertPdfMagic } from "../middleware/upload";
@@ -148,6 +149,32 @@ export async function processDevisUpload(projectId: number, file: UploadedFile, 
   }
 
   const validation = validateExtraction(parsed);
+
+  // Task #350 — extraction completeness is a hard gate: a draft must never
+  // persist when pages were missing from the extraction or a text-evidenced
+  // page produced no line items. The operator re-runs the upload instead of
+  // confirming silently-partial data.
+  const blockingCompleteness = findBlockingCompletenessWarnings(validation.warnings);
+  if (blockingCompleteness.length > 0) {
+    return {
+      success: false,
+      status: 422,
+      data: {
+        message: `Extraction appears incomplete: ${blockingCompleteness.map((w) => w.message).join(" ")}`,
+        code: DEVIS_UPLOAD_ERROR_CODES.EXTRACTION_INCOMPLETE,
+        extraction: parsed,
+        validation: {
+          isValid: false,
+          warnings: validation.warnings,
+          confidenceScore: validation.confidenceScore,
+          correctedValues: validation.correctedValues,
+        },
+        storageKey,
+        fileName: file.originalname,
+      },
+    };
+  }
+
   const lotWarnings = await checkLotReferencesAgainstCatalog(parsed);
 
   const corrected = { ...parsed, ...validation.correctedValues };

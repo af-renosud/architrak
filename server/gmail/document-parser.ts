@@ -13,6 +13,7 @@ import { join } from "path";
 import { env } from "../env";
 import { decideEmailDocRetry, EMAIL_DOC_MAX_ATTEMPTS } from "../services/email-doc-retry";
 import { evaluateEmailPrefilter, UNMATCHED_SENDER_STATUS } from "./email-prefilter";
+import { countItemRowCandidates } from "../services/extraction-completeness";
 
 const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
@@ -117,6 +118,24 @@ export interface ParsedDocument {
     bbox?: { x: number; y: number; w: number; h: number };
   }>;
   rawText?: string;
+  // Task #350 — extraction completeness metadata, stamped by parseDocument
+  // (deterministic, not AI-produced) and persisted with aiExtractedData so
+  // the completeness validation is auditable on every stored extraction.
+  extractionCoverage?: ExtractionCoverage;
+}
+
+export interface ExtractionCoverage {
+  /** Authoritative page count from pdfinfo; null when the PDF was too broken
+   *  for pdfinfo (legacy lenient path). */
+  pdfPageCount: number | null;
+  /** Number of page images actually rendered and sent to the AI. */
+  renderedPageCount: number;
+  /** Number of AI requests the pages were split across (1 = single-shot). */
+  chunkCount: number;
+  /** Per-page text-layer evidence: candidateRows counts deterministic
+   *  item-row-looking lines found in the page's text layer. hasTextLayer is
+   *  false for scanned pages (which must never false-block). */
+  pageEvidence?: Array<{ page: number; candidateRows: number; hasTextLayer: boolean }>;
 }
 
 interface MatchResult {
@@ -496,18 +515,33 @@ function pngDimensions(buf: Buffer): { width: number; height: number } | null {
   return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
 }
 
+// Task #350 — the byte budget applies PER AI REQUEST, and extraction sends at
+// most EXTRACTION_CHUNK_PAGES pages per request. Judging the whole document's
+// aggregate payload would force needless DPI downgrades (or outright failure)
+// on long PDFs whose individual chunks fit comfortably. Exported for tests.
+export function maxChunkImageBytes(images: Buffer[], chunkPages: number): number {
+  let max = 0;
+  for (let i = 0; i < images.length; i += chunkPages) {
+    let windowBytes = 0;
+    for (let j = i; j < Math.min(i + chunkPages, images.length); j++) {
+      windowBytes += images[j].length;
+    }
+    max = Math.max(max, windowBytes);
+  }
+  return max;
+}
+
 function exceedsGeminiImageLimits(images: Buffer[]): string | null {
-  let totalBytes = 0;
   for (const img of images) {
-    totalBytes += img.length;
     const dims = pngDimensions(img);
     if (dims && (dims.width > MAX_IMAGE_DIMENSION_PX || dims.height > MAX_IMAGE_DIMENSION_PX)) {
       return `page image ${dims.width}x${dims.height}px exceeds the ${MAX_IMAGE_DIMENSION_PX}px limit`;
     }
   }
-  if (totalBytes > MAX_TOTAL_IMAGE_BYTES) {
-    const mb = (totalBytes / (1024 * 1024)).toFixed(1);
-    return `rendered pages total ${mb}MB exceeds the ${MAX_TOTAL_IMAGE_BYTES / (1024 * 1024)}MB budget`;
+  const chunkBytes = maxChunkImageBytes(images, EXTRACTION_CHUNK_PAGES);
+  if (chunkBytes > MAX_TOTAL_IMAGE_BYTES) {
+    const mb = (chunkBytes / (1024 * 1024)).toFixed(1);
+    return `largest ${EXTRACTION_CHUNK_PAGES}-page extraction chunk totals ${mb}MB, exceeding the ${MAX_TOTAL_IMAGE_BYTES / (1024 * 1024)}MB per-request budget`;
   }
   return null;
 }
@@ -521,9 +555,10 @@ function exceedsGeminiImageLimits(images: Buffer[]): string | null {
 function computeFitDpi(images: Buffer[], currentDpi: number): number | null {
   let scale = 1;
   let maxDim = 0;
-  let totalBytes = 0;
+  // Mirror exceedsGeminiImageLimits: the byte budget is per extraction chunk
+  // (per AI request), not for the whole document.
+  const totalBytes = maxChunkImageBytes(images, EXTRACTION_CHUNK_PAGES);
   for (const img of images) {
-    totalBytes += img.length;
     const dims = pngDimensions(img);
     if (dims) maxDim = Math.max(maxDim, dims.width, dims.height);
   }
@@ -558,9 +593,20 @@ function runRasterCommand(
   });
 }
 
+// Sort rendered pages by their trailing page number, NOT lexically. pdftoppm
+// zero-pads its numbering so a lexical sort happens to work, but ghostscript's
+// `page-%d.png` pattern does not (page-10 sorts before page-2 lexically) —
+// which silently reorders pages on any document past 9 pages.
+function pageNumberOf(fileName: string): number {
+  const m = fileName.match(/(\d+)\.png$/);
+  return m ? Number(m[1]) : Number.MAX_SAFE_INTEGER;
+}
+
 async function collectPngPages(dir: string, maxPages: number): Promise<Buffer[]> {
   const files = await readdir(dir);
-  const pngFiles = files.filter((f) => f.endsWith(".png")).sort();
+  const pngFiles = files
+    .filter((f) => f.endsWith(".png"))
+    .sort((a, b) => pageNumberOf(a) - pageNumberOf(b) || a.localeCompare(b));
   const images: Buffer[] = [];
   for (const pngFile of pngFiles.slice(0, maxPages)) {
     images.push(await readFile(join(dir, pngFile)));
@@ -575,6 +621,89 @@ async function clearPngPages(dir: string): Promise<void> {
       .filter((f) => f.endsWith(".png"))
       .map((f) => unlink(join(dir, f)).catch(() => undefined)),
   );
+}
+
+// ── Authoritative PDF page count (Task #350) ───────────────────────────────
+// pdfinfo reads the page count from the PDF catalog without rendering — the
+// authoritative back-check for extraction completeness. Returns null when the
+// PDF is too broken for pdfinfo (rasterisation then proceeds leniently, as
+// before, rather than dead-ending on the counter itself).
+export async function getPdfPageCountFromFile(pdfPath: string): Promise<number | null> {
+  try {
+    const stdout = await new Promise<string>((resolve, reject) => {
+      execFile("pdfinfo", [pdfPath], { timeout: 30000, maxBuffer: 1024 * 1024 }, (err, out) => {
+        if (err) reject(err);
+        else resolve(out);
+      });
+    });
+    const m = stdout.match(/^Pages:\s+(\d+)/m);
+    return m ? Number(m[1]) : null;
+  } catch (err) {
+    console.warn("[document-parser] pdfinfo failed — page-count back-check unavailable:", err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+export async function getPdfPageCount(pdfBuffer: Buffer): Promise<number | null> {
+  const dir = await mkdtemp(join(tmpdir(), "architrak-pdfinfo-"));
+  const p = join(dir, "doc.pdf");
+  try {
+    await writeFile(p, pdfBuffer);
+    return await getPdfPageCountFromFile(p);
+  } finally {
+    try {
+      await unlink(p);
+      const { rmdir } = await import("fs/promises");
+      await rmdir(dir);
+    } catch {}
+  }
+}
+
+// Extract the text layer of a single page (1-indexed) with layout preserved.
+// Used for deterministic corroboration of extraction completeness. Returns
+// null when the page has no text layer or pdftotext fails (scanned PDFs must
+// never false-block).
+export async function getPdfPageText(pdfPath: string, page: number): Promise<string | null> {
+  try {
+    const stdout = await new Promise<string>((resolve, reject) => {
+      execFile(
+        "pdftotext",
+        ["-f", String(page), "-l", String(page), "-layout", pdfPath, "-"],
+        { timeout: 30000, maxBuffer: 8 * 1024 * 1024 },
+        (err, out) => {
+          if (err) reject(err);
+          else resolve(out);
+        },
+      );
+    });
+    return stdout;
+  } catch {
+    return null;
+  }
+}
+
+// Default getPageTexts dep: writes the buffer once and runs pdftotext per
+// page. Any failure yields nulls (scanned/broken PDFs must never block on
+// evidence gathering).
+async function getPageTextsFromBuffer(pdfBuffer: Buffer, pageCount: number): Promise<Array<string | null>> {
+  const dir = await mkdtemp(join(tmpdir(), "architrak-pagetext-"));
+  const p = join(dir, "doc.pdf");
+  try {
+    await writeFile(p, pdfBuffer);
+    const texts: Array<string | null> = [];
+    for (let page = 1; page <= pageCount; page++) {
+      texts.push(await getPdfPageText(p, page));
+    }
+    return texts;
+  } catch {
+    return Array.from({ length: pageCount }, () => null);
+  } finally {
+    try {
+      await unlink(p);
+      const { rmdir } = await import("fs/promises");
+      await rmdir(dir);
+    } catch {}
+  }
 }
 
 // ── SIRET cross-check against the PDF text layer ──────────────────────────
@@ -701,7 +830,25 @@ export async function crossCheckSiretAgainstTextLayer(
   }
 }
 
-export async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Promise<Buffer[]> {
+// Renders a PDF to one PNG per page.
+//
+// Task #350 — completeness guarantee: when `maxPages` is omitted, ALL pages
+// are rendered and the output is back-checked against the authoritative page
+// count from pdfinfo. A strategy whose output is missing pages is treated as
+// a failure (next backend / DPI rung), and if no strategy can produce the
+// complete set the whole conversion throws — a partial extraction is never
+// silently accepted (prod DVT0000959 lost pages 6–7 to the old 5-page cap).
+// Callers that pass an explicit `maxPages` (e.g. the design-contract parser)
+// keep prefix semantics, but the rendered prefix is still verified complete.
+export async function pdfToImages(pdfBuffer: Buffer, maxPages?: number): Promise<Buffer[]> {
+  const { images } = await pdfToImagesWithCoverage(pdfBuffer, maxPages);
+  return images;
+}
+
+export async function pdfToImagesWithCoverage(
+  pdfBuffer: Buffer,
+  maxPages?: number,
+): Promise<{ images: Buffer[]; pdfPageCount: number | null }> {
   const tempDir = await mkdtemp(join(tmpdir(), "architrak-pdf-"));
   const pdfPath = join(tempDir, "input.pdf");
   const decryptedPath = join(tempDir, "decrypted.pdf");
@@ -723,6 +870,16 @@ export async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Prom
       }
       console.warn("[document-parser] qpdf pre-processing failed, proceeding with original PDF:", err);
     }
+
+    // Authoritative page count (pdfinfo on the decrypted file). When known,
+    // the rendered output MUST contain exactly the expected number of pages;
+    // when pdfinfo itself fails on a broken PDF we fall back to the legacy
+    // lenient behaviour rather than dead-ending on the counter.
+    const pdfPageCount = await getPdfPageCountFromFile(pdfToProcess);
+    const expectedPages: number | null =
+      pdfPageCount != null ? (maxPages != null ? Math.min(maxPages, pdfPageCount) : pdfPageCount) : null;
+    // Page limit handed to the rasterisers' -l / -dLastPage flags.
+    const renderLimit = expectedPages ?? maxPages ?? 10000;
 
     // Rasterise with a fallback chain. Some supplier PDFs (protected,
     // oddly linearised, or with malformed xref tables) crash pdftoppm's
@@ -758,19 +915,19 @@ export async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Prom
       {
         name: "pdftoppm",
         run: () =>
-          runRasterCommand("pdftoppm", ["-png", "-r", String(dpi), "-l", String(maxPages), pdfToProcess, outputPrefix]),
+          runRasterCommand("pdftoppm", ["-png", "-r", String(dpi), "-l", String(renderLimit), pdfToProcess, outputPrefix]),
       },
       {
         name: "pdftocairo",
         run: () =>
-          runRasterCommand("pdftocairo", ["-png", "-r", String(dpi), "-l", String(maxPages), pdfToProcess, outputPrefix]),
+          runRasterCommand("pdftocairo", ["-png", "-r", String(dpi), "-l", String(renderLimit), pdfToProcess, outputPrefix]),
       },
       {
         name: "ghostscript-repair",
         run: async () => {
           const repair = await runRasterCommand("gs", ["-q", "-o", repairedPath, "-sDEVICE=pdfwrite", pdfToProcess]);
           if (!repair.ok) return repair;
-          return runRasterCommand("pdftoppm", ["-png", "-r", String(dpi), "-l", String(maxPages), repairedPath, outputPrefix]);
+          return runRasterCommand("pdftoppm", ["-png", "-r", String(dpi), "-l", String(renderLimit), repairedPath, outputPrefix]);
         },
       },
       {
@@ -779,7 +936,7 @@ export async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Prom
           runRasterCommand("gs", [
             "-q", "-dNOPAUSE", "-dBATCH", "-dSAFER",
             "-sDEVICE=png16m", `-r${dpi}`,
-            "-dFirstPage=1", `-dLastPage=${maxPages}`,
+            "-dFirstPage=1", `-dLastPage=${renderLimit}`,
             `-sOutputFile=${gsOutputPattern}`,
             pdfToProcess,
           ]),
@@ -808,8 +965,25 @@ export async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Prom
 
         await clearPngPages(tempDir);
         const { ok, detail, timedOut } = await strategy.run();
-        const images = await collectPngPages(tempDir, maxPages);
-        const allComplete = images.length > 0 && images.every(isCompletePng);
+        const images = await collectPngPages(tempDir, renderLimit);
+        let allComplete = images.length > 0 && images.every(isCompletePng);
+
+        // Task #350 — completeness back-check: when the authoritative page
+        // count is known, a strategy that rendered fewer pages than expected
+        // is a FAILURE even if every rendered page is a well-formed PNG.
+        // Accepting the partial set is exactly how prod DVT0000959 silently
+        // lost pages 6–7.
+        if (allComplete && expectedPages != null && images.length !== expectedPages) {
+          diagnostics.push(
+            `${strategy.name}@${dpi}dpi: rendered ${images.length} page(s) but pdfinfo reports ${expectedPages} expected — incomplete output discarded`,
+          );
+          allComplete = false;
+          if (timedOut) {
+            descendDpi = true;
+            break;
+          }
+          continue;
+        }
 
         if (allComplete && timedOut) {
           // The rasteriser was killed at the cap AFTER finishing these pages
@@ -842,7 +1016,7 @@ export async function pdfToImages(pdfBuffer: Buffer, maxPages: number = 5): Prom
                 `[document-parser] rasterised via "${strategy.name}" at ${dpi} DPI (${images.length} page(s))`,
               );
             }
-            return images;
+            return { images, pdfPageCount };
           }
           diagnostics.push(`${strategy.name}@${dpi}dpi: ${limitViolation} — retrying at reduced DPI`);
           if (rung === ladder.length - 1 && extraFitRungs < MAX_EXTRA_FIT_RUNGS) {
@@ -1013,8 +1187,102 @@ async function getOpenAIFallbackModelId(): Promise<string> {
   return "gpt-4o";
 }
 
+// Task #350 — chunked extraction. Long PDFs are split into contiguous chunks
+// of at most this many pages, each extracted in its own AI request, then
+// merged with global page offsets. Keeps per-request image payloads at the
+// size the extraction prompt was tuned for (and under Gemini inline limits)
+// while guaranteeing every page is actually shown to the model.
+export const EXTRACTION_CHUNK_PAGES = 5;
+
+// Merge per-chunk parses into a single ParsedDocument.
+//  - lineItems: concatenated in chunk order; pageHint is rebased from
+//    chunk-relative (the AI only sees the chunk's images) to global 1-indexed
+//    pages via each chunk's page offset.
+//  - identity fields (contractor, client, reference, SIRET, date, banking…):
+//    first non-empty value wins — they live on page 1.
+//  - totals / financial summary fields: LAST non-null value wins — French
+//    devis print the totals block on the final page(s).
+//  - documentType: first chunk that is not "unknown"/"other" wins.
+export function mergeChunkedParses(
+  chunks: Array<{ parsed: ParsedDocument; pageOffset: number; pageCount: number }>,
+): ParsedDocument {
+  if (chunks.length === 1 && chunks[0].pageOffset === 0) return chunks[0].parsed;
+
+  const FIRST_WINS = [
+    "contractorName", "clientName", "projectAddress", "reference", "invoiceNumber",
+    "devisNumber", "siret", "tvaIntracom", "date", "paymentTerms", "iban", "bic",
+    "description",
+  ] as const;
+  const LAST_WINS = [
+    "amountHt", "amountTtc", "tvaAmount", "tvaRate", "autoLiquidation",
+    "retenueDeGarantie", "netAPayer", "acompteRequired", "acomptePercent",
+    "acompteAmountHt", "acompteTrigger",
+  ] as const;
+
+  const merged: ParsedDocument = { documentType: "unknown" };
+  for (const { parsed } of chunks) {
+    if (
+      merged.documentType === "unknown" || merged.documentType === "other"
+    ) {
+      if (parsed.documentType && parsed.documentType !== "unknown") {
+        merged.documentType = parsed.documentType;
+      }
+    }
+    for (const key of FIRST_WINS) {
+      const v = parsed[key];
+      if (merged[key] == null && v != null && (typeof v !== "string" || v.trim() !== "")) {
+        (merged as unknown as Record<string, unknown>)[key] = v;
+      }
+    }
+    for (const key of LAST_WINS) {
+      const v = parsed[key];
+      if (v != null) (merged as unknown as Record<string, unknown>)[key] = v;
+    }
+  }
+
+  // lotReferences: union in order, de-duplicated.
+  const lotRefs: string[] = [];
+  for (const { parsed } of chunks) {
+    for (const ref of parsed.lotReferences ?? []) {
+      if (!lotRefs.includes(ref)) lotRefs.push(ref);
+    }
+  }
+  if (lotRefs.length > 0) merged.lotReferences = lotRefs;
+
+  const lineItems: NonNullable<ParsedDocument["lineItems"]> = [];
+  for (const { parsed, pageOffset, pageCount } of chunks) {
+    for (const item of parsed.lineItems ?? []) {
+      const rebased = { ...item };
+      if (typeof item.pageHint === "number" && Number.isFinite(item.pageHint)) {
+        // The AI was told "the first image is page 1" — for a chunk starting
+        // at global page pageOffset+1, hint N maps to pageOffset+N. Hints
+        // outside the chunk's own range are unreliable; drop them rather
+        // than rebasing garbage.
+        if (item.pageHint >= 1 && item.pageHint <= pageCount) {
+          rebased.pageHint = item.pageHint + pageOffset;
+        } else {
+          delete rebased.pageHint;
+          delete rebased.bbox;
+        }
+      }
+      lineItems.push(rebased);
+    }
+  }
+  if (lineItems.length > 0) merged.lineItems = lineItems;
+
+  const rawTexts = chunks.map((c) => c.parsed.rawText).filter(Boolean);
+  if (rawTexts.length > 0) merged.rawText = rawTexts.join("\n");
+
+  return merged;
+}
+
 export interface ParseDocumentDeps {
   pdfToImages?: (pdfBuffer: Buffer) => Promise<Buffer[]>;
+  /** Task #350 — preferred raster dep: returns the authoritative page count
+   *  alongside the rendered pages. Falls back to pdfToImages when absent. */
+  pdfToImagesWithCoverage?: (pdfBuffer: Buffer) => Promise<{ images: Buffer[]; pdfPageCount: number | null }>;
+  /** Task #350 — per-page text-layer extraction for completeness evidence. */
+  getPageTexts?: (pdfBuffer: Buffer, pageCount: number) => Promise<Array<string | null>>;
   getActiveModel?: () => Promise<{ provider: string; modelId: string }>;
   parseWithGemini?: (images: Buffer[], modelId: string) => Promise<ParsedDocument>;
   parseWithOpenAI?: (images: Buffer[], modelId: string) => Promise<ParsedDocument>;
@@ -1027,17 +1295,26 @@ export async function parseDocument(
   fileName: string,
   deps: ParseDocumentDeps = {},
 ): Promise<ParsedDocument> {
-  const _pdfToImages = deps.pdfToImages ?? pdfToImages;
   const _getActiveModel = deps.getActiveModel ?? getActiveModel;
   const _parseWithGemini = deps.parseWithGemini ?? parseWithGemini;
   const _parseWithOpenAI = deps.parseWithOpenAI ?? parseWithOpenAI;
   const _getOpenAIFallbackModelId = deps.getOpenAIFallbackModelId ?? getOpenAIFallbackModelId;
   const _hasOpenAIKey = deps.hasOpenAIKey ?? hasOpenAIKey;
+  const _pdfToImagesWithCoverage: (buf: Buffer) => Promise<{ images: Buffer[]; pdfPageCount: number | null }> =
+    deps.pdfToImagesWithCoverage
+      ?? (deps.pdfToImages
+        ? async (buf: Buffer) => {
+            const images = await deps.pdfToImages!(buf);
+            return { images, pdfPageCount: images.length };
+          }
+        : (buf: Buffer) => pdfToImagesWithCoverage(buf));
+  const _getPageTexts = deps.getPageTexts ?? getPageTextsFromBuffer;
 
   let images: Buffer[];
+  let pdfPageCount: number | null;
   try {
     console.log(`[DocumentParser] Converting PDF "${fileName}" to images...`);
-    images = await _pdfToImages(pdfBuffer);
+    ({ images, pdfPageCount } = await _pdfToImagesWithCoverage(pdfBuffer));
   } catch (err: any) {
     console.error("[DocumentParser] PDF conversion error:", err.message);
     return { documentType: "unknown", rawText: `Parse failed: ${err.message}` };
@@ -1045,51 +1322,109 @@ export async function parseDocument(
   if (images.length === 0) {
     return { documentType: "unknown", rawText: "PDF conversion produced no images" };
   }
-  console.log(`[DocumentParser] Converted ${images.length} page(s) to PNG`);
+  console.log(`[DocumentParser] Converted ${images.length} page(s) to PNG (pdfinfo reports ${pdfPageCount ?? "unknown"})`);
 
   const { provider, modelId } = await _getActiveModel();
   console.log(`[DocumentParser] Using ${provider}/${modelId} for extraction`);
 
+  const parseChunk = async (
+    chunkImages: Buffer[],
+  ): Promise<{ parsed: ParsedDocument | null; err: unknown; transient: boolean }> => {
+    let parsed: ParsedDocument | null = null;
+    let finalErr: unknown = null;
+    let finalErrTransient = false;
+
+    if (provider === "gemini") {
+      try {
+        parsed = await _parseWithGemini(chunkImages, modelId);
+      } catch (err: any) {
+        finalErr = err;
+        finalErrTransient = isTransientGeminiError(err);
+        console.error(`[DocumentParser] Gemini parse error (transient=${finalErrTransient}):`, err.message);
+        if (finalErrTransient && _hasOpenAIKey()) {
+          const fallbackModelId = await _getOpenAIFallbackModelId();
+          console.warn(`[DocumentParser] Falling back to OpenAI/${fallbackModelId} after Gemini transient failure`);
+          try {
+            parsed = await _parseWithOpenAI(chunkImages, fallbackModelId);
+            // OpenAI fallback succeeded — clear the prior error.
+            finalErr = null;
+            finalErrTransient = false;
+          } catch (fallbackErr: any) {
+            // Replace the Gemini error with the actual final cause and
+            // re-classify so a permanent OpenAI failure (e.g., bad key)
+            // surfaces as permanent, not transient.
+            finalErr = fallbackErr;
+            finalErrTransient = isTransientGeminiError(fallbackErr);
+            console.error(`[DocumentParser] OpenAI fallback also failed (transient=${finalErrTransient}):`, fallbackErr.message);
+          }
+        }
+      }
+    } else {
+      try {
+        parsed = await _parseWithOpenAI(chunkImages, modelId);
+      } catch (err: any) {
+        finalErr = err;
+        finalErrTransient = isTransientGeminiError(err);
+        console.error(`[DocumentParser] OpenAI parse error (transient=${finalErrTransient}):`, err.message);
+      }
+    }
+    return { parsed, err: finalErr, transient: finalErrTransient };
+  };
+
+  // Task #350 — chunked extraction: every rendered page is shown to the AI,
+  // in contiguous chunks of at most EXTRACTION_CHUNK_PAGES. Any chunk failure
+  // fails the whole parse (transiency preserved) — a document with silently
+  // missing middle pages must never persist as a partial draft.
   let parsed: ParsedDocument | null = null;
   let finalErr: unknown = null;
   let finalErrTransient = false;
+  const chunkCount = Math.ceil(images.length / EXTRACTION_CHUNK_PAGES);
 
-  if (provider === "gemini") {
-    try {
-      parsed = await _parseWithGemini(images, modelId);
-    } catch (err: any) {
-      finalErr = err;
-      finalErrTransient = isTransientGeminiError(err);
-      console.error(`[DocumentParser] Gemini parse error (transient=${finalErrTransient}):`, err.message);
-      if (finalErrTransient && _hasOpenAIKey()) {
-        const fallbackModelId = await _getOpenAIFallbackModelId();
-        console.warn(`[DocumentParser] Falling back to OpenAI/${fallbackModelId} after Gemini transient failure`);
-        try {
-          parsed = await _parseWithOpenAI(images, fallbackModelId);
-          // OpenAI fallback succeeded — clear the prior error.
-          finalErr = null;
-          finalErrTransient = false;
-        } catch (fallbackErr: any) {
-          // Replace the Gemini error with the actual final cause and
-          // re-classify so a permanent OpenAI failure (e.g., bad key)
-          // surfaces as permanent, not transient.
-          finalErr = fallbackErr;
-          finalErrTransient = isTransientGeminiError(fallbackErr);
-          console.error(`[DocumentParser] OpenAI fallback also failed (transient=${finalErrTransient}):`, fallbackErr.message);
-        }
-      }
-    }
+  if (chunkCount <= 1) {
+    ({ parsed, err: finalErr, transient: finalErrTransient } = await parseChunk(images));
   } else {
-    try {
-      parsed = await _parseWithOpenAI(images, modelId);
-    } catch (err: any) {
-      finalErr = err;
-      finalErrTransient = isTransientGeminiError(err);
-      console.error(`[DocumentParser] OpenAI parse error (transient=${finalErrTransient}):`, err.message);
+    console.log(`[DocumentParser] Splitting ${images.length} pages into ${chunkCount} extraction chunk(s)`);
+    const chunkResults: Array<{ parsed: ParsedDocument; pageOffset: number; pageCount: number }> = [];
+    for (let i = 0; i < chunkCount; i++) {
+      const pageOffset = i * EXTRACTION_CHUNK_PAGES;
+      const chunkImages = images.slice(pageOffset, pageOffset + EXTRACTION_CHUNK_PAGES);
+      const result = await parseChunk(chunkImages);
+      if (!result.parsed) {
+        finalErr = result.err ?? new Error(`chunk ${i + 1}/${chunkCount} returned no result`);
+        finalErrTransient = result.transient;
+        console.error(`[DocumentParser] Chunk ${i + 1}/${chunkCount} (pages ${pageOffset + 1}–${pageOffset + chunkImages.length}) failed — aborting whole extraction`);
+        break;
+      }
+      chunkResults.push({ parsed: result.parsed, pageOffset, pageCount: chunkImages.length });
+    }
+    if (chunkResults.length === chunkCount) {
+      parsed = mergeChunkedParses(chunkResults);
+    } else {
+      parsed = null;
     }
   }
 
   if (parsed) {
+    // Task #350 — stamp deterministic coverage metadata (persisted via
+    // aiExtractedData) so completeness validation is auditable downstream.
+    let pageEvidence: ExtractionCoverage["pageEvidence"];
+    try {
+      const evidencePageCount = pdfPageCount ?? images.length;
+      const pageTexts = await _getPageTexts(pdfBuffer, evidencePageCount);
+      pageEvidence = pageTexts.map((text, idx) => ({
+        page: idx + 1,
+        hasTextLayer: text != null && text.trim().length > 0,
+        candidateRows: text ? countItemRowCandidates(text) : 0,
+      }));
+    } catch (err) {
+      console.warn("[DocumentParser] page text evidence gathering failed (non-fatal):", err instanceof Error ? err.message : err);
+    }
+    parsed.extractionCoverage = {
+      pdfPageCount,
+      renderedPageCount: images.length,
+      chunkCount,
+      ...(pageEvidence ? { pageEvidence } : {}),
+    };
     // Secondary safeguard: the vision models occasionally misread SIRET
     // digits off page images. Cross-check (and correct) against the PDF's
     // deterministic text layer before anything downstream matches on it.
@@ -1360,9 +1695,22 @@ export async function processEmailDocument(
     const lotWarnings = await checkLotReferencesAgainstCatalog(parsed);
     const allWarnings = [...validation.warnings, ...lotWarnings, ...match.warnings];
 
-    const status = (validation.isValid && match.confidence >= 80) ? "completed" : "needs_review";
+    // Task #350 — an extraction with blocking completeness errors (missing
+    // page coverage / evidenced page without line items) must never be
+    // recorded as "completed": force needs_review and record why, so the
+    // operator sees the hole before any draft is created from this parse.
+    // (The devis/invoice upload services independently hard-gate on the same
+    // warnings when a draft is actually created from preParsed data.)
+    const { findBlockingCompletenessWarnings } = await import("../services/extraction-completeness");
+    const blockingCompleteness = findBlockingCompletenessWarnings(validation.warnings);
+    const status = (validation.isValid && blockingCompleteness.length === 0 && match.confidence >= 80)
+      ? "completed"
+      : "needs_review";
 
     await storage.updateEmailDocument(emailDocumentId, {
+      ...(blockingCompleteness.length > 0
+        ? { notes: `Extraction appears incomplete: ${blockingCompleteness.map((w) => w.message).join(" ")}` }
+        : {}),
       documentType: parsed.documentType || "unknown",
       extractionStatus: status,
       extractedData: {
