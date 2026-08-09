@@ -1285,6 +1285,35 @@ export const insertAccountingStateChangeSchema = createInsertSchema(accountingSt
 export type InsertAccountingStateChange = z.infer<typeof insertAccountingStateChangeSchema>;
 export type AccountingStateChange = typeof accountingStateChanges.$inferSelect;
 
+// Task #346 — append-only audit of every "reopen for review" action.
+// Confirming an AI-extracted draft moves it draft → pending; reopening is
+// the explicit reverse transition (pending → draft) so an architect can
+// amend a draft more than once. Every reopen records who did it and when.
+// NEVER updated or deleted — mirrors the accounting_state_changes
+// append-only convention. `entityType`/`entityId` is a polymorphic
+// reference (devis or invoice), so there is deliberately no FK; the
+// composite index keeps per-record history lookups cheap.
+export const DRAFT_REOPEN_ENTITY_TYPES = ["devis", "invoice"] as const;
+export type DraftReopenEntityType = (typeof DRAFT_REOPEN_ENTITY_TYPES)[number];
+
+export const draftReopenEvents = pgTable("draft_reopen_events", {
+  id: serial("id").primaryKey(),
+  entityType: text("entity_type").notNull(),
+  entityId: integer("entity_id").notNull(),
+  previousStatus: text("previous_status").notNull(),
+  reopenedBy: text("reopened_by"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("draft_reopen_events_entity_idx").on(table.entityType, table.entityId),
+]);
+
+export const insertDraftReopenEventSchema = createInsertSchema(draftReopenEvents).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertDraftReopenEvent = z.infer<typeof insertDraftReopenEventSchema>;
+export type DraftReopenEvent = typeof draftReopenEvents.$inferSelect;
+
 export const projectCommunications = pgTable("project_communications", {
   id: serial("id").primaryKey(),
   projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),

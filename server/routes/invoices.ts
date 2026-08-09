@@ -9,6 +9,7 @@ import { processInvoiceUpload } from "../services/invoice-upload.service";
 import { PdfPasswordProtectedError } from "../gmail/document-parser";
 import { INVOICE_UPLOAD_ERROR_CODES } from "../../shared/invoice-upload-errors";
 import { approveInvoice } from "../services/invoice-approval.service";
+import { reopenInvoiceDraft } from "../services/draft-reopen.service";
 import { getDocumentStream } from "../storage/object-storage";
 import { validateExtraction, type ValidationWarning } from "../services/extraction-validator";
 import type { ParsedDocument } from "../gmail/document-parser";
@@ -139,6 +140,25 @@ router.patch(
     if (!invoice) return res.status(404).json({ message: "Invoice not found" });
     await storage.revokeDevisCheckTokenIfFullyInvoiced(invoice.devisId);
     res.json(invoice);
+  },
+);
+
+// Task #346 — reopen a confirmed (pending, not yet approved) invoice for
+// another review round. Eligibility + pending→draft transition live in the
+// service; approved invoices are refused (commission already calculated).
+router.post(
+  "/api/invoices/:id/reopen",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    try {
+      const reopenedBy = req.session?.userId ? String(req.session.userId) : null;
+      const result = await reopenInvoiceDraft(Number(req.params.id), reopenedBy);
+      res.status(result.status).json(result.data);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[Invoice Reopen] Error:", message);
+      res.status(500).json({ message: `Reopen failed: ${message}` });
+    }
   },
 );
 

@@ -14,6 +14,7 @@ import { upload } from "../middleware/upload";
 import { processDevisUpload } from "../services/devis-upload.service";
 import { enqueueReconciliation } from "../services/reconciliation/reconciliation-queue.service";
 import { rescrapeDevis } from "../services/devis-rescrape.service";
+import { reopenDevisDraft } from "../services/draft-reopen.service";
 import { confirmDevisAndMirror, assignTagsForInsertedItems } from "../services/benchmark-ingest.service";
 import { PdfPasswordProtectedError } from "../gmail/document-parser";
 import { DEVIS_UPLOAD_ERROR_CODES } from "../../shared/devis-upload-errors";
@@ -429,6 +430,27 @@ router.get(
       stream.pipe(res);
     } catch {
       res.status(500).json({ message: "Signed PDF view failed" });
+    }
+  },
+);
+
+// Task #346 — reopen a confirmed (pending) devis for another review round.
+// Eligibility and the pending→draft transition live in the service; the
+// reopen is refused when downstream effects exist (invoices/situations,
+// sign-off started).
+router.post(
+  "/api/devis/:id/reopen",
+  requireAuth,
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    try {
+      const reopenedBy = req.session?.userId ? String(req.session.userId) : null;
+      const result = await reopenDevisDraft(Number(req.params.id), reopenedBy);
+      res.status(result.status).json(result.data);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[Devis Reopen] Error:", message);
+      res.status(500).json({ message: `Reopen failed: ${message}` });
     }
   },
 );

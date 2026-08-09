@@ -114,6 +114,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0056_project_documents_source_unique", artifact: { kind: "data_only", reason: "dedupe + partial unique index swap on project_documents.source_email_document_id; no table/column artifact" } },
   { tag: "0057_email_backlog_dump", artifact: { kind: "data_only", reason: "one-shot beta-reset backlog dump: pending/processing email_documents received before 2026-08-10 07:00Z moved to terminal 'skipped'" } },
   { tag: "0058_email_backlog_intake_cleanup", artifact: { kind: "data_only", reason: "tombstone skipped email docs and delete their un-routed intake mirrors (+cascaded intake_jobs) so dumped backlog cannot flow through the intake pipeline" } },
+  { tag: "0059_draft_reopen_events", artifact: { kind: "table", table: "draft_reopen_events" } },
 ];
 
 interface JournalFile {

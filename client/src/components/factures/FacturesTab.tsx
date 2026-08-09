@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ChevronDown, ChevronRight, FileText, Upload, FileUp, Loader2, Save, Calendar, Building2, Hash, Receipt, CheckCircle2, ShieldCheck, AlertTriangle, Trash2, Sparkles, ExternalLink } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -535,6 +536,25 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
     },
   });
 
+  // Task #346 — reopen a confirmed (pending, not yet approved) invoice for
+  // another review round; the draft review panel reappears with current values.
+  const [reopenConfirmOpen, setReopenConfirmOpen] = useState(false);
+  const reopenMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/invoices/${invoice.id}/reopen`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
+      toast({ title: "Draft reopened", description: "The invoice is back in Draft — review and confirm it again when ready." });
+      setReopenConfirmOpen(false);
+    },
+    onError: (error: Error) => {
+      setReopenConfirmOpen(false);
+      toast({ title: "Cannot reopen", description: error.message, variant: "destructive" });
+    },
+  });
 
   return (
     <div className="ml-4 mt-2 space-y-4 border-l-2 border-[#c1a27b]/30 pl-4 pb-2">
@@ -556,6 +576,15 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
             <p className="text-[10px] text-amber-600 mt-0.5">Review the extracted data below, then approve to calculate commission</p>
           </div>
           <Button
+            variant="outline"
+            onClick={() => setReopenConfirmOpen(true)}
+            disabled={reopenMutation.isPending || isArchived}
+            className="gap-1.5"
+            data-testid={`button-reopen-review-invoice-${invoice.id}`}
+          >
+            <span className="text-[10px] font-bold uppercase tracking-widest">Reopen Review</span>
+          </Button>
+          <Button
             onClick={() => approveMutation.mutate()}
             disabled={approveMutation.isPending || isArchived}
             className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1.5"
@@ -568,6 +597,32 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
           </Button>
         </div>
       )}
+
+      <AlertDialog open={reopenConfirmOpen} onOpenChange={setReopenConfirmOpen}>
+        <AlertDialogContent data-testid={`dialog-reopen-review-invoice-${invoice.id}`}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reopen this invoice for review?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Invoice {invoice.invoiceNumber} will move back to Draft so you can amend the extracted
+              values and confirm again. Your current values are preserved. Approved invoices cannot
+              be reopened (their commission has already been calculated).
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid={`button-reopen-cancel-invoice-${invoice.id}`}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                reopenMutation.mutate();
+              }}
+              disabled={reopenMutation.isPending}
+              data-testid={`button-reopen-confirm-invoice-${invoice.id}`}
+            >
+              {reopenMutation.isPending ? "Reopening..." : "Reopen review"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {invoice.status === "approved" && (
         <div className="p-3 rounded-xl border border-emerald-200 bg-emerald-50/50 flex items-center gap-2">

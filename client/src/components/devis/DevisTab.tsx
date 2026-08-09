@@ -754,11 +754,33 @@ function FeeOverrideBadge({ devis }: { devis: Devis }) {
 }
 
 function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openChecks, onToggle, onEditRefs, onReviewDraft, onGoToIntake }: DevisRowProps) {
+  const { toast } = useToast();
   const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [avenantOpen, setAvenantOpen] = useState(false);
   const [pdfPopoutOpen, setPdfPopoutOpen] = useState(false);
+  const [reopenConfirmOpen, setReopenConfirmOpen] = useState(false);
   const isVoid = d.status === "void";
   const hasPdf = !!d.pdfStorageKey;
+
+  // Task #346 — reopen a confirmed (pending) devis for another review
+  // round. On success the review panel opens with the current values.
+  const reopenMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/devis/${d.id}/reopen`);
+      return res.json();
+    },
+    onSuccess: (data: { devis?: Devis }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
+      toast({ title: "Draft reopened", description: "The devis is back in Draft — review and confirm it again when ready." });
+      setReopenConfirmOpen(false);
+      if (data?.devis) onReviewDraft(data.devis);
+    },
+    onError: (error: Error) => {
+      setReopenConfirmOpen(false);
+      toast({ title: "Cannot reopen", description: error.message, variant: "destructive" });
+    },
+  });
 
   return (
     <div>
@@ -954,6 +976,27 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
                       <TooltipContent side="top" className="text-[10px]">Review draft</TooltipContent>
                     </Tooltip>
                   ) : null}
+                  {d.status === "pending" ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setReopenConfirmOpen(true);
+                          }}
+                          disabled={isArchived}
+                          data-testid={`button-reopen-review-${d.id}`}
+                          aria-label="Reopen review"
+                        >
+                          <RefreshCw size={13} />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="text-[10px]">Reopen review</TooltipContent>
+                    </Tooltip>
+                  ) : null}
                 </div>
               </div>
 
@@ -987,6 +1030,32 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
           hasPdf={hasPdf}
         />
       )}
+
+      <AlertDialog open={reopenConfirmOpen} onOpenChange={setReopenConfirmOpen}>
+        <AlertDialogContent data-testid={`dialog-reopen-review-${d.id}`}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reopen this devis for review?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {d.devisCode} will move back to Draft so you can amend the extracted values and confirm again.
+              Your current values are preserved. Reopening is refused if invoices or situations already
+              reference this devis, or if the sign-off workflow has started.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid={`button-reopen-cancel-${d.id}`}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                reopenMutation.mutate();
+              }}
+              disabled={reopenMutation.isPending}
+              data-testid={`button-reopen-confirm-${d.id}`}
+            >
+              {reopenMutation.isPending ? "Reopening..." : "Reopen review"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <InvoiceUploadDialog devisId={d.id} projectId={projectId} open={invoiceOpen} onOpenChange={setInvoiceOpen} />
       <AvenantDialog devisId={d.id} projectId={projectId} open={avenantOpen} onOpenChange={setAvenantOpen} />
