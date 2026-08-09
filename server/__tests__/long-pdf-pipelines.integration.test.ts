@@ -17,8 +17,46 @@ import { join } from "path";
 //   3. the pipeline is NOT hard-gated by those advisories — persistence
 //      succeeds.
 
-const { storageSpy, uploadDocumentSpy } = vi.hoisted(() => ({
-  storageSpy: {
+const { storageSpy, uploadDocumentSpy, txSpies, dbSpy } = vi.hoisted(() => {
+  // --- devis rescrape (Task #353) transaction plumbing ---
+  // rescrapeDevis runs its mutation inside db.transaction with a tx that
+  // executes raw SQL (lock, precondition counts, line delete) plus builder
+  // update/insert calls. Dispatch raw SQL by substring; capture builder
+  // payloads for assertions.
+  const vi_ = vi;
+  const txSpies = {
+    lockedRow: null as Record<string, unknown> | null,
+    updateSet: vi_.fn(),
+    insertValues: vi_.fn(),
+    execute: vi_.fn(async (q: unknown) => {
+      const t = JSON.stringify(q);
+      if (t.includes("FOR UPDATE")) return { rows: [] };
+      if (t.includes("invoices")) return { rows: [{ count: 0 }] };
+      if (t.includes("situation_lines")) return { rows: [{ count: 0 }] };
+      if (t.includes("DELETE FROM devis_line_items")) return { rows: [{ id: 1 }], rowCount: 1 };
+      return { rows: [] };
+    }),
+  };
+  const tx = {
+    execute: txSpies.execute,
+    select: () => ({ from: () => ({ where: async () => (txSpies.lockedRow ? [txSpies.lockedRow] : []) }) }),
+    update: () => ({
+      set: (payload: unknown) => ({
+        where: async () => {
+          txSpies.updateSet(payload);
+        },
+      }),
+    }),
+    insert: () => ({
+      values: async (rows: unknown) => {
+        txSpies.insertValues(rows);
+      },
+    }),
+  };
+  const dbSpy = {
+    transaction: vi_.fn(async (fn: (t: typeof tx) => Promise<unknown>) => fn(tx)),
+  };
+  const storageSpy = {
     // --- intake queue plumbing ---
     claimIntakeJobForAttempt: vi.fn(),
     markIntakeJobSucceeded: vi.fn(async () => undefined),
@@ -58,12 +96,19 @@ const { storageSpy, uploadDocumentSpy } = vi.hoisted(() => ({
     getBenchmarkTags: vi.fn(async () => []),
     createBenchmarkItem: vi.fn(async (row: Record<string, unknown>) => ({ id: 1, ...row })),
     setBenchmarkItemTags: vi.fn(async () => undefined),
-  },
-  uploadDocumentSpy: vi.fn(async (_p: number, name: string) => `mock-key/${name}`),
-}));
+    // --- devis rescrape internals (Task #353) ---
+    getDevisLineContextAssetsByDevis: vi.fn(async () => []),
+  };
+  return {
+    txSpies,
+    dbSpy,
+    storageSpy,
+    uploadDocumentSpy: vi.fn(async (_p: number, name: string) => `mock-key/${name}`),
+  };
+});
 
 vi.mock("../storage", () => ({ storage: storageSpy }));
-vi.mock("../db", () => ({ db: {} }));
+vi.mock("../db", () => ({ db: dbSpy }));
 vi.mock("../storage/object-storage", () => ({
   getDocumentBuffer: vi.fn(async () => FIXTURE_PDF),
   uploadDocument: uploadDocumentSpy,
@@ -105,6 +150,7 @@ vi.mock("../gmail/document-parser", async (importOriginal) => {
 import { attemptIntakeJob } from "../services/intake/ingest-queue.service";
 import { processInvoiceUpload } from "../services/invoice-upload.service";
 import { processStandaloneBenchmarkUpload } from "../services/benchmark-ingest.service";
+import { rescrapeDevis } from "../services/devis-rescrape.service";
 import { parseDocument, type ParsedDocument } from "../gmail/document-parser";
 
 const parseDocumentMock = parseDocument as unknown as ReturnType<typeof vi.fn>;
@@ -358,5 +404,89 @@ describe("benchmark ingest — long-PDF parse flows coverage into the benchmark 
     // this path (benchmarks are review-queued via needsReview, not blocked).
     const warnings = (result.data as { validation: { warnings: WarningShape[] } }).validation.warnings;
     expectAdvisoriesWithoutBlocking(warnings);
+  });
+});
+
+describe("devis re-scrape — long-PDF parse flows coverage into the updated devis (Task #353)", () => {
+  const DEVIS_ROW = {
+    id: 42,
+    devisCode: "DVP0000042",
+    devisNumber: "DEV-2026-777",
+    projectId: 3,
+    contractorId: 11,
+    lotId: null,
+    status: "sent",
+    invoicingMode: "mode_a",
+    amountHt: "100",
+    amountTtc: "120",
+    dateSent: null,
+    pdfStorageKey: "devis/42/seven-page-devis.pdf",
+    pdfFileName: "seven-page-devis.pdf",
+  };
+
+  beforeEach(() => {
+    txSpies.lockedRow = { ...DEVIS_ROW };
+    storageSpy.getDevis.mockResolvedValue({ ...DEVIS_ROW });
+  });
+
+  it("full coverage + numbering advisory persist on the devis; line items replaced with rebased hints", async () => {
+    parseDocumentMock.mockResolvedValue(realParsed);
+
+    const result = await rescrapeDevis(42);
+
+    expect(result.success).toBe(true);
+    expect(result.status).toBe(200);
+    expect(parseDocumentMock).toHaveBeenCalledTimes(1);
+    expect(dbSpy.transaction).toHaveBeenCalledTimes(1);
+    expect(txSpies.updateSet).toHaveBeenCalledTimes(1);
+
+    // Coverage metadata + advisories persisted on the devis update.
+    const update = txSpies.updateSet.mock.calls[0][0] as {
+      aiExtractedData: ParsedDocument;
+      validationWarnings: WarningShape[];
+      amountHt: string;
+      amountTtc: string;
+      invoicingMode: string;
+    };
+    expectFullCoverage(update.aiExtractedData.extractionCoverage as CoverageShape);
+    expectAdvisoriesWithoutBlocking(update.validationWarnings);
+    expect(update.amountHt).toBe("7000");
+    expect(update.amountTtc).toBe("8400");
+    // Lines appeared on the re-scrape ⇒ mode_a flips to mode_b.
+    expect(update.invoicingMode).toBe("mode_b");
+
+    // All 7 line items re-created with rebased page hints (page 6 covered).
+    expect(txSpies.insertValues).toHaveBeenCalledTimes(1);
+    const rows = txSpies.insertValues.mock.calls[0][0] as Array<{
+      pdfPageHint: number | null;
+      lineNumber: number;
+    }>;
+    expect(rows).toHaveLength(7);
+    expect(rows.map((r) => r.pdfPageHint)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+
+    // Advisories surface in the API response payload too.
+    const validation = (result.data as { validation: { warnings: WarningShape[] } }).validation;
+    expectAdvisoriesWithoutBlocking(validation.warnings);
+    const extraction = (result.data as { extraction: { lineItemsCreated: number } }).extraction;
+    expect(extraction.lineItemsCreated).toBe(7);
+  });
+
+  it("control: the SAME parse with pages missing from coverage is hard-gated — existing data untouched", async () => {
+    parseDocumentMock.mockResolvedValue({
+      ...realParsed,
+      extractionCoverage: { ...realParsed.extractionCoverage!, renderedPageCount: 5 },
+    });
+
+    const result = await rescrapeDevis(42);
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe(422);
+    expect((result.data as { code: string }).code).toBe("EXTRACTION_INCOMPLETE");
+    // Gate fires BEFORE the transaction: no lock taken, no update, no
+    // delete/insert — the existing extraction survives intact.
+    expect(dbSpy.transaction).not.toHaveBeenCalled();
+    expect(txSpies.updateSet).not.toHaveBeenCalled();
+    expect(txSpies.insertValues).not.toHaveBeenCalled();
+    expect(txSpies.execute).not.toHaveBeenCalled();
   });
 });
