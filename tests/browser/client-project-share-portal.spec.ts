@@ -807,3 +807,168 @@ test.describe("Client project share portal — data-leak and access-control", ()
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task #404 — architect preview never counts as client activity
+// ---------------------------------------------------------------------------
+
+test.describe("Project share architect preview — no client-activity side effects", () => {
+
+  async function devLogin(ctx: import("@playwright/test").BrowserContext, email: string) {
+    const loginResp = await ctx.request.post("/api/auth/dev-login", { data: { email } });
+    expect(loginResp.ok(), `dev-login failed (${loginResp.status()})`).toBe(true);
+  }
+
+  // 1 + 2 + 3. Preview shell renders with banner, cards link to the architect
+  //    per-devis preview, and the token's lastUsedAt / expiresAt stay untouched.
+  test("preview shell + data render published quotations without touching lastUsedAt or expiresAt", async ({ browser }) => {
+    const databaseUrl = process.env.DATABASE_URL;
+    expect(databaseUrl, "DATABASE_URL must be set").toBeTruthy();
+
+    const uniq = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
+    const db = new Client({ connectionString: databaseUrl! });
+    await db.connect();
+    let seed: SeedFull | null = null;
+    const ctx = await browser.newContext();
+    try {
+      seed = await seedFullFixture(db, uniq);
+
+      // Pin a known expiry + a known lastUsedAt so "unchanged" is meaningful.
+      const pinnedExpiry = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+      await db.query(
+        `UPDATE client_project_share_tokens
+         SET expires_at = $2, last_used_at = NULL
+         WHERE id = $1`,
+        [seed.tokenId, pinnedExpiry],
+      );
+      const readTok = async () => {
+        const { rows } = await db.query<{ last_used_at: Date | null; expires_at: Date | null }>(
+          `SELECT last_used_at, expires_at FROM client_project_share_tokens WHERE id = $1`,
+          [seed!.tokenId],
+        );
+        return rows[0];
+      };
+      const before = await readTok();
+      expect(before.last_used_at).toBeNull();
+
+      await devLogin(ctx, `${SEED_PREFIX}arch-${uniq}@local.test`);
+
+      // Preview shell in a real browser page: banner + quotation card visible
+      const page = await ctx.newPage();
+      const shellResp = await page.goto(`/api/projects/${seed.projectId}/client-share/preview/shell`);
+      expect(shellResp?.status()).toBe(200);
+      await expect(page.getByTestId("banner-project-share-preview")).toBeVisible({ timeout: 8_000 });
+      await expect(page.getByTestId("banner-project-share-preview")).toContainText("Architect preview");
+
+      const card = page.getByTestId(`card-quotation-${SEED_PREFIX}D1-${uniq}`);
+      await expect(card).toBeVisible();
+      // Card links to the per-devis ARCHITECT preview shell, never a token URL
+      const href = await card.getAttribute("href");
+      expect(href).toBe(`/api/devis/${seed.devisId}/client-checks/portal-preview/shell`);
+      expect(href).not.toContain("/p/client/");
+      expect(href).not.toContain(seed.rawTok);
+
+      // Unpublished / untranslated devis absent from the preview too
+      await expect(page.getByTestId(`card-quotation-${SEED_PREFIX}D2-${uniq}`)).not.toBeVisible();
+      await expect(page.getByTestId(`card-quotation-${SEED_PREFIX}D3-${uniq}`)).not.toBeVisible();
+
+      // Preview data endpoint mirrors the client payload (whitelist shape)
+      const dataResp = await ctx.request.get(`/api/projects/${seed.projectId}/client-share/preview/data`);
+      expect(dataResp.ok(), `preview data failed (${dataResp.status()})`).toBe(true);
+      const body = await dataResp.json();
+      expect(body.quotations).toHaveLength(1);
+      expect(body.quotations[0].id).toBe(seed.devisId);
+      const raw = JSON.stringify(body);
+      expect(raw).not.toContain("iban");
+      expect(raw).not.toContain("aiExtractedData");
+      expect(raw).not.toContain("validationWarnings");
+
+      // THE invariant: after shell + data, the token is completely untouched.
+      const after = await readTok();
+      expect(after.last_used_at).toBeNull();
+      expect(after.expires_at?.toISOString()).toBe(new Date(pinnedExpiry).toISOString());
+
+      // Control: a LIVE client visit still counts as activity.
+      const liveResp = await ctx.request.get(`/p/client/project/${seed.rawTok}/data`);
+      expect(liveResp.ok()).toBe(true);
+      const afterLive = await readTok();
+      expect(afterLive.last_used_at).not.toBeNull();
+      // Sliding expiry refreshed — strictly later than the pinned value
+      expect(afterLive.expires_at!.getTime()).toBeGreaterThan(new Date(pinnedExpiry).getTime());
+    } finally {
+      try { await cleanup(db, seed); } finally { await db.end(); await ctx.close(); }
+    }
+  });
+
+  // 4. No active link → accurate empty state (no invented data)
+  test("preview shows empty state when the project has no active link", async ({ browser }) => {
+    const databaseUrl = process.env.DATABASE_URL;
+    expect(databaseUrl, "DATABASE_URL must be set").toBeTruthy();
+
+    const uniq = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
+    const db = new Client({ connectionString: databaseUrl! });
+    await db.connect();
+    let projectId: number | null = null;
+    const ctx = await browser.newContext();
+    try {
+      const { rows: [proj] } = await db.query<{ id: number }>(
+        `INSERT INTO projects (name, code, client_name)
+         VALUES ($1, $2, $3) RETURNING id`,
+        [`${SEED_PREFIX}nolink-${uniq}`, `${SEED_PREFIX}nl-${uniq}`, "No Link"],
+      );
+      projectId = proj.id;
+
+      await devLogin(ctx, `${SEED_PREFIX}arch2-${uniq}@local.test`);
+
+      const dataResp = await ctx.request.get(`/api/projects/${projectId}/client-share/preview/data`);
+      expect(dataResp.ok()).toBe(true);
+      const body = await dataResp.json();
+      expect(body.quotations).toEqual([]);
+
+      const page = await ctx.newPage();
+      await page.goto(`/api/projects/${projectId}/client-share/preview/shell`);
+      await expect(page.getByTestId("banner-project-share-preview")).toBeVisible({ timeout: 8_000 });
+      await expect(page.getByTestId("text-no-quotations")).toBeVisible();
+    } finally {
+      try {
+        if (projectId !== null) await db.query("DELETE FROM projects WHERE id = $1", [projectId]);
+      } catch (_) { /* best-effort */ }
+      await db.end();
+      await ctx.close();
+    }
+  });
+
+  // 5. Both preview endpoints sit behind the /api auth perimeter
+  test("unauthenticated requests to preview shell and data get 401", async ({ browser }) => {
+    const databaseUrl = process.env.DATABASE_URL;
+    expect(databaseUrl, "DATABASE_URL must be set").toBeTruthy();
+
+    const uniq = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
+    const db = new Client({ connectionString: databaseUrl! });
+    await db.connect();
+    let seed: SeedFull | null = null;
+    const ctx = await browser.newContext(); // fresh context = no session
+    try {
+      seed = await seedFullFixture(db, uniq);
+
+      const shellResp = await ctx.request.get(
+        `/api/projects/${seed.projectId}/client-share/preview/shell`,
+      );
+      expect(shellResp.status()).toBe(401);
+
+      const dataResp = await ctx.request.get(
+        `/api/projects/${seed.projectId}/client-share/preview/data`,
+      );
+      expect(dataResp.status()).toBe(401);
+
+      // And an unauthenticated preview attempt leaves the token untouched too
+      const { rows } = await db.query<{ last_used_at: Date | null }>(
+        `SELECT last_used_at FROM client_project_share_tokens WHERE id = $1`,
+        [seed.tokenId],
+      );
+      expect(rows[0].last_used_at).toBeNull();
+    } finally {
+      try { await cleanup(db, seed); } finally { await db.end(); await ctx.close(); }
+    }
+  });
+});
