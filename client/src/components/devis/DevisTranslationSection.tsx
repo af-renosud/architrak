@@ -50,6 +50,95 @@ export function DevisTranslationSection({
   const [localHeader, setLocalHeader] = useState<DevisTranslationHeader | null>(null);
   const initialisedFor = useRef<string | null>(null);
 
+  // --- Serialized translation saves (Task 364) -----------------------------
+  // PATCHes carry the FULL lines array, so two overlapping requests are a
+  // last-write-wins race: an older payload can land after (and wipe) a newer
+  // one. Saves are therefore single-flight: at most one PATCH in flight,
+  // newer payloads coalesce into `pendingPatchRef` (each is rebuilt from the
+  // latest local buffers, so keeping only the newest is lossless).
+  // `dirtyRef` tracks unsaved local edits so (a) a background refetch never
+  // rebuilds the edit buffers over in-progress typing, and (b) unmount can
+  // flush a still-unsaved edit when the user navigates away without blurring.
+  const [isSavingTranslation, setIsSavingTranslation] = useState(false);
+  const pendingPatchRef = useRef<{
+    patch: { header?: DevisTranslationHeader; lines?: DevisTranslationLine[] };
+    epoch: number;
+  } | null>(null);
+  const saveInFlightRef = useRef(false);
+  const dirtyRef = useRef(false);
+  // Monotonic counter bumped on EVERY local edit (each keystroke). A payload
+  // records the epoch of the buffers it was built from; dirty only clears
+  // when the payload that just saved is still current — i.e. no keystroke
+  // happened after it was built. This closes the lost-edit window where an
+  // unblurred edit B typed during in-flight save A would otherwise be wiped
+  // by the post-A refetch (A's success must NOT clear B's dirtiness).
+  const editEpochRef = useRef(0);
+  const markDirty = () => {
+    dirtyRef.current = true;
+    editEpochRef.current++;
+  };
+
+  const pumpTranslationSaves = async () => {
+    if (saveInFlightRef.current) return;
+    const pending = pendingPatchRef.current;
+    if (!pending) return;
+    pendingPatchRef.current = null;
+    saveInFlightRef.current = true;
+    setIsSavingTranslation(true);
+    try {
+      await apiRequest("PATCH", `/api/devis/${devisId}/translation`, pending.patch);
+      if (!pendingPatchRef.current && editEpochRef.current === pending.epoch) {
+        // Everything the user has typed so far is in the payload that just
+        // saved — safe to let the next refetch rebuild the local buffers.
+        dirtyRef.current = false;
+        initialisedFor.current = null;
+      }
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "translation"] });
+    } catch (err) {
+      toast({
+        title: "Save failed",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      saveInFlightRef.current = false;
+      setIsSavingTranslation(false);
+      if (pendingPatchRef.current) void pumpTranslationSaves();
+    }
+  };
+  const pumpRef = useRef(pumpTranslationSaves);
+  pumpRef.current = pumpTranslationSaves;
+
+  const enqueueTranslationPatch = (patch: { header?: DevisTranslationHeader; lines?: DevisTranslationLine[] }) => {
+    pendingPatchRef.current = {
+      patch: { ...(pendingPatchRef.current?.patch || {}), ...patch },
+      epoch: editEpochRef.current,
+    };
+    void pumpTranslationSaves();
+  };
+
+  // Flush a pending (typed but not yet blurred) edit when the section
+  // unmounts — e.g. switching tabs — mirroring the context editor's flush.
+  const localLinesRef = useRef(localLines);
+  localLinesRef.current = localLines;
+  const localHeaderRef = useRef(localHeader);
+  localHeaderRef.current = localHeader;
+  useEffect(
+    () => () => {
+      if (!dirtyRef.current) return;
+      pendingPatchRef.current = {
+        patch: {
+          ...(pendingPatchRef.current?.patch || {}),
+          lines: Array.from(localLinesRef.current.values()),
+          ...(localHeaderRef.current ? { header: localHeaderRef.current } : {}),
+        },
+        epoch: editEpochRef.current,
+      };
+      void pumpRef.current();
+    },
+    [],
+  );
+
   const { data: translation, isLoading } = useQuery<DevisTranslation>({
     queryKey: ["/api/devis", devisId, "translation"],
     refetchInterval: (q) => {
@@ -62,6 +151,11 @@ export function DevisTranslationSection({
     if (!translation) return;
     const key = `${devisId}:${translation.status}:${translation.updatedAt ?? ""}`;
     if (initialisedFor.current === key) return;
+    // Never rebuild the local edit buffers from server data while an edit is
+    // unsaved or a save is in flight — a stale refetch response would wipe
+    // in-progress edits. The buffers re-sync once the save settles
+    // (`dirtyRef` clears and `initialisedFor` resets after a full flush).
+    if (dirtyRef.current || saveInFlightRef.current || pendingPatchRef.current) return;
     if (translation.status === "draft" || translation.status === "edited" || translation.status === "finalised") {
       const m = new Map<number, DevisTranslationLine>();
       for (const l of (translation.lineTranslations as DevisTranslationLine[]) || []) m.set(l.lineNumber, l);
@@ -91,6 +185,8 @@ export function DevisTranslationSection({
       return res.json();
     },
     onSuccess: () => {
+      dirtyRef.current = false;
+      pendingPatchRef.current = null;
       initialisedFor.current = null;
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "translation"] });
       toast({ title: "Translation generated", description: `Devis ${devisCode} translated to English.` });
@@ -100,25 +196,14 @@ export function DevisTranslationSection({
     },
   });
 
-  const patchMutation = useMutation({
-    mutationFn: async (payload: { header?: DevisTranslationHeader; lines?: DevisTranslationLine[] }) => {
-      const res = await apiRequest("PATCH", `/api/devis/${devisId}/translation`, payload);
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "translation"] });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Save failed", description: err.message, variant: "destructive" });
-    },
-  });
-
   const retranslateLineMutation = useMutation({
     mutationFn: async (lineNumber: number) => {
       const res = await apiRequest("POST", `/api/devis/${devisId}/translation/lines/${lineNumber}/retranslate`, {});
       return res.json();
     },
     onSuccess: () => {
+      dirtyRef.current = false;
+      pendingPatchRef.current = null;
       initialisedFor.current = null;
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "translation"] });
     },
@@ -147,6 +232,8 @@ export function DevisTranslationSection({
       return res.json();
     },
     onSuccess: () => {
+      dirtyRef.current = false;
+      pendingPatchRef.current = null;
       initialisedFor.current = null;
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "translation"] });
       toast({ title: "Translation unlocked", description: "Translation reopened for editing. All existing text is preserved." });
@@ -193,13 +280,15 @@ export function DevisTranslationSection({
     const newMap = new Map(localLines);
     newMap.set(lineNumber, next);
     setLocalLines(newMap);
-    patchMutation.mutate({ lines: Array.from(newMap.values()) });
+    markDirty();
+    enqueueTranslationPatch({ lines: Array.from(newMap.values()) });
   };
 
   const persistHeader = (patch: Partial<DevisTranslationHeader>) => {
     const next: DevisTranslationHeader = { ...(localHeader || {}), ...patch };
     setLocalHeader(next);
-    patchMutation.mutate({ header: next });
+    markDirty();
+    enqueueTranslationPatch({ header: next });
   };
 
   const downloadPdf = (variant?: "original" | "translation" | "combined") => {
@@ -235,7 +324,7 @@ export function DevisTranslationSection({
           <Languages className="h-4 w-4 text-primary" />
           <h4 className="text-sm font-semibold uppercase tracking-wide text-foreground">English translation</h4>
           {statusBadge}
-          {patchMutation.isPending && (
+          {isSavingTranslation && (
             <span className="text-[10px] text-muted-foreground inline-flex items-center gap-1">
               <Loader2 className="h-3 w-3 animate-spin" /> Saving…
             </span>
@@ -428,7 +517,10 @@ export function DevisTranslationSection({
                   <Textarea
                     value={localHeader.summary || ""}
                     readOnly={false}
-                    onChange={(e) => setLocalHeader({ ...(localHeader || {}), summary: e.target.value })}
+                    onChange={(e) => {
+                      markDirty();
+                      setLocalHeader({ ...(localHeader || {}), summary: e.target.value });
+                    }}
                     onBlur={(e) => persistHeader({ summary: e.target.value })}
                     className="mt-1 min-h-[44px] text-sm bg-background"
                     data-testid={`text-translation-summary-${devisId}`}
@@ -441,7 +533,10 @@ export function DevisTranslationSection({
                   <Textarea
                     value={localHeader.descriptionExplanation || ""}
                     readOnly={false}
-                    onChange={(e) => setLocalHeader({ ...(localHeader || {}), descriptionExplanation: e.target.value })}
+                    onChange={(e) => {
+                      markDirty();
+                      setLocalHeader({ ...(localHeader || {}), descriptionExplanation: e.target.value });
+                    }}
                     onBlur={(e) => persistHeader({ descriptionExplanation: e.target.value })}
                     className="mt-1 min-h-[44px] text-xs bg-background"
                     data-testid={`text-translation-header-explanation-${devisId}`}
@@ -492,6 +587,7 @@ export function DevisTranslationSection({
                         value={t?.translation ?? ""}
                         readOnly={false}
                         onChange={(e) => {
+                          markDirty();
                           const newMap = new Map(localLines);
                           const cur = newMap.get(li.lineNumber);
                           newMap.set(li.lineNumber, {
@@ -516,6 +612,7 @@ export function DevisTranslationSection({
                             value={t?.explanation ?? ""}
                             readOnly={false}
                             onChange={(e) => {
+                              markDirty();
                               const newMap = new Map(localLines);
                               const cur = newMap.get(li.lineNumber);
                               newMap.set(li.lineNumber, {

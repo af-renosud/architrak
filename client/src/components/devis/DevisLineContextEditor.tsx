@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { Node, mergeAttributes, type Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
@@ -16,7 +16,6 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { queryClient } from "@/lib/queryClient";
 import {
   contextDocSchema,
   isSafeContextHref,
@@ -25,6 +24,7 @@ import {
   type ContextDoc,
 } from "@shared/context-doc";
 import type { DevisLineContext } from "@shared/schema";
+import { useContextSaveQueue } from "./useContextSaveQueue";
 
 /**
  * Rich-text "context" editor for one devis line item. Content is persisted
@@ -152,8 +152,11 @@ export function normalizeEditorJson(json: EditorJsonNode): ContextDoc {
 
 export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, context, readOnly = false }: DevisLineContextEditorProps) {
   const { toast } = useToast();
-  const revisionRef = useRef<number>(context?.revision ?? 0);
-  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "conflict" | "error">("idle");
+  const { saveState, setSaveState, enqueue, revisionRef, hasPendingSave } = useContextSaveQueue(
+    devisId,
+    lineItemId,
+    context,
+  );
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -180,93 +183,13 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
     [devisId],
   );
 
-  // --- Single-flight save queue -------------------------------------------
-  // Saves are serialized: at most one PUT in flight; while it runs, newer
-  // snapshots coalesce into `pendingDocRef` (only the latest is kept). On a
-  // 409 we rebase ONCE onto the server's latest revision and retry with the
-  // user's content preserved (deliberate last-writer-wins with a notice);
-  // a second consecutive 409 surfaces the conflict instead of looping.
-  const pendingDocRef = useRef<ContextDoc | null>(null);
-  const inFlightRef = useRef(false);
-  const rebasedRef = useRef(false);
-
-  const putDocument = async (document: ContextDoc): Promise<DevisLineContext> => {
-    const res = await fetch(`/api/devis/${devisId}/line-contexts/${lineItemId}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ document, baseRevision: revisionRef.current }),
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({ message: res.statusText }));
-      const err = new Error(body.message || "Save failed") as Error & { status?: number };
-      err.status = res.status;
-      throw err;
-    }
-    return (await res.json()) as DevisLineContext;
-  };
-
-  const fetchLatestRevision = async (): Promise<number> => {
-    const res = await fetch(`/api/devis/${devisId}/line-contexts`, { credentials: "include" });
-    if (!res.ok) throw new Error("Could not reload context state");
-    const body = (await res.json()) as { contexts: DevisLineContext[] };
-    return body.contexts.find((c) => c.devisLineItemId === lineItemId)?.revision ?? 0;
-  };
-
-  const pumpSaves = async () => {
-    if (inFlightRef.current) return;
-    const doc = pendingDocRef.current;
-    if (!doc) return;
-    pendingDocRef.current = null;
-    inFlightRef.current = true;
-    setSaveState("saving");
-    try {
-      const saved = await putDocument(doc);
-      revisionRef.current = saved.revision;
-      rebasedRef.current = false;
-      setSaveState("saved");
-    } catch (err) {
-      const status = (err as Error & { status?: number }).status;
-      if (status === 409 && !rebasedRef.current) {
-        rebasedRef.current = true;
-        try {
-          revisionRef.current = await fetchLatestRevision();
-          // Retry with the user's content unless they typed something newer.
-          if (!pendingDocRef.current) pendingDocRef.current = doc;
-          toast({
-            title: "Context edited elsewhere",
-            description: "This line was updated in another window — your version is being saved over it.",
-          });
-        } catch {
-          setSaveState("error");
-        }
-      } else if (status === 409) {
-        rebasedRef.current = false;
-        setSaveState("conflict");
-        queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "line-contexts"] });
-        toast({
-          title: "Context changed elsewhere",
-          description: "This line's context keeps changing in another window. Reload the page before editing further.",
-          variant: "destructive",
-        });
-      } else {
-        setSaveState("error");
-        toast({
-          title: "Context save failed",
-          description: err instanceof Error ? err.message : String(err),
-          variant: "destructive",
-        });
-      }
-    } finally {
-      inFlightRef.current = false;
-      if (pendingDocRef.current) void pumpSaves();
-    }
-  };
-
+  // Save queue lives in useContextSaveQueue: single-flight serialization,
+  // revision re-sync from fresher server data, duplicate-flush dedupe, and
+  // 409 self-conflict reconciliation (Task 364).
   const enqueueFromEditor = (editor: Editor) => {
     const doc = normalizeEditorJson(editor.getJSON() as EditorJsonNode);
     // Don't create a row for a line whose context was never used.
-    if (revisionRef.current === 0 && isContextDocEmpty(doc) && !pendingDocRef.current) return;
+    if (revisionRef.current === 0 && isContextDocEmpty(doc) && !hasPendingSave()) return;
     const check = contextDocSchema.safeParse(doc);
     if (!check.success) {
       setSaveState("error");
@@ -277,8 +200,7 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
       });
       return;
     }
-    pendingDocRef.current = check.data;
-    void pumpSaves();
+    enqueue(check.data);
   };
 
   const scheduleSave = (editor: Editor, immediate = false) => {
