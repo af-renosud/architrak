@@ -299,6 +299,85 @@ export async function buildClientPortalPayload(
   };
 }
 
+/**
+ * Client identity + target devis for the shared write helpers below. Both
+ * the per-devis token portal and the project-share detail view resolve
+ * their own token flavour, then delegate the actual writes here so the two
+ * surfaces stay behaviourally identical (sanitisation, verdict shapes,
+ * system messages).
+ */
+export interface ClientWriteContext {
+  devisId: number;
+  clientEmail: string;
+  clientName: string | null;
+}
+
+export async function performClientReply(
+  ctx: ClientWriteContext,
+  checkId: number,
+  body: string,
+): Promise<{ status: number; json: { message: string } | { id: number } }> {
+  const check = await storage.getClientCheck(checkId);
+  if (!check || check.devisId !== ctx.devisId) {
+    return { status: 404, json: { message: "Question not found" } };
+  }
+  if (check.status === "resolved" || check.status === "cancelled") {
+    return { status: 409, json: { message: "This question is closed" } };
+  }
+  // Sanitise: never let user-supplied free text masquerade as a verdict
+  // marker. The marker is a dedicated channel reserved for /agree and
+  // /reject — see CLIENT_VERDICT_*_MARKER docs above.
+  const sanitisedBody = stripClientVerdictMarker(body);
+  const msg = await storage.createClientCheckMessage({
+    checkId: check.id,
+    authorType: "client",
+    authorEmail: ctx.clientEmail,
+    authorName: ctx.clientName ?? null,
+    body: sanitisedBody,
+    channel: "portal",
+  });
+  // Bump updatedAt so the architect sees movement on the thread.
+  await storage.updateClientCheck(check.id, {});
+  return { status: 201, json: { id: msg.id } };
+}
+
+export async function performClientQuery(
+  ctx: ClientWriteContext,
+  body: string,
+  devisLineItemId: number | null = null,
+): Promise<{ status: number; json: { message: string } | { id: number } }> {
+  // Optional "Ask about this" anchor — the line MUST belong to this devis.
+  if (devisLineItemId != null) {
+    const lines = await storage.getDevisLineItems(ctx.devisId);
+    if (!lines.some((l) => l.id === devisLineItemId)) {
+      return { status: 400, json: { message: "This quotation line does not exist on this devis" } };
+    }
+  }
+  // Sanitise: never let user-supplied free text masquerade as a verdict
+  // marker. The marker is a dedicated channel reserved for /agree and
+  // /reject — see CLIENT_VERDICT_*_MARKER docs above.
+  const sanitisedBody = stripClientVerdictMarker(body);
+  const check = await storage.createClientCheck({
+    devisId: ctx.devisId,
+    status: "open",
+    queryText: sanitisedBody,
+    originSource: "architrak_internal",
+    devisLineItemId,
+  });
+  // Seed the thread with a system-channel row carrying the client's
+  // identity so the architect inbox can attribute the question without
+  // having to join through the token table.
+  await storage.createClientCheckMessage({
+    checkId: check.id,
+    authorType: "client",
+    authorEmail: ctx.clientEmail,
+    authorName: ctx.clientName ?? null,
+    body: sanitisedBody,
+    channel: "portal",
+  });
+  return { status: 201, json: { id: check.id } };
+}
+
 const router = Router();
 
 const tokenParams = z.object({ token: z.string().min(20).max(200) });
@@ -420,28 +499,13 @@ router.post(
       return res.status(status).json({ message, expired: lookup.reason === "expired" });
     }
     const t = lookup.token;
-    const check = await storage.getClientCheck(req.body.checkId);
-    if (!check || check.devisId !== t.devisId) {
-      return res.status(404).json({ message: "Question not found" });
-    }
-    if (check.status === "resolved" || check.status === "cancelled") {
-      return res.status(409).json({ message: "This question is closed" });
-    }
-    // Sanitise: never let user-supplied free text masquerade as a verdict
-    // marker — see CLIENT_VERDICT_*_MARKER docs above.
-    const sanitisedBody = stripClientVerdictMarker(req.body.body);
-    const msg = await storage.createClientCheckMessage({
-      checkId: check.id,
-      authorType: "client",
-      authorEmail: t.clientEmail,
-      authorName: t.clientName ?? null,
-      body: sanitisedBody,
-      channel: "portal",
-    });
-    // Bump updatedAt so the architect sees movement on the thread.
-    await storage.updateClientCheck(check.id, {});
-    await touchToken(t);
-    res.status(201).json({ id: msg.id });
+    const result = await performClientReply(
+      { devisId: t.devisId, clientEmail: t.clientEmail, clientName: t.clientName ?? null },
+      req.body.checkId,
+      req.body.body,
+    );
+    if (result.status < 400) await touchToken(t);
+    res.status(result.status).json(result.json);
   },
 );
 
@@ -464,36 +528,13 @@ router.post(
       return res.status(status).json({ message, expired: lookup.reason === "expired" });
     }
     const t = lookup.token;
-    const devisLineItemId: number | null = req.body.devisLineItemId ?? null;
-    if (devisLineItemId != null) {
-      const lines = await storage.getDevisLineItems(t.devisId);
-      if (!lines.some((l) => l.id === devisLineItemId)) {
-        return res.status(400).json({ message: "This quotation line does not exist on this devis" });
-      }
-    }
-    // Sanitise: never let user-supplied free text masquerade as a verdict
-    // marker — see CLIENT_VERDICT_*_MARKER docs above.
-    const sanitisedBody = stripClientVerdictMarker(req.body.body);
-    const check = await storage.createClientCheck({
-      devisId: t.devisId,
-      status: "open",
-      queryText: sanitisedBody,
-      originSource: "architrak_internal",
-      devisLineItemId,
-    });
-    // Seed the thread with a system-channel row carrying the client's
-    // identity so the architect inbox can attribute the question without
-    // having to join through the token table.
-    await storage.createClientCheckMessage({
-      checkId: check.id,
-      authorType: "client",
-      authorEmail: t.clientEmail,
-      authorName: t.clientName ?? null,
-      body: sanitisedBody,
-      channel: "portal",
-    });
+    const result = await performClientQuery(
+      { devisId: t.devisId, clientEmail: t.clientEmail, clientName: t.clientName ?? null },
+      req.body.body,
+      req.body.devisLineItemId ?? null,
+    );
     await touchToken(t);
-    res.status(201).json({ id: check.id });
+    res.status(result.status).json(result.json);
   },
 );
 
@@ -509,7 +550,7 @@ router.post(
  * the routes remain occupied so nothing else can squat on the paths and
  * mint marker rows. Historical verdict rows remain rendered as audit badges.
  */
-const retiredVerdictHandler = (_req: Request, res: import("express").Response) => {
+export const retiredVerdictHandler = (_req: Request, res: import("express").Response) => {
   res.status(410).json({
     message:
       "Approving or declining through this page has been retired. Please discuss the quotation in the dialogue below — the formal approval happens through the electronic signing workflow.",

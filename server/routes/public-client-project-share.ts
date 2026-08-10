@@ -9,7 +9,16 @@ import {
   computeTokenExpiry,
   isVisibleOnShareLink,
 } from "../services/client-project-share";
-import { classifyVerdict } from "./public-client-checks";
+import {
+  classifyVerdict,
+  buildClientPortalPayload,
+  renderClientPortalShell,
+  performClientReply,
+  performClientQuery,
+  retiredVerdictHandler,
+  streamCombinedPackagePdf,
+} from "./public-client-checks";
+import { getDocumentStream } from "../storage/object-storage";
 import type { ClientProjectShareToken, Devis } from "@shared/schema";
 
 /**
@@ -27,6 +36,9 @@ export interface ProjectSharePayload {
   project: { name: string } | null;
   client: { name: string | null; email: string };
   quotations: Array<{
+    /** Internal devis id — used only to build the per-devis detail URL
+     *  under the same project token. Not sensitive (opaque sequence). */
+    id: number;
     /** Public devis reference (devisNumber, falling back to devisCode). */
     ref: string;
     /** Trade / lot label, English preferred. */
@@ -82,6 +94,7 @@ export async function buildProjectSharePayload(
       ? (lot.descriptionUk || lot.descriptionFr)
       : (devis.lotRefText ?? null);
     quotations.push({
+      id: devis.id,
       ref: devis.devisNumber || devis.devisCode,
       trade: trade ?? null,
       description: devis.descriptionFr ?? null,
@@ -175,6 +188,210 @@ router.get(
   },
 );
 
+/**
+ * Per-devis detail view under the SAME project token (Task #393). The
+ * quotation cards on the landing page link here. Membership enforcement:
+ * the devis must be an explicitly published member of THIS token's
+ * project link, belong to the token's project, and still pass the
+ * render-time visibility filter — otherwise 404, indistinguishable from
+ * a nonexistent devis.
+ */
+const detailParams = z.object({
+  token: z.string().min(20).max(200),
+  devisId: z.coerce.number().int().positive(),
+});
+const detailReplySchema = z.object({
+  checkId: z.number().int().positive(),
+  body: z.string().min(1).max(5000),
+}).strict();
+const detailQuerySchema = z.object({
+  body: z.string().min(1).max(5000),
+  /** Optional "Ask about this" anchor — must be a line of THIS devis. */
+  devisLineItemId: z.number().int().positive().optional(),
+}).strict();
+
+const shareWriteIpLimiter = rateLimit({
+  name: "project-share-write-ip",
+  windowMs: 60_000,
+  max: 30,
+  keyer: ipKeyer,
+  message: "Too many requests. Please try again in a minute.",
+});
+const shareWriteTokenLimiter = rateLimit({
+  name: "project-share-write-tok",
+  windowMs: 60_000,
+  max: 10,
+  keyer: tokenOnlyKeyer,
+  message: "Too many requests. Please try again in a minute.",
+});
+
+function devisIdFromReq(req: Request): number {
+  return Number(req.params.devisId);
+}
+
+/** Resolve a member devis for this token, or null when unreachable. */
+async function resolveMemberDevis(
+  token: ClientProjectShareToken,
+  devisId: number,
+): Promise<Devis | null> {
+  const devisIds = await storage.listProjectShareDevisIds(token.id);
+  if (!devisIds.includes(devisId)) return null;
+  const devis = await storage.getDevis(devisId);
+  if (!devis || devis.projectId !== token.projectId || !isVisibleOnShareLink(devis)) return null;
+  return devis;
+}
+
+type DetailHandler = (
+  token: ClientProjectShareToken,
+  devis: Devis,
+  req: Request,
+  res: Parameters<Parameters<Router["get"]>[1]>[1],
+) => Promise<void>;
+
+/** Shared token+membership gate for the JSON detail endpoints. */
+function detailEndpoint(handler: DetailHandler) {
+  return async (req: Request, res: Parameters<DetailHandler>[3]) => {
+    const lookup = await resolveProjectShareToken(tokenFromReq(req));
+    if (!lookup.ok) {
+      const status = lookup.reason === "expired" ? 410 : 404;
+      const message = lookup.reason === "expired"
+        ? "This link has expired. Please contact your Renosud representative."
+        : "Invalid or expired link";
+      res.status(status).json({ message, expired: lookup.reason === "expired" });
+      return;
+    }
+    const devis = await resolveMemberDevis(lookup.token, devisIdFromReq(req));
+    if (!devis) {
+      res.status(404).json({ message: "Quotation not found" });
+      return;
+    }
+    await handler(lookup.token, devis, req, res);
+  };
+}
+
+/** HTML shell for the detail view — reuses the client portal shell. */
+router.get(
+  "/p/client/project/:token/devis/:devisId",
+  shareReadIpLimiter, shareReadTokenLimiter,
+  validateRequest({ params: detailParams }),
+  async (req, res) => {
+    const lookup = await resolveProjectShareToken(tokenFromReq(req));
+    if (!lookup.ok) {
+      if (lookup.reason === "expired") {
+        res.status(410).type("html").send(renderShareExpired());
+      } else {
+        res.status(404).type("html").send(renderShareInvalid());
+      }
+      return;
+    }
+    const devis = await resolveMemberDevis(lookup.token, devisIdFromReq(req));
+    if (!devis) {
+      res.status(404).type("html").send(renderShareInvalid());
+      return;
+    }
+    res.type("html").send(renderClientPortalShell({
+      mode: "project-share",
+      token: tokenFromReq(req),
+      devisId: devis.id,
+    }));
+  },
+);
+
+/** JSON state for the detail view — same whitelisted DTO as the per-devis portal. */
+router.get(
+  "/p/client/project/:token/devis/:devisId/data",
+  shareReadIpLimiter, shareReadTokenLimiter,
+  validateRequest({ params: detailParams }),
+  detailEndpoint(async (t, devis, _req, res) => {
+    await storage.touchProjectShareTokenUsed(t.id, computeTokenExpiry());
+    const payload = await buildClientPortalPayload(devis, {
+      clientName: t.clientName ?? null,
+      clientEmail: t.clientEmail,
+    });
+    if (!payload) {
+      res.status(404).json({ message: "Quotation not found" });
+      return;
+    }
+    res.json(payload);
+  }),
+);
+
+/** Stream the devis PDF inline (membership-gated). */
+router.get(
+  "/p/client/project/:token/devis/:devisId/pdf",
+  shareReadIpLimiter, shareReadTokenLimiter,
+  validateRequest({ params: detailParams }),
+  detailEndpoint(async (t, devis, _req, res) => {
+    if (!devis.pdfStorageKey) {
+      res.status(404).json({ message: "PDF unavailable" });
+      return;
+    }
+    try {
+      const doc = await getDocumentStream(devis.pdfStorageKey);
+      res.setHeader("Content-Type", doc.contentType || "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="devis-${devis.devisCode}.pdf"`);
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      await storage.touchProjectShareTokenUsed(t.id, computeTokenExpiry());
+      doc.stream.pipe(res);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "PDF read error";
+      res.status(500).json({ message: msg });
+    }
+  }),
+);
+
+/** Client replies on an existing check thread (same semantics as per-devis portal). */
+router.post(
+  "/p/client/project/:token/devis/:devisId/messages",
+  shareWriteIpLimiter, shareWriteTokenLimiter,
+  validateRequest({ params: detailParams, body: detailReplySchema }),
+  detailEndpoint(async (t, devis, req, res) => {
+    const result = await performClientReply(
+      { devisId: devis.id, clientEmail: t.clientEmail, clientName: t.clientName ?? null },
+      req.body.checkId,
+      req.body.body,
+    );
+    if (result.status < 400) await storage.touchProjectShareTokenUsed(t.id, computeTokenExpiry());
+    res.status(result.status).json(result.json);
+  }),
+);
+
+/** Client opens a brand-new query on this devis. */
+router.post(
+  "/p/client/project/:token/devis/:devisId/queries",
+  shareWriteIpLimiter, shareWriteTokenLimiter,
+  validateRequest({ params: detailParams, body: detailQuerySchema }),
+  detailEndpoint(async (t, devis, req, res) => {
+    const result = await performClientQuery(
+      { devisId: devis.id, clientEmail: t.clientEmail, clientName: t.clientName ?? null },
+      req.body.body,
+      req.body.devisLineItemId ?? null,
+    );
+    await storage.touchProjectShareTokenUsed(t.id, computeTokenExpiry());
+    res.status(result.status).json(result.json);
+  }),
+);
+
+/**
+ * Verdict endpoints are NOT exposed here: the per-devis portal retired
+ * /agree and /reject (Task #389 — approval happens through dialogue plus
+ * the e-signature workflow), and this surface must not resurrect them.
+ * The tombstone handlers keep the paths occupied with an explanatory 410.
+ */
+router.post("/p/client/project/:token/devis/:devisId/agree", shareWriteIpLimiter, shareWriteTokenLimiter, retiredVerdictHandler);
+router.post("/p/client/project/:token/devis/:devisId/reject", shareWriteIpLimiter, shareWriteTokenLimiter, retiredVerdictHandler);
+
+/** Download the combined EN+FR "complete package" PDF (membership-gated). */
+router.get(
+  "/p/client/project/:token/devis/:devisId/package.pdf",
+  shareReadIpLimiter, shareReadTokenLimiter,
+  validateRequest({ params: detailParams }),
+  detailEndpoint(async (t, devis, _req, res) => {
+    await storage.touchProjectShareTokenUsed(t.id, computeTokenExpiry());
+    await streamCombinedPackagePdf(devis, res);
+  }),
+);
+
 function renderShareInvalid(): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Invalid link</title>
 <style>body{font-family:system-ui,sans-serif;max-width:480px;margin:80px auto;padding:0 20px;color:#1f2937}</style>
@@ -214,7 +431,10 @@ function renderProjectShareShell(rawToken: string): string {
   header .meta { font-size: 13px; opacity: 0.85; margin-top: 4px; }
   main { max-width: 880px; margin: 0 auto; padding: 24px; padding-bottom: 60px; }
   .greeting { font-size: 15px; margin: 0 0 16px; color: #334155; }
+  a.card { display: block; text-decoration: none; color: inherit; }
+  a.card:hover { border-color: #94a3b8; box-shadow: 0 2px 8px rgba(15,23,42,0.08); }
   .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+  .open-hint { font-size: 12px; color: #2563eb; font-weight: 600; margin-top: 10px; }
   .card .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
   .card h3 { margin: 0; font-size: 15px; font-weight: 600; }
   .trade { font-size: 12px; color: #64748b; margin: 2px 0 0; }
@@ -240,6 +460,7 @@ function renderProjectShareShell(rawToken: string): string {
 <main id="root"><div class="empty">Loading…</div></main>
 <script>
 const DATA_URL = ${JSON.stringify(dataUrl)};
+const DETAIL_URL_BASE = ${JSON.stringify(`/p/client/project/${encodeURIComponent(rawToken)}/devis`)};
 const STATUS_LABELS = {
   signed: "Signed",
   rejected: "Declined",
@@ -265,7 +486,8 @@ function renderQuotation(q) {
   if (q.analysisAvailable) badges.push('<span class="badge b-info">Cost analysis available</span>');
   if (q.openQuestionCount > 0) badges.push('<span class="badge b-questions" data-testid="badge-questions-' + escapeHtml(q.ref) + '">' + q.openQuestionCount + ' open question' + (q.openQuestionCount > 1 ? 's' : '') + '</span>');
   const amount = q.amountHt ? formatAmount(q.amountHt) : null;
-  return '<div class="card" data-testid="card-quotation-' + escapeHtml(q.ref) + '">'
+  const href = DETAIL_URL_BASE + '/' + encodeURIComponent(q.id);
+  return '<a class="card" href="' + escapeHtml(href) + '" data-testid="card-quotation-' + escapeHtml(q.ref) + '">'
     + '<div class="top"><div>'
     + '<h3>Devis ' + escapeHtml(q.ref) + '</h3>'
     + (q.trade ? '<p class="trade" data-testid="text-trade-' + escapeHtml(q.ref) + '">' + escapeHtml(q.trade) + '</p>' : '')
@@ -275,7 +497,8 @@ function renderQuotation(q) {
     + (q.description ? '<p class="desc">' + escapeHtml(q.description) + '</p>' : '')
     + (q.descriptionEn ? '<p class="desc desc-en">' + escapeHtml(q.descriptionEn) + '</p>' : '')
     + '<div class="badges">' + badges.join('') + '</div>'
-    + '</div>';
+    + '<div class="open-hint">View details, translation &amp; questions &rarr;</div>'
+    + '</a>';
 }
 
 async function load() {

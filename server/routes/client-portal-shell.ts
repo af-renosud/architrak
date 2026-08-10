@@ -50,19 +50,29 @@ p{margin:8px 0}
 export function renderClientPortalShell(opts:
   | { mode: "live"; token: string }
   | { mode: "preview"; devisId: number }
+  | { mode: "project-share"; token: string; devisId: number }
 ): string {
   const isPreview = opts.mode === "preview";
-  const dataUrl = opts.mode === "preview"
-    ? `/api/devis/${opts.devisId}/client-checks/portal-preview/data`
-    : `/p/client/${encodeURIComponent(opts.token)}/data`;
-  const pdfUrl = opts.mode === "preview"
-    ? `/api/devis/${opts.devisId}/client-checks/portal-preview/pdf`
-    : `/p/client/${encodeURIComponent(opts.token)}/pdf`;
-  const packageUrl = opts.mode === "preview"
-    ? `/api/devis/${opts.devisId}/client-checks/portal-preview/package.pdf`
-    : `/p/client/${encodeURIComponent(opts.token)}/package.pdf`;
-  const messagesUrl = opts.mode === "preview" ? null : `/p/client/${encodeURIComponent(opts.token)}/messages`;
-  const queriesUrl = opts.mode === "preview" ? null : `/p/client/${encodeURIComponent(opts.token)}/queries`;
+  // Base URL for the token-authed endpoints. The project-share detail view
+  // (Task #393) reuses this exact shell, authenticated by the PROJECT-scoped
+  // share token instead of a per-devis token — same payload, same actions.
+  const liveBase = opts.mode === "live"
+    ? `/p/client/${encodeURIComponent(opts.token)}`
+    : opts.mode === "project-share"
+      ? `/p/client/project/${encodeURIComponent(opts.token)}/devis/${opts.devisId}`
+      : null;
+  const previewBase = opts.mode === "preview"
+    ? `/api/devis/${opts.devisId}/client-checks/portal-preview`
+    : null;
+  const dataUrl = liveBase ? `${liveBase}/data` : `${previewBase}/data`;
+  const pdfUrl = liveBase ? `${liveBase}/pdf` : `${previewBase}/pdf`;
+  const packageUrl = liveBase ? `${liveBase}/package.pdf` : `${previewBase}/package.pdf`;
+  const messagesUrl = liveBase ? `${liveBase}/messages` : null;
+  const queriesUrl = liveBase ? `${liveBase}/queries` : null;
+  // Back link to the project-wide quotation list, only in project-share mode.
+  const backUrl = opts.mode === "project-share"
+    ? `/p/client/project/${encodeURIComponent(opts.token)}`
+    : null;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -155,6 +165,7 @@ export function renderClientPortalShell(opts:
 <body${isPreview ? ` data-preview="1"` : ""}>
 ${isPreview ? `<div class="preview-banner" data-testid="banner-client-preview">Architect preview — actions will not be sent.</div>` : ""}
 <header>
+  ${backUrl ? `<a href="${backUrl}" style="color:#bcd0e8;font-size:13px;text-decoration:none;display:inline-block;margin-bottom:6px" data-testid="link-back-to-project">&larr; All quotations</a>` : ""}
   <h1>Client portal — Renosud</h1>
   <div class="meta" id="meta">Loading…</div>
 </header>
