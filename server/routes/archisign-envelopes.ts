@@ -298,8 +298,10 @@ router.post(
     // immutable storage key on the devis; the public route serves that key
     // verbatim. The resume branch reuses the already-pinned key so retries
     // never re-pin different bytes under an existing envelope.
-    if (!resumingExistingEnvelope || !d.archisignPinnedPdfStorageKey) {
-      let pinnedKey = await getValidatedCachedPdfKey(devisId, "combined");
+    let pinnedKey: string | null =
+      resumingExistingEnvelope && d.archisignPinnedPdfStorageKey ? d.archisignPinnedPdfStorageKey : null;
+    if (!pinnedKey) {
+      pinnedKey = await getValidatedCachedPdfKey(devisId, "combined");
       if (!pinnedKey) {
         try {
           pinnedKey = (await generateCombinedPdf(devisId, { includeExplanations: false })).storageKey;
@@ -332,7 +334,7 @@ router.post(
     }
     const pdfTtlMs = PDF_FETCH_URL_TTL_HOURS * 60 * 60 * 1000;
     const pdfExpiresAt = new Date(Date.now() + pdfTtlMs);
-    const pdfToken = mintPdfFetchToken(devisId, pdfExpiresAt);
+    const pdfToken = mintPdfFetchToken(devisId, pdfExpiresAt, pinnedKey);
     const pdfFetchUrl = `${baseUrl}/api/public/devis-pdf/${pdfToken}`;
     try {
       assertPdfFetchUrlTtl(pdfExpiresAt);

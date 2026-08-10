@@ -36,7 +36,7 @@ router.get("/api/public/devis-pdf/:token", async (req, res) => {
   if (!verified) {
     return res.status(401).json({ message: "Invalid or expired PDF fetch token" });
   }
-  const { devisId } = verified;
+  const { devisId, pinnedStorageKey } = verified;
 
   const d = await storage.getDevis(devisId);
   if (!d) {
@@ -51,11 +51,38 @@ router.get("/api/public/devis-pdf/:token", async (req, res) => {
     return res.status(409).json({ message: "Translation not ready", status: translation.status });
   }
 
-  // Task #378 — pinned bytes take absolute precedence: the send route
-  // persisted the exact storage key its envelope was created against, so
-  // post-send translation/context/analysis edits can never change what the
-  // signer receives. Storage objects are immutable (timestamped-unique
-  // keys), so serving this key verbatim is exactly the send-time snapshot.
+  // Task #378 — v2 tokens carry the EXACT storage key pinned at send time,
+  // HMAC-bound inside the token itself. Each envelope's fetch URL therefore
+  // resolves to its own immutable snapshot: a later re-send (which pins a
+  // new key on the devis) cannot change what an earlier still-valid token
+  // serves, and post-send translation/context/analysis edits can never
+  // change the bytes the signer receives. FAIL CLOSED if the pinned object
+  // is missing — regenerating from current state would silently violate the
+  // snapshot guarantee.
+  if (pinnedStorageKey) {
+    try {
+      const { stream, contentType, size } = await getDocumentStream(pinnedStorageKey);
+      res.setHeader("Content-Type", contentType || "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="DEVIS-${d.devisCode}.pdf"`);
+      if (size) res.setHeader("Content-Length", String(size));
+      res.setHeader("Cache-Control", "no-store, max-age=0");
+      stream.pipe(res);
+      return;
+    } catch (err) {
+      console.error(
+        `[ArchisignPublic] Pinned PDF ${pinnedStorageKey} for devis ${devisId} unavailable — failing closed (no regeneration):`,
+        err instanceof Error ? err.message : err,
+      );
+      return res.status(410).json({
+        message:
+          "The exact PDF snapshot pinned for this signature envelope is no longer available. Re-send the devis for signature to issue a fresh envelope.",
+        code: "pinned_pdf_unavailable",
+      });
+    }
+  }
+
+  // Legacy v1 tokens (minted before per-envelope pinning): keep the prior
+  // resolution order so envelopes already in flight continue to work.
   if (d.archisignPinnedPdfStorageKey) {
     try {
       const { stream, contentType, size } = await getDocumentStream(d.archisignPinnedPdfStorageKey);
@@ -66,11 +93,8 @@ router.get("/api/public/devis-pdf/:token", async (req, res) => {
       stream.pipe(res);
       return;
     } catch (err) {
-      // The pinned object should always exist (immutable storage). If it is
-      // somehow gone, fall through to regeneration rather than failing the
-      // signature ceremony entirely — logged loudly for investigation.
       console.error(
-        `[ArchisignPublic] Pinned PDF ${d.archisignPinnedPdfStorageKey} for devis ${devisId} unavailable — falling back to regeneration:`,
+        `[ArchisignPublic] Devis-level pinned PDF ${d.archisignPinnedPdfStorageKey} for devis ${devisId} unavailable (legacy token) — falling back to regeneration:`,
         err instanceof Error ? err.message : err,
       );
     }

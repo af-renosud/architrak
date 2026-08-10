@@ -321,6 +321,10 @@ async function handleExpired(p: ExpiredPayload): Promise<HandlerResult> {
     signOffStage: "approved_for_signing",
     archisignEnvelopeStatus: "expired",
     archisignEnvelopeId: null,
+    // Task #378 — the pin belongs to the dead envelope; clear it so the
+    // next fresh send re-pins current bytes instead of reusing this
+    // envelope's snapshot.
+    archisignPinnedPdfStorageKey: null,
     archisignOtpDestination: null,
     archisignEnvelopeExpiresAt: null,
     archisignAccessUrlInvalidatedAt: new Date(p.expiredAt),
