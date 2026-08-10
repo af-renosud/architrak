@@ -2650,6 +2650,9 @@ function LineItemWithCheck({
   openCheck,
   onSaveCheckQuery,
   disabled = false,
+  isWorkingLine = false,
+  isFlashing = false,
+  onActivateLine,
 }: {
   li: DevisLineItem;
   onUpdate: (data: Record<string, string>) => Promise<unknown> | unknown;
@@ -2657,6 +2660,9 @@ function LineItemWithCheck({
   openCheck: { id: number; query: string } | null;
   onSaveCheckQuery: (checkId: number, query: string) => Promise<unknown>;
   disabled?: boolean;
+  isWorkingLine?: boolean;
+  isFlashing?: boolean;
+  onActivateLine?: (lineNumber: number, lineItemId: number) => void;
 }) {
   const { toast } = useToast();
   const status = li.checkStatus || "unchecked";
@@ -2799,7 +2805,14 @@ function LineItemWithCheck({
 
   return (
     <>
-      <tr className={`border-l-[3px] ${colors.border} ${colors.row} ${savingDesc ? "opacity-60" : ""}`}>
+      <tr
+        id={`line-anchor-lines-${devisId}-${li.lineNumber}`}
+        onClick={() => onActivateLine?.(li.lineNumber, li.id)}
+        onFocusCapture={() => onActivateLine?.(li.lineNumber, li.id)}
+        className={`border-l-[3px] ${colors.border} ${colors.row} ${savingDesc ? "opacity-60" : ""} transition-colors duration-500 ${
+          isFlashing ? "bg-[#C1A27B]/25" : isWorkingLine ? "bg-[#C1A27B]/[0.08]" : ""
+        }`}
+      >
         <td className="py-1.5 px-2 text-[11px] align-top">{li.lineNumber}</td>
         <td className="py-1.5 px-2 text-[11px] align-top">
           {editingDesc ? (
@@ -4404,9 +4417,68 @@ function DevisDetailTabs({
   });
 
   const defaultTab = isModeB ? "lines" : "avenants";
+  const [activeTab, setActiveTab] = useState(defaultTab);
+
+  // --- Working-line anchor + floating toggle ------------------------------
+  // The team reviews line by line, bouncing between the Line Items tab
+  // (French original) and the Translation tab (English + context notes).
+  // Track the line last interacted with, and let a floating pill switch
+  // tabs and scroll straight to the same line on the other side.
+  const [workingLine, setWorkingLine] = useState<{ id: number; lineNumber: number } | null>(null);
+  const [flashLine, setFlashLine] = useState<{ tab: string; lineNumber: number } | null>(null);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Only one devis' pill should be active at a time — when a line is picked
+  // on another devis card, clear ours so fixed pills never stack/conflict.
+  useEffect(() => {
+    const onWorkingLineElsewhere = (e: Event) => {
+      const detail = (e as CustomEvent<{ devisId: number }>).detail;
+      if (detail?.devisId !== devis.id) setWorkingLine(null);
+    };
+    window.addEventListener("architrak:working-line", onWorkingLineElsewhere);
+    return () => {
+      window.removeEventListener("architrak:working-line", onWorkingLineElsewhere);
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    };
+  }, [devis.id]);
+
+  const setWorkingLineAndBroadcast = (lineNumber: number, lineItemId: number) => {
+    setWorkingLine((prev) =>
+      prev?.id === lineItemId && prev.lineNumber === lineNumber ? prev : { id: lineItemId, lineNumber },
+    );
+    window.dispatchEvent(new CustomEvent("architrak:working-line", { detail: { devisId: devis.id } }));
+  };
+
+  const scrollToLine = (tab: "lines" | "translation", lineNumber: number) => {
+    let attempts = 0;
+    const tryScroll = () => {
+      const el = document.getElementById(`line-anchor-${tab}-${devis.id}-${lineNumber}`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        setFlashLine({ tab, lineNumber });
+        if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+        flashTimerRef.current = setTimeout(() => setFlashLine(null), 1600);
+      } else if (attempts++ < 20) {
+        // Target tab content may not be mounted yet right after the switch.
+        requestAnimationFrame(tryScroll);
+      }
+    };
+    requestAnimationFrame(tryScroll);
+  };
+
+  const toggleTargetTab = activeTab === "lines" ? "translation" : "lines";
+  const showLineToggle =
+    isModeB && workingLine !== null && (activeTab === "lines" || activeTab === "translation");
+
+  const handleLineToggle = () => {
+    if (!workingLine) return;
+    const target = toggleTargetTab as "lines" | "translation";
+    setActiveTab(target);
+    scrollToLine(target, workingLine.lineNumber);
+  };
 
   return (
-    <Tabs defaultValue={defaultTab} className="rounded-2xl border border-[#0B2545]/15 bg-white/60 overflow-hidden" data-testid={`tabs-devis-detail-${devis.id}`}>
+    <Tabs value={activeTab} onValueChange={setActiveTab} className="rounded-2xl border border-[#0B2545]/15 bg-white/60 overflow-hidden" data-testid={`tabs-devis-detail-${devis.id}`}>
       <TabsList className="w-full justify-start rounded-none border-b border-black/5 bg-[#0B2545]/[0.03] px-2 h-auto p-0">
         {isModeB && (
           <TabsTrigger
@@ -4482,6 +4554,9 @@ function DevisDetailTabs({
                       onSaveCheckQuery={(checkId, query) => saveCheckQueryMutation.mutateAsync({ checkId, query })}
                       onUpdate={(data) => onUpdateLineItem(li.id, data)}
                       disabled={isArchived}
+                      isWorkingLine={workingLine?.lineNumber === li.lineNumber}
+                      isFlashing={flashLine?.tab === "lines" && flashLine.lineNumber === li.lineNumber}
+                      onActivateLine={setWorkingLineAndBroadcast}
                     />
                   ))}
                 </tbody>
@@ -4498,6 +4573,9 @@ function DevisDetailTabs({
           devisId={devis.id}
           devisCode={devis.devisCode}
           lineItems={translationLineItems ?? []}
+          workingLineNumber={workingLine?.lineNumber ?? null}
+          flashLineNumber={flashLine?.tab === "translation" ? flashLine.lineNumber : null}
+          onWorkingLineChange={setWorkingLineAndBroadcast}
         />
       </TabsContent>
 
@@ -4563,6 +4641,21 @@ function DevisDetailTabs({
           <p className="text-[11px] text-muted-foreground text-center py-2">No invoices.</p>
         )}
       </TabsContent>
+
+      {showLineToggle && workingLine && (
+        <div className="fixed bottom-6 right-6 z-50">
+          <Button
+            onClick={handleLineToggle}
+            className="rounded-full shadow-lg bg-[#0B2545] hover:bg-[#0B2545]/90 text-white gap-2 pl-4 pr-5 h-10"
+            data-testid={`button-line-toggle-${devis.id}`}
+          >
+            {toggleTargetTab === "translation" ? <Languages size={14} /> : <ListOrdered size={14} />}
+            <span className="text-[11px] font-bold uppercase tracking-widest">
+              Line {workingLine.lineNumber} — {toggleTargetTab === "translation" ? "View translation" : "View original"}
+            </span>
+          </Button>
+        </div>
+      )}
     </Tabs>
   );
 }

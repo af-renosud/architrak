@@ -28,9 +28,22 @@ interface DevisTranslationSectionProps {
   devisId: number;
   devisCode: string;
   lineItems: DevisLineItem[];
+  /** Line number of the current "working line" (shared with the Line Items tab). */
+  workingLineNumber?: number | null;
+  /** Line number to briefly flash-highlight after an anchored tab switch. */
+  flashLineNumber?: number | null;
+  /** Called when the user interacts with a line so the parent can track it. */
+  onWorkingLineChange?: (lineNumber: number, lineItemId: number) => void;
 }
 
-export function DevisTranslationSection({ devisId, devisCode, lineItems }: DevisTranslationSectionProps) {
+export function DevisTranslationSection({
+  devisId,
+  devisCode,
+  lineItems,
+  workingLineNumber = null,
+  flashLineNumber = null,
+  onWorkingLineChange,
+}: DevisTranslationSectionProps) {
   const { toast } = useToast();
   const [showExplanations, setShowExplanations] = useState(false);
   const [localLines, setLocalLines] = useState<Map<number, DevisTranslationLine>>(new Map());
@@ -445,10 +458,21 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems }: Devis
             {orderedLines.map((li) => {
               const t = localLines.get(li.lineNumber);
               const isLineRetranslating = retranslateLineMutation.isPending && retranslateLineMutation.variables === li.lineNumber;
+              const isWorking = workingLineNumber === li.lineNumber;
+              const isFlashing = flashLineNumber === li.lineNumber;
               return (
                 <div
                   key={li.lineNumber}
-                  className="rounded-sm border border-border/60 p-3"
+                  id={`line-anchor-translation-${devisId}-${li.lineNumber}`}
+                  className={`rounded-sm border p-3 transition-colors duration-500 ${
+                    isFlashing
+                      ? "border-[#C1A27B] bg-[#C1A27B]/15"
+                      : isWorking
+                        ? "border-[#C1A27B]/70 bg-[#C1A27B]/[0.06]"
+                        : "border-border/60"
+                  }`}
+                  onClickCapture={() => onWorkingLineChange?.(li.lineNumber, li.id)}
+                  onFocusCapture={() => onWorkingLineChange?.(li.lineNumber, li.id)}
                   data-testid={`row-translation-${devisId}-${li.lineNumber}`}
                 >
                   <div className="flex items-start gap-2">
