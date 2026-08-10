@@ -753,4 +753,57 @@ test.describe("Client project share portal — data-leak and access-control", ()
       try { await cleanup(db, seed); } finally { await db.end(); }
     }
   });
+
+  // 12. Complete-package PDF endpoint is membership- and token-gated
+  //     (happy-path download is skipped: the hermetic server has no real PDF
+  //      in object storage — the auth gate is the critical invariant)
+  test("package.pdf returns 404 for non-member devis, 404 for revoked token, 410 for expired token", async () => {
+    const databaseUrl = process.env.DATABASE_URL;
+    expect(databaseUrl, "DATABASE_URL must be set").toBeTruthy();
+
+    const uniq = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
+    const db = new Client({ connectionString: databaseUrl! });
+    await db.connect();
+    let seed: SeedFull | null = null;
+    let revoked: SeedBase | null = null;
+    let expired: SeedBase | null = null;
+    try {
+      seed = await seedFullFixture(db, uniq);
+      revoked = await seedRevokedToken(db, `${uniq}-r`);
+      expired = await seedExpiredToken(db, `${uniq}-e`);
+
+      // seedRevokedToken creates no membership row; add one so the 404 below
+      // exercises revocation itself, not the membership gate.
+      await db.query(
+        `INSERT INTO client_project_share_devis (token_id, devis_id) VALUES ($1, $2)`,
+        [revoked.tokenId, revoked.devisId],
+      );
+
+      const base = `http://localhost:${process.env.PORT ?? 5000}`;
+
+      // Valid token, but devis never published on this link → 404
+      const nonMemberResp = await fetch(
+        `${base}/p/client/project/${seed.rawTok}/devis/${seed.unpublishedDevisId}/package.pdf`,
+      );
+      expect(nonMemberResp.status).toBe(404);
+      // Must not leak PDF content on the failure path
+      expect(nonMemberResp.headers.get("content-type") ?? "").not.toContain("application/pdf");
+
+      // Revoked token → 404 even for its own devis
+      const revokedResp = await fetch(
+        `${base}/p/client/project/${revoked.rawTok}/devis/${revoked.devisId}/package.pdf`,
+      );
+      expect(revokedResp.status).toBe(404);
+
+      // Expired token → 410 (devis IS a member on this token; expiry alone blocks it)
+      const expiredResp = await fetch(
+        `${base}/p/client/project/${expired.rawTok}/devis/${expired.devisId}/package.pdf`,
+      );
+      expect(expiredResp.status).toBe(410);
+    } finally {
+      try { await cleanup(db, seed); } catch (_) { /* best-effort */ }
+      try { await cleanup(db, revoked); } catch (_) { /* best-effort */ }
+      try { await cleanup(db, expired); } finally { await db.end(); }
+    }
+  });
 });
