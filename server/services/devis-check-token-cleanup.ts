@@ -32,10 +32,14 @@ export async function runCleanup(): Promise<number> {
     // bulk pass should normally find nothing.
     const revokedExpired = await storage.revokeExpiredDevisCheckTokens();
     const revokedFullyInvoiced = await storage.revokeDevisCheckTokensForFullyInvoicedDevis();
-    const total = revokedExpired + revokedFullyInvoiced;
+    // Same idle-ceiling sweep for the project-scoped client share links
+    // (Task #395): an expired-but-active row would otherwise linger until
+    // the architect reissues the link.
+    const revokedProjectShares = await storage.revokeExpiredClientProjectShareTokens();
+    const total = revokedExpired + revokedFullyInvoiced + revokedProjectShares;
     if (total > 0) {
       console.log(
-        `[DevisCheckTokens] Revoked ${revokedExpired} expired + ${revokedFullyInvoiced} fully-invoiced token(s)`,
+        `[DevisCheckTokens] Revoked ${revokedExpired} expired + ${revokedFullyInvoiced} fully-invoiced token(s) + ${revokedProjectShares} expired project share token(s)`,
       );
     }
     return total;

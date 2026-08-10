@@ -692,6 +692,8 @@ export interface IStorage {
 
   revokeExpiredClientCheckTokens(now?: Date): Promise<number>;
 
+  revokeExpiredClientProjectShareTokens(now?: Date): Promise<number>;
+
   // --- Project-scoped client share link (Task #388) ---------------------
 
   getActiveProjectShareToken(projectId: number): Promise<ClientProjectShareToken | undefined>;
@@ -3494,6 +3496,24 @@ export class DatabaseStorage implements IStorage {
         ),
       )
       .returning({ id: clientCheckTokens.id });
+    return rows.length;
+  }
+
+  // Same sweep for the project-scoped share links: revoke expired-but-not-
+  // revoked rows so a stale expired row can never block the partial unique
+  // "one active per project" index when a new link is issued.
+  async revokeExpiredClientProjectShareTokens(now: Date = new Date()): Promise<number> {
+    const rows = await db
+      .update(clientProjectShareTokens)
+      .set({ revokedAt: now })
+      .where(
+        and(
+          isNull(clientProjectShareTokens.revokedAt),
+          isNotNull(clientProjectShareTokens.expiresAt),
+          lte(clientProjectShareTokens.expiresAt, now),
+        ),
+      )
+      .returning({ id: clientProjectShareTokens.id });
     return rows.length;
   }
 

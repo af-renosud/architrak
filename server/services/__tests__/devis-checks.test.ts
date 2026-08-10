@@ -12,6 +12,7 @@ const { storageMock } = vi.hoisted(() => ({
   storageMock: {
     revokeExpiredDevisCheckTokens: vi.fn(async () => 0),
     revokeDevisCheckTokensForFullyInvoicedDevis: vi.fn(async () => 0),
+    revokeExpiredClientProjectShareTokens: vi.fn(async () => 0),
   },
 }));
 
@@ -46,15 +47,18 @@ describe("devis-check-token cleanup job", () => {
   beforeEach(() => {
     storageMock.revokeExpiredDevisCheckTokens.mockClear();
     storageMock.revokeDevisCheckTokensForFullyInvoicedDevis.mockClear();
+    storageMock.revokeExpiredClientProjectShareTokens.mockClear();
   });
 
-  it("runs both the idle-ceiling and fully-invoiced sweeps and returns their sum", async () => {
+  it("runs the idle-ceiling, fully-invoiced, and project-share sweeps and returns their sum", async () => {
     storageMock.revokeExpiredDevisCheckTokens.mockResolvedValueOnce(2);
     storageMock.revokeDevisCheckTokensForFullyInvoicedDevis.mockResolvedValueOnce(3);
+    storageMock.revokeExpiredClientProjectShareTokens.mockResolvedValueOnce(4);
     const total = await runCleanup();
     expect(storageMock.revokeExpiredDevisCheckTokens).toHaveBeenCalledOnce();
     expect(storageMock.revokeDevisCheckTokensForFullyInvoicedDevis).toHaveBeenCalledOnce();
-    expect(total).toBe(5);
+    expect(storageMock.revokeExpiredClientProjectShareTokens).toHaveBeenCalledOnce();
+    expect(total).toBe(9);
   });
 
   it("swallows errors and returns 0 so the periodic timer keeps running", async () => {

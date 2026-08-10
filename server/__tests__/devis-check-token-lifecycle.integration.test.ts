@@ -9,6 +9,7 @@ import {
   invoices,
   avenants,
   devisCheckTokens,
+  clientProjectShareTokens,
 } from "@shared/schema";
 import { issueDevisCheckToken } from "../services/devis-checks";
 
@@ -288,5 +289,65 @@ describe("devis-check token lifecycle (integration)", () => {
     await deleteDevis(a.devisId);
     await deleteDevis(b.devisId);
     await deleteDevis(safe.devisId);
+  });
+
+  it("revokes expired-but-active project share tokens, leaving live and never-expiring ones alone (Task #395)", async () => {
+    // One active token per project (partial unique index), so each case
+    // gets its own project row.
+    const mkProject = async (tag: string) => {
+      const [p] = await db
+        .insert(projects)
+        .values({
+          name: `Share ${tag} ${SUFFIX}`,
+          code: `SH-${tag}-${SUFFIX}`,
+          clientName: "Share Client",
+        })
+        .returning({ id: projects.id });
+      return p.id;
+    };
+    const expiredProjectId = await mkProject("exp");
+    const liveProjectId = await mkProject("live");
+    const foreverProjectId = await mkProject("fvr");
+
+    const mkToken = async (pid: number, expiresAt: Date | null) => {
+      const [t] = await db
+        .insert(clientProjectShareTokens)
+        .values({
+          projectId: pid,
+          tokenHash: `share-hash-${SUFFIX}-${pid}`,
+          clientEmail: "share@test.local",
+          expiresAt,
+        })
+        .returning({ id: clientProjectShareTokens.id });
+      return t.id;
+    };
+    const expiredId = await mkToken(expiredProjectId, new Date(Date.now() - 60_000));
+    const liveId = await mkToken(liveProjectId, new Date(Date.now() + 60 * 60 * 1000));
+    const foreverId = await mkToken(foreverProjectId, null);
+
+    const revoked = await storage.revokeExpiredClientProjectShareTokens();
+    // Sweep is global; assert at least our expired one crossed.
+    expect(revoked).toBeGreaterThanOrEqual(1);
+
+    const getShareToken = async (id: number) => {
+      const [row] = await db
+        .select()
+        .from(clientProjectShareTokens)
+        .where(eq(clientProjectShareTokens.id, id));
+      return row;
+    };
+    const expiredRow = await getShareToken(expiredId);
+    expect(expiredRow.revokedAt).not.toBeNull();
+    expect((await getShareToken(liveId)).revokedAt).toBeNull();
+    expect((await getShareToken(foreverId)).revokedAt).toBeNull();
+
+    // Idempotent: a second sweep must not re-stamp the revoked row.
+    await storage.revokeExpiredClientProjectShareTokens();
+    const expiredAgain = await getShareToken(expiredId);
+    expect(expiredAgain.revokedAt?.toISOString()).toBe(expiredRow.revokedAt?.toISOString());
+
+    for (const pid of [expiredProjectId, liveProjectId, foreverProjectId]) {
+      await db.delete(projects).where(eq(projects.id, pid));
+    }
   });
 });
