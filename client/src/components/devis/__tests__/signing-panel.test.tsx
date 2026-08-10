@@ -102,13 +102,13 @@ describe("SigningPanel — first-send branch (two-step, Task #257)", () => {
 
     const dialog = screen.getByTestId("dialog-send-to-signer-42");
     expect(dialog).toBeVisible();
-    expect(dialog).toHaveTextContent(/Étape 1 \/ 2/);
+    expect(dialog).toHaveTextContent(/Step 1 of 2/);
 
     const textarea = screen.getByTestId("textarea-send-message-42") as HTMLTextAreaElement;
     expect(textarea).toBeVisible();
     // Template is pre-filled with the devis reference.
     expect(textarea.value).toContain("DVT0000042");
-    expect(textarea.value).toMatch(/^Bonjour/);
+    expect(textarea.value).toMatch(/^Dear/);
 
     expect(screen.getByTestId("button-send-to-signer-continue-42")).toBeEnabled();
     // The final confirm only exists on the recap step.
@@ -124,7 +124,7 @@ describe("SigningPanel — first-send branch (two-step, Task #257)", () => {
 
     expect(screen.getByTestId("button-send-to-signer-continue-42")).toBeDisabled();
     expect(screen.getByTestId("text-send-message-min-42")).toHaveTextContent(
-      /Minimum 20 caractères/,
+      /Minimum 20 characters/,
     );
 
     // Whitespace padding must not count.
@@ -152,7 +152,7 @@ describe("SigningPanel — first-send branch (two-step, Task #257)", () => {
     fireEvent.click(screen.getByTestId("button-send-to-signer-continue-42"));
 
     const dialog = screen.getByTestId("dialog-send-to-signer-42");
-    expect(dialog).toHaveTextContent(/Étape 2 \/ 2/);
+    expect(dialog).toHaveTextContent(/Step 2 of 2/);
     expect(screen.getByTestId("text-recap-message-42")).toHaveTextContent(VALID_MESSAGE);
     expect(screen.getByTestId("text-recap-devis-42")).toHaveTextContent("DVT0000042");
     expect(screen.getByTestId("text-recap-recipient-42")).toHaveTextContent(
@@ -205,7 +205,7 @@ describe("SigningPanel — first-send branch (two-step, Task #257)", () => {
       expect(toastSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           variant: "destructive",
-          title: expect.stringMatching(/contexte NON envoyé/),
+          title: expect.stringMatching(/Context email NOT sent/),
         }),
       ),
     );
@@ -224,7 +224,7 @@ describe("SigningPanel — resume branch", () => {
   it("hides the textarea and shows the resume-specific copy", () => {
     renderWithDevis(resumeDevis);
     expect(screen.getByTestId("button-send-to-signer-42")).toHaveTextContent(
-      /Réessayer l'envoi/,
+      /Retry send/,
     );
     fireEvent.click(screen.getByTestId("button-send-to-signer-42"));
     const dialog = screen.getByTestId("dialog-send-to-signer-42");
@@ -233,7 +233,7 @@ describe("SigningPanel — resume branch", () => {
     expect(screen.queryByTestId("textarea-send-message-42")).toBeNull();
     expect(screen.queryByTestId("button-send-to-signer-continue-42")).toBeNull();
     expect(dialog).toHaveTextContent(
-      /enveloppe a déjà été créée chez Archisign/i,
+      /envelope has already been created at Archisign/i,
     );
   });
 
