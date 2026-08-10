@@ -4427,6 +4427,10 @@ function DevisDetailTabs({
   const [workingLine, setWorkingLine] = useState<{ id: number; lineNumber: number } | null>(null);
   const [flashLine, setFlashLine] = useState<{ tab: string; lineNumber: number } | null>(null);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Cancels the in-flight settle loop (if any) — a new jump must supersede
+  // the previous one so an old session can't pull the viewport back to an
+  // obsolete anchor.
+  const cancelSettleRef = useRef<(() => void) | null>(null);
 
   // Only one devis' pill should be active at a time — when a line is picked
   // on another devis card, clear ours so fixed pills never stack/conflict.
@@ -4439,6 +4443,7 @@ function DevisDetailTabs({
     return () => {
       window.removeEventListener("architrak:working-line", onWorkingLineElsewhere);
       if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+      cancelSettleRef.current?.();
     };
   }, [devis.id]);
 
@@ -4460,26 +4465,67 @@ function DevisDetailTabs({
         if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
         flashTimerRef.current = setTimeout(() => setFlashLine(null), 1600);
 
-        // The target tab's async content (translation row, per-line context
-        // editors) may still be loading when we scroll — as those queries
-        // resolve, the layout above the anchor grows and pushes it back out
-        // of the viewport. Keep re-centering for a short settle window
-        // whenever the anchor's DOCUMENT position moves. We compare absolute
-        // position (rect.top + scrollY), which stays constant during the
-        // smooth scroll itself, so we never fight the scroll animation —
-        // only genuine layout shifts trigger a re-anchor.
-        const settleDeadline = Date.now() + 3000;
+        // The target tab's async content (translation rows, auto-sizing
+        // textareas, per-line context editors and their photos) keeps
+        // loading and growing AFTER we scroll — every expansion above the
+        // anchor pushes it further down, so a one-shot scroll lands several
+        // entries too early. Keep re-centering until the anchor's DOCUMENT
+        // position (rect.top + scrollY — unaffected by the scroll itself)
+        // has been stable for a moment:
+        //  * corrections use behavior "auto" so we never race a smooth
+        //    animation that is itself outrun by more layout growth;
+        //  * the quiet-period requirement (rather than a short fixed
+        //    deadline) survives slow-loading context editors and images,
+        //    with a hard cap so the loop always terminates;
+        //  * any manual scroll input from the user cancels the loop so we
+        //    never hijack the page once they start reading.
+        cancelSettleRef.current?.();
+        const settleHardDeadline = Date.now() + 10000;
+        const QUIET_MS = 600;
+        let quietUntil = Date.now() + QUIET_MS;
         let lastAbsTop: number | null = null;
+        let cancelled = false;
+        const cancel = () => {
+          cancelled = true;
+          if (cancelSettleRef.current === cancel) cancelSettleRef.current = null;
+          window.removeEventListener("wheel", cancel);
+          window.removeEventListener("touchmove", cancel);
+          window.removeEventListener("keydown", cancel);
+          // pointerdown covers scrollbar drags and any other pointer-driven
+          // scrolling that emits neither wheel nor touchmove events.
+          window.removeEventListener("pointerdown", cancel);
+          window.removeEventListener("mousedown", cancel);
+        };
+        cancelSettleRef.current = cancel;
+        window.addEventListener("wheel", cancel, { passive: true });
+        window.addEventListener("touchmove", cancel, { passive: true });
+        window.addEventListener("keydown", cancel);
+        window.addEventListener("pointerdown", cancel, { passive: true });
+        window.addEventListener("mousedown", cancel, { passive: true });
         const settle = () => {
+          if (cancelled) return;
           const target = document.getElementById(anchorId);
-          if (!target) return;
+          if (!target) {
+            cancel();
+            return;
+          }
           const absTop = target.getBoundingClientRect().top + window.scrollY;
           if (lastAbsTop !== null && Math.abs(absTop - lastAbsTop) > 1) {
-            target.scrollIntoView({ behavior: "smooth", block: "center" });
+            // Layout shifted — re-center instantly and restart the quiet timer.
+            target.scrollIntoView({ behavior: "auto", block: "center" });
+            quietUntil = Date.now() + QUIET_MS;
           }
           lastAbsTop = absTop;
-          if (Date.now() < settleDeadline) requestAnimationFrame(settle);
+          if (Date.now() < quietUntil && Date.now() < settleHardDeadline) {
+            requestAnimationFrame(settle);
+          } else {
+            // Final correction once everything is quiet, then stop listening.
+            target.scrollIntoView({ behavior: "auto", block: "center" });
+            cancel();
+          }
         };
+        // Let the initial smooth scroll play out before instant corrections
+        // take over; the quiet timer keeps the loop alive meanwhile.
         requestAnimationFrame(settle);
       } else if (attempts++ < 20) {
         // Target tab content may not be mounted yet right after the switch.
