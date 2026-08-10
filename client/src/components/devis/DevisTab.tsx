@@ -778,22 +778,27 @@ interface DevisReadiness {
   insuranceReason: string | null;
 }
 
-type StepTone = "navy" | "emerald" | "amber" | "red" | "muted";
+type StepTone = "navy" | "emerald" | "green" | "amber" | "red" | "muted";
 
 const STEP_TONE_CLASSES: Record<StepTone, string> = {
   navy: "border-[#0B2545]/25 bg-[#0B2545]/5 text-[#0B2545] dark:text-blue-300",
   emerald: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400",
+  // Task #387 — "checked internally" confirmation: a lighter green than
+  // `emerald` (Approved) so the internal check reads as a positive step
+  // that is NOT yet full approval.
+  green: "border-green-300 bg-green-100 text-green-800 dark:border-green-800 dark:bg-green-950/40 dark:text-green-300",
   amber: "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300",
   red: "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-400",
   muted: "border-border bg-muted/50 text-muted-foreground",
 };
 
-function ReadinessStep({ name, value, tone, testid, tooltip }: {
+function ReadinessStep({ name, value, tone, testid, tooltip, icon }: {
   name: string;
   value: string;
   tone: StepTone;
   testid: string;
   tooltip?: React.ReactNode;
+  icon?: React.ReactNode;
 }) {
   const chip = (
     <span
@@ -801,6 +806,7 @@ function ReadinessStep({ name, value, tone, testid, tooltip }: {
       data-testid={testid}
     >
       <span className="text-[8px] font-bold uppercase tracking-widest opacity-60">{name}</span>
+      {icon}
       <span className="text-[10px] font-semibold">{value}</span>
     </span>
   );
@@ -831,7 +837,7 @@ const REVIEW_STAGE_LABELS: Record<string, string> = {
  */
 function ReadinessStrip({ d, r }: { d: Devis; r: DevisReadiness }) {
   // Review step
-  let review: { value: string; tone: StepTone };
+  let review: { value: string; tone: StepTone; icon?: React.ReactNode };
   if (r.openContractorChecks > 0) {
     review = {
       value: r.openContractorChecks === 1 ? "1 check" : `${r.openContractorChecks} checks`,
@@ -843,6 +849,15 @@ function ReadinessStrip({ d, r }: { d: Devis; r: DevisReadiness }) {
     r.stage === "client_signed_off"
   ) {
     review = { value: "Approved", tone: "emerald" };
+  } else if (r.stage === "checked_internal") {
+    // Task #387 — architects read the navy "Internal check" chip as "the
+    // change didn't save". Confirm the completed internal check in green
+    // with a check mark, visually distinct from the later "Approved".
+    review = {
+      value: "Checked internally",
+      tone: "green",
+      icon: <Check size={10} className="shrink-0" aria-hidden />,
+    };
   } else if (r.stage === "client_rejected" || r.stage === "void") {
     review = { value: REVIEW_STAGE_LABELS[r.stage], tone: r.stage === "void" ? "muted" : "red" };
   } else {
@@ -908,7 +923,7 @@ function ReadinessStrip({ d, r }: { d: Devis; r: DevisReadiness }) {
         data-testid={`readiness-strip-${d.id}`}
         onClick={(e) => e.stopPropagation()}
       >
-        <ReadinessStep name="Review" value={review.value} tone={review.tone} testid={`readiness-review-${d.id}`} />
+        <ReadinessStep name="Review" value={review.value} tone={review.tone} icon={review.icon} testid={`readiness-review-${d.id}`} />
         <ChevronRight size={10} className="text-muted-foreground/50 shrink-0" aria-hidden />
         <ReadinessStep name="Translation" value={translation.value} tone={translation.tone} testid={`readiness-translation-${d.id}`} />
         <ChevronRight size={10} className="text-muted-foreground/50 shrink-0" aria-hidden />

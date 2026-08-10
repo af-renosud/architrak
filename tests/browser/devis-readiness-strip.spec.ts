@@ -103,8 +103,9 @@ async function devLogin(api: APIRequestContext, email: string) {
 interface Seed {
   projectId: number;
   contractorId: number;
+  lotId: number;
   devisBId: number; // mode_b, approved_for_signing, draft translation
-  devisAId: number; // mode_a, received
+  devisAId: number; // mode_a, received (lot + EN description so the stepper is unlocked)
 }
 
 async function seed(api: APIRequestContext, db: Client, uniq: string): Promise<Seed> {
@@ -124,19 +125,32 @@ async function seed(api: APIRequestContext, db: Client, uniq: string): Promise<S
     amountTtc: "1200.00",
     invoicingMode: "mode_b",
   });
+  const lot = await postOk<{ id: number }>(api, `/api/projects/${project.id}/lots`, {
+    lotNumber: "01",
+    descriptionFr: "Plomberie",
+    descriptionUk: "Plumbing",
+  });
   const devisA = await postOk<{ id: number }>(api, `/api/projects/${project.id}/devis`, {
     contractorId: contractor.id,
     devisCode: `RD-A-${uniq}`,
     descriptionFr: `Readiness mode_a devis ${uniq}`,
+    descriptionUk: `Readiness mode_a devis ${uniq}`,
     amountHt: "500.00",
     amountTtc: "600.00",
     invoicingMode: "mode_a",
+    lotId: lot.id,
   });
 
   // Stage + translation state have no public non-AI seeding API.
   await db.query(
     `UPDATE devis SET sign_off_stage = 'approved_for_signing' WHERE id = $1`,
     [devisB.id],
+  );
+  // Belt-and-braces: the create endpoint may strip lot/EN description; the
+  // stepper is locked without them (task #387 exercises a stage click).
+  await db.query(
+    `UPDATE devis SET lot_id = $1, description_uk = $2 WHERE id = $3`,
+    [lot.id, `Readiness mode_a devis ${uniq}`, devisA.id],
   );
   await db.query(
     `INSERT INTO devis_translations
@@ -150,6 +164,7 @@ async function seed(api: APIRequestContext, db: Client, uniq: string): Promise<S
   return {
     projectId: project.id,
     contractorId: contractor.id,
+    lotId: lot.id,
     devisBId: devisB.id,
     devisAId: devisA.id,
   };
@@ -160,6 +175,7 @@ async function cleanup(db: Client, s: Seed | null) {
   const stmts: Array<[string, unknown[]]> = [
     ["DELETE FROM devis_translations WHERE devis_id = ANY($1::int[])", [[s.devisBId, s.devisAId]]],
     ["DELETE FROM devis WHERE id = ANY($1::int[])", [[s.devisBId, s.devisAId]]],
+    ["DELETE FROM lots WHERE id = $1", [s.lotId]],
     ["DELETE FROM projects WHERE id = $1", [s.projectId]],
     ["DELETE FROM contractors WHERE id = $1", [s.contractorId]],
   ];
@@ -231,6 +247,20 @@ test.describe("Devis readiness strip (task #374)", () => {
       // -------- PENDING chip de-emphasised on both rows --------
       await expect(page.getByTestId(`card-devis-${B}`).getByText("PENDING", { exact: true })).toHaveCount(0);
       await expect(page.getByTestId(`card-devis-${A}`).getByText("PENDING", { exact: true })).toHaveCount(0);
+
+      // -------- Task #387: checked-internal confirmation, no reload --------
+      // Step devis A to "Checked internally" via the stepper and assert the
+      // Review chip flips to the green confirmed styling WITHOUT a reload.
+      await page.getByTestId(`row-devis-toggle-${A}`).click();
+      await page.getByTestId(`button-stage-checked_internal-${A}`).click();
+
+      const reviewChipA = page.getByTestId(`readiness-review-${A}`);
+      await expect(reviewChipA).toHaveText(/Checked internally/i);
+      // Distinct positive tone: light-green fill, different from both the
+      // navy "Received" chip and the emerald "Approved" chip.
+      await expect(reviewChipA).toHaveClass(/bg-green-100/);
+      await expect(page.getByTestId(`readiness-review-${B}`)).toHaveText(/Approved/i);
+      await expect(page.getByTestId(`readiness-review-${B}`)).not.toHaveClass(/bg-green-100/);
     } finally {
       await cleanup(db, s);
       await db.end().catch(() => {});
