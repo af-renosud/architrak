@@ -1,0 +1,60 @@
+This cost analysis breaks down quotation DVP0000661 into functional cost centers, identifying structural requirements, premium comfort upgrades, and high-impact cost-saving opportunities.
+
+**1. Cost Center Summary Table**
+
+| Cost Center / Package | Included Sub-Works | Necessity | Est. Cost (TTC) | Savings Opportunity |
+| --- | --- | --- | --- | --- |
+| **1. Site Prep, Demolition & Shell Prep** | Site setup, draining, fittings removal, partial wall demolition, right-angle cover wall creation, surface patching.
+
+ | Mandatory | €20,997.87
+
+ | Low |
+| **2. Pool Hydraulics & Waterproof Liner** | Skimmers, bottom drain, return jets, lights, pressure piping, Hung rails, 3D Touch liner, leak test.
+
+ | Mixed | €29,661.39
+
+ | Medium |
+| **3. Pool Terrace Structural Sub-base** | Retaining walls/barrettes (ASEB spec), 20cm reinforced concrete slab, 5cm slope screed.
+
+ | Mandatory | €36,089.42
+
+ | Low |
+| **4. Pool Terrace Finishes & Edging** | 101 m² Travertine paving (30mm), coping stones, Schluter Ditra-Drain 8 mat, Bara edge profiles.
+
+ | Mixed | €34,331.06
+
+ | Medium-High |
+| **5. House Terrace Reconstruction (157 m²)** | 12cm concrete slab, screed, Ditra-Drain 8 mat, Bara edge profiles, 30mm Travertine paving.
+
+ | Optional / Mixed | €65,659.90
+
+ | High |
+| **6. Technical Room Equipment & Automation** | Equipment removal, cartridge filter, salt chlorinator, Poolcop Evolution 2.0, 15kW heat pump, submerged cover.
+
+ | Mixed | €41,216.61
+
+ | High |
+
+---
+
+**2. Value Engineering & Savings Breakdown**
+
+Package: Pool Hydraulics & Waterproof Liner
+What can be removed: The 3D Touch premium textured liner (€15,858.53) can be downgraded. The basic hydraulic infrastructure and sealing elements are mandatory.
+Alternative Approaches: Replace the 3D Touch liner with a smooth 150/100th (1.5mm) standard reinforced PVC membrane (e.g., Alkorplan 2000).
+Trade-Offs: Loss of the relief texture and high-end stone-like aesthetic, but waterproofing integrity and lifespan remain identical.
+
+Package: Pool Terrace Finishes & Edging
+What can be removed: The Schlüter Ditra-Drain 8 uncoupling mat (€6,053.23) and Schlüter-Bara edge profiles (€2,476.80) are technical enhancements rather than code requirements.
+Alternative Approaches: Bond tiles directly to the slope screed using C2E-S1 flexible adhesive and adequate expansion joints. Alternatively, replace the entire tile sub-assembly with a single decorative concrete finish (*béton désactivé*).
+Trade-Offs: Removing Ditra-Drain increases long-term risk of tile joint cracking from moisture and freeze-thaw cycles. Switching to decorative concrete changes the natural stone aesthetic.
+
+Package: House Terrace Reconstruction (157 m²)
+What can be removed: The entire package (€65,659.90), or optional sub-layers including the Ditra-Drain mat (€8,629.23), Bara edge profiles (€1,270.15), and travertine paving (€28,263.05).
+Alternative Approaches: Defer house terrace tiling, or pour a single decorative exposed aggregate concrete slab (*béton désactivé*) directly over prepared ground, eliminating separate screeds, drainage mats, and tiles.
+Trade-Offs: Removing the package leaves damaged areas around pipe trenches unrepaired. Decorative concrete creates a distinct visual contrast between the pool terrace and house perimeter, but delivers massive cost reductions.
+
+Package: Technical Room Equipment & Automation
+What can be removed: The Poolcop Evolution 2.0 automated system (€8,937.75), Zodiac Z400 iQ Heat Pump (€6,890.22), and submerged automatic cover (€16,130.28) are non-essential luxury items.
+Alternative Approaches: Use standard manual chemical testing and timer-based filtration controls. Omit the heat pump (keeping bypass valves for future install). Replace the submerged cover with an above-ground motorized safety cover.
+Trade-Offs: Manual pool management requires regular chemical testing and filter cleaning. Removing the heat pump limits pool usage to peak summer months. Above-ground safety covers impact surrounding lawn aesthetics.

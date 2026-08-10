@@ -258,7 +258,9 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
       editorProps: {
         attributes: {
           class:
-            "ctx-editor min-h-[44px] w-full rounded-md border border-input bg-background px-3 py-2 text-[11px] leading-snug focus:outline-none focus:ring-1 focus:ring-ring prose-sm max-w-none",
+            // Green tint distinguishes the CONTEXT box from the translation
+            // textarea (sky tint) — the team kept typing notes into the wrong one.
+            "ctx-editor min-h-[44px] w-full rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-[11px] leading-snug focus:outline-none focus:ring-1 focus:ring-ring prose-sm max-w-none dark:border-emerald-800 dark:bg-emerald-950/40",
           "data-testid": `input-context-${devisId}-${lineNumber}`,
         },
         handlePaste: (_view, event) => {
@@ -329,7 +331,7 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
     if (!context || isContextDocEmpty(context.document as ContextDoc)) return null;
     return (
       <div className="space-y-1" data-testid={`section-context-${devisId}-${lineNumber}`}>
-        <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+        <div className="text-[10px] uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
           Context (shown in the translated PDF)
         </div>
         <EditorContent editor={editor} />
@@ -379,7 +381,7 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
   return (
     <div className="space-y-1" data-testid={`section-context-${devisId}-${lineNumber}`}>
       <div className="flex items-center gap-1">
-        <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+        <div className="text-[10px] uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
           Context (shown in the translated PDF)
         </div>
         <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-muted-foreground" data-testid={`status-context-save-${devisId}-${lineNumber}`}>

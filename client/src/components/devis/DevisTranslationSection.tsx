@@ -602,7 +602,7 @@ export function DevisTranslationSection({
                       <p className="text-[11px] text-muted-foreground leading-snug whitespace-pre-wrap">
                         {li.description}
                       </p>
-                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground pt-1">English (literal)</div>
+                      <div className="text-[10px] uppercase tracking-wider text-sky-700 dark:text-sky-400 pt-1">English (literal)</div>
                       <Textarea
                         value={t?.translation ?? ""}
                         readOnly={false}
@@ -620,7 +620,7 @@ export function DevisTranslationSection({
                           setLocalLines(newMap);
                         }}
                         onBlur={(e) => persistLine(li.lineNumber, li.description, { translation: e.target.value })}
-                        className="min-h-[44px] w-full text-[11px] leading-snug"
+                        className="min-h-[44px] w-full text-[11px] leading-snug border-sky-300 bg-sky-50 dark:border-sky-800 dark:bg-sky-950/40"
                         data-testid={`input-translation-${devisId}-${li.lineNumber}`}
                       />
                       {showExplanations && (
