@@ -2358,6 +2358,9 @@ export const CLIENT_PROJECT_SHARE_AUDIT_ACTIONS = [
   "revoke",
   "publish",
   "unpublish",
+  // Task #409 — ArchiDoc fetched the live link server-to-server (read-only;
+  // logged at most once per token per day).
+  "archidoc_lookup",
 ] as const;
 /**
  * insurance_overrides — captured at the moment an architect manually

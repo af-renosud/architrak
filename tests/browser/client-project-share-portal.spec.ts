@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { Client } from "pg";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 
 /**
  * E2E coverage for the project-level client share portal (Task #390).
@@ -811,6 +811,104 @@ test.describe("Client project share portal — data-leak and access-control", ()
 // ---------------------------------------------------------------------------
 // Task #404 — architect preview never counts as client activity
 // ---------------------------------------------------------------------------
+
+test.describe("ArchiDoc client-link lookup (Task #409)", () => {
+  const SECRET = process.env.ARCHIDOC_WEBHOOK_SECRET;
+
+  function signLookup(path: string, ts: number): string {
+    return createHmac("sha256", SECRET!).update(`${ts}.GET.${path}`).digest("hex");
+  }
+
+  test("signed lookup returns the live URL that resolves publicly; unsigned is rejected", async ({ browser }) => {
+    test.skip(!SECRET, "ARCHIDOC_WEBHOOK_SECRET not set in this environment");
+    const databaseUrl = process.env.DATABASE_URL;
+    expect(databaseUrl, "DATABASE_URL must be set").toBeTruthy();
+
+    const uniq = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
+    const db = new Client({ connectionString: databaseUrl! });
+    await db.connect();
+    let seed: SeedFull | null = null;
+    const ctx = await browser.newContext();
+    try {
+      seed = await seedFullFixture(db, uniq);
+      const archidocId = `${SEED_PREFIX}ad-${uniq}`;
+      await db.query(`UPDATE projects SET archidoc_id = $1 WHERE id = $2`, [archidocId, seed.projectId]);
+      const path = `/integrations/archidoc/projects/${archidocId}/client-share-link`;
+
+      // Unsigned → 401; bad signature → 401.
+      expect((await ctx.request.get(path)).status()).toBe(401);
+      expect((await ctx.request.get(path, {
+        headers: { "X-Archidoc-Timestamp": String(Date.now()), "X-Archidoc-Signature": "sha256=" + "0".repeat(64) },
+      })).status()).toBe(401);
+
+      // Seeded token has no encrypted URL → rotate_required.
+      let ts = Date.now();
+      const legacyResp = await ctx.request.get(path, {
+        headers: { "X-Archidoc-Timestamp": String(ts), "X-Archidoc-Signature": `sha256=${signLookup(path, ts)}` },
+      });
+      expect(legacyResp.status()).toBe(200);
+      expect(await legacyResp.json()).toEqual({ shareUrl: null, reason: "rotate_required" });
+
+      // Rotate via the authenticated API so the encrypted URL exists.
+      const loginResp = await ctx.request.post("/api/auth/dev-login", { data: { email: `${SEED_PREFIX}adlookup-${uniq}@local.test` } });
+      expect(loginResp.ok()).toBe(true);
+      const issueResp = await ctx.request.post(`/api/projects/${seed.projectId}/client-share/issue`, {
+        data: { clientEmail: `${SEED_PREFIX}client-${uniq}@local.test`, clientName: "AD Lookup" },
+      });
+      expect(issueResp.ok()).toBe(true);
+      const { shareUrl: issuedUrl } = await issueResp.json();
+
+      // Signed lookup returns the same URL + recipient/expiry.
+      ts = Date.now();
+      const okResp = await ctx.request.get(path, {
+        headers: { "X-Archidoc-Timestamp": String(ts), "X-Archidoc-Signature": `sha256=${signLookup(path, ts)}` },
+      });
+      expect(okResp.status()).toBe(200);
+      const okBody = await okResp.json();
+      expect(okBody.shareUrl).toBe(issuedUrl);
+      expect(okBody.recipientEmail).toBe(`${SEED_PREFIX}client-${uniq}@local.test`);
+      expect(okBody.expiresAt).toBeTruthy();
+
+      // Lookup never mutates the token.
+      const { rows: [tok] } = await db.query<{ last_used_at: Date | null }>(
+        `SELECT last_used_at FROM client_project_share_tokens WHERE project_id = $1 AND revoked_at IS NULL`,
+        [seed.projectId],
+      );
+      expect(tok.last_used_at).toBeNull();
+
+      // Low-noise audit: repeated lookup on the same day adds only ONE entry.
+      ts = Date.now();
+      await ctx.request.get(path, {
+        headers: { "X-Archidoc-Timestamp": String(ts), "X-Archidoc-Signature": `sha256=${signLookup(path, ts)}` },
+      });
+      const { rows: [auditCount] } = await db.query<{ n: string }>(
+        `SELECT COUNT(*)::text AS n FROM client_project_share_audit WHERE project_id = $1 AND action = 'archidoc_lookup'`,
+        [seed.projectId],
+      );
+      expect(auditCount.n).toBe("1");
+      // The audit detail never contains the URL/token.
+      const { rows: [auditRow] } = await db.query<{ detail: string }>(
+        `SELECT detail FROM client_project_share_audit WHERE project_id = $1 AND action = 'archidoc_lookup'`,
+        [seed.projectId],
+      );
+      expect(auditRow.detail).not.toContain(issuedUrl.split("/").pop());
+
+      // The returned URL resolves on the public portal.
+      const publicResp = await ctx.request.get(new URL(okBody.shareUrl).pathname);
+      expect(publicResp.status()).toBe(200);
+
+      // Unknown ArchiDoc project id → reason unknown_project.
+      const unknownPath = `/integrations/archidoc/projects/${SEED_PREFIX}nope-${uniq}/client-share-link`;
+      ts = Date.now();
+      const unknownResp = await ctx.request.get(unknownPath, {
+        headers: { "X-Archidoc-Timestamp": String(ts), "X-Archidoc-Signature": `sha256=${signLookup(unknownPath, ts)}` },
+      });
+      expect(await unknownResp.json()).toEqual({ shareUrl: null, reason: "unknown_project" });
+    } finally {
+      try { await cleanup(db, seed); } finally { await db.end(); await ctx.close(); }
+    }
+  });
+});
 
 test.describe("Project share link copy (Task #407)", () => {
 

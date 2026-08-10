@@ -3928,7 +3928,7 @@ function invalidateProjectShare(projectId: string) {
 // extend / revoke / publish / unpublish), newest first.
 type ProjectShareAuditEntry = {
   id: number;
-  action: "issue" | "rotate" | "extend" | "revoke" | "publish" | "unpublish";
+  action: "issue" | "rotate" | "extend" | "revoke" | "publish" | "unpublish" | "archidoc_lookup";
   devisId: number | null;
   detail: string;
   createdAt: string;
@@ -3941,6 +3941,8 @@ const SHARE_AUDIT_ACTION_STYLES: Record<ProjectShareAuditEntry["action"], string
   revoke: "bg-rose-50 text-rose-700 border-rose-200",
   publish: "bg-emerald-50 text-emerald-700 border-emerald-200",
   unpublish: "bg-amber-50 text-amber-700 border-amber-200",
+  // Task #409 — ArchiDoc consumed the link (read-only, informational).
+  archidoc_lookup: "bg-slate-50 text-slate-600 border-slate-200",
 };
 
 function ProjectShareHistory({ projectId }: { projectId: string }) {

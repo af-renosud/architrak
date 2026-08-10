@@ -723,6 +723,7 @@ export interface IStorage {
 
   /** Task #394 — append-only audit trail of project share link actions. */
   createProjectShareAuditEntry(data: InsertClientProjectShareAuditEntry): Promise<ClientProjectShareAuditEntry>;
+  createProjectShareAuditEntryIfAbsentSince(data: InsertClientProjectShareAuditEntry & { tokenId: number }, since: Date): Promise<boolean>;
 
   listProjectShareAuditEntries(projectId: number, limit?: number): Promise<ClientProjectShareAuditEntry[]>;
 
@@ -3498,6 +3499,30 @@ export class DatabaseStorage implements IStorage {
   async createProjectShareAuditEntry(data: InsertClientProjectShareAuditEntry): Promise<ClientProjectShareAuditEntry> {
     const [row] = await db.insert(clientProjectShareAudit).values(data).returning();
     return row;
+  }
+
+  async createProjectShareAuditEntryIfAbsentSince(
+    data: InsertClientProjectShareAuditEntry & { tokenId: number },
+    since: Date,
+  ): Promise<boolean> {
+    // Task #409 — atomic once-per-window audit insert. The advisory lock
+    // (namespace distinct from the issue-path lock) serialises concurrent
+    // lookups on the same token so check-then-insert cannot race.
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('client_project_share_audit_dedup'), ${data.tokenId}::int)`);
+      const [existing] = await tx
+        .select({ id: clientProjectShareAudit.id })
+        .from(clientProjectShareAudit)
+        .where(and(
+          eq(clientProjectShareAudit.tokenId, data.tokenId),
+          eq(clientProjectShareAudit.action, data.action),
+          gte(clientProjectShareAudit.createdAt, since),
+        ))
+        .limit(1);
+      if (existing) return false;
+      await tx.insert(clientProjectShareAudit).values(data);
+      return true;
+    });
   }
 
   async listProjectShareAuditEntries(projectId: number, limit = 100): Promise<ClientProjectShareAuditEntry[]> {

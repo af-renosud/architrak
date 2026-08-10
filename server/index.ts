@@ -19,6 +19,7 @@ import { registerAuthRoutes } from "./auth/routes";
 import publicChecksRouter from "./routes/public-checks";
 import publicClientChecksRouter from "./routes/public-client-checks";
 import publicClientProjectShareRouter from "./routes/public-client-project-share";
+import archidocLinkLookupRouter from "./routes/archidoc-link-lookup";
 import { requireAuth } from "./auth/middleware";
 import { pool } from "./db";
 import { env } from "./env";
@@ -143,6 +144,9 @@ app.use((req, res, next) => {
   // more specific /p/client/project/:token paths are matched first.
   app.use(publicClientProjectShareRouter);
   app.use(publicClientChecksRouter);
+  // Task #409 — server-to-server ArchiDoc lookup of the live client link.
+  // Lives under /integrations (not /api); HMAC signature is the auth wall.
+  app.use(archidocLinkLookupRouter);
 
   app.use("/api", (req, res, next) => {
     const publicPaths = ["/auth/login", "/auth/callback", "/auth/logout", "/auth/user", "/webhooks/archidoc", "/webhooks/archisign"];
