@@ -103,6 +103,11 @@ export function useContextSaveQueue(
       lastSavedStrRef.current = docStr;
       rebasedRef.current = false;
       setSaveState("saved");
+      // Keep the query cache fresh (staleTime is Infinity): without this, an
+      // editor remounted after a tab switch initialises from the stale cached
+      // document and the just-saved content silently vanishes from the UI
+      // until a full reload.
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "line-contexts"] });
     } catch (err) {
       const status = (err as Error & { status?: number }).status;
       if (status === 409 && !rebasedRef.current) {
@@ -176,5 +181,19 @@ export function useContextSaveQueue(
 
   const hasPendingSave = () => pendingDocRef.current !== null;
 
-  return { saveState, setSaveState, enqueue, revisionRef, hasPendingSave };
+  /**
+   * Adopt a fresh server snapshot as the new save baseline (revision + last
+   * saved content). Used when the EDITOR re-syncs its content from fresher
+   * query data (e.g. remounting after a tab switch while an unmount flush
+   * was still in flight). Refuses while a save is pending or in flight —
+   * the baseline must never move under an unsettled save.
+   */
+  const adoptServerState = (c: DevisLineContext): boolean => {
+    if (inFlightRef.current || pendingDocRef.current) return false;
+    revisionRef.current = c.revision;
+    lastSavedStrRef.current = JSON.stringify(c.document);
+    return true;
+  };
+
+  return { saveState, setSaveState, enqueue, revisionRef, hasPendingSave, adoptServerState };
 }

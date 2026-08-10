@@ -152,7 +152,7 @@ export function normalizeEditorJson(json: EditorJsonNode): ContextDoc {
 
 export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, context, readOnly = false }: DevisLineContextEditorProps) {
   const { toast } = useToast();
-  const { saveState, setSaveState, enqueue, revisionRef, hasPendingSave } = useContextSaveQueue(
+  const { saveState, setSaveState, enqueue, revisionRef, hasPendingSave, adoptServerState } = useContextSaveQueue(
     devisId,
     lineItemId,
     context,
@@ -205,8 +205,17 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
 
   const scheduleSave = (editor: Editor, immediate = false) => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (immediate) enqueueFromEditor(editor);
-    else debounceRef.current = setTimeout(() => enqueueFromEditor(editor), 1500);
+    if (immediate) {
+      // The ref doubles as an "edit waiting in the debounce window" signal
+      // for the server re-sync guard below — keep it accurate.
+      debounceRef.current = null;
+      enqueueFromEditor(editor);
+    } else {
+      debounceRef.current = setTimeout(() => {
+        debounceRef.current = null;
+        enqueueFromEditor(editor);
+      }, 1500);
+    }
   };
 
   const uploadImage = async (editor: Editor, file: File) => {
@@ -274,6 +283,26 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
     },
     [devisId, lineItemId],
   );
+
+  // Re-sync editor content when a FRESHER server snapshot arrives (revision
+  // above our save baseline) — e.g. this editor remounted after a tab switch
+  // while the previous instance's unmount flush was still in flight: it
+  // mounted from the stale cache, and the flush's success then invalidated
+  // the query. Guards: never while the user is focused/typing, never while a
+  // local edit is waiting in the debounce window, and never while a save is
+  // pending, in flight, or conflicted — server content may only replace
+  // content the user isn't actively working on. When a guard defers the
+  // re-sync, the effect re-runs once the local edit settles (saveState
+  // changes as the debounced save flushes), and the revisionRef comparison
+  // then rejects snapshots older than what we just saved.
+  useEffect(() => {
+    if (!editor || editor.isDestroyed || readOnly || !context) return;
+    if (context.revision <= revisionRef.current) return;
+    if (editor.isFocused || debounceRef.current || hasPendingSave() || saveState === "saving" || saveState === "conflict") return;
+    if (!adoptServerState(context)) return;
+    editor.commands.setContent(context.document as ContextDoc, { emitUpdate: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [context, editor, saveState]);
 
   // Flush a pending debounced save on unmount so navigating away within the
   // debounce window doesn't silently drop the edit.

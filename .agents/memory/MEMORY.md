@@ -14,4 +14,5 @@
 - [Hand-written migrations checklist](hand-written-migrations.md) — every new migration needs SQL + manual journal entry + MIGRATION_ARTIFACTS entry, or boot and replay tests hard-fail.
 - [PDF cache race guard](pdf-cache-race-guard.md) — never fingerprint-check-then-write cache keys; edits bump a version atomically with clearing keys, publish via version-guarded conditional UPDATE.
 - [Prince CSS limits](prince-css-limits.md) — DocRaptor/Prince ignores display:grid (renders stacked); flexbox/tables fine; check PDF links via qpdf --qdf, raw grep misses them.
+- [Stale cache eats remounted edits](stale-cache-remount-edits.md) — staleTime Infinity: autosave must invalidate its query on success and re-sync non-prop-driven editors, or remounts show stale content.
 - [Restore via cp, not git checkout](restore-via-cp-not-git-checkout.md) — `git checkout --` reverts to the last platform commit and silently wipes uncommitted session edits; snapshot with cp before temporary file mutations.
