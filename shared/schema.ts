@@ -2792,3 +2792,27 @@ export const insertClientProjectShareAuditSchema = createInsertSchema(clientProj
 });
 export type ClientProjectShareAuditEntry = typeof clientProjectShareAudit.$inferSelect;
 export type InsertClientProjectShareAuditEntry = z.infer<typeof insertClientProjectShareAuditSchema>;
+
+/**
+ * archidoc_link_lookup_misses — Task #410. One row per project recording the
+ * MOST RECENT failed ArchiDoc client-link lookup (reason "expired" or
+ * "rotate_required" only — unknown_project probes are normal and never
+ * recorded, and no_active_link means the architect deliberately has no
+ * link). A successful lookup deletes the row, so presence + recency drives
+ * the warning in the Project client link panel.
+ */
+export const ARCHIDOC_LOOKUP_MISS_REASONS = ["expired", "rotate_required"] as const;
+export type ArchidocLookupMissReason = (typeof ARCHIDOC_LOOKUP_MISS_REASONS)[number];
+
+export const archidocLinkLookupMisses = pgTable("archidoc_link_lookup_misses", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  // One of ARCHIDOC_LOOKUP_MISS_REASONS; plain text (no DB CHECK) by
+  // convention with the rest of this schema.
+  reason: text("reason").notNull(),
+  lastMissAt: timestamp("last_miss_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  uniqueIndex("archidoc_link_lookup_misses_project_id_idx").on(table.projectId),
+]);
+
+export type ArchidocLinkLookupMiss = typeof archidocLinkLookupMisses.$inferSelect;

@@ -21,6 +21,9 @@ const router = Router();
 
 const projectIdParams = z.object({ projectId: z.coerce.number().int().positive() });
 
+// Task #410 — how far back an ArchiDoc lookup miss still warrants a warning.
+const ARCHIDOC_MISS_WARNING_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
 const issueSchema = z.object({
   clientEmail: z.string().email(),
   clientName: z.string().max(200).optional(),
@@ -94,14 +97,22 @@ router.get(
   validateRequest({ params: projectIdParams }),
   async (req, res) => {
     const projectId = Number(req.params.projectId);
+    // Task #410 — surface a recent (last 7 days) failed ArchiDoc link lookup
+    // so the panel can warn that the client-facing button has gone dark.
+    // A successful lookup deletes the row, so recency is the only filter.
+    const miss = await storage.getArchidocLinkLookupMiss(projectId);
+    const archidocLookupMiss =
+      miss && Date.now() - miss.lastMissAt.getTime() <= ARCHIDOC_MISS_WARNING_WINDOW_MS
+        ? { reason: miss.reason as "expired" | "rotate_required", lastMissAt: miss.lastMissAt.toISOString() }
+        : null;
     const latest = await storage.getLatestProjectShareToken(projectId);
-    if (!latest) return res.json({ token: null, publishedDevisIds: [], canCopyLink: false });
+    if (!latest) return res.json({ token: null, publishedDevisIds: [], canCopyLink: false, archidocLookupMiss });
     const active = latest.revokedAt ? null : latest;
     const publishedDevisIds = active ? await storage.listProjectShareDevisIds(active.id) : [];
     // Task #407 — copy availability flag only; the URL itself is NEVER in
     // this DTO (fetched on demand from the /link endpoint below).
     const canCopyLink = !!(active && !isTokenExpired(active) && active.encryptedShareUrl);
-    res.json({ token: tokenDto(latest), publishedDevisIds, canCopyLink });
+    res.json({ token: tokenDto(latest), publishedDevisIds, canCopyLink, archidocLookupMiss });
   },
 );
 

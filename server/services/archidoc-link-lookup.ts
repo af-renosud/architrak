@@ -76,14 +76,41 @@ export async function lookupClientShareLinkForArchidoc(archidocProjectId: string
   const project = await storage.getProjectByArchidocId(archidocProjectId);
   if (!project) return { shareUrl: null, reason: "unknown_project" };
 
+  // Task #410 — record fixable misses ("expired" / "rotate_required") so the
+  // Project client link panel can warn the architect that ArchiDoc's button
+  // has gone dark. Best-effort: a bookkeeping hiccup must never change the
+  // lookup answer. unknown_project (above) is never recorded — ArchiDoc
+  // probing projects ArchiTrak doesn't track is normal — and no_active_link
+  // means the architect deliberately has no link.
+  const recordMiss = async (reason: "expired" | "rotate_required") => {
+    try {
+      await storage.upsertArchidocLinkLookupMiss(project.id, reason);
+    } catch (err) {
+      console.error("[archidoc-link-lookup] miss bookkeeping failed (lookup still answered):", err instanceof Error ? err.message : err);
+    }
+  };
+
   const active = await storage.getActiveProjectShareToken(project.id);
   if (!active) return { shareUrl: null, reason: "no_active_link" };
-  if (isTokenExpired(active)) return { shareUrl: null, reason: "expired" };
+  if (isTokenExpired(active)) {
+    await recordMiss("expired");
+    return { shareUrl: null, reason: "expired" };
+  }
 
   // Pre-encryption rows carry no recoverable URL (and so do rows whose
   // blob no longer authenticates after a SESSION_SECRET change).
   const url = active.encryptedShareUrl ? decryptShareUrl(active.encryptedShareUrl) : null;
-  if (!url) return { shareUrl: null, reason: "rotate_required" };
+  if (!url) {
+    await recordMiss("rotate_required");
+    return { shareUrl: null, reason: "rotate_required" };
+  }
+
+  // Successful lookup — the button is live again, so drop any stale warning.
+  try {
+    await storage.clearArchidocLinkLookupMiss(project.id);
+  } catch (err) {
+    console.error("[archidoc-link-lookup] miss clear failed (lookup still served):", err instanceof Error ? err.message : err);
+  }
 
   // Low-noise audit: at most one entry per token per calendar day (UTC).
   // Best-effort — an audit hiccup must never break the lookup itself.

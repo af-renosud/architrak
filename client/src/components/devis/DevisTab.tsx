@@ -3911,6 +3911,9 @@ type ProjectShareState = {
   // Task #407 — true when the active link's URL can be re-copied (stored
   // encrypted at rest). False for pre-#407 links until the next rotate.
   canCopyLink?: boolean;
+  // Task #410 — set when ArchiDoc recently (last 7 days) asked for the
+  // client link and couldn't get it. Cleared by the next successful lookup.
+  archidocLookupMiss?: { reason: "expired" | "rotate_required"; lastMissAt: string } | null;
 };
 
 function useProjectShareState(projectId: string) {
@@ -4199,6 +4202,26 @@ export function ProjectClientSharePanel({
           </div>
         )}
       </div>
+
+      {data?.archidocLookupMiss && (
+        <div
+          className="flex items-start gap-2 rounded border border-amber-300 bg-amber-50 p-2 text-[10px] text-amber-800"
+          data-testid="warning-archidoc-lookup-miss"
+        >
+          <AlertTriangle size={12} className="shrink-0 mt-0.5 text-amber-600" />
+          <div>
+            <span className="font-semibold">
+              ArchiDoc asked for this project's client link
+              {" "}({formatDateTime(data.archidocLookupMiss.lastMissAt)}) and couldn't get it
+            </span>
+            {" — "}
+            {data.archidocLookupMiss.reason === "expired"
+              ? "the link has expired, so the client-facing button in ArchiDoc is hidden. Use \u201CRotate link\u201D to issue a fresh one (and \u201CExtend\u201D before expiry next time)."
+              : "the link needs rotating (its stored URL can't be recovered), so the client-facing button in ArchiDoc is hidden. Use \u201CRotate link\u201D to fix it."}
+            {" "}This warning clears automatically once ArchiDoc gets the link again.
+          </div>
+        </div>
+      )}
 
       {token ? (
         <div className="grid grid-cols-3 gap-2 text-[10px] text-slate-600">

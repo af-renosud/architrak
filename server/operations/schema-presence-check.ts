@@ -122,6 +122,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0064_client_checks_line_item", artifact: { kind: "column", table: "client_checks", column: "devis_line_item_id" } },
   { tag: "0065_client_project_share_audit", artifact: { kind: "table", table: "client_project_share_audit" } },
   { tag: "0066_client_project_share_url_enc", artifact: { kind: "column", table: "client_project_share_tokens", column: "encrypted_share_url" } },
+  { tag: "0067_archidoc_link_lookup_misses", artifact: { kind: "table", table: "archidoc_link_lookup_misses" } },
 ];
 
 interface JournalFile {

@@ -21,6 +21,7 @@ import {
   devisChecks, devisCheckMessages, devisCheckTokens,
   clientChecks, clientCheckMessages, clientCheckTokens,
   clientProjectShareTokens, clientProjectShareDevis, clientProjectShareAudit,
+  archidocLinkLookupMisses, type ArchidocLinkLookupMiss, type ArchidocLookupMissReason,
   type ClientProjectShareToken, type InsertClientProjectShareToken,
   type ClientProjectShareDevis, type InsertClientProjectShareDevis,
   type ClientProjectShareAuditEntry, type InsertClientProjectShareAuditEntry,
@@ -726,6 +727,11 @@ export interface IStorage {
   createProjectShareAuditEntryIfAbsentSince(data: InsertClientProjectShareAuditEntry & { tokenId: number }, since: Date): Promise<boolean>;
 
   listProjectShareAuditEntries(projectId: number, limit?: number): Promise<ClientProjectShareAuditEntry[]>;
+
+  /** Task #410 — record / clear / read the most recent failed ArchiDoc link lookup per project. */
+  upsertArchidocLinkLookupMiss(projectId: number, reason: ArchidocLookupMissReason): Promise<void>;
+  clearArchidocLinkLookupMiss(projectId: number): Promise<void>;
+  getArchidocLinkLookupMiss(projectId: number): Promise<ArchidocLinkLookupMiss | undefined>;
 
   getProjectCommunicationByDedupeKey(key: string): Promise<ProjectCommunication | undefined>;
 
@@ -3523,6 +3529,31 @@ export class DatabaseStorage implements IStorage {
       await tx.insert(clientProjectShareAudit).values(data);
       return true;
     });
+  }
+
+  // --- Task #410 — ArchiDoc link-lookup misses --------------------------
+
+  async upsertArchidocLinkLookupMiss(projectId: number, reason: ArchidocLookupMissReason): Promise<void> {
+    await db
+      .insert(archidocLinkLookupMisses)
+      .values({ projectId, reason, lastMissAt: new Date() })
+      .onConflictDoUpdate({
+        target: archidocLinkLookupMisses.projectId,
+        set: { reason, lastMissAt: new Date() },
+      });
+  }
+
+  async clearArchidocLinkLookupMiss(projectId: number): Promise<void> {
+    await db.delete(archidocLinkLookupMisses).where(eq(archidocLinkLookupMisses.projectId, projectId));
+  }
+
+  async getArchidocLinkLookupMiss(projectId: number): Promise<ArchidocLinkLookupMiss | undefined> {
+    const [row] = await db
+      .select()
+      .from(archidocLinkLookupMisses)
+      .where(eq(archidocLinkLookupMisses.projectId, projectId))
+      .limit(1);
+    return row;
   }
 
   async listProjectShareAuditEntries(projectId: number, limit = 100): Promise<ClientProjectShareAuditEntry[]> {
