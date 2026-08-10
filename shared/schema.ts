@@ -2265,6 +2265,69 @@ export type ClientCheckToken = typeof clientCheckTokens.$inferSelect;
 export type InsertClientCheckToken = z.infer<typeof insertClientCheckTokenSchema>;
 
 /**
+ * client_project_share_tokens — project-scoped client share links (Task #388).
+ * ONE link per project listing all EXPLICITLY published quotations, so a
+ * client with several devis doesn't juggle several per-devis links. Mirrors
+ * `client_check_tokens` conventions: plaintext never persisted (SHA-256 hash
+ * only), partial unique index enforces one active link per project. The
+ * per-devis `client_check_tokens` remain valid in parallel during migration.
+ */
+export const clientProjectShareTokens = pgTable("client_project_share_tokens", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull(),
+  clientEmail: text("client_email").notNull(),
+  clientName: text("client_name"),
+  createdByUserId: integer("created_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+}, (table) => [
+  uniqueIndex("client_project_share_tokens_token_hash_idx").on(table.tokenHash),
+  index("client_project_share_tokens_project_id_idx").on(table.projectId),
+  uniqueIndex("client_project_share_tokens_one_active_idx")
+    .on(table.projectId)
+    .where(sql`${table.revokedAt} IS NULL`),
+]);
+
+export const insertClientProjectShareTokenSchema = createInsertSchema(clientProjectShareTokens).omit({
+  id: true,
+  createdAt: true,
+  revokedAt: true,
+  lastUsedAt: true,
+});
+export type ClientProjectShareToken = typeof clientProjectShareTokens.$inferSelect;
+export type InsertClientProjectShareToken = z.infer<typeof insertClientProjectShareTokenSchema>;
+
+/**
+ * client_project_share_devis — explicit publish membership (token ↔ devis).
+ * A devis appears on the project share link ONLY when a row exists here —
+ * NEVER auto-include all project devis (security decision locked with the
+ * user). Rotation copies memberships to the new token so re-issuing a link
+ * doesn't silently unpublish everything. FKs indexed per ARCHITECTURE.md
+ * §2.2.1 (the composite unique covers token_id lookups; devis_id gets its
+ * own index).
+ */
+export const clientProjectShareDevis = pgTable("client_project_share_devis", {
+  id: serial("id").primaryKey(),
+  tokenId: integer("token_id").notNull().references(() => clientProjectShareTokens.id, { onDelete: "cascade" }),
+  devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
+  publishedByUserId: integer("published_by_user_id").references(() => users.id),
+  publishedAt: timestamp("published_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  uniqueIndex("client_project_share_devis_token_devis_idx").on(table.tokenId, table.devisId),
+  index("client_project_share_devis_devis_id_idx").on(table.devisId),
+]);
+
+export const insertClientProjectShareDevisSchema = createInsertSchema(clientProjectShareDevis).omit({
+  id: true,
+  publishedAt: true,
+});
+export type ClientProjectShareDevis = typeof clientProjectShareDevis.$inferSelect;
+export type InsertClientProjectShareDevis = z.infer<typeof insertClientProjectShareDevisSchema>;
+
+/**
  * insurance_overrides — captured at the moment an architect manually
  * overrides a contractor-insurance non-affirmative result to proceed with
  * `approved_for_signing` (§2.1.4 + §1.3). Stores the verbatim override

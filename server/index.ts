@@ -18,6 +18,7 @@ import { SEED_BENCHMARK_TAGS } from "./services/benchmark-tags";
 import { registerAuthRoutes } from "./auth/routes";
 import publicChecksRouter from "./routes/public-checks";
 import publicClientChecksRouter from "./routes/public-client-checks";
+import publicClientProjectShareRouter from "./routes/public-client-project-share";
 import { requireAuth } from "./auth/middleware";
 import { pool } from "./db";
 import { env } from "./env";
@@ -138,6 +139,9 @@ app.use((req, res, next) => {
   // Public contractor portal — token-protected, NOT under /api so it bypasses
   // the session auth guard below. Auth is enforced by the token lookup itself.
   app.use(publicChecksRouter);
+  // Project-scoped share link goes BEFORE the per-devis client portal so the
+  // more specific /p/client/project/:token paths are matched first.
+  app.use(publicClientProjectShareRouter);
   app.use(publicClientChecksRouter);
 
   app.use("/api", (req, res, next) => {

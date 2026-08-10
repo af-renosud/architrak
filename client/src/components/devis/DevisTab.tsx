@@ -1522,6 +1522,8 @@ export function DevisTab({
         </LuxuryCard>
       </div>
 
+      <ProjectClientSharePanel projectId={projectId} isArchived={isArchived} />
+
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           {uploading ? (
@@ -3899,6 +3901,366 @@ function ClientPortalPanel({
 }
 
 // =============================================================================
+// Project-scoped client share link (Task #388) — ONE link per project listing
+// all EXPLICITLY published quotations. Mirrors ClientPortalPanel patterns.
+// =============================================================================
+
+type ProjectShareState = {
+  token: ClientCheckTokenInfo | null;
+  publishedDevisIds: number[];
+};
+
+function useProjectShareState(projectId: string) {
+  return useQuery<ProjectShareState>({
+    queryKey: ["/api/projects", projectId, "client-share"],
+  });
+}
+
+function invalidateProjectShare(projectId: string) {
+  queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "client-share"] });
+}
+
+export function ProjectClientSharePanel({
+  projectId,
+  isArchived,
+}: {
+  projectId: string;
+  isArchived: boolean;
+}) {
+  const { toast } = useToast();
+  const [issueOpen, setIssueOpen] = useState(false);
+  const [emailDraft, setEmailDraft] = useState("");
+  const [nameDraft, setNameDraft] = useState("");
+  const [emailErr, setEmailErr] = useState<string | null>(null);
+
+  const { data, isLoading } = useProjectShareState(projectId);
+  const { data: project } = useQuery<ProjectClientContact>({
+    queryKey: ["/api/projects", projectId],
+  });
+
+  const issueMutation = useMutation({
+    mutationFn: async (payload: { clientEmail: string; clientName?: string }) => {
+      const res = await apiRequest("POST", `/api/projects/${projectId}/client-share/issue`, payload);
+      return res.json() as Promise<{ shareUrl: string; clientEmail: string; clientName: string | null }>;
+    },
+    onSuccess: async (resp) => {
+      try {
+        await navigator.clipboard.writeText(resp.shareUrl);
+        toast({
+          title: "Project client link copied",
+          description: `The link for ${resp.clientName ? resp.clientName + " " : ""}<${resp.clientEmail}> is in your clipboard.`,
+        });
+      } catch {
+        toast({ title: "Project client link generated (copy manually)", description: resp.shareUrl });
+      }
+      invalidateProjectShare(projectId);
+      setIssueOpen(false);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const extendMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/projects/${projectId}/client-share/extend`, {});
+      return res.json();
+    },
+    onSuccess: () => { invalidateProjectShare(projectId); toast({ title: "Project client link extended" }); },
+    onError: (error: Error) => toast({ title: "Error", description: error.message, variant: "destructive" }),
+  });
+
+  const revokeMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/projects/${projectId}/client-share/revoke`, {});
+      return res.json();
+    },
+    onSuccess: () => { invalidateProjectShare(projectId); toast({ title: "Project client link revoked" }); },
+    onError: (error: Error) => toast({ title: "Error", description: error.message, variant: "destructive" }),
+  });
+
+  if (isLoading) return null;
+  const token = data?.token ?? null;
+  const publishedCount = data?.publishedDevisIds.length ?? 0;
+  const isRevoked = !!token?.revokedAt;
+  const isExpired = !!(token?.expiresAt && new Date(token.expiresAt).getTime() <= Date.now());
+  const hasActiveLink = !!token && !isRevoked && !isExpired;
+  const stateLabel = !token ? "No link issued" : isRevoked ? "Revoked" : isExpired ? "Expired" : "Active";
+  const stateColor = !token || isRevoked || isExpired
+    ? "bg-slate-100 text-slate-600 border-slate-300"
+    : "bg-emerald-50 text-emerald-700 border-emerald-200";
+
+  function openIssueDialog() {
+    setEmailDraft(token?.clientEmail ?? project?.clientContactEmail ?? "");
+    setNameDraft(token?.clientName ?? project?.clientContactName ?? project?.clientName ?? "");
+    setEmailErr(null);
+    setIssueOpen(true);
+  }
+
+  function submitIssue() {
+    const email = emailDraft.trim();
+    const name = nameDraft.trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      setEmailErr("Invalid email address");
+      return;
+    }
+    setEmailErr(null);
+    issueMutation.mutate({ clientEmail: email, clientName: name || undefined });
+  }
+
+  return (
+    <div
+      className="rounded-lg border border-slate-200 bg-white p-2.5 space-y-2"
+      data-testid="section-project-client-share-panel"
+    >
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] font-semibold text-slate-700">Project client link</span>
+          <span
+            className={`px-2 py-0.5 rounded-full border text-[9px] font-bold uppercase tracking-wide ${stateColor}`}
+            data-testid="status-project-share-token"
+          >
+            {stateLabel}
+          </span>
+          {hasActiveLink && (
+            <span className="text-[10px] text-slate-500" data-testid="text-project-share-published-count">
+              {publishedCount === 0
+                ? "No quotations published yet"
+                : `${publishedCount} quotation(s) published`}
+            </span>
+          )}
+        </div>
+        {!isArchived && (
+          <div className="flex items-center gap-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 text-[9px] font-bold uppercase tracking-widest gap-1"
+              onClick={openIssueDialog}
+              disabled={issueMutation.isPending}
+              data-testid="button-issue-project-share"
+            >
+              <Send size={10} />
+              {issueMutation.isPending ? "…" : hasActiveLink ? "Rotate link" : "Issue link"}
+            </Button>
+            {hasActiveLink && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 text-[9px] font-bold uppercase tracking-widest"
+                onClick={() => extendMutation.mutate()}
+                disabled={extendMutation.isPending}
+                data-testid="button-extend-project-share"
+              >
+                {extendMutation.isPending ? "…" : "Extend"}
+              </Button>
+            )}
+            {token && !isRevoked && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 text-[9px] font-bold uppercase tracking-widest border-rose-300 text-rose-700 hover:bg-rose-50"
+                onClick={() => revokeMutation.mutate()}
+                disabled={revokeMutation.isPending}
+                data-testid="button-revoke-project-share"
+              >
+                {revokeMutation.isPending ? "…" : "Revoke"}
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {token ? (
+        <div className="grid grid-cols-3 gap-2 text-[10px] text-slate-600">
+          <div>
+            <div className="text-slate-400 uppercase tracking-wide text-[9px]">Recipient</div>
+            <div data-testid="text-project-share-recipient">
+              {token.clientName ? `${token.clientName} ` : ""}&lt;{token.clientEmail}&gt;
+            </div>
+          </div>
+          <div>
+            <div className="text-slate-400 uppercase tracking-wide text-[9px]">Last accessed</div>
+            <div data-testid="text-project-share-last-used">{formatDateTime(token.lastUsedAt)}</div>
+          </div>
+          <div>
+            <div className="text-slate-400 uppercase tracking-wide text-[9px]">
+              {isRevoked ? "Revoked" : "Expires"}
+            </div>
+            <div data-testid="text-project-share-expires">
+              {isRevoked
+                ? formatDateTime(token.revokedAt)
+                : token.expiresAt
+                  ? formatDateTime(token.expiresAt)
+                  : "Never"}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <p className="text-[10px] text-slate-500" data-testid="text-no-project-share-token">
+          One link for the whole project: the client sees every quotation you explicitly publish
+          (never all of them automatically). Issue the link, then publish devis individually below.
+        </p>
+      )}
+
+      <Dialog open={issueOpen} onOpenChange={(o) => { if (!issueMutation.isPending) setIssueOpen(o); }}>
+        <DialogContent data-testid="dialog-issue-project-share">
+          <DialogHeader>
+            <DialogTitle>
+              {hasActiveLink ? "Rotate and copy the project link" : "Issue a project link for the client"}
+            </DialogTitle>
+            <DialogDescription>
+              {hasActiveLink
+                ? "A new link will be generated and copied to your clipboard. The current active link stops working immediately; the published quotations are kept."
+                : "Enter the client's email address. The link will be copied to your clipboard — you can share it via your preferred channel (email, WhatsApp, SMS)."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                Client email address
+              </label>
+              <Input
+                type="email"
+                value={emailDraft}
+                onChange={(e) => setEmailDraft(e.target.value)}
+                placeholder="client@example.com"
+                data-testid="input-project-share-email"
+                disabled={issueMutation.isPending}
+                autoFocus
+              />
+              {emailErr && (
+                <p className="text-[10px] text-rose-700" data-testid="text-project-share-email-error">
+                  {emailErr}
+                </p>
+              )}
+            </div>
+            <div className="space-y-1">
+              <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                Client name (optional)
+              </label>
+              <Input
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                placeholder="Mr / Mrs Smith"
+                data-testid="input-project-share-name"
+                disabled={issueMutation.isPending}
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              onClick={() => setIssueOpen(false)}
+              disabled={issueMutation.isPending}
+              data-testid="button-cancel-issue-project-share"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={submitIssue}
+              disabled={issueMutation.isPending}
+              data-testid="button-confirm-issue-project-share"
+            >
+              {issueMutation.isPending ? "Generating…" : hasActiveLink ? "Rotate and copy" : "Issue and copy"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function ProjectSharePublishControl({
+  projectId,
+  devisId,
+  isArchived,
+}: {
+  projectId: string;
+  devisId: number;
+  isArchived: boolean;
+}) {
+  const { toast } = useToast();
+  const { data, isLoading } = useProjectShareState(projectId);
+
+  const publishMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/projects/${projectId}/client-share/publish`, { devisId });
+      return res.json();
+    },
+    onSuccess: () => { invalidateProjectShare(projectId); toast({ title: "Devis published on the client link" }); },
+    onError: (error: Error) => toast({ title: "Cannot publish", description: error.message, variant: "destructive" }),
+  });
+
+  const unpublishMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/projects/${projectId}/client-share/unpublish`, { devisId });
+      return res.json();
+    },
+    onSuccess: () => { invalidateProjectShare(projectId); toast({ title: "Devis removed from the client link" }); },
+    onError: (error: Error) => toast({ title: "Error", description: error.message, variant: "destructive" }),
+  });
+
+  if (isLoading) return null;
+  const token = data?.token ?? null;
+  const isRevoked = !!token?.revokedAt;
+  const isExpired = !!(token?.expiresAt && new Date(token.expiresAt).getTime() <= Date.now());
+  const hasActiveLink = !!token && !isRevoked && !isExpired;
+  const published = (data?.publishedDevisIds ?? []).includes(devisId);
+
+  return (
+    <div
+      className="rounded-lg border border-slate-200 bg-white p-2.5 flex items-center justify-between gap-2 flex-wrap"
+      data-testid={`section-project-share-publish-${devisId}`}
+    >
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] font-semibold text-slate-700">Project client link</span>
+        <span
+          className={`px-2 py-0.5 rounded-full border text-[9px] font-bold uppercase tracking-wide ${
+            published
+              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+              : "bg-slate-100 text-slate-600 border-slate-300"
+          }`}
+          data-testid={`status-project-share-publish-${devisId}`}
+        >
+          {published ? "Published" : "Not published"}
+        </span>
+        {!hasActiveLink && (
+          <span className="text-[10px] text-slate-500" data-testid={`text-project-share-no-link-${devisId}`}>
+            Issue a project client link first (top of the Devis tab).
+          </span>
+        )}
+      </div>
+      {!isArchived && hasActiveLink && (
+        published ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-6 text-[9px] font-bold uppercase tracking-widest border-rose-300 text-rose-700 hover:bg-rose-50"
+            onClick={() => unpublishMutation.mutate()}
+            disabled={unpublishMutation.isPending}
+            data-testid={`button-unpublish-devis-${devisId}`}
+          >
+            {unpublishMutation.isPending ? "…" : "Unpublish"}
+          </Button>
+        ) : (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-6 text-[9px] font-bold uppercase tracking-widest"
+            onClick={() => publishMutation.mutate()}
+            disabled={publishMutation.isPending}
+            data-testid={`button-publish-devis-${devisId}`}
+          >
+            {publishMutation.isPending ? "…" : "Publish to client link"}
+          </Button>
+        )
+      )}
+    </div>
+  );
+}
+
+// =============================================================================
 // Insurance gate panel (AT3, contract §1.3 + §2.1.4)
 // =============================================================================
 
@@ -4334,6 +4696,7 @@ function ChecksPanel({
       <LapsingTokenBanner devisId={devisId} isArchived={isArchived} />
       <TokenPanel devisId={devisId} projectId={projectId} isArchived={isArchived} />
       <ClientPortalPanel devisId={devisId} projectId={projectId} isArchived={isArchived} />
+      <ProjectSharePublishControl projectId={projectId} devisId={devisId} isArchived={isArchived} />
       <InsurancePanel devisId={devisId} isArchived={isArchived} />
       <SigningPanel devisId={devisId} isArchived={isArchived} />
 

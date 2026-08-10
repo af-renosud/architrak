@@ -442,6 +442,13 @@
       "when": 1778760009000,
       "tag": "0062_cost_analysis_fingerprint",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1778760010000,
+      "tag": "0063_client_project_share",
+      "breakpoints": true
     }
   ]
 }

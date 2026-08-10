@@ -118,6 +118,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0060_dvp0000661_merge_fragment_line7", artifact: { kind: "data_only", reason: "One-shot line-fragment merge on prod devis DVP0000661 (Task #357, guarded no-op elsewhere); no schema artifact" } },
   { tag: "0061_devis_cost_analyses", artifact: { kind: "table", table: "devis_cost_analyses" } },
   { tag: "0062_cost_analysis_fingerprint", artifact: { kind: "column", table: "devis_cost_analyses", column: "quotation_fingerprint" } },
+  { tag: "0063_client_project_share", artifact: { kind: "table", table: "client_project_share_tokens" } },
 ];
 
 interface JournalFile {

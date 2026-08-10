@@ -20,6 +20,9 @@ import {
   benchmarkDocuments, benchmarkItems, benchmarkTags, benchmarkItemTags,
   devisChecks, devisCheckMessages, devisCheckTokens,
   clientChecks, clientCheckMessages, clientCheckTokens,
+  clientProjectShareTokens, clientProjectShareDevis,
+  type ClientProjectShareToken, type InsertClientProjectShareToken,
+  type ClientProjectShareDevis, type InsertClientProjectShareDevis,
   type DevisCheck, type InsertDevisCheck,
   type DevisCheckMessage, type InsertDevisCheckMessage, type InboxContractorResponseRow,
   type DevisCheckToken, type InsertDevisCheckToken,
@@ -688,6 +691,31 @@ export interface IStorage {
   revokeClientCheckTokenById(id: number): Promise<ClientCheckToken | undefined>;
 
   revokeExpiredClientCheckTokens(now?: Date): Promise<number>;
+
+  // --- Project-scoped client share link (Task #388) ---------------------
+
+  getActiveProjectShareToken(projectId: number): Promise<ClientProjectShareToken | undefined>;
+
+  getLatestProjectShareToken(projectId: number): Promise<ClientProjectShareToken | undefined>;
+
+  /** Rotates: revokes any active token, inserts the new one, and COPIES the
+   *  publish memberships from the previous active token so re-issuing the
+   *  link doesn't silently unpublish everything. */
+  createProjectShareToken(data: InsertClientProjectShareToken): Promise<ClientProjectShareToken>;
+
+  getProjectShareTokenByHash(hash: string): Promise<ClientProjectShareToken | undefined>;
+
+  touchProjectShareTokenUsed(id: number, expiresAt: Date | null): Promise<void>;
+
+  extendProjectShareTokenExpiry(id: number, expiresAt: Date | null): Promise<ClientProjectShareToken | undefined>;
+
+  revokeProjectShareTokenById(id: number): Promise<ClientProjectShareToken | undefined>;
+
+  listProjectShareDevisIds(tokenId: number): Promise<number[]>;
+
+  publishDevisToProjectShare(data: InsertClientProjectShareDevis): Promise<ClientProjectShareDevis>;
+
+  unpublishDevisFromProjectShare(tokenId: number, devisId: number): Promise<boolean>;
 
   getProjectCommunicationByDedupeKey(key: string): Promise<ProjectCommunication | undefined>;
 
@@ -3319,6 +3347,139 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(clientCheckTokens.id, id), isNull(clientCheckTokens.revokedAt)))
       .returning();
     return row;
+  }
+
+  // --- Project-scoped client share link (Task #388) ---------------------
+
+  async getActiveProjectShareToken(projectId: number): Promise<ClientProjectShareToken | undefined> {
+    const [t] = await db
+      .select()
+      .from(clientProjectShareTokens)
+      .where(and(eq(clientProjectShareTokens.projectId, projectId), isNull(clientProjectShareTokens.revokedAt)))
+      .limit(1);
+    return t;
+  }
+
+  async getLatestProjectShareToken(projectId: number): Promise<ClientProjectShareToken | undefined> {
+    const [t] = await db
+      .select()
+      .from(clientProjectShareTokens)
+      .where(eq(clientProjectShareTokens.projectId, projectId))
+      .orderBy(desc(clientProjectShareTokens.createdAt))
+      .limit(1);
+    return t;
+  }
+
+  async createProjectShareToken(data: InsertClientProjectShareToken): Promise<ClientProjectShareToken> {
+    // Same race-hardening as createClientCheckToken: advisory lock keyed on
+    // the project so two concurrent issues can't trip the partial unique
+    // index. Uses a distinct lock namespace offset so it can't collide with
+    // the per-devis lock keyed on devis ids.
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('client_project_share'), ${data.projectId}::int)`);
+      const [prior] = await tx
+        .select()
+        .from(clientProjectShareTokens)
+        .where(and(eq(clientProjectShareTokens.projectId, data.projectId), isNull(clientProjectShareTokens.revokedAt)))
+        .limit(1);
+      if (prior) {
+        await tx
+          .update(clientProjectShareTokens)
+          .set({ revokedAt: new Date() })
+          .where(eq(clientProjectShareTokens.id, prior.id));
+      }
+      const [created] = await tx.insert(clientProjectShareTokens).values(data).returning();
+      if (prior) {
+        // Carry the publish memberships forward — rotating the link must not
+        // silently unpublish the quotations the architect already curated.
+        const memberships = await tx
+          .select()
+          .from(clientProjectShareDevis)
+          .where(eq(clientProjectShareDevis.tokenId, prior.id));
+        if (memberships.length > 0) {
+          await tx.insert(clientProjectShareDevis).values(
+            memberships.map((m) => ({
+              tokenId: created.id,
+              devisId: m.devisId,
+              publishedByUserId: m.publishedByUserId,
+              publishedAt: m.publishedAt,
+            })),
+          );
+        }
+      }
+      return created;
+    });
+  }
+
+  async getProjectShareTokenByHash(hash: string): Promise<ClientProjectShareToken | undefined> {
+    const [t] = await db
+      .select()
+      .from(clientProjectShareTokens)
+      .where(eq(clientProjectShareTokens.tokenHash, hash));
+    return t;
+  }
+
+  async touchProjectShareTokenUsed(id: number, expiresAt: Date | null): Promise<void> {
+    await db
+      .update(clientProjectShareTokens)
+      .set({ lastUsedAt: new Date(), expiresAt })
+      .where(eq(clientProjectShareTokens.id, id));
+  }
+
+  async extendProjectShareTokenExpiry(id: number, expiresAt: Date | null): Promise<ClientProjectShareToken | undefined> {
+    const [row] = await db
+      .update(clientProjectShareTokens)
+      .set({ expiresAt })
+      .where(and(eq(clientProjectShareTokens.id, id), isNull(clientProjectShareTokens.revokedAt)))
+      .returning();
+    return row;
+  }
+
+  async revokeProjectShareTokenById(id: number): Promise<ClientProjectShareToken | undefined> {
+    const [row] = await db
+      .update(clientProjectShareTokens)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(clientProjectShareTokens.id, id), isNull(clientProjectShareTokens.revokedAt)))
+      .returning();
+    return row;
+  }
+
+  async listProjectShareDevisIds(tokenId: number): Promise<number[]> {
+    const rows = await db
+      .select({ devisId: clientProjectShareDevis.devisId })
+      .from(clientProjectShareDevis)
+      .where(eq(clientProjectShareDevis.tokenId, tokenId));
+    return rows.map((r) => r.devisId);
+  }
+
+  async publishDevisToProjectShare(data: InsertClientProjectShareDevis): Promise<ClientProjectShareDevis> {
+    // Idempotent: re-publishing an already-published devis is a no-op that
+    // returns the existing row (unique index on token_id + devis_id).
+    const [created] = await db
+      .insert(clientProjectShareDevis)
+      .values(data)
+      .onConflictDoNothing()
+      .returning();
+    if (created) return created;
+    const [existing] = await db
+      .select()
+      .from(clientProjectShareDevis)
+      .where(and(
+        eq(clientProjectShareDevis.tokenId, data.tokenId),
+        eq(clientProjectShareDevis.devisId, data.devisId),
+      ));
+    return existing;
+  }
+
+  async unpublishDevisFromProjectShare(tokenId: number, devisId: number): Promise<boolean> {
+    const rows = await db
+      .delete(clientProjectShareDevis)
+      .where(and(
+        eq(clientProjectShareDevis.tokenId, tokenId),
+        eq(clientProjectShareDevis.devisId, devisId),
+      ))
+      .returning({ id: clientProjectShareDevis.id });
+    return rows.length > 0;
   }
 
   async revokeExpiredClientCheckTokens(now: Date = new Date()): Promise<number> {
