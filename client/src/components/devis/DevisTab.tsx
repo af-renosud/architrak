@@ -3908,6 +3908,9 @@ function ClientPortalPanel({
 type ProjectShareState = {
   token: ClientCheckTokenInfo | null;
   publishedDevisIds: number[];
+  // Task #407 — true when the active link's URL can be re-copied (stored
+  // encrypted at rest). False for pre-#407 links until the next rotate.
+  canCopyLink?: boolean;
 };
 
 function useProjectShareState(projectId: string) {
@@ -4045,6 +4048,25 @@ export function ProjectClientSharePanel({
     onError: (error: Error) => toast({ title: "Error", description: error.message, variant: "destructive" }),
   });
 
+  // Task #407 — re-copy the live link any time. Read-only on the server
+  // (never rotates or extends); the URL is fetched on demand, never cached
+  // in the page.
+  const copyLinkMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("GET", `/api/projects/${projectId}/client-share/link`);
+      return res.json() as Promise<{ shareUrl: string }>;
+    },
+    onSuccess: async (resp) => {
+      try {
+        await navigator.clipboard.writeText(resp.shareUrl);
+        toast({ title: "Project client link copied", description: "The live link is in your clipboard — nothing was sent to the client." });
+      } catch {
+        toast({ title: "Copy manually", description: resp.shareUrl });
+      }
+    },
+    onError: (error: Error) => toast({ title: "Cannot copy link", description: error.message, variant: "destructive" }),
+  });
+
   if (isLoading) return null;
   const token = data?.token ?? null;
   const publishedCount = data?.publishedDevisIds.length ?? 0;
@@ -4114,6 +4136,29 @@ export function ProjectClientSharePanel({
               <Eye size={10} />
               Client-side preview
             </Button>
+            {hasActiveLink && (
+              data?.canCopyLink ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-6 text-[9px] font-bold uppercase tracking-widest gap-1"
+                  onClick={() => copyLinkMutation.mutate()}
+                  disabled={copyLinkMutation.isPending}
+                  data-testid="button-copy-project-share"
+                >
+                  <Copy size={10} />
+                  {copyLinkMutation.isPending ? "…" : "Copy link"}
+                </Button>
+              ) : (
+                <span
+                  className="text-[9px] text-slate-400 uppercase tracking-widest"
+                  title="This link predates the copy feature — rotate the link once to enable copying."
+                  data-testid="hint-rotate-to-copy"
+                >
+                  Rotate to enable copying
+                </span>
+              )
+            )}
             <Button
               variant="outline"
               size="sm"

@@ -812,6 +812,91 @@ test.describe("Client project share portal — data-leak and access-control", ()
 // Task #404 — architect preview never counts as client activity
 // ---------------------------------------------------------------------------
 
+test.describe("Project share link copy (Task #407)", () => {
+
+  async function devLoginCopy(ctx: import("@playwright/test").BrowserContext, email: string) {
+    const loginResp = await ctx.request.post("/api/auth/dev-login", { data: { email } });
+    expect(loginResp.ok(), `dev-login failed (${loginResp.status()})`).toBe(true);
+  }
+
+  test("copy endpoint returns the live URL that resolves publicly; pre-#407 rows get the rotate hint", async ({ browser }) => {
+    const databaseUrl = process.env.DATABASE_URL;
+    expect(databaseUrl, "DATABASE_URL must be set").toBeTruthy();
+
+    const uniq = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
+    const db = new Client({ connectionString: databaseUrl! });
+    await db.connect();
+    let seed: SeedFull | null = null;
+    const ctx = await browser.newContext();
+    try {
+      seed = await seedFullFixture(db, uniq);
+      await devLoginCopy(ctx, `${SEED_PREFIX}copy-${uniq}@local.test`);
+
+      // Seeded token was inserted directly (no encrypted URL) — the copy
+      // endpoint must refuse with the rotate hint, and state says canCopyLink=false.
+      const stateBefore = await (await ctx.request.get(`/api/projects/${seed.projectId}/client-share`)).json();
+      expect(stateBefore.canCopyLink).toBe(false);
+      const legacy = await ctx.request.get(`/api/projects/${seed.projectId}/client-share/link`);
+      expect(legacy.status()).toBe(404);
+      expect((await legacy.json()).message).toContain("rotate");
+
+      // Rotate via the API — new token persists the encrypted URL.
+      const issueResp = await ctx.request.post(`/api/projects/${seed.projectId}/client-share/issue`, {
+        data: { clientEmail: `${SEED_PREFIX}client-${uniq}@local.test`, clientName: "Copy Test" },
+      });
+      expect(issueResp.ok()).toBe(true);
+      const { shareUrl } = await issueResp.json();
+
+      const stateAfter = await (await ctx.request.get(`/api/projects/${seed.projectId}/client-share`)).json();
+      expect(stateAfter.canCopyLink).toBe(true);
+
+      // Copy endpoint returns exactly the issued URL...
+      const linkResp = await ctx.request.get(`/api/projects/${seed.projectId}/client-share/link`);
+      expect(linkResp.ok()).toBe(true);
+      const { shareUrl: copied } = await linkResp.json();
+      expect(copied).toBe(shareUrl);
+
+      // ...and the URL is never stored in the clear.
+      const { rows: [tokRow] } = await db.query<{ encrypted_share_url: string | null }>(
+        `SELECT encrypted_share_url FROM client_project_share_tokens
+         WHERE project_id = $1 AND revoked_at IS NULL`,
+        [seed.projectId],
+      );
+      expect(tokRow.encrypted_share_url).toBeTruthy();
+      expect(tokRow.encrypted_share_url).not.toContain(copied.split("/").pop());
+
+      // Copying must not mutate the token.
+      const { rows: [beforeVisit] } = await db.query<{ last_used_at: Date | null; expires_at: Date | null }>(
+        `SELECT last_used_at, expires_at FROM client_project_share_tokens
+         WHERE project_id = $1 AND revoked_at IS NULL`,
+        [seed.projectId],
+      );
+      expect(beforeVisit.last_used_at).toBeNull();
+
+      // The copied URL resolves on the public route (rotation carried the
+      // published devis membership forward).
+      const publicResp = await ctx.request.get(copied);
+      expect(publicResp.status()).toBe(200);
+      const publicPath = new URL(copied).pathname;
+      const dataResp = await ctx.request.get(`${publicPath}/data`);
+      expect(dataResp.status()).toBe(200);
+      const payload = await dataResp.json();
+      expect(payload.quotations.map((q: { id: number }) => q.id)).toContain(seed.devisId);
+
+      // Unauthenticated copy is refused by the /api perimeter.
+      const anonCtx = await browser.newContext();
+      try {
+        const anon = await anonCtx.request.get(`/api/projects/${seed.projectId}/client-share/link`);
+        expect(anon.status()).toBe(401);
+      } finally {
+        await anonCtx.close();
+      }
+    } finally {
+      try { await cleanup(db, seed); } finally { await db.end(); await ctx.close(); }
+    }
+  });
+});
+
 test.describe("Project share architect preview — no client-activity side effects", () => {
 
   async function devLogin(ctx: import("@playwright/test").BrowserContext, email: string) {

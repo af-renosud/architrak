@@ -7,6 +7,9 @@ import {
   computeTokenExpiry,
   isTokenExpired,
 } from "./client-checks";
+import { encryptShareUrl, decryptShareUrl } from "./share-url-crypto";
+
+export { encryptShareUrl, decryptShareUrl };
 
 /**
  * Token plumbing for the project-scoped client share link (Task #388).
@@ -28,6 +31,12 @@ export async function issueProjectShareToken(opts: {
   clientEmail: string;
   clientName: string | null;
   createdByUserId: number | null;
+  /**
+   * Task #407 — when provided, the full share URL is persisted encrypted
+   * at rest so the authenticated panel can offer "Copy link" later. The
+   * hash remains the only public lookup path.
+   */
+  publicBaseUrl?: string | null;
 }): Promise<IssuedProjectShareToken> {
   const raw = generateRawToken();
   const tokenHash = hashToken(raw);
@@ -38,6 +47,9 @@ export async function issueProjectShareToken(opts: {
     clientName: opts.clientName ?? undefined,
     createdByUserId: opts.createdByUserId ?? undefined,
     expiresAt: computeTokenExpiry(),
+    encryptedShareUrl: opts.publicBaseUrl
+      ? encryptShareUrl(buildProjectShareUrl(opts.publicBaseUrl, raw))
+      : undefined,
   });
   return { raw, record };
 }

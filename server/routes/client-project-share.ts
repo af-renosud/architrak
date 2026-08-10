@@ -9,6 +9,7 @@ import {
   computeTokenExpiry,
   isTokenExpired,
   getPublishBlockReason,
+  decryptShareUrl,
 } from "../services/client-project-share";
 import {
   buildProjectSharePayload,
@@ -94,10 +95,39 @@ router.get(
   async (req, res) => {
     const projectId = Number(req.params.projectId);
     const latest = await storage.getLatestProjectShareToken(projectId);
-    if (!latest) return res.json({ token: null, publishedDevisIds: [] });
+    if (!latest) return res.json({ token: null, publishedDevisIds: [], canCopyLink: false });
     const active = latest.revokedAt ? null : latest;
     const publishedDevisIds = active ? await storage.listProjectShareDevisIds(active.id) : [];
-    res.json({ token: tokenDto(latest), publishedDevisIds });
+    // Task #407 — copy availability flag only; the URL itself is NEVER in
+    // this DTO (fetched on demand from the /link endpoint below).
+    const canCopyLink = !!(active && !isTokenExpired(active) && active.encryptedShareUrl);
+    res.json({ token: tokenDto(latest), publishedDevisIds, canCopyLink });
+  },
+);
+
+/**
+ * Task #407 — return the live share URL for the ACTIVE link so the panel
+ * can copy it any time. Decrypts the at-rest blob; never mutates the token
+ * (no rotate/extend/touch). 404 when the stored blob is absent (pre-#407
+ * rows) or fails authentication (SESSION_SECRET changed) — the panel shows
+ * a "rotate to enable copying" hint in that case.
+ */
+router.get(
+  "/api/projects/:projectId/client-share/link",
+  validateRequest({ params: projectIdParams }),
+  async (req, res) => {
+    const projectId = Number(req.params.projectId);
+    const active = await storage.getActiveProjectShareToken(projectId);
+    if (!active || isTokenExpired(active)) {
+      return res.status(409).json({ message: "No active client link for this project." });
+    }
+    const url = active.encryptedShareUrl ? decryptShareUrl(active.encryptedShareUrl) : null;
+    if (!url) {
+      return res.status(404).json({
+        message: "This link was issued before copying was supported — rotate the link to enable copying.",
+      });
+    }
+    res.json({ shareUrl: url });
   },
 );
 
@@ -168,6 +198,7 @@ router.post(
       clientEmail: req.body.clientEmail,
       clientName: req.body.clientName ?? null,
       createdByUserId: userId ? Number(userId) : null,
+      publicBaseUrl: env.PUBLIC_BASE_URL,
     });
     const shareUrl = buildProjectShareUrl(env.PUBLIC_BASE_URL, issued.raw);
     const recipient = req.body.clientName
@@ -180,8 +211,8 @@ router.post(
       actorUserId: userId ? Number(userId) : null,
       detail: (actor) =>
         hadToken
-          ? `Lien projet régénéré pour ${recipient} par ${actor}.`
-          : `Lien projet émis pour ${recipient} par ${actor}.`,
+          ? `Lien projet régénéré pour ${recipient} par ${actor} (aucun email envoyé — lien copié dans le presse-papiers).`
+          : `Lien projet émis pour ${recipient} par ${actor} (aucun email envoyé — lien copié dans le presse-papiers).`,
     });
     res.json({
       shareUrl,

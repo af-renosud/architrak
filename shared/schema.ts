@@ -2290,6 +2290,12 @@ export const clientProjectShareTokens = pgTable("client_project_share_tokens", {
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
   lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
   expiresAt: timestamp("expires_at", { withTimezone: true }),
+  // Task #407 — full share URL encrypted at rest (AES-256-GCM keyed from
+  // SESSION_SECRET; see server/services/share-url-crypto.ts) so the
+  // authenticated panel can offer "Copy link" any time. The hash above
+  // remains the ONLY public lookup path. NULL on rows issued before the
+  // feature (copy unavailable until next rotate). Never exposed in DTOs.
+  encryptedShareUrl: text("encrypted_share_url"),
 }, (table) => [
   uniqueIndex("client_project_share_tokens_token_hash_idx").on(table.tokenHash),
   index("client_project_share_tokens_project_id_idx").on(table.projectId),
