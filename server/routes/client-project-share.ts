@@ -10,6 +10,11 @@ import {
   isTokenExpired,
   getPublishBlockReason,
 } from "../services/client-project-share";
+import {
+  buildProjectSharePayload,
+  renderProjectShareShell,
+  type ProjectSharePayload,
+} from "./public-client-project-share";
 
 const router = Router();
 
@@ -93,6 +98,50 @@ router.get(
     const active = latest.revokedAt ? null : latest;
     const publishedDevisIds = active ? await storage.listProjectShareDevisIds(active.id) : [];
     res.json({ token: tokenDto(latest), publishedDevisIds });
+  },
+);
+
+/**
+ * Task #403 — architect preview of the client-facing landing page.
+ * Authenticated (under the /api perimeter); renders the same shell as the
+ * public page but in preview mode: data from the preview endpoint below,
+ * quotation cards linking to the per-devis architect preview. Never touches
+ * token last-used/expiry tracking.
+ */
+router.get(
+  "/api/projects/:projectId/client-share/preview/shell",
+  validateRequest({ params: projectIdParams }),
+  async (req, res) => {
+    const projectId = Number(req.params.projectId);
+    const project = await storage.getProject(projectId);
+    if (!project) return res.status(404).type("html").send("Project not found");
+    res.type("html").send(renderProjectShareShell({ mode: "preview", projectId }));
+  },
+);
+
+/**
+ * Preview data — same whitelisted payload the client sees. With an active
+ * (non-expired) link, memberships come from that token; without one, the
+ * architect still gets an accurate empty-state preview.
+ */
+router.get(
+  "/api/projects/:projectId/client-share/preview/data",
+  validateRequest({ params: projectIdParams }),
+  async (req, res) => {
+    const projectId = Number(req.params.projectId);
+    const project = await storage.getProject(projectId);
+    if (!project) return res.status(404).json({ message: "Project not found" });
+    const active = await storage.getActiveProjectShareToken(projectId);
+    if (active && !isTokenExpired(active)) {
+      const payload = await buildProjectSharePayload(active);
+      return res.json(payload);
+    }
+    const empty: ProjectSharePayload = {
+      project: { name: project.name },
+      client: { name: null, email: "" },
+      quotations: [],
+    };
+    res.json(empty);
   },
 );
 

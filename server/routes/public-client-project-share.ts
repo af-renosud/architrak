@@ -163,7 +163,7 @@ router.get(
       }
       return;
     }
-    res.type("html").send(renderProjectShareShell(tokenFromReq(req)));
+    res.type("html").send(renderProjectShareShell({ mode: "live", token: tokenFromReq(req) }));
   },
 );
 
@@ -415,8 +415,29 @@ p{margin:8px 0}
 </body></html>`;
 }
 
-function renderProjectShareShell(rawToken: string): string {
-  const dataUrl = `/p/client/project/${encodeURIComponent(rawToken)}/data`;
+/**
+ * Shell for the project landing page. Two modes:
+ *  - live:    the public client-facing page under /p/client/project/:token
+ *  - preview: the authenticated architect preview (Task #403) — data comes
+ *             from the /api preview endpoint, quotation cards link to the
+ *             existing per-devis architect preview shell (forms disabled),
+ *             and a banner makes the preview state unmistakable. Nothing in
+ *             preview mode touches token last-used/expiry tracking.
+ */
+export function renderProjectShareShell(
+  opts: { mode: "live"; token: string } | { mode: "preview"; projectId: number },
+): string {
+  const isPreview = opts.mode === "preview";
+  const dataUrl = isPreview
+    ? `/api/projects/${opts.projectId}/client-share/preview/data`
+    : `/p/client/project/${encodeURIComponent(opts.token)}/data`;
+  const detailUrlBase = isPreview
+    ? "/api/devis"
+    : `/p/client/project/${encodeURIComponent(opts.token)}/devis`;
+  const detailUrlSuffix = isPreview ? "/client-checks/portal-preview/shell" : "";
+  const previewBanner = isPreview
+    ? `<div class="preview-banner" data-testid="banner-project-share-preview">Architect preview — this is what the client will see. Nothing is sent or recorded.</div>`
+    : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -450,17 +471,19 @@ function renderProjectShareShell(rawToken: string): string {
   .b-info { background: #f1f5f9; color: #475569; }
   .b-questions { background: #fef3c7; color: #92400e; }
   .empty { color: #64748b; font-style: italic; padding: 32px; text-align: center; background: #fff; border: 1px dashed #cbd5e1; border-radius: 8px; }
+  .preview-banner { background: #fef3c7; color: #92400e; font-size: 13px; font-weight: 600; padding: 8px 24px; border-bottom: 1px solid #fde68a; }
 </style>
 </head>
 <body>
-<header>
+${previewBanner}<header>
   <h1>Client portal — Renosud</h1>
   <div class="meta" id="meta">Loading…</div>
 </header>
 <main id="root"><div class="empty">Loading…</div></main>
 <script>
 const DATA_URL = ${JSON.stringify(dataUrl)};
-const DETAIL_URL_BASE = ${JSON.stringify(`/p/client/project/${encodeURIComponent(rawToken)}/devis`)};
+const DETAIL_URL_BASE = ${JSON.stringify(detailUrlBase)};
+const DETAIL_URL_SUFFIX = ${JSON.stringify(detailUrlSuffix)};
 const STATUS_LABELS = {
   signed: "Signed",
   rejected: "Declined",
@@ -486,7 +509,7 @@ function renderQuotation(q) {
   if (q.analysisAvailable) badges.push('<span class="badge b-info">Cost analysis available</span>');
   if (q.openQuestionCount > 0) badges.push('<span class="badge b-questions" data-testid="badge-questions-' + escapeHtml(q.ref) + '">' + q.openQuestionCount + ' open question' + (q.openQuestionCount > 1 ? 's' : '') + '</span>');
   const amount = q.amountHt ? formatAmount(q.amountHt) : null;
-  const href = DETAIL_URL_BASE + '/' + encodeURIComponent(q.id);
+  const href = DETAIL_URL_BASE + '/' + encodeURIComponent(q.id) + DETAIL_URL_SUFFIX;
   return '<a class="card" href="' + escapeHtml(href) + '" data-testid="card-quotation-' + escapeHtml(q.ref) + '">'
     + '<div class="top"><div>'
     + '<h3>Devis ' + escapeHtml(q.ref) + '</h3>'

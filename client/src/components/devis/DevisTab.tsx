@@ -4102,6 +4102,22 @@ export function ProjectClientSharePanel({
               variant="outline"
               size="sm"
               className="h-6 text-[9px] font-bold uppercase tracking-widest gap-1"
+              onClick={() => {
+                window.open(
+                  `/api/projects/${projectId}/client-share/preview/shell`,
+                  "_blank",
+                  "noopener,noreferrer",
+                );
+              }}
+              data-testid="button-preview-project-share"
+            >
+              <Eye size={10} />
+              Client-side preview
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 text-[9px] font-bold uppercase tracking-widest gap-1"
               onClick={openIssueDialog}
               disabled={issueMutation.isPending}
               data-testid="button-issue-project-share"
