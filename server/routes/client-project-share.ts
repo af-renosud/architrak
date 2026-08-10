@@ -181,6 +181,7 @@ router.get(
       project: { name: project.name },
       client: { name: null, email: "" },
       quotations: [],
+      financials: null,
     };
     res.json(empty);
   },

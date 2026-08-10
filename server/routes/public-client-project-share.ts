@@ -19,6 +19,11 @@ import {
   streamCombinedPackagePdf,
 } from "./public-client-checks";
 import { getDocumentStream } from "../storage/object-storage";
+import { getProjectFinancialSummary } from "../services/financial-summary.service";
+import {
+  buildProjectOverviewData,
+  type FinancialSummaryPayload,
+} from "../services/project-overview-pdf.service";
 import type { ClientProjectShareToken, Devis } from "@shared/schema";
 
 /**
@@ -55,6 +60,24 @@ export interface ProjectSharePayload {
     /** Display status: signed | rejected | awaiting_signature | in_review */
     status: "signed" | "rejected" | "awaiting_signature" | "in_review";
   }>;
+  /**
+   * Task #415 — project-level financial overview, the SAME headline figures
+   * as the architect's "Situation financière" PDF (totals verbatim from the
+   * financial-summary service, progress via buildProjectOverviewData so the
+   * two surfaces can never disagree). Aggregate totals only — never per-devis
+   * invoice detail, banking fields, or contractor data. Null when the project
+   * has no contracted works yet (nothing meaningful to show).
+   */
+  financials: {
+    totalContractedHt: number;
+    totalContractedTtc: number;
+    totalCertifiedHt: number;
+    totalCertifiedTtc: number;
+    totalResteARealiser: number;
+    totalResteARealiserTtc: number;
+    /** 0-100, share of the contracted works already invoiced (HT). */
+    progressPercent: number;
+  } | null;
 }
 
 function publicStatus(devis: Devis): ProjectSharePayload["quotations"][number]["status"] {
@@ -109,10 +132,33 @@ export async function buildProjectSharePayload(
   // Stable ordering: by ref, so the page doesn't reshuffle between visits.
   quotations.sort((a, b) => a.ref.localeCompare(b.ref, undefined, { numeric: true, sensitivity: "base" }));
 
+  let financials: ProjectSharePayload["financials"] = null;
+  if (project) {
+    const summaryResult = await getProjectFinancialSummary(project.id);
+    if (summaryResult.success) {
+      const overview = buildProjectOverviewData(
+        summaryResult.data as FinancialSummaryPayload,
+        null,
+      );
+      if (overview.totalContractedHt > 0) {
+        financials = {
+          totalContractedHt: overview.totalContractedHt,
+          totalContractedTtc: overview.totalContractedTtc,
+          totalCertifiedHt: overview.totalCertifiedHt,
+          totalCertifiedTtc: overview.totalCertifiedTtc,
+          totalResteARealiser: overview.totalResteARealiser,
+          totalResteARealiserTtc: overview.totalResteARealiserTtc,
+          progressPercent: overview.progressPercent,
+        };
+      }
+    }
+  }
+
   return {
     project: project ? { name: project.name } : null,
     client: { name: token.clientName ?? null, email: token.clientEmail },
     quotations,
+    financials,
   };
 }
 
@@ -473,6 +519,21 @@ export function renderProjectShareShell(
   .b-info { background: #f1f5f9; color: #475569; }
   .b-questions { background: #fef3c7; color: #92400e; }
   .empty { color: #64748b; font-style: italic; padding: 32px; text-align: center; background: #fff; border: 1px dashed #cbd5e1; border-radius: 8px; }
+  .fin { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 0 0 20px; }
+  .fin h2 { margin: 0 0 12px; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #0B2545; }
+  .fin-kpis { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  .fin-kpi { flex: 1 1 160px; border: 1px solid #e6e6e6; border-top: 3px solid #0B2545; border-radius: 6px; padding: 10px 12px; }
+  .fin-kpi.k-invoiced { border-top-color: #2a7d2e; }
+  .fin-kpi.k-remaining { border-top-color: #C1A27B; }
+  .fin-kpi .k-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #7E7F83; margin-bottom: 6px; }
+  .fin-kpi .k-value { font-size: 18px; font-weight: 800; color: #0B2545; white-space: nowrap; }
+  .fin-kpi .k-sub { font-size: 11px; color: #7E7F83; margin-top: 3px; white-space: nowrap; }
+  .fin-progress-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+  .fin-progress-head .p-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #0B2545; }
+  .fin-progress-head .p-pct { font-size: 13px; font-weight: 800; color: #0B2545; }
+  .fin-bar { width: 100%; height: 10px; background: #EDEFF2; border-radius: 5px; overflow: hidden; }
+  .fin-bar-fill { height: 10px; background: #0B2545; border-radius: 5px; }
+  .fin-bar-legend { display: flex; justify-content: space-between; font-size: 11px; color: #7E7F83; margin-top: 4px; }
   .preview-banner { background: #fef3c7; color: #92400e; font-size: 13px; font-weight: 600; padding: 8px 24px; border-bottom: 1px solid #fde68a; }
 </style>
 </head>
@@ -501,6 +562,35 @@ function formatAmount(a) {
   const n = parseFloat(a);
   if (!isFinite(n)) return null;
   return new Intl.NumberFormat("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n) + " € HT";
+}
+
+function formatMoney(n) {
+  return new Intl.NumberFormat("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n) + " €";
+}
+
+function renderFinancials(f) {
+  if (!f) return "";
+  const kpi = (cls, label, ttc, ht, testid) =>
+    '<div class="fin-kpi ' + cls + '" data-testid="' + testid + '">'
+    + '<div class="k-label">' + label + '</div>'
+    + '<div class="k-value">' + escapeHtml(formatMoney(ttc)) + '</div>'
+    + '<div class="k-sub">incl. VAT &middot; ' + escapeHtml(formatMoney(ht)) + ' excl. VAT</div>'
+    + '</div>';
+  const pct = Math.min(100, Math.max(0, f.progressPercent));
+  const pctLabel = new Intl.NumberFormat("en-GB", { maximumFractionDigits: 1 }).format(pct);
+  return '<section class="fin" data-testid="section-financial-overview">'
+    + '<h2>Project financial overview</h2>'
+    + '<div class="fin-kpis">'
+    + kpi('k-total', 'Total works', f.totalContractedTtc, f.totalContractedHt, 'kpi-total-works')
+    + kpi('k-invoiced', 'Invoiced to date', f.totalCertifiedTtc, f.totalCertifiedHt, 'kpi-invoiced')
+    + kpi('k-remaining', 'Remaining', f.totalResteARealiserTtc, f.totalResteARealiser, 'kpi-remaining')
+    + '</div>'
+    + '<div class="fin-progress-head"><span class="p-label">Invoicing progress</span>'
+    + '<span class="p-pct" data-testid="text-progress-percent">' + escapeHtml(pctLabel) + '&nbsp;%</span></div>'
+    + '<div class="fin-bar"><div class="fin-bar-fill" data-testid="bar-invoicing-progress" style="width:' + pct + '%;"></div></div>'
+    + '<div class="fin-bar-legend"><span>Invoiced: ' + escapeHtml(formatMoney(f.totalCertifiedHt)) + ' excl. VAT</span>'
+    + '<span>Remaining: ' + escapeHtml(formatMoney(f.totalResteARealiser)) + ' excl. VAT</span></div>'
+    + '</section>';
 }
 
 function renderQuotation(q) {
@@ -548,7 +638,7 @@ async function load() {
   const cards = (data.quotations && data.quotations.length)
     ? data.quotations.map(renderQuotation).join('')
     : '<div class="empty" data-testid="text-no-quotations">No quotations have been shared with you yet.</div>';
-  root.innerHTML = greeting + cards;
+  root.innerHTML = greeting + renderFinancials(data.financials) + cards;
 }
 
 load();
