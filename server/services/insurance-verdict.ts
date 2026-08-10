@@ -253,6 +253,22 @@ async function buildMirrorSnapshot(
   lotNumber: string | null,
 ): Promise<MirrorSnapshot> {
   const contractor = await storage.getContractor(contractorId);
+  const mirrorProject = projectArchidocId
+    ? await storage.getArchidocProject(projectArchidocId)
+    : undefined;
+  return buildMirrorSnapshotFromRows(contractor, mirrorProject?.lotContractors ?? null, lotNumber);
+}
+
+/**
+ * Pure variant of `buildMirrorSnapshot` operating on preloaded rows —
+ * used by batch surfaces (devis readiness) that fetch contractors and the
+ * project mirror ONCE for a whole list instead of per devis.
+ */
+function buildMirrorSnapshotFromRows(
+  contractor: { insuranceStatus?: unknown; archidocId?: string | null } | undefined,
+  rawLotContractors: unknown,
+  lotNumber: string | null,
+): MirrorSnapshot {
   const status = (contractor?.insuranceStatus ?? "").toString().trim();
   // Architrak's contractor mirror does not carry a syncedAt column today
   // (the contractor-updated webhook from Archidoc rewrites the row).
@@ -263,9 +279,8 @@ async function buildMirrorSnapshot(
 
   let contractorAssignedToLot = false;
   const hasLot = lotNumber !== null && lotNumber.trim() !== "";
-  if (projectArchidocId) {
-    const mirrorProject = await storage.getArchidocProject(projectArchidocId);
-    const lotContractors = (mirrorProject?.lotContractors ?? []) as Array<{ lotNumber?: unknown; contractorId?: unknown }>;
+  {
+    const lotContractors = (rawLotContractors ?? []) as Array<{ lotNumber?: unknown; contractorId?: unknown }>;
     if (Array.isArray(lotContractors) && contractor?.archidocId) {
       contractorAssignedToLot = lotContractors.some((lc) => {
         if (!lc || typeof lc !== "object") return false;
@@ -305,6 +320,20 @@ function evaluateMirror(snapshot: MirrorSnapshot): { ok: boolean; reason: string
   // Unknown / null status — mirror cannot affirm, so we surface as
   // overridable-but-blocked rather than silently green-lighting.
   return { ok: false, reason: `Mirror local : statut d'assurance non reconnu (« ${snapshot.status || "vide"} »).` };
+}
+
+/**
+ * Cheap, mirror-only insurance signal for batch/read-only surfaces (the
+ * devis-readiness strip). Operates on PRELOADED rows so a list of N devis
+ * costs zero extra storage reads here. Never calls live Archidoc — the
+ * live verdict stays authoritative at send time via `evaluateInsuranceGate`.
+ */
+export function evaluateInsuranceMirrorPreloaded(
+  contractor: { insuranceStatus?: unknown; archidocId?: string | null } | undefined,
+  mirrorLotContractors: unknown,
+  lotNumber: string | null,
+): { ok: boolean; reason: string } {
+  return evaluateMirror(buildMirrorSnapshotFromRows(contractor, mirrorLotContractors, lotNumber));
 }
 
 /**

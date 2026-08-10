@@ -346,6 +346,34 @@ describe("POST /api/devis/:id/send-to-signer — personalised message", () => {
   });
 });
 
+describe("POST /api/devis/:id/send-to-signer — Mode B finalised-translation gate (Task #374)", () => {
+  it.each(["draft", "edited"])("409 translation_not_finalised for a mode_b devis with a %s translation", async (status) => {
+    storageMock.getDevis.mockResolvedValue(makeDevis({ invoicingMode: "mode_b" }));
+    storageMock.getDevisTranslation.mockResolvedValue({ status });
+    const res = await postSend(100, { message: "Bonjour, voici le devis pour signature — merci." });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe("translation_not_finalised");
+    expect(body.translationStatus).toBe(status);
+    expect(archisignMock.createEnvelope).not.toHaveBeenCalled();
+  });
+
+  it("allows a mode_b send with a finalised translation", async () => {
+    storageMock.getDevis.mockResolvedValue(makeDevis({ invoicingMode: "mode_b" }));
+    storageMock.getDevisTranslation.mockResolvedValue({ status: "finalised" });
+    const res = await postSend(100, { message: "Bonjour, voici le devis pour signature — merci." });
+    expect(res.status).toBe(200);
+    expect(archisignMock.createEnvelope).toHaveBeenCalled();
+  });
+
+  it("still accepts draft/edited translations for mode_a devis", async () => {
+    storageMock.getDevis.mockResolvedValue(makeDevis({ invoicingMode: "mode_a" }));
+    storageMock.getDevisTranslation.mockResolvedValue({ status: "draft" });
+    const res = await postSend(100, { message: "Bonjour, voici le devis pour signature — merci." });
+    expect(res.status).toBe(200);
+  });
+});
+
 describe("POST /api/devis/:id/send-to-signer — §3.5.1.1(c) subject-rendering drift (Task #279)", () => {
   const VALID_MESSAGE = "Bonjour, voici le devis pour signature.";
 

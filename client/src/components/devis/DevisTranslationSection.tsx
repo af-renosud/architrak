@@ -94,6 +94,10 @@ export function DevisTranslationSection({
         initialisedFor.current = null;
       }
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "translation"] });
+      // Task #374 — the readiness strip on the devis list summarises the
+      // translation status; this component doesn't know its projectId, so
+      // match the batch readiness query by key suffix.
+      queryClient.invalidateQueries({ predicate: (q) => q.queryKey.includes("devis-readiness") });
     } catch (err) {
       toast({
         title: "Save failed",
@@ -189,6 +193,10 @@ export function DevisTranslationSection({
       pendingPatchRef.current = null;
       initialisedFor.current = null;
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "translation"] });
+      // Task #374 — the readiness strip on the devis list summarises the
+      // translation status; this component doesn't know its projectId, so
+      // match the batch readiness query by key suffix.
+      queryClient.invalidateQueries({ predicate: (q) => q.queryKey.includes("devis-readiness") });
       toast({ title: "Translation generated", description: `Devis ${devisCode} translated to English.` });
     },
     onError: (err: Error) => {
@@ -206,6 +214,10 @@ export function DevisTranslationSection({
       pendingPatchRef.current = null;
       initialisedFor.current = null;
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "translation"] });
+      // Task #374 — the readiness strip on the devis list summarises the
+      // translation status; this component doesn't know its projectId, so
+      // match the batch readiness query by key suffix.
+      queryClient.invalidateQueries({ predicate: (q) => q.queryKey.includes("devis-readiness") });
     },
     onError: (err: Error) => {
       toast({ title: "Re-translate failed", description: err.message, variant: "destructive" });
@@ -219,6 +231,10 @@ export function DevisTranslationSection({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "translation"] });
+      // Task #374 — the readiness strip on the devis list summarises the
+      // translation status; this component doesn't know its projectId, so
+      // match the batch readiness query by key suffix.
+      queryClient.invalidateQueries({ predicate: (q) => q.queryKey.includes("devis-readiness") });
       toast({ title: "Translation approved", description: "Translation locked and ready to share with the client." });
     },
     onError: (err: Error) => {
@@ -236,6 +252,10 @@ export function DevisTranslationSection({
       pendingPatchRef.current = null;
       initialisedFor.current = null;
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "translation"] });
+      // Task #374 — the readiness strip on the devis list summarises the
+      // translation status; this component doesn't know its projectId, so
+      // match the batch readiness query by key suffix.
+      queryClient.invalidateQueries({ predicate: (q) => q.queryKey.includes("devis-readiness") });
       toast({ title: "Translation unlocked", description: "Translation reopened for editing. All existing text is preserved." });
     },
     onError: (err: Error) => {

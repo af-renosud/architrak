@@ -674,6 +674,15 @@ export interface IStorage {
 
   getLatestInsuranceOverrideForDevis(devisId: number): Promise<InsuranceOverride | undefined>;
 
+  // -- Batch readiness queries (Task #374 devis readiness strip) -----------
+  getDevisTranslationStatusesByProject(projectId: number): Promise<Record<number, string>>;
+
+  countOpenClientChecksForProject(projectId: number): Promise<Record<number, number>>;
+
+  listDevisIdsWithInsuranceOverride(devisIds: number[]): Promise<Set<number>>;
+
+  getContractorsByIds(ids: number[]): Promise<Contractor[]>;
+
   // -- Archisign envelope tracking + inbound webhook (AT4) -----------------
   // claimWebhookEventIn returns true if the row was newly inserted, false
   // if a duplicate `(source, event_id)` already existed. Receivers MUST
@@ -3322,6 +3331,44 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(insuranceOverrides.createdAt))
       .limit(1);
     return row;
+  }
+
+  // -- Batch readiness queries (Task #374 devis readiness strip) -----------
+
+  async getDevisTranslationStatusesByProject(projectId: number): Promise<Record<number, string>> {
+    const rows = await db
+      .select({ devisId: devisTranslations.devisId, status: devisTranslations.status })
+      .from(devisTranslations)
+      .innerJoin(devis, eq(devisTranslations.devisId, devis.id))
+      .where(eq(devis.projectId, projectId));
+    const out: Record<number, string> = {};
+    for (const r of rows) out[r.devisId] = r.status;
+    return out;
+  }
+
+  async countOpenClientChecksForProject(projectId: number): Promise<Record<number, number>> {
+    const rows = await db
+      .select({ devisId: clientChecks.devisId })
+      .from(clientChecks)
+      .innerJoin(devis, eq(clientChecks.devisId, devis.id))
+      .where(and(eq(devis.projectId, projectId), eq(clientChecks.status, "open")));
+    const out: Record<number, number> = {};
+    for (const r of rows) out[r.devisId] = (out[r.devisId] ?? 0) + 1;
+    return out;
+  }
+
+  async listDevisIdsWithInsuranceOverride(devisIds: number[]): Promise<Set<number>> {
+    if (devisIds.length === 0) return new Set();
+    const rows = await db
+      .selectDistinct({ devisId: insuranceOverrides.devisId })
+      .from(insuranceOverrides)
+      .where(inArray(insuranceOverrides.devisId, devisIds));
+    return new Set(rows.map((r) => r.devisId));
+  }
+
+  async getContractorsByIds(ids: number[]): Promise<Contractor[]> {
+    if (ids.length === 0) return [];
+    return db.select().from(contractors).where(inArray(contractors.id, ids));
   }
 
   // -- Archisign envelope tracking + inbound webhook (AT4) -----------------

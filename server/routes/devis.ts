@@ -25,6 +25,7 @@ import { checkLotReferencesAgainstCatalog } from "../services/lot-reference-vali
 import type { ParsedDocument } from "../gmail/document-parser";
 import { roundCurrency } from "../../shared/financial-utils";
 import { evaluateInsuranceGate } from "../services/insurance-verdict";
+import { getProjectDevisReadiness } from "../services/devis-readiness";
 import { evaluateManualStageTransition } from "../services/devis-stage-guard.service";
 import {
   reconcileAdvisories,
@@ -135,6 +136,18 @@ type DevisConfirmInput = z.infer<typeof devisConfirmSchema>;
 router.get("/api/projects/:projectId/devis", async (req, res) => {
   const devisList = await storage.getDevisByProject(Number(req.params.projectId));
   res.json(devisList);
+});
+
+// Task #374 — ONE batch readiness call per list render (never per-card).
+// Powers the Review · Translation · Ready · Signature strip on collapsed
+// devis rows. Insurance here is mirror-only (cheap); the live Archidoc
+// verdict stays authoritative at send time.
+router.get("/api/projects/:projectId/devis-readiness", async (req, res) => {
+  const projectId = Number(req.params.projectId);
+  if (!Number.isInteger(projectId) || projectId <= 0) {
+    return res.status(400).json({ message: "Invalid project id" });
+  }
+  res.json(await getProjectDevisReadiness(projectId));
 });
 
 const nextLotNumberQuerySchema = z.object({

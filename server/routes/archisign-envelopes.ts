@@ -272,6 +272,17 @@ router.post(
         translationStatus: translation?.status ?? "missing",
       });
     }
+    // Task #374 — Mode B devis must carry a FINALISED translation before
+    // the envelope goes out. Draft/edited means the architect has not
+    // signed off the English wording the client will legally sign.
+    if (d.invoicingMode === "mode_b" && translation.status !== "finalised") {
+      return res.status(409).json({
+        message:
+          "The translation must be finalised before sending for signature (it is still a draft). Approve it on the Translation tab first.",
+        code: "translation_not_finalised",
+        translationStatus: translation.status,
+      });
+    }
 
     const baseUrl = (env.PUBLIC_BASE_URL ?? "").replace(/\/+$/, "");
     if (!baseUrl) {

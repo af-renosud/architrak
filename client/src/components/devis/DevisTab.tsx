@@ -658,6 +658,7 @@ interface DevisRowProps {
   isArchived: boolean;
   expanded: boolean;
   openChecks: number;
+  readiness?: DevisReadiness;
   onToggle: () => void;
   onEditRefs: (d: Devis) => void;
   onReviewDraft: (d: Devis) => void;
@@ -755,7 +756,171 @@ function FeeOverrideBadge({ devis }: { devis: Devis }) {
   );
 }
 
-function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openChecks, onToggle, onEditRefs, onReviewDraft, onGoToIntake }: DevisRowProps) {
+/**
+ * Task #374 — at-a-glance readiness payload returned by the batch
+ * GET /api/projects/:projectId/devis-readiness endpoint (one call per
+ * list render, keyed by devis id).
+ */
+interface DevisReadiness {
+  devisId: number;
+  stage: string;
+  invoicingMode: string;
+  translationStatus: string;
+  openContractorChecks: number;
+  openClientChecks: number;
+  envelopeStatus: string | null;
+  signature: string;
+  sent: boolean;
+  readyToSend: boolean;
+  blockers: string[];
+  insuranceOk: boolean;
+  insuranceOverridden: boolean;
+  insuranceReason: string | null;
+}
+
+type StepTone = "navy" | "emerald" | "amber" | "red" | "muted";
+
+const STEP_TONE_CLASSES: Record<StepTone, string> = {
+  navy: "border-[#0B2545]/25 bg-[#0B2545]/5 text-[#0B2545] dark:text-blue-300",
+  emerald: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400",
+  amber: "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300",
+  red: "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-400",
+  muted: "border-border bg-muted/50 text-muted-foreground",
+};
+
+function ReadinessStep({ name, value, tone, testid, tooltip }: {
+  name: string;
+  value: string;
+  tone: StepTone;
+  testid: string;
+  tooltip?: React.ReactNode;
+}) {
+  const chip = (
+    <span
+      className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 ${STEP_TONE_CLASSES[tone]} ${tooltip ? "cursor-help" : ""}`}
+      data-testid={testid}
+    >
+      <span className="text-[8px] font-bold uppercase tracking-widest opacity-60">{name}</span>
+      <span className="text-[10px] font-semibold">{value}</span>
+    </span>
+  );
+  if (!tooltip) return chip;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{chip}</TooltipTrigger>
+      <TooltipContent side="top" className="max-w-[320px] text-[11px] leading-snug">
+        {tooltip}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+const REVIEW_STAGE_LABELS: Record<string, string> = {
+  received: "Received",
+  checked_internal: "Internal check",
+  client_review_in_progress: "Client review",
+  client_agreed: "Client agreed",
+  client_rejected: "Rejected",
+  void: "Void",
+};
+
+/**
+ * Task #374 — 4-step readiness strip (Review · Translation · Ready ·
+ * Signature) rendered under the title/contractor line of every collapsed
+ * devis card. Fed by ONE project-level batch query.
+ */
+function ReadinessStrip({ d, r }: { d: Devis; r: DevisReadiness }) {
+  // Review step
+  let review: { value: string; tone: StepTone };
+  if (r.openContractorChecks > 0) {
+    review = {
+      value: r.openContractorChecks === 1 ? "1 check" : `${r.openContractorChecks} checks`,
+      tone: "amber",
+    };
+  } else if (
+    r.stage === "approved_for_signing" ||
+    r.stage === "sent_to_client" ||
+    r.stage === "client_signed_off"
+  ) {
+    review = { value: "Approved", tone: "emerald" };
+  } else if (r.stage === "client_rejected" || r.stage === "void") {
+    review = { value: REVIEW_STAGE_LABELS[r.stage], tone: r.stage === "void" ? "muted" : "red" };
+  } else {
+    review = { value: REVIEW_STAGE_LABELS[r.stage] ?? r.stage, tone: "navy" };
+  }
+
+  // Translation step — a translated PDF is required for BOTH invoicing
+  // modes at send time (the envelope PDF is the translation); mode B
+  // additionally requires it finalised, so a mode A draft shows emerald.
+  let translation: { value: string; tone: StepTone };
+  const isModeA = r.invoicingMode === "mode_a";
+  switch (r.translationStatus) {
+    case "missing": translation = { value: "Missing", tone: "muted" }; break;
+    case "pending":
+    case "processing": translation = { value: "Generating", tone: "navy" }; break;
+    case "draft":
+    case "edited": translation = { value: "Draft", tone: isModeA ? "emerald" : "amber" }; break;
+    case "finalised": translation = { value: "Approved", tone: "emerald" }; break;
+    case "failed": translation = { value: "Failed", tone: "red" }; break;
+    default: translation = { value: r.translationStatus, tone: "muted" };
+  }
+
+  // Ready step
+  let ready: { value: string; tone: StepTone; tooltip?: React.ReactNode };
+  if (r.readyToSend) {
+    ready = { value: "Ready to send", tone: "emerald" };
+  } else if (r.sent) {
+    ready = { value: "Sent", tone: "muted" };
+  } else {
+    ready = {
+      value: "Blocked",
+      tone: "amber",
+      tooltip: (
+        <div>
+          <span className="font-semibold">Not ready to send:</span>
+          <ul className="mt-1 list-disc pl-4 space-y-0.5">
+            {r.blockers.map((b, i) => (
+              <li key={i}>{b}</li>
+            ))}
+          </ul>
+        </div>
+      ),
+    };
+  }
+
+  // Signature step
+  const SIGNATURE_LABELS: Record<string, { value: string; tone: StepTone }> = {
+    not_sent: { value: "Not sent", tone: "muted" },
+    sent: { value: "Sent", tone: "navy" },
+    viewed: { value: "Viewed", tone: "navy" },
+    queried: { value: "Queried", tone: "amber" },
+    signed: { value: "Signed", tone: "emerald" },
+    declined: { value: "Declined", tone: "red" },
+    expired: { value: "Expired", tone: "red" },
+    void: { value: "Void", tone: "red" },
+  };
+  const signature = SIGNATURE_LABELS[r.signature] ?? { value: r.signature, tone: "muted" as StepTone };
+
+  return (
+    <TooltipProvider delayDuration={200}>
+      <div
+        className="mt-1.5 flex items-center gap-1 flex-wrap"
+        data-testid={`readiness-strip-${d.id}`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <ReadinessStep name="Review" value={review.value} tone={review.tone} testid={`readiness-review-${d.id}`} />
+        <ChevronRight size={10} className="text-muted-foreground/50 shrink-0" aria-hidden />
+        <ReadinessStep name="Translation" value={translation.value} tone={translation.tone} testid={`readiness-translation-${d.id}`} />
+        <ChevronRight size={10} className="text-muted-foreground/50 shrink-0" aria-hidden />
+        <ReadinessStep name="Ready" value={ready.value} tone={ready.tone} testid={`readiness-ready-${d.id}`} tooltip={ready.tooltip} />
+        <ChevronRight size={10} className="text-muted-foreground/50 shrink-0" aria-hidden />
+        <ReadinessStep name="Signature" value={signature.value} tone={signature.tone} testid={`readiness-signature-${d.id}`} />
+      </div>
+    </TooltipProvider>
+  );
+}
+
+function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openChecks, readiness, onToggle, onEditRefs, onReviewDraft, onGoToIntake }: DevisRowProps) {
   const { toast } = useToast();
   const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [avenantOpen, setAvenantOpen] = useState(false);
@@ -829,13 +994,17 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
               <span className="text-[10px] text-muted-foreground">
                 {contractors.find((c) => c.id === d.contractorId)?.name ?? `#${d.contractorId}`}
               </span>
+              {readiness && !isVoid && <ReadinessStrip d={d} r={readiness} />}
             </div>
           </div>
           <TooltipProvider delayDuration={200}>
             <div className="flex items-center gap-3 flex-wrap justify-end">
               {/* Compact toolbar: status + mode + advisory + actions, with hairline dividers */}
               <div className="flex items-center gap-2 min-[900px]:gap-2.5">
-                <StatusBadge status={d.status} />
+                {/* Task #374 — the generic PENDING chip is de-emphasised now
+                    that the readiness strip carries the real state; keep the
+                    badge for meaningful statuses (draft/void/…). */}
+                {d.status === "pending" && readiness ? null : <StatusBadge status={d.status} />}
 
                 <span className="hidden min-[900px]:block h-4 w-px bg-border" aria-hidden />
 
@@ -1135,12 +1304,32 @@ export function DevisTab({
   const [editRefsFor, setEditRefsFor] = useState<Devis | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { data: devisList, isLoading } = useQuery<Devis[]>({
+  const { data: devisList, isLoading, dataUpdatedAt: devisUpdatedAt } = useQuery<Devis[]>({
     queryKey: ["/api/projects", projectId, "devis"],
   });
-  const { data: openChecksByDevis = {} } = useQuery<Record<number, number>>({
+  const { data: openChecksByDevis = {}, dataUpdatedAt: checksUpdatedAt } = useQuery<Record<number, number>>({
     queryKey: ["/api/projects", projectId, "devis-checks", "open-counts"],
   });
+  // Task #374 — ONE batch readiness call for the whole list (never per-card).
+  const { data: readinessByDevis = {} } = useQuery<Record<number, DevisReadiness>>({
+    queryKey: ["/api/projects", projectId, "devis-readiness"],
+  });
+  // staleTime is Infinity app-wide, so the readiness strip must be re-derived
+  // whenever the inputs it summarises change. Rather than chasing every
+  // mutation site, piggy-back on the two queries those mutations already
+  // invalidate: any post-mount refetch of the devis list or the open-checks
+  // counts marks readiness stale too.
+  const readinessDepsRef = useRef<{ devis: number; checks: number } | null>(null);
+  useEffect(() => {
+    const prev = readinessDepsRef.current;
+    readinessDepsRef.current = { devis: devisUpdatedAt, checks: checksUpdatedAt };
+    if (!prev) return;
+    const devisRefetched = prev.devis !== 0 && prev.devis !== devisUpdatedAt;
+    const checksRefetched = prev.checks !== 0 && prev.checks !== checksUpdatedAt;
+    if (devisRefetched || checksRefetched) {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis-readiness"] });
+    }
+  }, [devisUpdatedAt, checksUpdatedAt, projectId]);
 
   const voidCount = devisList?.filter(d => d.status === "void").length ?? 0;
 
@@ -1465,6 +1654,7 @@ export function DevisTab({
               isArchived={isArchived}
               expanded={expandedDevis === d.id}
               openChecks={openChecksByDevis[d.id] ?? 0}
+              readiness={readinessByDevis[d.id]}
               onToggle={() => setExpandedDevis(expandedDevis === d.id ? null : d.id)}
               onEditRefs={setEditRefsFor}
               onGoToIntake={onGoToIntake}
