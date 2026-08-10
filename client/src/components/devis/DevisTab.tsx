@@ -4450,14 +4450,37 @@ function DevisDetailTabs({
   };
 
   const scrollToLine = (tab: "lines" | "translation", lineNumber: number) => {
+    const anchorId = `line-anchor-${tab}-${devis.id}-${lineNumber}`;
     let attempts = 0;
     const tryScroll = () => {
-      const el = document.getElementById(`line-anchor-${tab}-${devis.id}-${lineNumber}`);
+      const el = document.getElementById(anchorId);
       if (el) {
         el.scrollIntoView({ behavior: "smooth", block: "center" });
         setFlashLine({ tab, lineNumber });
         if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
         flashTimerRef.current = setTimeout(() => setFlashLine(null), 1600);
+
+        // The target tab's async content (translation row, per-line context
+        // editors) may still be loading when we scroll — as those queries
+        // resolve, the layout above the anchor grows and pushes it back out
+        // of the viewport. Keep re-centering for a short settle window
+        // whenever the anchor's DOCUMENT position moves. We compare absolute
+        // position (rect.top + scrollY), which stays constant during the
+        // smooth scroll itself, so we never fight the scroll animation —
+        // only genuine layout shifts trigger a re-anchor.
+        const settleDeadline = Date.now() + 3000;
+        let lastAbsTop: number | null = null;
+        const settle = () => {
+          const target = document.getElementById(anchorId);
+          if (!target) return;
+          const absTop = target.getBoundingClientRect().top + window.scrollY;
+          if (lastAbsTop !== null && Math.abs(absTop - lastAbsTop) > 1) {
+            target.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+          lastAbsTop = absTop;
+          if (Date.now() < settleDeadline) requestAnimationFrame(settle);
+        };
+        requestAnimationFrame(settle);
       } else if (attempts++ < 20) {
         // Target tab content may not be mounted yet right after the switch.
         requestAnimationFrame(tryScroll);
