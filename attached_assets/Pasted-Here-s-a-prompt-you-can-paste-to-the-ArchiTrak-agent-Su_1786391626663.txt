@@ -1,0 +1,50 @@
+Here's a prompt you can paste to the ArchiTrak agent:
+
+Subject: Verify the ArchiDoc client-share-link lookup endpoint is live and correctly configured
+
+ArchiDoc has implemented its side of the "View your quotations & invoices" integration and is now calling your API, but the endpoint currently returns the SPA's HTML instead of JSON. Please verify everything below is deployed and working.
+
+1. The endpoint must exist and be deployed:
+
+GET /integrations/archidoc/projects/{archidocProjectId}/client-share-link
+archidocProjectId is ArchiDoc's numeric project id.
+Right now, GET https://architrak.replit.app/integrations/archidoc/projects/1/client-share-link returns HTTP 200 with text/html (the app's index page). That means the route is not registered on the deployed server, or it's registered after the SPA catch-all. It must be registered before any catch-all/static fallback, and it must always return JSON.
+If the production base URL is not https://architrak.replit.app, tell us the correct one.
+2. Authentication — HMAC-SHA256 with the shared secret (your ARCHIDOC_WEBHOOK_SECRET):
+
+ArchiDoc signs each request like this:
+
+path         = "/integrations/archidoc/projects/{id}/client-share-link"   // path only, no query string, no host
+stringToSign = `${timestampMs}.GET.${path}`
+signature    = lowercase hex HMAC-SHA256(sharedSecret, stringToSign)
+Headers sent:
+
+X-Archidoc-Timestamp: <epoch milliseconds>
+X-Archidoc-Signature: sha256=<hex>
+Please verify:
+
+You verify the signature against exactly ${timestampMs}.GET.${path} (note the literal GET and dots; path only).
+Timestamp tolerance is ±5 minutes; the timestamp is in milliseconds.
+You accept the sha256= prefix on the signature header and compare with a timing-safe comparison.
+The secret configured as ARCHIDOC_WEBHOOK_SECRET on your side is the same value ArchiDoc holds as its ArchiTrak webhook secret. If you've rotated it, we need to re-sync.
+3. Response contract — authenticated requests always return 200 JSON:
+
+Link available:
+
+{ "shareUrl": "https://…", "recipientEmail": "client@example.com", "expiresAt": "2026-…" }
+No link:
+
+{ "shareUrl": null, "reason": "unknown_project" | "no_active_link" | "expired" | "rotate_required" }
+Errors: 401 for bad/missing signature or stale timestamp, 400 for a malformed project id, 503 if the secret isn't configured. Never HTML, never a redirect.
+
+Also confirm the lookup is strictly read-only (it must not extend, rotate, or consume the link) — ArchiDoc may refetch every 5 minutes.
+
+4. Please run this self-test and report the results:
+
+Unsigned request → expect 401 (not HTML).
+Correctly signed request for a known project with an active link → 200 with shareUrl + recipientEmail + expiresAt.
+Correctly signed request for an unknown project id → 200 with { "shareUrl": null, "reason": "unknown_project" }.
+Signed request with a timestamp 10 minutes old → 401.
+Confirm recipientEmail in the response is the client's email exactly as stored (ArchiDoc matches it case-insensitively against its share's client email — the button is hidden if they differ).
+Reply with the outcome of each check plus the confirmed production base URL.
+
