@@ -230,6 +230,39 @@ async function cleanup(db: Client, s: SeedBase | SeedFull | null) {
   }
 }
 
+/**
+ * Task #416 — extend the full fixture with contracted financials:
+ *  - an approved PV avenant (+1000.00 HT / +1200.00 TTC) on the published devis
+ *  - an invoice (4500.00 HT / 5400.00 TTC) on the published devis
+ *
+ * With the base fixture (D1 5000/6000, D2 1000/1200, D3 2000/2400 — all
+ * accounting-active so ALL of them count toward the project totals, published
+ * or not), the financial-summary service must produce:
+ *   totalContractedHt  = 5000 + 1000(pv) + 1000 + 2000 = 9000.00
+ *   totalContractedTtc = 6000 + 1200(pv) + 1200 + 2400 = 10800.00
+ *   totalCertifiedHt   = 4500.00   (TTC 5400.00)
+ *   totalResteARealiser = 4500.00  (TTC 5400.00)
+ *   progressPercent    = 4500 / 9000 = 50
+ */
+async function seedFinancials(db: Client, seed: SeedFull, uniq: string): Promise<void> {
+  await db.query(
+    `INSERT INTO avenants (devis_id, type, description_fr, amount_ht, amount_ttc, status)
+     VALUES ($1, 'pv', $2, '1000.00', '1200.00', 'approved')`,
+    [seed.devisId, `${SEED_PREFIX}avenant-${uniq}`],
+  );
+  // Also a draft avenant that must NOT count (only approved ones do)
+  await db.query(
+    `INSERT INTO avenants (devis_id, type, description_fr, amount_ht, amount_ttc, status)
+     VALUES ($1, 'pv', $2, '99999.00', '119998.80', 'draft')`,
+    [seed.devisId, `${SEED_PREFIX}avenant-draft-${uniq}`],
+  );
+  await db.query(
+    `INSERT INTO invoices (devis_id, contractor_id, project_id, invoice_number, amount_ht, tva_amount, amount_ttc)
+     VALUES ($1, $2, $3, $4, '4500.00', '900.00', '5400.00')`,
+    [seed.devisId, seed.contractorId, seed.projectId, `${SEED_PREFIX}INV-${uniq}`],
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Test suite
 // ---------------------------------------------------------------------------
@@ -804,6 +837,120 @@ test.describe("Client project share portal — data-leak and access-control", ()
       try { await cleanup(db, seed); } catch (_) { /* best-effort */ }
       try { await cleanup(db, revoked); } catch (_) { /* best-effort */ }
       try { await cleanup(db, expired); } finally { await db.end(); }
+    }
+  });
+
+  // 13. Task #416 — financial overview shows the summary-service totals
+  test("financial overview renders the right KPI totals, progress percent and bar width", async ({ browser }) => {
+    const databaseUrl = process.env.DATABASE_URL;
+    expect(databaseUrl, "DATABASE_URL must be set").toBeTruthy();
+
+    const uniq = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
+    const db = new Client({ connectionString: databaseUrl! });
+    await db.connect();
+    let seed: SeedFull | null = null;
+    const ctx = await browser.newContext();
+    try {
+      seed = await seedFullFixture(db, uniq);
+      await seedFinancials(db, seed, uniq);
+
+      // API-level: /data financials must be exactly the summary figures
+      const dataResp = await ctx.request.get(`/p/client/project/${seed.rawTok}/data`);
+      expect(dataResp.ok(), `Expected 200, got ${dataResp.status()}`).toBe(true);
+      const body = await dataResp.json();
+      expect(body.financials).toEqual({
+        totalContractedHt: 9000,
+        totalContractedTtc: 10800,
+        totalCertifiedHt: 4500,
+        totalCertifiedTtc: 5400,
+        totalResteARealiser: 4500,
+        totalResteARealiserTtc: 5400,
+        progressPercent: 50,
+      });
+
+      // Browser-level: section + KPI cards render the same figures
+      const page = await ctx.newPage();
+      await page.goto(`/p/client/project/${seed.rawTok}`);
+
+      const section = page.getByTestId("section-financial-overview");
+      await expect(section).toBeVisible({ timeout: 8_000 });
+      await expect(section).toContainText("Project financial overview");
+
+      // KPI cards: headline value is TTC, sub-line carries the HT figure
+      const totalWorks = page.getByTestId("kpi-total-works");
+      await expect(totalWorks).toContainText("Total works");
+      await expect(totalWorks).toContainText("10,800.00 €");
+      await expect(totalWorks).toContainText("9,000.00 € excl. VAT");
+
+      const invoiced = page.getByTestId("kpi-invoiced");
+      await expect(invoiced).toContainText("Invoiced to date");
+      await expect(invoiced).toContainText("5,400.00 €");
+      await expect(invoiced).toContainText("4,500.00 € excl. VAT");
+
+      const remaining = page.getByTestId("kpi-remaining");
+      await expect(remaining).toContainText("Remaining");
+      await expect(remaining).toContainText("5,400.00 €");
+      await expect(remaining).toContainText("4,500.00 € excl. VAT");
+
+      // Progress: label and bar width both 50%
+      await expect(page.getByTestId("text-progress-percent")).toHaveText(/^50\s*%$/);
+      const barStyle = await page.getByTestId("bar-invoicing-progress").getAttribute("style");
+      expect(barStyle).toContain("width:50%");
+
+      // Aggregates only — no per-devis invoice detail on the page
+      await expect(section).not.toContainText(`${SEED_PREFIX}INV-${uniq}`);
+    } finally {
+      try { await cleanup(db, seed); } finally { await db.end(); await ctx.close(); }
+    }
+  });
+
+  // 14. Task #416 — section hidden when the project has no contracted works
+  test("financial overview is absent when the project has no contracted works (financials: null)", async ({ browser }) => {
+    const databaseUrl = process.env.DATABASE_URL;
+    expect(databaseUrl, "DATABASE_URL must be set").toBeTruthy();
+
+    const uniq = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
+    const db = new Client({ connectionString: databaseUrl! });
+    await db.connect();
+    let projectId: number | null = null;
+    const ctx = await browser.newContext();
+    try {
+      // Project with a valid token but ZERO devis → totalContractedHt is 0
+      const { rows: [proj] } = await db.query<{ id: number }>(
+        `INSERT INTO projects (name, code, client_name)
+         VALUES ($1, $2, $3) RETURNING id`,
+        [`${SEED_PREFIX}nofin-${uniq}`, `${SEED_PREFIX}nf-${uniq}`, "No Fin"],
+      );
+      projectId = proj.id;
+      const tok = rawToken();
+      await db.query(
+        `INSERT INTO client_project_share_tokens
+           (project_id, token_hash, client_email, client_name)
+         VALUES ($1, $2, $3, $4)`,
+        [projectId, hash(tok), `${SEED_PREFIX}nofin-${uniq}@local.test`, "No Fin"],
+      );
+
+      // API-level: financials is exactly null (not zeros)
+      const dataResp = await ctx.request.get(`/p/client/project/${tok}/data`);
+      expect(dataResp.ok()).toBe(true);
+      const body = await dataResp.json();
+      expect(body.financials).toBeNull();
+
+      // Browser-level: page renders, section absent
+      const page = await ctx.newPage();
+      await page.goto(`/p/client/project/${tok}`);
+      await expect(page.getByTestId("text-greeting")).toBeVisible({ timeout: 8_000 });
+      await expect(page.getByTestId("section-financial-overview")).not.toBeVisible();
+      await expect(page.getByTestId("kpi-total-works")).not.toBeVisible();
+    } finally {
+      try {
+        if (projectId !== null) {
+          await db.query("DELETE FROM client_project_share_tokens WHERE project_id = $1", [projectId]);
+          await db.query("DELETE FROM projects WHERE id = $1", [projectId]);
+        }
+      } catch (_) { /* best-effort */ }
+      await db.end();
+      await ctx.close();
     }
   });
 });
