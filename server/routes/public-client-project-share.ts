@@ -434,7 +434,9 @@ export function renderProjectShareShell(
   const detailUrlBase = isPreview
     ? "/api/devis"
     : `/p/client/project/${encodeURIComponent(opts.token)}/devis`;
-  const detailUrlSuffix = isPreview ? "/client-checks/portal-preview/shell" : "";
+  const detailUrlSuffix = isPreview
+    ? `/client-checks/portal-preview/shell?projectId=${opts.projectId}`
+    : "";
   const previewBanner = isPreview
     ? `<div class="preview-banner" data-testid="banner-project-share-preview">Architect preview — this is what the client will see. Nothing is sent or recorded.</div>`
     : "";

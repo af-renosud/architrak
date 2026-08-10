@@ -49,7 +49,7 @@ p{margin:8px 0}
 
 export function renderClientPortalShell(opts:
   | { mode: "live"; token: string }
-  | { mode: "preview"; devisId: number }
+  | { mode: "preview"; devisId: number; backUrl?: string | null }
   | { mode: "project-share"; token: string; devisId: number }
 ): string {
   const isPreview = opts.mode === "preview";
@@ -72,7 +72,9 @@ export function renderClientPortalShell(opts:
   // Back link to the project-wide quotation list, only in project-share mode.
   const backUrl = opts.mode === "project-share"
     ? `/p/client/project/${encodeURIComponent(opts.token)}`
-    : null;
+    : opts.mode === "preview"
+      ? (opts.backUrl ?? null)
+      : null;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -160,12 +162,14 @@ export function renderClientPortalShell(opts:
   .err { color: #b91c1c; font-size: 13px; margin-top: 6px; }
   .research-btn { position: absolute; z-index: 20; background: #0B2545; color: #fff; border: 0; border-radius: 4px; padding: 4px 10px; font-size: 12px; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,0.25); display: none; }
   .research-btn.visible { display: block; }
+  .back-to-project { display: inline-block; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.35); color: #fff; font-size: 13px; font-weight: 600; text-decoration: none; padding: 6px 14px; border-radius: 9999px; margin-bottom: 10px; }
+  .back-to-project:hover { background: rgba(255,255,255,0.22); }
 </style>
 </head>
 <body${isPreview ? ` data-preview="1"` : ""}>
 ${isPreview ? `<div class="preview-banner" data-testid="banner-client-preview">Architect preview — actions will not be sent.</div>` : ""}
 <header>
-  ${backUrl ? `<a href="${backUrl}" style="color:#bcd0e8;font-size:13px;text-decoration:none;display:inline-block;margin-bottom:6px" data-testid="link-back-to-project">&larr; All quotations</a>` : ""}
+  ${backUrl ? `<a href="${backUrl}" class="back-to-project" data-testid="link-back-to-project">&larr; View all quotations</a>` : ""}
   <h1>Client portal — Renosud</h1>
   <div class="meta" id="meta">Loading…</div>
 </header>

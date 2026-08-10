@@ -864,7 +864,9 @@ test.describe("Project share architect preview — no client-activity side effec
       await expect(card).toBeVisible();
       // Card links to the per-devis ARCHITECT preview shell, never a token URL
       const href = await card.getAttribute("href");
-      expect(href).toBe(`/api/devis/${seed.devisId}/client-checks/portal-preview/shell`);
+      expect(href).toBe(
+        `/api/devis/${seed.devisId}/client-checks/portal-preview/shell?projectId=${seed.projectId}`,
+      );
       expect(href).not.toContain("/p/client/");
       expect(href).not.toContain(seed.rawTok);
 

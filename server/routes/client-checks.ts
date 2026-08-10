@@ -64,7 +64,17 @@ router.get(
     const devisId = Number(req.params.devisId);
     const devis = await storage.getDevis(devisId);
     if (!devis) return res.status(404).type("html").send("Devis not found");
-    res.type("html").send(renderClientPortalShell({ mode: "preview", devisId }));
+    // Optional back-link to the project-level architect preview (Task #403
+    // follow-up): the project preview page passes ?projectId= so the
+    // click-through keeps an obvious "view all" route back.
+    const rawProjectId = req.query.projectId;
+    const projectId = typeof rawProjectId === "string" && /^\d+$/.test(rawProjectId)
+      ? Number(rawProjectId)
+      : null;
+    const backUrl = projectId !== null && devis.projectId === projectId
+      ? `/api/projects/${projectId}/client-share/preview/shell`
+      : null;
+    res.type("html").send(renderClientPortalShell({ mode: "preview", devisId, backUrl }));
   },
 );
 
