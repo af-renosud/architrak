@@ -60,7 +60,7 @@ function formatDate(value: string | Date | null): string {
   return new Date(value).toLocaleDateString("en-GB");
 }
 
-interface LineContextRender {
+export interface LineContextRender {
   /** Pre-rendered, escaped HTML for the line's context block. */
   html: string;
 }
@@ -88,8 +88,12 @@ interface BuildHtmlInput {
  * data URIs (same self-contained pattern as the company logo — DocRaptor
  * never fetches external URLs). Invalid or empty documents are skipped;
  * a missing image degrades to a placeholder rather than failing the PDF.
+ *
+ * Exported for the client portal (Task #389), which shows the same
+ * pre-rendered context blocks inline; base64 data URIs keep the payload
+ * self-contained there exactly as they do for DocRaptor.
  */
-async function loadLineContextRenders(devisId: number): Promise<Map<number, LineContextRender>> {
+export async function loadLineContextRenders(devisId: number): Promise<Map<number, LineContextRender>> {
   const out = new Map<number, LineContextRender>();
   const contexts = await storage.getDevisLineContexts(devisId);
   if (contexts.length === 0) return out;

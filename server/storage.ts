@@ -234,7 +234,8 @@ export interface IStorage {
 
   updateDevisLineItem(id: number, data: Partial<InsertDevisLineItem>): Promise<DevisLineItem | undefined>;
 
-  deleteDevisLineItem(id: number): Promise<void>;
+  /** Deletes the line item and returns its devisId (null when not found). */
+  deleteDevisLineItem(id: number): Promise<number | null>;
 
   getAvenantsByDevis(devisId: number): Promise<Avenant[]>;
   // Batched variant for the projects-list accounting-status rollup.
@@ -1380,8 +1381,12 @@ export class DatabaseStorage implements IStorage {
     return item;
   }
 
-  async deleteDevisLineItem(id: number): Promise<void> {
-    await db.delete(devisLineItems).where(eq(devisLineItems.id, id));
+  async deleteDevisLineItem(id: number): Promise<number | null> {
+    const rows = await db
+      .delete(devisLineItems)
+      .where(eq(devisLineItems.id, id))
+      .returning({ devisId: devisLineItems.devisId });
+    return rows[0]?.devisId ?? null;
   }
 
   async getAvenantsByDevis(devisId: number): Promise<Avenant[]> {

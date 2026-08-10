@@ -257,6 +257,16 @@ export async function getConfirmedCostAnalysisDocument(
 ): Promise<CostAnalysisDocument | null> {
   const row = await storage.getDevisCostAnalysis(devisId);
   if (!row || row.status !== "confirmed") return null;
+  // Outbound gate (single source of truth for every client-facing surface:
+  // portal JSON, translated/combined PDFs, signing envelopes): a confirmed
+  // analysis whose fingerprint no longer matches the current quotation data
+  // must be silently omitted — its figures may not match the devis any more.
+  if (await isCostAnalysisQuotationChanged(row)) {
+    console.warn(
+      `[CostAnalysis] Confirmed analysis for devis ${devisId} is stale (quotation changed) — omitting from outbound render.`,
+    );
+    return null;
+  }
   const parsed = await import("@shared/cost-analysis-doc").then((m) =>
     m.costAnalysisDocumentSchema.safeParse(row.document),
   );

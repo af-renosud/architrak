@@ -1052,6 +1052,9 @@ router.post(
   validateRequest({ params: devisIdParams, body: createLineItemBodySchema }),
   async (req, res) => {
     const item = await storage.createDevisLineItem({ ...normalizeLineItemText({ ...req.body }), devisId: Number(req.params.devisId) });
+    // Quotation data changed → any cached translated/combined PDF (which may
+    // embed a now-stale confirmed cost analysis) must not be served again.
+    await storage.bumpContextsVersionAndClearPdfCache(Number(req.params.devisId));
     res.status(201).json(item);
   },
 );
@@ -1064,6 +1067,9 @@ router.patch(
     const lineItemId = Number(req.params.id);
     const item = await storage.updateDevisLineItem(lineItemId, normalizeLineItemText({ ...req.body }));
     if (!item) return res.status(404).json({ message: "Line item not found" });
+    // Quotation data changed → invalidate cached translated/combined PDFs so
+    // a stale embedded cost analysis can never be served from cache.
+    await storage.bumpContextsVersionAndClearPdfCache(item.devisId);
 
     // Auto-create / refresh a contractor check whenever the architect flags
     // a line item red or amber. Notes are optional — if the architect didn't
@@ -1115,7 +1121,9 @@ router.delete(
     // Snapshot the context-asset storage keys BEFORE the delete — the FK
     // cascade removes the rows, after which the keys are unrecoverable.
     const contextAssets = await storage.getDevisLineContextAssets(lineItemId);
-    await storage.deleteDevisLineItem(lineItemId);
+    const deletedDevisId = await storage.deleteDevisLineItem(lineItemId);
+    // Quotation data changed → invalidate cached translated/combined PDFs.
+    if (deletedDevisId !== null) await storage.bumpContextsVersionAndClearPdfCache(deletedDevisId);
     // Best-effort object cleanup (rows already cascaded); never blocks the 204.
     if (contextAssets.length > 0) void deleteContextAssetObjects(contextAssets);
     res.status(204).send();

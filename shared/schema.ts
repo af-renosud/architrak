@@ -2147,6 +2147,11 @@ export const clientChecks = pgTable("client_checks", {
   status: text("status").notNull().default("open"),
   queryText: text("query_text").notNull(),
   originSource: text("origin_source").notNull(),
+  // Task #389 — optional per-line dialogue anchor ("Ask about this" on a
+  // specific quotation line). NULL for quotation-level questions and all
+  // historical rows. ON DELETE SET NULL: a rescrape that replaces line
+  // items must not delete the client's question thread with the line.
+  devisLineItemId: integer("devis_line_item_id").references(() => devisLineItems.id, { onDelete: "set null" }),
   // Stable Archisign event id for the originating `envelope.queried` event
   // when originSource = 'archisign_query'. NULL otherwise. Used by AT4 to
   // reconcile retries against an already-mirrored check.
@@ -2165,6 +2170,7 @@ export const clientChecks = pgTable("client_checks", {
 }, (table) => [
   index("client_checks_devis_id_idx").on(table.devisId),
   index("client_checks_status_idx").on(table.status),
+  index("client_checks_devis_line_item_id_idx").on(table.devisLineItemId),
   index("client_checks_archisign_query_event_id_idx").on(table.archisignQueryEventId),
   check("client_checks_status_check", sql`${table.status} IN ('open', 'resolved', 'cancelled')`),
   check("client_checks_origin_source_check", sql`${table.originSource} IN ('architrak_internal', 'archisign_query')`),
@@ -2180,6 +2186,7 @@ export const clientChecks = pgTable("client_checks", {
 
 export const insertClientCheckSchema = createInsertSchema(clientChecks, {
   status: z.enum(CLIENT_CHECK_STATUSES).optional(),
+  devisLineItemId: z.number().int().positive().nullable().optional(),
   originSource: z.enum(CLIENT_CHECK_ORIGIN_SOURCES),
   resolvedBySource: z.enum(CLIENT_CHECK_RESOLVER_SOURCES).nullable().optional(),
   resolvedByActor: z.enum(CLIENT_CHECK_RESOLVER_ACTORS).nullable().optional(),

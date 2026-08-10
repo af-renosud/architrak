@@ -12,7 +12,10 @@ import { eq } from "drizzle-orm";
 import {
   computeQuotationFingerprint,
   isCostAnalysisQuotationChanged,
+  getConfirmedCostAnalysisDocument,
 } from "../services/devis-cost-analysis";
+import { devisTranslations } from "@shared/schema";
+import { buildClientPortalPayload } from "../routes/public-client-checks";
 
 /**
  * Task #381 — staleness detection for confirmed cost analyses:
@@ -62,6 +65,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await db.delete(devisTranslations).where(eq(devisTranslations.devisId, devisId));
   await db.delete(devisCostAnalyses).where(eq(devisCostAnalyses.devisId, devisId));
   await db.delete(devisLineItems).where(eq(devisLineItems.devisId, devisId));
   await db.delete(devis).where(eq(devis.id, devisId));
@@ -127,5 +131,47 @@ describe("cost-analysis staleness (task #381)", () => {
     expect(
       await isCostAnalysisQuotationChanged({ ...draft, status: "confirmed", quotationFingerprint: null }),
     ).toBe(false);
+  });
+
+  // Runs LAST: it leaves the analysis confirmed (+ a finalised translation row).
+  it("outbound gate (task #389): a stale confirmed analysis is omitted from the PDF document loader AND the portal payload", async () => {
+    // Re-confirm with the CURRENT fingerprint → fresh.
+    const before = (await storage.getDevisCostAnalysis(devisId))!;
+    const fp = await computeQuotationFingerprint(devisId);
+    const res = await storage.upsertDevisCostAnalysisIfRevision({
+      devisId,
+      rawText: "## Summary\nfresh",
+      document: DOC,
+      warnings: [],
+      status: "confirmed",
+      expectedRevision: before.revision,
+      quotationFingerprint: fp,
+    });
+    expect(res.outcome).toBe("saved");
+
+    // Portal payloads only surface analysis on a finalised translation.
+    await storage.upsertDevisTranslation({
+      devisId,
+      status: "finalised",
+      headerTranslated: {},
+      lineTranslations: [],
+    });
+    const devisRow = (await storage.getDevis(devisId))!;
+
+    // Fresh → present on both outbound surfaces.
+    expect(await getConfirmedCostAnalysisDocument(devisId)).not.toBeNull();
+    const freshPayload = await buildClientPortalPayload(devisRow);
+    expect(freshPayload.analysisHtml).not.toBeNull();
+
+    // Quotation edit → stale → silently omitted from BOTH surfaces
+    // (getConfirmedCostAnalysisDocument feeds the translated/combined
+    // package PDF; buildClientPortalPayload feeds the portal JSON).
+    await db
+      .update(devisLineItems)
+      .set({ totalHt: "199.99" })
+      .where(eq(devisLineItems.devisId, devisId));
+    expect(await getConfirmedCostAnalysisDocument(devisId)).toBeNull();
+    const stalePayload = await buildClientPortalPayload(devisRow);
+    expect(stalePayload.analysisHtml).toBeNull();
   });
 });

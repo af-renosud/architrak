@@ -8,8 +8,24 @@ import {
   resolveClientCheckToken,
   computeTokenExpiry,
 } from "../services/client-checks";
-import type { ClientCheckToken, Devis, ClientCheck } from "@shared/schema";
+import type { ClientCheckToken, Devis, ClientCheck, DevisTranslationLine, DevisTranslationHeader } from "@shared/schema";
 import { getDocumentStream } from "../storage/object-storage";
+import {
+  loadLineContextRenders,
+  generateCombinedPdf,
+  getValidatedCachedPdfKey,
+} from "../communications/devis-translation-generator";
+import { renderCostAnalysisHtml } from "../communications/cost-analysis-renderer";
+import { getConfirmedCostAnalysisDocument } from "../services/devis-cost-analysis";
+import {
+  renderClientInvalid,
+  renderClientExpired,
+  renderClientPortalShell,
+} from "./client-portal-shell";
+
+// Re-exported so existing imports (client-checks.ts architect preview) keep
+// working after the Task #389 modularization of the shell template.
+export { renderClientPortalShell };
 
 /**
  * Shape returned by both the live (token-authed) and preview (architect-authed)
@@ -18,10 +34,13 @@ import { getDocumentStream } from "../storage/object-storage";
  * meta, and the chronological list of open + resolved client checks with
  * their message threads.
  *
+ * Task #389 — the payload now carries the full bilingual quotation: per-line
+ * English translations (finalised translations only), per-line contextual
+ * notes as pre-rendered safe HTML, the confirmed non-stale cost analysis as
+ * pre-rendered safe HTML, and a flag for the complete-package download.
+ *
  * Note: unlike the contractor portal we DO show resolved checks, because the
- * client view doubles as a verdict log — once the client has agreed/rejected
- * the resolved row needs to remain visible so they can see what they have
- * already signalled.
+ * client view doubles as a dialogue log.
  */
 export interface ClientPortalDataPayload {
   devis: {
@@ -35,6 +54,18 @@ export interface ClientPortalDataPayload {
   };
   project: { name: string } | null;
   client: { name: string | null; email: string };
+  /** Finalised translation header (EN scope description), or null. */
+  translationHeaderEn: string | null;
+  /** Finalised translation document overview (EN summary), or null. */
+  translationSummary: string | null;
+  /** True when the combined EN+FR package PDF can be downloaded. */
+  packageAvailable: boolean;
+  /**
+   * Confirmed, non-stale cost analysis as pre-rendered safe HTML from the
+   * whitelisting serializer (cost-analysis-renderer.ts), or null. ONLY
+   * status=confirmed with a matching quotationFingerprint goes outbound.
+   */
+  analysisHtml: string | null;
   /** Devis line items, ordered by lineNumber so the client can review the
    *  itemised breakdown without having to scroll the PDF. Decimal amounts
    *  arrive as strings (Postgres `numeric`) — the shell renders them
@@ -43,25 +74,35 @@ export interface ClientPortalDataPayload {
     id: number;
     lineNumber: number | null;
     description: string | null;
+    /** English translation of the line (finalised translations only). */
+    translationEn: string | null;
+    /**
+     * Architect-authored contextual note, pre-rendered into safe HTML by
+     * the whitelisting serializer (context-doc-renderer.ts) with owned
+     * image assets inlined as base64 data URIs. Null when absent.
+     */
+    contextHtml: string | null;
     quantity: string | null;
     unit: string | null;
     unitPrice: string | null;
     totalHt: string | null;
   }>;
-  /** True after the client has signalled an agreement on this devis. */
+  /** True after the client signalled an agreement via the retired verdict
+   *  buttons (historical rows only — the endpoints are retired). */
   agreed: boolean;
-  /** True after the client has signalled a rejection on this devis. */
+  /** True after the client signalled a rejection (historical rows only). */
   rejected: boolean;
   checks: Array<{
     id: number;
     status: string;
     query: string;
     originSource: string;
+    /** Line item the question is anchored to ("Ask about this"), or null. */
+    devisLineItemId: number | null;
     openedAt: Date | string;
     resolvedAt: Date | string | null;
-    /** Synthetic verdict tag set on the rows minted by the Agree/Reject
-     *  buttons. UI uses it to render those rows differently from regular
-     *  questions (badge instead of query bubble). */
+    /** Synthetic verdict tag on historical rows minted by the retired
+     *  Agree/Reject buttons. UI renders those as audit badges. */
     verdict: "agree" | "reject" | null;
     messages: Array<{
       id: number;
@@ -74,27 +115,17 @@ export interface ClientPortalDataPayload {
 }
 
 /**
- * Stable queryText markers for the verdict rows minted by the Agree/Reject
- * buttons. The portal uses these markers to render the rows as verdict
- * badges, and the architect's read of the data uses them to compute the
- * `agreed` / `rejected` summary flags.
+ * Stable queryText markers for the verdict rows minted by the RETIRED
+ * Agree/Reject buttons (Task #389 removed the endpoints — agreement now
+ * happens through dialogue plus the e-signature workflow; the
+ * `client_agreed` / `client_rejected` SIGN_OFF_STAGES remain reachable via
+ * the architect's manual sign-off flow, devis-manual-signoff.ts).
  *
- * Integrity model: the only writers that may produce a row whose `queryText`
- * starts with one of these markers are the `/agree` and `/reject` endpoints.
- * Every user-supplied free-text body (`/queries`, `/messages`) is funnelled
- * through `stripClientVerdictMarker` before persistence, so a malicious
- * client cannot spoof a verdict by posting a question that begins with the
- * marker string. Combined with the marker check, the most-recent verdict
- * row therefore reliably reflects an actual click on Approve / Reject.
- *
- * Defence-in-depth: if a future writer is ever added that bypasses this
- * sanitiser, `classifyVerdict` ALSO requires the row's `resolvedBySource`
- * (for agree) / `originSource` (for both) to match the shape produced by
- * the verdict endpoints. The marker alone is not sufficient.
- *
- * They live here (not in @shared) because nothing client-side currently
- * needs them — the architect UI consumes the same data endpoint and reads
- * the precomputed `agreed`/`rejected` flags.
+ * The markers and classifier are kept so that:
+ *   1. historical verdict rows still render as audit badges in the portal
+ *      and still compute the `agreed`/`rejected` summary flags;
+ *   2. `stripClientVerdictMarker` keeps sanitising free text — no writer
+ *      may EVER mint a new row that classifies as a verdict.
  */
 export const CLIENT_VERDICT_AGREE_MARKER = "[VERDICT:AGREE]";
 export const CLIENT_VERDICT_REJECT_MARKER = "[VERDICT:REJECT]";
@@ -112,10 +143,11 @@ export function stripClientVerdictMarker(body: string): string {
 export function classifyVerdict(
   c: Pick<ClientCheck, "queryText" | "originSource" | "resolvedBySource" | "status">,
 ): "agree" | "reject" | null {
-  // The agree endpoint produces: status='resolved', originSource='architrak_internal',
-  // resolvedBySource='external'. Refuse to classify rows that don't match the
-  // exact shape, so a hypothetical future writer can't spoof a verdict by
-  // accident even if it manages to slip a marker into queryText.
+  // The (retired) agree endpoint produced: status='resolved',
+  // originSource='architrak_internal', resolvedBySource='external'. Refuse
+  // to classify rows that don't match the exact shape, so no current or
+  // future writer can spoof a verdict even if it slips a marker into
+  // queryText.
   if (
     c.queryText.startsWith(CLIENT_VERDICT_AGREE_MARKER) &&
     c.originSource === "architrak_internal" &&
@@ -124,8 +156,8 @@ export function classifyVerdict(
   ) {
     return "agree";
   }
-  // The reject endpoint produces: status='open', originSource='architrak_internal',
-  // resolvedBySource=null (architect must react to close).
+  // The (retired) reject endpoint produced: status='open',
+  // originSource='architrak_internal', resolvedBySource=null.
   if (
     c.queryText.startsWith(CLIENT_VERDICT_REJECT_MARKER) &&
     c.originSource === "architrak_internal" &&
@@ -134,6 +166,18 @@ export function classifyVerdict(
     return "reject";
   }
   return null;
+}
+
+/**
+ * Loads the outbound-eligible cost analysis for the portal. Delegates the
+ * eligibility decision to getConfirmedCostAnalysisDocument — the single
+ * outbound gate (confirmed + fingerprint-fresh + schema-valid) shared with
+ * the translated/combined PDF generators, so the portal JSON and the
+ * downloadable package can never diverge on what the client may see.
+ */
+async function loadOutboundAnalysisHtml(devisId: number): Promise<string | null> {
+  const doc = await getConfirmedCostAnalysisDocument(devisId);
+  return doc ? renderCostAnalysisHtml(doc) : null;
 }
 
 /**
@@ -153,10 +197,35 @@ export async function buildClientPortalPayload(
   const checks = await storage.listClientChecks(devis.id);
   const lineItems = await storage.getDevisLineItems(devis.id);
 
+  // Finalised translations only: the portal is an outbound client surface,
+  // so draft/edited translations (still under architect review) stay
+  // internal. Mirrors the "finalised devis translation rows" contract.
+  const translation = await storage.getDevisTranslation(devis.id);
+  const translationFinalised = translation?.status === "finalised";
+  const byLineNumber = new Map<number, DevisTranslationLine>();
+  if (translationFinalised) {
+    for (const t of (translation!.lineTranslations as DevisTranslationLine[] | null) ?? []) {
+      byLineNumber.set(t.lineNumber, t);
+    }
+  }
+  const header: DevisTranslationHeader = translationFinalised
+    ? ((translation!.headerTranslated as DevisTranslationHeader) ?? {})
+    : {};
+
+  // Contextual notes ride along with the finalised translation — they are
+  // authored for, and rendered into, the same client-facing package.
+  const contexts = translationFinalised
+    ? await loadLineContextRenders(devis.id)
+    : new Map<number, { html: string }>();
+
+  const analysisHtml = translationFinalised
+    ? await loadOutboundAnalysisHtml(devis.id)
+    : null;
+
+  const packageAvailable = translationFinalised && !!devis.pdfStorageKey;
+
   // Latest verdict markers determine the agreed/rejected summary flags.
-  // We scan all checks (resolved + open) — the markers identify verdict
-  // rows regardless of their downstream status. Most-recent wins so the
-  // client can change their mind by clicking the other button later.
+  // Historical only — the verdict endpoints are retired (Task #389).
   let agreed = false;
   let rejected = false;
   const sortedByCreated = [...checks].sort((a, b) => {
@@ -181,6 +250,7 @@ export async function buildClientPortalPayload(
         status: c.status,
         query: displayQuery,
         originSource: c.originSource,
+        devisLineItemId: c.devisLineItemId ?? null,
         openedAt: c.openedAt,
         resolvedAt: c.resolvedAt,
         verdict,
@@ -208,10 +278,16 @@ export async function buildClientPortalPayload(
       name: tokenContext?.clientName ?? null,
       email: tokenContext?.clientEmail ?? "",
     },
+    translationHeaderEn: header.description ?? null,
+    translationSummary: header.summary ?? null,
+    packageAvailable,
+    analysisHtml,
     lineItems: lineItems.map((li) => ({
       id: li.id,
       lineNumber: li.lineNumber ?? null,
       description: li.description ?? null,
+      translationEn: byLineNumber.get(li.lineNumber)?.translation ?? null,
+      contextHtml: contexts.get(li.id)?.html ?? null,
       quantity: li.quantity ?? null,
       unit: li.unit ?? null,
       unitPrice: li.unitPriceHt ?? null,
@@ -232,9 +308,8 @@ const replySchema = z.object({
 }).strict();
 const newQuerySchema = z.object({
   body: z.string().min(1).max(5000),
-}).strict();
-const verdictSchema = z.object({
-  note: z.string().max(5000).optional(),
+  /** Optional "Ask about this" anchor — must be a line of THIS devis. */
+  devisLineItemId: z.number().int().positive().optional(),
 }).strict();
 
 function tokenFromReq(req: Request): string {
@@ -353,8 +428,7 @@ router.post(
       return res.status(409).json({ message: "This question is closed" });
     }
     // Sanitise: never let user-supplied free text masquerade as a verdict
-    // marker. The marker is a dedicated channel reserved for /agree and
-    // /reject — see CLIENT_VERDICT_*_MARKER docs above.
+    // marker — see CLIENT_VERDICT_*_MARKER docs above.
     const sanitisedBody = stripClientVerdictMarker(req.body.body);
     const msg = await storage.createClientCheckMessage({
       checkId: check.id,
@@ -371,7 +445,11 @@ router.post(
   },
 );
 
-/** Client opens a brand-new query on this devis (architrak_internal source). */
+/**
+ * Client opens a brand-new query on this devis (architrak_internal source).
+ * Task #389 — may carry a devisLineItemId anchor ("Ask about this" on a
+ * specific quotation line); the line MUST belong to this devis.
+ */
 router.post(
   "/p/client/:token/queries",
   portalWriteIpLimiter, portalWriteTokenLimiter,
@@ -386,15 +464,22 @@ router.post(
       return res.status(status).json({ message, expired: lookup.reason === "expired" });
     }
     const t = lookup.token;
+    const devisLineItemId: number | null = req.body.devisLineItemId ?? null;
+    if (devisLineItemId != null) {
+      const lines = await storage.getDevisLineItems(t.devisId);
+      if (!lines.some((l) => l.id === devisLineItemId)) {
+        return res.status(400).json({ message: "This quotation line does not exist on this devis" });
+      }
+    }
     // Sanitise: never let user-supplied free text masquerade as a verdict
-    // marker. The marker is a dedicated channel reserved for /agree and
-    // /reject — see CLIENT_VERDICT_*_MARKER docs above.
+    // marker — see CLIENT_VERDICT_*_MARKER docs above.
     const sanitisedBody = stripClientVerdictMarker(req.body.body);
     const check = await storage.createClientCheck({
       devisId: t.devisId,
       status: "open",
       queryText: sanitisedBody,
       originSource: "architrak_internal",
+      devisLineItemId,
     });
     // Seed the thread with a system-channel row carrying the client's
     // identity so the architect inbox can attribute the question without
@@ -413,89 +498,25 @@ router.post(
 );
 
 /**
- * Verdict actions — the client signals approval or rejection of the devis
- * as a whole. Each click writes a NEW client_check row carrying the verdict
- * marker, so the architect sees an immutable audit trail of clicks rather
- * than mutating an earlier one. The most recent verdict marker wins for the
- * `agreed`/`rejected` summary flags.
+ * RETIRED verdict endpoints (Task #389, user decision). The portal no longer
+ * carries Approve/Decline cards: agreement happens through dialogue plus the
+ * e-signature workflow, and the `client_agreed` / `client_rejected`
+ * SIGN_OFF_STAGES remain reachable through the architect's manual sign-off
+ * flow (devis-manual-signoff.ts), which carries its own audit trail.
+ *
+ * They answer 410 Gone (not 404) deliberately: a client on a cached copy of
+ * the old portal gets an explanatory message rather than a dead click, and
+ * the routes remain occupied so nothing else can squat on the paths and
+ * mint marker rows. Historical verdict rows remain rendered as audit badges.
  */
-router.post(
-  "/p/client/:token/agree",
-  portalWriteIpLimiter, portalWriteTokenLimiter,
-  validateRequest({ params: tokenParams, body: verdictSchema }),
-  async (req, res) => {
-    const lookup = await resolveClientCheckToken(tokenFromReq(req));
-    if (!lookup.ok) {
-      const status = lookup.reason === "expired" ? 410 : 404;
-      const message = lookup.reason === "expired"
-        ? "This link has expired. Please contact your Renosud representative."
-        : "Invalid or expired link";
-      return res.status(status).json({ message, expired: lookup.reason === "expired" });
-    }
-    const t = lookup.token;
-    const note = (req.body.note ?? "").trim();
-    const queryText = note
-      ? `${CLIENT_VERDICT_AGREE_MARKER} ${note}`
-      : CLIENT_VERDICT_AGREE_MARKER;
-    const now = new Date();
-    const check = await storage.createClientCheck({
-      devisId: t.devisId,
-      status: "resolved",
-      queryText,
-      originSource: "architrak_internal",
-      resolvedBySource: "external",
-      resolvedByUserEmail: t.clientEmail,
-      resolutionNote: note || null,
-      resolvedAt: now,
-    });
-    await storage.createClientCheckMessage({
-      checkId: check.id,
-      authorType: "system",
-      body: `The client (${t.clientName || t.clientEmail}) has confirmed their approval of the devis.${note ? `\n\nNote: ${note}` : ""}`,
-      channel: "system",
-    });
-    await touchToken(t);
-    res.status(201).json({ id: check.id });
-  },
-);
-
-router.post(
-  "/p/client/:token/reject",
-  portalWriteIpLimiter, portalWriteTokenLimiter,
-  validateRequest({ params: tokenParams, body: verdictSchema }),
-  async (req, res) => {
-    const lookup = await resolveClientCheckToken(tokenFromReq(req));
-    if (!lookup.ok) {
-      const status = lookup.reason === "expired" ? 410 : 404;
-      const message = lookup.reason === "expired"
-        ? "This link has expired. Please contact your Renosud representative."
-        : "Invalid or expired link";
-      return res.status(status).json({ message, expired: lookup.reason === "expired" });
-    }
-    const t = lookup.token;
-    const note = (req.body.note ?? "").trim();
-    const queryText = note
-      ? `${CLIENT_VERDICT_REJECT_MARKER} ${note}`
-      : CLIENT_VERDICT_REJECT_MARKER;
-    // Reject lands as status='open' so it shows up in the architect's
-    // pending queue — they need to react to it (clarify, revise the devis,
-    // close the deal, etc.). Resolution is the architect's call.
-    const check = await storage.createClientCheck({
-      devisId: t.devisId,
-      status: "open",
-      queryText,
-      originSource: "architrak_internal",
-    });
-    await storage.createClientCheckMessage({
-      checkId: check.id,
-      authorType: "system",
-      body: `The client (${t.clientName || t.clientEmail}) has declined the devis.${note ? `\n\nReason: ${note}` : ""}`,
-      channel: "system",
-    });
-    await touchToken(t);
-    res.status(201).json({ id: check.id });
-  },
-);
+const retiredVerdictHandler = (_req: Request, res: import("express").Response) => {
+  res.status(410).json({
+    message:
+      "Approving or declining through this page has been retired. Please discuss the quotation in the dialogue below — the formal approval happens through the electronic signing workflow.",
+  });
+};
+router.post("/p/client/:token/agree", portalWriteIpLimiter, portalWriteTokenLimiter, retiredVerdictHandler);
+router.post("/p/client/:token/reject", portalWriteIpLimiter, portalWriteTokenLimiter, retiredVerdictHandler);
 
 /** Stream the devis PDF inline. */
 router.get(
@@ -528,500 +549,66 @@ router.get(
   },
 );
 
-function renderClientInvalid(): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Invalid link</title>
-<style>body{font-family:system-ui,sans-serif;max-width:480px;margin:80px auto;padding:0 20px;color:#1f2937}</style>
-</head><body data-testid="page-client-invalid"><h1>Invalid link</h1>
-<p>This link is no longer valid. Please contact your Renosud representative to obtain a new link.</p>
-</body></html>`;
-}
-
-function renderClientExpired(): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Link expired</title>
-<style>
-body{font-family:system-ui,sans-serif;max-width:520px;margin:80px auto;padding:0 24px;color:#0f172a;line-height:1.5}
-h1{font-size:22px;margin:0 0 12px;color:#b45309}
-.note{background:#fef3c7;border-left:3px solid #f59e0b;padding:12px 16px;border-radius:4px;margin:16px 0}
-p{margin:8px 0}
-</style>
-</head><body data-testid="page-client-expired">
-<h1>Link expired</h1>
-<div class="note">This client review portal link has expired for security reasons.</div>
-<p>To resume reviewing this devis, please contact your Renosud representative (the architect who sent you this link). They can generate a new access link for you.</p>
-<p>Your previous messages and decisions are kept and remain available to the Renosud team.</p>
-</body></html>`;
-}
-
 /**
- * Render the client portal HTML shell. Two modes share the same template:
- *   • live: token-authed client portal (writes enabled).
- *   • preview: architect-authed read-only preview, served inside an iframe
- *     in the architect UI. Reply/verdict forms are suppressed and a banner
- *     identifies it as a preview.
+ * Serve the combined "complete package" PDF: the English translation with
+ * contextual notes and the confirmed cost analysis, followed by the
+ * original French devis. Shared logic with the Archisign public download —
+ * fingerprint-validated cache read, regenerate on miss.
  *
- * Kept in this module (rather than reusing renderPortalShell) because the
- * client and contractor portals have distinct action sets (Agree/Reject +
- * "Ask a question" instead of just "Reply"), distinct English client copy, and
- * distinct data shapes — sharing a template would push branching deep into
- * the rendering JS and obscure the contract between the two portals.
+ * Gated on a FINALISED translation (same rule as the inline portal
+ * content): the package is an outbound client artifact.
  */
-export function renderClientPortalShell(opts:
-  | { mode: "live"; token: string }
-  | { mode: "preview"; devisId: number }
-): string {
-  const isPreview = opts.mode === "preview";
-  const dataUrl = opts.mode === "preview"
-    ? `/api/devis/${opts.devisId}/client-checks/portal-preview/data`
-    : `/p/client/${encodeURIComponent(opts.token)}/data`;
-  const pdfUrl = opts.mode === "preview"
-    ? `/api/devis/${opts.devisId}/client-checks/portal-preview/pdf`
-    : `/p/client/${encodeURIComponent(opts.token)}/pdf`;
-  const messagesUrl = opts.mode === "preview" ? null : `/p/client/${encodeURIComponent(opts.token)}/messages`;
-  const queriesUrl = opts.mode === "preview" ? null : `/p/client/${encodeURIComponent(opts.token)}/queries`;
-  const agreeUrl = opts.mode === "preview" ? null : `/p/client/${encodeURIComponent(opts.token)}/agree`;
-  const rejectUrl = opts.mode === "preview" ? null : `/p/client/${encodeURIComponent(opts.token)}/reject`;
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>${isPreview ? "Architect preview — " : ""}Client portal — Renosud</title>
-<style>
-  :root { color-scheme: light; }
-  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
-  .preview-banner { background: #fef3c7; color: #78350f; border-bottom: 2px solid #f59e0b; padding: 8px 16px; font-size: 12px; font-weight: 600; text-align: center; letter-spacing: 0.02em; }
-  header { background: #0B2545; color: #fff; padding: 16px 24px; }
-  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
-  header .meta { font-size: 13px; opacity: 0.85; margin-top: 4px; }
-  main { max-width: 880px; margin: 0 auto; padding: 24px; padding-bottom: 80px; }
-  .devis-info { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-  .devis-info h3 { margin: 0 0 8px; font-size: 15px; font-weight: 600; color: #0f172a; }
-  .devis-desc { margin: 0 0 6px; font-size: 13px; color: #334155; line-height: 1.5; }
-  .devis-desc-en { color: #64748b; }
-  .devis-total { margin: 8px 0 12px; font-size: 13px; color: #0f172a; }
-  .devis-lines { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
-  .devis-lines th, .devis-lines td { border: 1px solid #e2e8f0; padding: 6px 8px; text-align: left; vertical-align: top; }
-  .devis-lines th { background: #f1f5f9; font-weight: 600; color: #475569; }
-  .devis-lines td:nth-child(3), .devis-lines td:nth-child(5), .devis-lines td:nth-child(6),
-  .devis-lines th:nth-child(3), .devis-lines th:nth-child(5), .devis-lines th:nth-child(6) { text-align: right; white-space: nowrap; }
-  .verdict-strip { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
-  .verdict-card { flex: 1; min-width: 240px; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; }
-  .verdict-card h3 { margin: 0 0 6px; font-size: 14px; font-weight: 600; color: #0f172a; }
-  .verdict-card p { margin: 0 0 12px; font-size: 13px; color: #475569; line-height: 1.4; }
-  .verdict-card.agreed { border-color: #059669; background: #ecfdf5; }
-  .verdict-card.rejected { border-color: #dc2626; background: #fef2f2; }
-  .verdict-status { font-size: 12px; font-weight: 600; margin-top: 6px; }
-  .verdict-status.agreed { color: #047857; }
-  .verdict-status.rejected { color: #b91c1c; }
-  .check { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 16px; padding: 16px; }
-  .check.verdict-agree { border-left: 4px solid #059669; }
-  .check.verdict-reject { border-left: 4px solid #dc2626; }
-  .check h3 { margin: 0 0 8px; font-size: 14px; color: #475569; font-weight: 600; }
-  .query { background: #fef3c7; border-left: 3px solid #f59e0b; padding: 8px 12px; margin: 0 0 12px; font-size: 14px; }
-  .verdict-tag { display: inline-block; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 8px; }
-  .verdict-tag.agree { background: #d1fae5; color: #065f46; }
-  .verdict-tag.reject { background: #fee2e2; color: #991b1b; }
-  .status { display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; padding: 2px 8px; border-radius: 9999px; margin-left: 8px; }
-  .status-open { background: #fee2e2; color: #991b1b; }
-  .status-resolved { background: #dcfce7; color: #166534; }
-  .status-cancelled { background: #f1f5f9; color: #64748b; }
-  .messages { margin: 12px 0; }
-  .msg { padding: 8px 12px; margin: 6px 0; border-radius: 6px; font-size: 14px; line-height: 1.4; white-space: pre-wrap; }
-  .msg-architect { background: #f1f5f9; }
-  .msg-client { background: #eff6ff; }
-  .msg-system { background: #fefce8; color: #78350f; font-style: italic; font-size: 13px; }
-  .msg-meta { font-size: 11px; color: #64748b; margin-bottom: 2px; font-style: normal; }
-  textarea { width: 100%; min-height: 70px; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 4px; padding: 8px; font: inherit; resize: vertical; }
-  button { background: #0B2545; color: #fff; border: 0; border-radius: 4px; padding: 8px 14px; font: inherit; cursor: pointer; }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
-  button.btn-agree { background: #059669; }
-  button.btn-reject { background: #dc2626; }
-  button.btn-secondary { background: #fff; color: #0B2545; border: 1px solid #0B2545; }
-  .ask-section { background: #fff; border: 1px dashed #94a3b8; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-  .ask-section h3 { margin: 0 0 8px; font-size: 14px; }
-  .ask-section .hint { font-size: 12px; color: #64748b; margin: 0 0 8px; }
-  .pdf-toggle { position: fixed; bottom: 20px; right: 20px; z-index: 9; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
-  .pdf-panel { position: fixed; bottom: 80px; right: 20px; width: 480px; height: 640px; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; box-shadow: 0 12px 32px rgba(0,0,0,0.2); display: none; flex-direction: column; z-index: 10; }
-  .pdf-panel.open { display: flex; }
-  .pdf-handle { padding: 8px 12px; background: #0B2545; color: #fff; cursor: move; user-select: none; border-radius: 8px 8px 0 0; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
-  .pdf-handle button { background: transparent; padding: 2px 8px; }
-  .pdf-frame { flex: 1; border: 0; border-radius: 0 0 8px 8px; }
-  .pdf-resize { position: absolute; bottom: 2px; right: 2px; width: 14px; height: 14px; cursor: nwse-resize; opacity: 0.5; z-index: 2; }
-  .empty { color: #64748b; font-style: italic; padding: 24px; text-align: center; }
-  .err { color: #b91c1c; font-size: 13px; margin-top: 6px; }
-  dialog { border: 0; border-radius: 8px; padding: 0; box-shadow: 0 20px 50px rgba(0,0,0,0.3); max-width: 480px; width: 90%; }
-  dialog::backdrop { background: rgba(15, 23, 42, 0.5); }
-  .dlg-body { padding: 20px; }
-  .dlg-body h3 { margin: 0 0 8px; font-size: 16px; }
-  .dlg-body p { margin: 0 0 12px; font-size: 13px; color: #475569; line-height: 1.4; }
-  .dlg-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
-</style>
-</head>
-<body${isPreview ? ` data-preview="1"` : ""}>
-${isPreview ? `<div class="preview-banner" data-testid="banner-client-preview">Architect preview — actions will not be sent.</div>` : ""}
-<header>
-  <h1>Client portal — Renosud</h1>
-  <div class="meta" id="meta">Loading…</div>
-</header>
-<main id="root"><div class="empty">Loading…</div></main>
-
-<button class="pdf-toggle" id="pdfToggle" type="button" data-testid="button-client-pdf-toggle">View the devis (PDF)</button>
-<div class="pdf-panel" id="pdfPanel">
-  <div class="pdf-handle" id="pdfHandle">
-    <span>Devis — PDF</span>
-    <button id="pdfClose" type="button" aria-label="Close">×</button>
-  </div>
-  <iframe id="pdfFrame" class="pdf-frame" title="Devis PDF" src="about:blank" data-testid="iframe-client-pdf"></iframe>
-  <div class="pdf-resize" id="pdfResize"></div>
-</div>
-
-<dialog id="verdictDialog" data-testid="dialog-verdict">
-  <form method="dialog" class="dlg-body" id="verdictForm">
-    <h3 id="verdictTitle"></h3>
-    <p id="verdictBody"></p>
-    <textarea id="verdictNote" placeholder="Note or reason (optional)" maxlength="5000" data-testid="textarea-verdict-note"></textarea>
-    <div class="err" id="verdictErr"></div>
-    <div class="dlg-actions">
-      <button type="button" class="btn-secondary" id="verdictCancel" data-testid="button-verdict-cancel">Cancel</button>
-      <button type="button" id="verdictConfirm" data-testid="button-verdict-confirm">Confirm</button>
-    </div>
-  </form>
-</dialog>
-
-<script>
-const DATA_URL = ${JSON.stringify(dataUrl)};
-const PDF_URL = ${JSON.stringify(pdfUrl)};
-const MESSAGES_URL = ${messagesUrl === null ? "null" : JSON.stringify(messagesUrl)};
-const QUERIES_URL = ${queriesUrl === null ? "null" : JSON.stringify(queriesUrl)};
-const AGREE_URL = ${agreeUrl === null ? "null" : JSON.stringify(agreeUrl)};
-const REJECT_URL = ${rejectUrl === null ? "null" : JSON.stringify(rejectUrl)};
-const PREVIEW_MODE = ${isPreview ? "true" : "false"};
-const STATUS_LABELS = {
-  open: "Open",
-  resolved: "Closed",
-  cancelled: "Cancelled",
-};
-
-async function loadData() {
-  const r = await fetch(DATA_URL);
-  if (r.status === 410) {
-    const j = await r.json().catch(() => ({}));
-    document.getElementById("root").innerHTML =
-      '<div class="empty" data-testid="text-client-expired">' +
-      escapeHtml(j.message || "This link has expired. Please contact your Renosud representative.") +
-      '</div>';
-    return null;
+export async function streamCombinedPackagePdf(
+  devis: Devis,
+  res: import("express").Response,
+): Promise<void> {
+  const translation = await storage.getDevisTranslation(devis.id);
+  if (translation?.status !== "finalised" || !devis.pdfStorageKey) {
+    res.status(404).json({ message: "The complete package is not available yet." });
+    return;
   }
-  if (!r.ok) {
-    document.getElementById("root").innerHTML = '<div class="empty">Invalid or expired link.</div>';
-    return null;
-  }
-  return r.json();
-}
-
-function escapeHtml(s) {
-  return String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-}
-
-function render(data) {
-  const meta = document.getElementById("meta");
-  const subject = (data.project && data.project.name) ? (data.project.name + " — devis " + (data.devis.ref || "")) : ("devis " + (data.devis.ref || ""));
-  meta.textContent = subject;
-  const root = document.getElementById("root");
-
-  const devisInfo = renderDevisInfo(data);
-  const verdictStrip = renderVerdictStrip(data);
-  const askBlock = PREVIEW_MODE ? renderAskBlockPreview() : renderAskBlock();
-  const checksBlock = data.checks.length ? data.checks.map(renderCheck).join("") : '<div class="empty" data-testid="text-no-checks">No questions yet.</div>';
-
-  root.innerHTML = devisInfo + verdictStrip + askBlock + checksBlock;
-
-  if (!PREVIEW_MODE) {
-    wireAskForm();
-    wireReplyForms();
-    wireVerdictButtons(data);
-  }
-}
-
-function renderDevisInfo(data) {
-  // Compact summary card so the client sees what they're being asked to
-  // approve: project / ref, FR + EN descriptions, total HT, line items.
-  const d = data.devis || {};
-  const titleBits = [d.ref ? 'Devis ' + escapeHtml(d.ref) : null].filter(Boolean);
-  const title = titleBits.length ? '<h3 data-testid="text-devis-ref">' + titleBits.join(' — ') + '</h3>' : '';
-  const descFr = d.description ? '<p class="devis-desc" data-testid="text-devis-description-fr">' + escapeHtml(d.description) + '</p>' : '';
-  const descEn = d.descriptionEn ? '<p class="devis-desc devis-desc-en" data-testid="text-devis-description-en"><em>' + escapeHtml(d.descriptionEn) + '</em></p>' : '';
-  const total = d.amountHt ? '<p class="devis-total" data-testid="text-devis-amount-ht"><strong>Amount HT:</strong> ' + escapeHtml(d.amountHt) + ' €</p>' : '';
-  const items = Array.isArray(data.lineItems) ? data.lineItems : [];
-  const itemsBlock = items.length
-    ? '<table class="devis-lines" data-testid="table-devis-line-items">'
-      + '<thead><tr><th>No.</th><th>Description</th><th>Qty</th><th>Unit</th><th>Unit price HT</th><th>Total HT</th></tr></thead>'
-      + '<tbody>'
-      + items.map((li) => '<tr data-testid="row-line-item-' + li.id + '">'
-          + '<td>' + escapeHtml(li.lineNumber || '') + '</td>'
-          + '<td>' + escapeHtml(li.description || '') + '</td>'
-          + '<td>' + escapeHtml(li.quantity || '') + '</td>'
-          + '<td>' + escapeHtml(li.unit || '') + '</td>'
-          + '<td>' + escapeHtml(li.unitPrice || '') + '</td>'
-          + '<td>' + escapeHtml(li.totalHt || '') + '</td>'
-          + '</tr>').join('')
-      + '</tbody></table>'
-    : '';
-  const inner = title + descFr + descEn + total + itemsBlock;
-  if (!inner) return '';
-  return '<section class="devis-info" data-testid="section-devis-info">' + inner + '</section>';
-}
-
-function renderVerdictStrip(data) {
-  const agreeStatus = data.agreed
-    ? '<div class="verdict-status agreed" data-testid="status-agreed">✓ Approval recorded</div>'
-    : '';
-  const rejectStatus = data.rejected
-    ? '<div class="verdict-status rejected" data-testid="status-rejected">✗ Rejection recorded</div>'
-    : '';
-  const agreeBtn = PREVIEW_MODE
-    ? '<button type="button" class="btn-agree" disabled data-testid="button-agree-disabled">Approve the devis</button>'
-    : '<button type="button" class="btn-agree" id="btnAgree" data-testid="button-agree">Approve the devis</button>';
-  const rejectBtn = PREVIEW_MODE
-    ? '<button type="button" class="btn-reject" disabled data-testid="button-reject-disabled">Decline the devis</button>'
-    : '<button type="button" class="btn-reject" id="btnReject" data-testid="button-reject">Decline the devis</button>';
-  return '<div class="verdict-strip" data-testid="section-verdict-strip">'
-    + '<div class="verdict-card ' + (data.agreed ? 'agreed' : '') + '">'
-    + '<h3>Approve this devis</h3>'
-    + '<p>Click to confirm your approval of this devis. You may add an explanatory note.</p>'
-    + agreeBtn + agreeStatus
-    + '</div>'
-    + '<div class="verdict-card ' + (data.rejected ? 'rejected' : '') + '">'
-    + '<h3>Decline this devis</h3>'
-    + '<p>If you wish to decline or request a revision, let us know here. Your architect will be notified.</p>'
-    + rejectBtn + rejectStatus
-    + '</div>'
-    + '</div>';
-}
-
-function renderAskBlock() {
-  return '<div class="ask-section" data-testid="section-ask">'
-    + '<h3>Ask a new question</h3>'
-    + '<p class="hint">Your architect will receive your question and reply in the thread below.</p>'
-    + '<form id="askForm">'
-    + '<textarea id="askBody" required maxlength="5000" placeholder="Your question…" data-testid="textarea-new-query"></textarea>'
-    + '<div style="margin-top:8px;display:flex;gap:8px;align-items:center;">'
-    + '<button type="submit" data-testid="button-send-new-query">Send the question</button>'
-    + '<span class="err" id="askErr"></span>'
-    + '</div>'
-    + '</form>'
-    + '</div>';
-}
-
-function renderAskBlockPreview() {
-  return '<div class="ask-section">'
-    + '<h3>Ask a new question</h3>'
-    + '<p class="hint">Architect preview — form disabled.</p>'
-    + '<textarea disabled placeholder="Your question…" data-testid="textarea-new-query-disabled"></textarea>'
-    + '<div style="margin-top:8px"><button type="button" disabled data-testid="button-send-new-query-disabled">Send the question</button></div>'
-    + '</div>';
-}
-
-function renderCheck(c) {
-  const verdictTag = c.verdict
-    ? '<span class="verdict-tag ' + c.verdict + '" data-testid="tag-verdict-' + c.verdict + '-' + c.id + '">'
-        + (c.verdict === 'agree' ? 'Client approval' : 'Client rejection') + '</span>'
-    : '';
-  const head = c.verdict
-    ? verdictTag
-    : '<h3>Question<span class="status status-' + c.status + '">' + (STATUS_LABELS[c.status] || c.status) + '</span></h3>';
-  // For verdict rows we only show the optional note (already stripped of
-  // the marker); regular questions render the queryText as the prompt.
-  const queryBlock = c.verdict
-    ? (c.query ? '<p class="query">' + escapeHtml(c.query) + '</p>' : '')
-    : '<p class="query">' + escapeHtml(c.query) + '</p>';
-  const msgs = c.messages.map((m) => {
-    let author;
-    if (m.authorType === 'client') author = m.authorName || 'You';
-    else if (m.authorType === 'system') author = 'System';
-    else author = 'Renosud';
-    return '<div class="msg msg-' + m.authorType + '"><div class="msg-meta">' + escapeHtml(author) + '</div>' + escapeHtml(m.body) + '</div>';
-  }).join('');
-  const canReply = c.status === 'open' && !c.verdict && !PREVIEW_MODE;
-  const replyForm = canReply
-    ? '<form data-check="' + c.id + '" data-testid="form-reply-' + c.id + '"><textarea required maxlength="5000" data-testid="textarea-reply-' + c.id + '" placeholder="Your reply…"></textarea><div style="margin-top:8px;display:flex;gap:8px;align-items:center;"><button type="submit" data-testid="button-send-reply-' + c.id + '">Send</button><span class="err" data-err="' + c.id + '"></span></div></form>'
-    : '';
-  const cls = c.verdict ? 'check verdict-' + c.verdict : 'check';
-  return '<section class="' + cls + '" data-testid="check-' + c.id + '">' + head
-    + queryBlock
-    + '<div class="messages">' + msgs + '</div>' + replyForm + '</section>';
-}
-
-function wireAskForm() {
-  const form = document.getElementById('askForm');
-  if (!form) return;
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const ta = document.getElementById('askBody');
-    const err = document.getElementById('askErr');
-    err.textContent = '';
-    const body = (ta.value || '').trim();
-    if (!body) return;
-    const btn = form.querySelector('button[type="submit"]');
-    btn.disabled = true;
+  let storageKey = await getValidatedCachedPdfKey(devis.id, "combined");
+  if (!storageKey) {
     try {
-      const r = await fetch(QUERIES_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }) });
-      if (!r.ok) {
-        const j = await r.json().catch(() => ({}));
-        err.textContent = j.message || 'Error while sending.';
-      } else {
-        ta.value = '';
-        await refresh();
-      }
-    } catch (_e) {
-      err.textContent = 'Network error.';
-    } finally {
-      btn.disabled = false;
+      storageKey = (await generateCombinedPdf(devis.id, { includeExplanations: false })).storageKey;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Package generation failed: ${message}` });
+      return;
     }
-  });
-}
-
-function wireReplyForms() {
-  document.querySelectorAll('form[data-check]').forEach((form) => {
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const checkId = Number(form.getAttribute('data-check'));
-      const ta = form.querySelector('textarea');
-      const errEl = form.querySelector('[data-err="' + checkId + '"]');
-      if (errEl) errEl.textContent = '';
-      const body = (ta.value || '').trim();
-      if (!body) return;
-      const btn = form.querySelector('button[type="submit"]');
-      btn.disabled = true;
-      try {
-        const r = await fetch(MESSAGES_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ checkId, body }) });
-        if (!r.ok) {
-          const j = await r.json().catch(() => ({}));
-          if (errEl) errEl.textContent = j.message || 'Error while sending.';
-        } else {
-          ta.value = '';
-          await refresh();
-        }
-      } catch (_e) {
-        if (errEl) errEl.textContent = 'Network error.';
-      } finally {
-        btn.disabled = false;
-      }
-    });
-  });
-}
-
-function wireVerdictButtons(data) {
-  const dialog = document.getElementById('verdictDialog');
-  const titleEl = document.getElementById('verdictTitle');
-  const bodyEl = document.getElementById('verdictBody');
-  const noteEl = document.getElementById('verdictNote');
-  const errEl = document.getElementById('verdictErr');
-  const cancelBtn = document.getElementById('verdictCancel');
-  const confirmBtn = document.getElementById('verdictConfirm');
-  let pendingUrl = null;
-
-  function open(kind) {
-    pendingUrl = kind === 'agree' ? AGREE_URL : REJECT_URL;
-    titleEl.textContent = kind === 'agree' ? 'Confirm your approval' : 'Confirm your rejection';
-    bodyEl.textContent = kind === 'agree'
-      ? 'You are about to let your architect know that you approve this devis. A note is optional.'
-      : 'You are about to let your architect know that you decline or would like changes to this devis. Please give a reason if possible.';
-    noteEl.value = '';
-    errEl.textContent = '';
-    confirmBtn.classList.remove('btn-agree', 'btn-reject');
-    confirmBtn.classList.add(kind === 'agree' ? 'btn-agree' : 'btn-reject');
-    confirmBtn.textContent = kind === 'agree' ? 'Approve' : 'Decline';
-    if (typeof dialog.showModal === 'function') dialog.showModal();
-    else dialog.setAttribute('open', '');
   }
+  try {
+    const doc = await getDocumentStream(storageKey);
+    res.setHeader("Content-Type", doc.contentType || "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="DEVIS-${devis.devisCode}-COMPLETE.pdf"`);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    doc.stream.pipe(res);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "PDF read error";
+    res.status(500).json({ message: msg });
+  }
+}
 
-  cancelBtn.addEventListener('click', () => dialog.close());
-  confirmBtn.addEventListener('click', async () => {
-    if (!pendingUrl) return;
-    confirmBtn.disabled = true;
-    errEl.textContent = '';
-    try {
-      const r = await fetch(pendingUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note: noteEl.value || undefined }) });
-      if (!r.ok) {
-        const j = await r.json().catch(() => ({}));
-        errEl.textContent = j.message || 'Error while sending.';
-      } else {
-        dialog.close();
-        await refresh();
-      }
-    } catch (_e) {
-      errEl.textContent = 'Network error.';
-    } finally {
-      confirmBtn.disabled = false;
+router.get(
+  "/p/client/:token/package.pdf",
+  portalReadIpLimiter, portalReadTokenLimiter,
+  validateRequest({ params: tokenParams }),
+  async (req, res) => {
+    const lookup = await resolveClientCheckToken(tokenFromReq(req));
+    if (!lookup.ok) {
+      const status = lookup.reason === "expired" ? 410 : 404;
+      const message = lookup.reason === "expired"
+        ? "This link has expired. Please contact your Renosud representative."
+        : "Invalid or expired link";
+      return res.status(status).json({ message, expired: lookup.reason === "expired" });
     }
-  });
-
-  const agreeBtn = document.getElementById('btnAgree');
-  const rejectBtn = document.getElementById('btnReject');
-  if (agreeBtn) agreeBtn.addEventListener('click', () => open('agree'));
-  if (rejectBtn) rejectBtn.addEventListener('click', () => open('reject'));
-}
-
-async function refresh() {
-  const data = await loadData();
-  if (data) render(data);
-}
-
-// PDF panel — drag/resize/toggle. The client portal uses the browser's
-// native PDF viewer in an iframe (no pdf.js highlight overlay needed —
-// there's no per-line jump affordance on this side).
-const panel = document.getElementById('pdfPanel');
-const handle = document.getElementById('pdfHandle');
-const toggle = document.getElementById('pdfToggle');
-const closeBtn = document.getElementById('pdfClose');
-const frame = document.getElementById('pdfFrame');
-const resize = document.getElementById('pdfResize');
-let pdfLoaded = false;
-
-toggle.addEventListener('click', () => {
-  panel.classList.toggle('open');
-  if (panel.classList.contains('open') && !pdfLoaded) {
-    frame.src = PDF_URL;
-    pdfLoaded = true;
-  }
-});
-closeBtn.addEventListener('click', () => panel.classList.remove('open'));
-
-(function dragify() {
-  let dragging = false; let dx = 0, dy = 0;
-  handle.addEventListener('mousedown', (e) => {
-    if (e.target.tagName === 'BUTTON') return;
-    dragging = true;
-    const r = panel.getBoundingClientRect();
-    dx = e.clientX - r.left; dy = e.clientY - r.top;
-    panel.style.right = 'auto'; panel.style.bottom = 'auto';
-    e.preventDefault();
-  });
-  window.addEventListener('mousemove', (e) => {
-    if (!dragging) return;
-    panel.style.left = (e.clientX - dx) + 'px';
-    panel.style.top = (e.clientY - dy) + 'px';
-  });
-  window.addEventListener('mouseup', () => { dragging = false; });
-})();
-
-(function resizify() {
-  let resizing = false;
-  resize.addEventListener('mousedown', (e) => { resizing = true; e.preventDefault(); e.stopPropagation(); });
-  window.addEventListener('mousemove', (e) => {
-    if (!resizing) return;
-    const r = panel.getBoundingClientRect();
-    panel.style.width = Math.max(280, e.clientX - r.left) + 'px';
-    panel.style.height = Math.max(240, e.clientY - r.top) + 'px';
-  });
-  window.addEventListener('mouseup', () => { resizing = false; });
-})();
-
-refresh();
-</script>
-</body>
-</html>`;
-}
+    const t = lookup.token;
+    const devis = await storage.getDevis(t.devisId);
+    if (!devis) return res.status(404).json({ message: "Devis not found" });
+    await touchToken(t);
+    await streamCombinedPackagePdf(devis, res);
+  },
+);
 
 export default router;

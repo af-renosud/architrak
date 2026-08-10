@@ -79,13 +79,15 @@ function expectNoFrenchMarkers(text: string, surface: string) {
 }
 
 describe("client portal shell (public-client-checks) stays English", () => {
-  it("live shell carries the English verdict + expired-link copy and no French markers", async () => {
+  it("live shell carries the English dialogue + expired-link copy and no French markers", async () => {
     const { renderClientPortalShell } = await import("../routes/public-client-checks");
     const html = renderClientPortalShell({ mode: "live", token: "tok-english-check" });
 
-    // Key verdict confirmations shown after the client acts.
-    expect(html).toContain("Approval recorded");
-    expect(html).toContain("Rejection recorded");
+    // Task #389 — verdict cards are gone; the dialogue + signing note and
+    // package download carry the key client-facing English copy.
+    expect(html).toContain("electronic signing workflow");
+    expect(html).toContain("Download the complete package (PDF)");
+    expect(html).toContain("Ask about this");
     // Expired-link message rendered when the token has lapsed.
     expect(html).toContain("This link has expired. Please contact your Renosud representative.");
     // The shell declares itself as English.
@@ -99,8 +101,7 @@ describe("client portal shell (public-client-checks) stays English", () => {
     const { renderClientPortalShell } = await import("../routes/public-client-checks");
     const html = renderClientPortalShell({ mode: "preview", devisId: 42 });
 
-    expect(html).toContain("Approval recorded");
-    expect(html).toContain("Rejection recorded");
+    expect(html).toContain("electronic signing workflow");
     expect(html).toContain("Architect preview — actions will not be sent.");
 
     expectNoFrenchMarkers(html, "client portal shell (preview)");

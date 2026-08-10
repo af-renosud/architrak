@@ -9,7 +9,7 @@ import {
   isTokenExpired,
 } from "../services/client-checks";
 import { env } from "../env";
-import { buildClientPortalPayload, renderClientPortalShell } from "./public-client-checks";
+import { buildClientPortalPayload, renderClientPortalShell, streamCombinedPackagePdf } from "./public-client-checks";
 import { getDocumentStream } from "../storage/object-storage";
 
 const router = Router();
@@ -98,6 +98,21 @@ router.get(
       const msg = err instanceof Error ? err.message : "Erreur lecture PDF";
       res.status(500).json({ message: msg });
     }
+  },
+);
+
+/**
+ * Architect preview of the client "complete package" download (Task #389).
+ * Same gating as the live endpoint — finalised translation + original PDF.
+ */
+router.get(
+  "/api/devis/:devisId/client-checks/portal-preview/package.pdf",
+  validateRequest({ params: devisIdParams }),
+  async (req, res) => {
+    const devisId = Number(req.params.devisId);
+    const devis = await storage.getDevis(devisId);
+    if (!devis) return res.status(404).json({ message: "Devis not found" });
+    await streamCombinedPackagePdf(devis, res);
   },
 );
 
