@@ -15,6 +15,21 @@ export const GEMINI_MODEL_ID = "gemini-2.5-flash";
 
 const GEMINI_TIMEOUT_MS = 120_000;
 
+/**
+ * Task #384 — thrown when the Gemini call exceeds the client timeout and is
+ * aborted. Lets routes map this specific (transient, retryable) failure to a
+ * distinct error code so the UI can offer a one-click retry, while every
+ * other failure (missing key, blocked prompt, API error) stays verbatim.
+ */
+export class GeminiTimeoutError extends Error {
+  constructor() {
+    super(
+      `Gemini did not respond within ${Math.round(GEMINI_TIMEOUT_MS / 1000)}s and the request was aborted.`,
+    );
+    this.name = "GeminiTimeoutError";
+  }
+}
+
 export function isGeminiConfigured(): boolean {
   return Boolean(env.GEMINI_API_KEY) || env.E2E_FAKE_GEMINI;
 }
@@ -35,7 +50,11 @@ export async function generateWithGemini(input: {
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL_ID}:generateContent`;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, GEMINI_TIMEOUT_MS);
   let resp: Response;
   try {
     resp = await fetch(url, {
@@ -52,6 +71,9 @@ export async function generateWithGemini(input: {
       signal: controller.signal,
     });
   } catch (err) {
+    if (timedOut || (err instanceof Error && err.name === "AbortError")) {
+      throw new GeminiTimeoutError();
+    }
     throw new Error(
       `Gemini request failed: ${err instanceof Error ? err.message : String(err)}`,
     );

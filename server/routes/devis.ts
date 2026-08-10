@@ -41,6 +41,7 @@ import {
   removeCostAnalysis,
   isCostAnalysisQuotationChanged,
 } from "../services/devis-cost-analysis";
+import { GeminiTimeoutError } from "../services/gemini";
 import { normalizeDevisText, normalizeLineItemText, toSentenceCase } from "../lib/sentence-case";
 import {
   composeDevisCode,
@@ -1341,6 +1342,15 @@ router.post(
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error("[CostAnalysis] Generation failed:", message);
+      // Task #384 — a Gemini timeout is transient and retryable: map it to a
+      // stable code so the client can show a friendly retry prompt instead of
+      // a raw abort message. Every other failure stays verbatim.
+      if (err instanceof GeminiTimeoutError) {
+        return res.status(504).json({
+          message: "The AI took too long to respond. This is usually temporary — try again.",
+          code: "ai_timeout",
+        });
+      }
       // Explicit AI failure — surfaced verbatim, no silent fallback.
       res.status(502).json({ message: `Cost analysis generation failed: ${message}` });
     }

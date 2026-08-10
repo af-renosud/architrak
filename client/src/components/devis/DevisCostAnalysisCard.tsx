@@ -24,7 +24,8 @@ import {
   Save,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { ToastAction } from "@/components/ui/toast";
+import { apiRequest, queryClient, ApiError } from "@/lib/queryClient";
 import type { DevisCostAnalysis } from "@shared/schema";
 import {
   parseCostAnalysisMarkdown,
@@ -167,7 +168,34 @@ export function DevisCostAnalysisCard({ devisId, translationFinalised }: DevisCo
       invalidate();
       toast({ title: "Cost analysis generated", description: "Review the draft, then confirm it to include it in the PDF." });
     },
-    onError,
+    // Task #384 — a Gemini timeout is transient: show a friendly message with
+    // a one-click retry instead of the raw abort error. All other errors
+    // (missing key, blocked prompt, malformed response) surface verbatim.
+    onError: (err: unknown) => {
+      if (err instanceof ApiError && err.code === "ai_timeout") {
+        toast({
+          title: "The AI took too long",
+          description:
+            "The cost-analysis request timed out. This is usually temporary — retrying often succeeds.",
+          variant: "destructive",
+          action: (
+            <ToastAction
+              altText="Retry cost analysis generation"
+              onClick={() => {
+                setDirty(false);
+                generateMutation.mutate();
+              }}
+              data-testid="button-retry-cost-analysis"
+            >
+              Retry
+            </ToastAction>
+          ),
+        });
+        invalidate();
+        return;
+      }
+      onError(err);
+    },
   });
 
   const saveMutation = useMutation({
