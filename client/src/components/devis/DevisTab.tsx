@@ -4543,7 +4543,7 @@ function DevisDetailTabs({
         >
           <Languages size={13} />
           Translation
-          <span className="text-[9px] px-1.5 py-0.5 rounded bg-neutral-200 text-neutral-700">{translationStatus.toUpperCase()}</span>
+          <span className={`text-[9px] px-1.5 py-0.5 rounded ${translationStatus === "finalised" ? "bg-emerald-600 text-white" : "bg-amber-400 text-amber-950"}`} data-testid={`chip-translation-status-${devis.id}`}>{translationStatus === "finalised" ? "FINALISED" : "OPEN"}</span>
         </TabsTrigger>
         <TabsTrigger
           value="avenants"
