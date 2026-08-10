@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ChevronDown, ChevronRight, FileText, Upload, FileUp, Loader2, Save, Calendar, Building2, Hash, Receipt, CheckCircle2, ShieldCheck, AlertTriangle, Trash2, Sparkles, ExternalLink } from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, Upload, FileUp, Loader2, Save, Calendar, Building2, Hash, Receipt, CheckCircle2, ShieldCheck, AlertTriangle, Trash2, Sparkles, ExternalLink, PieChart, FileStack } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -22,6 +22,52 @@ function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
 }
 
+// Task #413 — fetch a generated PDF (slow: rendered on demand) and open it in
+// a new tab, keeping a spinner on the button while it generates.
+function usePdfDownload() {
+  const { toast } = useToast();
+  const [pendingKey, setPendingKey] = useState<string | null>(null);
+
+  const download = async (key: string, url: string, filename: string) => {
+    setPendingKey(key);
+    // Open the tab synchronously inside the click's user activation —
+    // popup blockers reject window.open after an async wait.
+    const tab = window.open("", "_blank");
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ message: "PDF generation failed" }));
+        throw new Error(err.message || "PDF generation failed");
+      }
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      if (tab && !tab.closed) {
+        tab.location.href = blobUrl;
+      } else {
+        // Popup was blocked anyway — fall back to a direct download.
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+    } catch (error) {
+      if (tab && !tab.closed) tab.close();
+      toast({
+        title: "PDF generation failed",
+        description: error instanceof Error ? error.message : String(error),
+        variant: "destructive",
+      });
+    } finally {
+      setPendingKey(null);
+    }
+  };
+
+  return { download, pendingKey };
+}
+
 interface FacturesTabProps {
   projectId: string;
   contractors: Contractor[];
@@ -31,6 +77,7 @@ interface FacturesTabProps {
 
 export function FacturesTab({ projectId, contractors, isArchived = false, onGoToIntake }: FacturesTabProps) {
   const { toast } = useToast();
+  const { download: downloadPdf, pendingKey: pdfPendingKey } = usePdfDownload();
   const [expandedInvoice, setExpandedInvoice] = useState<number | null>(null);
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [selectedDevisId, setSelectedDevisId] = useState<number | null>(null);
@@ -125,7 +172,19 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
         </LuxuryCard>
       </div>
 
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-end gap-2 flex-wrap">
+        <Button
+          variant="outline"
+          className="border-[#0B2545]/20 text-[#0B2545] hover:bg-[#0B2545]/5"
+          onClick={() => downloadPdf("project-overview", `/api/projects/${projectId}/overview-pdf`, `situation-projet-${projectId}.pdf`)}
+          disabled={pdfPendingKey !== null}
+          data-testid="button-project-overview-pdf"
+        >
+          {pdfPendingKey === "project-overview" ? <Loader2 size={14} className="animate-spin" /> : <PieChart size={14} />}
+          <span className="text-[9px] font-bold uppercase tracking-widest">
+            {pdfPendingKey === "project-overview" ? "Generating..." : "Financial Overview PDF"}
+          </span>
+        </Button>
         <Button onClick={() => onGoToIntake()} disabled={isArchived} data-testid="button-upload-facture">
           <Upload size={14} />
           <span className="text-[9px] font-bold uppercase tracking-widest">Upload Invoice</span>
@@ -176,6 +235,25 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                         >
                           <FileText size={12} />
                           <span className="text-[9px] font-bold uppercase tracking-widest">View PDF</span>
+                        </Button>
+                      )}
+                      {inv.pdfPath && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-3 gap-1.5 border-[#c1a27b]/40 text-[#8a6d43] hover:bg-[#c1a27b]/10"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            downloadPdf(`invoice-package-${inv.id}`, `/api/invoices/${inv.id}/pdf-with-overview`, `facture-${inv.invoiceNumber}-avec-situation.pdf`);
+                          }}
+                          disabled={pdfPendingKey !== null}
+                          data-testid={`button-client-package-facture-${inv.id}`}
+                          title="Invoice + one-page project financial overview, ready to send to the client"
+                        >
+                          {pdfPendingKey === `invoice-package-${inv.id}` ? <Loader2 size={12} className="animate-spin" /> : <FileStack size={12} />}
+                          <span className="text-[9px] font-bold uppercase tracking-widest">
+                            {pdfPendingKey === `invoice-package-${inv.id}` ? "Generating..." : "Client PDF"}
+                          </span>
                         </Button>
                       )}
                       {inv.driveWebViewLink && (

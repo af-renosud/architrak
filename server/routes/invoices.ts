@@ -11,6 +11,10 @@ import { INVOICE_UPLOAD_ERROR_CODES } from "../../shared/invoice-upload-errors";
 import { approveInvoice } from "../services/invoice-approval.service";
 import { reopenInvoiceDraft } from "../services/draft-reopen.service";
 import { getDocumentStream } from "../storage/object-storage";
+import {
+  generateInvoicePackagePdf,
+  ProjectOverviewNotFoundError,
+} from "../services/project-overview-pdf.service";
 import { validateExtraction, type ValidationWarning } from "../services/extraction-validator";
 import type { ParsedDocument } from "../gmail/document-parser";
 import { roundCurrency, deriveTvaAmount } from "../../shared/financial-utils";
@@ -131,6 +135,31 @@ router.get("/api/invoices/:id/pdf", async (req, res) => {
     res.status(500).json({ message: `PDF view failed: ${message}` });
   }
 });
+
+// Task #413 — combined client package: the stored invoice PDF followed by a
+// freshly generated one-page project financial overview. Never cached.
+router.get(
+  "/api/invoices/:id/pdf-with-overview",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    try {
+      const { pdfBuffer, invoiceNumber } = await generateInvoicePackagePdf(Number(req.params.id));
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `inline; filename="facture-${invoiceNumber}-avec-situation.pdf"`,
+      );
+      res.setHeader("Content-Length", String(pdfBuffer.length));
+      res.send(pdfBuffer);
+    } catch (err: unknown) {
+      if (err instanceof ProjectOverviewNotFoundError) {
+        return res.status(404).json({ message: err.message });
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Invoice package failed: ${message}` });
+    }
+  },
+);
 
 router.patch(
   "/api/invoices/:id",
