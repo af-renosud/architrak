@@ -4477,6 +4477,28 @@ function DevisDetailTabs({
     scrollToLine(target, workingLine.lineNumber);
   };
 
+  // Keyboard shortcut (Task #365): Alt+T triggers the same anchored tab
+  // switch as clicking the pill, so hands stay on the keyboard while typing
+  // notes line by line. The Alt modifier means plain typing in inputs or
+  // textareas can never trigger it; we still only listen while the pill is
+  // actually shown (this devis owns the working line and an eligible tab is
+  // active), so at most one card ever reacts to the keypress.
+  const handleLineToggleRef = useRef(handleLineToggle);
+  handleLineToggleRef.current = handleLineToggle;
+  useEffect(() => {
+    if (!showLineToggle) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      // Use `code` so the shortcut works even on layouts/OSes where Alt+T
+      // produces a composed character (e.g. "†" on macOS).
+      if (e.code !== "KeyT") return;
+      e.preventDefault();
+      handleLineToggleRef.current();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showLineToggle]);
+
   return (
     <Tabs value={activeTab} onValueChange={setActiveTab} className="rounded-2xl border border-[#0B2545]/15 bg-white/60 overflow-hidden" data-testid={`tabs-devis-detail-${devis.id}`}>
       <TabsList className="w-full justify-start rounded-none border-b border-black/5 bg-[#0B2545]/[0.03] px-2 h-auto p-0">
@@ -4644,16 +4666,27 @@ function DevisDetailTabs({
 
       {showLineToggle && workingLine && (
         <div className="fixed bottom-6 right-6 z-50">
-          <Button
-            onClick={handleLineToggle}
-            className="rounded-full shadow-lg bg-[#0B2545] hover:bg-[#0B2545]/90 text-white gap-2 pl-4 pr-5 h-10"
-            data-testid={`button-line-toggle-${devis.id}`}
-          >
-            {toggleTargetTab === "translation" ? <Languages size={14} /> : <ListOrdered size={14} />}
-            <span className="text-[11px] font-bold uppercase tracking-widest">
-              Line {workingLine.lineNumber} — {toggleTargetTab === "translation" ? "View translation" : "View original"}
-            </span>
-          </Button>
+          <TooltipProvider delayDuration={300}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  onClick={handleLineToggle}
+                  className="rounded-full shadow-lg bg-[#0B2545] hover:bg-[#0B2545]/90 text-white gap-2 pl-4 pr-5 h-10"
+                  data-testid={`button-line-toggle-${devis.id}`}
+                >
+                  {toggleTargetTab === "translation" ? <Languages size={14} /> : <ListOrdered size={14} />}
+                  <span className="text-[11px] font-bold uppercase tracking-widest">
+                    Line {workingLine.lineNumber} — {toggleTargetTab === "translation" ? "View translation" : "View original"}
+                  </span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="left" data-testid={`tooltip-line-toggle-${devis.id}`}>
+                <span className="text-[11px]">
+                  Shortcut: <kbd className="font-mono font-semibold">Alt</kbd>+<kbd className="font-mono font-semibold">T</kbd>
+                </span>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
       )}
     </Tabs>
