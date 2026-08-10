@@ -3917,7 +3917,73 @@ function useProjectShareState(projectId: string) {
 }
 
 function invalidateProjectShare(projectId: string) {
+  // Prefix invalidation also refreshes the audit-history query below.
   queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "client-share"] });
+}
+
+// Task #394 — append-only audit trail of link actions (issue / rotate /
+// extend / revoke / publish / unpublish), newest first.
+type ProjectShareAuditEntry = {
+  id: number;
+  action: "issue" | "rotate" | "extend" | "revoke" | "publish" | "unpublish";
+  devisId: number | null;
+  detail: string;
+  createdAt: string;
+};
+
+const SHARE_AUDIT_ACTION_STYLES: Record<ProjectShareAuditEntry["action"], string> = {
+  issue: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  rotate: "bg-sky-50 text-sky-700 border-sky-200",
+  extend: "bg-sky-50 text-sky-700 border-sky-200",
+  revoke: "bg-rose-50 text-rose-700 border-rose-200",
+  publish: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  unpublish: "bg-amber-50 text-amber-700 border-amber-200",
+};
+
+function ProjectShareHistory({ projectId }: { projectId: string }) {
+  const [open, setOpen] = useState(false);
+  const { data } = useQuery<{ entries: ProjectShareAuditEntry[] }>({
+    queryKey: ["/api/projects", projectId, "client-share", "audit"],
+    enabled: open,
+  });
+  const entries = data?.entries ?? [];
+  return (
+    <div className="pt-1 border-t border-slate-100">
+      <button
+        type="button"
+        className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 hover:text-slate-700"
+        onClick={() => setOpen((o) => !o)}
+        data-testid="button-toggle-project-share-history"
+      >
+        {open ? "Hide history" : "Show history"}
+      </button>
+      {open && (
+        <div className="mt-1.5 space-y-1 max-h-48 overflow-y-auto" data-testid="list-project-share-history">
+          {entries.length === 0 ? (
+            <p className="text-[10px] text-slate-500" data-testid="text-project-share-history-empty">
+              No link actions recorded yet.
+            </p>
+          ) : (
+            entries.map((e) => (
+              <div
+                key={e.id}
+                className="flex items-start gap-2 text-[10px] text-slate-600"
+                data-testid={`row-project-share-history-${e.id}`}
+              >
+                <span
+                  className={`shrink-0 px-1.5 py-0.5 rounded-full border text-[8px] font-bold uppercase tracking-wide ${SHARE_AUDIT_ACTION_STYLES[e.action] ?? "bg-slate-100 text-slate-600 border-slate-300"}`}
+                >
+                  {e.action}
+                </span>
+                <span className="flex-1">{e.detail}</span>
+                <span className="shrink-0 text-slate-400">{formatDateTime(e.createdAt)}</span>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function ProjectClientSharePanel({
@@ -4102,6 +4168,8 @@ export function ProjectClientSharePanel({
           (never all of them automatically). Issue the link, then publish devis individually below.
         </p>
       )}
+
+      <ProjectShareHistory projectId={projectId} />
 
       <Dialog open={issueOpen} onOpenChange={(o) => { if (!issueMutation.isPending) setIssueOpen(o); }}>
         <DialogContent data-testid="dialog-issue-project-share">

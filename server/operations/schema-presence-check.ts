@@ -120,6 +120,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0062_cost_analysis_fingerprint", artifact: { kind: "column", table: "devis_cost_analyses", column: "quotation_fingerprint" } },
   { tag: "0063_client_project_share", artifact: { kind: "table", table: "client_project_share_tokens" } },
   { tag: "0064_client_checks_line_item", artifact: { kind: "column", table: "client_checks", column: "devis_line_item_id" } },
+  { tag: "0065_client_project_share_audit", artifact: { kind: "table", table: "client_project_share_audit" } },
 ];
 
 interface JournalFile {

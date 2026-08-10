@@ -20,9 +20,10 @@ import {
   benchmarkDocuments, benchmarkItems, benchmarkTags, benchmarkItemTags,
   devisChecks, devisCheckMessages, devisCheckTokens,
   clientChecks, clientCheckMessages, clientCheckTokens,
-  clientProjectShareTokens, clientProjectShareDevis,
+  clientProjectShareTokens, clientProjectShareDevis, clientProjectShareAudit,
   type ClientProjectShareToken, type InsertClientProjectShareToken,
   type ClientProjectShareDevis, type InsertClientProjectShareDevis,
+  type ClientProjectShareAuditEntry, type InsertClientProjectShareAuditEntry,
   type DevisCheck, type InsertDevisCheck,
   type DevisCheckMessage, type InsertDevisCheckMessage, type InboxContractorResponseRow,
   type DevisCheckToken, type InsertDevisCheckToken,
@@ -719,6 +720,11 @@ export interface IStorage {
   publishDevisToProjectShare(data: InsertClientProjectShareDevis): Promise<ClientProjectShareDevis>;
 
   unpublishDevisFromProjectShare(tokenId: number, devisId: number): Promise<boolean>;
+
+  /** Task #394 — append-only audit trail of project share link actions. */
+  createProjectShareAuditEntry(data: InsertClientProjectShareAuditEntry): Promise<ClientProjectShareAuditEntry>;
+
+  listProjectShareAuditEntries(projectId: number, limit?: number): Promise<ClientProjectShareAuditEntry[]>;
 
   getProjectCommunicationByDedupeKey(key: string): Promise<ProjectCommunication | undefined>;
 
@@ -3487,6 +3493,20 @@ export class DatabaseStorage implements IStorage {
       ))
       .returning({ id: clientProjectShareDevis.id });
     return rows.length > 0;
+  }
+
+  async createProjectShareAuditEntry(data: InsertClientProjectShareAuditEntry): Promise<ClientProjectShareAuditEntry> {
+    const [row] = await db.insert(clientProjectShareAudit).values(data).returning();
+    return row;
+  }
+
+  async listProjectShareAuditEntries(projectId: number, limit = 100): Promise<ClientProjectShareAuditEntry[]> {
+    return db
+      .select()
+      .from(clientProjectShareAudit)
+      .where(eq(clientProjectShareAudit.projectId, projectId))
+      .orderBy(desc(clientProjectShareAudit.createdAt), desc(clientProjectShareAudit.id))
+      .limit(limit);
   }
 
   async revokeExpiredClientCheckTokens(now: Date = new Date()): Promise<number> {

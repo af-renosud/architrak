@@ -2335,6 +2335,25 @@ export type ClientProjectShareDevis = typeof clientProjectShareDevis.$inferSelec
 export type InsertClientProjectShareDevis = z.infer<typeof insertClientProjectShareDevisSchema>;
 
 /**
+ * client_project_share_audit — append-only audit trail of every architect
+ * action on the project share link (Task #394). Membership rows are DELETEd
+ * on unpublish, so without this table there is no history of who removed a
+ * quotation from the client's view or when — and publishing controls what a
+ * client can see. Rows are NEVER updated or deleted by application code;
+ * token/devis FKs are SET NULL (not cascade) so history survives token
+ * rotation-cleanup or devis deletion. `detail` is a human-readable snapshot
+ * (actor name, devis code, client email…) rendered directly in the UI so the
+ * trail stays legible even after referenced rows disappear.
+ */
+export const CLIENT_PROJECT_SHARE_AUDIT_ACTIONS = [
+  "issue",
+  "rotate",
+  "extend",
+  "revoke",
+  "publish",
+  "unpublish",
+] as const;
+/**
  * insurance_overrides — captured at the moment an architect manually
  * overrides a contractor-insurance non-affirmative result to proceed with
  * `approved_for_signing` (§2.1.4 + §1.3). Stores the verbatim override
@@ -2738,3 +2757,29 @@ export const insertBankingMismatchOverrideSchema = createInsertSchema(bankingMis
 });
 export type InsertBankingMismatchOverride = z.infer<typeof insertBankingMismatchOverrideSchema>;
 export type BankingMismatchOverride = typeof bankingMismatchOverrides.$inferSelect;
+
+export type ClientProjectShareAuditAction = (typeof CLIENT_PROJECT_SHARE_AUDIT_ACTIONS)[number];
+
+export const clientProjectShareAudit = pgTable("client_project_share_audit", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  tokenId: integer("token_id").references(() => clientProjectShareTokens.id, { onDelete: "set null" }),
+  devisId: integer("devis_id").references(() => devis.id, { onDelete: "set null" }),
+  // One of CLIENT_PROJECT_SHARE_AUDIT_ACTIONS; plain text (no DB CHECK) by
+  // convention with the rest of this schema.
+  action: text("action").notNull(),
+  actorUserId: integer("actor_user_id").references(() => users.id),
+  detail: text("detail").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("client_project_share_audit_project_id_idx").on(table.projectId),
+  index("client_project_share_audit_token_id_idx").on(table.tokenId),
+  index("client_project_share_audit_devis_id_idx").on(table.devisId),
+]);
+
+export const insertClientProjectShareAuditSchema = createInsertSchema(clientProjectShareAudit).omit({
+  id: true,
+  createdAt: true,
+});
+export type ClientProjectShareAuditEntry = typeof clientProjectShareAudit.$inferSelect;
+export type InsertClientProjectShareAuditEntry = z.infer<typeof insertClientProjectShareAuditSchema>;

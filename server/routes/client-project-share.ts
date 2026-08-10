@@ -28,6 +28,36 @@ const devisRefSchema = z.object({
 // under `/api/...` so the `/api` perimeter auth gate in server/index.ts
 // covers them — same convention as client-checks.ts.
 
+function describeUser(user: { firstName?: string | null; lastName?: string | null; email: string } | null): string {
+  if (!user) return "un administrateur";
+  const name = `${user.firstName ?? ""} ${user.lastName ?? ""}`.trim();
+  return name || user.email;
+}
+
+/**
+ * Task #394 — append-only audit of project share link actions. Failure to
+ * write the audit row is NOT swallowed for publish/unpublish (visibility
+ * changes must be traceable), but the helper centralises actor resolution.
+ */
+async function recordShareAudit(opts: {
+  projectId: number;
+  action: "issue" | "rotate" | "extend" | "revoke" | "publish" | "unpublish";
+  tokenId?: number | null;
+  devisId?: number | null;
+  actorUserId: number | null;
+  detail: (actorLabel: string) => string;
+}) {
+  const user = (opts.actorUserId ? await storage.getUser(opts.actorUserId) : null) ?? null;
+  await storage.createProjectShareAuditEntry({
+    projectId: opts.projectId,
+    action: opts.action,
+    tokenId: opts.tokenId ?? null,
+    devisId: opts.devisId ?? null,
+    actorUserId: opts.actorUserId,
+    detail: opts.detail(describeUser(user)),
+  });
+}
+
 function tokenDto(t: {
   id: number;
   clientEmail: string;
@@ -82,6 +112,8 @@ router.post(
     if (!env.PUBLIC_BASE_URL) {
       return res.status(500).json({ message: "PUBLIC_BASE_URL is not configured" });
     }
+    // Distinguish first issue from rotation BEFORE creating the new token.
+    const hadToken = !!(await storage.getLatestProjectShareToken(projectId));
     const issued = await issueProjectShareToken({
       projectId,
       clientEmail: req.body.clientEmail,
@@ -89,6 +121,19 @@ router.post(
       createdByUserId: userId ? Number(userId) : null,
     });
     const shareUrl = buildProjectShareUrl(env.PUBLIC_BASE_URL, issued.raw);
+    const recipient = req.body.clientName
+      ? `${req.body.clientName} <${req.body.clientEmail}>`
+      : req.body.clientEmail;
+    await recordShareAudit({
+      projectId,
+      action: hadToken ? "rotate" : "issue",
+      tokenId: issued.record.id,
+      actorUserId: userId ? Number(userId) : null,
+      detail: (actor) =>
+        hadToken
+          ? `Lien projet régénéré pour ${recipient} par ${actor}.`
+          : `Lien projet émis pour ${recipient} par ${actor}.`,
+    });
     res.json({
       shareUrl,
       clientEmail: req.body.clientEmail,
@@ -111,6 +156,16 @@ router.post(
     const newExpiry = computeTokenExpiry();
     const updated = await storage.extendProjectShareTokenExpiry(active.id, newExpiry);
     if (!updated) return res.status(409).json({ message: "Link was revoked in the meantime" });
+    const expiryNote = newExpiry
+      ? `expire le ${newExpiry.toLocaleString("fr-FR")}`
+      : "sans date d'expiration";
+    await recordShareAudit({
+      projectId,
+      action: "extend",
+      tokenId: active.id,
+      actorUserId: req.session?.userId ? Number(req.session.userId) : null,
+      detail: (actor) => `Lien projet prolongé par ${actor} — ${expiryNote}.`,
+    });
     res.json({ token: { id: updated.id, expiresAt: updated.expiresAt } });
   },
 );
@@ -124,6 +179,13 @@ router.post(
     if (!active) return res.status(409).json({ message: "No active link to revoke" });
     const revoked = await storage.revokeProjectShareTokenById(active.id);
     if (!revoked) return res.status(409).json({ message: "Link already revoked" });
+    await recordShareAudit({
+      projectId,
+      action: "revoke",
+      tokenId: active.id,
+      actorUserId: req.session?.userId ? Number(req.session.userId) : null,
+      detail: (actor) => `Lien projet révoqué par ${actor}.`,
+    });
     res.json({ ok: true });
   },
 );
@@ -154,6 +216,14 @@ router.post(
       devisId: devis.id,
       publishedByUserId: userId ? Number(userId) : undefined,
     });
+    await recordShareAudit({
+      projectId,
+      action: "publish",
+      tokenId: active.id,
+      devisId: devis.id,
+      actorUserId: userId ? Number(userId) : null,
+      detail: (actor) => `Devis ${devis.devisCode} publié sur le lien projet par ${actor}.`,
+    });
     res.json({ ok: true, devisId: devis.id });
   },
 );
@@ -169,7 +239,39 @@ router.post(
     }
     const removed = await storage.unpublishDevisFromProjectShare(active.id, req.body.devisId);
     if (!removed) return res.status(404).json({ message: "This devis is not published on the link." });
+    const devis = await storage.getDevis(req.body.devisId);
+    await recordShareAudit({
+      projectId,
+      action: "unpublish",
+      tokenId: active.id,
+      devisId: req.body.devisId,
+      actorUserId: req.session?.userId ? Number(req.session.userId) : null,
+      detail: (actor) =>
+        `Devis ${devis?.devisCode ?? `#${req.body.devisId}`} retiré du lien projet par ${actor}.`,
+    });
     res.json({ ok: true, devisId: req.body.devisId });
+  },
+);
+
+/**
+ * Task #394 — audit history of every action on the project share link
+ * (issue / rotate / extend / revoke / publish / unpublish), newest first.
+ */
+router.get(
+  "/api/projects/:projectId/client-share/audit",
+  validateRequest({ params: projectIdParams }),
+  async (req, res) => {
+    const projectId = Number(req.params.projectId);
+    const entries = await storage.listProjectShareAuditEntries(projectId);
+    res.json({
+      entries: entries.map((e) => ({
+        id: e.id,
+        action: e.action,
+        devisId: e.devisId,
+        detail: e.detail,
+        createdAt: e.createdAt,
+      })),
+    });
   },
 );
 

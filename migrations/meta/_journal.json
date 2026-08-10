@@ -456,6 +456,13 @@
       "when": 1778760011000,
       "tag": "0064_client_checks_line_item",
       "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1778760012000,
+      "tag": "0065_client_project_share_audit",
+      "breakpoints": true
     }
   ]
 }
