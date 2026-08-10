@@ -45,6 +45,11 @@ import {
 } from "../services/archisign";
 import { evaluateInsuranceGate } from "../services/insurance-verdict";
 import { mintPdfFetchToken } from "../services/archisign-pdf-token";
+import {
+  generateCombinedPdf,
+  generateDevisTranslationPdf,
+  getValidatedCachedPdfKey,
+} from "../communications/devis-translation-generator";
 import { env } from "../env";
 
 const router = Router();
@@ -282,6 +287,40 @@ router.post(
         code: "translation_not_finalised",
         translationStatus: translation.status,
       });
+    }
+
+    // ---- Pin the exact PDF bytes Archisign will fetch (Task #378) -----
+    //
+    // The fetch token is stateless and the public route used to regenerate
+    // from CURRENT state — so an analysis/context/translation edit between
+    // send and Archisign's fetch could change the bytes the signer receives.
+    // Generate (or reuse the validated cache of) the PDF NOW and persist its
+    // immutable storage key on the devis; the public route serves that key
+    // verbatim. The resume branch reuses the already-pinned key so retries
+    // never re-pin different bytes under an existing envelope.
+    if (!resumingExistingEnvelope || !d.archisignPinnedPdfStorageKey) {
+      let pinnedKey = await getValidatedCachedPdfKey(devisId, "combined");
+      if (!pinnedKey) {
+        try {
+          pinnedKey = (await generateCombinedPdf(devisId, { includeExplanations: false })).storageKey;
+        } catch {
+          // Fall through to the translation-only variant (same order the
+          // public route used).
+        }
+      }
+      if (!pinnedKey) pinnedKey = await getValidatedCachedPdfKey(devisId, "translated");
+      if (!pinnedKey) {
+        try {
+          pinnedKey = (await generateDevisTranslationPdf(devisId, { includeExplanations: false })).storageKey;
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          return res.status(502).json({
+            message: `Could not generate the PDF to send for signature: ${detail}`,
+            code: "pdf_generation_failed",
+          });
+        }
+      }
+      await storage.updateDevis(devisId, { archisignPinnedPdfStorageKey: pinnedKey });
     }
 
     const baseUrl = (env.PUBLIC_BASE_URL ?? "").replace(/\/+$/, "");

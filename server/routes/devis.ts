@@ -34,6 +34,12 @@ import {
 } from "../services/advisory-reconciler";
 import { validateRequest } from "../middleware/validate";
 import { translateDevis, retranslateSingleLine, triggerDevisTranslation } from "../services/devis-translation";
+import {
+  generateCostAnalysisDraft,
+  saveCostAnalysisText,
+  confirmCostAnalysis,
+  removeCostAnalysis,
+} from "../services/devis-cost-analysis";
 import { normalizeDevisText, normalizeLineItemText, toSentenceCase } from "../lib/sentence-case";
 import {
   composeDevisCode,
@@ -1267,6 +1273,124 @@ router.post(
         .json({ message: "Advisory not found, already acknowledged, or not on this devis" });
     }
     res.json(row);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Cost analysis / value engineering appendix (Task #378)
+// ---------------------------------------------------------------------------
+
+const costAnalysisDevisParams = z.object({ devisId: z.coerce.number().int().positive() });
+
+async function costAnalysisActorEmail(req: express.Request): Promise<string | null> {
+  const userId = req.session?.userId;
+  if (!userId) return null;
+  const user = await storage.getUser(Number(userId));
+  return user?.email ?? null;
+}
+
+function sendCostAnalysisOutcome(
+  res: express.Response,
+  result: { outcome: string; analysis?: unknown; warnings?: string[] },
+): void {
+  switch (result.outcome) {
+    case "saved":
+      res.json({ analysis: result.analysis, warnings: result.warnings ?? [] });
+      return;
+    case "deleted":
+      res.json({ deleted: true });
+      return;
+    case "stale":
+      res.status(409).json({ message: "The analysis changed in another tab — reload and retry.", code: "stale_revision" });
+      return;
+    case "finalised":
+      res.status(409).json({ message: "The translation is finalised — unlock it before changing the cost analysis.", code: "translation_finalised" });
+      return;
+    case "not_found":
+      res.status(404).json({ message: "No cost analysis exists for this devis." });
+      return;
+    default:
+      res.status(500).json({ message: `Unexpected outcome: ${result.outcome}` });
+  }
+}
+
+router.get(
+  "/api/devis/:devisId/cost-analysis",
+  validateRequest({ params: costAnalysisDevisParams }),
+  async (req, res) => {
+    const analysis = await storage.getDevisCostAnalysis(Number(req.params.devisId));
+    res.json({ analysis: analysis ?? null });
+  },
+);
+
+router.post(
+  "/api/devis/:devisId/cost-analysis/generate",
+  requireAuth,
+  validateRequest({ params: costAnalysisDevisParams }),
+  async (req, res) => {
+    try {
+      const devisId = Number(req.params.devisId);
+      const actor = await costAnalysisActorEmail(req);
+      const result = await generateCostAnalysisDraft(devisId, actor);
+      sendCostAnalysisOutcome(res, result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[CostAnalysis] Generation failed:", message);
+      // Explicit AI failure — surfaced verbatim, no silent fallback.
+      res.status(502).json({ message: `Cost analysis generation failed: ${message}` });
+    }
+  },
+);
+
+const costAnalysisSaveBody = z.object({
+  rawText: z.string().min(1).max(200_000),
+  expectedRevision: z.number().int().positive(),
+});
+
+router.put(
+  "/api/devis/:devisId/cost-analysis",
+  requireAuth,
+  validateRequest({ params: costAnalysisDevisParams, body: costAnalysisSaveBody }),
+  async (req, res) => {
+    try {
+      const { rawText, expectedRevision } = req.body as z.infer<typeof costAnalysisSaveBody>;
+      const actor = await costAnalysisActorEmail(req);
+      const result = await saveCostAnalysisText(Number(req.params.devisId), rawText, expectedRevision, actor);
+      sendCostAnalysisOutcome(res, result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(422).json({ message: `Could not save the analysis: ${message}` });
+    }
+  },
+);
+
+const costAnalysisRevisionBody = z.object({ expectedRevision: z.number().int().positive() });
+
+router.post(
+  "/api/devis/:devisId/cost-analysis/confirm",
+  requireAuth,
+  validateRequest({ params: costAnalysisDevisParams, body: costAnalysisRevisionBody }),
+  async (req, res) => {
+    try {
+      const { expectedRevision } = req.body as z.infer<typeof costAnalysisRevisionBody>;
+      const actor = await costAnalysisActorEmail(req);
+      const result = await confirmCostAnalysis(Number(req.params.devisId), expectedRevision, actor);
+      sendCostAnalysisOutcome(res, result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(422).json({ message: `Could not confirm the analysis: ${message}` });
+    }
+  },
+);
+
+router.delete(
+  "/api/devis/:devisId/cost-analysis",
+  requireAuth,
+  validateRequest({ params: costAnalysisDevisParams, body: costAnalysisRevisionBody }),
+  async (req, res) => {
+    const { expectedRevision } = req.body as z.infer<typeof costAnalysisRevisionBody>;
+    const result = await removeCostAnalysis(Number(req.params.devisId), expectedRevision);
+    sendCostAnalysisOutcome(res, result);
   },
 );
 

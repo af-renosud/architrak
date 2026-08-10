@@ -51,6 +51,31 @@ router.get("/api/public/devis-pdf/:token", async (req, res) => {
     return res.status(409).json({ message: "Translation not ready", status: translation.status });
   }
 
+  // Task #378 — pinned bytes take absolute precedence: the send route
+  // persisted the exact storage key its envelope was created against, so
+  // post-send translation/context/analysis edits can never change what the
+  // signer receives. Storage objects are immutable (timestamped-unique
+  // keys), so serving this key verbatim is exactly the send-time snapshot.
+  if (d.archisignPinnedPdfStorageKey) {
+    try {
+      const { stream, contentType, size } = await getDocumentStream(d.archisignPinnedPdfStorageKey);
+      res.setHeader("Content-Type", contentType || "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="DEVIS-${d.devisCode}.pdf"`);
+      if (size) res.setHeader("Content-Length", String(size));
+      res.setHeader("Cache-Control", "no-store, max-age=0");
+      stream.pipe(res);
+      return;
+    } catch (err) {
+      // The pinned object should always exist (immutable storage). If it is
+      // somehow gone, fall through to regeneration rather than failing the
+      // signature ceremony entirely — logged loudly for investigation.
+      console.error(
+        `[ArchisignPublic] Pinned PDF ${d.archisignPinnedPdfStorageKey} for devis ${devisId} unavailable — falling back to regeneration:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
   // Fingerprint-validated cache reads — a per-line context save racing this
   // request must force regeneration rather than serving a stale PDF.
   let storageKey = await getValidatedCachedPdfKey(devisId, "combined");

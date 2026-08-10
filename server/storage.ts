@@ -1,9 +1,10 @@
 import { db } from "./db";
 import { eq, ne, desc, asc, and, or, inArray, isNotNull, isNull, lt, lte, gte, like, ilike, sql, type SQL } from "drizzle-orm";
 import {
-  devisLineContexts, devisLineContextAssets,
+  devisLineContexts, devisLineContextAssets, devisCostAnalyses,
   type DevisLineContext, type InsertDevisLineContext,
   type DevisLineContextAsset, type InsertDevisLineContextAsset,
+  type DevisCostAnalysis,
   projects, contractors, lots, lotCatalog, marches, devis, devisLineItems,
   avenants, invoices, situations, situationLines, certificats, fees, feeEntries,
   driveUploads,
@@ -462,6 +463,37 @@ export interface IStorage {
     | { outcome: "saved"; row: DevisLineContext }
 
   >;
+  getDevisCostAnalysis(devisId: number): Promise<DevisCostAnalysis | undefined>;
+  /**
+   * Optimistic-concurrency upsert of the cost analysis (Task #378), guarded
+   * like context saves: refused while the translation is finalised; when the
+   * analysis was or becomes 'confirmed', contexts_version is bumped and both
+   * cached PDF keys cleared in the SAME transaction (a confirmed analysis
+   * renders into the PDFs).
+   */
+  upsertDevisCostAnalysisIfRevision(args: {
+    devisId: number;
+    rawText: string;
+    document: unknown;
+    warnings: string[];
+    status: "draft" | "confirmed";
+    /** null = expect no existing row (create). */
+    expectedRevision: number | null;
+    modelId?: string | null;
+    promptVersion?: number | null;
+    generatedAt?: Date | null;
+    updatedByEmail?: string | null;
+  }): Promise<
+    | { outcome: "finalised" }
+    | { outcome: "stale" }
+    | { outcome: "saved"; analysis: DevisCostAnalysis }
+  >;
+
+  deleteDevisCostAnalysisIfRevision(
+    devisId: number,
+    expectedRevision: number,
+  ): Promise<{ outcome: "deleted" | "stale" | "finalised" | "not_found" }>;
+
   /** Returns undefined when the translation is finalised (asset insert refused). */
 
   createDevisLineContextAsset(data: InsertDevisLineContextAsset): Promise<DevisLineContextAsset | undefined>;
@@ -2370,6 +2402,156 @@ export class DatabaseStorage implements IStorage {
           .where(eq(devisTranslations.devisId, devisId));
       }
       return { outcome: "saved" as const, row };
+    });
+  }
+
+  async getDevisCostAnalysis(devisId: number): Promise<DevisCostAnalysis | undefined> {
+    const [row] = await db.select().from(devisCostAnalyses).where(eq(devisCostAnalyses.devisId, devisId));
+    return row;
+  }
+
+  async upsertDevisCostAnalysisIfRevision(args: {
+    devisId: number;
+    rawText: string;
+    document: unknown;
+    warnings: string[];
+    status: "draft" | "confirmed";
+    expectedRevision: number | null;
+    modelId?: string | null;
+    promptVersion?: number | null;
+    generatedAt?: Date | null;
+    updatedByEmail?: string | null;
+  }): Promise<
+    | { outcome: "finalised" }
+    | { outcome: "stale" }
+    | { outcome: "saved"; analysis: DevisCostAnalysis }
+  > {
+    const { devisId } = args;
+    // Same serialization strategy as saveDevisLineContextGuarded: FOR UPDATE
+    // row lock on the translation row means either finalisation committed
+    // first (reject) or it waits for our write + version bump to commit.
+    return db.transaction(async (tx) => {
+      const [translation] = await tx
+        .select({ status: devisTranslations.status })
+        .from(devisTranslations)
+        .where(eq(devisTranslations.devisId, devisId))
+        .for("update");
+      if (translation?.status === "finalised") {
+        return { outcome: "finalised" as const };
+      }
+
+      const [existing] = await tx
+        .select({ revision: devisCostAnalyses.revision, status: devisCostAnalyses.status })
+        .from(devisCostAnalyses)
+        .where(eq(devisCostAnalyses.devisId, devisId));
+
+      let row: DevisCostAnalysis | undefined;
+      if (args.expectedRevision === null) {
+        if (existing) return { outcome: "stale" as const };
+        const [created] = await tx
+          .insert(devisCostAnalyses)
+          .values({
+            devisId,
+            rawText: args.rawText,
+            document: args.document,
+            warnings: args.warnings,
+            status: args.status,
+            revision: 1,
+            modelId: args.modelId ?? null,
+            promptVersion: args.promptVersion ?? null,
+            generatedAt: args.generatedAt ?? null,
+            updatedByEmail: args.updatedByEmail ?? null,
+          })
+          .onConflictDoNothing({ target: devisCostAnalyses.devisId })
+          .returning();
+        if (!created) return { outcome: "stale" as const };
+        row = created;
+      } else {
+        const [updated] = await tx
+          .update(devisCostAnalyses)
+          .set({
+            rawText: args.rawText,
+            document: args.document,
+            warnings: args.warnings,
+            status: args.status,
+            revision: sql`${devisCostAnalyses.revision} + 1`,
+            ...(args.modelId !== undefined ? { modelId: args.modelId } : {}),
+            ...(args.promptVersion !== undefined ? { promptVersion: args.promptVersion } : {}),
+            ...(args.generatedAt !== undefined ? { generatedAt: args.generatedAt } : {}),
+            updatedByEmail: args.updatedByEmail ?? null,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(devisCostAnalyses.devisId, devisId),
+              eq(devisCostAnalyses.revision, args.expectedRevision),
+            ),
+          )
+          .returning();
+        if (!updated) return { outcome: "stale" as const };
+        row = updated;
+      }
+
+      // A confirmed analysis renders into the PDFs, so any transition
+      // involving 'confirmed' (before OR after) must invalidate the cache
+      // atomically with the write — same version-guard as context saves.
+      const touchesPdf = args.status === "confirmed" || existing?.status === "confirmed";
+      if (touchesPdf && translation) {
+        await tx
+          .update(devisTranslations)
+          .set({
+            contextsVersion: sql`${devisTranslations.contextsVersion} + 1`,
+            translatedPdfStorageKey: null,
+            combinedPdfStorageKey: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(devisTranslations.devisId, devisId));
+      }
+      return { outcome: "saved" as const, analysis: row };
+    });
+  }
+
+  async deleteDevisCostAnalysisIfRevision(
+    devisId: number,
+    expectedRevision: number,
+  ): Promise<{ outcome: "deleted" | "stale" | "finalised" | "not_found" }> {
+    return db.transaction(async (tx) => {
+      const [translation] = await tx
+        .select({ status: devisTranslations.status })
+        .from(devisTranslations)
+        .where(eq(devisTranslations.devisId, devisId))
+        .for("update");
+      if (translation?.status === "finalised") return { outcome: "finalised" as const };
+
+      const [existing] = await tx
+        .select({ status: devisCostAnalyses.status })
+        .from(devisCostAnalyses)
+        .where(eq(devisCostAnalyses.devisId, devisId));
+      if (!existing) return { outcome: "not_found" as const };
+
+      const deleted = await tx
+        .delete(devisCostAnalyses)
+        .where(
+          and(
+            eq(devisCostAnalyses.devisId, devisId),
+            eq(devisCostAnalyses.revision, expectedRevision),
+          ),
+        )
+        .returning({ id: devisCostAnalyses.id });
+      if (deleted.length === 0) return { outcome: "stale" as const };
+
+      if (existing.status === "confirmed" && translation) {
+        await tx
+          .update(devisTranslations)
+          .set({
+            contextsVersion: sql`${devisTranslations.contextsVersion} + 1`,
+            translatedPdfStorageKey: null,
+            combinedPdfStorageKey: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(devisTranslations.devisId, devisId));
+      }
+      return { outcome: "deleted" as const };
     });
   }
 

@@ -87,6 +87,10 @@ const envSchema = z.object({
 
   // --- AI providers (feature-scoped) -----------------------------------
   GEMINI_API_KEY: optionalString(),
+  // server/services/gemini.ts returns a canned cost-analysis instead of
+  // calling the real Gemini API. Lets browser tests exercise the draft →
+  // confirm workflow without a key. Refused in production (see check below).
+  E2E_FAKE_GEMINI: booleanFlag(false),
   AI_INTEGRATIONS_OPENAI_API_KEY: optionalString(),
   AI_INTEGRATIONS_OPENAI_BASE_URL: optionalUrl(),
 
@@ -321,7 +325,7 @@ if (!parsed.success) {
  * Exported for tests; called immediately below for the real boot path.
  */
 export function assertNoDevLoginBackdoorInProduction(
-  cfg: Pick<Env, "NODE_ENV" | "ENABLE_DEV_LOGIN_FOR_E2E" | "E2E_FAKE_GMAIL">,
+  cfg: Pick<Env, "NODE_ENV" | "ENABLE_DEV_LOGIN_FOR_E2E" | "E2E_FAKE_GMAIL" | "E2E_FAKE_GEMINI">,
   exit: (code: number) => never = process.exit as (code: number) => never,
   log: (msg: string) => void = (m) => console.error(m),
 ): void {
@@ -336,6 +340,13 @@ export function assertNoDevLoginBackdoorInProduction(
     log(
       "[env] Refusing to start: E2E_FAKE_GMAIL must NOT be set when NODE_ENV=production. " +
         "Unset E2E_FAKE_GMAIL (or set it to false) before redeploying.",
+    );
+    exit(1);
+  }
+  if (cfg.NODE_ENV === "production" && cfg.E2E_FAKE_GEMINI) {
+    log(
+      "[env] Refusing to start: E2E_FAKE_GEMINI must NOT be set when NODE_ENV=production. " +
+        "Unset E2E_FAKE_GEMINI (or set it to false) before redeploying.",
     );
     exit(1);
   }

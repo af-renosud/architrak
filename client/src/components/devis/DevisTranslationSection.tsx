@@ -23,6 +23,7 @@ import type {
   DevisLineContext,
 } from "@shared/schema";
 import { DevisLineContextEditor } from "./DevisLineContextEditor";
+import { DevisCostAnalysisCard } from "./DevisCostAnalysisCard";
 
 interface DevisTranslationSectionProps {
   devisId: number;
@@ -685,6 +686,8 @@ export function DevisTranslationSection({
           </div>
         </>
       )}
+
+      <DevisCostAnalysisCard devisId={devisId} translationFinalised={isFinalised} />
     </div>
   );
 }

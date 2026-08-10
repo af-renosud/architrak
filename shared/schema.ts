@@ -393,6 +393,12 @@ export const devis = pgTable("devis", {
   // archisignOtpDestination — masked phone/email shown in /create response
   // (§3.5.1). Persisted for UI display only; not used for auth.
   archisignOtpDestination: text("archisign_otp_destination"),
+  // archisignPinnedPdfStorageKey — the exact PDF object Archisign fetches
+  // for this devis' envelope. Written at send time (before the fetch token
+  // is minted) so post-send translation/context/analysis edits can never
+  // change the bytes the signer receives. Cleared implicitly on re-send
+  // (overwritten with the freshly generated key).
+  archisignPinnedPdfStorageKey: text("archisign_pinned_pdf_storage_key"),
   // archisignSignerMessage — the architect's optional personalised note,
   // captured in the "Envoyer à la signature" dialog and forwarded to
   // Archisign /create as the envelope `body`. Persisted here so the note
@@ -1997,6 +2003,38 @@ export const insertDevisLineContextAssetSchema = createInsertSchema(devisLineCon
 });
 export type DevisLineContext = typeof devisLineContexts.$inferSelect;
 export type InsertDevisLineContext = z.infer<typeof insertDevisLineContextSchema>;
+
+/**
+ * One AI-generated cost-analysis / value-engineering appendix per devis
+ * (Task #378). `rawText` is the architect-editable markdown; `document` is
+ * the server-parsed, validated AST (shared/cost-analysis-doc.ts) that the
+ * PDF serializer renders. Only status='confirmed' analyses render in
+ * outbound PDFs (draft → review/edit → confirm, mirroring the AI data-entry
+ * convention). `revision` implements optimistic concurrency like
+ * devis_line_contexts.
+ */
+export const devisCostAnalyses = pgTable("devis_cost_analyses", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id")
+    .notNull()
+    .unique()
+    .references(() => devis.id, { onDelete: "cascade" }),
+  rawText: text("raw_text").notNull(),
+  document: jsonb("document").notNull(),
+  warnings: jsonb("warnings").notNull().default(sql`'[]'::jsonb`),
+  status: text("status").notNull().default("draft"),
+  revision: integer("revision").notNull().default(1),
+  modelId: text("model_id"),
+  promptVersion: integer("prompt_version"),
+  generatedAt: timestamp("generated_at"),
+  updatedByEmail: text("updated_by_email"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export const DEVIS_COST_ANALYSIS_STATUSES = ["draft", "confirmed"] as const;
+export type DevisCostAnalysisStatus = (typeof DEVIS_COST_ANALYSIS_STATUSES)[number];
+export type DevisCostAnalysis = typeof devisCostAnalyses.$inferSelect;
 export type DevisLineContextAsset = typeof devisLineContextAssets.$inferSelect;
 export type InsertDevisLineContextAsset = z.infer<typeof insertDevisLineContextAssetSchema>;
 

@@ -1336,6 +1336,7 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     contractorId: -1,
     lotId: -1,
     marcheId: null,
+    archisignPinnedPdfStorageKey: null,
     signedOffVia: null,
     manualSignoffAt: null,
     manualSignoffBy: null,

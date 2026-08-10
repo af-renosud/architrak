@@ -93,6 +93,17 @@ vi.mock("../../env", () => ({
 vi.mock("../../communications/email-sender", () => ({
   sendDevisSignatureContextEmail: emailMock.sendDevisSignatureContextEmail,
 }));
+// Task #378 — the send route now pins the exact PDF bytes before minting the
+// fetch token; return a stable cached key so no real PDF generation runs.
+vi.mock("../../communications/devis-translation-generator", () => ({
+  getValidatedCachedPdfKey: vi.fn(async () => "cache/pinned-test.pdf"),
+  generateCombinedPdf: vi.fn(async () => {
+    throw new Error("not expected in this test");
+  }),
+  generateDevisTranslationPdf: vi.fn(async () => {
+    throw new Error("not expected in this test");
+  }),
+}));
 
 import archisignEnvelopesRouter from "../archisign-envelopes";
 import { storage } from "../../storage";
