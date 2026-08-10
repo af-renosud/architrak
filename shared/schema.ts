@@ -2024,6 +2024,12 @@ export const devisCostAnalyses = pgTable("devis_cost_analyses", {
   warnings: jsonb("warnings").notNull().default(sql`'[]'::jsonb`),
   status: text("status").notNull().default("draft"),
   revision: integer("revision").notNull().default(1),
+  // Task #381 — SHA-256 fingerprint of the quotation data (line items +
+  // header amounts + lot) this analysis was generated from. Compared
+  // against the freshly computed fingerprint to warn when the quotation
+  // changed after the analysis was confirmed. NULL = generated before
+  // this column existed (staleness unknown).
+  quotationFingerprint: text("quotation_fingerprint"),
   modelId: text("model_id"),
   promptVersion: integer("prompt_version"),
   generatedAt: timestamp("generated_at"),

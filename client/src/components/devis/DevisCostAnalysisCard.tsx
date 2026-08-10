@@ -119,10 +119,13 @@ export function DevisCostAnalysisCard({ devisId, translationFinalised }: DevisCo
   const [confirmRegenerate, setConfirmRegenerate] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
 
-  const { data, isLoading } = useQuery<{ analysis: DevisCostAnalysis | null }>({
+  const { data, isLoading } = useQuery<{ analysis: DevisCostAnalysis | null; quotationChanged?: boolean }>({
     queryKey: ["/api/devis", devisId, "cost-analysis"],
   });
   const analysis = data?.analysis ?? null;
+  // Task #381 — server-computed: confirmed analysis whose quotation data
+  // (lines/amounts) changed since it was generated.
+  const quotationChanged = data?.quotationChanged === true;
 
   // Sync the editor with the server row whenever it changes and the
   // architect has no unsaved local edits (stale-cache remount lesson).
@@ -239,12 +242,33 @@ export function DevisCostAnalysisCard({ devisId, translationFinalised }: DevisCo
           ) : analysis ? (
             <Badge variant="secondary" data-testid="badge-cost-analysis-status">Draft — not in PDF</Badge>
           ) : null}
+          {quotationChanged && (
+            <Badge
+              className="gap-1 bg-amber-500 hover:bg-amber-500 text-white"
+              data-testid="badge-cost-analysis-stale"
+            >
+              <AlertTriangle className="h-3 w-3" /> Quotation changed
+            </Badge>
+          )}
         </div>
         <span className="text-xs text-muted-foreground">Optional AI appendix</span>
       </button>
 
       {open && (
         <div className="px-4 pb-4 space-y-3">
+          {quotationChanged && (
+            <div
+              className="border border-amber-300 bg-amber-50 dark:bg-amber-950/30 rounded-md p-2 text-xs flex items-start gap-1"
+              data-testid="cost-analysis-stale-warning"
+            >
+              <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0 text-amber-600" />
+              <span>
+                The quotation's line items or amounts have changed since this analysis was
+                confirmed — the appendix in the PDF may no longer match the quotation.
+                Regenerate the analysis and confirm the new version before sending.
+              </span>
+            </div>
+          )}
           {locked && (
             <div className="text-xs text-muted-foreground flex items-center gap-1">
               <AlertTriangle className="h-3 w-3" />

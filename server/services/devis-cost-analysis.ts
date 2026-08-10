@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { storage } from "../storage";
 import { generateWithGemini } from "./gemini";
 import {
@@ -104,6 +105,49 @@ export async function buildQuotationPayload(devisId: number): Promise<string> {
   return parts.join("\n");
 }
 
+/**
+ * Task #381 — deterministic fingerprint of the quotation data an analysis
+ * is generated from: line items (number, FR description, qty, unit, unit
+ * price, total) + header amounts + lot. Deliberately EXCLUDES the English
+ * translation, project/contractor names and scope text: only changes that
+ * can invalidate the cost figures should flag the analysis as stale.
+ */
+export async function computeQuotationFingerprint(devisId: number): Promise<string> {
+  const devis = await storage.getDevis(devisId);
+  if (!devis) throw new Error(`Devis ${devisId} not found`);
+  const lines = await storage.getDevisLineItems(devisId);
+  const canonical = JSON.stringify({
+    amountHt: devis.amountHt ?? null,
+    amountTtc: devis.amountTtc ?? null,
+    lotId: devis.lotId ?? null,
+    lines: [...lines]
+      .sort((a, b) => a.lineNumber - b.lineNumber)
+      .map((li) => [
+        li.lineNumber,
+        li.description,
+        li.quantity ?? null,
+        li.unit ?? null,
+        li.unitPriceHt ?? null,
+        li.totalHt ?? null,
+      ]),
+  });
+  return createHash("sha256").update(canonical, "utf8").digest("hex");
+}
+
+/**
+ * True when a CONFIRMED analysis carries a fingerprint that no longer
+ * matches the current quotation data — the appendix in the PDF may not
+ * match the quotation any more. NULL fingerprints (pre-#381 analyses)
+ * report false: staleness is unknown, not proven.
+ */
+export async function isCostAnalysisQuotationChanged(
+  analysis: DevisCostAnalysis,
+): Promise<boolean> {
+  if (analysis.status !== "confirmed" || !analysis.quotationFingerprint) return false;
+  const current = await computeQuotationFingerprint(analysis.devisId);
+  return current !== analysis.quotationFingerprint;
+}
+
 export type CostAnalysisMutationResult =
   | { outcome: "saved"; analysis: DevisCostAnalysis; warnings: string[] }
   | { outcome: "stale" }
@@ -129,6 +173,7 @@ export async function generateCostAnalysisDraft(
   if (!(await assertNotFinalised(devisId))) return { outcome: "finalised" };
 
   const payload = await buildQuotationPayload(devisId);
+  const quotationFingerprint = await computeQuotationFingerprint(devisId);
   const { text, modelId } = await generateWithGemini({
     systemPrompt: COST_ANALYSIS_SYSTEM_PROMPT,
     userContent: `Analyse the following contractor quotation and produce the standard response.\n\n${payload}`,
@@ -143,6 +188,7 @@ export async function generateCostAnalysisDraft(
     warnings,
     status: "draft",
     expectedRevision: existing?.revision ?? null,
+    quotationFingerprint,
     modelId,
     promptVersion: COST_ANALYSIS_PROMPT_VERSION,
     generatedAt: new Date(),

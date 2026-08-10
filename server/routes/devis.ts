@@ -39,6 +39,7 @@ import {
   saveCostAnalysisText,
   confirmCostAnalysis,
   removeCostAnalysis,
+  isCostAnalysisQuotationChanged,
 } from "../services/devis-cost-analysis";
 import { normalizeDevisText, normalizeLineItemText, toSentenceCase } from "../lib/sentence-case";
 import {
@@ -1319,7 +1320,11 @@ router.get(
   validateRequest({ params: costAnalysisDevisParams }),
   async (req, res) => {
     const analysis = await storage.getDevisCostAnalysis(Number(req.params.devisId));
-    res.json({ analysis: analysis ?? null });
+    // Task #381 — flag confirmed analyses whose quotation data changed
+    // since generation (fingerprint mismatch): the PDF appendix may no
+    // longer match the quotation, prompting a regenerate before sending.
+    const quotationChanged = analysis ? await isCostAnalysisQuotationChanged(analysis) : false;
+    res.json({ analysis: analysis ?? null, quotationChanged });
   },
 );
 

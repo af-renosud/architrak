@@ -2417,6 +2417,7 @@ export class DatabaseStorage implements IStorage {
     warnings: string[];
     status: "draft" | "confirmed";
     expectedRevision: number | null;
+    quotationFingerprint?: string | null;
     modelId?: string | null;
     promptVersion?: number | null;
     generatedAt?: Date | null;
@@ -2457,6 +2458,7 @@ export class DatabaseStorage implements IStorage {
             warnings: args.warnings,
             status: args.status,
             revision: 1,
+            quotationFingerprint: args.quotationFingerprint ?? null,
             modelId: args.modelId ?? null,
             promptVersion: args.promptVersion ?? null,
             generatedAt: args.generatedAt ?? null,
@@ -2475,6 +2477,9 @@ export class DatabaseStorage implements IStorage {
             warnings: args.warnings,
             status: args.status,
             revision: sql`${devisCostAnalyses.revision} + 1`,
+            ...(args.quotationFingerprint !== undefined
+              ? { quotationFingerprint: args.quotationFingerprint }
+              : {}),
             ...(args.modelId !== undefined ? { modelId: args.modelId } : {}),
             ...(args.promptVersion !== undefined ? { promptVersion: args.promptVersion } : {}),
             ...(args.generatedAt !== undefined ? { generatedAt: args.generatedAt } : {}),

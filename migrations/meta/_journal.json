@@ -435,6 +435,13 @@
       "when": 1778760008000,
       "tag": "0061_devis_cost_analyses",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1778760009000,
+      "tag": "0062_cost_analysis_fingerprint",
+      "breakpoints": true
     }
   ]
 }
