@@ -49,8 +49,9 @@ const ROUTING_COLOURS: Record<string, string> = {
 
 function promotedLink(row: IntakeJobRow): string | null {
   if (!row.promotedId) return null;
-  if (row.promotedKind === "devis") return `/projects/${row.projectId}?devis=${row.promotedId}`;
-  if (row.promotedKind === "invoice") return `/projects/${row.projectId}?invoice=${row.promotedId}`;
+  // Project detail is registered under the FRENCH path `/projets/:id`.
+  if (row.promotedKind === "devis") return `/projets/${row.projectId}?devis=${row.promotedId}`;
+  if (row.promotedKind === "invoice") return `/projets/${row.projectId}?tab=factures&invoice=${row.promotedId}`;
   return null;
 }
 

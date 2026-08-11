@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Upload, FileText, Download, Mail, HardDriveUpload, Inbox, ArrowRight, RotateCw, Trash2, Eye, EyeOff } from "lucide-react";
 import { Link } from "wouter";
 import {
@@ -65,8 +65,10 @@ function routingLabel(state: string): { label: string; className: string } | nul
 
 function promotedHref(projectId: string, doc: ProjectIntakeDocument): string | null {
   if (!doc.promotedId) return null;
-  if (doc.promotedKind === "devis") return `/projects/${projectId}?devis=${doc.promotedId}`;
-  if (doc.promotedKind === "invoice") return `/projects/${projectId}?invoice=${doc.promotedId}`;
+  // NOTE: project detail is registered under the FRENCH path `/projets/:id`
+  // (client/src/App.tsx) — an English `/projects/...` href 404s.
+  if (doc.promotedKind === "devis") return `/projets/${projectId}?devis=${doc.promotedId}`;
+  if (doc.promotedKind === "invoice") return `/projets/${projectId}?tab=factures&invoice=${doc.promotedId}`;
   return null;
 }
 
@@ -97,6 +99,75 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
       return active ? 3000 : false;
     },
   });
+
+  // Task #418 — the app runs with staleTime: Infinity, so when the background
+  // intake queue promotes an uploaded document into a devis/facture record,
+  // nothing would otherwise refresh the (already cached) Devis/Factures lists
+  // — the new draft stayed invisible until a hard page reload. Watch the
+  // polled intake list for docs that GAIN a promotedId and invalidate the
+  // record lists (and their derived summaries) for the affected kinds.
+  const promotedTrackerRef = useRef<{ projectId: string; keys: Set<string> } | null>(null);
+  useEffect(() => {
+    if (!intakeDocs) return;
+    // Track (doc id, kind, promotedId) so a re-route that changes the
+    // promotion target also triggers invalidation.
+    const promotionKey = (d: ProjectIntakeDocument) =>
+      `${d.id}:${d.promotedKind}:${d.promotedId}`;
+    const promotedDocs = intakeDocs.filter((d) => d.promotedId != null);
+    const promotedNow = new Set(promotedDocs.map(promotionKey));
+    const prev =
+      promotedTrackerRef.current?.projectId === projectId
+        ? promotedTrackerRef.current.keys
+        : null;
+    promotedTrackerRef.current = { projectId, keys: promotedNow };
+
+    let staleKinds: Set<string | null>;
+    if (!prev) {
+      // First observation for this project. The record lists may hold cached
+      // pre-promotion data (staleTime: Infinity), so check whether every
+      // promoted record is already present in the cached lists; invalidate
+      // the kinds that are missing one. Absent caches fetch fresh on mount
+      // and need nothing.
+      staleKinds = new Set();
+      const cachedDevis = queryClient.getQueryData<{ id: number }[]>(
+        ["/api/projects", projectId, "devis"],
+      );
+      const cachedInvoices = queryClient.getQueryData<{ id: number }[]>(
+        ["/api/projects", projectId, "invoices"],
+      );
+      for (const d of promotedDocs) {
+        if (
+          d.promotedKind === "devis" &&
+          cachedDevis &&
+          !cachedDevis.some((r) => r.id === d.promotedId)
+        ) {
+          staleKinds.add("devis");
+        }
+        if (
+          d.promotedKind === "invoice" &&
+          cachedInvoices &&
+          !cachedInvoices.some((r) => r.id === d.promotedId)
+        ) {
+          staleKinds.add("invoice");
+        }
+      }
+    } else {
+      const newlyPromoted = promotedDocs.filter((d) => !prev.has(promotionKey(d)));
+      staleKinds = new Set(newlyPromoted.map((d) => d.promotedKind));
+    }
+    if (staleKinds.size === 0) return;
+    const kinds = staleKinds;
+    if (kinds.has("devis")) {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis-readiness"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis-checks", "open-counts"] });
+    }
+    if (kinds.has("invoice")) {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "invoices"] });
+    }
+    queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "accounting-status"] });
+  }, [intakeDocs, projectId]);
 
   const uploadMutation = useMutation({
     mutationFn: async (files: File[]) => {

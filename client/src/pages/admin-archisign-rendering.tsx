@@ -113,7 +113,7 @@ export default function AdminArchisignRendering() {
                     >
                       <td className="py-2">
                         <Link
-                          href={`/projects/${row.projectId}`}
+                          href={`/projets/${row.projectId}?devis=${row.id}`}
                           className="font-medium hover:underline"
                           data-testid={`link-devis-${row.id}`}
                         >

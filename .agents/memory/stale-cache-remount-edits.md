@@ -15,3 +15,12 @@ queue alone could not.
 fresher server data must treat a pending debounce as an unsaved edit and adopt
 the server revision as the save baseline atomically, or edits get wiped /
 falsely conflict.
+
+Same class of bug for **background workers**: when a server-side queue
+(intake analysis/routing, sweepers) creates records asynchronously, no client
+mutation ever fires, so cached list queries stay stale forever. Whatever UI
+observes the worker's progress (polling status list) must invalidate the
+affected record-list queries when it sees a promotion/completion transition —
+and on its FIRST observation must compare against the cached lists (via
+`queryClient.getQueryData`) rather than assuming a baseline, or promotions
+that happened between visits stay invisible.

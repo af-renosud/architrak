@@ -387,12 +387,21 @@ export default function ProjectDetail() {
     return Number.isFinite(n) && n > 0 ? n : null;
   })();
   const deepLinkTab = searchParams.get("tab");
+  // `?invoice=<id>` deep-links (from the intake list's "View invoice") land on
+  // the Factures tab even without an explicit `?tab=` param.
+  const deepLinkInvoiceId = (() => {
+    const raw = searchParams.get("invoice");
+    const n = raw ? Number(raw) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : null;
+  })();
   const [activeTab, setActiveTab] = useState<string>(
     deepLinkTab && deepLinkTab.length > 0
       ? deepLinkTab
       : deepLinkDevisId
         ? "devis"
-        : "resume",
+        : deepLinkInvoiceId
+          ? "factures"
+          : "resume",
   );
   const deepLinkCheckId = (() => {
     const raw = searchParams.get("check");
