@@ -22,6 +22,10 @@ const allowlist = [
   "nanoid",
   "nodemailer",
   "openai",
+  // ESM-only: must be bundled — leaving it external makes the CJS bundle
+  // require() it and esbuild's __toESM interop yields a non-callable
+  // `.default` at runtime ("(0 , x.default) is not a function").
+  "p-limit",
   "passport",
   "passport-local",
   "pg",

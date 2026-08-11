@@ -17,4 +17,5 @@
 - [PDF cache race guard](pdf-cache-race-guard.md) — never fingerprint-check-then-write cache keys; edits bump a version atomically with clearing keys, publish via version-guarded conditional UPDATE.
 - [Prince CSS limits](prince-css-limits.md) — DocRaptor/Prince ignores display:grid (renders stacked); flexbox/tables fine; check PDF links via qpdf --qdf, raw grep misses them.
 - [Stale cache eats remounted edits](stale-cache-remount-edits.md) — staleTime Infinity: autosave must invalidate its query on success and re-sync non-prop-driven editors, or remounts show stale content.
+- [ESM-only deps in CJS bundle](esm-only-deps-in-cjs-bundle.md) — ESM-only packages left external crash the prod bundle with "(0 , X.default) is not a function"; add them to the build allowlist and smoke-boot dist with NODE_ENV=production.
 - [Restore via cp, not git checkout](restore-via-cp-not-git-checkout.md) — `git checkout --` reverts to the last platform commit and silently wipes uncommitted session edits; snapshot with cp before temporary file mutations.
