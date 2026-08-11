@@ -190,7 +190,11 @@ export default function EmailDocuments() {
   const filtered = emailDocs?.filter(doc => {
     if (statusFilter === "needs_project") {
       if (doc.extractionStatus !== "needs_review" || doc.projectId != null) return false;
-    } else if (statusFilter !== "all" && doc.extractionStatus !== statusFilter) {
+    } else if (statusFilter === "all") {
+      // Task #424 — removed (skipped) docs are hidden from the default view;
+      // they remain visible under the explicit "Skipped" filter for audit.
+      if (doc.extractionStatus === "skipped") return false;
+    } else if (doc.extractionStatus !== statusFilter) {
       return false;
     }
     if (typeFilter !== "all" && doc.documentType !== typeFilter) return false;
@@ -216,12 +220,14 @@ export default function EmailDocuments() {
   }
 
   const pendingCount = emailDocs?.filter(d => d.extractionStatus === "pending" || d.extractionStatus === "needs_review").length ?? 0;
+  const skippedCount = emailDocs?.filter(d => d.extractionStatus === "skipped").length ?? 0;
+  const activeCount = (emailDocs?.length ?? 0) - skippedCount;
 
   return (
     <AppLayout>
       <div className="space-y-8">
         <div className="flex items-center justify-between flex-wrap gap-4">
-          <SectionHeader icon={Mail} title="Email Documents" subtitle={`${emailDocs?.length ?? 0} documents extracted`} />
+          <SectionHeader icon={Mail} title="Email Documents" subtitle={skippedCount > 0 ? `${activeCount} active · ${skippedCount} removed` : `${activeCount} documents extracted`} />
           <div className="flex items-center gap-3">
             {gmailStatus && (
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
