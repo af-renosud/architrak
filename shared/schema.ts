@@ -722,6 +722,12 @@ export const feeEntries = pgTable("fee_entries", {
   // pennylanePaidAt / pennylanePaidAmount / pennylaneStatus: written
   //   by the hourly poller from GET /customer_invoices.
   pennylaneInvoiceId: text("pennylane_invoice_id"),
+  // Task #426 — the HUMAN-VISIBLE Pennylane invoice number (e.g.
+  // "F-2026-138"), captured from the API response at push time. The API id
+  // alone cannot reconcile an inbound facture d'honoraires PDF against the
+  // entry Pennylane already carries — only the human number appears on the
+  // document itself.
+  pennylaneInvoiceNumber: text("pennylane_invoice_number"),
   pennylanePdfStorageKey: text("pennylane_pdf_storage_key"),
   pennylanePushedAt: timestamp("pennylane_pushed_at"),
   pennylanePaidAt: timestamp("pennylane_paid_at"),
@@ -2892,3 +2898,43 @@ export const insertArchitectFeeInvoiceSchema = createInsertSchema(architectFeeIn
 });
 export type ArchitectFeeInvoice = typeof architectFeeInvoices.$inferSelect;
 export type InsertArchitectFeeInvoice = z.infer<typeof insertArchitectFeeInvoiceSchema>;
+
+/**
+ * Task #426 — APPEND-ONLY audit of review decisions on caught fee invoices.
+ * One row per operator decision (confirm / dismiss / conflict parked /
+ * idempotent replay). Rows are NEVER updated or deleted — same invariant as
+ * accountingStateChanges.
+ */
+export const ARCHITECT_FEE_INVOICE_EVENT_ACTIONS = [
+  "confirmed",
+  "dismissed",
+  "conflict_parked",
+  "replayed",
+] as const;
+export type ArchitectFeeInvoiceEventAction = (typeof ARCHITECT_FEE_INVOICE_EVENT_ACTIONS)[number];
+
+export const architectFeeInvoiceEvents = pgTable("architect_fee_invoice_events", {
+  id: serial("id").primaryKey(),
+  architectFeeInvoiceId: integer("architect_fee_invoice_id")
+    .notNull()
+    .references(() => architectFeeInvoices.id, { onDelete: "cascade" }),
+  action: text("action").notNull(),
+  actor: text("actor"),
+  note: text("note"),
+  /** Structured decision context (bound ids, reconciliation path, refusal reason). */
+  details: jsonb("details"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("architect_fee_invoice_events_invoice_idx").on(table.architectFeeInvoiceId),
+  check(
+    "architect_fee_invoice_events_action_chk",
+    sql`${table.action} IN ('confirmed','dismissed','conflict_parked','replayed')`,
+  ),
+]);
+
+export const insertArchitectFeeInvoiceEventSchema = createInsertSchema(architectFeeInvoiceEvents).omit({
+  id: true,
+  createdAt: true,
+});
+export type ArchitectFeeInvoiceEvent = typeof architectFeeInvoiceEvents.$inferSelect;
+export type InsertArchitectFeeInvoiceEvent = z.infer<typeof insertArchitectFeeInvoiceEventSchema>;

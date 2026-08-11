@@ -23,6 +23,7 @@ import {
   clientProjectShareTokens, clientProjectShareDevis, clientProjectShareAudit,
   archidocLinkLookupMisses, type ArchidocLinkLookupMiss, type ArchidocLookupMissReason,
   architectFeeInvoices, type ArchitectFeeInvoice, type InsertArchitectFeeInvoice, type ArchitectFeeInvoiceStatus,
+  architectFeeInvoiceEvents, type ArchitectFeeInvoiceEvent, type InsertArchitectFeeInvoiceEvent,
   type ClientProjectShareToken, type InsertClientProjectShareToken,
   type ClientProjectShareDevis, type InsertClientProjectShareDevis,
   type ClientProjectShareAuditEntry, type InsertClientProjectShareAuditEntry,
@@ -749,6 +750,11 @@ export interface IStorage {
   updateArchitectFeeInvoice(id: number, data: Partial<InsertArchitectFeeInvoice>): Promise<ArchitectFeeInvoice | undefined>;
   /** Review outcome writes — server-authoritative columns (dismiss only in #425). */
   setArchitectFeeInvoiceReviewState(id: number, state: { status: ArchitectFeeInvoiceStatus; reviewedBy: string | null }): Promise<ArchitectFeeInvoice | undefined>;
+  /** Confirmed evidence row bound to a fee entry (paid-poller milestone propagation). */
+  getArchitectFeeInvoiceByFeeEntryId(feeEntryId: number): Promise<ArchitectFeeInvoice | undefined>;
+  /** Append-only review-decision audit (Task #426). Rows are never updated or deleted. */
+  createArchitectFeeInvoiceEvent(data: InsertArchitectFeeInvoiceEvent): Promise<ArchitectFeeInvoiceEvent>;
+  listArchitectFeeInvoiceEvents(architectFeeInvoiceId: number): Promise<ArchitectFeeInvoiceEvent[]>;
 
   upsertArchidocLinkLookupMiss(projectId: number, reason: ArchidocLookupMissReason): Promise<void>;
   clearArchidocLinkLookupMiss(projectId: number): Promise<void>;
@@ -3700,6 +3706,27 @@ export class DatabaseStorage implements IStorage {
     return row;
   }
 
+  async getArchitectFeeInvoiceByFeeEntryId(feeEntryId: number): Promise<ArchitectFeeInvoice | undefined> {
+    const [row] = await db
+      .select()
+      .from(architectFeeInvoices)
+      .where(and(eq(architectFeeInvoices.feeEntryId, feeEntryId), eq(architectFeeInvoices.status, "confirmed")));
+    return row;
+  }
+
+  async createArchitectFeeInvoiceEvent(data: InsertArchitectFeeInvoiceEvent): Promise<ArchitectFeeInvoiceEvent> {
+    const [row] = await db.insert(architectFeeInvoiceEvents).values(data).returning();
+    return row;
+  }
+
+  async listArchitectFeeInvoiceEvents(architectFeeInvoiceId: number): Promise<ArchitectFeeInvoiceEvent[]> {
+    return db
+      .select()
+      .from(architectFeeInvoiceEvents)
+      .where(eq(architectFeeInvoiceEvents.architectFeeInvoiceId, architectFeeInvoiceId))
+      .orderBy(architectFeeInvoiceEvents.createdAt);
+  }
+
   async upsertArchidocLinkLookupMiss(projectId: number, reason: ArchidocLookupMissReason): Promise<void> {
     await db
       .insert(archidocLinkLookupMisses)
@@ -5131,6 +5158,8 @@ export class DatabaseStorage implements IStorage {
     pennylaneInvoiceId: string;
     pennylanePdfStorageKey: string | null;
     pennylaneStatus: string | null;
+    /** Human-visible Pennylane invoice number (Task #426); undefined = leave unchanged. */
+    pennylaneInvoiceNumber?: string | null;
   }): Promise<void> {
     await db
       .update(feeEntries)
@@ -5139,6 +5168,9 @@ export class DatabaseStorage implements IStorage {
         pennylanePdfStorageKey: args.pennylanePdfStorageKey,
         pennylaneStatus: args.pennylaneStatus,
         pennylanePushedAt: new Date(),
+        ...(args.pennylaneInvoiceNumber !== undefined
+          ? { pennylaneInvoiceNumber: args.pennylaneInvoiceNumber }
+          : {}),
       })
       .where(eq(feeEntries.id, args.feeEntryId));
   }

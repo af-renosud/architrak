@@ -126,6 +126,12 @@ async function applyPaidUpdate(
     const paidAmount = paidAmountRaw === null || paidAmountRaw === undefined
       ? null
       : Number(paidAmountRaw);
+    // Task #426 — paid propagation to the linked design-contract milestone
+    // stays with THIS poller (a Gmail invoice receipt never sets paid).
+    // Deliberately BEFORE the fee-entry paid write: once pennylanePaidAt is
+    // set the poller never revisits this entry, so a propagation failure
+    // must abort and let the next tick retry (milestone-paid is idempotent).
+    await propagatePaidToMilestone(entry.id, paidAt);
     await storage.setFeeEntryPennylanePaid({
       feeEntryId: entry.id,
       paidAt,
@@ -150,6 +156,23 @@ async function applyPaidUpdate(
     return "status";
   }
   return "noop";
+}
+
+async function propagatePaidToMilestone(feeEntryId: number, paidAt: Date): Promise<void> {
+  // Entries bound through a confirmed caught fee invoice (Task #426) carry
+  // a milestone linkage. Any failure here THROWS: the caller has not yet
+  // persisted pennylanePaidAt, so the next poll tick retries both writes.
+  const evidence = await storage.getArchitectFeeInvoiceByFeeEntryId(feeEntryId);
+  if (!evidence?.milestoneId) return;
+  const milestone = await storage.getDesignContractMilestone(evidence.milestoneId);
+  if (!milestone || milestone.status === "paid") return;
+  await storage.updateDesignContractMilestone(milestone.id, {
+    status: "paid",
+    paidAt,
+  });
+  console.log(
+    `[PennylanePaidPoller] milestone ${milestone.id} ("${milestone.labelFr}") marked paid via fee_entry ${feeEntryId}`,
+  );
 }
 
 export function startPennylanePaidPoller(

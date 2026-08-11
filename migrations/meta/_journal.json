@@ -484,6 +484,13 @@
       "when": 1778760015000,
       "tag": "0068_architect_fee_invoices",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1778846415000,
+      "tag": "0069_architect_fee_invoice_confirm",
+      "breakpoints": true
     }
   ]
 }

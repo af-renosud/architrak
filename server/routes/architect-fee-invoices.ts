@@ -2,14 +2,18 @@ import { Router } from "express";
 import { z } from "zod";
 import { storage } from "../storage";
 import { ARCHITECT_FEE_INVOICE_STATUSES, type ArchitectFeeInvoiceStatus } from "@shared/schema";
+import { confirmArchitectFeeInvoice } from "../services/architect-fee-invoice-confirm.service";
+import { validateRequest } from "../middleware/validate";
 
 /**
  * Task #425 — review queue for the firm's own outbound honoraires invoices
- * caught by Gmail polling. Read + dismiss only: the confirmation
- * transaction (milestone invoiced + fee entry recording + Pennylane
- * reconciliation) is Task #426 and has NO endpoint here yet — the UI's
- * confirm button is disabled. Review-state columns are server-authoritative
- * (dedicated storage write, never a generic PATCH body).
+ * caught by Gmail polling. Read, dismiss, and confirm (Task #426): the
+ * confirmation transaction (milestone invoiced + fee entry recording +
+ * Pennylane reconciliation) lives in
+ * services/architect-fee-invoice-confirm.service.ts. Review-state columns
+ * are server-authoritative (dedicated storage write, never a generic PATCH
+ * body). Every review decision is audited append-only in
+ * architect_fee_invoice_events.
  */
 const router = Router();
 
@@ -47,7 +51,61 @@ router.post("/api/architect-fee-invoices/:id/dismiss", async (req, res) => {
     status: "dismissed",
     reviewedBy: user?.email ?? null,
   });
+  // Append-only decision audit (Task #426) — every review decision leaves a trace.
+  await storage.createArchitectFeeInvoiceEvent({
+    architectFeeInvoiceId: id.data,
+    action: "dismissed",
+    actor: user?.email ?? null,
+    note: null,
+    details: null,
+  });
   res.json(updated);
 });
+
+/** Append-only review-decision history for one caught invoice. */
+router.get("/api/architect-fee-invoices/:id/events", async (req, res) => {
+  const id = z.coerce.number().int().positive().safeParse(req.params.id);
+  if (!id.success) return res.status(400).json({ message: "Invalid id" });
+  res.json(await storage.listArchitectFeeInvoiceEvents(id.data));
+});
+
+const confirmBodySchema = z
+  .object({
+    projectId: z.number().int().positive(),
+    milestoneId: z.number().int().positive(),
+  })
+  .strict();
+
+/**
+ * Task #426 — explicit operator confirmation. Atomically binds the evidence
+ * to a project + milestone, records/attaches the fee entry with the
+ * EXTRACTED ref/date, and transitions the milestone to `invoiced`
+ * (`paid` stays with the Pennylane paid-poller). Idempotent on replay.
+ */
+router.post(
+  "/api/architect-fee-invoices/:id/confirm",
+  validateRequest({ body: confirmBodySchema }),
+  async (req, res) => {
+    const id = z.coerce.number().int().positive().safeParse(req.params.id);
+    if (!id.success) return res.status(400).json({ message: "Invalid id" });
+    const user = (req as { user?: { email?: string | null } }).user;
+    const result = await confirmArchitectFeeInvoice({
+      evidenceId: id.data,
+      projectId: req.body.projectId,
+      milestoneId: req.body.milestoneId,
+      actor: user?.email ?? null,
+    });
+    if (!result.ok) {
+      return res.status(result.status).json({ message: result.message, code: result.code, parked: result.parked ?? false });
+    }
+    res.json({
+      evidence: result.evidence,
+      feeEntryId: result.feeEntryId,
+      milestoneId: result.milestoneId,
+      reconciliation: result.reconciliation,
+      replayed: result.replayed,
+    });
+  },
+);
 
 export default router;

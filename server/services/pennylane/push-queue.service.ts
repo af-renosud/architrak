@@ -342,10 +342,23 @@ async function findCustomerByExternalId(externalId: string): Promise<string | nu
 
 interface PennylaneInvoiceResponse {
   id?: number | string;
-  invoice?: { id?: number | string; public_file_url?: string; status?: string };
+  invoice?: {
+    id?: number | string;
+    public_file_url?: string;
+    status?: string;
+    invoice_number?: string | null;
+  };
   public_file_url?: string;
   status?: string;
   external_id?: string;
+  // Task #426 — the HUMAN-VISIBLE invoice number Pennylane assigns
+  // (e.g. "F-2026-138"). Persisted so inbound fee-invoice PDFs can be
+  // reconciled against pushed entries by the number on the document.
+  invoice_number?: string | null;
+}
+
+function extractInvoiceNumber(res: PennylaneInvoiceResponse): string | null {
+  return res.invoice?.invoice_number ?? res.invoice_number ?? null;
 }
 
 /**
@@ -358,7 +371,7 @@ interface PennylaneInvoiceResponse {
  */
 async function findInvoiceByExternalId(
   externalId: string,
-): Promise<{ id: string; status: string | null; publicUrl: string | null } | null> {
+): Promise<{ id: string; status: string | null; publicUrl: string | null; invoiceNumber: string | null } | null> {
   try {
     for await (const page of iteratePages<PennylaneInvoiceResponse>(
       "/customer_invoices",
@@ -369,7 +382,7 @@ async function findInvoiceByExternalId(
           const id = extractInvoiceId(item);
           const status = item.invoice?.status ?? item.status ?? null;
           const publicUrl = item.invoice?.public_file_url ?? item.public_file_url ?? null;
-          return { id, status, publicUrl };
+          return { id, status, publicUrl, invoiceNumber: extractInvoiceNumber(item) };
         }
       }
       break;
@@ -445,11 +458,13 @@ async function runCustomerInvoicePush(
   let invoiceId: string;
   let status: string | null;
   let publicUrl: string | null;
+  let invoiceNumber: string | null;
 
   if (preExisting) {
     invoiceId = preExisting.id;
     status = preExisting.status;
     publicUrl = preExisting.publicUrl;
+    invoiceNumber = preExisting.invoiceNumber;
   } else {
     let created: PennylaneInvoiceResponse;
     try {
@@ -476,7 +491,7 @@ async function runCustomerInvoicePush(
           `[PennylaneQueue] recovered from duplicate-create (status=${err.status}) for fee_entry ${feeEntry.id} → invoice ${invoiceId}`,
         );
         // jump past the assignment block by reusing the persistence path below
-        await persistInvoiceMirror({ project, feeEntry, invoiceId, status, publicUrl });
+        await persistInvoiceMirror({ project, feeEntry, invoiceId, status, publicUrl, invoiceNumber: recovered.invoiceNumber });
         await enqueueEmailSend(project.id, feeEntry.id);
         return { kind: "ok", pennylaneId: invoiceId };
       }
@@ -485,9 +500,10 @@ async function runCustomerInvoicePush(
     invoiceId = extractInvoiceId(created);
     status = created.invoice?.status ?? created.status ?? null;
     publicUrl = created.invoice?.public_file_url ?? created.public_file_url ?? null;
+    invoiceNumber = extractInvoiceNumber(created);
   }
 
-  await persistInvoiceMirror({ project, feeEntry, invoiceId, status, publicUrl });
+  await persistInvoiceMirror({ project, feeEntry, invoiceId, status, publicUrl, invoiceNumber });
   await enqueueEmailSend(project.id, feeEntry.id);
   return { kind: "ok", pennylaneId: invoiceId };
 }
@@ -498,6 +514,8 @@ async function persistInvoiceMirror(args: {
   invoiceId: string;
   status: string | null;
   publicUrl: string | null;
+  /** Human-visible Pennylane invoice number (Task #426); null = not returned. */
+  invoiceNumber?: string | null;
 }): Promise<void> {
   let storageKey: string | null = null;
   if (args.publicUrl) {
@@ -521,6 +539,9 @@ async function persistInvoiceMirror(args: {
     pennylaneInvoiceId: args.invoiceId,
     pennylanePdfStorageKey: storageKey,
     pennylaneStatus: args.status,
+    // Only write when Pennylane actually returned a number — never
+    // clobber a previously captured one with null.
+    ...(args.invoiceNumber ? { pennylaneInvoiceNumber: args.invoiceNumber } : {}),
   });
 }
 

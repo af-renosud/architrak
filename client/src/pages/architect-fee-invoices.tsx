@@ -55,6 +55,92 @@ const statusVariant: Record<string, "default" | "secondary" | "destructive" | "o
   dismissed: "outline",
 };
 
+function ConfirmControls({ row, candidates }: { row: ArchitectFeeInvoice; candidates: CandidatesPayload }) {
+  const { toast } = useToast();
+  const [projectId, setProjectId] = useState<string>(() =>
+    candidates.highConfidenceProjectId != null
+      ? String(candidates.highConfidenceProjectId)
+      : candidates.projects.length === 1
+        ? String(candidates.projects[0].projectId)
+        : "",
+  );
+  const milestonesForProject = projectId ? (candidates.milestones[projectId] ?? []) : [];
+  const [milestoneId, setMilestoneId] = useState<string>("");
+
+  const confirmMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/architect-fee-invoices/${row.id}/confirm`, {
+        projectId: Number(projectId),
+        milestoneId: Number(milestoneId),
+      });
+      return res.json();
+    },
+    onSuccess: (data: { reconciliation: string; feeEntryId: number }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/architect-fee-invoices"] });
+      const how =
+        data.reconciliation === "created"
+          ? "nouvelle écriture d'honoraires créée"
+          : "rattachée à l'écriture Pennylane existante";
+      toast({ title: "Facture confirmée", description: `Jalon marqué facturé — ${how} (n°${data.feeEntryId}).` });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Confirmation refusée", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <Select
+        value={projectId}
+        onValueChange={(v) => {
+          setProjectId(v);
+          setMilestoneId("");
+        }}
+      >
+        <SelectTrigger className="w-44" data-testid={`select-fee-invoice-project-${row.id}`}>
+          <SelectValue placeholder="Projet…" />
+        </SelectTrigger>
+        <SelectContent>
+          {candidates.projects.map((p) => (
+            <SelectItem key={p.projectId} value={String(p.projectId)}>
+              {p.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Select value={milestoneId} onValueChange={setMilestoneId} disabled={!projectId || milestonesForProject.length === 0}>
+        <SelectTrigger className="w-56" data-testid={`select-fee-invoice-milestone-${row.id}`}>
+          <SelectValue placeholder={milestonesForProject.length === 0 ? "Aucun jalon" : "Jalon…"} />
+        </SelectTrigger>
+        <SelectContent>
+          {milestonesForProject.map((m) => (
+            <SelectItem key={m.milestoneId} value={String(m.milestoneId)}>
+              #{m.sequence} · {m.labelFr}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span>
+            <Button
+              size="sm"
+              disabled={!projectId || !milestoneId || confirmMutation.isPending}
+              onClick={() => confirmMutation.mutate()}
+              data-testid={`button-fee-invoice-confirm-${row.id}`}
+            >
+              Confirmer
+            </Button>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>
+          Marque le jalon comme facturé et enregistre l'écriture d'honoraires (rapprochement Pennylane automatique).
+        </TooltipContent>
+      </Tooltip>
+    </div>
+  );
+}
+
 export default function ArchitectFeeInvoices() {
   const { toast } = useToast();
   const [statusFilter, setStatusFilter] = useState<string>("pending_review");
@@ -154,18 +240,7 @@ export default function ArchitectFeeInvoices() {
                       )}
                       {row.status === "pending_review" && (
                         <>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span>
-                                <Button size="sm" disabled data-testid={`button-fee-invoice-confirm-${row.id}`}>
-                                  Confirmer
-                                </Button>
-                              </span>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              La confirmation (jalon facturé + rapprochement Pennylane) arrive dans une prochaine étape.
-                            </TooltipContent>
-                          </Tooltip>
+                          <ConfirmControls row={row} candidates={candidates} />
                           <Button
                             variant="outline"
                             size="sm"
