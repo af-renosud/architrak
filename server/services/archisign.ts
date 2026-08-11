@@ -8,7 +8,8 @@
  * The env var `ARCHISIGN_API_KEY` is a CSV; we use the FIRST entry (rotation
  * windows are out of scope for AT4 — operator rotates by reordering CSV).
  *
- * Retry policy (§1.4): 3 attempts; 1s/3s/exhausted; per-attempt 10s timeout;
+ * Retry policy (§1.4): 3 attempts; 1s/3s/exhausted; per-attempt 30s timeout
+ * (raised from 10s to absorb Autoscale cold starts on the Archisign side);
  * retry on 5xx + network errors + 429 (Retry-After honoured); 4xx fails fast
  * and the caller is expected to surface the error to the architect.
  *
@@ -186,7 +187,10 @@ export class ArchisignRetentionBreachError extends ArchisignError {
   }
 }
 
-const PER_ATTEMPT_TIMEOUT_MS = 10_000;
+// 30s per attempt: Archisign runs on an Autoscale deployment, so the first
+// call after an idle period can hit a cold start that takes well over the
+// previous 10s budget. 30s lets a cold boot complete on the first attempt.
+const PER_ATTEMPT_TIMEOUT_MS = 30_000;
 const RETRY_DELAYS_MS = [1_000, 3_000];
 const MIN_PDF_FETCH_URL_TTL_MS = 5 * 60 * 1000; // §G2
 const MIN_EXPIRES_AT_MS = 60 * 1000; // §G5
