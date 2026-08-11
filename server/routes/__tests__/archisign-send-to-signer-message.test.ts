@@ -70,8 +70,15 @@ vi.mock("../../services/archisign", () => {
       this.name = "ArchisignError";
     }
   }
+  class ArchisignConfigError extends ArchisignError {
+    constructor(message: string) {
+      super(message, 503, undefined, true);
+      this.name = "ArchisignConfigError";
+    }
+  }
   return {
     ArchisignError,
+    ArchisignConfigError,
     createEnvelope: archisignMock.createEnvelope,
     sendEnvelope: archisignMock.sendEnvelope,
     assertPdfFetchUrlTtl: archisignMock.assertPdfFetchUrlTtl,
@@ -571,5 +578,100 @@ describe("POST /api/devis/:id/send-to-signer — §3.5.1.1(b) body-rendering dri
     for (const call of storageMock.updateDevis.mock.calls) {
       expect(call[1] as Record<string, unknown>).not.toHaveProperty("archisignBodyDriftAt");
     }
+  });
+});
+
+/**
+ * Task #434 — an Archisign OUTAGE must not be reported as a config
+ * problem. Config-missing (ArchisignConfigError, thrown locally before
+ * any network call) → 503 archisign_unconfigured. Upstream 5xx after
+ * retries, or exhausted timeouts (httpStatus 0) → 503 archisign_unavailable
+ * with a retry-later message.
+ */
+describe("POST /api/devis/:id/send-to-signer — outage vs config (Task #434)", () => {
+  const VALID = { message: "Bonjour, voici le devis pour signature électronique." };
+
+  it("maps a local config error to archisign_unconfigured", async () => {
+    const { ArchisignConfigError } = await import("../../services/archisign");
+    archisignMock.createEnvelope.mockRejectedValue(
+      new ArchisignConfigError("ARCHISIGN_API_KEY is not configured"),
+    );
+    const res = await postSend(100, VALID);
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { code: string; message: string };
+    expect(body.code).toBe("archisign_unconfigured");
+    expect(body.message).toMatch(/not configured/);
+  });
+
+  it("maps an upstream 503 (outage) to archisign_unavailable, NOT unconfigured", async () => {
+    const { ArchisignError } = await import("../../services/archisign");
+    archisignMock.createEnvelope.mockRejectedValue(
+      new ArchisignError("Archisign 503: Service Unavailable", 503, undefined, true),
+    );
+    const res = await postSend(100, VALID);
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { code: string; message: string };
+    expect(body.code).toBe("archisign_unavailable");
+    expect(body.message).toMatch(/momentanément indisponible/);
+  });
+
+  it("maps exhausted network retries (httpStatus 0) to archisign_unavailable", async () => {
+    const { ArchisignError } = await import("../../services/archisign");
+    archisignMock.createEnvelope.mockRejectedValue(
+      new ArchisignError("Archisign network error after retries: timeout", 0, undefined, true),
+    );
+    const res = await postSend(100, VALID);
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("archisign_unavailable");
+  });
+
+  it("keeps 4xx create failures on the generic 502 archisign_create_failed path", async () => {
+    const { ArchisignError } = await import("../../services/archisign");
+    archisignMock.createEnvelope.mockRejectedValue(
+      new ArchisignError("Archisign 400: invalid_request", 400, undefined, false),
+    );
+    const res = await postSend(100, VALID);
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("archisign_create_failed");
+  });
+});
+
+describe("POST /api/devis/:id/send-to-signer — SEND-stage outage (Task #434)", () => {
+  const VALID = { message: "Bonjour, voici le devis pour signature électronique." };
+
+  it("maps an upstream 503 on sendEnvelope to archisign_unavailable (envelope preserved)", async () => {
+    const { ArchisignError } = await import("../../services/archisign");
+    archisignMock.sendEnvelope.mockRejectedValue(
+      new ArchisignError("Archisign 503: Service Unavailable", 503, undefined, true),
+    );
+    const res = await postSend(100, VALID);
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { code: string; message: string; archisignEnvelopeId: string };
+    expect(body.code).toBe("archisign_unavailable");
+    expect(body.message).toMatch(/momentanément indisponible/);
+    // Resume path stays intact: the created envelope id is surfaced.
+    expect(body.archisignEnvelopeId).toBe("env_42");
+  });
+
+  it("maps exhausted network retries on sendEnvelope to archisign_unavailable", async () => {
+    const { ArchisignError } = await import("../../services/archisign");
+    archisignMock.sendEnvelope.mockRejectedValue(
+      new ArchisignError("Archisign network error after retries: timeout", 0, undefined, true),
+    );
+    const res = await postSend(100, VALID);
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as { code: string }).code).toBe("archisign_unavailable");
+  });
+
+  it("keeps non-transient sendEnvelope failures on 502 archisign_send_failed", async () => {
+    const { ArchisignError } = await import("../../services/archisign");
+    archisignMock.sendEnvelope.mockRejectedValue(
+      new ArchisignError("Archisign 400: invalid_request", 400, undefined, false),
+    );
+    const res = await postSend(100, VALID);
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as { code: string }).code).toBe("archisign_send_failed");
   });
 });

@@ -61,8 +61,15 @@ vi.mock("../../services/archisign", () => {
       this.name = "ArchisignError";
     }
   }
+  class ArchisignConfigError extends ArchisignError {
+    constructor(message: string) {
+      super(message, 503, undefined, true);
+      this.name = "ArchisignConfigError";
+    }
+  }
   return {
     ArchisignError,
+    ArchisignConfigError,
     createEnvelope: vi.fn(),
     sendEnvelope: vi.fn(),
     assertPdfFetchUrlTtl: vi.fn(),

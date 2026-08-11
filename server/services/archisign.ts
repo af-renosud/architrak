@@ -56,6 +56,21 @@ export class ArchisignError extends Error {
   }
 }
 
+/**
+ * Local configuration problem (missing/empty API key or base URL) —
+ * thrown BEFORE any network call. Kept as a distinct subclass so routes
+ * can tell "we are misconfigured" apart from "Archisign is down": the
+ * upstream service also legitimately returns 503 during outages, and
+ * mapping any 503 to a "not configured" message sent operators hunting
+ * for config problems during a real Archisign outage (2026-08-11).
+ */
+export class ArchisignConfigError extends ArchisignError {
+  constructor(message: string) {
+    super(message, 503, undefined, true);
+    this.name = "ArchisignConfigError";
+  }
+}
+
 interface CreateEnvelopePayload {
   // Architrak's stable correlation id for this envelope (devis id).
   externalRef: string;
@@ -180,11 +195,11 @@ const DEFAULT_EXPIRES_AT_MS = 30 * 24 * 60 * 60 * 1000;
 function getApiKey(): string {
   const csv = env.ARCHISIGN_API_KEY;
   if (!csv) {
-    throw new ArchisignError("ARCHISIGN_API_KEY is not configured", 503, undefined, true);
+    throw new ArchisignConfigError("ARCHISIGN_API_KEY is not configured");
   }
   const first = csv.split(",").map((s) => s.trim()).find((s) => s.length > 0);
   if (!first) {
-    throw new ArchisignError("ARCHISIGN_API_KEY is empty", 503, undefined, true);
+    throw new ArchisignConfigError("ARCHISIGN_API_KEY is empty");
   }
   return first;
 }
@@ -192,7 +207,7 @@ function getApiKey(): string {
 function getBaseUrl(): string {
   const base = env.ARCHISIGN_BASE_URL;
   if (!base) {
-    throw new ArchisignError("ARCHISIGN_BASE_URL is not configured", 503, undefined, true);
+    throw new ArchisignConfigError("ARCHISIGN_BASE_URL is not configured");
   }
   return base.replace(/\/+$/, "");
 }

@@ -40,6 +40,7 @@ import {
   createEnvelope,
   sendEnvelope,
   ArchisignError,
+  ArchisignConfigError,
   assertPdfFetchUrlTtl,
   buildArchisignEnvelopeSubject,
 } from "../services/archisign";
@@ -404,13 +405,29 @@ router.post(
           body: personalMessage,
         });
       } catch (err) {
-        if (err instanceof ArchisignError && err.httpStatus === 503) {
+        // Local config problem (thrown BEFORE any network call) — genuinely
+        // "not configured". Never inferred from an upstream 503: Archisign
+        // also returns 503 during outages (2026-08-11 incident), and telling
+        // the operator to check config during an outage is a false lead.
+        if (err instanceof ArchisignConfigError) {
+          console.error(`[Archisign] LOCAL CONFIG MISSING for devis ${devisId}: ${err.message}`);
           return res.status(503).json({
             message: "Archisign is not configured (missing API key or base URL).",
             code: "archisign_unconfigured",
           });
         }
         const detail = err instanceof Error ? err.message : String(err);
+        // Upstream outage: 5xx after retries, or repeated timeouts/network
+        // errors (httpStatus 0). Transient — the operator should just retry.
+        if (err instanceof ArchisignError && (err.httpStatus >= 500 || err.httpStatus === 0)) {
+          console.error(`[Archisign] UPSTREAM UNAVAILABLE (createEnvelope, devis ${devisId}, status=${err.httpStatus}):`, detail);
+          return res.status(503).json({
+            message:
+              "Le service de signature Archisign est momentanément indisponible — réessayez dans quelques minutes.",
+            code: "archisign_unavailable",
+            detail,
+          });
+        }
         console.error(`[Archisign] createEnvelope failed for devis ${devisId}:`, detail);
         return res.status(502).json({
           message: "Failed to create the Archisign envelope.",
@@ -488,6 +505,27 @@ router.post(
       // The envelope exists on Archisign side. Architect can retry this
       // endpoint and we will resume from /send (envelopeId is persisted,
       // stage is still approved_for_signing).
+      // Task #434 — an outage here (5xx after retries, or exhausted
+      // timeouts) gets the same "temporarily unavailable, just retry"
+      // treatment as the create step; the resume path makes the retry safe.
+      if (err instanceof ArchisignConfigError) {
+        console.error(`[Archisign] LOCAL CONFIG MISSING (sendEnvelope, devis ${devisId}): ${detail}`);
+        return res.status(503).json({
+          message: "Archisign is not configured (missing API key or base URL).",
+          code: "archisign_unconfigured",
+          archisignEnvelopeId: envelopeId,
+        });
+      }
+      if (err instanceof ArchisignError && (err.httpStatus >= 500 || err.httpStatus === 0)) {
+        console.error(`[Archisign] UPSTREAM UNAVAILABLE (sendEnvelope, devis ${devisId}, status=${err.httpStatus}):`, detail);
+        return res.status(503).json({
+          message:
+            "Le service de signature Archisign est momentanément indisponible — réessayez dans quelques minutes.",
+          code: "archisign_unavailable",
+          archisignEnvelopeId: envelopeId,
+          detail,
+        });
+      }
       return res.status(502).json({
         message: "Envelope created but sending it via Archisign failed. Please retry.",
         code: "archisign_send_failed",
