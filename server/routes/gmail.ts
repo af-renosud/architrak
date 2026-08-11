@@ -6,6 +6,7 @@ import { processEmailDocument } from "../gmail/document-parser";
 import { insertEmailDocumentSchema, type InsertEmailDocument } from "@shared/schema";
 import { classifyGmailPollHealth, type GmailPollHealth } from "@shared/gmail-poll-health";
 import { validateRequest } from "../middleware/validate";
+import { dismissEmailDocument, DismissRefusedError } from "../services/email-document-dismiss.service";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
@@ -112,6 +113,29 @@ router.patch(
     const doc = await storage.updateEmailDocument(Number(req.params.id), req.body);
     if (!doc) return res.status(404).json({ message: "Document not found" });
     res.json(doc);
+  },
+);
+
+// Task #421 — "not relevant" dismissal. Soft-disposition (skipped +
+// tombstone + mirror/storage cleanup) handled by the service; promoted
+// documents are refused with 409.
+router.delete(
+  "/api/email-documents/:id",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    try {
+      const result = await dismissEmailDocument(Number(req.params.id));
+      if (result.outcome === "not_found") {
+        return res.status(404).json({ message: "Document not found" });
+      }
+      res.json({ id: result.id, dismissed: true, alreadyDismissed: result.outcome === "already_dismissed" });
+    } catch (err: unknown) {
+      if (err instanceof DismissRefusedError) {
+        return res.status(409).json({ message: err.message });
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Dismiss failed: ${message}` });
+    }
   },
 );
 

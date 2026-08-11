@@ -4,7 +4,18 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { Mail, FileText, RefreshCw, ExternalLink, Search, Filter, Eye, RotateCcw } from "lucide-react";
+import { Mail, FileText, RefreshCw, ExternalLink, Search, Filter, Eye, RotateCcw, Trash2 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -47,9 +58,13 @@ export default function EmailDocuments() {
     const param = new URLSearchParams(window.location.search).get("filter");
     return param === "needs_project" ? "needs_project" : "all";
   });
-  const [typeFilter, setTypeFilter] = useState<string>("all");
-  const [searchQuery, setSearchQuery] = useState("");
+  const [typeFilter, setTypeFilterState] = useState<string>("all");
+  const [searchQuery, setSearchQueryState] = useState("");
   const [viewingDoc, setViewingDoc] = useState<EmailDocument | null>(null);
+  // Task #421 — "not relevant" removal: per-row and bulk dismissal.
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [confirmDismissIds, setConfirmDismissIds] = useState<number[] | null>(null);
+  const [isDismissing, setIsDismissing] = useState(false);
 
   const { data: emailDocs, isLoading } = useQuery<EmailDocument[]>({
     queryKey: ["/api/email-documents"],
@@ -116,6 +131,58 @@ export default function EmailDocuments() {
       toast({ title: "Project assigned" });
     },
   });
+
+  // Changing any filter clears the selection: "Remove selected" must never
+  // act on rows the operator can no longer see.
+  const setStatusFilterAndClear = (v: string) => { setSelectedIds(new Set()); setStatusFilter(v); };
+  const setTypeFilter = (v: string) => { setSelectedIds(new Set()); setTypeFilterState(v); };
+  const setSearchQuery = (v: string) => { setSelectedIds(new Set()); setSearchQueryState(v); };
+
+  // Dismiss sequentially so per-document refusals (already promoted into a
+  // devis/facture → 409) surface individually in the summary toast.
+  const dismissDocuments = async (ids: number[]) => {
+    setIsDismissing(true);
+    let removed = 0;
+    const refused: string[] = [];
+    try {
+      for (const id of ids) {
+        try {
+          await apiRequest("DELETE", `/api/email-documents/${id}`);
+          removed++;
+        } catch (err) {
+          refused.push(err instanceof Error ? err.message : String(err));
+        }
+      }
+    } finally {
+      setIsDismissing(false);
+      setConfirmDismissIds(null);
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        ids.forEach(id => next.delete(id));
+        return next;
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/email-documents"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/email-documents/queue-stats"] });
+    }
+    if (refused.length === 0) {
+      toast({ title: `${removed} document${removed > 1 ? "s" : ""} removed` });
+    } else {
+      toast({
+        title: `${removed} removed · ${refused.length} refused`,
+        description: refused[0],
+        variant: "destructive",
+      });
+    }
+  };
+
+  const toggleSelected = (id: number, checked: boolean) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
 
   const projectMap = new Map<number, Project>();
   projects?.forEach(p => projectMap.set(p.id, p));
@@ -226,7 +293,7 @@ export default function EmailDocuments() {
               data-testid="input-search-documents"
             />
           </div>
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <Select value={statusFilter} onValueChange={setStatusFilterAndClear}>
             <SelectTrigger className="w-[160px]" data-testid="select-status-filter">
               <Filter size={14} className="mr-1" />
               <SelectValue placeholder="Status" />
@@ -257,6 +324,18 @@ export default function EmailDocuments() {
               <SelectItem value="unknown">Unknown</SelectItem>
             </SelectContent>
           </Select>
+          {selectedIds.size > 0 && (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setConfirmDismissIds(Array.from(selectedIds))}
+              disabled={isDismissing}
+              data-testid="button-dismiss-selected"
+            >
+              <Trash2 size={14} />
+              <span className="text-xs">Remove selected ({selectedIds.size})</span>
+            </Button>
+          )}
         </div>
 
         <div className="space-y-3">
@@ -273,6 +352,14 @@ export default function EmailDocuments() {
                 <LuxuryCard key={doc.id} className="p-4" data-testid={`card-email-doc-${doc.id}`}>
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex items-start gap-3 flex-1 min-w-0">
+                      {doc.extractionStatus !== "skipped" && (
+                        <Checkbox
+                          className="mt-3"
+                          checked={selectedIds.has(doc.id)}
+                          onCheckedChange={(checked) => toggleSelected(doc.id, checked === true)}
+                          data-testid={`checkbox-select-doc-${doc.id}`}
+                        />
+                      )}
                       <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-950/30 flex items-center justify-center flex-shrink-0">
                         <FileText size={16} className="text-blue-600" />
                       </div>
@@ -349,6 +436,19 @@ export default function EmailDocuments() {
                           <RotateCcw size={14} />
                         </Button>
                       )}
+                      {doc.extractionStatus !== "skipped" && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-rose-500 hover:text-rose-600"
+                          title="Not relevant — remove"
+                          onClick={() => setConfirmDismissIds([doc.id])}
+                          disabled={isDismissing}
+                          data-testid={`button-dismiss-${doc.id}`}
+                        >
+                          <Trash2 size={14} />
+                        </Button>
+                      )}
                     </div>
                   </div>
                 </LuxuryCard>
@@ -356,6 +456,33 @@ export default function EmailDocuments() {
             })
           )}
         </div>
+
+        <AlertDialog open={!!confirmDismissIds} onOpenChange={(open) => { if (!open) setConfirmDismissIds(null); }}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                Remove {confirmDismissIds?.length === 1 ? "this document" : `${confirmDismissIds?.length} documents`} from the queue?
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                The document{confirmDismissIds && confirmDismissIds.length > 1 ? "s" : ""} will be marked as not
+                relevant, removed from the pending queue, and the stored file deleted. It stays visible under the
+                "Skipped" filter for audit. Documents already turned into a devis or facture cannot be removed
+                this way.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel data-testid="button-cancel-dismiss">Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => confirmDismissIds && dismissDocuments(confirmDismissIds)}
+                disabled={isDismissing}
+                className="bg-rose-600 hover:bg-rose-700"
+                data-testid="button-confirm-dismiss"
+              >
+                Remove
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         <Dialog open={!!viewingDoc} onOpenChange={() => setViewingDoc(null)}>
           <DialogContent className="max-w-2xl">

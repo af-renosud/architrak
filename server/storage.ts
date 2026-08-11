@@ -389,6 +389,13 @@ export interface IStorage {
   deleteProjectIntakeDocument(id: number): Promise<void>;
 
   tombstoneEmailDocumentIntake(emailDocumentId: number): Promise<void>;
+  dismissEmailDocumentAtomically(id: number): Promise<
+    | { outcome: "not_found" }
+    | { outcome: "already_dismissed" }
+    | { outcome: "refused"; message: string }
+    | { outcome: "dismissed"; storageKey: string | null }
+  >;
+  isStorageKeyReferencedElsewhere(storageKey: string, excludingEmailDocumentId: number): Promise<boolean>;
 
   getProjectCommunications(projectId: number): Promise<ProjectCommunication[]>;
 
@@ -2200,6 +2207,81 @@ export class DatabaseStorage implements IStorage {
     await db.update(emailDocuments)
       .set({ intakeDeletedAt: new Date() })
       .where(eq(emailDocuments.id, emailDocumentId));
+  }
+
+  async dismissEmailDocumentAtomically(id: number): Promise<
+    | { outcome: "not_found" }
+    | { outcome: "already_dismissed" }
+    | { outcome: "refused"; message: string }
+    | { outcome: "dismissed"; storageKey: string | null }
+  > {
+    // Task #421 — operator marks a queued email document "not relevant".
+    // All guards + writes run in ONE transaction holding FOR UPDATE locks on
+    // the email row and its intake mirror, so a concurrent processor claim or
+    // intake promotion cannot slip between guard and write (TOCTOU). The
+    // terminal 'skipped' status + intakeDeletedAt tombstone are written in a
+    // single UPDATE, bypassing updateEmailDocument's mirror side-effect.
+    // Idempotent; skipped stays skipped (Task #322 immutability preserved).
+    return await db.transaction(async (tx) => {
+      const [doc] = await tx.select().from(emailDocuments)
+        .where(eq(emailDocuments.id, id)).for("update");
+      if (!doc) return { outcome: "not_found" as const };
+      if (doc.extractionStatus === "skipped") return { outcome: "already_dismissed" as const };
+      if (doc.devisId != null || doc.invoiceId != null) {
+        return {
+          outcome: "refused" as const,
+          message:
+            `This document is linked to ${doc.devisId != null ? `devis #${doc.devisId}` : `facture #${doc.invoiceId}`}. ` +
+            `Accounting records cannot be removed from the email queue — handle the record itself.`,
+        };
+      }
+      // A claimed doc is mid-extraction; its worker may be about to write a
+      // project document. Refuse instead of racing it.
+      if (doc.extractionStatus === "processing") {
+        return { outcome: "refused" as const, message: "This document is currently being processed — retry in a moment." };
+      }
+      const [mirror] = await tx.select().from(projectIntakeDocuments)
+        .where(eq(projectIntakeDocuments.sourceEmailDocumentId, id)).for("update");
+      if (mirror) {
+        if (mirror.promotedId != null) {
+          return {
+            outcome: "refused" as const,
+            message:
+              `This document was routed into ${mirror.promotedKind ?? "a record"} #${mirror.promotedId}. ` +
+              `Delete that record first, then remove the document.`,
+          };
+        }
+        // Mid-analysis: the intake worker may be about to promote it.
+        if (mirror.analysisState === "analyzing") {
+          return { outcome: "refused" as const, message: "This document is currently being analyzed — retry in a moment." };
+        }
+        const deleted = await tx.delete(projectIntakeDocuments)
+          .where(and(eq(projectIntakeDocuments.id, mirror.id), isNull(projectIntakeDocuments.promotedId)))
+          .returning({ id: projectIntakeDocuments.id });
+        if (deleted.length === 0) {
+          return { outcome: "refused" as const, message: "This document was just promoted into a record — refresh and check it." };
+        }
+      }
+      await tx.update(emailDocuments)
+        .set({ extractionStatus: "skipped", intakeDeletedAt: new Date(), updatedAt: new Date() })
+        .where(eq(emailDocuments.id, id));
+      return { outcome: "dismissed" as const, storageKey: doc.storageKey };
+    });
+  }
+
+  async isStorageKeyReferencedElsewhere(storageKey: string, excludingEmailDocumentId: number): Promise<boolean> {
+    // Task #421 — the email doc's storage key can be shared (intake mirror
+    // uses the same key; legacy/manual project_documents may too). Never
+    // delete an object that another persisted row still points to.
+    const [pd] = await db.select({ id: projectDocuments.id }).from(projectDocuments)
+      .where(eq(projectDocuments.storageKey, storageKey)).limit(1);
+    if (pd) return true;
+    const [pid] = await db.select({ id: projectIntakeDocuments.id }).from(projectIntakeDocuments)
+      .where(eq(projectIntakeDocuments.storageKey, storageKey)).limit(1);
+    if (pid) return true;
+    const [ed] = await db.select({ id: emailDocuments.id }).from(emailDocuments)
+      .where(and(eq(emailDocuments.storageKey, storageKey), ne(emailDocuments.id, excludingEmailDocumentId))).limit(1);
+    return !!ed;
   }
 
   async getProjectCommunications(projectId: number): Promise<ProjectCommunication[]> {
