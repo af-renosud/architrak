@@ -139,6 +139,20 @@ export class AccountingStateConflictError extends Error {
   }
 }
 
+/** Task #430 — pending works-commission fee entry + correlation data for ranking. */
+export interface WorksFeeCandidateRow {
+  feeEntryId: number;
+  projectId: number;
+  status: string;
+  feeAmount: string;
+  baseHt: string;
+  devisNumber: string | null;
+  devisCode: string | null;
+  devisRef2: string | null;
+  contractorName: string | null;
+  contractorInvoiceNumber: string | null;
+}
+
 export interface IStorage {
   getProjects(options?: { includeArchived?: boolean; archivedOnly?: boolean }): Promise<Project[]>;
 
@@ -752,6 +766,9 @@ export interface IStorage {
   setArchitectFeeInvoiceReviewState(id: number, state: { status: ArchitectFeeInvoiceStatus; reviewedBy: string | null }): Promise<ArchitectFeeInvoice | undefined>;
   /** Confirmed evidence row bound to a fee entry (paid-poller milestone propagation). */
   getArchitectFeeInvoiceByFeeEntryId(feeEntryId: number): Promise<ArchitectFeeInvoice | undefined>;
+  /** Task #430 — pending works-commission entries enriched with contractor-invoice/devis correlation data. */
+  getPendingWorksFeeCandidates(projectId: number): Promise<WorksFeeCandidateRow[]>;
+
   /** Append-only review-decision audit (Task #426). Rows are never updated or deleted. */
   createArchitectFeeInvoiceEvent(data: InsertArchitectFeeInvoiceEvent): Promise<ArchitectFeeInvoiceEvent>;
   listArchitectFeeInvoiceEvents(architectFeeInvoiceId: number): Promise<ArchitectFeeInvoiceEvent[]>;
@@ -3717,6 +3734,37 @@ export class DatabaseStorage implements IStorage {
   async createArchitectFeeInvoiceEvent(data: InsertArchitectFeeInvoiceEvent): Promise<ArchitectFeeInvoiceEvent> {
     const [row] = await db.insert(architectFeeInvoiceEvents).values(data).returning();
     return row;
+  }
+
+  // Task #430 — works-commission candidates: pending works_percentage fee
+  // entries of one project joined with their originating contractor invoice,
+  // devis and contractor so ranking can correlate the caught firm invoice.
+  async getPendingWorksFeeCandidates(projectId: number): Promise<WorksFeeCandidateRow[]> {
+    return db
+      .select({
+        feeEntryId: feeEntries.id,
+        projectId: fees.projectId,
+        status: feeEntries.status,
+        feeAmount: feeEntries.feeAmount,
+        baseHt: feeEntries.baseHt,
+        devisNumber: devis.devisNumber,
+        devisCode: devis.devisCode,
+        devisRef2: devis.ref2,
+        contractorName: contractors.name,
+        contractorInvoiceNumber: invoices.invoiceNumber,
+      })
+      .from(feeEntries)
+      .innerJoin(fees, eq(feeEntries.feeId, fees.id))
+      .leftJoin(invoices, eq(feeEntries.invoiceId, invoices.id))
+      .leftJoin(devis, eq(feeEntries.devisId, devis.id))
+      .leftJoin(contractors, eq(invoices.contractorId, contractors.id))
+      .where(
+        and(
+          eq(fees.projectId, projectId),
+          eq(fees.feeType, "works_percentage"),
+          eq(feeEntries.status, "pending"),
+        ),
+      );
   }
 
   async listArchitectFeeInvoiceEvents(architectFeeInvoiceId: number): Promise<ArchitectFeeInvoiceEvent[]> {

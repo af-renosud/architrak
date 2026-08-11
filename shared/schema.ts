@@ -2857,6 +2857,12 @@ export const architectFeeInvoices = pgTable("architect_fee_invoices", {
   tvaAmount: numeric("tva_amount", { precision: 12, scale: 2 }),
   amountTtc: numeric("amount_ttc", { precision: 12, scale: 2 }),
   clientName: text("client_name"),
+  // Task #430 — works-commission correlation. The firm's commission invoice
+  // on contractor works carries the originating DEVIS reference; promoted
+  // out of extractionSnapshot so ranking/reconciliation and the UI can use
+  // it without spelunking JSONB. Backfilled by migration 0070.
+  devisNumber: text("devis_number"),
+  devisNumberNormalized: text("devis_number_normalized"),
   fileName: text("file_name"),
   storageKey: text("storage_key"),
   source: text("source").notNull().default("gmail"),

@@ -38,7 +38,7 @@
  */
 
 import { db } from "../db";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql, type SQL } from "drizzle-orm";
 import {
   architectFeeInvoices,
   architectFeeInvoiceEvents,
@@ -171,6 +171,13 @@ export async function confirmArchitectFeeInvoice(args: {
       let reconciliation: "attached_by_ref" | "attached_by_amount" | "created" = "created";
 
       if (refNorm) {
+        // Cross-project guard: the invoice ref already lives on an entry of
+        // ANOTHER project → already recorded elsewhere; never double-record.
+        const global = await lockEntriesBearingRef(tx, refNorm);
+        const foreign = global.find((g) => !entries.some((e) => e.id === g.id));
+        if (foreign) {
+          return await park(tx, evidence, args.actor, "ref_conflict", `La référence ${evidence.invoiceNumber} est déjà portée par l'écriture d'honoraires #${foreign.id} (autre projet).`);
+        }
         const refMatches = entries.filter((e) => entryRef(e) === refNorm);
         if (refMatches.length > 1) {
           return await park(tx, evidence, args.actor, "ref_ambiguous", `Plusieurs écritures d'honoraires portent la référence ${evidence.invoiceNumber}.`);
@@ -319,7 +326,216 @@ export async function confirmArchitectFeeInvoice(args: {
   });
 }
 
+// ─── Task #430 — works-commission binding variant ─────────────────────────
+
+export type ConfirmWorksOutcome =
+  | {
+      ok: true;
+      replayed: boolean;
+      evidence: ArchitectFeeInvoice;
+      feeEntryId: number;
+      reconciliation: "invoiced_works_entry" | "attached_by_ref";
+    }
+  | { ok: false; status: number; code: string; message: string; parked?: boolean };
+
+/**
+ * Confirms a caught firm fee invoice against an EXISTING works-commission
+ * (`works_percentage`) fee entry — the entry created when the originating
+ * contractor invoice was approved. Same guarantees as the milestone flow
+ * (one transaction, FOR UPDATE locks, extracted-date-only, Pennylane
+ * reconciliation, conflict parking, idempotent replay, append-only audit)
+ * but NO milestone is touched and NO new fee entry is ever created: the
+ * correlation targets an entry ArchiTrak already carries.
+ *
+ * Reconciliation rules:
+ *  - the invoice ref must not already live on a DIFFERENT entry of the
+ *    project (ref_conflict → park);
+ *  - a pending entry is invoiced with the EXTRACTED ref + issue date;
+ *  - an entry already invoiced via the Pennylane push flow (pennylaneInvoiceId
+ *    set) with a matching/absent ref is ATTACHED (number backfilled, no state
+ *    change); any other already-invoiced entry is refused;
+ *  - an entry bound to another confirmed evidence parks the invoice.
+ */
+export async function confirmArchitectFeeInvoiceWorks(args: {
+  evidenceId: number;
+  projectId: number;
+  feeEntryId: number;
+  actor: string | null;
+}): Promise<ConfirmWorksOutcome> {
+  return await db.transaction(async (tx): Promise<ConfirmWorksOutcome> => {
+    // ── Lock the evidence row: concurrent confirms serialize here. ──
+    const [evidence] = await tx
+      .select()
+      .from(architectFeeInvoices)
+      .where(eq(architectFeeInvoices.id, args.evidenceId))
+      .for("update");
+    if (!evidence) {
+      return { ok: false, status: 404, code: "not_found", message: "Facture introuvable." };
+    }
+
+    if (evidence.status === "confirmed") {
+      if (evidence.projectId === args.projectId && evidence.feeEntryId === args.feeEntryId) {
+        await tx.insert(architectFeeInvoiceEvents).values({
+          architectFeeInvoiceId: evidence.id,
+          action: "replayed",
+          actor: args.actor,
+          note: "Confirmation replay (commission travaux) — binding already recorded, no writes.",
+          details: { projectId: args.projectId, feeEntryId: args.feeEntryId, binding: "works_fee_entry" },
+        });
+        return { ok: true, replayed: true, evidence, feeEntryId: args.feeEntryId, reconciliation: "attached_by_ref" };
+      }
+      return {
+        ok: false,
+        status: 409,
+        code: "already_confirmed",
+        message: `Cette facture est déjà confirmée (projet #${evidence.projectId}, écriture #${evidence.feeEntryId ?? "?"}).`,
+      };
+    }
+    if (evidence.status === "dismissed") {
+      return { ok: false, status: 409, code: "dismissed", message: "Cette facture a été écartée." };
+    }
+
+    // ── Server-authoritative date: EXTRACTED issue date or refuse. ──
+    if (!evidence.issueDate) {
+      return {
+        ok: false,
+        status: 409,
+        code: "missing_issue_date",
+        message: "Date d'émission absente de la facture — impossible de dater l'écriture. Complétez la pièce avant confirmation.",
+      };
+    }
+    const dateInvoiced = evidence.issueDate;
+
+    const [project] = await tx.select().from(projects).where(eq(projects.id, args.projectId));
+    if (!project) {
+      return { ok: false, status: 404, code: "project_not_found", message: "Projet introuvable." };
+    }
+
+    // ── Lock ALL of the project's fee entries (target + ref-conflict scan). ──
+    const projectFees = await tx.select().from(fees).where(eq(fees.projectId, args.projectId));
+    const entries: FeeEntry[] = projectFees.length
+      ? await tx
+          .select()
+          .from(feeEntries)
+          .where(inArray(feeEntries.feeId, projectFees.map((f) => f.id)))
+          .for("update")
+      : [];
+    const target = entries.find((e) => e.id === args.feeEntryId);
+    if (!target) {
+      return { ok: false, status: 409, code: "entry_not_in_project", message: "L'écriture d'honoraires n'appartient pas à ce projet." };
+    }
+    const parentFee = projectFees.find((f) => f.id === target.feeId);
+    if (!parentFee || parentFee.feeType !== "works_percentage") {
+      return {
+        ok: false,
+        status: 409,
+        code: "not_works_entry",
+        message: "Cette écriture n'est pas une commission sur travaux — utilisez le rattachement par jalon.",
+      };
+    }
+
+    const refNorm = evidence.invoiceNumberNormalized ?? normalizeInvoiceRef(evidence.invoiceNumber);
+    const entryRef = (e: FeeEntry): string | null =>
+      normalizeInvoiceRef(e.pennylaneInvoiceNumber) || normalizeInvoiceRef(e.pennylaneInvoiceRef) || null;
+
+    // The invoice ref already lives on a DIFFERENT entry — in ANY project —
+    // → the document is already reconciled elsewhere; never double-record.
+    // Matching rows are locked FOR UPDATE (global scan) so concurrent
+    // confirms/manual ref writes serialize with this transaction.
+    if (refNorm) {
+      const bearing = await lockEntriesBearingRef(tx, refNorm);
+      const elsewhere = bearing.find((e) => e.id !== target.id);
+      if (elsewhere) {
+        return await park(tx, evidence, args.actor, "ref_conflict", `La référence ${evidence.invoiceNumber} est déjà portée par l'écriture d'honoraires #${elsewhere.id}.`);
+      }
+      const targetRef = entryRef(target);
+      if (targetRef != null && targetRef !== refNorm) {
+        return await park(tx, evidence, args.actor, "ref_conflict", `L'écriture #${target.id} porte déjà une autre référence (${target.pennylaneInvoiceNumber ?? target.pennylaneInvoiceRef}).`);
+      }
+    }
+
+    // Never rebind an entry already bound to ANOTHER confirmed evidence.
+    const [boundTo] = await tx
+      .select()
+      .from(architectFeeInvoices)
+      .where(eq(architectFeeInvoices.feeEntryId, target.id));
+    if (boundTo && boundTo.id !== evidence.id && boundTo.status === "confirmed") {
+      return await park(tx, evidence, args.actor, "entry_already_bound", `L'écriture d'honoraires #${target.id} est déjà liée à la facture confirmée #${boundTo.id}.`);
+    }
+
+    // ── Writes ──
+    let reconciliation: "invoiced_works_entry" | "attached_by_ref";
+    if (target.status === "pending") {
+      const res = await markFeeEntryInvoicedTx(tx, target.id, {
+        dateInvoiced,
+        pennylaneInvoiceRef: target.pennylaneInvoiceRef ?? evidence.invoiceNumber,
+        pennylaneInvoiceNumber: evidence.invoiceNumber,
+      });
+      if (!res.ok) throw new Error(`works fee entry ${target.id} transition failed: ${res.reason}`);
+      reconciliation = "invoiced_works_entry";
+    } else if (target.pennylaneInvoiceId != null) {
+      // Already invoiced via the Pennylane push flow — ATTACH only: backfill
+      // the human number, no state or money change.
+      if (!target.pennylaneInvoiceNumber && evidence.invoiceNumber) {
+        await tx
+          .update(feeEntries)
+          .set({ pennylaneInvoiceNumber: evidence.invoiceNumber })
+          .where(eq(feeEntries.id, target.id));
+      }
+      reconciliation = "attached_by_ref";
+    } else {
+      return {
+        ok: false,
+        status: 409,
+        code: "entry_already_invoiced",
+        message: `L'écriture d'honoraires #${target.id} est déjà ${target.status === "paid" ? "payée" : "facturée"}.`,
+      };
+    }
+
+    const noteLine = `Facture ${evidence.invoiceNumber ?? "?"} du ${dateInvoiced} — commission travaux, écriture #${target.id} (pièce n°${evidence.id}${evidence.fileName ? ` — ${evidence.fileName}` : ""}).`;
+    const [updatedEvidence] = await tx
+      .update(architectFeeInvoices)
+      .set({
+        status: "confirmed",
+        projectId: args.projectId,
+        milestoneId: null,
+        feeEntryId: target.id,
+        reviewedBy: args.actor,
+        reviewedAt: new Date(),
+      })
+      .where(eq(architectFeeInvoices.id, evidence.id))
+      .returning();
+
+    await tx.insert(architectFeeInvoiceEvents).values({
+      architectFeeInvoiceId: evidence.id,
+      action: "confirmed",
+      actor: args.actor,
+      note: noteLine,
+      details: { projectId: args.projectId, feeEntryId: target.id, binding: "works_fee_entry", reconciliation, dateInvoiced },
+    });
+
+    return { ok: true, replayed: false, evidence: updatedEvidence, feeEntryId: target.id, reconciliation };
+  });
+}
+
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * GLOBAL ref scan — the caught invoice reference must not already live on
+ * ANY fee entry, in ANY project (a cross-project double-record is still a
+ * double-record). SQL-side normalization mirrors normalizeInvoiceRef
+ * (lowercase, alphanumerics only; refs are ASCII in practice). Matching
+ * rows are locked FOR UPDATE so a concurrent confirm/manual ref write on
+ * them serializes with this transaction.
+ */
+async function lockEntriesBearingRef(tx: Tx, refNorm: string): Promise<FeeEntry[]> {
+  const norm = (col: unknown): SQL => sql`lower(regexp_replace(coalesce(${col}, ''), '[^a-zA-Z0-9]', '', 'g'))`;
+  return tx
+    .select()
+    .from(feeEntries)
+    .where(sql`(${norm(feeEntries.pennylaneInvoiceNumber)} = ${refNorm} OR ${norm(feeEntries.pennylaneInvoiceRef)} = ${refNorm})`)
+    .for("update");
+}
 
 /**
  * Conflict path: evidence STAYS pending_review; the conflict is audited and
@@ -333,7 +549,7 @@ async function park(
   actor: string | null,
   code: string,
   message: string,
-): Promise<ConfirmOutcome> {
+): Promise<{ ok: false; status: number; code: string; message: string; parked: true }> {
   await tx.insert(architectFeeInvoiceEvents).values({
     architectFeeInvoiceId: evidence.id,
     action: "conflict_parked",

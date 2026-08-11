@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { storage } from "../storage";
 import { ARCHITECT_FEE_INVOICE_STATUSES, type ArchitectFeeInvoiceStatus } from "@shared/schema";
-import { confirmArchitectFeeInvoice } from "../services/architect-fee-invoice-confirm.service";
+import { confirmArchitectFeeInvoice, confirmArchitectFeeInvoiceWorks } from "../services/architect-fee-invoice-confirm.service";
 import { validateRequest } from "../middleware/validate";
 
 /**
@@ -72,15 +72,23 @@ router.get("/api/architect-fee-invoices/:id/events", async (req, res) => {
 const confirmBodySchema = z
   .object({
     projectId: z.number().int().positive(),
-    milestoneId: z.number().int().positive(),
+    milestoneId: z.number().int().positive().optional(),
+    // Task #430 — alternative binding: an existing works-commission fee entry.
+    feeEntryId: z.number().int().positive().optional(),
   })
-  .strict();
+  .strict()
+  .refine((b) => (b.milestoneId != null) !== (b.feeEntryId != null), {
+    message: "Provide exactly one of milestoneId or feeEntryId",
+  });
 
 /**
- * Task #426 — explicit operator confirmation. Atomically binds the evidence
- * to a project + milestone, records/attaches the fee entry with the
- * EXTRACTED ref/date, and transitions the milestone to `invoiced`
- * (`paid` stays with the Pennylane paid-poller). Idempotent on replay.
+ * Task #426/#430 — explicit operator confirmation, two bindings:
+ *  - milestoneId: design-contract milestone flow (Task #426) — milestone →
+ *    invoiced, fee entry recorded/attached with the EXTRACTED ref/date;
+ *  - feeEntryId: works-commission flow (Task #430) — the EXISTING pending
+ *    `works_percentage` entry is invoiced with the document's ref/date; no
+ *    milestone is touched, no entry created.
+ * Both are idempotent on replay; `paid` stays with the Pennylane paid-poller.
  */
 router.post(
   "/api/architect-fee-invoices/:id/confirm",
@@ -89,6 +97,24 @@ router.post(
     const id = z.coerce.number().int().positive().safeParse(req.params.id);
     if (!id.success) return res.status(400).json({ message: "Invalid id" });
     const user = (req as { user?: { email?: string | null } }).user;
+    if (req.body.feeEntryId != null) {
+      const result = await confirmArchitectFeeInvoiceWorks({
+        evidenceId: id.data,
+        projectId: req.body.projectId,
+        feeEntryId: req.body.feeEntryId,
+        actor: user?.email ?? null,
+      });
+      if (!result.ok) {
+        return res.status(result.status).json({ message: result.message, code: result.code, parked: result.parked ?? false });
+      }
+      return res.json({
+        evidence: result.evidence,
+        feeEntryId: result.feeEntryId,
+        milestoneId: null,
+        reconciliation: result.reconciliation,
+        replayed: result.replayed,
+      });
+    }
     const result = await confirmArchitectFeeInvoice({
       evidenceId: id.data,
       projectId: req.body.projectId,

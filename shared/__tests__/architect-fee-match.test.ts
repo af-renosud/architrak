@@ -5,10 +5,12 @@ import {
   rankProjectCandidates,
   isHighConfidenceProjectMatch,
   rankMilestoneCandidates,
+  rankWorksFeeCandidates,
   reconciledInvoiceTtc,
   normalizeInvoiceRef,
   type FirmProfile,
   type FeeInvoiceExtraction,
+  type WorksFeeCandidateInput,
 } from "../architect-fee-match";
 
 const FIRM: FirmProfile = {
@@ -158,6 +160,65 @@ describe("milestone ranking", () => {
     expect(reconciledInvoiceTtc(extraction({ amountHt: 1000, tvaAmount: 200 }))).toBe(1200);
     expect(reconciledInvoiceTtc(extraction({ amountHt: 1000, tvaRate: 20 }))).toBe(1200);
     expect(reconciledInvoiceTtc(extraction({}))).toBeNull();
+  });
+});
+
+describe("rankWorksFeeCandidates (Task #430)", () => {
+  const entry = (overrides: Partial<WorksFeeCandidateInput> = {}): WorksFeeCandidateInput => ({
+    feeEntryId: 1,
+    projectId: 5,
+    status: "pending",
+    feeAmount: "350.00",
+    baseHt: "5000.00",
+    devisNumber: "DEV-2026-042",
+    devisCode: "GO-01",
+    devisRef2: null,
+    contractorName: "MACONNERIE DURAND",
+    contractorInvoiceNumber: "FC-2026-9",
+    ...overrides,
+  });
+
+  it("scores devis-ref + exact commission amount + contractor mention", () => {
+    const ranked = rankWorksFeeCandidates(
+      extraction({ devisNumber: "dev 2026 042", amountHt: 350, description: "Honoraires 7% travaux Maçonnerie Durand" }),
+      [entry()],
+    );
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0].score).toBeGreaterThanOrEqual(120);
+    expect(ranked[0].reasons.join(" ")).toContain("référence devis");
+  });
+
+  it("matches the devis reference from the invoice `reference` field and devisCode too", () => {
+    const ranked = rankWorksFeeCandidates(extraction({ reference: "GO-01" }), [entry({ devisNumber: null })]);
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0].score).toBe(60);
+  });
+
+  it("skips non-pending entries entirely", () => {
+    const ranked = rankWorksFeeCandidates(
+      extraction({ devisNumber: "DEV-2026-042", amountHt: 350 }),
+      [entry({ status: "invoiced" })],
+    );
+    expect(ranked).toHaveLength(0);
+  });
+
+  it("gives the base-amount signal only when the fee amount does not match", () => {
+    const ranked = rankWorksFeeCandidates(extraction({ amountHt: 5000 }), [entry()]);
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0].score).toBe(10);
+  });
+
+  it("returns nothing when no signal matches", () => {
+    const ranked = rankWorksFeeCandidates(extraction({ amountHt: 12.34, devisNumber: "OTHER" }), [entry()]);
+    expect(ranked).toHaveLength(0);
+  });
+
+  it("sorts by score descending", () => {
+    const ranked = rankWorksFeeCandidates(
+      extraction({ devisNumber: "DEV-2026-042", amountHt: 99 }),
+      [entry({ feeEntryId: 1, devisNumber: "NOPE", feeAmount: "99.00" }), entry({ feeEntryId: 2 })],
+    );
+    expect(ranked.map((r) => r.feeEntryId)).toEqual([2, 1]);
   });
 });
 

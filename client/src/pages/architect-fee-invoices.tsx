@@ -37,10 +37,22 @@ interface RankedMilestone {
   amountTtc: string;
 }
 
+interface RankedWorksFee {
+  feeEntryId: number;
+  score: number;
+  reasons: string[];
+  feeAmount: string;
+  contractorName: string | null;
+  devisNumber: string | null;
+  contractorInvoiceNumber: string | null;
+}
+
 interface CandidatesPayload {
   projects: RankedProject[];
   highConfidenceProjectId: number | null;
   milestones: Record<string, RankedMilestone[]>;
+  /** Task #430 — pending works-commission fee entries per project. */
+  worksFees?: Record<string, RankedWorksFee[]>;
 }
 
 const statusLabels: Record<string, string> = {
@@ -65,23 +77,31 @@ function ConfirmControls({ row, candidates }: { row: ArchitectFeeInvoice; candid
         : "",
   );
   const milestonesForProject = projectId ? (candidates.milestones[projectId] ?? []) : [];
-  const [milestoneId, setMilestoneId] = useState<string>("");
+  const worksForProject = projectId ? (candidates.worksFees?.[projectId] ?? []) : [];
+  // Binding value: "m:<milestoneId>" (jalon) or "w:<feeEntryId>" (commission travaux).
+  const [binding, setBinding] = useState<string>("");
 
   const confirmMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", `/api/architect-fee-invoices/${row.id}/confirm`, {
-        projectId: Number(projectId),
-        milestoneId: Number(milestoneId),
-      });
+      const [kind, idStr] = binding.split(":");
+      const body =
+        kind === "w"
+          ? { projectId: Number(projectId), feeEntryId: Number(idStr) }
+          : { projectId: Number(projectId), milestoneId: Number(idStr) };
+      const res = await apiRequest("POST", `/api/architect-fee-invoices/${row.id}/confirm`, body);
       return res.json();
     },
-    onSuccess: (data: { reconciliation: string; feeEntryId: number }) => {
+    onSuccess: (data: { reconciliation: string; feeEntryId: number; milestoneId: number | null }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/architect-fee-invoices"] });
       const how =
         data.reconciliation === "created"
-          ? "nouvelle écriture d'honoraires créée"
-          : "rattachée à l'écriture Pennylane existante";
-      toast({ title: "Facture confirmée", description: `Jalon marqué facturé — ${how} (n°${data.feeEntryId}).` });
+          ? "Jalon marqué facturé — nouvelle écriture d'honoraires créée"
+          : data.reconciliation === "invoiced_works_entry"
+            ? "Commission travaux facturée — écriture existante enregistrée"
+            : data.milestoneId != null
+              ? "Jalon marqué facturé — rattachée à l'écriture Pennylane existante"
+              : "Rattachée à l'écriture Pennylane existante";
+      toast({ title: "Facture confirmée", description: `${how} (n°${data.feeEntryId}).` });
     },
     onError: (err: Error) => {
       toast({ title: "Confirmation refusée", description: err.message, variant: "destructive" });
@@ -94,7 +114,7 @@ function ConfirmControls({ row, candidates }: { row: ArchitectFeeInvoice; candid
         value={projectId}
         onValueChange={(v) => {
           setProjectId(v);
-          setMilestoneId("");
+          setBinding("");
         }}
       >
         <SelectTrigger className="w-44" data-testid={`select-fee-invoice-project-${row.id}`}>
@@ -108,14 +128,34 @@ function ConfirmControls({ row, candidates }: { row: ArchitectFeeInvoice; candid
           ))}
         </SelectContent>
       </Select>
-      <Select value={milestoneId} onValueChange={setMilestoneId} disabled={!projectId || milestonesForProject.length === 0}>
-        <SelectTrigger className="w-56" data-testid={`select-fee-invoice-milestone-${row.id}`}>
-          <SelectValue placeholder={milestonesForProject.length === 0 ? "Aucun jalon" : "Jalon…"} />
+      <Select
+        value={binding}
+        onValueChange={setBinding}
+        disabled={!projectId || (milestonesForProject.length === 0 && worksForProject.length === 0)}
+      >
+        <SelectTrigger className="w-64" data-testid={`select-fee-invoice-milestone-${row.id}`}>
+          <SelectValue
+            placeholder={
+              milestonesForProject.length === 0 && worksForProject.length === 0
+                ? "Aucun rattachement"
+                : "Jalon ou commission…"
+            }
+          />
         </SelectTrigger>
         <SelectContent>
           {milestonesForProject.map((m) => (
-            <SelectItem key={m.milestoneId} value={String(m.milestoneId)}>
-              #{m.sequence} · {m.labelFr}
+            <SelectItem key={`m:${m.milestoneId}`} value={`m:${m.milestoneId}`}>
+              Jalon #{m.sequence} · {m.labelFr}
+            </SelectItem>
+          ))}
+          {worksForProject.map((w) => (
+            <SelectItem
+              key={`w:${w.feeEntryId}`}
+              value={`w:${w.feeEntryId}`}
+              data-testid={`option-fee-invoice-works-${row.id}-${w.feeEntryId}`}
+            >
+              Commission travaux · {w.contractorName ?? "?"}
+              {w.devisNumber ? ` (devis ${w.devisNumber})` : ""} — {formatCurrency(w.feeAmount)}
             </SelectItem>
           ))}
         </SelectContent>
@@ -125,7 +165,7 @@ function ConfirmControls({ row, candidates }: { row: ArchitectFeeInvoice; candid
           <span>
             <Button
               size="sm"
-              disabled={!projectId || !milestoneId || confirmMutation.isPending}
+              disabled={!projectId || !binding || confirmMutation.isPending}
               onClick={() => confirmMutation.mutate()}
               data-testid={`button-fee-invoice-confirm-${row.id}`}
             >
@@ -218,6 +258,9 @@ export default function ArchitectFeeInvoices() {
                       </div>
                       <div className="mt-1 text-sm text-muted-foreground space-x-3">
                         {row.clientName && <span>Client : {row.clientName}</span>}
+                        {row.devisNumber && (
+                          <span data-testid={`text-fee-invoice-devis-ref-${row.id}`}>Réf. devis : {row.devisNumber}</span>
+                        )}
                         {row.issueDate && <span>Émise le {row.issueDate}</span>}
                         {row.fileName && <span className="break-all">{row.fileName}</span>}
                       </div>
@@ -274,7 +317,17 @@ export default function ArchitectFeeInvoices() {
                               <ul className="mt-1 ml-4 list-disc text-xs text-muted-foreground">
                                 {candidates.milestones[String(p.projectId)].map((m) => (
                                   <li key={m.milestoneId}>
-                                    #{m.sequence} · {m.labelFr} — {formatCurrency(m.amountTtc)} ({m.reasons.join(", ")})
+                                    Jalon #{m.sequence} · {m.labelFr} — {formatCurrency(m.amountTtc)} ({m.reasons.join(", ")})
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                            {(candidates.worksFees?.[String(p.projectId)] ?? []).length > 0 && (
+                              <ul className="mt-1 ml-4 list-disc text-xs text-muted-foreground">
+                                {(candidates.worksFees?.[String(p.projectId)] ?? []).map((w) => (
+                                  <li key={w.feeEntryId} data-testid={`text-fee-invoice-works-candidate-${row.id}-${w.feeEntryId}`}>
+                                    Commission travaux · {w.contractorName ?? "?"}
+                                    {w.devisNumber ? ` (devis ${w.devisNumber})` : ""} — {formatCurrency(w.feeAmount)} ({w.reasons.join(", ")})
                                   </li>
                                 ))}
                               </ul>

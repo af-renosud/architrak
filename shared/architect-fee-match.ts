@@ -314,6 +314,97 @@ export function rankMilestoneCandidates(
   return out;
 }
 
+// ─── Works-commission fee-entry ranking (Task #430) ───────────────────────
+
+/**
+ * One pending `works_percentage` fee entry, enriched with the correlating
+ * data of its originating contractor invoice + devis (built server-side).
+ */
+export interface WorksFeeCandidateInput {
+  feeEntryId: number;
+  projectId: number;
+  status: string;
+  /** Commission amount HT of the entry ("38.50"). */
+  feeAmount: string | number;
+  /** Contractor-invoice HT the commission was computed from. */
+  baseHt: string | number;
+  /** Originating devis references (devisNumber, devisCode, ref2). */
+  devisNumber?: string | null;
+  devisCode?: string | null;
+  devisRef2?: string | null;
+  contractorName?: string | null;
+  /** Contractor invoice number the entry was created from. */
+  contractorInvoiceNumber?: string | null;
+}
+
+export interface RankedWorksFeeCandidate {
+  feeEntryId: number;
+  score: number;
+  reasons: string[];
+}
+
+/**
+ * Rank pending works-commission fee entries against a caught firm fee
+ * invoice. Only `pending` entries are considered (invoiced/paid entries are
+ * already reconciled). Signals (additive):
+ *  - normalized devis-reference match (invoice devisNumber/reference vs the
+ *    entry's devisNumber/devisCode/ref2): +60
+ *  - exact commission-amount match (invoice HT == entry feeAmount): +40
+ *  - contractor name appears in the invoice description/haystack: +20
+ *  - base-amount match (entry baseHt appears as the invoice's stated base —
+ *    matched against amountHt only when no fee-amount match): +10
+ */
+export function rankWorksFeeCandidates(
+  parsed: FeeInvoiceExtraction & { devisNumber?: string | null },
+  entries: WorksFeeCandidateInput[],
+  extraHaystack?: string | null,
+): RankedWorksFeeCandidate[] {
+  const parsedRefs = [parsed.devisNumber, parsed.reference]
+    .map((r) => normalizeRef(r))
+    .filter(Boolean);
+  const invoiceHt = parsed.amountHt != null && Number.isFinite(parsed.amountHt) ? roundCurrency(parsed.amountHt) : null;
+  const haystackTokens = tokenSet(`${parsed.description ?? ""} ${parsed.reference ?? ""} ${extraHaystack ?? ""}`);
+
+  const out: RankedWorksFeeCandidate[] = [];
+  for (const e of entries) {
+    if (e.status !== "pending") continue;
+    let score = 0;
+    const reasons: string[] = [];
+
+    const entryRefs = [e.devisNumber, e.devisCode, e.devisRef2].map((r) => normalizeRef(r)).filter(Boolean);
+    const refHit = parsedRefs.find((pr) => entryRefs.includes(pr));
+    if (refHit) {
+      score += 60;
+      reasons.push(`référence devis correspondante ("${e.devisNumber ?? e.devisCode ?? e.devisRef2}")`);
+    }
+
+    const feeAmount = toNumber(e.feeAmount);
+    const feeHit = invoiceHt != null && feeAmount != null && roundCurrency(feeAmount) === invoiceHt;
+    if (feeHit) {
+      score += 40;
+      reasons.push(`montant de commission exact (${invoiceHt.toFixed(2)} € HT)`);
+    }
+
+    const contractorTokens = tokenSet(e.contractorName);
+    if (tokenOverlap(contractorTokens, haystackTokens) >= 0.5) {
+      score += 20;
+      reasons.push(`entreprise citée ("${e.contractorName}")`);
+    }
+
+    if (!feeHit && invoiceHt != null) {
+      const baseHt = toNumber(e.baseHt);
+      if (baseHt != null && roundCurrency(baseHt) === invoiceHt) {
+        score += 10;
+        reasons.push(`montant égal à la base travaux (${invoiceHt.toFixed(2)} € HT)`);
+      }
+    }
+
+    if (score > 0) out.push({ feeEntryId: e.feeEntryId, score, reasons });
+  }
+  out.sort((a, b) => b.score - a.score);
+  return out;
+}
+
 /** Business-ref normalization for dedup — same rules as intake refs. */
 export function normalizeInvoiceRef(value: string | null | undefined): string {
   return normalizeRef(value);

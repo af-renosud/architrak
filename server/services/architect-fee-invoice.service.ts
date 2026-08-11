@@ -22,12 +22,14 @@ import {
   normalizeInvoiceRef,
   rankProjectCandidates,
   rankMilestoneCandidates,
+  rankWorksFeeCandidates,
   isHighConfidenceProjectMatch,
   type FirmProfile,
   type FeeInvoiceExtraction,
   type FirmGateResult,
   type RankedProjectCandidate,
   type RankedMilestoneCandidate,
+  type RankedWorksFeeCandidate,
 } from "@shared/architect-fee-match";
 import type { ParsedDocument } from "../gmail/document-parser";
 
@@ -83,6 +85,19 @@ interface CandidatesPayload {
   highConfidenceProjectId: number | null;
   /** Keyed by projectId — milestones only ranked for top project candidates. */
   milestones: Record<string, (RankedMilestoneCandidate & { labelFr: string; sequence: number; amountTtc: string })[]>;
+  /**
+   * Task #430 — keyed by projectId: pending works-commission fee entries the
+   * invoice could bind to instead of a design milestone (suggestions only).
+   */
+  worksFees: Record<
+    string,
+    (RankedWorksFeeCandidate & {
+      feeAmount: string;
+      contractorName: string | null;
+      devisNumber: string | null;
+      contractorInvoiceNumber: string | null;
+    })[]
+  >;
 }
 
 /**
@@ -117,16 +132,35 @@ export async function captureArchitectFeeInvoice(args: CaptureArgs): Promise<Cap
   const highConfidence = isHighConfidenceProjectMatch(rankedProjects);
 
   const milestones: CandidatesPayload["milestones"] = {};
+  const worksFees: CandidatesPayload["worksFees"] = {};
+  const worksHaystack = args.matchHaystack ?? args.fileName ?? null;
   for (const cand of rankedProjects.slice(0, 3)) {
     const contract = await storage.getDesignContractByProject(cand.projectId);
-    if (!contract) continue;
-    const rows = await storage.getDesignContractMilestones(contract.id);
-    const ranked = rankMilestoneCandidates(parsed, rows);
-    if (ranked.length > 0) {
-      const rowById = new Map(rows.map((m) => [m.id, m]));
-      milestones[String(cand.projectId)] = ranked.map((r) => {
-        const m = rowById.get(r.milestoneId)!;
-        return { ...r, labelFr: m.labelFr, sequence: m.sequence, amountTtc: m.amountTtc };
+    if (contract) {
+      const rows = await storage.getDesignContractMilestones(contract.id);
+      const ranked = rankMilestoneCandidates(parsed, rows);
+      if (ranked.length > 0) {
+        const rowById = new Map(rows.map((m) => [m.id, m]));
+        milestones[String(cand.projectId)] = ranked.map((r) => {
+          const m = rowById.get(r.milestoneId)!;
+          return { ...r, labelFr: m.labelFr, sequence: m.sequence, amountTtc: m.amountTtc };
+        });
+      }
+    }
+    // Task #430 — pending works-commission entries as alternative binding.
+    const worksRows = await storage.getPendingWorksFeeCandidates(cand.projectId);
+    const rankedWorks = rankWorksFeeCandidates(parsed as FeeInvoiceExtraction & { devisNumber?: string | null }, worksRows, worksHaystack);
+    if (rankedWorks.length > 0) {
+      const rowByEntry = new Map(worksRows.map((w) => [w.feeEntryId, w]));
+      worksFees[String(cand.projectId)] = rankedWorks.map((r) => {
+        const w = rowByEntry.get(r.feeEntryId)!;
+        return {
+          ...r,
+          feeAmount: w.feeAmount,
+          contractorName: w.contractorName,
+          devisNumber: w.devisNumber ?? w.devisCode,
+          contractorInvoiceNumber: w.contractorInvoiceNumber,
+        };
       });
     }
   }
@@ -138,6 +172,7 @@ export async function captureArchitectFeeInvoice(args: CaptureArgs): Promise<Cap
     }),
     highConfidenceProjectId: highConfidence ? rankedProjects[0].projectId : null,
     milestones,
+    worksFees,
   };
 
   const toMoney = (v: number | null | undefined): string | null =>
@@ -153,6 +188,10 @@ export async function captureArchitectFeeInvoice(args: CaptureArgs): Promise<Cap
     tvaAmount: toMoney(parsed.tvaAmount),
     amountTtc: toMoney(parsed.amountTtc),
     clientName: parsed.clientName ?? null,
+    // Task #430 — first-class works-commission correlation (devis reference
+    // printed on the firm's commission invoice).
+    devisNumber: (parsed as { devisNumber?: string | null }).devisNumber ?? null,
+    devisNumberNormalized: normalizeInvoiceRef((parsed as { devisNumber?: string | null }).devisNumber) || null,
     fileName: args.fileName ?? null,
     storageKey: args.storageKey ?? null,
     source: "gmail",
