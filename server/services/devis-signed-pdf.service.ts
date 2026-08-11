@@ -26,6 +26,8 @@
 import { storage } from "../storage";
 import {
   getSignedPdfUrl,
+  ArchisignError,
+  ArchisignConfigError,
   ArchisignRetentionBreachError,
 } from "./archisign.js";
 import { uploadDocumentAtKey, buildSignedDevisObjectName } from "../storage/object-storage";
@@ -65,14 +67,37 @@ function nextAttemptAtFromAttempts(currentAttempts: number): Date | null {
 /**
  * Download a signed PDF body from a short-lived URL with a hard timeout.
  * Returns the bytes on success or throws on any non-2xx / network error.
+ *
+ * Task #438 — the URLs downloaded here are Archisign-hosted (webhook
+ * snapshot or re-minted), so failures are classified as ArchisignError:
+ * HTTP status carried through for non-2xx, httpStatus 0 for network
+ * errors / timeouts. That lets classifyDownloadFailure treat a 5xx or
+ * timeout on the byte download itself as an outage, not a generic error.
  */
 async function fetchPdfBytes(url: string): Promise<Buffer> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { signal: controller.signal });
+    let res: Response;
+    try {
+      res = await fetch(url, { signal: controller.signal });
+    } catch (err) {
+      // Network error or timeout abort — Archisign-side unreachable.
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new ArchisignError(
+        `Network error fetching signed PDF: ${detail}`,
+        0,
+        undefined,
+        true,
+      );
+    }
     if (!res.ok) {
-      throw new Error(`HTTP ${res.status} ${res.statusText} fetching signed PDF`);
+      throw new ArchisignError(
+        `HTTP ${res.status} ${res.statusText} fetching signed PDF`,
+        res.status,
+        undefined,
+        res.status >= 500,
+      );
     }
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length === 0) throw new Error("Empty response body for signed PDF");
@@ -83,23 +108,55 @@ async function fetchPdfBytes(url: string): Promise<Buffer> {
 }
 
 /**
+ * Task #438 — classified outcome of a persist attempt so operator-facing
+ * callers (the admin recovery retry endpoint) can distinguish an Archisign
+ * outage ("temporarily down, just retry") from a real error, mirroring the
+ * outage-vs-config split Task #434 gave send-to-signer.
+ *
+ *   - `archisign_unavailable`  — upstream 5xx after retries, or exhausted
+ *                                timeouts/network errors (httpStatus 0).
+ *   - `archisign_unconfigured` — local config missing (thrown BEFORE any
+ *                                network call).
+ *   - `retention_breach`       — terminal: Archisign purged the bytes.
+ *   - `other`                  — everything else (expired URL, storage
+ *                                upload failure, unexpected errors, …).
+ */
+export interface SignedPdfPersistOutcome {
+  persisted: boolean;
+  failureKind?: "archisign_unavailable" | "archisign_unconfigured" | "retention_breach" | "other";
+  error?: string;
+}
+
+function classifyDownloadFailure(err: unknown): NonNullable<SignedPdfPersistOutcome["failureKind"]> {
+  if (err instanceof ArchisignRetentionBreachError) return "retention_breach";
+  if (err instanceof ArchisignConfigError) return "archisign_unconfigured";
+  if (err instanceof ArchisignError && (err.httpStatus >= 500 || err.httpStatus === 0)) {
+    return "archisign_unavailable";
+  }
+  return "other";
+}
+
+/**
  * Best-effort persist + Drive mirror. Never throws — caller is the
  * Archisign webhook handler which MUST 200 regardless of our audit
  * copy state. All failure modes are logged with a stable prefix so
  * operators can grep `[SignedPdfPersist]` to triage.
+ *
+ * Returns a classified outcome (Task #438); fire-and-forget callers
+ * (webhook, sweeper) are free to ignore it.
  */
-export async function persistSignedDevisPdf(devisId: number): Promise<void> {
+export async function persistSignedDevisPdf(devisId: number): Promise<SignedPdfPersistOutcome> {
   try {
     const d = await storage.getDevis(devisId);
     if (!d) {
       console.warn(`[SignedPdfPersist] devis ${devisId} not found — skipping`);
-      return;
+      return { persisted: false, failureKind: "other", error: "devis not found" };
     }
     if (!d.archisignEnvelopeId) {
       console.warn(
         `[SignedPdfPersist] devis ${devisId} has no archisignEnvelopeId — cannot fetch signed PDF`,
       );
-      return;
+      return { persisted: false, failureKind: "other", error: "no archisignEnvelopeId" };
     }
 
     let storageKey = d.signedPdfStorageKey ?? null;
@@ -109,9 +166,11 @@ export async function persistSignedDevisPdf(devisId: number): Promise<void> {
       let bytes: Buffer | null = null;
       let giveUp = false;
       let failureMessage: string | null = null;
+      let failureKind: NonNullable<SignedPdfPersistOutcome["failureKind"]> = "other";
       try {
         bytes = await downloadSignedPdf(d);
       } catch (err) {
+        failureKind = classifyDownloadFailure(err);
         if (err instanceof ArchisignRetentionBreachError) {
           // Terminal: Archisign has purged the bytes. Stop retrying.
           giveUp = true;
@@ -123,10 +182,17 @@ export async function persistSignedDevisPdf(devisId: number): Promise<void> {
           );
         } else {
           failureMessage = err instanceof Error ? err.message : String(err);
-          console.error(
-            `[SignedPdfPersist] devis ${devisId} envelope ${d.archisignEnvelopeId}: ` +
-              `download failed: ${failureMessage}`,
-          );
+          if (failureKind === "archisign_unavailable") {
+            console.error(
+              `[SignedPdfPersist] devis ${devisId} envelope ${d.archisignEnvelopeId}: ` +
+                `Archisign UPSTREAM UNAVAILABLE (transient — will retry): ${failureMessage}`,
+            );
+          } else {
+            console.error(
+              `[SignedPdfPersist] devis ${devisId} envelope ${d.archisignEnvelopeId}: ` +
+                `download failed: ${failureMessage}`,
+            );
+          }
         }
       }
 
@@ -141,7 +207,7 @@ export async function persistSignedDevisPdf(devisId: number): Promise<void> {
           failureMessage ?? "unknown",
           nextAt,
         );
-        return;
+        return { persisted: false, failureKind, error: failureMessage ?? "unknown" };
       }
 
       // Deterministic object name keyed by devisId. Concurrent webhook
@@ -163,7 +229,7 @@ export async function persistSignedDevisPdf(devisId: number): Promise<void> {
           message,
           nextAttemptAtFromAttempts(currentAttempts),
         );
-        return;
+        return { persisted: false, failureKind: "other", error: message };
       }
       console.log(
         `[SignedPdfPersist] devis ${devisId} envelope ${d.archisignEnvelopeId}: ` +
@@ -189,9 +255,11 @@ export async function persistSignedDevisPdf(devisId: number): Promise<void> {
       displayName: signedPdfFileName(d),
       seedDevisCode: d.devisCode,
     });
+    return { persisted: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[SignedPdfPersist] devis ${devisId}: unexpected failure: ${message}`);
+    return { persisted: false, failureKind: "other", error: message };
   }
 }
 

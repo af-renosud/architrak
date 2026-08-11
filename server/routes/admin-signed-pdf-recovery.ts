@@ -70,7 +70,32 @@ router.post(
       // pass with a clean attempt budget — matching the drive-uploads
       // admin retry semantics.
       await storage.clearSignedPdfRetry(id);
-      await persistSignedDevisPdf(id);
+      const outcome = await persistSignedDevisPdf(id);
+
+      // Task #438 — mirror the outage-vs-config split Task #434 gave
+      // send-to-signer: an Archisign outage (5xx after retries, exhausted
+      // timeouts) is transient and just needs a later retry; a local
+      // config problem is actionable. Both are surfaced as 503 so the
+      // operator never mistakes them for a real failure.
+      if (outcome && !outcome.persisted) {
+        if (outcome.failureKind === "archisign_unavailable") {
+          return res.status(503).json({
+            message:
+              "Le service de signature Archisign est momentanément indisponible — réessayez dans quelques minutes.",
+            code: "archisign_unavailable",
+            id,
+            detail: outcome.error ?? null,
+          });
+        }
+        if (outcome.failureKind === "archisign_unconfigured") {
+          return res.status(503).json({
+            message: "Archisign is not configured (missing API key or base URL).",
+            code: "archisign_unconfigured",
+            id,
+            detail: outcome.error ?? null,
+          });
+        }
+      }
 
       const after = await storage.getDevis(id);
       res.json({

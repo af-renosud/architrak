@@ -217,6 +217,77 @@ describe("POST /api/admin/signed-pdf-recovery/:id/retry", () => {
     expect(persistMock.persistSignedDevisPdf).toHaveBeenCalledWith(42);
   });
 
+  // Task #438 — outage-vs-config split on the signed-PDF fetch path,
+  // mirroring the Task #434 semantics on send-to-signer.
+  it("maps an Archisign outage to 503 archisign_unavailable with the retry message", async () => {
+    storageMock.listSignedPdfRecoveryCandidates.mockResolvedValueOnce([
+      { ...baseCandidate },
+    ]);
+    persistMock.persistSignedDevisPdf.mockResolvedValueOnce({
+      persisted: false,
+      failureKind: "archisign_unavailable",
+      error: "Archisign 503: Service Unavailable",
+    });
+
+    const res = await postRetry(42);
+
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as {
+      message: string;
+      code: string;
+      id: number;
+      detail: string | null;
+    };
+    expect(body.code).toBe("archisign_unavailable");
+    expect(body.message).toMatch(/momentanément indisponible/);
+    expect(body.message).toMatch(/réessayez/);
+    expect(body.id).toBe(42);
+    expect(body.detail).toBe("Archisign 503: Service Unavailable");
+    // The endpoint never reads post-state on this branch.
+    expect(storageMock.getDevis).not.toHaveBeenCalled();
+  });
+
+  it("maps a local Archisign config problem to 503 archisign_unconfigured", async () => {
+    storageMock.listSignedPdfRecoveryCandidates.mockResolvedValueOnce([
+      { ...baseCandidate },
+    ]);
+    persistMock.persistSignedDevisPdf.mockResolvedValueOnce({
+      persisted: false,
+      failureKind: "archisign_unconfigured",
+      error: "ARCHISIGN_API_KEY is not configured",
+    });
+
+    const res = await postRetry(42);
+
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { message: string; code: string };
+    expect(body.code).toBe("archisign_unconfigured");
+    expect(body.message).toMatch(/not configured/i);
+  });
+
+  it("keeps the 200 { recovered:false } shape for non-outage failures", async () => {
+    storageMock.listSignedPdfRecoveryCandidates.mockResolvedValueOnce([
+      { ...baseCandidate },
+    ]);
+    persistMock.persistSignedDevisPdf.mockResolvedValueOnce({
+      persisted: false,
+      failureKind: "other",
+      error: "fetch_url_expired",
+    });
+    storageMock.getDevis.mockResolvedValueOnce({
+      id: 42,
+      signedPdfStorageKey: null,
+      signedPdfLastError: "fetch_url_expired",
+      signedPdfRetryAttempts: 1,
+    });
+
+    const res = await postRetry(42);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { recovered: boolean };
+    expect(body.recovered).toBe(false);
+  });
+
   it("returns 500 when the persist service throws synchronously", async () => {
     storageMock.listSignedPdfRecoveryCandidates.mockResolvedValueOnce([
       { ...baseCandidate },

@@ -31,17 +31,39 @@ const { storageMock, archisignMock, uploadMock, driveQueueMock } = vi.hoisted(()
 }));
 
 vi.mock("../../storage", () => ({ storage: storageMock }));
-vi.mock("../archisign.js", () => ({
-  getSignedPdfUrl: archisignMock.getSignedPdfUrl,
-  // We re-export the real error class so `instanceof` checks inside the
+vi.mock("../archisign.js", () => {
+  // Mirror the real class hierarchy so `instanceof` checks inside the
   // service still resolve correctly without dragging the real Archisign
   // HTTP client into the test.
-  ArchisignRetentionBreachError: class ArchisignRetentionBreachError extends Error {
-    constructor(public breach: { incidentRef: string }) {
-      super("retention breach");
+  class ArchisignError extends Error {
+    constructor(
+      message: string,
+      public readonly httpStatus: number,
+      public readonly responseBody?: unknown,
+      public readonly isTransient: boolean = false,
+    ) {
+      super(message);
+      this.name = "ArchisignError";
     }
-  },
-}));
+  }
+  class ArchisignConfigError extends ArchisignError {
+    constructor(message: string) {
+      super(message, 503, undefined, true);
+      this.name = "ArchisignConfigError";
+    }
+  }
+  class ArchisignRetentionBreachError extends ArchisignError {
+    constructor(public breach: { incidentRef: string }) {
+      super("retention breach", 410);
+    }
+  }
+  return {
+    getSignedPdfUrl: archisignMock.getSignedPdfUrl,
+    ArchisignError,
+    ArchisignConfigError,
+    ArchisignRetentionBreachError,
+  };
+});
 vi.mock("../../storage/object-storage", () => ({
   uploadDocumentAtKey: uploadMock.uploadDocumentAtKey,
   buildSignedDevisObjectName: uploadMock.buildSignedDevisObjectName,
@@ -49,7 +71,11 @@ vi.mock("../../storage/object-storage", () => ({
 vi.mock("../drive/upload-queue.service", () => ({ enqueueDriveUpload: driveQueueMock.enqueueDriveUpload }));
 
 import { persistSignedDevisPdf, signedPdfFileName } from "../devis-signed-pdf.service";
-import { ArchisignRetentionBreachError } from "../archisign.js";
+import {
+  ArchisignError,
+  ArchisignConfigError,
+  ArchisignRetentionBreachError,
+} from "../archisign.js";
 
 const baseDevis = {
   id: 42,
@@ -236,6 +262,134 @@ describe("persistSignedDevisPdf", () => {
   it("never throws on unexpected failures (best-effort contract — webhook handler must keep its 200 response)", async () => {
     storageMock.getDevis.mockRejectedValue(new Error("DB blew up"));
 
-    await expect(persistSignedDevisPdf(42)).resolves.toBeUndefined();
+    await expect(persistSignedDevisPdf(42)).resolves.toEqual(
+      expect.objectContaining({ persisted: false, failureKind: "other" }),
+    );
+  });
+
+  // -------------------------------------------------------------------
+  // Task #438 — outcome classification so operator-facing callers can
+  // show "Archisign temporarily down, retry" instead of a generic error.
+  // -------------------------------------------------------------------
+  describe("outcome classification (Task #438)", () => {
+    it("classifies an upstream 5xx from getSignedPdfUrl as archisign_unavailable (retry stays armed)", async () => {
+      storageMock.getDevis.mockResolvedValue({ ...baseDevis, signedPdfFetchUrlSnapshot: null });
+      archisignMock.getSignedPdfUrl.mockRejectedValue(
+        new ArchisignError("Archisign 503: Service Unavailable", 503, undefined, true),
+      );
+
+      const outcome = await persistSignedDevisPdf(42);
+
+      expect(outcome).toEqual({
+        persisted: false,
+        failureKind: "archisign_unavailable",
+        error: "Archisign 503: Service Unavailable",
+      });
+      // The transient failure still arms the sweeper retry.
+      const [, , nextAt] = storageMock.recordSignedPdfPersistFailure.mock.calls[0];
+      expect(nextAt).toBeInstanceOf(Date);
+    });
+
+    it("classifies exhausted timeouts / network errors (httpStatus 0) as archisign_unavailable", async () => {
+      storageMock.getDevis.mockResolvedValue({ ...baseDevis, signedPdfFetchUrlSnapshot: null });
+      archisignMock.getSignedPdfUrl.mockRejectedValue(
+        new ArchisignError("Archisign network error after retries: fetch failed", 0, undefined, true),
+      );
+
+      const outcome = await persistSignedDevisPdf(42);
+
+      expect(outcome.persisted).toBe(false);
+      expect(outcome.failureKind).toBe("archisign_unavailable");
+    });
+
+    it("classifies a local config problem as archisign_unconfigured, NOT unavailable", async () => {
+      storageMock.getDevis.mockResolvedValue({ ...baseDevis, signedPdfFetchUrlSnapshot: null });
+      archisignMock.getSignedPdfUrl.mockRejectedValue(
+        new ArchisignConfigError("ARCHISIGN_API_KEY is not configured"),
+      );
+
+      const outcome = await persistSignedDevisPdf(42);
+
+      expect(outcome.failureKind).toBe("archisign_unconfigured");
+    });
+
+    it("classifies a retention breach as retention_breach (terminal)", async () => {
+      storageMock.getDevis.mockResolvedValue({ ...baseDevis, signedPdfFetchUrlSnapshot: null });
+      archisignMock.getSignedPdfUrl.mockRejectedValue(
+        new ArchisignRetentionBreachError({ incidentRef: "inc_123" } as never),
+      );
+
+      const outcome = await persistSignedDevisPdf(42);
+
+      expect(outcome.failureKind).toBe("retention_breach");
+    });
+
+    it("classifies a 5xx on the reminted signed-PDF byte download as archisign_unavailable", async () => {
+      storageMock.getDevis.mockResolvedValue({ ...baseDevis, signedPdfFetchUrlSnapshot: null });
+      archisignMock.getSignedPdfUrl.mockResolvedValue({ url: "https://archisign.test/reminted.pdf" });
+      mockFetchFail(503);
+
+      const outcome = await persistSignedDevisPdf(42);
+
+      expect(outcome.persisted).toBe(false);
+      expect(outcome.failureKind).toBe("archisign_unavailable");
+      expect(outcome.error).toMatch(/HTTP 503/);
+      // Transient — the sweeper retry stays armed.
+      const [, , nextAt] = storageMock.recordSignedPdfPersistFailure.mock.calls[0];
+      expect(nextAt).toBeInstanceOf(Date);
+    });
+
+    it("classifies a network failure on the signed-PDF byte download as archisign_unavailable", async () => {
+      storageMock.getDevis.mockResolvedValue({ ...baseDevis, signedPdfFetchUrlSnapshot: null });
+      archisignMock.getSignedPdfUrl.mockResolvedValue({ url: "https://archisign.test/reminted.pdf" });
+      global.fetch = vi.fn(async () => {
+        throw new TypeError("fetch failed");
+      }) as unknown as typeof fetch;
+
+      const outcome = await persistSignedDevisPdf(42);
+
+      expect(outcome.failureKind).toBe("archisign_unavailable");
+      expect(outcome.error).toMatch(/fetch failed/);
+    });
+
+    it("classifies a 4xx on the signed-PDF byte download as other (retry alone will not help)", async () => {
+      storageMock.getDevis.mockResolvedValue({ ...baseDevis, signedPdfFetchUrlSnapshot: null });
+      archisignMock.getSignedPdfUrl.mockResolvedValue({ url: "https://archisign.test/reminted.pdf" });
+      mockFetchFail(404);
+
+      const outcome = await persistSignedDevisPdf(42);
+
+      expect(outcome.failureKind).toBe("other");
+    });
+
+    it("does NOT misclassify a storage upload failure as an Archisign outage", async () => {
+      storageMock.getDevis.mockResolvedValue({ ...baseDevis });
+      mockFetchOk();
+      uploadMock.uploadDocumentAtKey.mockRejectedValueOnce(new Error("object storage unreachable"));
+
+      const outcome = await persistSignedDevisPdf(42);
+
+      expect(outcome.persisted).toBe(false);
+      expect(outcome.failureKind).toBe("other");
+      expect(outcome.error).toMatch(/object storage unreachable/);
+    });
+
+    it("classifies an Archisign 4xx as other (a retry will not help by itself)", async () => {
+      storageMock.getDevis.mockResolvedValue({ ...baseDevis, signedPdfFetchUrlSnapshot: null });
+      archisignMock.getSignedPdfUrl.mockRejectedValue(
+        new ArchisignError("Archisign 404: envelope not found", 404, undefined, false),
+      );
+
+      const outcome = await persistSignedDevisPdf(42);
+
+      expect(outcome.failureKind).toBe("other");
+    });
+
+    it("returns { persisted: true } on the happy path", async () => {
+      storageMock.getDevis.mockResolvedValue({ ...baseDevis });
+      mockFetchOk();
+
+      await expect(persistSignedDevisPdf(42)).resolves.toEqual({ persisted: true });
+    });
   });
 });
