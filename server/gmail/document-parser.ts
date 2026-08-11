@@ -45,7 +45,7 @@ function getGeminiClient() {
 }
 
 export interface ParsedDocument {
-  documentType: "quotation" | "invoice" | "situation" | "avenant" | "acompte" | "other" | "unknown";
+  documentType: "quotation" | "invoice" | "situation" | "avenant" | "acompte" | "architect_fee_invoice" | "other" | "unknown";
   contractorName?: string;
   clientName?: string;
   projectAddress?: string;
@@ -214,11 +214,12 @@ Extraction Rules:
 - For each line item, also populate "pageHint": the 1-indexed page number of the PDF on which that line appears. Pages are provided to you as separate images in order — the first image is page 1, the second is page 2, and so on. If you cannot determine the page with confidence, omit pageHint for that line.
 - For each line item, also populate "bbox": the rectangle on the page image that visually contains that line's row in the table. Coordinates MUST be normalized to the [0, 1] range of the page image (x and w as a fraction of the image width; y and h as a fraction of the image height; origin at the top-left of the image). Make the box tight to the line row, including the description and the amount, but not neighbouring rows. If you cannot determine the box with confidence, omit bbox for that line — do not guess.
 - A single numbered item's description often spans MULTIPLE paragraphs or wrapped lines. All descriptive text between one priced row and the next belongs to the SAME line item — append it to that item's description. NEVER emit a separate line item for a continuation paragraph: a row that has no printed unit price and no printed total of its own is not a new line item.
-- If a field is not visible on the document, omit it (do not guess).`;
+- If a field is not visible on the document, omit it (do not guess).
+- Architect fee invoices (honoraires): when the ISSUER of the invoice (letterhead entity) is the architecture firm itself — e.g. "ARCHITECTS-FRANCE" / "SAS ARCHITECTS-FRANCE" — invoicing its own client for fees/honoraires (mission d'architecte, ouverture de dossier, phases de conception, etc.), use documentType="architect_fee_invoice". In that case contractorName is the ARCHITECTURE FIRM (the issuer) and clientName is the maitre d'ouvrage being billed. Never classify such a document as a contractor "invoice".`;
 
 const USER_PROMPT = `Analyze this French construction document and extract the following fields:
 
-- documentType: "quotation" (devis), "invoice" (facture), "situation" (situation de travaux), "avenant" (amendment), "acompte" (facture d'acompte / deposit invoice), "other", or "unknown"
+- documentType: "quotation" (devis), "invoice" (facture), "situation" (situation de travaux), "avenant" (amendment), "acompte" (facture d'acompte / deposit invoice), "architect_fee_invoice" (facture d'honoraires ISSUED BY the architecture firm itself to its client), "other", or "unknown"
 - acompteRequired: boolean — true if this devis explicitly requires a deposit on order/signature (look at payment-terms and any "Conditions de règlement" block). Omit on factures.
 - acomptePercent: number 0..100 — the deposit percentage if stated (e.g. 30 for "30%"). Omit if not stated.
 - acompteAmountHt: number — the deposit amount HT if stated as a euro amount on the devis. Omit if only a percentage is given.
@@ -254,8 +255,8 @@ const EXTRACTION_SCHEMA: ResponseSchema = {
     documentType: {
       type: SchemaType.STRING,
       format: "enum",
-      description: "Type of document: quotation, invoice, situation, avenant, acompte, other, or unknown",
-      enum: ["quotation", "invoice", "situation", "avenant", "acompte", "other", "unknown"],
+      description: "Type of document: quotation, invoice, situation, avenant, acompte, architect_fee_invoice, other, or unknown",
+      enum: ["quotation", "invoice", "situation", "avenant", "acompte", "architect_fee_invoice", "other", "unknown"],
     },
     contractorName: {
       type: SchemaType.STRING,
@@ -1681,10 +1682,21 @@ export async function processEmailDocument(
       const linkedUsers = await Promise.resolve()
         .then(() => storage.listGmailPollingUsers())
         .catch(() => [] as { email: string | null }[]);
+      // Task #425 — the firm's own identity is a first-class prefilter
+      // signal: mail from a firm domain, or mentioning a firm legal name,
+      // must reach classification so outbound honoraires invoices are
+      // caught (the issuer gate downstream decides what the doc really is).
+      const { getFirmProfile, getFirmEmailDomains } = await import(
+        "../services/architect-fee-invoice.service"
+      );
       const pre = evaluateEmailPrefilter(emailDoc, {
         contractors,
         projects,
         knownEmails: linkedUsers.map((u) => u.email),
+        firm: {
+          legalNames: getFirmProfile().legalNames,
+          domains: getFirmEmailDomains(),
+        },
       });
       if (!pre.pass) {
         await storage.setEmailDocumentRetryState(emailDocumentId, {
@@ -1700,6 +1712,49 @@ export async function processEmailDocument(
 
     const buffer = await getDocumentBuffer(emailDoc.storageKey);
     const parsed = await parseDocument(buffer, emailDoc.attachmentFileName || "document.pdf");
+
+    // Task #425 — deterministic firm-identity gate. Rewrites documentType in
+    // place (confirms/downgrades architect_fee_invoice, rescues firm-issued
+    // "invoice" classifications) BEFORE matching/routing so the firm's own
+    // honoraires invoices never travel the contractor paths. When the gate
+    // says this is the firm's own fee invoice, capture it into the dedicated
+    // review queue (evidence + ranked suggestions; no money is moved).
+    const { applyFirmGateToParsed, captureArchitectFeeInvoice } = await import(
+      "../services/architect-fee-invoice.service"
+    );
+    const firmGate = applyFirmGateToParsed(parsed);
+    if (firmGate.isArchitectFeeInvoice) {
+      // TERMINAL branch: a confirmed firm fee invoice must never travel the
+      // contractor paths — no project matching, no project_documents filing,
+      // no Drive scrape, and no intake mirroring (projectId is deliberately
+      // NOT set, which keeps mirrorEmailDocumentToIntake a no-op).
+      let captureNote: string;
+      try {
+        const capture = await captureArchitectFeeInvoice({
+          parsed,
+          gateReason: firmGate.gateReason,
+          emailDocumentId,
+          fileName: emailDoc.attachmentFileName,
+          storageKey: emailDoc.storageKey,
+          matchHaystack: `${emailDoc.attachmentFileName ?? ""} ${emailDoc.emailSubject ?? ""}`,
+        });
+        captureNote = `Architect fee invoice (facture d'honoraires) — awaiting review in the fee-invoice queue (evidence #${capture.id}).`;
+        console.log(`[DocumentParser] Document ${emailDocumentId} captured as architect fee invoice (${capture.outcome}, evidence #${capture.id})`);
+      } catch (captureErr) {
+        // Even when evidence capture fails, the doc stays OUT of the
+        // contractor paths — parked reviewable with the failure recorded.
+        captureNote = `Architect fee invoice detected but evidence capture failed: ${captureErr instanceof Error ? captureErr.message : String(captureErr)}`;
+        console.error(`[DocumentParser] Architect fee-invoice capture failed for document ${emailDocumentId}:`, captureErr);
+      }
+      await storage.updateEmailDocument(emailDocumentId, {
+        documentType: "architect_fee_invoice",
+        extractionStatus: "completed",
+        extractedData: { ...parsed, firmGate },
+        notes: captureNote,
+      });
+      console.log(`[DocumentParser] Processed document ${emailDocumentId}: type=architect_fee_invoice (terminal — fee-invoice review queue)`);
+      return;
+    }
 
     const match = await matchToProject(parsed, projects, contractors);
 

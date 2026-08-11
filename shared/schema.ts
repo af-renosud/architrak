@@ -2816,3 +2816,79 @@ export const archidocLinkLookupMisses = pgTable("archidoc_link_lookup_misses", {
 ]);
 
 export type ArchidocLinkLookupMiss = typeof archidocLinkLookupMisses.$inferSelect;
+
+/**
+ * architect_fee_invoices — Task #425. Evidence record for the firm's OWN
+ * outbound honoraires invoices caught by Gmail polling (or later,
+ * Pennylane). One row per caught invoice, parked `pending_review` until an
+ * operator confirms it against a project + design-contract milestone
+ * (confirmation transaction is Task #426; nothing here moves money).
+ *
+ * Guardrails:
+ *  - unique source pointers (emailDocumentId / intakeDocumentId) — the same
+ *    caught document can never spawn two evidence rows;
+ *  - unique normalized invoice ref among non-dismissed rows (partial index
+ *    in migration 0068) — business-ref dedup across re-catches;
+ *  - projectId/milestoneId/feeEntryId stay NULL until human confirmation;
+ *    `candidates` only carries ranked SUGGESTIONS;
+ *  - `extractionSnapshot` is the immutable parsed payload for audit.
+ */
+export const ARCHITECT_FEE_INVOICE_STATUSES = ["pending_review", "confirmed", "dismissed"] as const;
+export type ArchitectFeeInvoiceStatus = (typeof ARCHITECT_FEE_INVOICE_STATUSES)[number];
+
+export const architectFeeInvoices = pgTable("architect_fee_invoices", {
+  id: serial("id").primaryKey(),
+  emailDocumentId: integer("email_document_id").references(() => emailDocuments.id, { onDelete: "set null" }),
+  intakeDocumentId: integer("intake_document_id").references(() => projectIntakeDocuments.id, { onDelete: "set null" }),
+  // NULL until confirmed by an operator (Task #426).
+  projectId: integer("project_id").references(() => projects.id, { onDelete: "set null" }),
+  milestoneId: integer("milestone_id").references(() => designContractMilestones.id, { onDelete: "set null" }),
+  feeEntryId: integer("fee_entry_id").references(() => feeEntries.id, { onDelete: "set null" }),
+  invoiceNumber: text("invoice_number"),
+  invoiceNumberNormalized: text("invoice_number_normalized"),
+  issueDate: date("issue_date"),
+  amountHt: numeric("amount_ht", { precision: 12, scale: 2 }),
+  tvaAmount: numeric("tva_amount", { precision: 12, scale: 2 }),
+  amountTtc: numeric("amount_ttc", { precision: 12, scale: 2 }),
+  clientName: text("client_name"),
+  fileName: text("file_name"),
+  storageKey: text("storage_key"),
+  source: text("source").notNull().default("gmail"),
+  status: text("status").notNull().default("pending_review"),
+  /** How the firm-identity gate confirmed the issuer (audit). */
+  identityReason: text("identity_reason"),
+  /** Ranked project + milestone suggestions ({projects:[],milestones:{}}). */
+  candidates: jsonb("candidates"),
+  /** Immutable copy of the parsed extraction at capture time. */
+  extractionSnapshot: jsonb("extraction_snapshot"),
+  reviewedBy: text("reviewed_by"),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  uniqueIndex("architect_fee_invoices_email_doc_unique").on(table.emailDocumentId).where(sql`${table.emailDocumentId} IS NOT NULL`),
+  uniqueIndex("architect_fee_invoices_intake_doc_unique").on(table.intakeDocumentId).where(sql`${table.intakeDocumentId} IS NOT NULL`),
+  uniqueIndex("architect_fee_invoices_ref_unique")
+    .on(table.invoiceNumberNormalized)
+    .where(sql`${table.invoiceNumberNormalized} IS NOT NULL AND ${table.status} <> 'dismissed'`),
+  index("architect_fee_invoices_status_idx").on(table.status),
+  check(
+    "architect_fee_invoices_status_chk",
+    sql`${table.status} IN ('pending_review','confirmed','dismissed')`,
+  ),
+]);
+
+export const insertArchitectFeeInvoiceSchema = createInsertSchema(architectFeeInvoices).omit({
+  id: true,
+  createdAt: true,
+  // Server-authoritative: review outcome + money linkage are only ever
+  // written by dedicated services (Task #426), never a generic body.
+  status: true,
+  projectId: true,
+  milestoneId: true,
+  feeEntryId: true,
+  reviewedBy: true,
+  reviewedAt: true,
+});
+export type ArchitectFeeInvoice = typeof architectFeeInvoices.$inferSelect;
+export type InsertArchitectFeeInvoice = z.infer<typeof insertArchitectFeeInvoiceSchema>;

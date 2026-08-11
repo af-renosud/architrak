@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { rateLimit } from "../middleware/rate-limit";
 
 import projectsRouter from "./projects";
+import architectFeeInvoicesRouter from "./architect-fee-invoices";
 import contractorsRouter from "./contractors";
 import marchesRouter from "./marches";
 import lotsRouter from "./lots";
@@ -103,6 +104,7 @@ export async function registerRoutes(
   app.use(situationsRouter);
   app.use(certificatsRouter);
   app.use(feesRouter);
+  app.use(architectFeeInvoicesRouter);
   app.use(financialRouter);
   app.use(dashboardRouter);
   app.use(archidocRouter);

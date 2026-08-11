@@ -477,6 +477,13 @@
       "when": 1778760014000,
       "tag": "0067_archidoc_link_lookup_misses",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1778760015000,
+      "tag": "0068_architect_fee_invoices",
+      "breakpoints": true
     }
   ]
 }

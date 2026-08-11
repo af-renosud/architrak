@@ -22,6 +22,7 @@ import {
   clientChecks, clientCheckMessages, clientCheckTokens,
   clientProjectShareTokens, clientProjectShareDevis, clientProjectShareAudit,
   archidocLinkLookupMisses, type ArchidocLinkLookupMiss, type ArchidocLookupMissReason,
+  architectFeeInvoices, type ArchitectFeeInvoice, type InsertArchitectFeeInvoice, type ArchitectFeeInvoiceStatus,
   type ClientProjectShareToken, type InsertClientProjectShareToken,
   type ClientProjectShareDevis, type InsertClientProjectShareDevis,
   type ClientProjectShareAuditEntry, type InsertClientProjectShareAuditEntry,
@@ -736,6 +737,19 @@ export interface IStorage {
   listProjectShareAuditEntries(projectId: number, limit?: number): Promise<ClientProjectShareAuditEntry[]>;
 
   /** Task #410 — record / clear / read the most recent failed ArchiDoc link lookup per project. */
+  // --- Architect fee invoices (Task #425) --------------------------------
+  /** Insert-or-nothing (races resolved by partial uniques); undefined = conflict, caller re-selects. */
+  createArchitectFeeInvoice(data: InsertArchitectFeeInvoice): Promise<ArchitectFeeInvoice | undefined>;
+  getArchitectFeeInvoice(id: number): Promise<ArchitectFeeInvoice | undefined>;
+  getArchitectFeeInvoiceByEmailDocumentId(emailDocumentId: number): Promise<ArchitectFeeInvoice | undefined>;
+  getArchitectFeeInvoiceByIntakeDocumentId(intakeDocumentId: number): Promise<ArchitectFeeInvoice | undefined>;
+  /** Non-dismissed row with the same normalized invoice ref, if any. */
+  getArchitectFeeInvoiceByNormalizedRef(refNorm: string): Promise<ArchitectFeeInvoice | undefined>;
+  listArchitectFeeInvoices(status?: ArchitectFeeInvoiceStatus): Promise<ArchitectFeeInvoice[]>;
+  updateArchitectFeeInvoice(id: number, data: Partial<InsertArchitectFeeInvoice>): Promise<ArchitectFeeInvoice | undefined>;
+  /** Review outcome writes — server-authoritative columns (dismiss only in #425). */
+  setArchitectFeeInvoiceReviewState(id: number, state: { status: ArchitectFeeInvoiceStatus; reviewedBy: string | null }): Promise<ArchitectFeeInvoice | undefined>;
+
   upsertArchidocLinkLookupMiss(projectId: number, reason: ArchidocLookupMissReason): Promise<void>;
   clearArchidocLinkLookupMiss(projectId: number): Promise<void>;
   getArchidocLinkLookupMiss(projectId: number): Promise<ArchidocLinkLookupMiss | undefined>;
@@ -3614,6 +3628,77 @@ export class DatabaseStorage implements IStorage {
   }
 
   // --- Task #410 — ArchiDoc link-lookup misses --------------------------
+
+  // --- Architect fee invoices (Task #425) --------------------------------
+  async createArchitectFeeInvoice(data: InsertArchitectFeeInvoice): Promise<ArchitectFeeInvoice | undefined> {
+    // ON CONFLICT DO NOTHING against ALL partial uniques (source pointers +
+    // normalized ref among non-dismissed rows) so two concurrent captures
+    // can never both insert; the loser gets `undefined` and the service
+    // resolves the surviving row instead of surfacing a unique violation.
+    const [row] = await db.insert(architectFeeInvoices).values(data).onConflictDoNothing().returning();
+    return row;
+  }
+
+  async getArchitectFeeInvoice(id: number): Promise<ArchitectFeeInvoice | undefined> {
+    const [row] = await db.select().from(architectFeeInvoices).where(eq(architectFeeInvoices.id, id));
+    return row;
+  }
+
+  async getArchitectFeeInvoiceByEmailDocumentId(emailDocumentId: number): Promise<ArchitectFeeInvoice | undefined> {
+    const [row] = await db
+      .select()
+      .from(architectFeeInvoices)
+      .where(eq(architectFeeInvoices.emailDocumentId, emailDocumentId));
+    return row;
+  }
+
+  async getArchitectFeeInvoiceByIntakeDocumentId(intakeDocumentId: number): Promise<ArchitectFeeInvoice | undefined> {
+    const [row] = await db
+      .select()
+      .from(architectFeeInvoices)
+      .where(eq(architectFeeInvoices.intakeDocumentId, intakeDocumentId));
+    return row;
+  }
+
+  async getArchitectFeeInvoiceByNormalizedRef(refNorm: string): Promise<ArchitectFeeInvoice | undefined> {
+    const [row] = await db
+      .select()
+      .from(architectFeeInvoices)
+      .where(
+        and(
+          eq(architectFeeInvoices.invoiceNumberNormalized, refNorm),
+          ne(architectFeeInvoices.status, "dismissed"),
+        ),
+      );
+    return row;
+  }
+
+  async listArchitectFeeInvoices(status?: ArchitectFeeInvoiceStatus): Promise<ArchitectFeeInvoice[]> {
+    let q = db.select().from(architectFeeInvoices).$dynamic();
+    if (status) q = q.where(eq(architectFeeInvoices.status, status));
+    return q.orderBy(desc(architectFeeInvoices.createdAt));
+  }
+
+  async updateArchitectFeeInvoice(id: number, data: Partial<InsertArchitectFeeInvoice>): Promise<ArchitectFeeInvoice | undefined> {
+    const [row] = await db
+      .update(architectFeeInvoices)
+      .set(data)
+      .where(eq(architectFeeInvoices.id, id))
+      .returning();
+    return row;
+  }
+
+  async setArchitectFeeInvoiceReviewState(
+    id: number,
+    state: { status: ArchitectFeeInvoiceStatus; reviewedBy: string | null },
+  ): Promise<ArchitectFeeInvoice | undefined> {
+    const [row] = await db
+      .update(architectFeeInvoices)
+      .set({ status: state.status, reviewedBy: state.reviewedBy, reviewedAt: new Date() })
+      .where(eq(architectFeeInvoices.id, id))
+      .returning();
+    return row;
+  }
 
   async upsertArchidocLinkLookupMiss(projectId: number, reason: ArchidocLookupMissReason): Promise<void> {
     await db

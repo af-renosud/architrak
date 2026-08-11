@@ -14,6 +14,7 @@ import ContractorDetail from "@/pages/contractor-detail";
 import FinancialTracking from "@/pages/financial-tracking";
 import CertificatsPage from "@/pages/certificats";
 import Fees from "@/pages/fees";
+import ArchitectFeeInvoices from "@/pages/architect-fee-invoices";
 import EmailDocuments from "@/pages/email-documents";
 import Communications from "@/pages/communications";
 import SettingsPage from "@/pages/settings";
@@ -39,6 +40,7 @@ function Router() {
       <Route path="/suivi-financier" component={FinancialTracking} />
       <Route path="/certificats" component={CertificatsPage} />
       <Route path="/honoraires" component={Fees} />
+      <Route path="/honoraires/factures-detectees" component={ArchitectFeeInvoices} />
       <Route path="/documents" component={EmailDocuments} />
       <Route path="/communications" component={Communications} />
       <Route path="/benchmarks" component={CostBenchmarks} />

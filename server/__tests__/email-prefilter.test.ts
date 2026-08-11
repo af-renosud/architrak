@@ -25,6 +25,10 @@ const ctx: PrefilterContext = {
     },
   ] as PrefilterContext["projects"],
   knownEmails: ["architecte@cabinet-arch.fr"],
+  firm: {
+    legalNames: ["SAS ARCHITECTS-FRANCE", "ARCHITECTS-FRANCE"],
+    domains: ["renosud.com"],
+  },
 };
 
 const base = { emailFrom: null, emailSubject: null, attachmentFileName: null };
@@ -40,6 +44,38 @@ describe("extractSenderEmail", () => {
 });
 
 describe("evaluateEmailPrefilter", () => {
+  it("passes mail from the firm's own domain even with no other signal (Task #425)", () => {
+    const r = evaluateEmailPrefilter(
+      { ...base, emailFrom: "Compta <compta@renosud.com>", emailSubject: "Document", attachmentFileName: "piece.pdf" },
+      ctx,
+    );
+    expect(r.pass).toBe(true);
+    expect(r.reason).toContain("firm's own domain");
+  });
+
+  it("passes when the filename mentions a firm legal name (Task #425)", () => {
+    const r = evaluateEmailPrefilter(
+      {
+        ...base,
+        emailFrom: "someone@unknown-sender.xyz",
+        emailSubject: "fwd",
+        attachmentFileName: "F-2026-138 ARCHITECTS-FRANCE.pdf",
+      },
+      ctx,
+    );
+    expect(r.pass).toBe(true);
+    expect(r.reason).toContain("firm");
+  });
+
+  it("still parks unknown senders when no firm context is provided", () => {
+    const noFirm = { ...ctx, firm: undefined };
+    const r = evaluateEmailPrefilter(
+      { ...base, emailFrom: "someone@unknown-sender.xyz", emailSubject: "hello", attachmentFileName: "doc.pdf" },
+      noFirm,
+    );
+    expect(r.pass).toBe(false);
+  });
+
   it("passes when a project or contractor is already assigned", () => {
     expect(evaluateEmailPrefilter({ ...base, projectId: 10 }, ctx).pass).toBe(true);
     expect(evaluateEmailPrefilter({ ...base, contractorId: 2 }, ctx).pass).toBe(true);

@@ -284,6 +284,17 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
         ? prior
         : await parseDocument(buffer, doc.fileName);
 
+    // Task #425 — deterministic firm-identity gate BEFORE dedup/routing.
+    // Rewrites documentType in place so the firm's own honoraires invoices
+    // (architect_fee_invoice) never reach the contractor devis/invoice
+    // paths, and downgrades hallucinated architect_fee_invoice claims whose
+    // issuer is not the firm back to plain "invoice".
+    const { applyFirmGateToParsed } = await import("../architect-fee-invoice.service");
+    const firmGate = applyFirmGateToParsed(parsed);
+    if (firmGate.gateReason) {
+      console.log(`[intake-queue] Firm-identity gate on intake doc ${doc.id}: ${firmGate.gateReason}`);
+    }
+
     // A total extraction whiff: if the parser produced nothing usable AND
     // signals a transient backend failure, retry; otherwise it's a real
     // unparseable doc → park.
@@ -361,6 +372,35 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
       return;
     }
     switch (parsed.documentType) {
+      case "architect_fee_invoice": {
+        // The firm's OWN honoraires invoice — never a contractor document.
+        // Capture as evidence in the dedicated review queue and park the
+        // intake doc awaiting human review. No draft, no money movement
+        // (confirmation is Task #426).
+        const { captureArchitectFeeInvoice } = await import("../architect-fee-invoice.service");
+        try {
+          const capture = await captureArchitectFeeInvoice({
+            parsed,
+            gateReason: firmGate.gateReason,
+            intakeDocumentId: doc.id,
+            fileName: doc.fileName,
+            storageKey: doc.storageKey,
+          });
+          await storage.updateProjectIntakeDocument(doc.id, {
+            analysisState: "analyzed",
+            routingState: "parked",
+            notes: appendNote(
+              doc.notes,
+              `Architect fee invoice (facture d'honoraires) — awaiting review in the fee-invoice queue (evidence #${capture.id}).`,
+            ),
+          });
+        } catch (err) {
+          throw new TransientIntakeError(
+            `architect fee-invoice capture failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        return;
+      }
       case "quotation": {
         const result = await processDevisUpload(doc.projectId, file, parsed);
         if (result.success) {

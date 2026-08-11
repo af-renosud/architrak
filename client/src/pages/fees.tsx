@@ -5,7 +5,8 @@ import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Badge } from "@/components/ui/badge";
-import { Coins, Plus, Pencil, Copy, Check } from "lucide-react";
+import { Coins, Plus, Pencil, Copy, Check, ReceiptEuro } from "lucide-react";
+import { Link } from "wouter";
 import { OutstandingFeesPanel } from "@/components/fees/OutstandingFeesPanel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -357,6 +358,14 @@ export default function Fees() {
           icon={Coins}
           title="Honoraires Tracking"
           subtitle="Works percentage, conception & planning"
+          actions={
+            <Link href="/honoraires/factures-detectees">
+              <Button variant="outline" size="sm" data-testid="button-fee-invoice-review-queue">
+                <ReceiptEuro className="w-4 h-4 mr-1" />
+                Factures détectées
+              </Button>
+            </Link>
+          }
         />
 
         <OutstandingFeesPanel

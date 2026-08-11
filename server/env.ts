@@ -123,6 +123,22 @@ const envSchema = z.object({
       message: "EMAIL_INTAKE_MIN_RECEIVED_AT must be an ISO date-time string",
     }),
 
+  // --- Firm identity (Task #425) ----------------------------------------
+  // Server-controlled identity of the architecture firm itself, used to
+  // deterministically confirm that a caught invoice was ISSUED BY the firm
+  // (facture d'honoraires) before typing it architect_fee_invoice. The AI
+  // classification alone is never trusted for this. FIRM_SIRET is the
+  // 14-digit SIRET (digits only, separators tolerated); FIRM_LEGAL_NAMES is
+  // a CSV of accepted letterhead names. Defaults cover the deployed firm.
+  FIRM_SIRET: optionalString(),
+  FIRM_LEGAL_NAMES: z
+    .string()
+    .default("SAS ARCHITECTS-FRANCE,ARCHITECTS-FRANCE"),
+  // CSV of mail domains the firm sends from. Mail from these domains always
+  // passes the email prefilter so the firm's own fee invoices reach AI
+  // classification. Default matches the workspace's Google OAuth domain.
+  FIRM_EMAIL_DOMAINS: z.string().default("renosud.com"),
+
   // --- Archisign envelope orchestration + webhook (AT4) ----------------
   // ARCHISIGN_API_KEY is a CSV of one or more keys to support overlapping
   // rotation windows (§3.6); the FIRST entry is used for new outbound

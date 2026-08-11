@@ -39,6 +39,18 @@ export interface PrefilterContext {
   projects: Pick<Project, "id" | "name" | "clientName" | "clientContactName" | "clientContactEmail">[];
   /** Linked architect inbox addresses (forward-to-self is a valid signal). */
   knownEmails?: (string | null | undefined)[];
+  /**
+   * Task #425 — the firm's own identity. The firm's outbound honoraires
+   * invoices (facture d'honoraires) must reach AI classification even when
+   * the sender is unknown and the subject/filename carries no construction
+   * keyword: mail from a firm domain, or mentioning a firm legal name,
+   * always passes the prefilter (the deterministic issuer gate downstream
+   * decides what the document actually is).
+   */
+  firm?: {
+    legalNames: string[];
+    domains: string[];
+  };
 }
 
 export interface PrefilterResult {
@@ -63,7 +75,7 @@ const FREEMAIL_DOMAINS = new Set([
 const DOC_KEYWORDS = [
   "devis", "facture", "facturation", "proforma", "situation", "avenant",
   "acompte", "marche", "chantier", "travaux", "dpgf", "cctp", "dgd",
-  "decompte", "attestation", "quitus", "retenue de garantie",
+  "decompte", "attestation", "quitus", "retenue de garantie", "honoraires",
   "appel d offre", "situation de travaux", "bon de commande",
 ];
 
@@ -134,6 +146,13 @@ export function evaluateEmailPrefilter(
     return { pass: true, reason: `sender ${senderEmail} is a known contact` };
   }
 
+  // ── Signal 1b (Task #425): firm's own mail domain ──────────────────────
+  // The firm forwarding/bcc'ing its own fee invoices is a first-class
+  // signal — never park mail from the firm's own domain(s).
+  if (senderDomain && ctx.firm?.domains.some((d) => d.toLowerCase() === senderDomain)) {
+    return { pass: true, reason: `sender domain ${senderDomain} is the firm's own domain` };
+  }
+
   // ── Signal 2: sender domain (non-freemail only) ────────────────────────
   if (senderDomain && !FREEMAIL_DOMAINS.has(senderDomain)) {
     const knownDomains = new Set<string>();
@@ -163,6 +182,11 @@ export function evaluateEmailPrefilter(
     }
     for (const c of ctx.contractors) {
       candidates.push({ label: "contractor", value: c.name });
+    }
+    // Task #425 — the firm's own legal name on a subject/filename (e.g.
+    // "Facture-…-ARCHITECTS-FRANCE-F-2026-138.pdf") is a valid signal.
+    for (const n of ctx.firm?.legalNames ?? []) {
+      candidates.push({ label: "firm", value: n });
     }
     const padded = ` ${haystack} `;
     for (const cand of candidates) {
