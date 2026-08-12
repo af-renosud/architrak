@@ -191,18 +191,48 @@ export function SigningPanel({
       // Distinguish a transient Archisign outage from everything else:
       // the operator should simply retry in a few minutes, nothing is
       // wrong with the app or its configuration.
-      const code = (error as { data?: { code?: string } }).data?.code;
+      const data = (error as { data?: { code?: string; detail?: string } }).data;
+      const code = data?.code;
+      // Task #440 — surface what Archisign ACTUALLY said (the server
+      // echoes the upstream error body in `detail`) as secondary,
+      // technical text so an outage can be diagnosed from the toast
+      // instead of production logs.
+      const detail =
+        typeof data?.detail === "string" && data.detail.trim().length > 0
+          ? data.detail.trim()
+          : null;
+      const technicalDetail = detail ? (
+        <span
+          className="mt-1.5 block break-words font-mono text-xs opacity-80"
+          data-testid={`text-archisign-error-detail-${devisId}`}
+        >
+          Technical detail: {detail}
+        </span>
+      ) : null;
       if (code === "archisign_unavailable") {
         toast({
           title: "Archisign temporarily unavailable",
-          description:
-            "The signature service is momentarily down — nothing is wrong on your side. " +
-            "Wait a few minutes and press “Send for signature” again.",
+          description: (
+            <>
+              The signature service is momentarily down — nothing is wrong on your side. Wait a
+              few minutes and press “Send for signature” again.
+              {technicalDetail}
+            </>
+          ),
           variant: "destructive",
         });
         return;
       }
-      toast({ title: "Send failed", description: error.message, variant: "destructive" });
+      toast({
+        title: "Send failed",
+        description: (
+          <>
+            {error.message}
+            {technicalDetail}
+          </>
+        ),
+        variant: "destructive",
+      });
     },
   });
 

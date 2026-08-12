@@ -212,6 +212,105 @@ describe("SigningPanel — first-send branch (two-step, Task #257)", () => {
   });
 });
 
+describe("SigningPanel — upstream error detail surfacing (Task #440)", () => {
+  function apiError(status: number, body: Record<string, unknown>) {
+    const err = new Error(
+      typeof body.message === "string" ? body.message : `${status}`,
+    ) as Error & { status: number; data: unknown };
+    err.status = status;
+    err.data = body;
+    return err;
+  }
+
+  async function sendFirstAttempt() {
+    renderWithDevis(baseDevis);
+    fireEvent.click(screen.getByTestId("button-send-to-signer-42"));
+    fireEvent.change(screen.getByTestId("textarea-send-message-42"), {
+      target: { value: VALID_MESSAGE },
+    });
+    fireEvent.click(screen.getByTestId("button-send-to-signer-continue-42"));
+    fireEvent.click(screen.getByTestId("button-send-to-signer-confirm-42"));
+    await waitFor(() => expect(apiRequestMock).toHaveBeenCalledTimes(1));
+  }
+
+  it("shows the upstream detail from the 503 body on the archisign_unavailable toast", async () => {
+    apiRequestMock.mockRejectedValue(
+      apiError(503, {
+        message:
+          "Le service de signature Archisign est momentanément indisponible — réessayez dans quelques minutes.",
+        code: "archisign_unavailable",
+        detail: '{"error":"vault_transient","message":"Invalid IP address: undefined"}',
+      }),
+    );
+    await sendFirstAttempt();
+
+    await waitFor(() =>
+      expect(toastSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          variant: "destructive",
+          title: "Archisign temporarily unavailable",
+        }),
+      ),
+    );
+    // The description is JSX — render it and assert the technical detail
+    // line carries the upstream body, styled as secondary text.
+    const { description } = toastSpy.mock.calls[0][0] as {
+      description: React.ReactElement;
+    };
+    render(<>{description}</>);
+    const detailEl = screen.getByTestId("text-archisign-error-detail-42");
+    expect(detailEl).toHaveTextContent(
+      'Technical detail: {"error":"vault_transient","message":"Invalid IP address: undefined"}',
+    );
+    expect(detailEl.className).toContain("text-xs");
+  });
+
+  it("appends the detail on non-outage failures (archisign_create_failed) too", async () => {
+    apiRequestMock.mockRejectedValue(
+      apiError(502, {
+        message: "Failed to create the Archisign envelope.",
+        code: "archisign_create_failed",
+        detail: "Archisign 400: signer email rejected",
+      }),
+    );
+    await sendFirstAttempt();
+
+    await waitFor(() =>
+      expect(toastSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ variant: "destructive", title: "Send failed" }),
+      ),
+    );
+    const { description } = toastSpy.mock.calls[0][0] as {
+      description: React.ReactElement;
+    };
+    render(<>{description}</>);
+    expect(screen.getByTestId("text-archisign-error-detail-42")).toHaveTextContent(
+      "Technical detail: Archisign 400: signer email rejected",
+    );
+  });
+
+  it("omits the technical-detail line when the body has no detail", async () => {
+    apiRequestMock.mockRejectedValue(
+      apiError(503, {
+        message: "Archisign is not configured (missing API key or base URL).",
+        code: "archisign_unconfigured",
+      }),
+    );
+    await sendFirstAttempt();
+
+    await waitFor(() =>
+      expect(toastSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ variant: "destructive", title: "Send failed" }),
+      ),
+    );
+    const { description } = toastSpy.mock.calls[0][0] as {
+      description: React.ReactElement;
+    };
+    render(<>{description}</>);
+    expect(screen.queryByTestId("text-archisign-error-detail-42")).toBeNull();
+  });
+});
+
 describe("SigningPanel — resume branch", () => {
   const resumeDevis = {
     ...baseDevis,
