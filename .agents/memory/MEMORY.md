@@ -18,4 +18,5 @@
 - [Prince CSS limits](prince-css-limits.md) — DocRaptor/Prince ignores display:grid (renders stacked); flexbox/tables fine; check PDF links via qpdf --qdf, raw grep misses them.
 - [Stale cache eats remounted edits](stale-cache-remount-edits.md) — staleTime Infinity: autosave must invalidate its query on success and re-sync non-prop-driven editors, or remounts show stale content.
 - [ESM-only deps in CJS bundle](esm-only-deps-in-cjs-bundle.md) — ESM-only packages left external crash the prod bundle with "(0 , X.default) is not a function"; add them to the build allowlist and smoke-boot dist with NODE_ENV=production.
+- [Project-task completion binding](project-task-completion-binding.md) — tasks run informally (not dispatched via the queue) can't be closed with markTaskComplete; user must close them from the task panel.
 - [Restore via cp, not git checkout](restore-via-cp-not-git-checkout.md) — `git checkout --` reverts to the last platform commit and silently wipes uncommitted session edits; snapshot with cp before temporary file mutations.
