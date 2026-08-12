@@ -19,7 +19,8 @@ type StatusType =
   | "partial"
   | "invoiced"
   | "queued"
-  | "failed";
+  | "failed"
+  | "superseded";
 
 const statusConfig: Record<StatusType, { label: string; bg: string; text: string; border: string }> = {
   draft: { label: "DRAFT", bg: "bg-slate-50 dark:bg-slate-900/40", text: "text-slate-600 dark:text-slate-400", border: "border-slate-200 dark:border-slate-700" },
@@ -41,6 +42,7 @@ const statusConfig: Record<StatusType, { label: string; bg: string; text: string
   invoiced: { label: "INVOICED", bg: "bg-blue-50 dark:bg-blue-950/40", text: "text-blue-700 dark:text-blue-400", border: "border-blue-200 dark:border-blue-800" },
   queued: { label: "QUEUED", bg: "bg-amber-50 dark:bg-amber-950/40", text: "text-amber-700 dark:text-amber-400", border: "border-amber-200 dark:border-amber-800" },
   failed: { label: "FAILED", bg: "bg-red-50 dark:bg-red-950/40", text: "text-red-700 dark:text-red-400", border: "border-red-200 dark:border-red-800" },
+  superseded: { label: "SUPERSEDED", bg: "bg-orange-50 dark:bg-orange-950/40", text: "text-orange-700 dark:text-orange-400", border: "border-orange-200 dark:border-orange-800" },
 };
 
 type StatusBadgeSize = "sm" | "md";

@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import {
   FileText, FileSignature, Layers, Receipt, FileCheck, AlertTriangle,
-  Download, ArrowLeft, Lock, Unlock,
+  Download, ArrowLeft, Lock, Unlock, RefreshCw,
 } from "lucide-react";
 
 /**
@@ -43,6 +43,7 @@ interface ChainCertificat {
   id: number; certificateRef: string; status: string;
   dateIssued: string | null; issuedAt: string | null;
   netToPayHt: string; netToPayTtc: string; sealed: boolean;
+  reissuedFromCertificatId: number | null;
   sourceInvoiceIds: number[]; sourceSituationIds: number[];
 }
 interface DocumentChain {
@@ -255,6 +256,15 @@ export default function DocumentChainPage() {
                     <StatusBadge status={c.status} />
                     <TechnicalLabel>Net {formatCurrency(c.netToPayTtc)} TTC</TechnicalLabel>
                     {c.dateIssued && <TechnicalLabel>Issued {c.dateIssued}</TechnicalLabel>}
+                    {c.reissuedFromCertificatId != null && (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-md bg-blue-50 border border-blue-300 px-2 py-0.5 text-[11px] font-bold text-blue-700"
+                        data-testid={`badge-certificat-${c.id}-reissue`}
+                        title={`Reissue of ${certificats.find((p) => p.id === c.reissuedFromCertificatId)?.certificateRef ?? `certificat #${c.reissuedFromCertificatId}`}`}
+                      >
+                        <RefreshCw size={11} /> Reissue of {certificats.find((p) => p.id === c.reissuedFromCertificatId)?.certificateRef ?? `#${c.reissuedFromCertificatId}`}
+                      </span>
+                    )}
                     {c.sealed ? (
                       <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 border border-emerald-300 px-2 py-0.5 text-[11px] font-bold text-emerald-700" data-testid={`badge-certificat-${c.id}-sealed`}>
                         <Lock size={11} /> Sealed

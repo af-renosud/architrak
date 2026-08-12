@@ -350,6 +350,12 @@ export interface IStorage {
   // NULL. Returns null when the row is missing OR already sealed; callers
   // distinguish via a follow-up read.
   updateCertificatUnsealed(id: number, data: Partial<InsertCertificat>): Promise<Certificat | null>;
+  // Task #457 — reissue lineage lookups: certificats whose
+  // reissuedFromCertificatId is one of the given ids.
+  getCertificatReissues(certificatIds: number[]): Promise<Certificat[]>;
+  // Task #457 — atomic reissue: insert the replacement draft AND mark the
+  // original superseded in ONE transaction; both roll back on any failure.
+  reissueCertificat(originalId: number, draft: InsertCertificat & { reissuedFromCertificatId: number }): Promise<Certificat>;
 
   getFeesByProject(projectId: number): Promise<Fee[]>;
 
@@ -1898,6 +1904,34 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(certificats.id, id), isNull(certificats.pdfStorageKey)))
       .returning();
     return cert ?? null;
+  }
+
+  async getCertificatReissues(certificatIds: number[]): Promise<Certificat[]> {
+    if (certificatIds.length === 0) return [];
+    return db.select().from(certificats).where(inArray(certificats.reissuedFromCertificatId, certificatIds));
+  }
+
+  async reissueCertificat(
+    originalId: number,
+    draft: InsertCertificat & { reissuedFromCertificatId: number },
+  ): Promise<Certificat> {
+    // Task #457 — the paired lifecycle transition (new draft + original →
+    // superseded) must be all-or-nothing: a committed draft with a
+    // still-active original would double-count money in the chain, and the
+    // partial unique index on reissued_from_certificat_id would block any
+    // repair retry. One transaction; the unique index still elects a single
+    // winner under concurrent reissues (the loser's INSERT throws 23505 and
+    // its status update rolls back).
+    return db.transaction(async (tx) => {
+      const [created] = await tx.insert(certificats).values(draft).returning();
+      const [superseded] = await tx
+        .update(certificats)
+        .set({ status: "superseded", version: sql`${certificats.version} + 1` })
+        .where(eq(certificats.id, originalId))
+        .returning();
+      if (!superseded) throw new Error(`Certificat ${originalId} disappeared during reissue`);
+      return created;
+    });
   }
 
   async updateCertificat(id: number, data: Partial<InsertCertificat>): Promise<Certificat | undefined> {

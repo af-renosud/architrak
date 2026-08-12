@@ -46,6 +46,18 @@ router.get(
       await Promise.all(certificatIds.map((id) => storage.getCertificat(id)))
     ).filter(<T,>(c: T | undefined): c is T => c !== undefined);
 
+    // Task #457 — reissue drafts have no certificat_sources rows until they
+    // are sealed, but the chain must show BOTH the superseded original and
+    // its replacement. Walk the reissue lineage transitively (a reissue can
+    // itself be reissued after sealing).
+    let frontier = certificats.map((c) => c.id);
+    while (frontier.length > 0) {
+      const reissues = (await storage.getCertificatReissues(frontier))
+        .filter((r) => !certificats.some((c) => c.id === r.id));
+      certificats.push(...reissues);
+      frontier = reissues.map((r) => r.id);
+    }
+
     res.json({
       devis: {
         id: d.id,
@@ -103,6 +115,7 @@ router.get(
         netToPayHt: c.netToPayHt,
         netToPayTtc: c.netToPayTtc,
         sealed: !!c.pdfStorageKey,
+        reissuedFromCertificatId: c.reissuedFromCertificatId,
         sourceInvoiceIds: links.filter((l) => l.certificatId === c.id && l.invoiceId != null).map((l) => l.invoiceId),
         sourceSituationIds: links.filter((l) => l.certificatId === c.id && l.situationId != null).map((l) => l.situationId),
       })),

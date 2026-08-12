@@ -20,6 +20,19 @@ const sendCertParams = z.object({
 // Task #243 — `retenueOverride` / `prorataOverride` let an architect force a
 // cumulative deduction for edge cases. They are NOT columns: the handler pulls
 // them out and feeds them to the deduction resolver, never to storage.
+// Drizzle/node-postgres may wrap query failures, leaving the PostgreSQL
+// metadata (SQLSTATE `code`, `constraint`) on the error's `cause` chain.
+// Walk the chain so unique-violation branching never misses a wrapped error.
+function pgErrorInfo(err: unknown): { code?: string; constraint?: string } {
+  let current: unknown = err;
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth++) {
+    const { code, constraint } = current as { code?: string; constraint?: string };
+    if (code) return { code, constraint };
+    current = (current as { cause?: unknown }).cause;
+  }
+  return {};
+}
+
 const deductionOverrideShape = {
   retenueOverride: z.string().optional(),
   prorataOverride: z.string().optional(),
@@ -39,13 +52,18 @@ const serverDerivedDeductionFields = {
   netToPayTtc: true,
 } as const;
 
+// Task #457 — closed lifecycle vocabulary for client-settable statuses.
+// `superseded` is terminal and written ONLY by the atomic reissue
+// transaction, never accepted from a request body.
+const clientSettableStatus = z.enum(["draft", "ready", "sent", "paid"]);
+
 const createCertificatBodySchema = insertCertificatSchema
   .omit({ projectId: true, certificateRef: true, ...serverDerivedDeductionFields })
-  .extend(deductionOverrideShape);
+  .extend({ ...deductionOverrideShape, status: clientSettableStatus.default("draft") });
 const updateCertificatSchema = insertCertificatSchema
   .omit(serverDerivedDeductionFields)
   .partial()
-  .extend(deductionOverrideShape);
+  .extend({ ...deductionOverrideShape, status: clientSettableStatus.optional() });
 
 router.get("/api/projects/:projectId/certificats", async (req, res) => {
   const certs = await storage.getCertificatsByProject(Number(req.params.projectId));
@@ -87,8 +105,86 @@ router.post(
         const cert = await storage.createCertificat({ ...body, ...deductions, projectId, certificateRef: nextRef });
         return res.status(201).json(cert);
       } catch (err) {
-        const code = (err as { code?: string }).code;
+        const { code } = pgErrorInfo(err);
         if (code === "23505" && attempt < 2) continue;
+        throw err;
+      }
+    }
+  },
+);
+
+// Task #457 — one-click reissue of a sealed certificat. Clones the sealed
+// row into a NEW draft (next certificateRef, financial inputs pre-filled,
+// deductions recomputed excluding the superseded original), marks the old
+// certificat `superseded`, and records the lineage in
+// `reissuedFromCertificatId`. The partial unique index on that column makes
+// double-reissue race-free: a concurrent second click loses at INSERT time.
+router.post(
+  "/api/certificats/:id/reissue",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    const id = Number(req.params.id);
+    const existing = await storage.getCertificat(id);
+    if (!existing) return res.status(404).json({ message: "Certificat not found" });
+    if (!existing.pdfStorageKey) {
+      return res.status(409).json({
+        code: "CERTIFICAT_NOT_SEALED",
+        message: `Certificat ${existing.certificateRef} is still a draft — edit it directly instead of reissuing.`,
+      });
+    }
+    const [priorReissue] = await storage.getCertificatReissues([id]);
+    if (priorReissue) {
+      return res.status(409).json({
+        code: "CERTIFICAT_ALREADY_REISSUED",
+        message: `Certificat ${existing.certificateRef} was already reissued as ${priorReissue.certificateRef}.`,
+        reissueCertificatId: priorReissue.id,
+      });
+    }
+
+    // Recompute the server-authoritative deductions from the cloned inputs,
+    // EXCLUDING the superseded original from the prior set: the reissue
+    // replaces it, so its cumulative figures must not feed the new draft.
+    const deductions = await resolveCertificatDeductions({
+      projectId: existing.projectId,
+      contractorId: existing.contractorId,
+      totalWorksHt: existing.totalWorksHt,
+      pvMvAdjustment: existing.pvMvAdjustment,
+      previousPayments: existing.previousPayments,
+      excludeCertificatId: id,
+    });
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const nextRef = await storage.getNextCertificateRef(existing.projectId);
+        // Atomic paired transition: insert the draft AND mark the original
+        // superseded in one transaction (storage.reissueCertificat) — a
+        // failure on either write rolls back both, so the chain can never
+        // hold a committed replacement next to a still-active original.
+        const draft = await storage.reissueCertificat(id, {
+          projectId: existing.projectId,
+          contractorId: existing.contractorId,
+          certificateRef: nextRef,
+          dateIssued: null,
+          totalWorksHt: existing.totalWorksHt,
+          pvMvAdjustment: existing.pvMvAdjustment,
+          previousPayments: existing.previousPayments,
+          ...deductions,
+          status: "draft",
+          notes: `Reissue of ${existing.certificateRef}${existing.notes ? ` — ${existing.notes}` : ""}`,
+          reissuedFromCertificatId: id,
+        } as InsertCertificat & { reissuedFromCertificatId: number });
+        return res.status(201).json(draft);
+      } catch (err) {
+        const { code, constraint } = pgErrorInfo(err);
+        if (code === "23505" && constraint === "certificats_reissued_from_unique") {
+          const [winner] = await storage.getCertificatReissues([id]);
+          return res.status(409).json({
+            code: "CERTIFICAT_ALREADY_REISSUED",
+            message: `Certificat ${existing.certificateRef} was already reissued${winner ? ` as ${winner.certificateRef}` : ""}.`,
+            reissueCertificatId: winner?.id,
+          });
+        }
+        if (code === "23505" && attempt < 2) continue; // ref collision — retry with a fresh ref
         throw err;
       }
     }
@@ -112,6 +208,17 @@ router.patch(
     const existing = await storage.getCertificat(id);
     if (!existing) return res.status(404).json({ message: "Certificat not found" });
 
+    // Task #457 — `superseded` is TERMINAL and server-set only (written
+    // exclusively by the atomic reissue transaction). A superseded certificat
+    // must never be reactivated — its replacement already exists — and no
+    // PATCH may move a certificat into or out of that state directly.
+    if ("status" in body && existing.status === "superseded") {
+      return res.status(409).json({
+        code: "CERTIFICAT_SUPERSEDED",
+        message: `Certificat ${existing.certificateRef} was superseded by a reissue and can no longer change status.`,
+      });
+    }
+
     // Task #451 — issuance seal. Once a certificat carries a pinned PDF it is
     // an issued payment instruction: financial/source fields are locked and
     // corrections require a reissue (a new certificat). Only lifecycle fields
@@ -121,6 +228,8 @@ router.patch(
     delete (body as Record<string, unknown>).pdfFileName;
     delete (body as Record<string, unknown>).issuedAt;
     delete (body as Record<string, unknown>).issuanceSnapshot;
+    // Task #457 — reissue lineage is server-set only, never patchable.
+    delete (body as Record<string, unknown>).reissuedFromCertificatId;
     if (existing.pdfStorageKey) {
       const allowedOnSealed = new Set(["status", "notes"]);
       const blocked = Object.keys(body).filter((k) => !allowedOnSealed.has(k));
@@ -276,6 +385,14 @@ router.post(
       const cert = await storage.getCertificat(certId);
       if (!cert) return res.status(404).json({ message: "Certificat not found" });
       if (cert.projectId !== projectId) return res.status(400).json({ message: "Certificat does not belong to this project" });
+      // Task #457 — a superseded certificat was replaced by a reissue; its
+      // pinned PDF is corrected history and must never be (re)sent.
+      if (cert.status === "superseded") {
+        return res.status(409).json({
+          code: "CERTIFICAT_SUPERSEDED",
+          message: `Certificat ${cert.certificateRef} was superseded by a reissue and cannot be sent. Send the replacement instead.`,
+        });
+      }
 
       const devisList = await storage.getDevisByProject(projectId);
       const contractorDevis = devisList.filter((d) => d.contractorId === cert.contractorId && d.status !== "void");

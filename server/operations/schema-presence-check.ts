@@ -133,6 +133,8 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0075_certificat_version_guard", artifact: { kind: "column", table: "certificats", column: "version" } },
   { tag: "0076_situation_review", artifact: { kind: "column", table: "situation_lines", column: "check_status" } },
   { tag: "0077_situation_lines_unique", artifact: { kind: "data_only", reason: "UNIQUE index on situation_lines(situation_id, devis_line_item_id); no new table/column artifact (same rationale as 0056/0072/0073)" } },
+  { tag: "0078_certificat_reissue", artifact: { kind: "column", table: "certificats", column: "reissued_from_certificat_id" } },
+  { tag: "0079_certificat_status_check", artifact: { kind: "data_only", reason: "adds a CHECK constraint on certificats.status only — no table/column artifact to probe" } },
 ];
 
 interface JournalFile {

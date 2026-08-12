@@ -4,7 +4,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { FileCheck, Plus, Eye, ChevronRight, ExternalLink } from "lucide-react";
+import { FileCheck, Plus, Eye, ChevronRight, ExternalLink, RefreshCw, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -229,8 +229,11 @@ export default function Certificats() {
   const hasBankGuarantee = selectedMarche?.hasBankGuarantee ?? false;
   const isProrataManager = selectedMarche?.isProrataManager ?? false;
 
+  // Task #457 — superseded certificats were replaced by a reissue; their
+  // cumulative figures must not feed the live preview (mirrors the server
+  // resolver's exclusion).
   const priorCerts = useMemo(
-    () => (allCertificats ?? []).filter((c) => c.contractorId === watchContractorId),
+    () => (allCertificats ?? []).filter((c) => c.contractorId === watchContractorId && c.status !== "superseded"),
     [allCertificats, watchContractorId],
   );
 
@@ -306,6 +309,27 @@ export default function Certificats() {
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Task #457 — one-click reissue of a sealed certificat. The server clones
+  // it into a new draft (next ref, financials pre-filled) and marks the
+  // original superseded; both remain visible and downloadable.
+  const reissueMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("POST", `/api/certificats/${id}/reissue`);
+      return res.json() as Promise<Certificat>;
+    },
+    onSuccess: (draft) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "certificats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "certificats", "next-ref"] });
+      toast({
+        title: `Reissued as ${draft.certificateRef}`,
+        description: "A new draft was created with the financials pre-filled; the original is now marked superseded.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Reissue failed", description: error.message, variant: "destructive" });
     },
   });
 
@@ -446,6 +470,31 @@ export default function Certificats() {
                           <ExternalLink size={11} />
                           Drive
                         </a>
+                      )}
+                      {cert.pdfStorageKey && (
+                        <a
+                          href={`/api/certificats/${cert.id}/pdf`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-input bg-background px-3 text-[11px] font-bold uppercase tracking-widest hover:bg-accent hover:text-accent-foreground"
+                          data-testid={`link-cert-pdf-${cert.id}`}
+                          title="Download the pinned issued PDF"
+                        >
+                          <Download size={11} />
+                          PDF
+                        </a>
+                      )}
+                      {cert.pdfStorageKey && cert.status !== "superseded" && (
+                        <Button
+                          variant="outline"
+                          onClick={() => reissueMutation.mutate(cert.id)}
+                          disabled={reissueMutation.isPending}
+                          data-testid={`button-reissue-cert-${cert.id}`}
+                          title="Create a corrected draft and mark this certificat superseded"
+                        >
+                          <RefreshCw size={12} />
+                          <span className="text-[8px] font-bold uppercase tracking-widest">Reissue</span>
+                        </Button>
                       )}
                       {nextStatus && nextLabel && (
                         <Button

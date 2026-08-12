@@ -55,9 +55,12 @@ export async function resolveCertificatDeductions(
   const marches = await storage.getMarchesByProject(input.projectId);
   const marche = marches.find((m) => m.contractorId === input.contractorId) ?? null;
 
+  // Task #457 — superseded certificats were replaced by a reissue; their
+  // cumulative figures are corrected history and must never feed a later
+  // certificat's math (the replacement carries the corrected cumulatives).
   const priorCerts = (
     await storage.getCertificatsByProjectAndContractor(input.projectId, input.contractorId)
-  ).filter((c) => c.id !== input.excludeCertificatId);
+  ).filter((c) => c.id !== input.excludeCertificatId && c.status !== "superseded");
 
   // Both `retenueGarantie` and `cumulativeProrataDeduction` store the
   // cumulative-to-date figure on each certificat, so the *latest* prior

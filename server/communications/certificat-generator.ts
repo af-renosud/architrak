@@ -268,7 +268,10 @@ async function buildAnnexeData(
     certificat.projectId,
     certificat.contractorId
   );
-  const previousCerts = allCertificats.filter((c) => c.id !== certificat.id);
+  // Task #457 — superseded certificats were corrected by a reissue: keeping
+  // them in the previous-certificat rows would double-count the replaced
+  // payment in the annexe history and cumulative totals.
+  const previousCerts = allCertificats.filter((c) => c.id !== certificat.id && c.status !== "superseded");
 
   const previousCertificats: PreviousCertificatRow[] = previousCerts.map((c) => ({
     certificateRef: c.certificateRef,
@@ -1476,6 +1479,7 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     issuedAt: null,
     issuanceSnapshot: null,
     version: 1,
+    reissuedFromCertificatId: null,
     createdAt: now,
   };
 

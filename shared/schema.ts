@@ -18,6 +18,7 @@ import {
   doublePrecision,
   bigint,
   vector,
+  foreignKey,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -782,10 +783,27 @@ export const certificats = pgTable("certificats", {
   // captured BEFORE rendering still matches, so the pinned PDF, the
   // issuanceSnapshot and the persisted financial fields always agree.
   version: integer("version").notNull().default(1),
+  // Task #457 — assisted reissue lineage. When a sealed certificat needs a
+  // correction, the reissue flow clones it into a new draft and records the
+  // parent here. Server-set only (stripped from create/update request
+  // schemas); the partial unique index makes "at most one reissue per
+  // certificat" race-free — concurrent reissues elect a single winner at
+  // INSERT time, never via check-then-write.
+  reissuedFromCertificatId: integer("reissued_from_certificat_id"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   unique("certificats_project_ref_unique").on(table.projectId, table.certificateRef),
   index("certificats_project_contractor_idx").on(table.projectId, table.contractorId),
+  foreignKey({ columns: [table.reissuedFromCertificatId], foreignColumns: [table.id], name: "certificats_reissued_from_fk" }),
+  uniqueIndex("certificats_reissued_from_unique")
+    .on(table.reissuedFromCertificatId)
+    .where(sql`${table.reissuedFromCertificatId} IS NOT NULL`),
+  // Task #457 — closed status vocabulary; `superseded` is written only by
+  // the atomic reissue transaction (enforced at the routes) and is terminal.
+  check(
+    "certificats_status_check",
+    sql`${table.status} IN ('draft', 'ready', 'sent', 'paid', 'superseded')`,
+  ),
 ]);
 
 /**
@@ -1879,6 +1897,8 @@ export const insertCertificatSchema = createInsertSchema(certificats).omit({
   issuanceSnapshot: true,
   // Server-managed optimistic-concurrency counter — never client-settable.
   version: true,
+  // Task #457 — reissue lineage is set exclusively by the reissue route.
+  reissuedFromCertificatId: true,
 });
 
 export const insertCertificatSourceSchema = createInsertSchema(certificatSources).omit({
