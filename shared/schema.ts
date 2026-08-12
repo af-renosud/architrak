@@ -690,6 +690,10 @@ export const situationLines = pgTable("situation_lines", {
 }, (table) => [
   index("situation_lines_situation_id_idx").on(table.situationId),
   index("situation_lines_devis_line_item_id_idx").on(table.devisLineItemId),
+  // Task #450 (review follow-up) — one line per devis line item per
+  // situation; DB-level guard against concurrent duplicate creation
+  // (migration 0077). Route surfaces the violation as 409.
+  uniqueIndex("situation_lines_situation_devis_line_unique").on(table.situationId, table.devisLineItemId),
 ]);
 
 // Task #449 — signed marché-level evidence documents (currently kind

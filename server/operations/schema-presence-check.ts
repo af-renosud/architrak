@@ -132,6 +132,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0074_certificat_seal", artifact: { kind: "column", table: "certificats", column: "pdf_storage_key" } },
   { tag: "0075_certificat_version_guard", artifact: { kind: "column", table: "certificats", column: "version" } },
   { tag: "0076_situation_review", artifact: { kind: "column", table: "situation_lines", column: "check_status" } },
+  { tag: "0077_situation_lines_unique", artifact: { kind: "data_only", reason: "UNIQUE index on situation_lines(situation_id, devis_line_item_id); no new table/column artifact (same rationale as 0056/0072/0073)" } },
 ];
 
 interface JournalFile {
