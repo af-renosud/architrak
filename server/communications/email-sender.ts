@@ -1,9 +1,13 @@
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { getUncachableGmailClient, isGmailConfigured } from "../gmail/client";
 import { storage } from "../storage";
 import { generateCertificatPdf, buildCertificatEmailBody } from "./certificat-generator";
 import { getDocumentBuffer, uploadDocument } from "../storage/object-storage";
 import { env } from "../env";
 import type { InsertProjectCommunication } from "@shared/schema";
+import { CLIENT_NO_PAYMENT_NOTICE } from "@shared/signature-message-template";
 
 /**
  * Task #225 — Pull the contractor's RIB (PDF of bank-account details)
@@ -115,6 +119,58 @@ export async function sendCertificat(certificatId: number): Promise<number> {
   return created.id;
 }
 
+/**
+ * Task #443 — bundled static email attachments.
+ *
+ * Attachment keys in `attachmentStorageKeys` normally reference object
+ * storage. Keys prefixed `asset:` instead resolve to files bundled with
+ * the server in `server/assets/` — used for standard documents that ship
+ * with the app (e.g. the client signing-and-payment explainer PDF) and
+ * must never depend on object-storage state. The part after the prefix
+ * is both the file name on disk and the filename the recipient sees.
+ */
+export const ASSET_ATTACHMENT_PREFIX = "asset:";
+
+/** The one-page client explainer attached to every signature-context email. */
+export const SIGNING_EXPLAINER_ATTACHMENT_KEY =
+  `${ASSET_ATTACHMENT_PREFIX}How-signing-and-payment-works.pdf`;
+
+/** Maps the shipped attachment filename to its on-disk asset file. */
+const ASSET_FILE_BY_NAME: Record<string, string> = {
+  "How-signing-and-payment-works.pdf": "how-signing-and-payment-works.pdf",
+};
+
+function resolveAssetsFolder(): string {
+  const candidates: string[] = [];
+  try {
+    const here = typeof __dirname !== "undefined"
+      ? __dirname
+      : path.dirname(fileURLToPath(import.meta.url));
+    // Production: dist/index.cjs (__dirname = dist) with assets copied to
+    // dist/assets by script/build.ts. Dev (tsx): this file lives in
+    // server/communications, so ../assets = server/assets.
+    candidates.push(path.resolve(here, "assets"));
+    candidates.push(path.resolve(here, "..", "assets"));
+  } catch {
+    // fall through to cwd candidates
+  }
+  candidates.push(path.resolve(process.cwd(), "server", "assets"));
+  candidates.push(path.resolve(process.cwd(), "dist", "assets"));
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return candidates[0];
+}
+
+/** Exported for tests. Throws when the asset is unknown or missing on disk. */
+export function loadAssetAttachment(key: string): { filename: string; buffer: Buffer } {
+  const filename = key.slice(ASSET_ATTACHMENT_PREFIX.length);
+  const diskName = ASSET_FILE_BY_NAME[filename];
+  if (!diskName) throw new Error(`Unknown bundled asset attachment: ${filename}`);
+  const filePath = path.join(resolveAssetsFolder(), diskName);
+  return { filename, buffer: fs.readFileSync(filePath) };
+}
+
 export async function sendCommunication(
   communicationId: number,
   opts?: { threadId?: string | null; inReplyToMessageId?: string | null },
@@ -141,6 +197,20 @@ export async function sendCommunication(
     const storageKeys = (comm.attachmentStorageKeys as string[]) || [];
 
     for (const key of storageKeys) {
+      // Bundled assets are REQUIRED attachments: failing to load one is a
+      // deployment problem (missing file) and must fail the send — silently
+      // dropping e.g. the signing explainer would defeat its purpose. This
+      // load intentionally sits OUTSIDE the best-effort try/catch below, so
+      // a failure propagates and marks the communication `failed`.
+      if (key.startsWith(ASSET_ATTACHMENT_PREFIX)) {
+        const asset = loadAssetAttachment(key);
+        attachments.push({
+          filename: asset.filename,
+          content: asset.buffer.toString("base64"),
+          contentType: "application/pdf",
+        });
+        continue;
+      }
       try {
         const buffer = await getDocumentBuffer(key);
         const filename = key.split("/").pop() || "attachment";
@@ -366,7 +436,9 @@ export function buildDevisContextEmailBody(opts: {
   const note =
     `You will shortly receive a separate email from Archisign containing the secure ` +
     `link to electronically sign devis ${opts.refLabel} (project "${opts.projectName}").`;
-  return `${opts.architectMessage.trim()}\n\n---\n\n${note}\n`;
+  // Task #442 — the fixed payment warning sits OUTSIDE the architect's
+  // text so it is server-guaranteed on every send, whatever they wrote.
+  return `${opts.architectMessage.trim()}\n\n---\n\n${CLIENT_NO_PAYMENT_NOTICE}\n\n${note}\n`;
 }
 
 export interface DevisContextEmailResult {
@@ -426,6 +498,21 @@ export async function sendDevisSignatureContextEmail(opts: {
         return { communicationId: existing.id, status: "already_sent" };
       }
       communicationId = existing.id;
+      // Tasks #442/#443 — legacy rows queued/failed before the explainer
+      // attachment and payment notice became standard carry stale content.
+      // Refresh subject/body from the current builders and merge in the
+      // attachment key before the retry, so EVERY context email that
+      // actually goes out carries both guarantees.
+      const existingKeys = (existing.attachmentStorageKeys as string[] | null) ?? [];
+      const patch: Record<string, unknown> = {};
+      if (!existingKeys.includes(SIGNING_EXPLAINER_ATTACHMENT_KEY)) {
+        patch.attachmentStorageKeys = [...existingKeys, SIGNING_EXPLAINER_ATTACHMENT_KEY];
+      }
+      if (existing.subject !== subject) patch.subject = subject;
+      if (existing.body !== body) patch.body = body;
+      if (Object.keys(patch).length > 0) {
+        await storage.updateProjectCommunication(existing.id, patch);
+      }
     } else {
       const created = await storage.createProjectCommunication({
         projectId: project.id,
@@ -435,6 +522,11 @@ export async function sendDevisSignatureContextEmail(opts: {
         recipientName: recipientName || project.clientName,
         subject,
         body,
+        // Task #443 — every signature-context email carries the standard
+        // one-page explainer PDF ("How signing and payment works"), a
+        // bundled static asset. Kept OUT of the Archisign signing package
+        // by design: the explainer stays separate from the legal document.
+        attachmentStorageKeys: [SIGNING_EXPLAINER_ATTACHMENT_KEY],
         status: "queued",
         dedupeKey,
       });

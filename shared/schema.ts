@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import { CLIENT_NO_PAYMENT_NOTICE } from "./signature-message-template";
 import {
   pgTable,
   text,
@@ -64,7 +65,14 @@ export type SignOffStage = (typeof SIGN_OFF_STAGES)[number];
  * `server/routes/archisign-envelopes.ts` so the two can never drift.
  */
 export const DEVIS_CLIENT_MESSAGE_MIN_LEN = 20;
-export const DEVIS_CLIENT_MESSAGE_MAX_LEN = 2000;
+// Task #442 — the Archisign contract caps `body` at 2000 code points, and
+// the server appends the fixed payment notice ("\n\n" + notice) AFTER the
+// architect's message. Reserve that space here so a maximal message can
+// never push the combined envelope body past the upstream limit. Shared
+// with the SigningPanel character counter, which shrinks in lockstep.
+export const ARCHISIGN_BODY_MAX_LEN = 2000;
+export const DEVIS_CLIENT_MESSAGE_MAX_LEN =
+  ARCHISIGN_BODY_MAX_LEN - (CLIENT_NO_PAYMENT_NOTICE.length + 2);
 
 /**
  * `identityVerification` 8-field block embedded in `envelope.signed`

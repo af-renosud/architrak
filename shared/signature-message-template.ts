@@ -8,6 +8,19 @@
  * drifts back to French. `descriptionFr` is the devis' French lot
  * description — a domain value interpolated as-is, not UI copy.
  */
+/**
+ * Task #442 — fixed, server-guaranteed payment warning appended to every
+ * client-facing devis signing message (Archisign envelope body AND the
+ * ArchiTrak context email). Lives in shared/ so both the server builders
+ * and the English-copy regression guard use the exact same string. It is
+ * intentionally NOT part of the editable prefill template below: the
+ * server appends it outside the architect's text so it can never be
+ * edited away (and never shows twice).
+ */
+export const CLIENT_NO_PAYMENT_NOTICE =
+  "Don't pay anything now. At this stage, you are only authorising the quotation. " +
+  "Payment instructions will follow.";
+
 export interface ClientSignatureMessageTemplateInput {
   refLabel: string;
   descriptionFr: string | null | undefined;

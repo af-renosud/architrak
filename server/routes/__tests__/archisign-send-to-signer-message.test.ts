@@ -114,6 +114,8 @@ vi.mock("../../communications/devis-translation-generator", () => ({
 
 import archisignEnvelopesRouter from "../archisign-envelopes";
 import { storage } from "../../storage";
+import { DEVIS_CLIENT_MESSAGE_MAX_LEN } from "@shared/schema";
+import { CLIENT_NO_PAYMENT_NOTICE } from "@shared/signature-message-template";
 import { asStorageMock } from "./helpers/mock-storage";
 
 const storageMock = asStorageMock(storage);
@@ -194,14 +196,26 @@ async function postSend(devisId: number, body: unknown) {
 }
 
 describe("POST /api/devis/:id/send-to-signer — personalised message", () => {
-  it("rejects messages longer than 2000 chars with a 400", async () => {
-    const tooLong = "a".repeat(2001);
+  it("rejects messages longer than the max (Archisign 2000-cap minus the fixed notice) with a 400", async () => {
+    // Task #442 — the server appends "\n\n" + CLIENT_NO_PAYMENT_NOTICE to
+    // the envelope body, so the architect's allowance shrinks in lockstep
+    // to keep the combined body within Archisign's 2000-code-point cap.
+    expect(DEVIS_CLIENT_MESSAGE_MAX_LEN + CLIENT_NO_PAYMENT_NOTICE.length + 2).toBe(2000);
+    const tooLong = "a".repeat(DEVIS_CLIENT_MESSAGE_MAX_LEN + 1);
     const res = await postSend(100, { message: tooLong });
     expect(res.status).toBe(400);
     const body = (await res.json()) as { message: string };
-    expect(body.message).toMatch(/2000 characters/);
+    expect(body.message).toMatch(new RegExp(`${DEVIS_CLIENT_MESSAGE_MAX_LEN} characters`));
     expect(archisignMock.createEnvelope).not.toHaveBeenCalled();
     expect(archisignMock.sendEnvelope).not.toHaveBeenCalled();
+
+    // A maximal-length message still succeeds, and the combined envelope
+    // body (message + "\n\n" + notice) lands exactly on the 2000 cap.
+    const maximal = "a".repeat(DEVIS_CLIENT_MESSAGE_MAX_LEN);
+    const okRes = await postSend(100, { message: maximal });
+    expect(okRes.status).toBe(200);
+    const sentBody = archisignMock.createEnvelope.mock.calls[0][0].body as string;
+    expect(sentBody.length).toBe(2000);
   });
 
   it("forwards the trimmed message to createEnvelope on first-send", async () => {
@@ -211,7 +225,12 @@ describe("POST /api/devis/:id/send-to-signer — personalised message", () => {
     const args = archisignMock.createEnvelope.mock.calls[0][0];
     expect(args).toMatchObject({
       externalRef: "devis-100",
-      body: "Bonjour, voici le devis pour signature.",
+      // Task #442 — the fixed payment warning is appended server-side,
+      // outside the architect's editable text.
+      body:
+        "Bonjour, voici le devis pour signature.\n\n" +
+        "Don't pay anything now. At this stage, you are only authorising the quotation. " +
+        "Payment instructions will follow.",
       signer: { fullName: "Marie Dupont", email: "marie@example.test" },
     });
     expect(archisignMock.sendEnvelope).toHaveBeenCalledWith("env_42");
@@ -260,8 +279,14 @@ describe("POST /api/devis/:id/send-to-signer — personalised message", () => {
     const raw = "Bonjour <Marie> & équipe,\nVoici le devis.\n\nCordialement & merci.";
     const res = await postSend(100, { message: raw });
     expect(res.status).toBe(200);
-    expect(archisignMock.createEnvelope.mock.calls[0][0].body).toBe(raw);
-    // And the same verbatim value is what we persist on our side.
+    // Task #442 — the architect's text is forwarded untouched, with only the
+    // fixed payment warning appended after it (server-guaranteed block).
+    expect(archisignMock.createEnvelope.mock.calls[0][0].body).toBe(
+      raw +
+        "\n\nDon't pay anything now. At this stage, you are only authorising the quotation. " +
+        "Payment instructions will follow.",
+    );
+    // The RAW verbatim value (without the notice) is what we persist on our side.
     const persistCall = storageMock.updateDevis.mock.calls.find(
       (c) => (c[1] as { archisignEnvelopeId?: string }).archisignEnvelopeId === "env_42",
     );

@@ -82,6 +82,8 @@ vi.mock("../../env", () => ({ env: {} }));
 import {
   buildDevisContextEmailBody,
   sendDevisSignatureContextEmail,
+  loadAssetAttachment,
+  SIGNING_EXPLAINER_ATTACHMENT_KEY,
 } from "../email-sender";
 
 beforeEach(() => {
@@ -103,6 +105,9 @@ describe("buildDevisContextEmailBody", () => {
     expect(body).toContain("\n\n---\n\n");
     expect(body).not.toContain("e-mail séparé d'Archisign");
     expect(body).toContain("separate email from Archisign");
+    // Task #442 — fixed payment warning, guaranteed outside the architect text.
+    expect(body).toContain("Don't pay anything now. At this stage, you are only authorising the quotation.");
+    expect(body.indexOf("---")).toBeLessThan(body.indexOf("Don't pay anything now"));
     expect(body).toContain("DVT0000941");
     expect(body).toContain("Villa Sophia");
   });
@@ -184,5 +189,65 @@ describe("sendDevisSignatureContextEmail", () => {
     expect(result.status).toBe("failed");
     expect(result.error).toMatch(/Client contact email missing/);
     expect(storageSpy.createProjectCommunication).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Task #443 — the standard one-page explainer PDF ("How signing and
+ * payment works") accompanies every signature-context email as a bundled
+ * static asset. Kept out of the Archisign signing package by design.
+ */
+describe("signing explainer attachment (Task #443)", () => {
+  it("creates the communication with the bundled explainer asset key", async () => {
+    const result = await sendDevisSignatureContextEmail({
+      devisId: 7,
+      envelopeId: "env_43",
+      message: "Bonjour Marie, voici le devis pour signature.",
+    });
+    expect(result.status).toBe("sent");
+    const row = state.comms[0];
+    expect(row.attachmentStorageKeys).toEqual([SIGNING_EXPLAINER_ATTACHMENT_KEY]);
+    // The Gmail raw payload must carry the attachment with the client-facing filename.
+    const raw = (gmailSpy.send.mock.calls[0][0] as { requestBody: { raw: string } }).requestBody.raw;
+    const decoded = Buffer.from(raw, "base64url").toString("utf-8");
+    expect(decoded).toContain('filename="How-signing-and-payment-works.pdf"');
+    expect(decoded).toContain("Content-Type: application/pdf");
+  });
+
+  it("loadAssetAttachment returns the real one-page PDF from server/assets", () => {
+    const asset = loadAssetAttachment(SIGNING_EXPLAINER_ATTACHMENT_KEY);
+    expect(asset.filename).toBe("How-signing-and-payment-works.pdf");
+    expect(asset.buffer.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+    expect(asset.buffer.length).toBeGreaterThan(10_000);
+  });
+
+  it("throws on an unknown asset key instead of silently attaching nothing", () => {
+    expect(() => loadAssetAttachment("asset:nope.pdf")).toThrow(/Unknown bundled asset/);
+  });
+
+  it("merges the explainer key into a legacy failed row before retrying (and attaches it)", async () => {
+    // Legacy row: queued before Task #443, no attachments, failed send.
+    state.comms.push({
+      id: state.nextId++,
+      projectId: 3,
+      type: "devis_signature_context",
+      recipientEmail: "marie@example.test",
+      subject: "old subject",
+      body: "old body",
+      attachmentStorageKeys: null,
+      status: "failed",
+      dedupeKey: "devis-signature-context:7:env_legacy",
+    });
+    const result = await sendDevisSignatureContextEmail({
+      devisId: 7,
+      envelopeId: "env_legacy",
+      message: "Bonjour Marie, voici le devis pour signature.",
+    });
+    expect(result.status).toBe("sent");
+    const row = state.comms.find((c) => c.dedupeKey === "devis-signature-context:7:env_legacy")!;
+    expect(row.attachmentStorageKeys).toEqual([SIGNING_EXPLAINER_ATTACHMENT_KEY]);
+    const raw = (gmailSpy.send.mock.calls[0][0] as { requestBody: { raw: string } }).requestBody.raw;
+    const decoded = Buffer.from(raw, "base64url").toString("utf-8");
+    expect(decoded).toContain('filename="How-signing-and-payment-works.pdf"');
   });
 });

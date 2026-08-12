@@ -205,6 +205,22 @@ describe("devis signature-context client email stays English", () => {
     expect(body).toContain('devis DVT0000941 (project "Villa Test")');
     expectNoFrenchMarkers(body, "devis signature-context email body (fixed footer)");
   });
+
+  it("carries the fixed English payment warning (Task #442)", async () => {
+    const { CLIENT_NO_PAYMENT_NOTICE } = await import("@shared/signature-message-template");
+    const { buildDevisContextEmailBody } = await import("../communications/email-sender");
+    expect(CLIENT_NO_PAYMENT_NOTICE).toBe(
+      "Don't pay anything now. At this stage, you are only authorising the quotation. " +
+        "Payment instructions will follow.",
+    );
+    expectNoFrenchMarkers(CLIENT_NO_PAYMENT_NOTICE, "client no-payment notice");
+    const body = buildDevisContextEmailBody({
+      architectMessage: "Here is the devis for your approval.",
+      refLabel: "DVT0000941",
+      projectName: "Villa Test",
+    });
+    expect(body).toContain(CLIENT_NO_PAYMENT_NOTICE);
+  });
 });
 
 describe("certificat client email subject stays English", () => {

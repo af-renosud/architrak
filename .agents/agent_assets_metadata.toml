@@ -1,0 +1,9 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "08f10yY3hQx47Sad9M8dG"
+uri = "file://attached_assets/architrak-signing-explainer-draft.pdf"
+type = "pdf"
+title = "Client guide — How signing & payment works"
+description = "One-page A4 explainer attached to every signature-context email: sign via Archisign, don't pay at signing, pay only against Payment Certificates."

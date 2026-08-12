@@ -1,6 +1,6 @@
 import { build as esbuild } from "esbuild";
 import { build as viteBuild } from "vite";
-import { rm, readFile } from "fs/promises";
+import { rm, readFile, cp, access } from "fs/promises";
 import { spawnSync } from "child_process";
 
 // server deps to bundle to reduce openat(2) syscalls
@@ -110,6 +110,15 @@ async function buildAll() {
     external: externals,
     logLevel: "info",
   });
+
+  // Task #443 — bundled email attachments (server/assets) must ship with
+  // the compiled output: the runtime resolver checks dist/assets first via
+  // __dirname, so a deployment rooted at dist still finds them. A missing
+  // required asset fails the whole email send at runtime, so fail the
+  // BUILD instead if the copy didn't produce the explainer PDF.
+  console.log("copying server assets...");
+  await cp("server/assets", "dist/assets", { recursive: true });
+  await access("dist/assets/how-signing-and-payment-works.pdf");
 }
 
 buildAll().catch((err) => {

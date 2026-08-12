@@ -52,6 +52,7 @@ import {
   getValidatedCachedPdfKey,
 } from "../communications/devis-translation-generator";
 import { env } from "../env";
+import { CLIENT_NO_PAYMENT_NOTICE } from "@shared/signature-message-template";
 
 const router = Router();
 
@@ -402,7 +403,17 @@ router.post(
           // own context email below as delivery redundancy + audit trail.
           // On the resume branch we never reach this block, so the message
           // is silently dropped — the FE hides the input in that case.
-          body: personalMessage,
+          // Task #442 — the fixed payment warning is appended server-side,
+          // OUTSIDE the architect's editable message, so every signer email
+          // carries it regardless of what the architect wrote. Persisted
+          // archisignSignerMessage stays the RAW architect message.
+          // Scope: the envelope-body guarantee applies to envelopes CREATED
+          // from now on; a resume of a pre-#442 envelope skips /create and
+          // cannot rewrite its Archisign body — for those, the notice is
+          // still delivered via the ArchiTrak context email (builder-level).
+          body: personalMessage
+            ? `${personalMessage}\n\n${CLIENT_NO_PAYMENT_NOTICE}`
+            : personalMessage,
         });
       } catch (err) {
         // Local config problem (thrown BEFORE any network call) — genuinely

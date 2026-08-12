@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>How signing &amp; payment works — ArchiTrak</title>
+<style>
+  @page { size: A4; margin: 0; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 210mm; height: 297mm; }
+  body { font-family: Georgia, 'Times New Roman', serif; color: #1d2733; background: #ffffff; }
+  .page { width: 210mm; height: 297mm; padding: 14mm 16mm 12mm; display: flex; flex-direction: column; }
+  .header { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 3px solid #14314f; padding-bottom: 6mm; }
+  .brand { font-family: Helvetica, Arial, sans-serif; font-weight: 700; font-size: 15pt; letter-spacing: 0.5px; color: #14314f; }
+  .brand span { color: #b8860b; }
+  .header .doc-type { font-family: Helvetica, Arial, sans-serif; font-size: 8pt; letter-spacing: 2px; text-transform: uppercase; color: #6b7684; }
+  h1 { font-size: 21pt; font-weight: 400; color: #14314f; margin-top: 7mm; line-height: 1.2; }
+  .intro { font-size: 10.5pt; line-height: 1.55; color: #3d4a59; margin-top: 3.5mm; max-width: 165mm; }
+  .steps { margin-top: 7mm; }
+  .step { display: flex; align-items: flex-start; margin-bottom: 4.5mm; }
+  .step-num { flex: 0 0 11mm; height: 11mm; width: 11mm; border-radius: 50%; background: #14314f; color: #fff; font-family: Helvetica, Arial, sans-serif; font-size: 13pt; font-weight: 700; text-align: center; line-height: 11mm; margin-right: 5mm; }
+  .step:nth-child(3) .step-num { background: #b8860b; }
+  .step-body { flex: 1; padding-top: 0.5mm; }
+  .step-title { font-family: Helvetica, Arial, sans-serif; font-weight: 700; font-size: 11pt; color: #14314f; }
+  .step-text { font-size: 9.8pt; line-height: 1.5; color: #3d4a59; margin-top: 1mm; max-width: 158mm; }
+  .warning { margin-top: 2mm; border: 2.5px solid #b8860b; border-radius: 3mm; background: #fdf6e6; padding: 4.5mm 6mm; display: flex; align-items: center; }
+  .warning .icon { flex: 0 0 12mm; height: 12mm; width: 12mm; border-radius: 50%; background: #b8860b; color: #fff; text-align: center; line-height: 12mm; font-family: Helvetica, Arial, sans-serif; font-size: 17pt; font-weight: 700; margin-right: 5mm; }
+  .warning .w-title { font-family: Helvetica, Arial, sans-serif; font-weight: 700; font-size: 11.5pt; color: #7a5a08; }
+  .warning .w-text { font-size: 9.8pt; line-height: 1.5; color: #5a4a17; margin-top: 1mm; }
+  .cols { display: flex; margin-top: 6mm; }
+  .col { flex: 1; }
+  .col + .col { margin-left: 8mm; }
+  .col h2 { font-family: Helvetica, Arial, sans-serif; font-size: 9pt; letter-spacing: 1.5px; text-transform: uppercase; color: #14314f; border-bottom: 1.5px solid #d8dee6; padding-bottom: 1.5mm; margin-bottom: 2.5mm; }
+  .col ul { list-style: none; }
+  .col li { font-size: 9.3pt; line-height: 1.45; color: #3d4a59; padding-left: 6mm; position: relative; margin-bottom: 2mm; }
+  .col.good li::before { content: "\2713"; position: absolute; left: 0; color: #2e7d4f; font-weight: 700; font-family: Helvetica, Arial, sans-serif; }
+  .col.bad li::before { content: "\2715"; position: absolute; left: 0; color: #b3261e; font-weight: 700; font-family: Helvetica, Arial, sans-serif; }
+  .footer { margin-top: auto; border-top: 1.5px solid #d8dee6; padding-top: 3mm; display: flex; justify-content: space-between; font-family: Helvetica, Arial, sans-serif; font-size: 7.8pt; color: #6b7684; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <div class="brand">Archi<span>Trak</span></div>
+    <div class="doc-type">Client guide &middot; Signing &amp; payments</div>
+  </div>
+  <h1>How signing and payment works on your project</h1>
+  <p class="intro">Your architect uses ArchiTrak to manage quotations, signatures and payments on your building project. This one-page guide explains what happens at each step &mdash; and, most importantly, when to pay and when not to.</p>
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body">
+        <div class="step-title">You receive a quotation to sign electronically</div>
+        <p class="step-text">You'll get an email from <strong>Archisign</strong>, our secure e-signature service, with a link to review the contractor's quotation (the <em>devis</em>). Your architect has already checked it &mdash; including the contractor's insurance cover &mdash; before it reaches you.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-body">
+        <div class="step-title">Signing only authorises the work &mdash; it is not a request to pay</div>
+        <p class="step-text">By signing, you approve the quotation so the contractor can be engaged. The quotation may show prices, deposits or bank details, but <strong>none of these are payable at this stage</strong>.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-body">
+        <div class="step-title">Pay only against a Payment Certificate</div>
+        <p class="step-text">As work progresses, your architect verifies what has actually been done and issues you a <strong>Payment Certificate</strong> &mdash; a document stating exactly what to pay, to whom, and why. Every payment on your project is authorised this way, including any deposit.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">4</div>
+      <div class="step-body">
+        <div class="step-title">Everything is tracked for you</div>
+        <p class="step-text">ArchiTrak keeps a running record of what has been quoted, signed, certified and paid &mdash; so you always know where your project stands, and nothing is paid twice or too early.</p>
+      </div>
+    </div>
+  </div>
+  <div class="warning">
+    <div class="icon">!</div>
+    <div>
+      <div class="w-title">Don't pay anything now.</div>
+      <p class="w-text">At the signing stage, you are only authorising the quotation. Payment instructions will follow with each Payment Certificate. If you're ever unsure whether a payment request is genuine, check with your architect first.</p>
+    </div>
+  </div>
+  <div class="cols">
+    <div class="col good">
+      <h2>What to expect</h2>
+      <ul>
+        <li>Signature requests always come via Archisign, with your architect's message.</li>
+        <li>Payment Certificates come from your architect, with clear instructions.</li>
+        <li>You can ask your architect about any document at any time.</li>
+      </ul>
+    </div>
+    <div class="col bad">
+      <h2>What we will never do</h2>
+      <ul>
+        <li>Ask you to pay directly from a quotation or signature email.</li>
+        <li>Change bank details by email without a Payment Certificate.</li>
+        <li>Rush you &mdash; take the time you need before signing.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer">
+    <div>ArchiTrak &mdash; project tracking for your architect-led works</div>
+    <div>Questions? Contact your architect directly.</div>
+  </div>
+</div>
+</body>
+</html>
