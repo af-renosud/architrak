@@ -615,6 +615,10 @@ export interface IStorage {
 
   getDevisByProjectAndContractor(projectId: number, contractorId: number): Promise<Devis[]>;
 
+  getSituationLine(id: number): Promise<SituationLine | undefined>;
+
+  updateSituationLine(id: number, data: Partial<InsertSituationLine>): Promise<SituationLine | undefined>;
+
   getLot(id: number): Promise<import("@shared/schema").Lot | undefined>;
 
   getUser(id: number): Promise<User | undefined>;
@@ -1850,6 +1854,16 @@ export class DatabaseStorage implements IStorage {
 
   async createSituationLine(data: InsertSituationLine): Promise<SituationLine> {
     const [line] = await db.insert(situationLines).values(data).returning();
+    return line;
+  }
+
+  async getSituationLine(id: number): Promise<SituationLine | undefined> {
+    const [line] = await db.select().from(situationLines).where(eq(situationLines.id, id));
+    return line;
+  }
+
+  async updateSituationLine(id: number, data: Partial<InsertSituationLine>): Promise<SituationLine | undefined> {
+    const [line] = await db.update(situationLines).set(data).where(eq(situationLines.id, id)).returning();
     return line;
   }
 

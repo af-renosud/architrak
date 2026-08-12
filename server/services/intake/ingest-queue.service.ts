@@ -18,8 +18,10 @@
  *   6. route by documentType:
  *        - quotation        → processDevisUpload  (typed devis DRAFT)
  *        - invoice/acompte  → unique devis match → processInvoiceUpload
- *        - situation        → unique devis match + situation-number match
- *                             → attach signed PDF to the situations row
+ *        - situation        → unique devis match; number matches an existing
+ *                             situations row → attach signed PDF (Task #449);
+ *                             otherwise unique mode_b devis → DRAFT situation
+ *                             with per-line claimed % (Task #450)
  *        - commande         → unique devis match → marche_documents row
  *        - everything else  → park (manual routing — later task)
  *
@@ -508,20 +510,54 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
           typeof parsed.situationNumber === "number" && Number.isInteger(parsed.situationNumber) && parsed.situationNumber > 0
             ? parsed.situationNumber
             : null;
-        if (situationNumber == null) {
-          await park(doc, fingerprint, "Situation parked: no situation number could be extracted — attach manually.");
-          return;
-        }
-        const existing = (await storage.getSituationsByDevis(candidates[0].id)).find(
-          (s) => s.situationNumber === situationNumber,
-        );
+        const existing =
+          situationNumber == null
+            ? undefined
+            : (await storage.getSituationsByDevis(candidates[0].id)).find(
+                (s) => s.situationNumber === situationNumber,
+              );
         if (!existing) {
-          await park(
-            doc,
-            fingerprint,
-            `Situation parked: no existing situation n°${situationNumber} on the matched devis — attach manually.`,
-          );
-          return;
+          // Task #450 — no existing situations row to attach evidence to:
+          // this is a NEW contractor claim. On a mode_b devis, create a
+          // DRAFT situation with per-line claimed % for the traffic-light
+          // review; anything else parks for manual handling.
+          if (candidates[0].invoicingMode !== "mode_b") {
+            await park(doc, fingerprint, "Situation parked: matched devis is not mode_b (no line items to review against) and no existing situation to attach to — attach manually.");
+            return;
+          }
+          // Second existence check (see invoice branch): a delete may have
+          // landed while the matching lookups ran.
+          if (!(await storage.getProjectIntakeDocument(doc.id))) {
+            console.log(`[intake-queue] Intake document ${doc.id} was deleted mid-analysis — skipping situation routing`);
+            return;
+          }
+          const { createDraftSituationFromParsed, SituationReviewError } = await import("../situation-review.service");
+          try {
+            const { situation } = await createDraftSituationFromParsed({
+              devis: candidates[0],
+              parsed,
+              fileName: doc.fileName,
+              storageKey: doc.storageKey,
+            });
+            await storage.updateProjectIntakeDocument(doc.id, {
+              analysisState: "analyzed",
+              routingState: "routed",
+              promotedKind: "situation",
+              promotedId: situation.id,
+              contentFingerprint: fingerprint,
+            });
+            return;
+          } catch (err) {
+            if (err instanceof SituationReviewError) {
+              // Deterministic rejection (no % lines, existing draft, …) —
+              // park with the reason; retrying won't change the outcome.
+              await park(doc, fingerprint, `Situation parked: ${err.message}`);
+              return;
+            }
+            throw new TransientIntakeError(
+              `situation routing failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
         }
         if (existing.sourceStorageKey) {
           await park(

@@ -131,6 +131,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0073_situations_source_unique", artifact: { kind: "data_only", reason: "index swap on situations.source_intake_document_id: plain index replaced by a partial UNIQUE index; no table/column artifact (same rationale as 0056/0072)" } },
   { tag: "0074_certificat_seal", artifact: { kind: "column", table: "certificats", column: "pdf_storage_key" } },
   { tag: "0075_certificat_version_guard", artifact: { kind: "column", table: "certificats", column: "version" } },
+  { tag: "0076_situation_review", artifact: { kind: "column", table: "situation_lines", column: "check_status" } },
 ];
 
 interface JournalFile {

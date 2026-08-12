@@ -4,21 +4,54 @@ import { storage } from "../storage";
 import {
   insertSituationSchema,
   insertSituationLineSchema,
-  type InsertSituation,
-  type InsertSituationLine,
 } from "@shared/schema";
 import { validateRequest } from "../middleware/validate";
 import { evaluateAcompteGate, gateInputsFromDevis } from "../services/acompte.service";
 import { getDocumentStream } from "../storage/object-storage";
+import {
+  SituationReviewError,
+  confirmSituation,
+  getSituationReview,
+  recomputeDraftSituation,
+} from "../services/situation-review.service";
+import { insertSituationSchema } from "@shared/schema";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
 const devisIdParams = z.object({ devisId: z.coerce.number().int().positive() });
 const situationIdParams = z.object({ situationId: z.coerce.number().int().positive() });
 
-const createSituationBodySchema = insertSituationSchema.omit({ devisId: true });
-const updateSituationSchema = insertSituationSchema.partial();
-const createLineBodySchema = insertSituationLineSchema.omit({ situationId: true });
+// Task #450 — seal the state machine + provenance: `status`, `confirmedAt`
+// and source-PDF/audit columns must never be settable through the generic
+// create/update endpoints (state moves only via /confirm; provenance is set
+// only by the intake pipeline). Omitted from the SCHEMA, not just guarded,
+// so a crafted body can't move money without an audit trail.
+// (Task #449's source-PDF provenance columns are already omitted from
+// insertSituationSchema itself, so they can never appear here.)
+const sealedSituationFields = {
+  status: true,
+  confirmedAt: true,
+  aiExtractedData: true,
+} as const;
+const createSituationBodySchema = insertSituationSchema
+  .omit({ devisId: true })
+  .omit(sealedSituationFields);
+const updateSituationSchema = insertSituationSchema
+  .omit(sealedSituationFields)
+  .partial();
+const createLineBodySchema = z
+  .object({
+    devisLineItemId: z.coerce.number().int().positive(),
+    percentComplete: z.coerce.number().min(0).max(100),
+  })
+  .strict();
+
+function handleReviewError(err: unknown, res: import("express").Response) {
+  if (err instanceof SituationReviewError) {
+    return res.status(err.status).json({ message: err.message });
+  }
+  throw err;
+}
 
 router.get("/api/devis/:devisId/situations", async (req, res) => {
   const sits = await storage.getSituationsByDevis(Number(req.params.devisId));
@@ -42,13 +75,21 @@ router.post(
         acompteState: decision.state,
       });
     }
-    const situation = await storage.createSituation({ ...req.body, devisId });
+      const situation = await confirmSituation(Number(req.params.id));
+
+      const devisLine = (await storage.getDevisLineItems(situation.devisId)).find(
+        (dl) => dl.id === req.body.devisLineItemId,
+      );
     res.status(201).json(situation);
   },
 );
 
 router.get("/api/situations/:id", async (req, res) => {
-  const situation = await storage.getSituation(Number(req.params.id));
+      const situation = await confirmSituation(Number(req.params.id));
+
+      const devisLine = (await storage.getDevisLineItems(situation.devisId)).find(
+        (dl) => dl.id === req.body.devisLineItemId,
+      );
   if (!situation) return res.status(404).json({ message: "Situation not found" });
   res.json(situation);
 });
@@ -57,23 +98,24 @@ router.patch(
   "/api/situations/:id",
   validateRequest({ params: idParams, body: updateSituationSchema }),
   async (req, res) => {
-    // Task #449 — source-PDF provenance is server-written only. The Zod
-    // schema already omits these fields, but delete them from the body
-    // outright (belt-and-braces — see the devis state-machine seal).
+    const existing = await storage.getSituation(Number(req.params.id));
+    if (!existing) return res.status(404).json({ message: "Situation not found" });
+    // Confirmed situations are the baseline for later ones — immutable.
+    if (existing.status !== "draft") {
+      return res.status(409).json({ message: "Confirmed situations cannot be edited" });
+    }
+    // Task #449/#450 — sealed fields are omitted from the Zod schema, but
+    // delete them from the body outright (belt-and-braces — see the devis
+    // state-machine seal).
     const body = { ...req.body };
-    for (const k of [
-      "sourceStorageKey",
-      "sourceFileName",
-      "sourceUploadedAt",
-      "sourceUploadedBy",
-      "sourceConfirmedAt",
-      "sourceConfirmedBy",
-      "sourceIntakeDocumentId",
-    ]) {
+    for (const k of Object.keys(sealedSituationFields)) {
       delete (body as Record<string, unknown>)[k];
     }
-    const situation = await storage.updateSituation(Number(req.params.id), body);
-    if (!situation) return res.status(404).json({ message: "Situation not found" });
+      const situation = await confirmSituation(Number(req.params.id));
+
+      const devisLine = (await storage.getDevisLineItems(situation.devisId)).find(
+        (dl) => dl.id === req.body.devisLineItemId,
+      );
     res.json(situation);
   },
 );
@@ -86,24 +128,39 @@ router.post(
   validateRequest({ params: idParams, body: z.object({ confirmedBy: z.string().optional() }) }),
   async (req, res) => {
     const id = Number(req.params.id);
-    const situation = await storage.getSituation(id);
+      const situation = await confirmSituation(Number(req.params.id));
+
+      const devisLine = (await storage.getDevisLineItems(situation.devisId)).find(
+        (dl) => dl.id === req.body.devisLineItemId,
+      );
     if (!situation) return res.status(404).json({ message: "Situation not found" });
     if (!situation.sourceStorageKey) {
       return res.status(409).json({ message: "This situation has no source PDF attached." });
     }
     if (situation.sourceConfirmedAt) return res.json(situation);
-    const updated = await storage.confirmSituationSourcePdf(id, req.body.confirmedBy || "operator");
-    res.json(updated);
+      const updated = await storage.updateSituationLine(line.id, patch);
+      if (req.body.percentComplete !== undefined) {
+        await recomputeDraftSituation(situation.id);
+      }
+      res.json(updated);
+    } catch (err) {
+      handleReviewError(err, res);
+    }
   },
 );
 
-// Task #449 — download the retained signed Situation PDF.
-router.get(
-  "/api/situations/:id/source-pdf",
+/** Draft → confirmed. Requires every line resolved (non-unchecked);
+ *  recomputes all money server-side before flipping status. */
+router.post(
+  "/api/situations/:id/confirm",
   validateRequest({ params: idParams }),
   async (req, res) => {
     try {
-      const situation = await storage.getSituation(Number(req.params.id));
+      const situation = await confirmSituation(Number(req.params.id));
+
+      const devisLine = (await storage.getDevisLineItems(situation.devisId)).find(
+        (dl) => dl.id === req.body.devisLineItemId,
+      );
       if (!situation) return res.status(404).json({ message: "Situation not found" });
       if (!situation.sourceStorageKey) {
         return res.status(404).json({ message: "This situation has no source PDF attached." });
@@ -122,16 +179,80 @@ router.get(
 
 router.get("/api/situations/:situationId/lines", async (req, res) => {
   const lines = await storage.getSituationLines(Number(req.params.situationId));
-  res.json(lines);
-});
 
-router.post(
-  "/api/situations/:situationId/lines",
-  validateRequest({ params: situationIdParams, body: createLineBodySchema }),
+      const situationId = Number(req.params.situationId);
+      const line = await storage.getSituationLine(Number(req.params.id));
+
+      const fresh = await storage.getSituationLine(line.id);
+const situationLineReviewSchema = z
+  .object({
+    percentComplete: z.coerce.number().min(0).max(100).optional(),
+    checkStatus: z.enum(["unchecked", "green", "amber", "red"]).optional(),
+    checkNotes: z.string().max(2000).nullable().optional(),
+  })
+  .strict();
+
+/** Per-line review edit (approved %, traffic-light status, notes).
+ *  Only while the parent situation is a draft; all money is recomputed
+ *  server-side (roundCurrency) after a % change. */
+router.patch(
+  "/api/situation-lines/:id",
+  validateRequest({ params: idParams, body: situationLineReviewSchema }),
   async (req, res) => {
-    const line = await storage.createSituationLine({ ...req.body, situationId: Number(req.params.situationId) });
-    res.status(201).json(line);
+    try {
+      const line = await storage.getSituationLine(Number(req.params.id));
+
+      const fresh = await storage.getSituationLine(line.id);
+      if (!line) return res.status(404).json({ message: "Situation line not found" });
+      const situation = await confirmSituation(Number(req.params.id));
+
+      const devisLine = (await storage.getDevisLineItems(situation.devisId)).find(
+        (dl) => dl.id === req.body.devisLineItemId,
+      );
+      if (!situation) return res.status(404).json({ message: "Situation not found" });
+      if (situation.status !== "draft") {
+        return res.status(409).json({ message: "Lines of a confirmed situation cannot be edited" });
+      }
+      const patch: Record<string, unknown> = {};
+      if (req.body.percentComplete !== undefined) {
+        patch.percentComplete = Number(req.body.percentComplete).toFixed(2);
+      }
+      if (req.body.checkStatus !== undefined) patch.checkStatus = req.body.checkStatus;
+      if (req.body.checkNotes !== undefined) patch.checkNotes = req.body.checkNotes;
+      const updated = await storage.updateSituationLine(line.id, patch);
+      if (req.body.percentComplete !== undefined) {
+        await recomputeDraftSituation(situation.id);
+      }
+      res.json(updated);
+    } catch (err) {
+      handleReviewError(err, res);
+    }
+  },
+);
+
+/** Draft → confirmed. Requires every line resolved (non-unchecked);
+ *  recomputes all money server-side before flipping status. */
+router.post(
+  "/api/situations/:id/confirm",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    try {
+      const situation = await confirmSituation(Number(req.params.id));
+
+      const devisLine = (await storage.getDevisLineItems(situation.devisId)).find(
+        (dl) => dl.id === req.body.devisLineItemId,
+      );
+      res.json(situation);
+    } catch (err) {
+      handleReviewError(err, res);
+    }
   },
 );
 
 export default router;
+
+      const { byLineItem: baseline } = await getBaseline(situation.devisId);
+
+      const previousAmount = baseline.get(devisLine.id)?.cumulativeAmount ?? 0;
+
+      const existingLines = await storage.getSituationLines(situationId);

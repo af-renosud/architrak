@@ -84,6 +84,8 @@ function promotedHref(projectId: string, doc: ProjectIntakeDocument): string | n
   // (client/src/App.tsx) — an English `/projects/...` href 404s.
   if (doc.promotedKind === "devis") return `/projets/${projectId}?devis=${doc.promotedId}`;
   if (doc.promotedKind === "invoice") return `/projets/${projectId}?tab=factures&invoice=${doc.promotedId}`;
+  // Task #450 — situations are reviewed on their devis card (Situations tab).
+  if (doc.promotedKind === "situation") return `/projets/${projectId}?tab=devis`;
   return null;
 }
 
@@ -309,6 +311,16 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
     }
     if (kinds.has("invoice")) {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "invoices"] });
+    }
+    if (kinds.has("situation")) {
+      // Task #450 — situations lists live per-devis; invalidate them all so
+      // the new draft's Situations tab chip/list refreshes without a reload.
+      queryClient.invalidateQueries({
+        predicate: (q) =>
+          Array.isArray(q.queryKey) &&
+          q.queryKey[0] === "/api/devis" &&
+          q.queryKey[2] === "situations",
+      });
     }
     queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
     queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "accounting-status"] });

@@ -533,6 +533,13 @@
       "when": 1779019219000,
       "tag": "0075_certificat_version_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1786548927000,
+      "tag": "0076_situation_review",
+      "breakpoints": true
     }
   ]
 }

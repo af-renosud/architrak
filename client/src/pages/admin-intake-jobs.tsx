@@ -52,6 +52,7 @@ function promotedLink(row: IntakeJobRow): string | null {
   // Project detail is registered under the FRENCH path `/projets/:id`.
   if (row.promotedKind === "devis") return `/projets/${row.projectId}?devis=${row.promotedId}`;
   if (row.promotedKind === "invoice") return `/projets/${row.projectId}?tab=factures&invoice=${row.promotedId}`;
+  if (row.promotedKind === "situation") return `/projets/${row.projectId}?tab=devis`;
   return null;
 }
 

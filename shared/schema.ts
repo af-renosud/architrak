@@ -22,11 +22,11 @@ import {
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-// =============================================================================
+// -----------------------------------------------------------------------------
 // Devis sign-off contract — shared enums and embedded-jsonb shapes (AT1)
 // Sourced from `docs/INTER_APP_CONTRACT_v1.0.md` (frozen 2026-04-25).
 // Tables that consume these constants are defined further down in this file.
-// =============================================================================
+// -----------------------------------------------------------------------------
 
 /**
  * Canonical 9-value `signOffStage` enum per contract §1.1. The DB column is a
@@ -652,6 +652,12 @@ export const situations = pgTable("situations", {
   sourceConfirmedAt: timestamp("source_confirmed_at"),
   sourceConfirmedBy: text("source_confirmed_by"),
   sourceIntakeDocumentId: integer("source_intake_document_id").references(() => projectIntakeDocuments.id, { onDelete: "set null" }),
+  // Task #450 — review lifecycle: a situation created from an intake
+  // 'situation' PDF keeps the raw AI extraction payload for audit;
+  // confirmedAt is set exactly once by the confirm endpoint (draft →
+  // confirmed). Source-PDF evidence uses the Task #449 columns above.
+  aiExtractedData: jsonb("ai_extracted_data"),
+  confirmedAt: timestamp("confirmed_at"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   index("situations_devis_id_idx").on(table.devisId),
@@ -674,6 +680,13 @@ export const situationLines = pgTable("situation_lines", {
   cumulativeAmount: numeric("cumulative_amount", { precision: 12, scale: 2 }).notNull(),
   previousAmount: numeric("previous_amount", { precision: 12, scale: 2 }).notNull().default("0.00"),
   netAmount: numeric("net_amount", { precision: 12, scale: 2 }).notNull(),
+  // Task #450 — traffic-light review, mirroring devis_line_items.
+  // claimedPercent is the AI-extracted % from the contractor's situation PDF
+  // (immutable audit value); percentComplete above is the architect-approved
+  // %. checkStatus: unchecked | green | amber | red. checkNotes free text.
+  claimedPercent: numeric("claimed_percent", { precision: 5, scale: 2 }),
+  checkStatus: text("check_status").notNull().default("unchecked"),
+  checkNotes: text("check_notes"),
 }, (table) => [
   index("situation_lines_situation_id_idx").on(table.situationId),
   index("situation_lines_devis_line_item_id_idx").on(table.devisLineItemId),
@@ -869,13 +882,13 @@ export const feeEntries = pgTable("fee_entries", {
   check("fee_entries_fee_rate_pct", sql`${table.feeRate} >= 0 AND ${table.feeRate} <= 100`),
 ]);
 
-// =============================================================================
+// -----------------------------------------------------------------------------
 // Design contracts — uploaded PDF design contract per project,
 // extracted by Gemini into totals + payment milestones. Replaces the manual
 // conception/planning numeric inputs in the New Project dialog. One contract
 // per project (UNIQUE projectId); re-upload archives the previous PDF and
 // replaces both rows.
-// =============================================================================
+// -----------------------------------------------------------------------------
 export const DESIGN_CONTRACT_TRIGGER_EVENTS = [
   "file_opened",
   "concept_signed",
@@ -2292,12 +2305,12 @@ export const insertInvoiceRefEditSchema = createInsertSchema(invoiceRefEdits).om
 export type InvoiceRefEdit = typeof invoiceRefEdits.$inferSelect;
 export type InsertInvoiceRefEdit = z.infer<typeof insertInvoiceRefEditSchema>;
 
-// =============================================================================
+// -----------------------------------------------------------------------------
 // Devis sign-off contract — table definitions (AT1, contract §2.1.1–§2.1.9)
 // All seven tables are created in migration 0024_devis_signoff_workflow.sql.
 // The downstream tasks (AT2 storage / AT3 outbound / AT4 receiver / AT5 emit)
 // build their CRUD operations on top of these models.
-// =============================================================================
+// -----------------------------------------------------------------------------
 
 /**
  * client_checks — devis-scoped check items raised against a client during
@@ -2823,7 +2836,7 @@ export const insertDriveUploadSchema = createInsertSchema(driveUploads).omit({
 export type InsertDriveUpload = z.infer<typeof insertDriveUploadSchema>;
 export type DriveUpload = typeof driveUploads.$inferSelect;
 
-// =============================================================================
+// -----------------------------------------------------------------------------
 // Pennylane push queue (Task #214). One row per logical push action
 // keyed by (kind, doc_id) — re-enqueue of an already-succeeded row
 // is a no-op via the unique constraint, exactly like drive_uploads.
@@ -2839,7 +2852,7 @@ export type DriveUpload = typeof driveUploads.$inferSelect;
 //                       successful customer_invoice — loads the
 //                       mirrored PDF and emails it to the client via
 //                       the architect's own Gmail OAuth token.
-// =============================================================================
+// -----------------------------------------------------------------------------
 
 export const PENNYLANE_PUSH_STATES = [
   "pending",

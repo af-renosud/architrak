@@ -11,7 +11,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Receipt, FilePlus2, ListOrdered, Languages } from "lucide-react";
+import { Receipt, FilePlus2, ListOrdered, Languages, ClipboardCheck } from "lucide-react";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -38,6 +38,7 @@ import {
 import { z } from "zod";
 import { AdvisoriesList, AdvisoryBadge } from "@/components/advisories/AdvisoriesList";
 import { DevisTranslationSection } from "@/components/devis/DevisTranslationSection";
+import { SituationsSection } from "@/components/devis/SituationsSection";
 import { PdfPopoutViewer } from "@/components/devis/PdfPopoutViewer";
 import { ContractorSelect } from "@/components/ui/contractor-select";
 import { TvaDerivedHint } from "@/components/ui/tva-derived-hint";
@@ -5109,6 +5110,13 @@ function DevisDetailTabs({
   const { data: translation } = useQuery<{ status: string }>({
     queryKey: ["/api/devis", devis.id, "translation"],
   });
+
+  // Task #450 — situation count for the tab chip (mode_b only).
+  const { data: situationsForCount = [] } = useQuery<{ id: number }[]>({
+    queryKey: ["/api/devis", devis.id, "situations"],
+    enabled: isModeB,
+  });
+  const situationCount = situationsForCount.length;
   const translationStatus = translation?.status ?? "missing";
 
   // Fetch open checks once at this level so each LineItemWithCheck can render
@@ -5322,6 +5330,17 @@ function DevisDetailTabs({
           Avenants
           <span className="text-[9px] px-1.5 py-0.5 rounded bg-neutral-200 text-neutral-700">{avenantCount}</span>
         </TabsTrigger>
+        {isModeB && (
+          <TabsTrigger
+            value="situations"
+            className="gap-2 px-3 py-2.5 text-[11px] font-bold uppercase tracking-widest text-muted-foreground data-[state=active]:text-[#0B2545] data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-[#0B2545] rounded-none"
+            data-testid={`tab-situations-${devis.id}`}
+          >
+            <ClipboardCheck size={13} />
+            Situations
+            <span className="text-[9px] px-1.5 py-0.5 rounded bg-neutral-200 text-neutral-700">{situationCount}</span>
+          </TabsTrigger>
+        )}
         <TabsTrigger
           value="invoices"
           className="gap-2 px-3 py-2.5 text-[11px] font-bold uppercase tracking-widest text-muted-foreground data-[state=active]:text-[#0B2545] data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-[#0B2545] rounded-none"
@@ -5423,6 +5442,17 @@ function DevisDetailTabs({
           <p className="text-[11px] text-muted-foreground text-center py-2">No avenants.</p>
         )}
       </TabsContent>
+
+      {isModeB && (
+        <TabsContent value="situations" className="p-4 mt-0">
+          <div className="flex items-center justify-between mb-2">
+            <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
+              Situations de travaux ({situationCount})
+            </h4>
+          </div>
+          <SituationsSection devisId={devis.id} isArchived={isArchived} />
+        </TabsContent>
+      )}
 
       <TabsContent value="invoices" className="p-4 mt-0">
         <div className="flex items-center justify-between mb-2">
