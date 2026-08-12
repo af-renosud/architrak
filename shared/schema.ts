@@ -586,7 +586,8 @@ export const invoices = pgTable("invoices", {
   devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
   contractorId: integer("contractor_id").notNull().references(() => contractors.id),
   projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
-  certificateNumber: text("certificate_number"),
+  // Task #451 — the old loose-text `certificate_number` column was dropped;
+  // certificat linkage is now the FK-grounded `certificat_sources` junction.
   invoiceNumber: text("invoice_number").notNull(),
   amountHt: numeric("amount_ht", { precision: 12, scale: 2 }).notNull(),
   tvaAmount: numeric("tva_amount", { precision: 12, scale: 2 }).notNull(),
@@ -747,12 +748,59 @@ export const certificats = pgTable("certificats", {
   driveFileId: text("drive_file_id"),
   driveWebViewLink: text("drive_web_view_link"),
   driveUploadedAt: timestamp("drive_uploaded_at"),
+  // Task #451 — issuance seal. A certificat is a payment instruction: once
+  // issued (sent) it must never silently re-render with different numbers.
+  // `pdfStorageKey` pins the exact bytes rendered at issuance; `issuedAt` +
+  // `issuanceSnapshot` freeze the financial inputs that produced them. All
+  // three are written exactly once by the seal service via a conditional
+  // UPDATE (WHERE pdf_storage_key IS NULL) so concurrent sends elect a
+  // single sealer. NULL pdfStorageKey ⇔ draft/preview-only. Corrections to
+  // a sealed certificat require a reissue (new certificat), never an edit.
+  pdfStorageKey: text("pdf_storage_key"),
+  pdfFileName: text("pdf_file_name"),
+  issuedAt: timestamp("issued_at"),
+  issuanceSnapshot: jsonb("issuance_snapshot"),
+  // Task #451 — optimistic-concurrency guard. Every UPDATE bumps `version`
+  // (see storage.updateCertificat); the seal commits only when the version
+  // captured BEFORE rendering still matches, so the pinned PDF, the
+  // issuanceSnapshot and the persisted financial fields always agree.
+  version: integer("version").notNull().default(1),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   unique("certificats_project_ref_unique").on(table.projectId, table.certificateRef),
   index("certificats_project_contractor_idx").on(table.projectId, table.contractorId),
 ]);
 
+/**
+ * Task #451 — certificat_sources: FK-grounded record of exactly which
+ * documents a sealed certificat certifies. Replaces the loose free-text
+ * `invoices.certificate_number` (dropped in migration 0071). Each row links
+ * the certificat to EITHER a situation OR an invoice (XOR enforced by CHECK).
+ * Rows are written once at seal time from the documents actually included in
+ * the rendered PDF, with ON CONFLICT DO NOTHING so a concurrent-send loser
+ * can replay harmlessly.
+ */
+export const certificatSources = pgTable("certificat_sources", {
+  id: serial("id").primaryKey(),
+  certificatId: integer("certificat_id").notNull().references(() => certificats.id, { onDelete: "cascade" }),
+  situationId: integer("situation_id").references(() => situations.id, { onDelete: "cascade" }),
+  invoiceId: integer("invoice_id").references(() => invoices.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("certificat_sources_certificat_id_idx").on(table.certificatId),
+  index("certificat_sources_situation_id_idx").on(table.situationId),
+  index("certificat_sources_invoice_id_idx").on(table.invoiceId),
+  uniqueIndex("certificat_sources_cert_situation_unique")
+    .on(table.certificatId, table.situationId)
+    .where(sql`${table.situationId} IS NOT NULL`),
+  uniqueIndex("certificat_sources_cert_invoice_unique")
+    .on(table.certificatId, table.invoiceId)
+    .where(sql`${table.invoiceId} IS NOT NULL`),
+  check(
+    "certificat_sources_exactly_one_target",
+    sql`(${table.situationId} IS NOT NULL) <> (${table.invoiceId} IS NOT NULL)`,
+  ),
+]);
 export const fees = pgTable("fees", {
   id: serial("id").primaryKey(),
   projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
@@ -1806,8 +1854,20 @@ export const insertSituationLineSchema = createInsertSchema(situationLines).omit
 export const insertCertificatSchema = createInsertSchema(certificats).omit({
   id: true,
   createdAt: true,
+  // Task #451 — seal fields are written exactly once by the seal service;
+  // they must never be creatable/patchable through the generic API schemas.
+  pdfStorageKey: true,
+  pdfFileName: true,
+  issuedAt: true,
+  issuanceSnapshot: true,
+  // Server-managed optimistic-concurrency counter — never client-settable.
+  version: true,
 });
 
+export const insertCertificatSourceSchema = createInsertSchema(certificatSources).omit({
+  id: true,
+  createdAt: true,
+});
 export const insertFeeSchema = createInsertSchema(fees).omit({
   id: true,
   createdAt: true,
@@ -3044,3 +3104,7 @@ export const insertArchitectFeeInvoiceEventSchema = createInsertSchema(architect
 });
 export type ArchitectFeeInvoiceEvent = typeof architectFeeInvoiceEvents.$inferSelect;
 export type InsertArchitectFeeInvoiceEvent = z.infer<typeof insertArchitectFeeInvoiceEventSchema>;
+
+export type InsertCertificatSource = z.infer<typeof insertCertificatSourceSchema>;
+
+export type CertificatSource = typeof certificatSources.$inferSelect;

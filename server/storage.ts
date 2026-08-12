@@ -56,6 +56,7 @@ import {
   marcheDocuments,
   type MarcheDocument, type InsertMarcheDocument,
   type Certificat, type InsertCertificat,
+  certificatSources, type CertificatSource, type InsertCertificatSource,
   type Fee, type InsertFee,
   type FeeEntry, type InsertFeeEntry,
   designContracts, designContractMilestones,
@@ -345,6 +346,10 @@ export interface IStorage {
   createCertificat(data: InsertCertificat): Promise<Certificat>;
 
   updateCertificat(id: number, data: Partial<InsertCertificat>): Promise<Certificat | undefined>;
+  // Task #451 — race-free edit lock: UPDATE guarded by pdf_storage_key IS
+  // NULL. Returns null when the row is missing OR already sealed; callers
+  // distinguish via a follow-up read.
+  updateCertificatUnsealed(id: number, data: Partial<InsertCertificat>): Promise<Certificat | null>;
 
   getFeesByProject(projectId: number): Promise<Fee[]>;
 
@@ -1023,6 +1028,29 @@ export interface IStorage {
   setInvoiceDriveLink(invoiceId: number, fileId: string, webViewLink: string): Promise<void>;
 
   setCertificatDriveLink(certificatId: number, fileId: string, webViewLink: string): Promise<void>;
+
+  // Task #451 — issuance seal. Runs in ONE transaction: a conditional
+  // single-writer UPDATE (only fills the seal columns when pdf_storage_key
+  // IS NULL — electing exactly one sealer under concurrent sends — AND
+  // version = expectedVersion, so a financial PATCH interleaved with the
+  // render forces a re-render instead of pinning stale bytes) plus the
+  // certificat_sources junction inserts. Atomicity guarantees a sealed row
+  // can never exist without its source links. Returns the sealed row on
+  // success, null when the guard missed (caller reloads: sealed by another
+  // → reuse pinned key; version drift → re-render and retry).
+  sealCertificat(id: number, seal: {
+    pdfStorageKey: string;
+    pdfFileName: string;
+    issuanceSnapshot: unknown;
+    dateIssued: string;
+    sourceRows: InsertCertificatSource[];
+    expectedVersion: number;
+  }): Promise<Certificat | null>;
+
+  // Task #451 — certificat_sources junction (idempotent via ON CONFLICT DO NOTHING).
+  getCertificatSources(certificatId: number): Promise<CertificatSource[]>;
+  getCertificatSourcesByCertificatIds(certificatIds: number[]): Promise<CertificatSource[]>;
+  getCertificatSourcesForDocuments(args: { invoiceIds: number[]; situationIds: number[] }): Promise<CertificatSource[]>;
 
   upsertDriveUpload(data: InsertDriveUpload): Promise<DriveUpload>;
 
@@ -1843,9 +1871,88 @@ export class DatabaseStorage implements IStorage {
     return cert;
   }
 
+  async updateCertificatUnsealed(id: number, data: Partial<InsertCertificat>): Promise<Certificat | null> {
+    // Task #451 — the edit lock must be enforced IN the UPDATE itself, not by
+    // a read-then-write in the route: a PATCH authorized against an unsealed
+    // row could otherwise commit after a concurrent seal and desync the live
+    // financial fields from the pinned PDF/snapshot. `pdf_storage_key IS
+    // NULL` in the WHERE makes the lock race-free; a miss on an existing row
+    // means "sealed meanwhile" (route answers 409 CERTIFICAT_SEALED).
+    const [cert] = await db
+      .update(certificats)
+      .set({ ...data, version: sql`${certificats.version} + 1` })
+      .where(and(eq(certificats.id, id), isNull(certificats.pdfStorageKey)))
+      .returning();
+    return cert ?? null;
+  }
+
   async updateCertificat(id: number, data: Partial<InsertCertificat>): Promise<Certificat | undefined> {
-    const [cert] = await db.update(certificats).set(data).where(eq(certificats.id, id)).returning();
+    // Task #451 — every certificat UPDATE bumps the optimistic-concurrency
+    // version so an in-flight issuance render cannot seal against inputs
+    // that changed underneath it (see sealCertificat's version guard).
+    const [cert] = await db
+      .update(certificats)
+      .set({ ...data, version: sql`${certificats.version} + 1` })
+      .where(eq(certificats.id, id))
+      .returning();
     return cert;
+  }
+
+  async sealCertificat(id: number, seal: {
+    pdfStorageKey: string;
+    pdfFileName: string;
+    issuanceSnapshot: unknown;
+    dateIssued: string;
+    sourceRows: InsertCertificatSource[];
+    expectedVersion: number;
+  }): Promise<Certificat | null> {
+    // Task #451 — version-guard style conditional UPDATE: the WHERE clause is
+    // the idempotency + consistency mechanism, never check-then-write.
+    // `pdf_storage_key IS NULL` elects a single sealer under concurrent
+    // sends; `version = expectedVersion` guarantees the financial inputs the
+    // PDF was rendered from are STILL the persisted ones at commit time (any
+    // interleaved PATCH bumped the version and forces a re-render). Seal
+    // columns and the certificat_sources junction commit atomically — a
+    // sealed certificat without its source links must be impossible.
+    return db.transaction(async (tx) => {
+      const [cert] = await tx
+        .update(certificats)
+        .set({
+          pdfStorageKey: seal.pdfStorageKey,
+          pdfFileName: seal.pdfFileName,
+          issuanceSnapshot: seal.issuanceSnapshot,
+          issuedAt: new Date(),
+          dateIssued: seal.dateIssued,
+        })
+        .where(and(
+          eq(certificats.id, id),
+          isNull(certificats.pdfStorageKey),
+          eq(certificats.version, seal.expectedVersion),
+        ))
+        .returning();
+      if (!cert) return null;
+      if (seal.sourceRows.length > 0) {
+        await tx.insert(certificatSources).values(seal.sourceRows).onConflictDoNothing();
+      }
+      return cert;
+    });
+  }
+
+  async getCertificatSources(certificatId: number): Promise<CertificatSource[]> {
+    return db.select().from(certificatSources).where(eq(certificatSources.certificatId, certificatId));
+  }
+
+  async getCertificatSourcesByCertificatIds(certificatIds: number[]): Promise<CertificatSource[]> {
+    if (certificatIds.length === 0) return [];
+    return db.select().from(certificatSources).where(inArray(certificatSources.certificatId, certificatIds));
+  }
+
+  async getCertificatSourcesForDocuments(args: { invoiceIds: number[]; situationIds: number[] }): Promise<CertificatSource[]> {
+    const conditions: SQL[] = [];
+    if (args.invoiceIds.length > 0) conditions.push(inArray(certificatSources.invoiceId, args.invoiceIds));
+    if (args.situationIds.length > 0) conditions.push(inArray(certificatSources.situationId, args.situationIds));
+    if (conditions.length === 0) return [];
+    return db.select().from(certificatSources).where(or(...conditions));
   }
 
   async getFeesByProject(projectId: number): Promise<Fee[]> {

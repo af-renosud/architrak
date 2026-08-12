@@ -35,8 +35,14 @@ export async function generateProjectFolder(projectId: number): Promise<Buffer> 
   );
 
   const allCertificats = await storage.getCertificatsByProject(projectId);
+  // Task #451 — a sealed certificat (pinned pdfStorageKey) must export its
+  // pinned bytes verbatim, never a re-render from current data. Unsealed
+  // "ready" drafts keep the historical behavior of an ephemeral render.
+  // Unsealed sent/paid rows (historical certificats issued before the seal
+  // existed) are deliberately EXCLUDED: re-rendering them from current data
+  // would recreate the audit drift pinned PDFs exist to prevent.
   const generatedCerts = allCertificats.filter(
-    (c) => c.status === "ready" || c.status === "sent" || c.status === "paid"
+    (c) => c.pdfStorageKey != null || c.status === "ready"
   );
 
   const lots = await storage.getLotsByProject(projectId);
@@ -91,7 +97,11 @@ export async function generateProjectFolder(projectId: number): Promise<Buffer> 
 
       for (const cert of generatedCerts) {
         try {
-          const { pdfBuffer } = await generateCertificatPdf(cert.id);
+          // Task #451 — sealed certificats export the pinned issued bytes;
+          // only unsealed drafts fall back to an ephemeral preview render.
+          const pdfBuffer = cert.pdfStorageKey
+            ? await getDocumentBuffer(cert.pdfStorageKey)
+            : (await generateCertificatPdf(cert.id, { mode: "preview" })).pdfBuffer;
           const contractor = contractorsMap.get(cert.contractorId);
           const contractorName = contractor?.name ?? "Unknown";
           const dateStr = cert.dateIssued

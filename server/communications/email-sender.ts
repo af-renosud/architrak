@@ -3,7 +3,8 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { getUncachableGmailClient, isGmailConfigured } from "../gmail/client";
 import { storage } from "../storage";
-import { generateCertificatPdf, buildCertificatEmailBody } from "./certificat-generator";
+import { buildCertificatEmailBody } from "./certificat-generator";
+import { sealCertificat } from "../services/certificat-seal.service";
 import { getDocumentBuffer, uploadDocument } from "../storage/object-storage";
 import { env } from "../env";
 import type { InsertProjectCommunication } from "@shared/schema";
@@ -69,16 +70,18 @@ export function buildCertificatEmailSubject(opts: {
 }
 
 export async function sendCertificat(certificatId: number): Promise<number> {
-  const certificat = await storage.getCertificat(certificatId);
-  if (!certificat) throw new Error(`Certificat ${certificatId} not found`);
+  // Task #451 — issuance seal FIRST: render once, pin the bytes. Re-sends
+  // and concurrent sends all attach the same pinned PDF (idempotent inside
+  // sealCertificat via a version-guarded conditional single-writer UPDATE).
+  // The email subject/body are then built from the SEALED row — never from
+  // a pre-seal fetch — so message amounts always match the attached PDF.
+  const { pdfStorageKey: storageKey, certificat } = await sealCertificat(certificatId);
 
   const project = await storage.getProject(certificat.projectId);
   if (!project) throw new Error(`Project not found`);
 
   const contractor = await storage.getContractor(certificat.contractorId);
   if (!contractor) throw new Error(`Contractor not found`);
-
-  const { storageKey } = await generateCertificatPdf(certificatId);
 
   const subject = buildCertificatEmailSubject({
     certificateRef: certificat.certificateRef,
@@ -110,12 +113,16 @@ export async function sendCertificat(certificatId: number): Promise<number> {
     attachmentStorageKeys,
     status: "queued",
     relatedCertificatId: certificatId,
+    // Task #451 — idempotent under concurrent send: the dedupe key is stable
+    // per issuance (certificat + pinned bytes), so racing send requests hit
+    // the unique index in createProjectCommunication and share ONE queued
+    // email instead of each enqueuing a duplicate payment instruction.
+    dedupeKey: `certificat_sent:${certificatId}:${storageKey}`,
   };
 
   const created = await storage.createProjectCommunication(comm);
-  // NB: Drive enqueue happens inside `generateCertificatPdf` itself
-  // (Task #198), so previewing a draft certificat already mirrors it
-  // to Drive. The send path here doesn't need a second enqueue.
+  // NB: Drive enqueue happens inside the issuance render (Task #198 /
+  // Task #451) — previews no longer persist or mirror anything.
   return created.id;
 }
 

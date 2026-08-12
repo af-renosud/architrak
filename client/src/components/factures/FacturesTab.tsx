@@ -210,7 +210,6 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                           <span className="text-[16px] font-black text-[#0B2545] tracking-tight" data-testid={`text-facture-number-${inv.id}`}>
                             Facture #{inv.invoiceNumber}
                           </span>
-                          {inv.certificateNumber && <TechnicalLabel>Cert: {inv.certificateNumber}</TechnicalLabel>}
                         </div>
                         <p className="text-[12px] text-foreground mt-0.5 truncate">
                           {contractorMap.get(inv.contractorId) ?? `Contractor #${inv.contractorId}`}
@@ -775,16 +774,6 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
             </div>
           </div>
         </>
-      )}
-
-      {invoice.certificateNumber && (
-        <div className="p-3 rounded-xl border border-emerald-200 bg-emerald-50/50">
-          <div className="flex items-center gap-1.5 mb-1">
-            <Hash size={10} className="text-emerald-600" />
-            <TechnicalLabel>Payment Certificate</TechnicalLabel>
-          </div>
-          <p className="text-[12px] text-emerald-700 font-semibold">Certificat: {invoice.certificateNumber}</p>
-        </div>
       )}
 
       <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">

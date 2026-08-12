@@ -5441,7 +5441,6 @@ function DevisDetailTabs({
                 <div className="flex items-center gap-2">
                   <FileText size={12} className="text-muted-foreground" />
                   <span className="text-[11px]">Invoice #{inv.invoiceNumber}</span>
-                  {inv.certificateNumber && <TechnicalLabel>Cert: {inv.certificateNumber}</TechnicalLabel>}
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-[12px] font-semibold text-foreground">{formatCurrency(parseFloat(inv.amountHt))}</span>
@@ -5766,6 +5765,20 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
               {!hasPdf && (
                 <TooltipContent side="top" className="text-[10px]">No PDF on file</TooltipContent>
               )}
+            </Tooltip>
+            {/* Task #451 — read-only Document Chain audit view. */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Link
+                  href={`/devis/${devis.id}/document-chain`}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-md border border-input bg-background px-3 text-[11px] font-bold uppercase tracking-widest hover:bg-accent hover:text-accent-foreground"
+                  data-testid={`link-document-chain-${devis.id}`}
+                >
+                  <FileText size={13} />
+                  Chain
+                </Link>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="text-[10px]">Document Chain — devis → situations → factures → certificats</TooltipContent>
             </Tooltip>
             {/* Task #198 — only rendered when the auto-upload to the
                  Renosud shared Drive has succeeded for this devis. */}

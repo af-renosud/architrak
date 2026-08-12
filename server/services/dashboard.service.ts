@@ -90,7 +90,7 @@ export async function getDashboardSummary() {
   for (const inv of recentInvoices) {
     recentActivity.push({
       type: "invoice",
-      label: `Facture F${inv.invoiceNumber}${inv.certificateNumber ? ` (${inv.certificateNumber})` : ""}`,
+      label: `Facture F${inv.invoiceNumber}`,
       date: inv.dateIssued ?? inv.createdAt?.toISOString().split("T")[0] ?? null,
       amount: inv.amountTtc,
       projectId: inv.projectId,

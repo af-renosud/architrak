@@ -166,6 +166,42 @@ values land as NULL rather than persisted garbage.
   `attachmentStorageKeys`. Failure is non-fatal — the certificat
   itself always carries the IBAN block.
 
+## Certificat issuance seal + Document Chain (Task #451)
+
+- **Previews are ephemeral**: `generateCertificatPdf(id, { mode: "preview" })`
+  persists nothing. Explicit issue/send goes through
+  `server/services/certificat-seal.service.ts`: render once (`mode: "issue"`
+  uploads + Drive-enqueues), pin `certificats.pdfStorageKey` + freeze
+  `issuanceSnapshot`/`issuedAt` via a conditional UPDATE
+  (`WHERE pdf_storage_key IS NULL`) — idempotent under concurrent send; the
+  race loser reuses the winner's pinned bytes. The seal is additionally
+  guarded by `certificats.version` (bumped on every UPDATE, migration 0072):
+  the render captures the version first and the seal only commits if it still
+  matches, so pinned PDF, `issuanceSnapshot` and the persisted financial
+  fields always agree — an interleaved PATCH forces a re-render (bounded
+  retries). The seal columns and the `certificat_sources` rows commit in ONE
+  transaction inside `storage.sealCertificat`. The Drive mirror is enqueued
+  only by the seal winner with the pinned key (never inside the render). Sends always attach the pinned PDF and carry a
+  dedupe key stable per issuance (`certificat_sent:<id>:<storageKey>`), so
+  concurrent sends collapse onto one queued email;
+  `GET /api/certificats/:id/pdf` serves the pinned bytes (404 on drafts).
+  Status lifecycle is unchanged (draft → ready → sent → paid); sealed-ness is
+  tracked by `pdfStorageKey`/`issuedAt`, not a status. Bulk project export
+  uses pinned bytes for sealed certificats and only preview-renders unsealed
+  "ready" drafts.
+- **Sealed = locked**: PATCH on a sealed certificat rejects everything except
+  `status`/`notes` with 409 `CERTIFICAT_SEALED`. Corrections = issue a new
+  certificat.
+- **`certificat_sources` junction** FK-links each certificat to the
+  invoice(s)/situation(s) it certifies (written at seal time, indexed,
+  XOR check). It replaced the loose text `invoices.certificate_number`
+  (dropped in migration 0071).
+- **Document Chain view**: read-only per-devis audit at
+  `/devis/:id/document-chain` (page `client/src/pages/document-chain.tsx`,
+  API `GET /api/devis/:id/document-chain`): Devis → Marché → Situations
+  (Mode B only) → Factures → Certificats, with PDF downloads and conspicuous
+  missing-evidence flags.
+
 ## Pennylane integration (Task #214, feature-flagged OFF by default)
 
 Architect honoraires push from Outstanding Fees to Pennylane.

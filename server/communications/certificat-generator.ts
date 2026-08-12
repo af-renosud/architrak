@@ -1,7 +1,6 @@
 import { storage } from "../storage";
 import { uploadDocument, getDocumentBuffer } from "../storage/object-storage";
 import { convertHtmlToPdf } from "../services/docraptor";
-import { enqueueDriveUpload } from "../services/drive/upload-queue.service";
 import { roundCurrency } from "@shared/financial-utils";
 import type { Certificat, Project, Contractor, Devis, Lot, Invoice, Avenant } from "@shared/schema";
 import { formatLotDescription } from "@shared/lot-label";
@@ -473,7 +472,31 @@ function buildAnnexeHtml(data: AnnexeData): string {
   </div>`;
 }
 
-export async function generateCertificatPdf(certificatId: number): Promise<{ storageKey: string; pdfBuffer: Buffer }> {
+/**
+ * Task #451 — render the certificat PDF.
+ *
+ * `mode: "preview"` (default) is EPHEMERAL: the buffer is returned to the
+ * caller and nothing is persisted — no object-storage upload, no Drive
+ * enqueue. `mode: "issue"` is the single persistence path used by the seal
+ * service at explicit issue/send time: it uploads the bytes and enqueues the
+ * Drive mirror. Previews of a draft therefore never leave stray artefacts.
+ */
+export async function generateCertificatPdf(
+  certificatId: number,
+  opts: { mode: "preview" | "issue" } = { mode: "preview" },
+): Promise<{
+  storageKey: string | null;
+  pdfBuffer: Buffer;
+  fileName: string;
+  sourceInvoiceIds: number[];
+  /** Present only in issue mode — inputs for the winner-only Drive enqueue. */
+  driveSeed?: {
+    projectId: number;
+    lotId: number | null;
+    displayName: string;
+    seedDevisCode: string;
+  };
+}> {
   const certificat = await storage.getCertificat(certificatId);
   if (!certificat) throw new Error(`Certificat ${certificatId} not found`);
 
@@ -562,27 +585,30 @@ export async function generateCertificatPdf(certificatId: number): Promise<{ sto
   const fileName = `${docName}.pdf`;
 
   const pdfBuffer = await convertHtmlToPdf(html, docName);
+  const sourceInvoiceIds = devisDetails.flatMap((dd) => dd.invoices.map((inv) => inv.id));
+
+  // Task #451 — previews are ephemeral: return the bytes and persist nothing.
+  if (opts.mode !== "issue") {
+    return { storageKey: null, pdfBuffer, fileName, sourceInvoiceIds };
+  }
+
   const storageKey = await uploadDocument(project.id, fileName, pdfBuffer, "application/pdf");
 
-  // Mirror the certificat PDF into the Renosud shared Drive so it
-  // lands in the same `{Lot} {project} {devisCode}` per-lot folder as
-  // the devis and factures. Enqueue runs at PDF materialisation time
-  // (covers both /preview and /send paths) and is idempotent on
-  // (doc_kind, doc_id), so repeated previews collapse to one Drive
-  // copy. The whole call no-ops when DRIVE_AUTO_UPLOAD_ENABLED is
-  // false — gated inside enqueueDriveUpload itself.
+  // Task #451 (round 3) — the Drive mirror is NOT enqueued here. The Drive
+  // queue dedupes on (doc_kind, doc_id) and keeps the first submitted key,
+  // so a losing concurrent renderer could otherwise supply the Drive copy
+  // while a different winner's bytes get pinned and emailed. The seal
+  // service enqueues the mirror only after the seal winner is established,
+  // using the winner's pinned key (see `driveSeed` below).
   const seedDevis = activeDevis.find((d) => d.lotId != null) ?? activeDevis[0];
-  void enqueueDriveUpload({
-    docKind: "certificat",
-    docId: certificat.id,
+  const driveSeed = {
     projectId: project.id,
     lotId: seedDevis?.lotId ?? null,
-    sourceStorageKey: storageKey,
     displayName: `${docName}.pdf`,
     seedDevisCode: seedDevis?.devisCode ?? `cert-${certificat.certificateRef}`,
-  });
+  };
 
-  return { storageKey, pdfBuffer };
+  return { storageKey, pdfBuffer, fileName, sourceInvoiceIds, driveSeed };
 }
 
 /**
@@ -1404,7 +1430,6 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     devisId: -1,
     contractorId: -1,
     projectId: -1,
-    certificateNumber: null,
     invoiceNumber: "FAC-2026-038",
     amountHt: "12000.00",
     tvaAmount: "2400.00",
@@ -1446,6 +1471,11 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     driveFileId: null,
     driveWebViewLink: null,
     driveUploadedAt: null,
+    pdfStorageKey: null,
+    pdfFileName: null,
+    issuedAt: null,
+    issuanceSnapshot: null,
+    version: 1,
     createdAt: now,
   };
 

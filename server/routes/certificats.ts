@@ -6,6 +6,7 @@ import { generateCertificatPdf, BankingDetailsMissingError, BankingMismatchError
 import { sendCertificat } from "../communications/email-sender";
 import { validateRequest } from "../middleware/validate";
 import { resolveCertificatDeductions } from "../services/certificat-deductions.service";
+import { getDocumentBuffer } from "../storage/object-storage";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
@@ -111,6 +112,27 @@ router.patch(
     const existing = await storage.getCertificat(id);
     if (!existing) return res.status(404).json({ message: "Certificat not found" });
 
+    // Task #451 — issuance seal. Once a certificat carries a pinned PDF it is
+    // an issued payment instruction: financial/source fields are locked and
+    // corrections require a reissue (a new certificat). Only lifecycle fields
+    // (status, notes) remain patchable. Belt-and-braces: `delete` the seal
+    // columns from the body even though the Zod schema already omits them.
+    delete (body as Record<string, unknown>).pdfStorageKey;
+    delete (body as Record<string, unknown>).pdfFileName;
+    delete (body as Record<string, unknown>).issuedAt;
+    delete (body as Record<string, unknown>).issuanceSnapshot;
+    if (existing.pdfStorageKey) {
+      const allowedOnSealed = new Set(["status", "notes"]);
+      const blocked = Object.keys(body).filter((k) => !allowedOnSealed.has(k));
+      if (blocked.length > 0 || retenueOverride !== undefined || prorataOverride !== undefined) {
+        return res.status(409).json({
+          code: "CERTIFICAT_SEALED",
+          message: `Certificat ${existing.certificateRef} has been issued and is sealed. Corrections require issuing a new certificat.`,
+          blockedFields: blocked,
+        });
+      }
+    }
+
     // Task #243 — recompute deductions whenever a financial input changes or an
     // explicit override is supplied. Status-only patches skip the recompute.
     const touchesFinancials =
@@ -136,8 +158,27 @@ router.patch(
       patch = { ...body, ...deductions };
     }
 
-    const cert = await storage.updateCertificat(id, patch);
-    if (!cert) return res.status(404).json({ message: "Certificat not found" });
+    // Task #451 — status/notes-only patches remain allowed on sealed rows;
+    // anything touching financial/source inputs goes through the GUARDED
+    // update (WHERE pdf_storage_key IS NULL) so a PATCH authorized against
+    // an unsealed row can never commit after a concurrent seal.
+    const onlyLifecycleFields = Object.keys(patch).every((k) => k === "status" || k === "notes");
+    if (onlyLifecycleFields && retenueOverride === undefined && prorataOverride === undefined) {
+      const cert = await storage.updateCertificat(id, patch);
+      if (!cert) return res.status(404).json({ message: "Certificat not found" });
+      return res.json(cert);
+    }
+    const cert = await storage.updateCertificatUnsealed(id, patch);
+    if (!cert) {
+      const current = await storage.getCertificat(id);
+      if (!current) return res.status(404).json({ message: "Certificat not found" });
+      // Row exists but the guard missed: sealed between our read and the write.
+      return res.status(409).json({
+        code: "CERTIFICAT_SEALED",
+        message: `Certificat ${current.certificateRef} has been issued and is sealed. Corrections require issuing a new certificat.`,
+        blockedFields: Object.keys(body).filter((k) => k !== "status" && k !== "notes"),
+      });
+    }
     res.json(cert);
   },
 );
@@ -150,7 +191,15 @@ router.post(
       const certId = Number(req.params.certId);
       const cert = await storage.getCertificat(certId);
       if (!cert) return res.status(404).json({ message: "Certificat not found" });
-      const { pdfBuffer } = await generateCertificatPdf(certId);
+      // Task #451 — sealed certificats always preview the pinned issued
+      // bytes; drafts render ephemerally (nothing persisted).
+      if (cert.pdfStorageKey) {
+        const pinned = await getDocumentBuffer(cert.pdfStorageKey);
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", `inline; filename="${cert.pdfFileName || `Certificat_${cert.certificateRef}.pdf`}"`);
+        return res.send(pinned);
+      }
+      const { pdfBuffer } = await generateCertificatPdf(certId, { mode: "preview" });
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Content-Disposition", `inline; filename="Certificat_${cert.certificateRef}.pdf"`);
       res.send(pdfBuffer);
@@ -178,6 +227,41 @@ router.post(
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ message: `Preview generation failed: ${message}` });
     }
+  },
+);
+
+// Task #451 — download the pinned (sealed) certificat PDF. 404s on drafts:
+// there is deliberately no durable PDF before issuance.
+router.get(
+  "/api/certificats/:id/pdf",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    try {
+      const cert = await storage.getCertificat(Number(req.params.id));
+      if (!cert) return res.status(404).json({ message: "Certificat not found" });
+      if (!cert.pdfStorageKey) {
+        return res.status(404).json({ code: "CERTIFICAT_NOT_SEALED", message: "Certificat has not been issued yet — no pinned PDF exists" });
+      }
+      const pinned = await getDocumentBuffer(cert.pdfStorageKey);
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="${cert.pdfFileName || `Certificat_${cert.certificateRef}.pdf`}"`);
+      res.setHeader("Content-Length", String(pinned.length));
+      res.send(pinned);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Certificat PDF fetch failed: ${message}` });
+    }
+  },
+);
+
+// Task #451 — sources this certificat certifies (junction rows).
+router.get(
+  "/api/certificats/:id/sources",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    const cert = await storage.getCertificat(Number(req.params.id));
+    if (!cert) return res.status(404).json({ message: "Certificat not found" });
+    res.json(await storage.getCertificatSources(cert.id));
   },
 );
 

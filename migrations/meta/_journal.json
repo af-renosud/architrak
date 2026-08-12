@@ -519,6 +519,20 @@
       "when": 1779019217000,
       "tag": "0073_situations_source_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1779019218000,
+      "tag": "0074_certificat_seal",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1779019219000,
+      "tag": "0075_certificat_version_guard",
+      "breakpoints": true
     }
   ]
 }

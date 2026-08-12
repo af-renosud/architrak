@@ -13,6 +13,7 @@ import Contractors from "@/pages/contractors";
 import ContractorDetail from "@/pages/contractor-detail";
 import FinancialTracking from "@/pages/financial-tracking";
 import CertificatsPage from "@/pages/certificats";
+import DocumentChainPage from "@/pages/document-chain";
 import Fees from "@/pages/fees";
 import ArchitectFeeInvoices from "@/pages/architect-fee-invoices";
 import EmailDocuments from "@/pages/email-documents";
@@ -39,6 +40,7 @@ function Router() {
       <Route path="/entreprises/:id" component={ContractorDetail} />
       <Route path="/suivi-financier" component={FinancialTracking} />
       <Route path="/certificats" component={CertificatsPage} />
+      <Route path="/devis/:id/document-chain" component={DocumentChainPage} />
       <Route path="/honoraires" component={Fees} />
       <Route path="/honoraires/factures-detectees" component={ArchitectFeeInvoices} />
       <Route path="/documents" component={EmailDocuments} />

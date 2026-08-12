@@ -129,6 +129,8 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0071_evidence_attachments", artifact: { kind: "table", table: "marche_documents" } },
   { tag: "0072_marche_documents_source_unique", artifact: { kind: "data_only", reason: "index swap: plain source_intake_document_id index replaced by a partial UNIQUE index; no table/column artifact (same rationale as 0056)" } },
   { tag: "0073_situations_source_unique", artifact: { kind: "data_only", reason: "index swap on situations.source_intake_document_id: plain index replaced by a partial UNIQUE index; no table/column artifact (same rationale as 0056/0072)" } },
+  { tag: "0074_certificat_seal", artifact: { kind: "column", table: "certificats", column: "pdf_storage_key" } },
+  { tag: "0075_certificat_version_guard", artifact: { kind: "column", table: "certificats", column: "version" } },
 ];
 
 interface JournalFile {

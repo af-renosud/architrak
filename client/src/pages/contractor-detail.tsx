@@ -331,9 +331,6 @@ export default function ContractorDetail() {
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <TechnicalLabel>F{inv.invoiceNumber}</TechnicalLabel>
-                        {inv.certificateNumber && (
-                          <TechnicalLabel>{inv.certificateNumber}</TechnicalLabel>
-                        )}
                       </div>
                       {proj && (
                         <Link href={`/projets/${proj.id}`}>
