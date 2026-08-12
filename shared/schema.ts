@@ -632,9 +632,34 @@ export const situations = pgTable("situations", {
   tvaAmount: numeric("tva_amount", { precision: 12, scale: 2 }).notNull(),
   netToPayTtc: numeric("net_to_pay_ttc", { precision: 12, scale: 2 }).notNull(),
   status: text("status").notNull().default("draft"),
+  // Task #449 — source-PDF provenance: the signed "Situation de travaux"
+  // document this record was keyed from. Attached either automatically by
+  // the intake pipeline (exact project+contractor+devis+number match) or by
+  // an operator through the reviewed one-click attach flow. All columns are
+  // server-written only — the generic PATCH strips them (see routes).
+  //   sourceStorageKey/FileName — object-storage copy of the signed PDF.
+  //   sourceUploadedAt/By       — when + how the PDF was attached
+  //                               ("intake-auto" | operator name).
+  //   sourceConfirmedAt/By      — operator confirmation (draft→confirm):
+  //                               auto-attached PDFs start unconfirmed;
+  //                               reviewed attachments confirm immediately.
+  //   sourceIntakeDocumentId    — provenance FK back to the intake row.
+  sourceStorageKey: text("source_storage_key"),
+  sourceFileName: text("source_file_name"),
+  sourceUploadedAt: timestamp("source_uploaded_at"),
+  sourceUploadedBy: text("source_uploaded_by"),
+  sourceConfirmedAt: timestamp("source_confirmed_at"),
+  sourceConfirmedBy: text("source_confirmed_by"),
+  sourceIntakeDocumentId: integer("source_intake_document_id").references(() => projectIntakeDocuments.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   index("situations_devis_id_idx").on(table.devisId),
+  // One situations row per source intake document (partial unique) — a
+  // signed PDF can never be retained as evidence on two situations. The
+  // attach transaction relies on this racing safely (23505 → conflict).
+  uniqueIndex("situations_source_intake_doc_unique")
+    .on(table.sourceIntakeDocumentId)
+    .where(sql`${table.sourceIntakeDocumentId} IS NOT NULL`),
   unique("situations_devis_number_unique").on(table.devisId, table.situationNumber),
   check("situations_cumulative_ht_nonneg", sql`${table.cumulativeHt} >= 0`),
   check("situations_net_to_pay_ttc_nonneg", sql`${table.netToPayTtc} >= 0`),
@@ -651,6 +676,50 @@ export const situationLines = pgTable("situation_lines", {
 }, (table) => [
   index("situation_lines_situation_id_idx").on(table.situationId),
   index("situation_lines_devis_line_item_id_idx").on(table.devisLineItemId),
+]);
+
+// Task #449 — signed marché-level evidence documents (currently kind
+// "commande": the signed Bon de commande / purchase order). Stored as an
+// object-storage copy attached to the project (and, when unambiguous, the
+// devis it authorises). No DB enum by schema convention — `kind` and
+// `status` are plain text columns; the app vocabulary is
+// MARCHE_DOCUMENT_KINDS / draft|confirmed. Auto-routed rows start as
+// status "draft" (unreviewed); operator attachment or confirmation moves
+// them to "confirmed".
+export const MARCHE_DOCUMENT_KINDS = ["commande"] as const;
+export type MarcheDocumentKind = (typeof MARCHE_DOCUMENT_KINDS)[number];
+
+export const marcheDocuments = pgTable("marche_documents", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull().default("commande"),
+  storageKey: text("storage_key").notNull(),
+  fileName: text("file_name").notNull(),
+  // Optional links: the devis this commande authorises, and (when known)
+  // the marché record itself. Both nullable — a commande can arrive before
+  // either exists.
+  devisId: integer("devis_id").references(() => devis.id, { onDelete: "set null" }),
+  marcheId: integer("marche_id").references(() => marches.id, { onDelete: "set null" }),
+  // Provenance back to the intake pipeline row the PDF came through.
+  sourceIntakeDocumentId: integer("source_intake_document_id").references(() => projectIntakeDocuments.id, { onDelete: "set null" }),
+  extractedData: jsonb("extracted_data"),
+  status: text("status").notNull().default("draft"),
+  uploadedAt: timestamp("uploaded_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  uploadedBy: text("uploaded_by"),
+  confirmedAt: timestamp("confirmed_at"),
+  confirmedBy: text("confirmed_by"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("marche_documents_project_id_idx").on(table.projectId),
+  index("marche_documents_devis_id_idx").on(table.devisId),
+  index("marche_documents_marche_id_idx").on(table.marcheId),
+  // One evidence row per intake document (concurrent/double-submit safety):
+  // creation goes through ON CONFLICT DO NOTHING against this partial
+  // unique index and re-reads the winner.
+  uniqueIndex("marche_documents_source_intake_doc_unique")
+    .on(table.sourceIntakeDocumentId)
+    .where(sql`${table.sourceIntakeDocumentId} IS NOT NULL`),
 ]);
 
 export const certificats = pgTable("certificats", {
@@ -1705,7 +1774,30 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({
 export const insertSituationSchema = createInsertSchema(situations).omit({
   id: true,
   createdAt: true,
+  // Task #449 — source-PDF provenance is server-written only (attached by
+  // the intake pipeline or the reviewed attach flow, confirmed by dedicated
+  // endpoints). Omitted here so the generic create/PATCH surfaces cannot
+  // set or clear it (see devis-state-machine seal rationale).
+  sourceStorageKey: true,
+  sourceFileName: true,
+  sourceUploadedAt: true,
+  sourceUploadedBy: true,
+  sourceConfirmedAt: true,
+  sourceConfirmedBy: true,
+  sourceIntakeDocumentId: true,
 });
+
+export const insertMarcheDocumentSchema = createInsertSchema(marcheDocuments).omit({
+  id: true,
+  createdAt: true,
+  // Confirmation state is server-written only (confirm endpoint / reviewed
+  // attach flow).
+  status: true,
+  confirmedAt: true,
+  confirmedBy: true,
+});
+export type InsertMarcheDocument = z.infer<typeof insertMarcheDocumentSchema>;
+export type MarcheDocument = typeof marcheDocuments.$inferSelect;
 
 export const insertSituationLineSchema = createInsertSchema(situationLines).omit({
   id: true,

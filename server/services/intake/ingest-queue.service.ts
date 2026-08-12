@@ -18,6 +18,9 @@
  *   6. route by documentType:
  *        - quotation        → processDevisUpload  (typed devis DRAFT)
  *        - invoice/acompte  → unique devis match → processInvoiceUpload
+ *        - situation        → unique devis match + situation-number match
+ *                             → attach signed PDF to the situations row
+ *        - commande         → unique devis match → marche_documents row
  *        - everything else  → park (manual routing — later task)
  *
  * The pipeline NEVER moves money: it only ever creates DRAFT records via
@@ -36,7 +39,7 @@ import { processDevisUpload } from "../devis-upload.service";
 import { processInvoiceUpload } from "../invoice-upload.service";
 import { enqueueReconciliation } from "../reconciliation/reconciliation-queue.service";
 import type { ParsedDocument } from "../../gmail/document-parser";
-import type { ProjectIntakeDocument } from "@shared/schema";
+import type { InsertMarcheDocument, ProjectIntakeDocument } from "@shared/schema";
 
 export const MAX_INTAKE_ATTEMPTS = 5;
 
@@ -478,8 +481,141 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
         await park(doc, fingerprint, `Invoice routing failed: ${(result.data as { message?: string }).message ?? "unknown"}`);
         return;
       }
+      case "situation": {
+        // Task #449 — a signed "Situation de travaux" PDF. Auto-attach ONLY
+        // on an exact, unambiguous chain: contractor identified → exactly
+        // one devis for (project, contractor) → an existing situations row
+        // with the extracted situation number that has no source PDF yet.
+        // Anything weaker parks for the reviewed one-click attach flow.
+        // Never creates or mutates money fields.
+        const allProjects = await storage.getProjects({ includeArchived: true });
+        const allContractors = await storage.getContractors();
+        const match = await matchToProject(parsed, allProjects, allContractors);
+        if (!match.contractorId) {
+          await park(doc, fingerprint, "Situation parked: could not identify the contractor for unique devis matching — attach manually.");
+          return;
+        }
+        const candidates = await storage.getDevisByProjectAndContractor(doc.projectId, match.contractorId);
+        if (candidates.length !== 1) {
+          await park(
+            doc,
+            fingerprint,
+            `Situation parked: ${candidates.length === 0 ? "no" : `${candidates.length}`} devis match for this contractor — attach manually.`,
+          );
+          return;
+        }
+        const situationNumber =
+          typeof parsed.situationNumber === "number" && Number.isInteger(parsed.situationNumber) && parsed.situationNumber > 0
+            ? parsed.situationNumber
+            : null;
+        if (situationNumber == null) {
+          await park(doc, fingerprint, "Situation parked: no situation number could be extracted — attach manually.");
+          return;
+        }
+        const existing = (await storage.getSituationsByDevis(candidates[0].id)).find(
+          (s) => s.situationNumber === situationNumber,
+        );
+        if (!existing) {
+          await park(
+            doc,
+            fingerprint,
+            `Situation parked: no existing situation n°${situationNumber} on the matched devis — attach manually.`,
+          );
+          return;
+        }
+        if (existing.sourceStorageKey) {
+          await park(
+            doc,
+            fingerprint,
+            `Situation parked: situation n°${situationNumber} already has a source PDF attached — review manually.`,
+          );
+          return;
+        }
+        // Re-check existence right before the side effect (delete race).
+        if (!(await storage.getProjectIntakeDocument(doc.id))) {
+          console.log(`[intake-queue] Intake document ${doc.id} was deleted mid-analysis — skipping situation routing`);
+          return;
+        }
+        // Auto-attached = unconfirmed draft attachment; an operator confirms
+        // it from the situation record (draft→confirm). Claim (unrouted→
+        // routed) + attach run in ONE transaction, conditional on the
+        // situation having no source PDF yet and guarded by the partial
+        // unique index on situations.source_intake_document_id — if any
+        // concurrent attach wins the race, park instead of overwriting.
+        const result = await storage.attachSituationSourceAndRouteIntake({
+          situationId: existing.id,
+          intakeDocumentId: doc.id,
+          sourceStorageKey: doc.storageKey,
+          sourceFileName: doc.fileName,
+          sourceUploadedBy: "intake-auto",
+          confirmed: false,
+          intakeNote: `Signed situation PDF attached to situation n°${situationNumber} (unconfirmed — review on the record).`,
+          existingIntakeNotes: doc.notes,
+          expectedRoutingState: "unrouted",
+          contentFingerprint: fingerprint,
+        });
+        if ("conflict" in result) {
+          await park(
+            doc,
+            fingerprint,
+            `Situation parked: could not auto-attach to situation n°${situationNumber} (${result.conflict}) — review manually.`,
+          );
+          return;
+        }
+        return;
+      }
+      case "commande": {
+        // Task #449 — a signed "Bon de commande". Retained as a
+        // marche_documents evidence row. Auto-route only when the
+        // contractor is identified AND exactly one devis matches
+        // (project + contractor); otherwise park for reviewed attach.
+        const allProjects = await storage.getProjects({ includeArchived: true });
+        const allContractors = await storage.getContractors();
+        const match = await matchToProject(parsed, allProjects, allContractors);
+        if (!match.contractorId) {
+          await park(doc, fingerprint, "Bon de commande parked: could not identify the contractor for unique devis matching — attach manually.");
+          return;
+        }
+        const candidates = await storage.getDevisByProjectAndContractor(doc.projectId, match.contractorId);
+        if (candidates.length !== 1) {
+          await park(
+            doc,
+            fingerprint,
+            `Bon de commande parked: ${candidates.length === 0 ? "no" : `${candidates.length}`} devis match for this contractor — attach manually.`,
+          );
+          return;
+        }
+        if (!(await storage.getProjectIntakeDocument(doc.id))) {
+          console.log(`[intake-queue] Intake document ${doc.id} was deleted mid-analysis — skipping commande routing`);
+          return;
+        }
+        // Transactional claim (unrouted→routed) + evidence insert, guarded
+        // by the unique-per-intake-doc index — conflicts park for review.
+        const result = await storage.createMarcheDocumentAndRouteIntake({
+          data: {
+            projectId: doc.projectId,
+            kind: "commande",
+            storageKey: doc.storageKey,
+            fileName: doc.fileName,
+            devisId: candidates[0].id,
+            marcheId: candidates[0].marcheId ?? null,
+            sourceIntakeDocumentId: doc.id,
+            extractedData: extractedData as InsertMarcheDocument["extractedData"],
+            uploadedBy: "intake-auto",
+          },
+          intakeNote: "Signed bon de commande retained as marché evidence (unconfirmed — review on the record).",
+          existingIntakeNotes: doc.notes,
+          expectedRoutingState: "unrouted",
+          contentFingerprint: fingerprint,
+        });
+        if ("conflict" in result) {
+          await park(doc, fingerprint, `Bon de commande parked: could not auto-retain (${result.conflict}) — review manually.`);
+          return;
+        }
+        return;
+      }
       default: {
-        // situation / avenant / other / unknown — detected but parked for
+        // avenant / other / unknown — detected but parked for
         // manual routing (handled by a later task). When the "unknown" was
         // caused by a hard parse/conversion failure (e.g. a PDF that could
         // not be rasterised), surface that reason so the operator knows to

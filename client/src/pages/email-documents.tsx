@@ -47,6 +47,7 @@ const typeLabels: Record<string, string> = {
   situation: "Situation",
   avenant: "Avenant",
   acompte: "Acompte",
+  commande: "Bon de commande",
   architect_fee_invoice: "Facture d'honoraires",
   other: "Other",
   unknown: "Unknown",

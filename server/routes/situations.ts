@@ -9,6 +9,7 @@ import {
 } from "@shared/schema";
 import { validateRequest } from "../middleware/validate";
 import { evaluateAcompteGate, gateInputsFromDevis } from "../services/acompte.service";
+import { getDocumentStream } from "../storage/object-storage";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
@@ -56,9 +57,66 @@ router.patch(
   "/api/situations/:id",
   validateRequest({ params: idParams, body: updateSituationSchema }),
   async (req, res) => {
-    const situation = await storage.updateSituation(Number(req.params.id), req.body);
+    // Task #449 — source-PDF provenance is server-written only. The Zod
+    // schema already omits these fields, but delete them from the body
+    // outright (belt-and-braces — see the devis state-machine seal).
+    const body = { ...req.body };
+    for (const k of [
+      "sourceStorageKey",
+      "sourceFileName",
+      "sourceUploadedAt",
+      "sourceUploadedBy",
+      "sourceConfirmedAt",
+      "sourceConfirmedBy",
+      "sourceIntakeDocumentId",
+    ]) {
+      delete (body as Record<string, unknown>)[k];
+    }
+    const situation = await storage.updateSituation(Number(req.params.id), body);
     if (!situation) return res.status(404).json({ message: "Situation not found" });
     res.json(situation);
+  },
+);
+
+// Task #449 — operator confirmation of an auto-attached source PDF
+// (draft→confirm). Reviewed attachments made through the intake attach
+// flow are confirmed at attach time and don't need this.
+router.post(
+  "/api/situations/:id/confirm-source",
+  validateRequest({ params: idParams, body: z.object({ confirmedBy: z.string().optional() }) }),
+  async (req, res) => {
+    const id = Number(req.params.id);
+    const situation = await storage.getSituation(id);
+    if (!situation) return res.status(404).json({ message: "Situation not found" });
+    if (!situation.sourceStorageKey) {
+      return res.status(409).json({ message: "This situation has no source PDF attached." });
+    }
+    if (situation.sourceConfirmedAt) return res.json(situation);
+    const updated = await storage.confirmSituationSourcePdf(id, req.body.confirmedBy || "operator");
+    res.json(updated);
+  },
+);
+
+// Task #449 — download the retained signed Situation PDF.
+router.get(
+  "/api/situations/:id/source-pdf",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    try {
+      const situation = await storage.getSituation(Number(req.params.id));
+      if (!situation) return res.status(404).json({ message: "Situation not found" });
+      if (!situation.sourceStorageKey) {
+        return res.status(404).json({ message: "This situation has no source PDF attached." });
+      }
+      const { stream, contentType, size } = await getDocumentStream(situation.sourceStorageKey);
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Content-Disposition", `attachment; filename="${situation.sourceFileName ?? `situation-${situation.id}.pdf`}"`);
+      if (size) res.setHeader("Content-Length", String(size));
+      stream.pipe(res);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Download failed: ${message}` });
+    }
   },
 );
 

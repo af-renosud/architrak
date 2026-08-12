@@ -128,6 +128,139 @@ router.post(
   },
 );
 
+// Task #449 — server-side precondition guard for the reviewed attach flows.
+// Only a PARKED, already-analysed intake document whose AI classification is
+// the exact evidence type may be attached — anything else (unrouted /
+// still-analyzing docs the queue may yet route, already-routed docs, or a
+// quotation/invoice masquerading as evidence) is rejected regardless of what
+// the client sent.
+function validateEvidenceAttachState(
+  doc: { promotedId: number | null; promotedKind: string | null; routingState: string; extractedData: unknown },
+  expectedType: "situation" | "commande",
+): string | null {
+  if (doc.promotedId) {
+    return `Already routed into ${doc.promotedKind ?? "a record"} #${doc.promotedId}.`;
+  }
+  if (doc.routingState !== "parked") {
+    return `Only parked documents can be attached (this one is "${doc.routingState}").`;
+  }
+  const type = (doc.extractedData as { documentType?: unknown } | null)?.documentType;
+  if (type !== expectedType) {
+    return `This document was classified as "${typeof type === "string" ? type : "unknown"}", not "${expectedType}" — re-analyze or route it through the matching flow.`;
+  }
+  return null;
+}
+
+// Task #449 — reviewed one-click attach flows for parked evidence PDFs.
+//
+// A parked intake document classified as a "situation" (signed Situation de
+// travaux) is attached to an EXISTING situations row picked by the operator;
+// a parked "commande" (signed Bon de commande) is retained as a
+// marche_documents evidence row against the picked devis. Both are
+// human-reviewed decisions, so the attachment is confirmed immediately
+// (unlike pipeline auto-attachments, which stay unconfirmed drafts).
+
+router.post(
+  "/api/intake-documents/:id/attach-situation",
+  validateRequest({
+    params: intakeIdParams,
+    body: z.object({
+      situationId: z.coerce.number().int().positive(),
+      reviewedBy: z.string().optional(),
+    }),
+  }),
+  async (req, res) => {
+    try {
+      const doc = await storage.getProjectIntakeDocument(Number(req.params.id));
+      if (!doc) return res.status(404).json({ message: "Document not found" });
+      const stateError = validateEvidenceAttachState(doc, "situation");
+      if (stateError) return res.status(409).json({ message: stateError });
+      const situation = await storage.getSituation(req.body.situationId);
+      if (!situation) return res.status(404).json({ message: "Situation not found" });
+      const devis = await storage.getDevis(situation.devisId);
+      if (!devis || devis.projectId !== doc.projectId) {
+        return res.status(409).json({ message: "That situation belongs to a different project than this document." });
+      }
+      const reviewedBy = req.body.reviewedBy || "operator";
+      // Single transaction: claim the parked intake doc (parked→routed,
+      // promoted_id still NULL) AND attach the PDF (source_storage_key still
+      // NULL), guarded by the partial unique index on
+      // situations.source_intake_document_id. Concurrent duplicates,
+      // double-submits, and mid-flight failures all resolve to a conflict
+      // or a clean rollback — never a half-attached state.
+      const result = await storage.attachSituationSourceAndRouteIntake({
+        situationId: situation.id,
+        intakeDocumentId: doc.id,
+        sourceStorageKey: doc.storageKey,
+        sourceFileName: doc.fileName,
+        sourceUploadedBy: reviewedBy,
+        confirmed: true,
+        confirmedBy: reviewedBy,
+        intakeNote: `Attached to situation n°${situation.situationNumber} by ${reviewedBy}.`,
+        existingIntakeNotes: doc.notes,
+        expectedRoutingState: "parked",
+      });
+      if ("conflict" in result) {
+        return res.status(409).json({ message: result.conflict });
+      }
+      res.json({ situation: result.situation });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Attach failed: ${message}` });
+    }
+  },
+);
+
+router.post(
+  "/api/intake-documents/:id/attach-commande",
+  validateRequest({
+    params: intakeIdParams,
+    body: z.object({
+      devisId: z.coerce.number().int().positive(),
+      reviewedBy: z.string().optional(),
+    }),
+  }),
+  async (req, res) => {
+    try {
+      const doc = await storage.getProjectIntakeDocument(Number(req.params.id));
+      if (!doc) return res.status(404).json({ message: "Document not found" });
+      const stateError = validateEvidenceAttachState(doc, "commande");
+      if (stateError) return res.status(409).json({ message: stateError });
+      const devis = await storage.getDevis(req.body.devisId);
+      if (!devis || devis.projectId !== doc.projectId) {
+        return res.status(409).json({ message: "That devis belongs to a different project than this document." });
+      }
+      const reviewedBy = req.body.reviewedBy || "operator";
+      // Single transaction: create the confirmed evidence row (unique per
+      // intake doc) and claim the parked intake doc, or conflict.
+      const result = await storage.createMarcheDocumentAndRouteIntake({
+        data: {
+          projectId: doc.projectId,
+          kind: "commande",
+          storageKey: doc.storageKey,
+          fileName: doc.fileName,
+          devisId: devis.id,
+          marcheId: devis.marcheId ?? null,
+          sourceIntakeDocumentId: doc.id,
+          extractedData: doc.extractedData ?? null,
+          uploadedBy: reviewedBy,
+        },
+        confirmedBy: reviewedBy,
+        intakeNote: `Retained as bon de commande evidence on devis ${devis.devisCode} by ${reviewedBy}.`,
+        existingIntakeNotes: doc.notes,
+        expectedRoutingState: "parked",
+      });
+      if ("conflict" in result) {
+        return res.status(409).json({ message: result.conflict });
+      }
+      res.json({ marcheDocument: result.marcheDocument });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Attach failed: ${message}` });
+    }
+  },
+);
+
 router.delete(
   "/api/intake-documents/:id",
   validateRequest({ params: intakeIdParams }),

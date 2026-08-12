@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { Upload, FileText, Download, Mail, HardDriveUpload, Inbox, ArrowRight, RotateCw, Trash2, Eye, EyeOff } from "lucide-react";
+import { Upload, FileText, Download, Mail, HardDriveUpload, Inbox, ArrowRight, RotateCw, Trash2, Eye, EyeOff, Paperclip } from "lucide-react";
 import { Link } from "wouter";
 import {
   AlertDialog,
@@ -12,12 +12,27 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import type { ProjectIntakeDocument } from "@shared/schema";
+import type { Devis, ProjectIntakeDocument, Situation } from "@shared/schema";
 
 type IntakeListItem = ProjectIntakeDocument & { isVoid?: boolean };
 
@@ -70,6 +85,136 @@ function promotedHref(projectId: string, doc: ProjectIntakeDocument): string | n
   if (doc.promotedKind === "devis") return `/projets/${projectId}?devis=${doc.promotedId}`;
   if (doc.promotedKind === "invoice") return `/projets/${projectId}?tab=factures&invoice=${doc.promotedId}`;
   return null;
+}
+
+// Task #449 — parked evidence documents (signed Situation de travaux / Bon de
+// commande) get a one-click reviewed attach flow instead of only "retry".
+function evidenceKind(doc: ProjectIntakeDocument): "situation" | "commande" | null {
+  if (doc.routingState !== "parked" || doc.promotedId) return null;
+  const type = (doc.extractedData as { documentType?: string } | null)?.documentType;
+  return type === "situation" || type === "commande" ? type : null;
+}
+
+function AttachEvidenceDialog({
+  projectId,
+  doc,
+  onClose,
+}: {
+  projectId: string;
+  doc: ProjectIntakeDocument;
+  onClose: () => void;
+}) {
+  const { toast } = useToast();
+  const kind = evidenceKind(doc) ?? "situation";
+  const [devisId, setDevisId] = useState<string>("");
+  const [situationId, setSituationId] = useState<string>("");
+
+  const { data: devisList } = useQuery<Devis[]>({
+    queryKey: ["/api/projects", projectId, "devis"],
+  });
+  const { data: situationsList } = useQuery<Situation[]>({
+    queryKey: ["/api/devis", devisId, "situations"],
+    enabled: kind === "situation" && devisId !== "",
+  });
+
+  const extractedNumber = (doc.extractedData as { situationNumber?: number } | null)?.situationNumber;
+
+  const attachMutation = useMutation({
+    mutationFn: async () => {
+      if (kind === "situation") {
+        return apiRequest("POST", `/api/intake-documents/${doc.id}/attach-situation`, {
+          situationId: Number(situationId),
+        });
+      }
+      return apiRequest("POST", `/api/intake-documents/${doc.id}/attach-commande`, {
+        devisId: Number(devisId),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "intake"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "marche-documents"] });
+      if (devisId) queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "situations"] });
+      toast({
+        title: kind === "situation" ? "Situation PDF attached" : "Bon de commande retained",
+        description:
+          kind === "situation"
+            ? "The signed PDF is now attached to the situation record."
+            : "The signed order form is retained as marché evidence on the devis.",
+      });
+      onClose();
+    },
+    onError: (error: Error) => {
+      toast({ title: "Attach failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const canAttach =
+    kind === "situation" ? situationId !== "" : devisId !== "";
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent data-testid="dialog-attach-evidence">
+        <DialogHeader>
+          <DialogTitle>
+            {kind === "situation" ? "Attach signed situation PDF" : "Attach bon de commande"}
+          </DialogTitle>
+          <DialogDescription>
+            {kind === "situation"
+              ? `Pick the devis and the situation record "${doc.fileName}" belongs to. The PDF is attached as confirmed evidence.`
+              : `Pick the devis "${doc.fileName}" authorises. The signed order form is retained as confirmed marché evidence.`}
+            {kind === "situation" && extractedNumber ? ` Extracted number: Situation n°${extractedNumber}.` : ""}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <Select value={devisId} onValueChange={(v) => { setDevisId(v); setSituationId(""); }}>
+            <SelectTrigger data-testid="select-attach-devis">
+              <SelectValue placeholder="Select a devis" />
+            </SelectTrigger>
+            <SelectContent>
+              {(devisList ?? []).map((d) => (
+                <SelectItem key={d.id} value={String(d.id)}>
+                  {d.devisCode} — {d.descriptionFr}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {kind === "situation" && devisId !== "" && (
+            <Select value={situationId} onValueChange={setSituationId}>
+              <SelectTrigger data-testid="select-attach-situation">
+                <SelectValue placeholder="Select a situation" />
+              </SelectTrigger>
+              <SelectContent>
+                {(situationsList ?? []).length === 0 ? (
+                  <div className="px-3 py-2 text-[11px] text-muted-foreground">
+                    No situations on this devis yet — create the situation record first.
+                  </div>
+                ) : (
+                  (situationsList ?? []).map((s) => (
+                    <SelectItem key={s.id} value={String(s.id)} disabled={!!s.sourceStorageKey}>
+                      Situation n°{s.situationNumber}
+                      {s.sourceStorageKey ? " (PDF already attached)" : ""}
+                    </SelectItem>
+                  ))
+                )}
+              </SelectContent>
+            </Select>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} data-testid="button-cancel-attach">
+            Cancel
+          </Button>
+          <Button
+            onClick={() => attachMutation.mutate()}
+            disabled={!canAttach || attachMutation.isPending}
+            data-testid="button-confirm-attach"
+          >
+            {attachMutation.isPending ? "Attaching..." : "Attach"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".doc", ".docx", ".xls", ".xlsx"];
@@ -223,6 +368,7 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
   });
 
   const [deleteTarget, setDeleteTarget] = useState<ProjectIntakeDocument | null>(null);
+  const [attachTarget, setAttachTarget] = useState<ProjectIntakeDocument | null>(null);
 
   const deleteMutation = useMutation({
     mutationFn: async (intakeDocumentId: number) => {
@@ -415,6 +561,19 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
                         </Button>
                       </Link>
                     )}
+                    {!isArchived && evidenceKind(doc) && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8"
+                        onClick={() => setAttachTarget(doc)}
+                        title={evidenceKind(doc) === "situation" ? "Attach to a situation record" : "Attach to a devis as bon de commande"}
+                        data-testid={`button-attach-evidence-${doc.id}`}
+                      >
+                        <Paperclip size={12} />
+                        <span className="text-[9px] font-bold uppercase tracking-widest">Attach</span>
+                      </Button>
+                    )}
                     {canRetry && (
                       <Button
                         variant="ghost"
@@ -462,6 +621,14 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
             </p>
           </div>
         </LuxuryCard>
+      )}
+
+      {attachTarget && (
+        <AttachEvidenceDialog
+          projectId={projectId}
+          doc={attachTarget}
+          onClose={() => setAttachTarget(null)}
+        />
       )}
 
       <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>

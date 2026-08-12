@@ -53,6 +53,8 @@ import {
   type Invoice, type InsertInvoice,
   type Situation, type InsertSituation,
   type SituationLine, type InsertSituationLine,
+  marcheDocuments,
+  type MarcheDocument, type InsertMarcheDocument,
   type Certificat, type InsertCertificat,
   type Fee, type InsertFee,
   type FeeEntry, type InsertFeeEntry,
@@ -291,6 +293,48 @@ export interface IStorage {
   getSituationLines(situationId: number): Promise<SituationLine[]>;
 
   createSituationLine(data: InsertSituationLine): Promise<SituationLine>;
+
+  // Task #449 — evidence attachments (signed Situation / Bon de commande PDFs)
+  attachSituationSourcePdf(
+    situationId: number,
+    opts: {
+      sourceStorageKey: string;
+      sourceFileName: string;
+      sourceUploadedBy: string;
+      sourceIntakeDocumentId: number | null;
+      confirmed: boolean;
+      confirmedBy?: string;
+    },
+  ): Promise<Situation | undefined>;
+  confirmSituationSourcePdf(situationId: number, confirmedBy: string): Promise<Situation | undefined>;
+  attachSituationSourceAndRouteIntake(opts: {
+    situationId: number;
+    intakeDocumentId: number;
+    sourceStorageKey: string;
+    sourceFileName: string;
+    sourceUploadedBy: string;
+    confirmed: boolean;
+    confirmedBy?: string;
+    intakeNote: string;
+    existingIntakeNotes: string | null;
+    /** Routing state the intake doc must still be in ("parked" for the reviewed flow, "unrouted" for the pipeline). */
+    expectedRoutingState: string;
+    contentFingerprint?: string;
+  }): Promise<{ situation: Situation } | { conflict: string }>;
+  getMarcheDocument(id: number): Promise<MarcheDocument | undefined>;
+  getMarcheDocumentsByProject(projectId: number): Promise<MarcheDocument[]>;
+  getMarcheDocumentsByDevis(devisId: number): Promise<MarcheDocument[]>;
+  createMarcheDocument(data: InsertMarcheDocument): Promise<MarcheDocument>;
+  getMarcheDocumentBySourceIntakeDocument(intakeDocumentId: number): Promise<MarcheDocument | undefined>;
+  createMarcheDocumentAndRouteIntake(opts: {
+    data: InsertMarcheDocument & { sourceIntakeDocumentId: number };
+    confirmedBy?: string;
+    intakeNote: string;
+    existingIntakeNotes: string | null;
+    expectedRoutingState: string;
+    contentFingerprint?: string;
+  }): Promise<{ marcheDocument: MarcheDocument } | { conflict: string }>;
+  confirmMarcheDocument(id: number, confirmedBy: string): Promise<MarcheDocument | undefined>;
 
   getCertificatsByProject(projectId: number): Promise<Certificat[]>;
 
@@ -1523,6 +1567,257 @@ export class DatabaseStorage implements IStorage {
 
   async getSituationLines(situationId: number): Promise<SituationLine[]> {
     return db.select().from(situationLines).where(eq(situationLines.situationId, situationId));
+  }
+
+  // Task #449 — evidence attachments. Source-PDF provenance columns are
+  // server-written ONLY through these helpers (never via the generic
+  // create/PATCH surfaces — insertSituationSchema omits them).
+  async attachSituationSourcePdf(
+    situationId: number,
+    opts: {
+      sourceStorageKey: string;
+      sourceFileName: string;
+      sourceUploadedBy: string;
+      sourceIntakeDocumentId: number | null;
+      confirmed: boolean;
+      confirmedBy?: string;
+    },
+  ): Promise<Situation | undefined> {
+    // Conditional (atomic) attach: only a situation WITHOUT a source PDF can
+    // gain one — the `source_storage_key IS NULL` predicate makes concurrent
+    // attach attempts race safely; the loser gets `undefined` (caller returns
+    // a conflict / re-parks). Never check-then-write in two steps here.
+    const now = new Date();
+    const [row] = await db
+      .update(situations)
+      .set({
+        sourceStorageKey: opts.sourceStorageKey,
+        sourceFileName: opts.sourceFileName,
+        sourceUploadedAt: now,
+        sourceUploadedBy: opts.sourceUploadedBy,
+        sourceIntakeDocumentId: opts.sourceIntakeDocumentId,
+        sourceConfirmedAt: opts.confirmed ? now : null,
+        sourceConfirmedBy: opts.confirmed ? (opts.confirmedBy ?? opts.sourceUploadedBy) : null,
+      })
+      .where(and(eq(situations.id, situationId), isNull(situations.sourceStorageKey)))
+      .returning();
+    return row;
+  }
+
+  // Task #449 (review) — claim + attach as ONE transaction. The intake
+  // document is conditionally flipped parked→routed (promoted_id must still
+  // be NULL) and the situation conditionally gains the source PDF
+  // (source_storage_key must still be NULL) inside the same transaction, so
+  // a failure between the two writes can never leave an attached PDF on a
+  // still-parked intake record. The partial unique index on
+  // situations.source_intake_document_id turns "same intake doc attached to
+  // TWO situations concurrently" into a 23505 → conflict for the loser.
+  async attachSituationSourceAndRouteIntake(opts: {
+    situationId: number;
+    intakeDocumentId: number;
+    sourceStorageKey: string;
+    sourceFileName: string;
+    sourceUploadedBy: string;
+    confirmed: boolean;
+    confirmedBy?: string;
+    intakeNote: string;
+    existingIntakeNotes: string | null;
+    expectedRoutingState: string;
+    contentFingerprint?: string;
+  }): Promise<{ situation: Situation } | { conflict: string }> {
+    class AttachConflict extends Error {
+      constructor(public readonly reason: string) {
+        super(reason);
+      }
+    }
+    const now = new Date();
+    try {
+      return await db.transaction(async (tx) => {
+        // 1. Claim the intake document: parked → routed, only if it has not
+        //    been routed/claimed by anyone else in the meantime.
+        const [claimed] = await tx
+          .update(projectIntakeDocuments)
+          .set({
+            analysisState: "analyzed",
+            routingState: "routed",
+            promotedKind: "situation",
+            promotedId: opts.situationId,
+            notes: opts.existingIntakeNotes ? `${opts.existingIntakeNotes}\n${opts.intakeNote}` : opts.intakeNote,
+            ...(opts.contentFingerprint ? { contentFingerprint: opts.contentFingerprint } : {}),
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(projectIntakeDocuments.id, opts.intakeDocumentId),
+              eq(projectIntakeDocuments.routingState, opts.expectedRoutingState),
+              isNull(projectIntakeDocuments.promotedId),
+            ),
+          )
+          .returning();
+        if (!claimed) {
+          throw new AttachConflict("This document was already routed or is no longer parked.");
+        }
+        // 2. Attach the PDF to the situation, only if it has none yet.
+        const [situation] = await tx
+          .update(situations)
+          .set({
+            sourceStorageKey: opts.sourceStorageKey,
+            sourceFileName: opts.sourceFileName,
+            sourceUploadedAt: now,
+            sourceUploadedBy: opts.sourceUploadedBy,
+            sourceIntakeDocumentId: opts.intakeDocumentId,
+            sourceConfirmedAt: opts.confirmed ? now : null,
+            sourceConfirmedBy: opts.confirmed ? (opts.confirmedBy ?? opts.sourceUploadedBy) : null,
+          })
+          .where(and(eq(situations.id, opts.situationId), isNull(situations.sourceStorageKey)))
+          .returning();
+        if (!situation) {
+          throw new AttachConflict("That situation already has a source PDF attached.");
+        }
+        return { situation };
+      });
+    } catch (err) {
+      if (err instanceof AttachConflict) return { conflict: err.reason };
+      // Partial unique index violation: same intake doc attached to another
+      // situation by a concurrent request.
+      if (typeof err === "object" && err !== null && (err as { code?: string }).code === "23505") {
+        return { conflict: "This document is already attached to another situation." };
+      }
+      throw err;
+    }
+  }
+
+  async confirmSituationSourcePdf(situationId: number, confirmedBy: string): Promise<Situation | undefined> {
+    const [row] = await db
+      .update(situations)
+      .set({ sourceConfirmedAt: new Date(), sourceConfirmedBy: confirmedBy })
+      .where(and(eq(situations.id, situationId), isNotNull(situations.sourceStorageKey)))
+      .returning();
+    return row;
+  }
+
+  async getMarcheDocument(id: number): Promise<MarcheDocument | undefined> {
+    const [row] = await db.select().from(marcheDocuments).where(eq(marcheDocuments.id, id));
+    return row;
+  }
+
+  async getMarcheDocumentsByProject(projectId: number): Promise<MarcheDocument[]> {
+    return db.select().from(marcheDocuments).where(eq(marcheDocuments.projectId, projectId)).orderBy(desc(marcheDocuments.createdAt));
+  }
+
+  async getMarcheDocumentsByDevis(devisId: number): Promise<MarcheDocument[]> {
+    return db.select().from(marcheDocuments).where(eq(marcheDocuments.devisId, devisId)).orderBy(desc(marcheDocuments.createdAt));
+  }
+
+  async createMarcheDocument(data: InsertMarcheDocument): Promise<MarcheDocument> {
+    // Conflict-safe against the partial unique index on
+    // source_intake_document_id: a concurrent/double submit for the same
+    // intake document inserts nothing and returns the existing winner row.
+    const [row] = await db
+      .insert(marcheDocuments)
+      .values(data)
+      .onConflictDoNothing({
+        target: marcheDocuments.sourceIntakeDocumentId,
+        where: isNotNull(marcheDocuments.sourceIntakeDocumentId),
+      })
+      .returning();
+    if (row) return row;
+    if (data.sourceIntakeDocumentId != null) {
+      const existing = await this.getMarcheDocumentBySourceIntakeDocument(data.sourceIntakeDocumentId);
+      if (existing) return existing;
+    }
+    throw new Error("marche document insert conflicted but no existing row was found");
+  }
+
+  // Task #449 (review) — commande twin of attachSituationSourceAndRouteIntake:
+  // claim the intake doc (expected state → routed) and create (+optionally
+  // confirm) the marche_documents evidence row in ONE transaction. Any
+  // failed claim, uniqueness collision (same intake doc already retained),
+  // or mid-flight failure rolls back atomically and reports a conflict —
+  // never retained evidence pointing at a still-parked/unrouted intake row.
+  async createMarcheDocumentAndRouteIntake(opts: {
+    data: InsertMarcheDocument & { sourceIntakeDocumentId: number };
+    confirmedBy?: string;
+    intakeNote: string;
+    existingIntakeNotes: string | null;
+    expectedRoutingState: string;
+    contentFingerprint?: string;
+  }): Promise<{ marcheDocument: MarcheDocument } | { conflict: string }> {
+    class AttachConflict extends Error {
+      constructor(public readonly reason: string) {
+        super(reason);
+      }
+    }
+    const now = new Date();
+    try {
+      return await db.transaction(async (tx) => {
+        // 1. Insert the evidence row. The partial unique index on
+        //    source_intake_document_id makes a concurrent duplicate insert
+        //    a no-op — treated as a conflict (the winner already routed).
+        const [marcheDoc] = await tx
+          .insert(marcheDocuments)
+          .values({
+            ...opts.data,
+            ...(opts.confirmedBy ? { status: "confirmed", confirmedAt: now, confirmedBy: opts.confirmedBy } : {}),
+          })
+          .onConflictDoNothing({
+            target: marcheDocuments.sourceIntakeDocumentId,
+            where: isNotNull(marcheDocuments.sourceIntakeDocumentId),
+          })
+          .returning();
+        if (!marcheDoc) {
+          throw new AttachConflict("This document is already retained as marché evidence.");
+        }
+        // 2. Claim the intake document, only if it is still in the expected
+        //    state and unclaimed.
+        const [claimed] = await tx
+          .update(projectIntakeDocuments)
+          .set({
+            analysisState: "analyzed",
+            routingState: "routed",
+            promotedKind: "marche_document",
+            promotedId: marcheDoc.id,
+            notes: opts.existingIntakeNotes ? `${opts.existingIntakeNotes}\n${opts.intakeNote}` : opts.intakeNote,
+            ...(opts.contentFingerprint ? { contentFingerprint: opts.contentFingerprint } : {}),
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(projectIntakeDocuments.id, opts.data.sourceIntakeDocumentId),
+              eq(projectIntakeDocuments.routingState, opts.expectedRoutingState),
+              isNull(projectIntakeDocuments.promotedId),
+            ),
+          )
+          .returning();
+        if (!claimed) {
+          throw new AttachConflict("This document was already routed or is no longer in an attachable state.");
+        }
+        return { marcheDocument: marcheDoc };
+      });
+    } catch (err) {
+      if (err instanceof AttachConflict) return { conflict: err.reason };
+      if (typeof err === "object" && err !== null && (err as { code?: string }).code === "23505") {
+        return { conflict: "This document is already retained as marché evidence." };
+      }
+      throw err;
+    }
+  }
+
+  async getMarcheDocumentBySourceIntakeDocument(intakeDocumentId: number): Promise<MarcheDocument | undefined> {
+    const [row] = await db
+      .select()
+      .from(marcheDocuments)
+      .where(eq(marcheDocuments.sourceIntakeDocumentId, intakeDocumentId));
+    return row;
+  }
+
+  async confirmMarcheDocument(id: number, confirmedBy: string): Promise<MarcheDocument | undefined> {
+    const [row] = await db
+      .update(marcheDocuments)
+      .set({ status: "confirmed", confirmedAt: new Date(), confirmedBy })
+      .where(eq(marcheDocuments.id, id))
+      .returning();
+    return row;
   }
 
   async createSituationLine(data: InsertSituationLine): Promise<SituationLine> {

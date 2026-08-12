@@ -45,7 +45,11 @@ function getGeminiClient() {
 }
 
 export interface ParsedDocument {
-  documentType: "quotation" | "invoice" | "situation" | "avenant" | "acompte" | "architect_fee_invoice" | "other" | "unknown";
+  documentType: "quotation" | "invoice" | "situation" | "avenant" | "acompte" | "commande" | "architect_fee_invoice" | "other" | "unknown";
+  // Task #449 — for situations de travaux: the situation sequence number
+  // printed on the document (e.g. 3 for "Situation n°3"). Used to attach
+  // the signed PDF to the matching situations row.
+  situationNumber?: number;
   contractorName?: string;
   clientName?: string;
   projectAddress?: string;
@@ -203,6 +207,8 @@ Domain Knowledge:
 - SIRET: 14-digit identifier for French companies, often on letterhead.
 - RCS: Registre du Commerce et des Societes registration.
 - Lot references: Construction projects are divided into lots (e.g., "Lot 1 - Gros Oeuvre", "Lot 7 - Electricite"). Extract all lot codes visible.
+- Bon de commande: a purchase order / order form issued to (and typically signed by) the client or maître d'ouvrage to authorise the works of a devis. Titles like "BON DE COMMANDE", "Bon pour accord / commande" indicate documentType="commande". Do NOT confuse with a devis (quotation) or a facture.
+- Situations de travaux carry a sequence number ("Situation n°3", "Situation #2", "3ème situation") — extract it as situationNumber (integer).
 - Distinguish Acompte (deposit invoice / deposit clause on a devis) from Situation (progress claim with cumulative percentages). On a devis, an acompte is announced via payment-terms wording such as "Acompte de 30% à la commande", "30 % à la signature", "Versement à la réservation", etc. — when present, set acompteRequired=true, capture acomptePercent and/or acompteAmountHt, and copy the verbatim phrase into acompteTrigger. On a facture, the document itself is an "acompte" when the title/header includes "FACTURE D'ACOMPTE" or "ACOMPTE Nº" — use documentType="acompte" in that case (do NOT confuse with progress invoices).
 
 Extraction Rules:
@@ -219,7 +225,8 @@ Extraction Rules:
 
 const USER_PROMPT = `Analyze this French construction document and extract the following fields:
 
-- documentType: "quotation" (devis), "invoice" (facture), "situation" (situation de travaux), "avenant" (amendment), "acompte" (facture d'acompte / deposit invoice), "architect_fee_invoice" (facture d'honoraires ISSUED BY the architecture firm itself to its client), "other", or "unknown"
+- documentType: "quotation" (devis), "invoice" (facture), "situation" (situation de travaux), "avenant" (amendment), "acompte" (facture d'acompte / deposit invoice), "commande" (bon de commande / signed purchase order), "architect_fee_invoice" (facture d'honoraires ISSUED BY the architecture firm itself to its client), "other", or "unknown"
+- situationNumber: integer — for situations de travaux only, the situation sequence number printed on the document (e.g. 3 for "Situation n°3"). Omit when not a situation or not visible.
 - acompteRequired: boolean — true if this devis explicitly requires a deposit on order/signature (look at payment-terms and any "Conditions de règlement" block). Omit on factures.
 - acomptePercent: number 0..100 — the deposit percentage if stated (e.g. 30 for "30%"). Omit if not stated.
 - acompteAmountHt: number — the deposit amount HT if stated as a euro amount on the devis. Omit if only a percentage is given.
@@ -255,8 +262,13 @@ const EXTRACTION_SCHEMA: ResponseSchema = {
     documentType: {
       type: SchemaType.STRING,
       format: "enum",
-      description: "Type of document: quotation, invoice, situation, avenant, acompte, architect_fee_invoice, other, or unknown",
-      enum: ["quotation", "invoice", "situation", "avenant", "acompte", "architect_fee_invoice", "other", "unknown"],
+      description: "Type of document: quotation, invoice, situation, avenant, acompte, commande, architect_fee_invoice, other, or unknown",
+      enum: ["quotation", "invoice", "situation", "avenant", "acompte", "commande", "architect_fee_invoice", "other", "unknown"],
+    },
+    situationNumber: {
+      type: SchemaType.NUMBER,
+      description: "Situation sequence number for situations de travaux (e.g. 3 for 'Situation n°3')",
+      nullable: true,
     },
     contractorName: {
       type: SchemaType.STRING,

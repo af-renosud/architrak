@@ -17,6 +17,7 @@ import clientProjectShareRouter from "./client-project-share";
 import insuranceGateRouter from "./insurance-gate";
 import invoicesRouter from "./invoices";
 import situationsRouter from "./situations";
+import marcheDocumentsRouter from "./marche-documents";
 import certificatsRouter from "./certificats";
 import feesRouter from "./fees";
 import financialRouter from "./financial";
@@ -102,6 +103,7 @@ export async function registerRoutes(
   app.use(insuranceGateRouter);
   app.use(invoicesRouter);
   app.use(situationsRouter);
+  app.use(marcheDocumentsRouter);
   app.use(certificatsRouter);
   app.use(feesRouter);
   app.use(architectFeeInvoicesRouter);
