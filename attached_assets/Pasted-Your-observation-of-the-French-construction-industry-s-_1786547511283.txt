@@ -1,0 +1,25 @@
+Your observation of the French construction industry's billing workflows is spot-on. In French law, once a *Devis* (estimate/quote) is signed with the mention *"Bon pour accord"*, it becomes a legally binding contract (*contrat commercial* or *marché de travaux*). However, administrative practices vary depending on company size, public vs. private domain, and project scale.
+
+Here is an analysis of your three observed workflows, followed by the structured table for your application logic.
+
+### Contextual Elucidation of the 3 Modes
+
+* **Mode 1 (Formal Corporate / ERP Flow):** Common in larger companies or formal project structures. The extra *Commande* step (often a *Bon de commande* or formal contract countersignature) serves internal ERP compliance to generate a firm order in their accounting system before work begins. Progress is validated via a signed *Situation de travaux* (progress billing state) before issuing the definitive *Facture de situation*.
+* **Mode 2 (Standard Construction Practice):** The most widespread method for mid-sized construction projects (*BTP*). The signed *Devis* acts as the sole contract. As phases finish, the contractor submits a *Situation* detailing percentage completion (often reviewed/validated by you, the architect, as *Maître d'œuvre*). Once validated, the corresponding *Facture* is generated.
+* **Mode 3 (Direct / Simplified Flow):** Standard for smaller works, single-trade contractors (*artisans*), or fixed-phase jobs (e.g., deposit + balance). The company bypasses formal progress tracking (*Situations*) and bills fixed percentages or milestones directly via *Facture d'acompte* (deposit invoice) or final *Facture*.
+
+---
+
+### Document Flow Logic Summary
+
+| Workflow Mode | Initial Contract Phase | Progress Validation Phase | Invoicing Phase | Typical Context / Use Case |
+| --- | --- | --- | --- | --- |
+| **Mode 1** | `Devis` → `Bon de Commande` | `Situation de Travaux` (Signed) | `Facture de Situation` | Large companies, strict internal ERP workflows, formal commercial contracts. |
+| **Mode 2** | `Devis` (Signed) | `Situation de Travaux` (Signed or Draft) | `Facture de Situation` | Standard mid-sized *BTP* construction projects managed by architects/MOE. |
+| **Mode 3** | `Devis` (Signed) | *None* | `Facture` (Acompte / Solde) | Small projects, *artisans*, quick turnarounds, or simple milestone billing. |
+
+### Technical Notes for Application Logic
+
+1. **Legal Status of Devis:** Under Code Civil Art. 1103, a signed *Devis* serves as a contract. In Mode 1, a `Commande` is an internal or administrative duplication of this commitment, not a legal requirement to replace the signed quote.
+2. **Situation vs. Facture:** A *Situation de travaux* is legally an **extracontractual draft statement** of work completed, not an accounting invoice. Legally, tax and VAT (TVA) obligations in France are triggered only when the official **Facture** is generated against that situation.
+3. **Sequential Linking:** In your application schema, `Situation` records should ideally maintain a parent-child relationship with the original `Devis` ID, and each generated `Facture` should reference both its `Devis` ID and its corresponding `Situation` batch number (e.g., *Facture de Situation N°1*).
