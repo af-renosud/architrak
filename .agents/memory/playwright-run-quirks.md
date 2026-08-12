@@ -22,6 +22,8 @@ Rules for running `npx playwright test` here:
   (`PORT=5599 NODE_ENV=development ENABLE_DEV_LOGIN_FOR_E2E=true E2E_FAKE_GMAIL=true npx tsx server/index.ts &`,
   poll `/healthz`, then run with `E2E_BASE_URL=http://localhost:5599`, kill after). `npm run dev` is
   blocked by the shell sandbox — invoke `npx tsx server/index.ts` directly.
+- **Use `127.0.0.1`, not `localhost`, for side-server URLs** — Playwright's request context resolves
+  localhost to `::1` and fails with EAFNOSUPPORT against the IPv4-bound tsx server.
 - **Toast text assertions need `{ exact: true }` (or `.first()`)** — the toaster mirrors the title
   into an aria-live announcer span, so `getByText("<toast title>")` hits a strict-mode violation.
 
