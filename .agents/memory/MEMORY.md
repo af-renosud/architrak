@@ -24,4 +24,5 @@
 - [Payment-ledger atomicity](payment-ledger-atomicity.md) — ledger mutations are one tx (cert row lock + re-check + audit + conditional one-way paid flip); lock on actual coverage, not status.
 - [Merge-corrupted source files](merge-corrupted-files.md) — a task merge can commit a spliced/broken file; rebuild from service+client contracts, and restart the workflow before trusting post-merge smoke failures.
 - [Regex accents & TS target](regex-accents-ts-target.md) — `\b` never matches after é/è and the `u` flag fails `npm run check`; use an explicit Latin-letter class boundary.
+- [Live Gmail verification in dev](live-gmail-verification.md) — connector is send-only AND same account as the linked inbox; dev OAuth needs the dev-domain redirect URI; dev-login 500s for existing real-Google users, drive server code via tsx instead.
 - [Restore via cp, not git checkout](restore-via-cp-not-git-checkout.md) — `git checkout --` reverts to the last platform commit and silently wipes uncommitted session edits; snapshot with cp before temporary file mutations.
