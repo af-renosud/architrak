@@ -99,6 +99,10 @@ const renderResult = (key: string, sourceInvoiceIds: number[] = []) => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: the authoritative recompute agrees with the stored row, so the
+  // seal proceeds without a drift-repair loop. Tests that exercise drift
+  // override this per-call.
+  resolveDeductions.mockResolvedValue(mirrorDeductions(draftCert));
 });
 
 describe("sealCertificat", () => {
@@ -157,6 +161,11 @@ describe("sealCertificat", () => {
       .mockResolvedValueOnce({ ...draftCert, version: 1, netToPayTtc: "1140.00" }) // attempt 1 capture
       .mockResolvedValueOnce({ ...draftCert, version: 2, netToPayTtc: "999.00", pdfStorageKey: null }) // reload: unsealed, drifted
       .mockResolvedValueOnce({ ...draftCert, version: 2, netToPayTtc: "999.00", pdfStorageKey: null }); // attempt 2 capture
+    // The recompute mirrors whatever each attempt loaded — no drift, the
+    // version-guard miss alone drives the re-render.
+    resolveDeductions
+      .mockResolvedValueOnce(mirrorDeductions(draftCert))
+      .mockResolvedValueOnce(mirrorDeductions({ ...draftCert, netToPayTtc: "999.00" }));
     generate
       .mockResolvedValueOnce(renderResult("stale-render.pdf"))
       .mockResolvedValueOnce(renderResult("fresh-render.pdf"));
@@ -176,6 +185,42 @@ describe("sealCertificat", () => {
     // Drive is enqueued once, by the eventual winner, with the pinned key.
     expect(driveEnqueue).toHaveBeenCalledTimes(1);
     expect(driveEnqueue.mock.calls[0][0].sourceStorageKey).toBe("fresh-render.pdf");
+  });
+
+  it("repairs drifted deductions before sealing (persist fresh figures, retry, then seal)", async () => {
+    // A deposit turned 'paid' after the draft was created: the seal-time
+    // recompute disagrees with the stored row, so the sealer must persist
+    // the fresh figures (bumping version) and retry before rendering.
+    const repaired = {
+      ...draftCert,
+      cumulativeAcompteRecoupment: "200.00",
+      periodAcompteRecoupment: "200.00",
+      netToPayHt: "750.00",
+      tvaAmount: "150.00",
+      netToPayTtc: "900.00",
+    };
+    getCertificat
+      .mockResolvedValueOnce({ ...draftCert, version: 1 }) // attempt 1: stale row
+      .mockResolvedValueOnce({ ...repaired, version: 2 }); // attempt 2: repaired row
+    resolveDeductions.mockResolvedValue(mirrorDeductions(repaired));
+    (storage.updateCertificat as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...repaired,
+      version: 2,
+    });
+    generate.mockResolvedValue(renderResult("repaired.pdf"));
+    sealCertificatStore.mockResolvedValue({ ...repaired, version: 2, pdfStorageKey: "repaired.pdf" });
+
+    const result = await sealCertificat(5);
+    expect(result.pdfStorageKey).toBe("repaired.pdf");
+    // Drift persisted exactly once, with the resolver's fresh figures.
+    expect(storage.updateCertificat).toHaveBeenCalledTimes(1);
+    expect(storage.updateCertificat).toHaveBeenCalledWith(5, mirrorDeductions(repaired));
+    // No render happened on the stale attempt — only after the repair.
+    expect(generate).toHaveBeenCalledTimes(1);
+    // The seal + snapshot reflect the repaired row (version 2, fresh nets).
+    expect(sealCertificatStore.mock.calls[0][1].expectedVersion).toBe(2);
+    expect(sealCertificatStore.mock.calls[0][1].issuanceSnapshot.netToPayTtc).toBe("900.00");
+    expect(sealCertificatStore.mock.calls[0][1].issuanceSnapshot.cumulativeAcompteRecoupment).toBe("200.00");
   });
 
   it("gives up with a clear error when edits keep changing the inputs", async () => {

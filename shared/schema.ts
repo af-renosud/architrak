@@ -1830,7 +1830,32 @@ export const insertLotCatalogSchema = createInsertSchema(lotCatalog).omit({
     .optional(),
 });
 
-export const insertMarcheSchema = createInsertSchema(marches).omit({
+export const insertMarcheSchema = createInsertSchema(marches, {
+  // Task #462 — acompte recoupment configuration must be well-formed at the
+  // boundary: an unknown rule or out-of-range percent would silently change
+  // how a paid deposit is recovered on certificats.
+  acompteRecoupmentRule: z.enum(["asap", "percent", "progress_threshold"]).optional(),
+  // Strict scale-2 decimal strings: `parseFloat` would accept trailing junk
+  // ("10oops") and >2 decimals that numeric(5,2) silently rounds (0.001 →
+  // 0.00 turns the percent rule into its full-recovery fallback). Require
+  // the exact DB-compatible representation, then range-check the value.
+  acompteRecoupmentPercent: z
+    .string()
+    .regex(/^\d{1,3}(\.\d{1,2})?$/, "Recoupment percent must be a decimal with at most 2 decimal places")
+    .refine((v) => { const n = parseFloat(v); return n > 0 && n <= 100; }, {
+      message: "Recoupment percent must be between 0 (exclusive) and 100",
+    })
+    .nullable()
+    .optional(),
+  acompteRecoupmentThresholdPercent: z
+    .string()
+    .regex(/^\d{1,3}(\.\d{1,2})?$/, "Recoupment threshold must be a decimal with at most 2 decimal places")
+    .refine((v) => { const n = parseFloat(v); return n >= 0 && n <= 100; }, {
+      message: "Recoupment threshold must be between 0 and 100",
+    })
+    .nullable()
+    .optional(),
+}).omit({
   id: true,
   createdAt: true,
 });

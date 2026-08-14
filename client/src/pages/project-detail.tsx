@@ -562,6 +562,7 @@ export default function ProjectDetail() {
       priceType: "forfaitaire", totalHt: "0.00", totalTtc: "0.00",
       retenueGarantiePercent: "5.00", paymentSchedule: null, signedDate: null, status: "draft",
       hasBankGuarantee: false, isProrataManager: false,
+      acompteRecoupmentRule: "asap", acompteRecoupmentPercent: null, acompteRecoupmentThresholdPercent: null,
     },
   });
 
@@ -1537,6 +1538,7 @@ export default function ProjectDetail() {
                       priceType: "forfaitaire", totalHt: "0.00", totalTtc: "0.00",
                       retenueGarantiePercent: "5.00", paymentSchedule: null, signedDate: null, status: "draft",
                       hasBankGuarantee: false, isProrataManager: false,
+                      acompteRecoupmentRule: "asap", acompteRecoupmentPercent: null, acompteRecoupmentThresholdPercent: null,
                     });
                     setMarcheDialogOpen(true);
                   }} disabled={isArchived} data-testid="button-new-marche">
@@ -1638,6 +1640,45 @@ export default function ProjectDetail() {
                           <FormMessage />
                         </FormItem>
                       )} />
+                      <FormField control={marcheForm.control} name="acompteRecoupmentRule" render={({ field }) => (
+                        <FormItem>
+                          <FormLabel><TechnicalLabel>Récupération de l'Acompte</TechnicalLabel></FormLabel>
+                          <Select onValueChange={(v) => {
+                            field.onChange(v);
+                            if (v !== "percent") marcheForm.setValue("acompteRecoupmentPercent", null);
+                            if (v !== "progress_threshold") marcheForm.setValue("acompteRecoupmentThresholdPercent", null);
+                          }} value={field.value ?? "asap"}>
+                            <FormControl><SelectTrigger data-testid="select-marche-acompte-rule"><SelectValue /></SelectTrigger></FormControl>
+                            <SelectContent>
+                              <SelectItem value="asap">Dès le premier certificat (asap)</SelectItem>
+                              <SelectItem value="percent">% de chaque certificat</SelectItem>
+                              <SelectItem value="progress_threshold">À partir d'un seuil d'avancement</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <p className="text-[10px] text-muted-foreground mt-0.5">How a paid deposit is recovered on certificats de paiement.</p>
+                          <FormMessage />
+                        </FormItem>
+                      )} />
+                      {marcheForm.watch("acompteRecoupmentRule") === "percent" && (
+                        <FormField control={marcheForm.control} name="acompteRecoupmentPercent" render={({ field }) => (
+                          <FormItem>
+                            <FormLabel><TechnicalLabel>Récupération par certificat (%)</TechnicalLabel></FormLabel>
+                            <FormControl><Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} type="number" step="0.01" min="0" max="100" placeholder="ex: 10.00" data-testid="input-marche-acompte-percent" /></FormControl>
+                            <p className="text-[10px] text-muted-foreground mt-0.5">Empty = full recovery on the first certificat.</p>
+                            <FormMessage />
+                          </FormItem>
+                        )} />
+                      )}
+                      {marcheForm.watch("acompteRecoupmentRule") === "progress_threshold" && (
+                        <FormField control={marcheForm.control} name="acompteRecoupmentThresholdPercent" render={({ field }) => (
+                          <FormItem>
+                            <FormLabel><TechnicalLabel>Seuil d'avancement (%)</TechnicalLabel></FormLabel>
+                            <FormControl><Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} type="number" step="0.01" min="0" max="100" placeholder="ex: 30.00" data-testid="input-marche-acompte-threshold" /></FormControl>
+                            <p className="text-[10px] text-muted-foreground mt-0.5">Recovery starts once cumulative works reach this share of the marché total.</p>
+                            <FormMessage />
+                          </FormItem>
+                        )} />
+                      )}
                       <FormField control={marcheForm.control} name="hasBankGuarantee" render={({ field }) => (
                         <FormItem className="flex items-center justify-between gap-2 rounded-lg border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] p-3">
                           <div>
