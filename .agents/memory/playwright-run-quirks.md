@@ -34,3 +34,6 @@ silent foreground timeouts before landing on the pattern above.
 - **TOAST_LIMIT is 1** — the shadcn toaster keeps only the most recent toast, so a flow that
   fires success-then-warning shows ONLY the warning. Never assert two toasts visible at once;
   assert the last-fired one.
+
+- Radix dialogs in specs: `page.keyboard.press("Escape")` right after a mutation can be swallowed by toast focus and leave the overlay up (later clicks fail with "DialogOverlay intercepts pointer events"). Close via the dialog's `Close` button and assert `getByRole("dialog")` count 0 before continuing.
+- Toast text assertions hit strict-mode violations (visible toast + aria-live announcer duplicate the text); use `getByText(..., { exact: true })`.
