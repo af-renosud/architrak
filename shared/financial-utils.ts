@@ -22,6 +22,25 @@ export function calculateFeeAmount(invoiceHt: number, feeRate: number): number {
 const DEFAULT_TVA_RATE = 0.2;
 
 /**
+ * Task #479 — documentary effective TVA rate (%) from source-document
+ * HT/TTC sums. French contractor invoices routinely mix rates (10% rénovation
+ * + 20% supplies, sometimes 5.5%), so no single statutory rate reproduces the
+ * invoice's real tax; the blended effective rate (ΣTTC − ΣHT) / ΣHT does.
+ * Returns null when there is no usable evidence: zero/negative HT base,
+ * TTC below HT, or a rate outside the sane French bracket [0, 30] (a wild
+ * rate means bad extraction data, and money must not follow bad data).
+ * Rounded to 2 decimals so the same figure is persisted, displayed and
+ * re-derivable. Shared: the client mirrors the server preview with it.
+ */
+export function computeEffectiveTvaRatePercent(sumHt: number, sumTtc: number): number | null {
+  if (!Number.isFinite(sumHt) || !Number.isFinite(sumTtc)) return null;
+  if (sumHt <= 0 || sumTtc < sumHt) return null;
+  const rate = ((sumTtc - sumHt) / sumHt) * 100;
+  if (rate < 0 || rate > 30) return null;
+  return Math.round((rate + Number.EPSILON) * 100) / 100;
+}
+
+/**
  * Task #243 — Authoritative Certificat de Paiement deduction math.
  *
  * A certificat is CUMULATIVE: `totalWorksHt` is the gross approved works to

@@ -8,6 +8,7 @@ import {
   formatCurrencyEur,
   formatCurrencyNoSymbol,
   computeCertificatDeductions,
+  computeEffectiveTvaRatePercent,
 } from "../financial-utils";
 
 describe("roundCurrency", () => {
@@ -448,5 +449,32 @@ describe("computeCertificatDeductions", () => {
     });
     expect(r.cumulativeRetenue).toBe(0);
     expect(r.cumulativeProrata).toBe(2000);
+  });
+});
+
+describe("computeEffectiveTvaRatePercent (Task #479)", () => {
+  it("derives the blended rate from mixed 10%/20% documents", () => {
+    expect(computeEffectiveTvaRatePercent(2000, 2300)).toBe(15);
+  });
+  it("rounds to 2 decimals", () => {
+    expect(computeEffectiveTvaRatePercent(300, 333.33)).toBe(11.11);
+  });
+  it("accepts a legitimate 0% (TTC == HT)", () => {
+    expect(computeEffectiveTvaRatePercent(1000, 1000)).toBe(0);
+  });
+  it("rejects zero or negative HT base", () => {
+    expect(computeEffectiveTvaRatePercent(0, 100)).toBeNull();
+    expect(computeEffectiveTvaRatePercent(-5, 100)).toBeNull();
+  });
+  it("rejects TTC below HT (bad extraction data)", () => {
+    expect(computeEffectiveTvaRatePercent(1000, 900)).toBeNull();
+  });
+  it("rejects rates above the sane French bracket (30%)", () => {
+    expect(computeEffectiveTvaRatePercent(100, 200)).toBeNull();
+    expect(computeEffectiveTvaRatePercent(100, 130)).toBe(30);
+  });
+  it("rejects non-finite inputs", () => {
+    expect(computeEffectiveTvaRatePercent(NaN, 100)).toBeNull();
+    expect(computeEffectiveTvaRatePercent(100, Infinity)).toBeNull();
   });
 });

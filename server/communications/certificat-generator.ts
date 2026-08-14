@@ -664,9 +664,14 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   // mandatory legal mention on autoliquidation certificats (art. 283 CGI).
   const tvaRatePercent = parseFloat(certificat.tvaRatePercent ?? "20");
   const tvaAutoliquidation = certificat.tvaAutoliquidation === true;
+  // Task #479 — label honesty: a documentary blended rate (derived from the
+  // invoices' HT/TTC, e.g. mixed 10%/20% lines) is presented as "taux
+  // effectif", not as if it were a statutory rate.
   const tvaRateLabel = tvaAutoliquidation
     ? "0&nbsp;%"
-    : `${escapeHtml(String(tvaRatePercent))}&nbsp;%`;
+    : certificat.tvaRateSource === "documentary"
+      ? `(taux effectif ${escapeHtml(String(tvaRatePercent))}&nbsp;%)`
+      : `${escapeHtml(String(tvaRatePercent))}&nbsp;%`;
   const amountInWords = numberToEnglishWords(netTtc);
 
   // Task #243 — authoritative cumulative deduction figures persisted on the
@@ -1489,6 +1494,7 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     contractorId: -1,
     cumulativeAcompteRecoupment: "0.00",
     periodAcompteRecoupment: "0.00",
+    tvaRateSource: "default",
     certificateRef: "CP-2026-007",
     dateIssued: sampleDate.toISOString().slice(0, 10),
     totalWorksHt: "24500.00",

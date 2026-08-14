@@ -253,7 +253,18 @@ export async function confirmArchitectFeeInvoice(args: {
         // an old project predates that flow.
         let fee = projectFees.find((f) => f.feeType === "conception");
         if (!fee) {
-          const contractHt = roundCurrency(Number(contract.totalTtc) / 1.2);
+          // Task #479 — no hardcoded 20% assumption: prefer the contract's
+          // own documentary HT, then TTC − TVA, then its stated rate; the
+          // statutory /1.2 division is the documented last resort.
+          const contractTtc = Number(contract.totalTtc);
+          const contractHtRaw = contract.totalHt != null && Number(contract.totalHt) > 0
+            ? Number(contract.totalHt)
+            : contract.totalTva != null
+              ? contractTtc - Number(contract.totalTva)
+              : contract.tvaRate != null && Number(contract.tvaRate) >= 0
+                ? contractTtc / (1 + Number(contract.tvaRate) / 100)
+                : contractTtc / 1.2;
+          const contractHt = roundCurrency(contractHtRaw);
           [fee] = await tx
             .insert(fees)
             .values({

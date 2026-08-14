@@ -1,5 +1,5 @@
 import { storage } from "../storage";
-import { computeCertificatDeductions } from "@shared/financial-utils";
+import { computeCertificatDeductions, computeEffectiveTvaRatePercent } from "@shared/financial-utils";
 
 /**
  * Task #243 — Server-side authoritative resolver for a certificat's deductions.
@@ -72,6 +72,8 @@ export interface ResolvedCertificatDeductions {
   /** Task #463 — the TVA rate (%) actually applied; audit trail. */
   tvaRatePercent: string;
   tvaAutoliquidation: boolean;
+  /** Task #479 — which source produced the applied rate. */
+  tvaRateSource: TvaRateSource;
   /** Task #464 — solde designation + retenue release state, server-derived. */
   isSolde: boolean;
   retenueReleased: boolean;
@@ -80,6 +82,14 @@ export interface ResolvedCertificatDeductions {
   tvaAmount: string;
   netToPayTtc: string;
 }
+
+export type TvaRateSource =
+  | "autoliquidation"
+  | "override"
+  | "documentary"
+  | "marche"
+  | "contractor"
+  | "default";
 
 function toNumberOrNull(value: string | null | undefined): number | null {
   if (value == null || value === "") return null;
@@ -174,12 +184,61 @@ export async function resolveCertificatDeductions(
     : marche?.tvaRatePercent != null
       ? false
       : contractor?.defaultTvaAutoliquidation ?? false;
-  const resolvedTvaRatePercent = tvaAutoliquidation
-    ? 0
-    : toNumberOrNull(input.tvaRateOverride)
-      ?? toNumberOrNull(marche?.tvaRatePercent)
-      ?? toNumberOrNull(contractor?.defaultTvaRatePercent)
-      ?? 20;
+
+  // Task #479 — documentary effective rate. Contractors routinely issue
+  // mixed-rate invoices (10% rénovation + 20% supplies, sometimes 5.5%);
+  // a single configured/statutory rate then misstates the tax the client
+  // owes. The invoices' HT/TTC (source of truth since Task #78) encode the
+  // real blended rate: (ΣTTC − ΣHT) / ΣHT over the same invoice set the
+  // certificat annexe renders (all invoices of the contractor's non-void
+  // devis). Null when there is no usable evidence — see the shared helper.
+  // The rate is applied to the post-deduction net HT, so partial-progress
+  // certificats automatically pro-rate the documentary rate to the
+  // certified base.
+  let documentaryTvaRatePercent: number | null = null;
+  if (!tvaAutoliquidation) {
+    let sumHt = 0;
+    let sumTtc = 0;
+    for (const d of devisList) {
+      if (d.contractorId !== input.contractorId) continue;
+      if (d.status === "void" || d.signOffStage === "void") continue;
+      const invoices = await storage.getInvoicesByDevis(d.id);
+      for (const inv of invoices) {
+        sumHt += parseFloat(inv.amountHt) || 0;
+        sumTtc += parseFloat(inv.amountTtc) || 0;
+      }
+    }
+    documentaryTvaRatePercent = computeEffectiveTvaRatePercent(sumHt, sumTtc);
+  }
+
+  // Task #463/#479 — precedence: autoliquidation (art. 283 CGI, legal) →
+  // architect draft override → documentary effective rate (real invoice
+  // evidence beats configured expectations) → marché rate → contractor
+  // default → statutory 20% as documented last resort.
+  const overrideRate = toNumberOrNull(input.tvaRateOverride);
+  const marcheRate = toNumberOrNull(marche?.tvaRatePercent);
+  const contractorRate = toNumberOrNull(contractor?.defaultTvaRatePercent);
+  let resolvedTvaRatePercent: number;
+  let tvaRateSource: TvaRateSource;
+  if (tvaAutoliquidation) {
+    resolvedTvaRatePercent = 0;
+    tvaRateSource = "autoliquidation";
+  } else if (overrideRate != null) {
+    resolvedTvaRatePercent = overrideRate;
+    tvaRateSource = "override";
+  } else if (documentaryTvaRatePercent != null) {
+    resolvedTvaRatePercent = documentaryTvaRatePercent;
+    tvaRateSource = "documentary";
+  } else if (marcheRate != null) {
+    resolvedTvaRatePercent = marcheRate;
+    tvaRateSource = "marche";
+  } else if (contractorRate != null) {
+    resolvedTvaRatePercent = contractorRate;
+    tvaRateSource = "contractor";
+  } else {
+    resolvedTvaRatePercent = 20;
+    tvaRateSource = "default";
+  }
 
   const result = computeCertificatDeductions({
     tvaRate: resolvedTvaRatePercent / 100,
@@ -214,6 +273,7 @@ export async function resolveCertificatDeductions(
     periodAcompteRecoupment: result.periodAcompteRecoupment.toFixed(2),
     tvaRatePercent: resolvedTvaRatePercent.toFixed(2),
     tvaAutoliquidation,
+    tvaRateSource,
     isSolde,
     retenueReleased: isSolde && releaseRetenue,
     retenueReleaseAmount: result.retenueReleaseAmount.toFixed(2),

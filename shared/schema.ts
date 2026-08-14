@@ -795,6 +795,14 @@ export const certificats = pgTable("certificats", {
   // rate 0.00 + the mandatory art. 283 CGI mention on the PDF.
   tvaRatePercent: numeric("tva_rate_percent", { precision: 5, scale: 2 }).notNull().default("20.00"),
   tvaAutoliquidation: boolean("tva_autoliquidation").notNull().default(false),
+  // Task #479 — provenance of the applied TVA rate (audit + UI honesty):
+  // 'autoliquidation' (art. 283 CGI, rate 0), 'override' (draft-level
+  // architect override), 'documentary' (blended effective rate derived from
+  // the contractor's invoices' HT/TTC — handles mixed 10%/20% invoices),
+  // 'marche' (contract rate), 'contractor' (contractor default), 'default'
+  // (last-resort statutory 20%). Server-derived on every create/PATCH;
+  // frozen once sealed, like tvaRatePercent.
+  tvaRateSource: text("tva_rate_source").notNull().default("default"),
   // Task #464 — solde (final) certificat for its marché. At most ONE
   // non-superseded solde certificat may exist per (project, contractor):
   // enforced by the partial unique index below + a friendly resolver check.

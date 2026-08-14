@@ -68,11 +68,16 @@ export async function sealCertificat(certificatId: number): Promise<{
       // never silently reverts an override to the standard rate math.
       retenueOverride: existing.retenueGarantie,
       prorataOverride: existing.cumulativeProrataDeduction,
-      // Task #463 — same reasoning for the applied TVA rate: it may embed a
-      // draft-time architect override, so pass it back rather than letting
-      // the seal silently revert to the contract regime. Autoliquidation
-      // still wins inside the resolver (forces 0%).
-      tvaRateOverride: existing.tvaRatePercent,
+      // Task #463/#479 — the applied TVA rate is passed back as an override
+      // ONLY when it actually WAS an architect override (provenance says
+      // so); the override itself is not persisted, so this preserves it
+      // through the seal recompute. For documentary/marché/contractor/
+      // default provenance the resolver must re-derive freely — sealing is
+      // when money leaves, so invoice evidence added since the draft must
+      // refresh the effective rate, and the provenance must not be
+      // relabelled 'override'. Autoliquidation still wins inside the
+      // resolver (forces 0%).
+      tvaRateOverride: existing.tvaRateSource === "override" ? existing.tvaRatePercent : null,
       // Task #464 — the seal FREEZES the solde designation and the retenue
       // release state as recorded on the draft; changing either after
       // issuance requires the reissue flow.
@@ -142,6 +147,7 @@ export async function sealCertificat(certificatId: number): Promise<{
       periodAcompteRecoupment: existing.periodAcompteRecoupment,
       tvaRatePercent: existing.tvaRatePercent,
       tvaAutoliquidation: existing.tvaAutoliquidation,
+      tvaRateSource: existing.tvaRateSource,
       isSolde: existing.isSolde,
       retenueReleased: existing.retenueReleased,
       retenueReleaseAmount: existing.retenueReleaseAmount,

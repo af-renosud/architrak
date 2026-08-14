@@ -603,6 +603,13 @@
       "when": 1786738800000,
       "tag": "0085_project_communications_sent_via_user",
       "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1786790000000,
+      "tag": "0086_certificat_tva_rate_source",
+      "breakpoints": true
     }
   ]
 }

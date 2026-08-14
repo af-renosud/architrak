@@ -20,7 +20,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { insertCertificatSchema } from "@shared/schema";
 import type { Project, Contractor, Certificat, CertificatPayment, CertificatPaymentSuggestion, Invoice, Marche, Devis } from "@shared/schema";
-import { computeCertificatDeductions } from "@shared/financial-utils";
+import { computeCertificatDeductions, computeEffectiveTvaRatePercent } from "@shared/financial-utils";
 import { z } from "zod";
 
 function formatCurrency(value: number): string {
@@ -458,7 +458,9 @@ function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Certifica
               </div>
               <div className="flex items-center justify-between gap-2 mt-1">
                 <TechnicalLabel>
-                  {`TVA (${parseFloat(cert.tvaRatePercent ?? "20")}%${cert.tvaAutoliquidation ? " — autoliquidation" : ""})`}
+                  {cert.tvaRateSource === "documentary"
+                    ? `TVA (taux effectif ${parseFloat(cert.tvaRatePercent ?? "20")}%)`
+                    : `TVA (${parseFloat(cert.tvaRatePercent ?? "20")}%${cert.tvaAutoliquidation ? " — autoliquidation" : ""})`}
                 </TechnicalLabel>
                 <span className="text-[13px] font-semibold text-foreground" data-testid="text-cert-detail-tva">
                   {formatCurrency(parseFloat(cert.tvaAmount))}
@@ -611,16 +613,43 @@ export default function Certificats() {
     : selectedMarche?.tvaRatePercent != null
       ? false
       : selectedContractor?.defaultTvaAutoliquidation ?? false;
+  // Task #479 — documentary effective rate mirror: same invoice set as the
+  // server resolver (all invoices of the contractor's non-void devis), rate
+  // = (ΣTTC − ΣHT) / ΣHT via the shared helper. Handles mixed-rate invoices
+  // (10% + 20%) that no single configured rate can reproduce.
+  const documentaryTvaRatePercent = useMemo(() => {
+    if (!watchContractorId) return null;
+    const contractorDevisIds = new Set(
+      (projectDevis ?? [])
+        .filter((d) => d.contractorId === watchContractorId && d.status !== "void" && d.signOffStage !== "void")
+        .map((d) => d.id),
+    );
+    let sumHt = 0;
+    let sumTtc = 0;
+    for (const inv of projectInvoices ?? []) {
+      if (!contractorDevisIds.has(inv.devisId)) continue;
+      sumHt += parseFloat(inv.amountHt) || 0;
+      sumTtc += parseFloat(inv.amountTtc) || 0;
+    }
+    return computeEffectiveTvaRatePercent(sumHt, sumTtc);
+  }, [projectInvoices, projectDevis, watchContractorId]);
+
   const overrideRate = watchTvaRateOverride ? parseFloat(watchTvaRateOverride) : NaN;
+  // Mirrors the server precedence: autoliquidation → override → documentary
+  // effective rate → marché rate → contractor default → 20%.
   const appliedTvaRatePercent = tvaAutoliquidation
     ? 0
     : Number.isFinite(overrideRate)
       ? overrideRate
-      : selectedMarche?.tvaRatePercent != null
-        ? parseFloat(selectedMarche.tvaRatePercent)
-        : selectedContractor?.defaultTvaRatePercent != null
-          ? parseFloat(selectedContractor.defaultTvaRatePercent)
-          : 20;
+      : documentaryTvaRatePercent != null
+        ? documentaryTvaRatePercent
+        : selectedMarche?.tvaRatePercent != null
+          ? parseFloat(selectedMarche.tvaRatePercent)
+          : selectedContractor?.defaultTvaRatePercent != null
+            ? parseFloat(selectedContractor.defaultTvaRatePercent)
+            : 20;
+  const previewTvaIsDocumentary =
+    !tvaAutoliquidation && !Number.isFinite(overrideRate) && documentaryTvaRatePercent != null;
 
   // Task #457 — superseded certificats were replaced by a reissue; their
   // cumulative figures must not feed the live preview (mirrors the server
@@ -1356,7 +1385,9 @@ export default function Certificats() {
                   </div>
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[11px] text-muted-foreground">
-                      TVA ({appliedTvaRatePercent}%{tvaAutoliquidation ? " — autoliquidation" : ""})
+                      {previewTvaIsDocumentary
+                        ? `TVA (taux effectif ${appliedTvaRatePercent}% — d'après les factures)`
+                        : `TVA (${appliedTvaRatePercent}%${tvaAutoliquidation ? " — autoliquidation" : ""})`}
                     </span>
                     <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-tva">
                       {formatCurrency(breakdown.tvaAmount)}

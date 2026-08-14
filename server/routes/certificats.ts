@@ -80,6 +80,8 @@ const serverDerivedDeductionFields = {
   // the raw columns are never client-settable.
   tvaRatePercent: true,
   tvaAutoliquidation: true,
+  // Task #479 — the rate's provenance is derived alongside the rate itself.
+  tvaRateSource: true,
   // Task #464 — solde/release state is server-derived: `isSolde` comes back
   // from the resolver (which enforces the single-solde rule) and the release
   // fields are derived from the validated `releaseRetenue`/`releaseReason`
