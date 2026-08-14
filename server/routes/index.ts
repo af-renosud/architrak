@@ -19,6 +19,7 @@ import invoicesRouter from "./invoices";
 import situationsRouter from "./situations";
 import marcheDocumentsRouter from "./marche-documents";
 import certificatsRouter from "./certificats";
+import certificatPaymentsRouter from "./certificat-payments";
 import feesRouter from "./fees";
 import financialRouter from "./financial";
 import dashboardRouter from "./dashboard";
@@ -106,6 +107,7 @@ export async function registerRoutes(
   app.use(situationsRouter);
   app.use(marcheDocumentsRouter);
   app.use(certificatsRouter);
+  app.use(certificatPaymentsRouter);
   app.use(documentChainRouter);
   app.use(feesRouter);
   app.use(architectFeeInvoicesRouter);

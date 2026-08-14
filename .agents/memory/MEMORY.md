@@ -21,5 +21,6 @@
 - [ESM-only deps in CJS bundle](esm-only-deps-in-cjs-bundle.md) — ESM-only packages left external crash the prod bundle with "(0 , X.default) is not a function"; add them to the build allowlist and smoke-boot dist with NODE_ENV=production.
 - [Project-task completion binding](project-task-completion-binding.md) — tasks run informally (not dispatched via the queue) can't be closed with markTaskComplete; user must close them from the task panel.
 - [Evidence attach transactionality](evidence-attach-transactionality.md) — claim source + attach evidence in ONE transaction with conditional WHEREs and a partial unique FK index; check-then-write gets rejected in review.
+- [Payment-ledger atomicity](payment-ledger-atomicity.md) — ledger mutations are one tx (cert row lock + re-check + audit + conditional one-way paid flip); lock on actual coverage, not status.
 - [Merge-corrupted source files](merge-corrupted-files.md) — a task merge can commit a spliced/broken file; rebuild from service+client contracts, and restart the workflow before trusting post-merge smoke failures.
 - [Restore via cp, not git checkout](restore-via-cp-not-git-checkout.md) — `git checkout --` reverts to the last platform commit and silently wipes uncommitted session edits; snapshot with cp before temporary file mutations.

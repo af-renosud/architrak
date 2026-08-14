@@ -194,6 +194,32 @@ export function computeCertificatDeductions(input: CertificatDeductionInput): Ce
   };
 }
 
+// Task #465 — client-payment reconciliation. Payments are FACTS: they
+// accumulate; the certificat counts as fully paid only when the summed
+// amounts cover the TTC total (roundCurrency compare). Over-payment is
+// flagged but never blocks recording — real life happens.
+export interface CertificatPaymentState {
+  paidToDate: number;
+  outstanding: number;
+  fullyPaid: boolean;
+  overpaid: boolean;
+}
+
+export function computeCertificatPaymentState(
+  netToPayTtc: number,
+  paymentAmounts: number[],
+): CertificatPaymentState {
+  const paidToDate = roundCurrency(paymentAmounts.reduce((s, a) => s + a, 0));
+  const total = roundCurrency(netToPayTtc);
+  const outstanding = roundCurrency(Math.max(0, total - paidToDate));
+  return {
+    paidToDate,
+    outstanding,
+    fullyPaid: paymentAmounts.length > 0 && paidToDate >= total,
+    overpaid: paidToDate > total,
+  };
+}
+
 export function formatCurrencyEur(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
 }

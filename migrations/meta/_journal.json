@@ -582,6 +582,13 @@
       "when": 1786645200000,
       "tag": "0082_certificat_solde_retenue_release",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1786731600000,
+      "tag": "0083_certificat_payments",
+      "breakpoints": true
     }
   ]
 }

@@ -868,6 +868,54 @@ export const certificats = pgTable("certificats", {
 ]);
 
 /**
+ * Task #465 — certificat_payments: structured client-payment ledger per
+ * certificat. Each row is a FACT (a payment received), not a workflow state:
+ * partial payments accumulate, and the certificat flips to `paid` only when
+ * the cumulative logged amount covers the TTC total (roundCurrency compare,
+ * server-side). Entries stay correctable while the certificat is not fully
+ * paid; every create/update/delete writes an audit row. Existing `paid`
+ * certificats without payment rows are grandfathered readable — no rows are
+ * fabricated for them.
+ */
+export const certificatPayments = pgTable("certificat_payments", {
+  id: serial("id").primaryKey(),
+  certificatId: integer("certificat_id").notNull().references(() => certificats.id, { onDelete: "cascade" }),
+  datePaid: date("date_paid").notNull(),
+  amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
+  method: text("method").notNull().default("virement"),
+  reference: text("reference"),
+  loggedBy: text("logged_by"),
+  // `manual` today; `email` reserved for the Gmail confirmation follow-up.
+  source: text("source").notNull().default("manual"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("certificat_payments_certificat_id_idx").on(table.certificatId),
+  check("certificat_payments_amount_positive", sql`${table.amount} > 0`),
+  check("certificat_payments_method_check", sql`${table.method} IN ('virement', 'cheque', 'autre')`),
+  check("certificat_payments_source_check", sql`${table.source} IN ('manual', 'email')`),
+]);
+
+/**
+ * Task #465 — append-only audit trail of payment-ledger edits. `paymentId`
+ * is a plain integer (no FK) so the audit survives a deleted entry; the
+ * certificat FK keeps the trail queryable per certificat. `snapshot` holds
+ * the row state BEFORE the change (null for `created`).
+ */
+export const certificatPaymentAudits = pgTable("certificat_payment_audits", {
+  id: serial("id").primaryKey(),
+  certificatId: integer("certificat_id").notNull().references(() => certificats.id, { onDelete: "cascade" }),
+  paymentId: integer("payment_id").notNull(),
+  action: text("action").notNull(),
+  snapshot: jsonb("snapshot"),
+  changedBy: text("changed_by"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("certificat_payment_audits_certificat_id_idx").on(table.certificatId),
+  check("certificat_payment_audits_action_check", sql`${table.action} IN ('created', 'updated', 'deleted')`),
+]);
+
+/**
  * Task #451 — certificat_sources: FK-grounded record of exactly which
  * documents a sealed certificat certifies. Replaces the loose free-text
  * `invoices.certificate_number` (dropped in migration 0071). Each row links
@@ -2045,6 +2093,31 @@ export type SituationLine = typeof situationLines.$inferSelect;
 export type InsertSituationLine = z.infer<typeof insertSituationLineSchema>;
 export type Certificat = typeof certificats.$inferSelect;
 export type InsertCertificat = z.infer<typeof insertCertificatSchema>;
+
+// Task #465 — payment-ledger request schema. Strict scale-2 amount, closed
+// method vocabulary; `source` and timestamps are server-set.
+export const insertCertificatPaymentSchema = createInsertSchema(certificatPayments)
+  .omit({
+    id: true,
+    certificatId: true,
+    source: true,
+    createdAt: true,
+    updatedAt: true,
+  })
+  .extend({
+    datePaid: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date invalide (AAAA-MM-JJ)"),
+    amount: z
+      .string()
+      .regex(/^\d{1,10}(\.\d{1,2})?$/, "Montant invalide (2 décimales max)")
+      .refine((v) => parseFloat(v) > 0, "Le montant doit être positif"),
+    method: z.enum(["virement", "cheque", "autre"]),
+    reference: z.string().trim().max(200).nullable().optional(),
+    loggedBy: z.string().trim().max(200).nullable().optional(),
+  });
+
+export type CertificatPayment = typeof certificatPayments.$inferSelect;
+export type InsertCertificatPayment = z.infer<typeof insertCertificatPaymentSchema>;
+export type CertificatPaymentAudit = typeof certificatPaymentAudits.$inferSelect;
 export type Fee = typeof fees.$inferSelect;
 export type InsertFee = z.infer<typeof insertFeeSchema>;
 export type FeeEntry = typeof feeEntries.$inferSelect;

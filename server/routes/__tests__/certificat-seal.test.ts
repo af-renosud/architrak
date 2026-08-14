@@ -19,6 +19,7 @@ vi.mock("../../storage", async () => {
       "getCertificat",
       "updateCertificat",
       "getCertificatSources",
+      "getCertificatPayments",
     ]),
   };
 });
@@ -48,6 +49,7 @@ import { storage } from "../../storage";
 
 const getCertificat = storage.getCertificat as unknown as ReturnType<typeof vi.fn>;
 const updateCertificat = storage.updateCertificat as unknown as ReturnType<typeof vi.fn>;
+const getCertificatPayments = storage.getCertificatPayments as unknown as ReturnType<typeof vi.fn>;
 
 const sealedCert = {
   id: 7,
@@ -128,14 +130,42 @@ describe("PATCH /api/certificats/:id — issuance seal", () => {
 
   it("still allows lifecycle-only patches (status/notes) on a sealed certificat", async () => {
     getCertificat.mockResolvedValue(sealedCert);
+    updateCertificat.mockResolvedValue({ ...sealedCert, status: "sent" });
+    const res = await fetch(`${baseUrl}/api/certificats/7`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "sent", notes: "sent to client" }),
+    });
+    expect(res.status).toBe(200);
+    expect(updateCertificat).toHaveBeenCalledWith(7, { status: "sent", notes: "sent to client" });
+  });
+
+  // Task #465 — a sealed certificat's `paid` status must be BACKED by the
+  // payment ledger: manual flips are refused until coverage reaches the TTC
+  // total, at which point the ledger flips the status automatically anyway.
+  it("refuses status=paid on a sealed certificat without full payment coverage", async () => {
+    getCertificat.mockResolvedValue(sealedCert);
+    getCertificatPayments.mockResolvedValue([]);
+    const res = await fetch(`${baseUrl}/api/certificats/7`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "paid" }),
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("PAYMENTS_INCOMPLETE");
+    expect(updateCertificat).not.toHaveBeenCalled();
+  });
+
+  it("allows status=paid on a sealed certificat once payments cover the TTC total", async () => {
+    getCertificat.mockResolvedValue(sealedCert);
+    getCertificatPayments.mockResolvedValue([{ id: 1, certificatId: 7, amount: sealedCert.netToPayTtc }]);
     updateCertificat.mockResolvedValue({ ...sealedCert, status: "paid" });
     const res = await fetch(`${baseUrl}/api/certificats/7`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: "paid", notes: "paid by client" }),
+      body: JSON.stringify({ status: "paid" }),
     });
     expect(res.status).toBe(200);
-    expect(updateCertificat).toHaveBeenCalledWith(7, { status: "paid", notes: "paid by client" });
   });
 
   it("never lets seal columns through the PATCH body even on drafts", async () => {

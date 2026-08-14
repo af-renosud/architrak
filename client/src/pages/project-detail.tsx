@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
@@ -21,7 +21,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { insertCertificatSchema, insertFeeSchema, insertFeeEntrySchema, insertLotSchema, insertMarcheSchema } from "@shared/schema";
-import type { Project, Devis, Lot, Marche, Certificat, Fee, FeeEntry, Contractor, Invoice, ProjectDocument, ProjectCommunication, PaymentReminder } from "@shared/schema";
+import type { Project, Devis, Lot, Marche, Certificat, CertificatPayment, Fee, FeeEntry, Contractor, Invoice, ProjectDocument, ProjectCommunication, PaymentReminder } from "@shared/schema";
 import {
   ContextEmailResendButton,
   parseDevisIdFromContextEmailDedupeKey,
@@ -443,6 +443,22 @@ export default function ProjectDetail() {
     queryKey: ["/api/projects", projectId, "marches"],
     enabled: !!project && !!project.hasMarche,
   });
+
+  // Task #465 — client-payment ledger for paid/partial badges + summary.
+  const { data: projectPayments } = useQuery<CertificatPayment[]>({
+    queryKey: ["/api/projects", projectId, "certificat-payments"],
+  });
+  const paidByCert = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const p of projectPayments ?? []) {
+      map.set(p.certificatId, (map.get(p.certificatId) ?? 0) + parseFloat(p.amount));
+    }
+    return map;
+  }, [projectPayments]);
+  const totalClientPaid = useMemo(
+    () => Array.from(paidByCert.values()).reduce((s, v) => s + v, 0),
+    [paidByCert],
+  );
 
   const { data: certificatsList } = useQuery<Certificat[]>({
     queryKey: ["/api/projects", projectId, "certificats"],
@@ -1324,6 +1340,11 @@ export default function ProjectDetail() {
                       {formatCurrency(financialSummary.totalCertifiedTtc)} <span className="text-[11px] text-muted-foreground">TTC</span>
                     </p>
                     <p className="text-[12px] text-muted-foreground">{formatCurrency(financialSummary.totalCertifiedHt)} HT</p>
+                    {/* Task #465 — payments actually received from the client
+                        against the certified totals (structured ledger). */}
+                    <p className="text-[12px] text-muted-foreground mt-1" data-testid="text-total-client-paid">
+                      Encaissé client : <span className="font-semibold text-foreground">{formatCurrency(totalClientPaid)}</span>
+                    </p>
                   </LuxuryCard>
                   <LuxuryCard data-testid="card-total-reste">
                     <TechnicalLabel>Reste à Réaliser</TechnicalLabel>
@@ -1874,8 +1895,20 @@ export default function ProjectDetail() {
                               </span>
                               <p className="text-[9px] text-muted-foreground">TTC</p>
                             </div>
+                            {c.status !== "paid" && (paidByCert.get(c.id) ?? 0) > 0 && (
+                              <span
+                                className="text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                                data-testid={`badge-cert-partial-tab-${c.id}`}
+                                title={`Encaissé ${formatCurrency(paidByCert.get(c.id) ?? 0)} sur ${formatCurrency(parseFloat(c.netToPayTtc))}`}
+                              >
+                                Partiel {formatCurrency(paidByCert.get(c.id) ?? 0)}
+                              </span>
+                            )}
                             <StatusBadge status={c.status} />
-                            {nextStatus && nextLabel && (
+                            {/* Task #465 — sealed certificats flip to paid via
+                                the payment ledger (Certificats page), never a
+                                manual status shortcut. */}
+                            {nextStatus && nextLabel && !(nextStatus === "paid" && c.pdfStorageKey) && (
                               <Button
                                 variant="outline"
                                 onClick={() => updateCertStatusMutation.mutate({ id: c.id, status: nextStatus })}

@@ -11,6 +11,7 @@ import {
   ReleaseRequiresSoldeError,
 } from "../services/certificat-deductions.service";
 import { getDocumentBuffer } from "../storage/object-storage";
+import { reconcilePayments } from "../services/certificat-payments.service";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
@@ -319,6 +320,24 @@ router.patch(
         code: "CERTIFICAT_SUPERSEDED",
         message: `Certificat ${existing.certificateRef} was superseded by a reissue and can no longer change status.`,
       });
+    }
+
+    // Task #465 — a sealed certificat is a payment instruction: its `paid`
+    // status must be BACKED by the payment ledger. Manual status flips to
+    // paid are refused unless the cumulative logged payments cover the TTC
+    // total (the ledger's auto-flip is the normal path). Unsealed drafts and
+    // already-paid rows (grandfathered status-only paids) are unaffected.
+    if (body.status === "paid" && existing.pdfStorageKey && existing.status !== "paid") {
+      const payments = await storage.getCertificatPayments(id);
+      const paymentState = reconcilePayments(existing, payments);
+      if (!paymentState.fullyPaid) {
+        return res.status(409).json({
+          code: "PAYMENTS_INCOMPLETE",
+          message: `Certificat ${existing.certificateRef} ne peut pas être marqué payé : ${paymentState.paidToDate.toFixed(2)} € enregistrés sur ${parseFloat(existing.netToPayTtc).toFixed(2)} € TTC. Enregistrez les paiements reçus — le statut basculera automatiquement.`,
+          paidToDate: paymentState.paidToDate,
+          outstanding: paymentState.outstanding,
+        });
+      }
     }
 
     // Task #451 — issuance seal. Once a certificat carries a pinned PDF it is

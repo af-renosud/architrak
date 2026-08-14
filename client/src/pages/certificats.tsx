@@ -19,7 +19,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { insertCertificatSchema } from "@shared/schema";
-import type { Project, Contractor, Certificat, Invoice, Marche, Devis } from "@shared/schema";
+import type { Project, Contractor, Certificat, CertificatPayment, Invoice, Marche, Devis } from "@shared/schema";
 import { computeCertificatDeductions } from "@shared/financial-utils";
 import { z } from "zod";
 
@@ -47,6 +47,209 @@ const certificatFormSchema = insertCertificatSchema.extend({
 });
 
 type CertificatFormValues = z.infer<typeof certificatFormSchema>;
+
+// Task #465 — structured client-payment ledger on the certificat detail.
+// Entries are facts (partial payments accumulate); the server flips the
+// certificat to `paid` when coverage reaches the TTC total and locks the
+// ledger. Over-payment is warned about but recordable.
+interface PaymentLedgerResponse {
+  payments: CertificatPayment[];
+  paidToDate: number;
+  outstanding: number;
+  fullyPaid: boolean;
+  overpaid: boolean;
+}
+
+function CertificatPaymentsSection({ cert, projectId }: { cert: Certificat; projectId: number }) {
+  const { toast } = useToast();
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [formOpen, setFormOpen] = useState(false);
+  const [datePaid, setDatePaid] = useState("");
+  const [amount, setAmount] = useState("");
+  const [method, setMethod] = useState<"virement" | "cheque" | "autre">("virement");
+  const [reference, setReference] = useState("");
+
+  const ledgerKey = ["/api/certificats", String(cert.id), "payments"];
+  const { data: ledger } = useQuery<PaymentLedgerResponse>({ queryKey: ledgerKey });
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ledgerKey });
+    queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "certificats"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "certificat-payments"] });
+  };
+
+  const resetForm = () => {
+    setEditingId(null);
+    setFormOpen(false);
+    setDatePaid("");
+    setAmount("");
+    setMethod("virement");
+    setReference("");
+  };
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const body = {
+        datePaid,
+        amount,
+        method,
+        reference: reference.trim() ? reference.trim() : null,
+      };
+      const res = editingId
+        ? await apiRequest("PATCH", `/api/certificat-payments/${editingId}`, body)
+        : await apiRequest("POST", `/api/certificats/${cert.id}/payments`, body);
+      return res.json() as Promise<{ overpaid: boolean; fullyPaid: boolean }>;
+    },
+    onSuccess: (r) => {
+      invalidate();
+      resetForm();
+      if (r.overpaid) {
+        toast({ title: "Paiement enregistré — trop-perçu", description: "Le total encaissé dépasse le montant TTC du certificat.", variant: "destructive" });
+      } else if (r.fullyPaid) {
+        toast({ title: "Certificat intégralement payé", description: "Le statut est passé automatiquement à payé." });
+      } else {
+        toast({ title: "Paiement enregistré" });
+      }
+    },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: number) => (await apiRequest("DELETE", `/api/certificat-payments/${id}`)).json(),
+    onSuccess: () => {
+      invalidate();
+      toast({ title: "Paiement supprimé" });
+    },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  const methodLabel: Record<string, string> = { virement: "Virement", cheque: "Chèque", autre: "Autre" };
+  const locked = ledger?.fullyPaid ?? false;
+
+  return (
+    <div className="space-y-3 p-4 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]" data-testid="section-cert-payments">
+      <div className="flex items-center justify-between gap-2">
+        <TechnicalLabel>Paiements Client</TechnicalLabel>
+        {!locked && cert.status !== "superseded" && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => { resetForm(); setFormOpen(true); setDatePaid(new Date().toISOString().split("T")[0]); }}
+            data-testid="button-log-payment"
+          >
+            <Plus size={11} />
+            <span className="text-[8px] font-bold uppercase tracking-widest">Enregistrer un paiement</span>
+          </Button>
+        )}
+      </div>
+
+      {ledger && (
+        <div className="flex items-center justify-between gap-2 text-[12px]">
+          <span className="text-muted-foreground">
+            Encaissé <span className="font-semibold text-foreground" data-testid="text-cert-paid-to-date">{formatCurrency(ledger.paidToDate)}</span>
+            {" / "}{formatCurrency(parseFloat(cert.netToPayTtc))} TTC
+          </span>
+          {ledger.overpaid ? (
+            <span className="text-[10px] font-bold uppercase tracking-widest text-red-600 dark:text-red-400" data-testid="badge-cert-overpaid">Trop-perçu</span>
+          ) : ledger.fullyPaid ? (
+            <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-700 dark:text-emerald-400" data-testid="badge-cert-fully-paid">Soldé</span>
+          ) : (
+            <span className="text-muted-foreground" data-testid="text-cert-outstanding">Reste dû {formatCurrency(ledger.outstanding)}</span>
+          )}
+        </div>
+      )}
+
+      {(ledger?.payments ?? []).map((p) => (
+        <div key={p.id} className="flex items-center justify-between gap-2 text-[12px] border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] pt-2" data-testid={`row-payment-${p.id}`}>
+          <div>
+            <span className="font-semibold text-foreground">{formatCurrency(parseFloat(p.amount))}</span>
+            <span className="text-muted-foreground"> — {methodLabel[p.method] ?? p.method} le {p.datePaid}</span>
+            {p.reference && <span className="text-[10px] text-muted-foreground italic"> (réf. {p.reference})</span>}
+          </div>
+          {!locked && cert.status !== "superseded" && (
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setEditingId(p.id);
+                  setFormOpen(true);
+                  setDatePaid(p.datePaid);
+                  setAmount(p.amount);
+                  setMethod((p.method as "virement" | "cheque" | "autre") ?? "virement");
+                  setReference(p.reference ?? "");
+                }}
+                data-testid={`button-edit-payment-${p.id}`}
+              >
+                <span className="text-[8px] font-bold uppercase tracking-widest">Corriger</span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => deleteMutation.mutate(p.id)}
+                disabled={deleteMutation.isPending}
+                data-testid={`button-delete-payment-${p.id}`}
+              >
+                <span className="text-[8px] font-bold uppercase tracking-widest text-red-600 dark:text-red-400">Suppr.</span>
+              </Button>
+            </div>
+          )}
+        </div>
+      ))}
+
+      {ledger && ledger.payments.length === 0 && (
+        <p className="text-[11px] text-muted-foreground" data-testid="text-no-payments">
+          {cert.status === "paid" ? "Certificat marqué payé avant la mise en place du journal des paiements." : "Aucun paiement enregistré."}
+        </p>
+      )}
+
+      {formOpen && (
+        <div className="space-y-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] pt-3" data-testid="form-payment">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <TechnicalLabel>Date de paiement</TechnicalLabel>
+              <Input type="date" value={datePaid} onChange={(e) => setDatePaid(e.target.value)} data-testid="input-payment-date" />
+            </div>
+            <div>
+              <TechnicalLabel>Montant TTC (€)</TechnicalLabel>
+              <Input type="number" step="0.01" min="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} data-testid="input-payment-amount" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <TechnicalLabel>Mode</TechnicalLabel>
+              <Select value={method} onValueChange={(v) => setMethod(v as "virement" | "cheque" | "autre")}>
+                <SelectTrigger data-testid="select-payment-method"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="virement">Virement</SelectItem>
+                  <SelectItem value="cheque">Chèque</SelectItem>
+                  <SelectItem value="autre">Autre</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <TechnicalLabel>Référence (optionnel)</TechnicalLabel>
+              <Input value={reference} onChange={(e) => setReference(e.target.value)} placeholder="ex: VIR-2026-081" data-testid="input-payment-reference" />
+            </div>
+          </div>
+          <div className="flex items-center gap-2 justify-end">
+            <Button variant="ghost" size="sm" onClick={resetForm} data-testid="button-cancel-payment">
+              <span className="text-[8px] font-bold uppercase tracking-widest">Annuler</span>
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => saveMutation.mutate()}
+              disabled={saveMutation.isPending || !datePaid || !amount || parseFloat(amount) <= 0}
+              data-testid="button-save-payment"
+            >
+              <span className="text-[8px] font-bold uppercase tracking-widest">{editingId ? "Corriger" : "Enregistrer"}</span>
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Certificat; contractor?: Contractor; onClose: () => void }) {
   return (
@@ -173,6 +376,8 @@ function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Certifica
             </div>
           </div>
 
+          {cert.status !== "draft" && <CertificatPaymentsSection cert={cert} projectId={cert.projectId} />}
+
           {cert.notes && (
             <div>
               <TechnicalLabel>Notes</TechnicalLabel>
@@ -208,6 +413,20 @@ export default function Certificats() {
     queryKey: ["/api/projects", selectedProjectId, "invoices"],
     enabled: !!selectedProjectId,
   });
+
+  // Task #465 — project-wide payment ledger for list badges (paid-to-date /
+  // partial). Detail-level reconciliation lives in CertificatPaymentsSection.
+  const { data: projectPayments } = useQuery<CertificatPayment[]>({
+    queryKey: ["/api/projects", selectedProjectId, "certificat-payments"],
+    enabled: !!selectedProjectId,
+  });
+  const paidByCert = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const p of projectPayments ?? []) {
+      map.set(p.certificatId, (map.get(p.certificatId) ?? 0) + parseFloat(p.amount));
+    }
+    return map;
+  }, [projectPayments]);
 
   const { data: nextRefData } = useQuery<{ nextRef: string }>({
     queryKey: ["/api/projects", selectedProjectId, "certificats", "next-ref"],
@@ -545,6 +764,13 @@ export default function Certificats() {
             {allCertificats.map((cert) => {
               const nextStatus = getNextStatus(cert.status);
               const nextLabel = getNextStatusLabel(cert.status);
+              // Task #465 — sealed certificats flip to paid via the payment
+              // ledger only; the manual "Mark Paid" shortcut is replaced by
+              // opening the detail (where payments get logged).
+              const paidToDate = paidByCert.get(cert.id) ?? 0;
+              const totalTtc = parseFloat(cert.netToPayTtc);
+              const partiallyPaid = cert.status !== "paid" && paidToDate > 0;
+              const sealedPaidFlip = nextStatus === "paid" && !!cert.pdfStorageKey;
               return (
                 <LuxuryCard key={cert.id} data-testid={`card-certificat-${cert.id}`}>
                   <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -566,6 +792,15 @@ export default function Certificats() {
                         </span>
                         <p className="text-[9px] text-muted-foreground">TTC</p>
                       </div>
+                      {partiallyPaid && (
+                        <span
+                          className="text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                          data-testid={`badge-cert-partial-${cert.id}`}
+                          title={`Encaissé ${formatCurrency(paidToDate)} sur ${formatCurrency(totalTtc)}`}
+                        >
+                          Partiel {formatCurrency(paidToDate)}
+                        </span>
+                      )}
                       <StatusBadge status={cert.status} />
                       {cert.driveWebViewLink && (
                         <a
@@ -606,15 +841,27 @@ export default function Certificats() {
                         </Button>
                       )}
                       {nextStatus && nextLabel && (
-                        <Button
-                          variant="outline"
-                          onClick={() => updateStatusMutation.mutate({ id: cert.id, status: nextStatus })}
-                          disabled={updateStatusMutation.isPending}
-                          data-testid={`button-advance-cert-${cert.id}`}
-                        >
-                          <ChevronRight size={12} />
-                          <span className="text-[8px] font-bold uppercase tracking-widest">{nextLabel}</span>
-                        </Button>
+                        sealedPaidFlip ? (
+                          <Button
+                            variant="outline"
+                            onClick={() => setViewingCert(cert)}
+                            data-testid={`button-log-payment-cert-${cert.id}`}
+                            title="Enregistrez les paiements reçus — le statut basculera automatiquement une fois le montant TTC couvert."
+                          >
+                            <ChevronRight size={12} />
+                            <span className="text-[8px] font-bold uppercase tracking-widest">Log Payment</span>
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="outline"
+                            onClick={() => updateStatusMutation.mutate({ id: cert.id, status: nextStatus })}
+                            disabled={updateStatusMutation.isPending}
+                            data-testid={`button-advance-cert-${cert.id}`}
+                          >
+                            <ChevronRight size={12} />
+                            <span className="text-[8px] font-bold uppercase tracking-widest">{nextLabel}</span>
+                          </Button>
+                        )
                       )}
                       <Button
                         variant="ghost"

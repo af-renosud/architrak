@@ -1,4 +1,5 @@
 import { db } from "./db";
+import { computeCertificatPaymentState, type CertificatPaymentState } from "@shared/financial-utils";
 import { eq, ne, desc, asc, and, or, inArray, isNotNull, isNull, lt, lte, gte, like, ilike, sql, type SQL } from "drizzle-orm";
 import {
   devisLineContexts, devisLineContextAssets, devisCostAnalyses,
@@ -57,6 +58,8 @@ import {
   type MarcheDocument, type InsertMarcheDocument,
   type Certificat, type InsertCertificat,
   certificatSources, type CertificatSource, type InsertCertificatSource,
+  certificatPayments, certificatPaymentAudits,
+  type CertificatPayment, type InsertCertificatPayment, type CertificatPaymentAudit,
   type Fee, type InsertFee,
   type FeeEntry, type InsertFeeEntry,
   designContracts, designContractMilestones,
@@ -155,6 +158,16 @@ export interface WorksFeeCandidateRow {
   contractorName: string | null;
   contractorInvoiceNumber: string | null;
 }
+
+// Task #465 — discriminated result of an atomic payment-ledger mutation.
+// Non-"ok" outcomes are precondition refusals the routes map to friendly
+// HTTP responses; "ok" carries the post-mutation reconciliation state.
+export type CertificatPaymentMutationResult =
+  | { outcome: "not_found" }
+  | { outcome: "superseded" | "draft" | "locked"; cert: Certificat }
+  | { outcome: "ok"; cert: Certificat; state: CertificatPaymentState };
+
+type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export interface IStorage {
   getProjects(options?: { includeArchived?: boolean; archivedOnly?: boolean }): Promise<Project[]>;
@@ -346,6 +359,16 @@ export interface IStorage {
   createCertificat(data: InsertCertificat): Promise<Certificat>;
 
   updateCertificat(id: number, data: Partial<InsertCertificat>): Promise<Certificat | undefined>;
+  // Task #465 — client-payment ledger. All mutations are single atomic
+  // transactions (certificat row lock + precondition re-check + payment +
+  // audit + conditional paid flip).
+  getCertificatPayment(id: number): Promise<CertificatPayment | undefined>;
+  getCertificatPayments(certificatId: number): Promise<CertificatPayment[]>;
+  getCertificatPaymentsByProject(projectId: number): Promise<CertificatPayment[]>;
+  createCertificatPaymentAtomic(certificatId: number, data: InsertCertificatPayment): Promise<CertificatPaymentMutationResult & { payment?: CertificatPayment }>;
+  updateCertificatPaymentAtomic(paymentId: number, patch: Partial<InsertCertificatPayment>, changedBy: string | null): Promise<CertificatPaymentMutationResult & { payment?: CertificatPayment }>;
+  deleteCertificatPaymentAtomic(paymentId: number, changedBy: string | null): Promise<CertificatPaymentMutationResult>;
+  getCertificatPaymentAudits(certificatId: number): Promise<CertificatPaymentAudit[]>;
   // Task #451 — race-free edit lock: UPDATE guarded by pdf_storage_key IS
   // NULL. Returns null when the row is missing OR already sealed; callers
   // distinguish via a follow-up read.
@@ -1938,6 +1961,193 @@ export class DatabaseStorage implements IStorage {
       const [created] = await tx.insert(certificats).values(draft).returning();
       return created;
     });
+  }
+
+  // Task #465 — client-payment ledger.
+  async getCertificatPayment(id: number): Promise<CertificatPayment | undefined> {
+    const [row] = await db.select().from(certificatPayments).where(eq(certificatPayments.id, id));
+    return row;
+  }
+
+  async getCertificatPayments(certificatId: number): Promise<CertificatPayment[]> {
+    return db
+      .select()
+      .from(certificatPayments)
+      .where(eq(certificatPayments.certificatId, certificatId))
+      .orderBy(certificatPayments.datePaid, certificatPayments.id);
+  }
+
+  async getCertificatPaymentsByProject(projectId: number): Promise<CertificatPayment[]> {
+    return db
+      .select({
+        id: certificatPayments.id,
+        certificatId: certificatPayments.certificatId,
+        datePaid: certificatPayments.datePaid,
+        amount: certificatPayments.amount,
+        method: certificatPayments.method,
+        reference: certificatPayments.reference,
+        loggedBy: certificatPayments.loggedBy,
+        source: certificatPayments.source,
+        createdAt: certificatPayments.createdAt,
+        updatedAt: certificatPayments.updatedAt,
+      })
+      .from(certificatPayments)
+      .innerJoin(certificats, eq(certificatPayments.certificatId, certificats.id))
+      .where(eq(certificats.projectId, projectId))
+      .orderBy(certificatPayments.datePaid, certificatPayments.id);
+  }
+
+  // Task #465 — every ledger mutation is ONE transaction that locks the
+  // certificat row (SELECT … FOR UPDATE), re-checks the lock/lifecycle
+  // preconditions against current data, writes the payment + its audit row,
+  // and applies the conditional paid flip. Check-then-write outside a
+  // transaction is not acceptable for a financial ledger: concurrent
+  // requests could all pass the "not fully paid" check, and a payment
+  // racing a reissue could resurrect a superseded certificat. The status
+  // flip's WHERE excludes paid/superseded so it can never revive a
+  // terminal row even if the locked snapshot went stale (it can't — the
+  // lock serializes against reissue's UPDATE — but belt-and-braces).
+  private paymentLedgerState(cert: Certificat, payments: CertificatPayment[]) {
+    return computeCertificatPaymentState(
+      parseFloat(cert.netToPayTtc),
+      payments.map((p) => parseFloat(p.amount)),
+    );
+  }
+
+  private async lockCertificatForPayments(
+    tx: DbTransaction,
+    certificatId: number,
+  ): Promise<
+    | { outcome: "not_found" }
+    | { outcome: "superseded" | "draft" | "locked"; cert: Certificat }
+    | { outcome: "ok"; cert: Certificat; payments: CertificatPayment[] }
+  > {
+    const [cert] = await tx.select().from(certificats).where(eq(certificats.id, certificatId)).for("update");
+    if (!cert) return { outcome: "not_found" };
+    if (cert.status === "superseded") return { outcome: "superseded", cert };
+    // Draft policy: payments are facts about ISSUED certificats. Accepting
+    // them on a draft would let a direct API call auto-mark an unissued
+    // draft paid (UI hides the ledger for drafts; server must match).
+    if (cert.status === "draft") return { outcome: "draft", cert };
+    const payments = await tx
+      .select()
+      .from(certificatPayments)
+      .where(eq(certificatPayments.certificatId, certificatId))
+      .orderBy(certificatPayments.datePaid, certificatPayments.id);
+    if (this.paymentLedgerState(cert, payments).fullyPaid) return { outcome: "locked", cert };
+    return { outcome: "ok", cert, payments };
+  }
+
+  private async flipPaidIfCovered(
+    tx: DbTransaction,
+    cert: Certificat,
+    payments: CertificatPayment[],
+  ): Promise<ReturnType<DatabaseStorage["paymentLedgerState"]>> {
+    const state = this.paymentLedgerState(cert, payments);
+    if (state.fullyPaid && cert.status !== "paid") {
+      await tx
+        .update(certificats)
+        .set({ status: "paid", version: sql`${certificats.version} + 1` })
+        .where(and(eq(certificats.id, cert.id), ne(certificats.status, "paid"), ne(certificats.status, "superseded")));
+    }
+    return state;
+  }
+
+  async createCertificatPaymentAtomic(
+    certificatId: number,
+    data: InsertCertificatPayment,
+  ): Promise<CertificatPaymentMutationResult & { payment?: CertificatPayment }> {
+    return db.transaction(async (tx) => {
+      const guard = await this.lockCertificatForPayments(tx, certificatId);
+      if (guard.outcome !== "ok") return guard;
+      const [payment] = await tx
+        .insert(certificatPayments)
+        .values({ ...data, certificatId, source: "manual" })
+        .returning();
+      await tx.insert(certificatPaymentAudits).values({
+        certificatId,
+        paymentId: payment.id,
+        action: "created",
+        snapshot: null,
+        changedBy: data.loggedBy ?? null,
+      });
+      const state = await this.flipPaidIfCovered(tx, guard.cert, [...guard.payments, payment]);
+      return { outcome: "ok" as const, cert: guard.cert, payment, state };
+    });
+  }
+
+  async updateCertificatPaymentAtomic(
+    paymentId: number,
+    patch: Partial<InsertCertificatPayment>,
+    changedBy: string | null,
+  ): Promise<CertificatPaymentMutationResult & { payment?: CertificatPayment }> {
+    // Find the parent OUTSIDE the lock only to know which row to lock; the
+    // payment itself is re-read (and its existence re-verified) inside.
+    const before = await this.getCertificatPayment(paymentId);
+    if (!before) return { outcome: "not_found" };
+    return db.transaction(async (tx) => {
+      const guard = await this.lockCertificatForPayments(tx, before.certificatId);
+      if (guard.outcome !== "ok") return guard;
+      const current = guard.payments.find((p) => p.id === paymentId);
+      if (!current) return { outcome: "not_found" as const };
+      const [payment] = await tx
+        .update(certificatPayments)
+        .set({ ...patch, updatedAt: sql`CURRENT_TIMESTAMP` })
+        .where(eq(certificatPayments.id, paymentId))
+        .returning();
+      if (!payment) return { outcome: "not_found" as const };
+      await tx.insert(certificatPaymentAudits).values({
+        certificatId: guard.cert.id,
+        paymentId,
+        action: "updated",
+        snapshot: current,
+        changedBy,
+      });
+      const state = await this.flipPaidIfCovered(
+        tx,
+        guard.cert,
+        guard.payments.map((p) => (p.id === paymentId ? payment : p)),
+      );
+      return { outcome: "ok" as const, cert: guard.cert, payment, state };
+    });
+  }
+
+  async deleteCertificatPaymentAtomic(
+    paymentId: number,
+    changedBy: string | null,
+  ): Promise<CertificatPaymentMutationResult> {
+    const before = await this.getCertificatPayment(paymentId);
+    if (!before) return { outcome: "not_found" };
+    return db.transaction(async (tx) => {
+      const guard = await this.lockCertificatForPayments(tx, before.certificatId);
+      if (guard.outcome !== "ok") return guard;
+      const deleted = await tx
+        .delete(certificatPayments)
+        .where(eq(certificatPayments.id, paymentId))
+        .returning();
+      if (deleted.length === 0) return { outcome: "not_found" as const };
+      await tx.insert(certificatPaymentAudits).values({
+        certificatId: guard.cert.id,
+        paymentId,
+        action: "deleted",
+        snapshot: deleted[0],
+        changedBy,
+      });
+      const state = await this.flipPaidIfCovered(
+        tx,
+        guard.cert,
+        guard.payments.filter((p) => p.id !== paymentId),
+      );
+      return { outcome: "ok" as const, cert: guard.cert, state };
+    });
+  }
+
+  async getCertificatPaymentAudits(certificatId: number): Promise<CertificatPaymentAudit[]> {
+    return db
+      .select()
+      .from(certificatPaymentAudits)
+      .where(eq(certificatPaymentAudits.certificatId, certificatId))
+      .orderBy(certificatPaymentAudits.createdAt, certificatPaymentAudits.id);
   }
 
   async updateCertificat(id: number, data: Partial<InsertCertificat>): Promise<Certificat | undefined> {
