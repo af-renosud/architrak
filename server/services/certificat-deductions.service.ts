@@ -35,6 +35,8 @@ export interface ResolvedCertificatDeductions {
   retenueGarantie: string;
   cumulativeProrataDeduction: string;
   periodProrataDeduction: string;
+  cumulativeAcompteRecoupment: string;
+  periodAcompteRecoupment: string;
   netToPayHt: string;
   tvaAmount: string;
   netToPayTtc: string;
@@ -86,6 +88,25 @@ export async function resolveCertificatDeductions(
   const priorCumulativeProrata = latestPrior
     ? parseFloat(latestPrior.cumulativeProrataDeduction ?? "0")
     : 0;
+  const priorCumulativeAcompteRecoupment = latestPrior
+    ? parseFloat(latestPrior.cumulativeAcompteRecoupment ?? "0")
+    : 0;
+
+  // Task #462 — total deposit actually PAID on this contractor's devis and
+  // NOT yet recovered elsewhere. Only 'paid' counts: 'applied' is terminal
+  // and means the deposit was already fully deducted through the invoice
+  // deduction path ("déduction acompte versé"), so counting it here would
+  // recover the same deposit a second time. Void devis are excluded: their
+  // deposits are handled through the credit-note path.
+  const devisList = await storage.getDevisByProject(input.projectId);
+  const paidAcompteAmount = devisList
+    .filter((d) =>
+      d.contractorId === input.contractorId &&
+      d.status !== "void" &&
+      d.signOffStage !== "void" &&
+      d.acompteState === "paid",
+    )
+    .reduce((sum, d) => sum + (parseFloat(d.acompteAmountHt ?? "0") || 0), 0);
 
   const result = computeCertificatDeductions({
     totalWorksHt: parseFloat(input.totalWorksHt || "0"),
@@ -101,12 +122,20 @@ export async function resolveCertificatDeductions(
     priorCumulativeProrata,
     retenueOverride: toNumberOrNull(input.retenueOverride),
     prorataOverride: toNumberOrNull(input.prorataOverride),
+    paidAcompteAmount,
+    priorCumulativeAcompteRecoupment,
+    acompteRecoupmentRule: (marche?.acompteRecoupmentRule as "asap" | "percent" | "progress_threshold" | undefined) ?? "asap",
+    acompteRecoupmentPercent: toNumberOrNull(marche?.acompteRecoupmentPercent),
+    acompteRecoupmentThresholdPercent: toNumberOrNull(marche?.acompteRecoupmentThresholdPercent),
+    contractTotalHt: toNumberOrNull(marche?.totalHt),
   });
 
   return {
     retenueGarantie: result.cumulativeRetenue.toFixed(2),
     cumulativeProrataDeduction: result.cumulativeProrata.toFixed(2),
     periodProrataDeduction: result.periodProrata.toFixed(2),
+    cumulativeAcompteRecoupment: result.cumulativeAcompteRecoupment.toFixed(2),
+    periodAcompteRecoupment: result.periodAcompteRecoupment.toFixed(2),
     netToPayHt: result.netToPayHt.toFixed(2),
     tvaAmount: result.tvaAmount.toFixed(2),
     netToPayTtc: result.netToPayTtc.toFixed(2),

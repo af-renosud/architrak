@@ -283,6 +283,13 @@ export const marches = pgTable("marches", {
   // Task #243 — when true, this marché is the project's Compte Prorata
   // manager: it COLLECTS the prorata levy and is itself exempt from paying it.
   isProrataManager: boolean("is_prorata_manager").notNull().default(false),
+  // Task #462 — how the deposit (acompte) paid on this contractor's devis is
+  // recovered on certificats: 'asap' (default), 'percent' (each certificat
+  // recoups percent% of the deposit) or 'progress_threshold' (full recoupment
+  // once gross progress ≥ threshold% of the contract total).
+  acompteRecoupmentRule: text("acompte_recoupment_rule").notNull().default("asap"),
+  acompteRecoupmentPercent: numeric("acompte_recoupment_percent", { precision: 5, scale: 2 }),
+  acompteRecoupmentThresholdPercent: numeric("acompte_recoupment_threshold_percent", { precision: 5, scale: 2 }),
   paymentSchedule: jsonb("payment_schedule"),
   signedDate: date("signed_date"),
   status: text("status").notNull().default("draft"),
@@ -757,6 +764,11 @@ export const certificats = pgTable("certificats", {
   // contractor's marché is the prorata manager or the project rate is 0.
   cumulativeProrataDeduction: numeric("cumulative_prorata_deduction", { precision: 12, scale: 2 }).notNull().default("0.00"),
   periodProrataDeduction: numeric("period_prorata_deduction", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  // Task #462 — remboursement d'acompte: recovery of the deposit paid on the
+  // contractor's devis. Cumulative-to-date + this period's movement, computed
+  // authoritatively server-side (see certificat-deductions.service).
+  cumulativeAcompteRecoupment: numeric("cumulative_acompte_recoupment", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  periodAcompteRecoupment: numeric("period_acompte_recoupment", { precision: 12, scale: 2 }).notNull().default("0.00"),
   netToPayHt: numeric("net_to_pay_ht", { precision: 12, scale: 2 }).notNull(),
   tvaAmount: numeric("tva_amount", { precision: 12, scale: 2 }).notNull(),
   netToPayTtc: numeric("net_to_pay_ttc", { precision: 12, scale: 2 }).notNull(),

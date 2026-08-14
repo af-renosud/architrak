@@ -219,6 +219,173 @@ describe("computeCertificatDeductions", () => {
     expect(r.netToPayHt).toBe(95000);
   });
 
+  describe("acompte recoupment (Task #462)", () => {
+    it("recoups the full paid deposit asap when net allows (default rule)", () => {
+      const r = computeCertificatDeductions({ ...base, totalWorksHt: 100000, paidAcompteAmount: 30000 });
+      expect(r.cumulativeAcompteRecoupment).toBe(30000);
+      expect(r.periodAcompteRecoupment).toBe(30000);
+      // 100000 − 5000 retenue − 2000 prorata − 30000 recoupment
+      expect(r.netToPayHt).toBe(63000);
+    });
+
+    it("does nothing when no deposit was paid", () => {
+      const r = computeCertificatDeductions({ ...base, totalWorksHt: 100000, paidAcompteAmount: 0 });
+      expect(r.cumulativeAcompteRecoupment).toBe(0);
+      expect(r.periodAcompteRecoupment).toBe(0);
+      expect(r.netToPayHt).toBe(93000);
+    });
+
+    it("never pushes the period net below zero (clamps to available net)", () => {
+      // gross 20000 → net before recoupment = 20000 − 1000 − 400 = 18600
+      const r = computeCertificatDeductions({ ...base, totalWorksHt: 20000, paidAcompteAmount: 30000 });
+      expect(r.cumulativeAcompteRecoupment).toBe(18600);
+      expect(r.periodAcompteRecoupment).toBe(18600);
+      expect(r.netToPayHt).toBe(0);
+    });
+
+    it("subtracts only the PERIOD movement (prior recoupment already reduced prior nets)", () => {
+      // Period 2: cumulative 100k, prior recouped 18600 of 30000 deposit.
+      const r = computeCertificatDeductions({
+        ...base,
+        totalWorksHt: 100000,
+        priorCumulativeRetenue: 1000,
+        priorCumulativeProrata: 400,
+        paidAcompteAmount: 30000,
+        priorCumulativeAcompteRecoupment: 18600,
+      });
+      expect(r.cumulativeAcompteRecoupment).toBe(30000);
+      expect(r.periodAcompteRecoupment).toBe(11400);
+      // net = 100000 − 5000 − 2000 − 0 previousPayments − 11400 period
+      expect(r.netToPayHt).toBe(81600);
+    });
+
+    it("never un-recoups: cumulative stays at prior even if target is lower", () => {
+      const r = computeCertificatDeductions({
+        ...base,
+        totalWorksHt: 100000,
+        paidAcompteAmount: 30000,
+        priorCumulativeAcompteRecoupment: 30000,
+        acompteRecoupmentRule: "progress_threshold",
+        acompteRecoupmentThresholdPercent: 200, // never reached
+        contractTotalHt: 100000,
+      });
+      expect(r.cumulativeAcompteRecoupment).toBe(30000);
+      expect(r.periodAcompteRecoupment).toBe(0);
+    });
+
+    it("never exceeds the deposit amount", () => {
+      const r = computeCertificatDeductions({
+        ...base,
+        totalWorksHt: 500000,
+        paidAcompteAmount: 30000,
+        priorCumulativeAcompteRecoupment: 25000,
+      });
+      expect(r.cumulativeAcompteRecoupment).toBe(30000);
+      expect(r.periodAcompteRecoupment).toBe(5000);
+    });
+
+    it("percent rule recoups percent% of the deposit per certificat, cumulatively", () => {
+      const p1 = computeCertificatDeductions({
+        ...base,
+        totalWorksHt: 100000,
+        paidAcompteAmount: 30000,
+        acompteRecoupmentRule: "percent",
+        acompteRecoupmentPercent: 25,
+      });
+      expect(p1.cumulativeAcompteRecoupment).toBe(7500);
+      expect(p1.periodAcompteRecoupment).toBe(7500);
+
+      const p2 = computeCertificatDeductions({
+        ...base,
+        totalWorksHt: 200000,
+        previousPayments: p1.netToPayHt,
+        priorCumulativeRetenue: p1.cumulativeRetenue,
+        priorCumulativeProrata: p1.cumulativeProrata,
+        paidAcompteAmount: 30000,
+        priorCumulativeAcompteRecoupment: p1.cumulativeAcompteRecoupment,
+        acompteRecoupmentRule: "percent",
+        acompteRecoupmentPercent: 25,
+      });
+      expect(p2.cumulativeAcompteRecoupment).toBe(15000);
+      expect(p2.periodAcompteRecoupment).toBe(7500);
+    });
+
+    it("percent rule with no percent configured degrades to full recoupment", () => {
+      const r = computeCertificatDeductions({
+        ...base,
+        totalWorksHt: 100000,
+        paidAcompteAmount: 30000,
+        acompteRecoupmentRule: "percent",
+        acompteRecoupmentPercent: null,
+      });
+      expect(r.cumulativeAcompteRecoupment).toBe(30000);
+    });
+
+    it("threshold rule waits until progress reaches the threshold, then recoups fully", () => {
+      const before = computeCertificatDeductions({
+        ...base,
+        totalWorksHt: 40000,
+        paidAcompteAmount: 30000,
+        acompteRecoupmentRule: "progress_threshold",
+        acompteRecoupmentThresholdPercent: 50,
+        contractTotalHt: 100000,
+      });
+      expect(before.cumulativeAcompteRecoupment).toBe(0);
+      expect(before.periodAcompteRecoupment).toBe(0);
+
+      const after = computeCertificatDeductions({
+        ...base,
+        totalWorksHt: 60000,
+        paidAcompteAmount: 30000,
+        acompteRecoupmentRule: "progress_threshold",
+        acompteRecoupmentThresholdPercent: 50,
+        contractTotalHt: 100000,
+      });
+      expect(after.cumulativeAcompteRecoupment).toBe(30000);
+    });
+
+    it("threshold rule degrades to asap when the contract total is unknown", () => {
+      const r = computeCertificatDeductions({
+        ...base,
+        totalWorksHt: 100000,
+        paidAcompteAmount: 30000,
+        acompteRecoupmentRule: "progress_threshold",
+        acompteRecoupmentThresholdPercent: 50,
+        contractTotalHt: null,
+      });
+      expect(r.cumulativeAcompteRecoupment).toBe(30000);
+    });
+
+    it("recovers nothing more once the deposit leaves the payable base (e.g. state moved to 'applied')", () => {
+      // A deposit previously recouped 30000, then the devis acompteState
+      // advanced to 'applied' (deducted via the invoice path) so the
+      // resolver now reports paidAcompteAmount = 0. The math must not
+      // recover anything further NOR go negative (un-recoup).
+      const r = computeCertificatDeductions({
+        ...base,
+        totalWorksHt: 150000,
+        paidAcompteAmount: 0,
+        priorCumulativeAcompteRecoupment: 30000,
+      });
+      expect(r.periodAcompteRecoupment).toBe(0);
+      expect(r.cumulativeAcompteRecoupment).toBe(0);
+      // net unaffected by recoupment this period
+      expect(r.netToPayHt).toBe(150000 - 7500 - 3000);
+    });
+
+    it("negative deposit or prior inputs are clamped to safe values", () => {
+      const r = computeCertificatDeductions({
+        ...base,
+        totalWorksHt: 100000,
+        paidAcompteAmount: -500,
+        priorCumulativeAcompteRecoupment: -100,
+      });
+      expect(r.cumulativeAcompteRecoupment).toBe(0);
+      expect(r.periodAcompteRecoupment).toBe(0);
+      expect(r.netToPayHt).toBe(93000);
+    });
+  });
+
   it("derives the period movement as cumulative minus prior (no compounding)", () => {
     // Period 1: gross 100k → retenue 5k, prorata 2k.
     const p1 = computeCertificatDeductions({ ...base, totalWorksHt: 100000 });

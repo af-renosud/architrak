@@ -670,6 +670,10 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   const cumulativeRetenue = roundCurrency(parseFloat(certificat.retenueGarantie ?? "0"));
   const cumulativeProrata = roundCurrency(parseFloat(certificat.cumulativeProrataDeduction ?? "0"));
   const previousPaymentsHt = roundCurrency(parseFloat(certificat.previousPayments ?? "0"));
+  // Task #462 — deposit recovery: only THIS period's movement is subtracted
+  // from this period's net (prior recoupments already reduced prior nets).
+  const periodAcompteRecoupment = roundCurrency(parseFloat(certificat.periodAcompteRecoupment ?? "0"));
+  const cumulativeAcompteRecoupment = roundCurrency(parseFloat(certificat.cumulativeAcompteRecoupment ?? "0"));
 
   const primaryLot = devisDetails.find(d => d.lot)?.lot;
   const lotLabel = primaryLot ? `LOT ${primaryLot.lotNumber}` : "LOT";
@@ -1204,6 +1208,10 @@ function buildCertificatHtml(data: CertificatPdfData): string {
             <td>Compte Prorata (cumulative levy)</td>
             <td style="text-align:right;color:#B23A48;">- ${formatCurrencyNoSymbol(cumulativeProrata)}</td>
           </tr>
+          ${periodAcompteRecoupment > 0 || cumulativeAcompteRecoupment > 0 ? `<tr>
+            <td>Remboursement d'Acompte (this period${cumulativeAcompteRecoupment > 0 ? `, cumulative ${formatCurrencyNoSymbol(cumulativeAcompteRecoupment)}` : ""})</td>
+            <td style="text-align:right;color:#B23A48;">- ${formatCurrencyNoSymbol(periodAcompteRecoupment)}</td>
+          </tr>` : ""}
           <tr>
             <td>Previous Payments (cumulative)</td>
             <td style="text-align:right;color:#B23A48;">- ${formatCurrencyNoSymbol(previousPaymentsHt)}</td>
@@ -1458,6 +1466,8 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     id: -1,
     projectId: -1,
     contractorId: -1,
+    cumulativeAcompteRecoupment: "0.00",
+    periodAcompteRecoupment: "0.00",
     certificateRef: "CP-2026-007",
     dateIssued: sampleDate.toISOString().slice(0, 10),
     totalWorksHt: "24500.00",

@@ -36,6 +36,17 @@ const DEFAULT_TVA_RATE = 0.2;
  * - An explicit architect override replaces the computed cumulative figure for
  *   either deduction (edge cases); the period delta is recomputed from it.
  */
+// Task #462 — acompte recoupment (remboursement d'acompte). A deposit paid
+// on the devis must be recovered on the certificats or the contractor gets
+// paid twice. The rule lives on the marché:
+//   'asap'              — recoup the full deposit as soon as available net allows.
+//   'percent'           — each certificat recoups (percent% × deposit), cumulative.
+//   'progress_threshold'— nothing until gross cumulative progress reaches
+//                         thresholdPercent of the contract total, then full
+//                         recoupment. Degrades to 'asap' when the contract
+//                         total is unknown (safer against double payment).
+export type AcompteRecoupmentRule = "asap" | "percent" | "progress_threshold";
+
 export interface CertificatDeductionInput {
   totalWorksHt: number;
   pvMvAdjustment: number;
@@ -49,6 +60,17 @@ export interface CertificatDeductionInput {
   retenueOverride?: number | null;
   prorataOverride?: number | null;
   tvaRate?: number;
+  /** Task #462 — total deposit actually PAID on the contractor's devis. */
+  paidAcompteAmount?: number;
+  /** Cumulative recoupment already taken by prior certificats. */
+  priorCumulativeAcompteRecoupment?: number;
+  acompteRecoupmentRule?: AcompteRecoupmentRule;
+  /** For rule 'percent': % of the deposit recouped per certificat. */
+  acompteRecoupmentPercent?: number | null;
+  /** For rule 'progress_threshold': progress % that unlocks recoupment. */
+  acompteRecoupmentThresholdPercent?: number | null;
+  /** Contract total HT (marché) used for threshold progress; null = unknown. */
+  contractTotalHt?: number | null;
 }
 
 export interface CertificatDeductionResult {
@@ -57,6 +79,8 @@ export interface CertificatDeductionResult {
   periodRetenue: number;
   cumulativeProrata: number;
   periodProrata: number;
+  cumulativeAcompteRecoupment: number;
+  periodAcompteRecoupment: number;
   netToPayHt: number;
   tvaAmount: number;
   netToPayTtc: number;
@@ -80,8 +104,57 @@ export function computeCertificatDeductions(input: CertificatDeductionInput): Ce
       : roundCurrency(grossCumulativeHt * input.prorataPercent / 100);
   const periodProrata = roundCurrency(cumulativeProrata - input.priorCumulativeProrata);
 
+  // Task #462 — acompte recoupment. The deposit was paid OUTSIDE the
+  // certificat waterfall, so `previousPayments` (Σ prior net HT) does NOT
+  // contain it; without this step it would never be recovered and the
+  // contractor would be paid twice. Cumulative-first like retenue/prorata,
+  // but only the PERIOD movement is subtracted from this period's net
+  // (prior recoupments already reduced prior nets).
+  const paidAcompte = roundCurrency(Math.max(0, input.paidAcompteAmount ?? 0));
+  const priorRecouped = roundCurrency(
+    Math.min(paidAcompte, Math.max(0, input.priorCumulativeAcompteRecoupment ?? 0)),
+  );
+  const availableNetBeforeRecoupment = Math.max(
+    0,
+    roundCurrency(grossCumulativeHt - cumulativeRetenue - cumulativeProrata - input.previousPayments),
+  );
+
+  let rule: AcompteRecoupmentRule = input.acompteRecoupmentRule ?? "asap";
+  const contractTotal = input.contractTotalHt ?? null;
+  if (rule === "progress_threshold" && (contractTotal == null || contractTotal <= 0)) {
+    // Unknown contract total: degrade to asap — recouping sooner can never
+    // double-pay, deferring indefinitely can.
+    rule = "asap";
+  }
+
+  let cumulativeTarget: number;
+  if (paidAcompte <= 0) {
+    cumulativeTarget = 0;
+  } else if (rule === "percent") {
+    const pct = Math.max(0, input.acompteRecoupmentPercent ?? 0);
+    cumulativeTarget = pct > 0
+      ? roundCurrency(priorRecouped + paidAcompte * pct / 100)
+      : paidAcompte; // percent rule with no percent configured → recoup asap
+  } else if (rule === "progress_threshold") {
+    const threshold = Math.max(0, input.acompteRecoupmentThresholdPercent ?? 0);
+    const progressPct = (grossCumulativeHt / (contractTotal as number)) * 100;
+    cumulativeTarget = progressPct >= threshold ? paidAcompte : priorRecouped;
+  } else {
+    cumulativeTarget = paidAcompte;
+  }
+
+  // Clamp: never un-recoup (≥ prior), never exceed the deposit, and never
+  // push this period's net below zero.
+  const cumulativeAcompteRecoupment = roundCurrency(
+    Math.max(
+      priorRecouped,
+      Math.min(cumulativeTarget, paidAcompte, priorRecouped + availableNetBeforeRecoupment),
+    ),
+  );
+  const periodAcompteRecoupment = roundCurrency(cumulativeAcompteRecoupment - priorRecouped);
+
   const netToPayHt = roundCurrency(
-    grossCumulativeHt - cumulativeRetenue - cumulativeProrata - input.previousPayments,
+    grossCumulativeHt - cumulativeRetenue - cumulativeProrata - input.previousPayments - periodAcompteRecoupment,
   );
   const tvaAmount = roundCurrency(netToPayHt * tvaRate);
   const netToPayTtc = roundCurrency(netToPayHt + tvaAmount);
@@ -92,6 +165,8 @@ export function computeCertificatDeductions(input: CertificatDeductionInput): Ce
     periodRetenue,
     cumulativeProrata,
     periodProrata,
+    cumulativeAcompteRecoupment,
+    periodAcompteRecoupment,
     netToPayHt,
     tvaAmount,
     netToPayTtc,

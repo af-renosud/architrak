@@ -1,5 +1,6 @@
 import { storage } from "../storage";
 import { generateCertificatPdf } from "../communications/certificat-generator";
+import { resolveCertificatDeductions } from "./certificat-deductions.service";
 import { enqueueDriveUpload } from "./drive/upload-queue.service";
 import type { Certificat, InsertCertificatSource } from "@shared/schema";
 
@@ -46,6 +47,34 @@ export async function sealCertificat(certificatId: number): Promise<{
     if (!existing) throw new Error(`Certificat ${certificatId} not found`);
     if (existing.pdfStorageKey) {
       return { certificat: existing, pdfStorageKey: existing.pdfStorageKey, alreadySealed: true };
+    }
+
+    // Task #462 — deductions are resolved on create/PATCH, but the world can
+    // move between then and issuance (a deposit becomes 'paid', a marché
+    // recoupment rule changes, a prior certificat is reissued). Sealing is
+    // the moment money actually leaves, so re-resolve authoritatively here;
+    // if anything drifted, persist the fresh figures (bumps `version`) and
+    // retry the loop so the render + snapshot use the corrected row.
+    const freshDeductions = await resolveCertificatDeductions({
+      projectId: existing.projectId,
+      contractorId: existing.contractorId,
+      totalWorksHt: existing.totalWorksHt,
+      pvMvAdjustment: existing.pvMvAdjustment,
+      previousPayments: existing.previousPayments,
+      // The stored retenue/prorata cumulatives may embed an explicit
+      // architect override recorded at create/PATCH time (the override
+      // itself is not persisted); pass them back as overrides so the seal
+      // recompute refreshes ONLY the acompte recoupment + net figures and
+      // never silently reverts an override to the standard rate math.
+      retenueOverride: existing.retenueGarantie,
+      prorataOverride: existing.cumulativeProrataDeduction,
+      excludeCertificatId: certificatId,
+    });
+    const drifted = (Object.entries(freshDeductions) as Array<[keyof typeof freshDeductions, string]>)
+      .some(([key, value]) => (existing[key] ?? "0.00") !== value);
+    if (drifted) {
+      await storage.updateCertificat(certificatId, freshDeductions);
+      continue;
     }
 
     // Version captured BEFORE rendering — the seal only commits if it still
@@ -99,6 +128,8 @@ export async function sealCertificat(certificatId: number): Promise<{
       retenueGarantie: existing.retenueGarantie,
       cumulativeProrataDeduction: existing.cumulativeProrataDeduction,
       periodProrataDeduction: existing.periodProrataDeduction,
+      cumulativeAcompteRecoupment: existing.cumulativeAcompteRecoupment,
+      periodAcompteRecoupment: existing.periodAcompteRecoupment,
       netToPayHt: existing.netToPayHt,
       tvaAmount: existing.tvaAmount,
       netToPayTtc: existing.netToPayTtc,

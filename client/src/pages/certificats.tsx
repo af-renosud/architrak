@@ -18,7 +18,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { insertCertificatSchema } from "@shared/schema";
-import type { Project, Contractor, Certificat, Invoice, Marche } from "@shared/schema";
+import type { Project, Contractor, Certificat, Invoice, Marche, Devis } from "@shared/schema";
 import { computeCertificatDeductions } from "@shared/financial-utils";
 import { z } from "zod";
 
@@ -112,6 +112,14 @@ function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Certifica
                 {formatCurrency(parseFloat(cert.cumulativeProrataDeduction ?? "0"))}
               </span>
             </div>
+            {parseFloat(cert.cumulativeAcompteRecoupment ?? "0") > 0 && (
+              <div className="flex items-center justify-between gap-2">
+                <TechnicalLabel>Remboursement d'Acompte (période / cumul)</TechnicalLabel>
+                <span className="text-[13px] font-semibold text-foreground" data-testid="text-cert-detail-acompte-recoupment">
+                  {formatCurrency(parseFloat(cert.periodAcompteRecoupment ?? "0"))} / {formatCurrency(parseFloat(cert.cumulativeAcompteRecoupment ?? "0"))}
+                </span>
+              </div>
+            )}
             <div className="border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] pt-3">
               <div className="flex items-center justify-between gap-2">
                 <TechnicalLabel>Net to Pay HT</TechnicalLabel>
@@ -180,6 +188,12 @@ export default function Certificats() {
     enabled: !!selectedProjectId,
   });
 
+  // Task #462 — needed to compute the paid deposit (acompte) to recoup.
+  const { data: projectDevis } = useQuery<Devis[]>({
+    queryKey: ["/api/projects", selectedProjectId, "devis"],
+    enabled: !!selectedProjectId,
+  });
+
   const form = useForm<CertificatFormValues>({
     resolver: zodResolver(certificatFormSchema),
     defaultValues: {
@@ -244,6 +258,23 @@ export default function Certificats() {
   // keeps this live preview consistent with the persisted server values even when
   // a downward override or a guarantee/exemption transition legitimately lowers
   // the cumulative. Order by issue date, then id as a stable tiebreaker.
+  // Task #462 — total deposit actually PAID on this contractor's devis and
+  // not yet recovered elsewhere ('paid' only — 'applied' means the deposit
+  // was already deducted through the invoice path); mirrors the server
+  // resolver's filter so the live preview matches the persisted figures.
+  const paidAcompteAmount = useMemo(
+    () =>
+      (projectDevis ?? [])
+        .filter((d) =>
+          d.contractorId === watchContractorId &&
+          d.status !== "void" &&
+          d.signOffStage !== "void" &&
+          d.acompteState === "paid",
+        )
+        .reduce((sum, d) => sum + (parseFloat(d.acompteAmountHt ?? "0") || 0), 0),
+    [projectDevis, watchContractorId],
+  );
+
   const latestPrior = useMemo(
     () =>
       priorCerts
@@ -270,7 +301,13 @@ export default function Certificats() {
     priorCumulativeProrata: latestPrior ? parseFloat(latestPrior.cumulativeProrataDeduction ?? "0") : 0,
     retenueOverride: watchRetenueOverride ? parseFloat(watchRetenueOverride) : null,
     prorataOverride: watchProrataOverride ? parseFloat(watchProrataOverride) : null,
-  }), [watchTotalWorks, watchPvMv, watchPrevious, retenuePercent, hasBankGuarantee, prorataPercent, isProrataManager, latestPrior, watchRetenueOverride, watchProrataOverride]);
+    paidAcompteAmount,
+    priorCumulativeAcompteRecoupment: latestPrior ? parseFloat(latestPrior.cumulativeAcompteRecoupment ?? "0") : 0,
+    acompteRecoupmentRule: (selectedMarche?.acompteRecoupmentRule as "asap" | "percent" | "progress_threshold" | undefined) ?? "asap",
+    acompteRecoupmentPercent: selectedMarche?.acompteRecoupmentPercent != null ? parseFloat(selectedMarche.acompteRecoupmentPercent) : null,
+    acompteRecoupmentThresholdPercent: selectedMarche?.acompteRecoupmentThresholdPercent != null ? parseFloat(selectedMarche.acompteRecoupmentThresholdPercent) : null,
+    contractTotalHt: selectedMarche?.totalHt != null ? parseFloat(selectedMarche.totalHt) : null,
+  }), [watchTotalWorks, watchPvMv, watchPrevious, retenuePercent, hasBankGuarantee, prorataPercent, isProrataManager, latestPrior, watchRetenueOverride, watchProrataOverride, paidAcompteAmount, selectedMarche]);
 
   useEffect(() => {
     form.setValue("retenueGarantie", breakdown.cumulativeRetenue.toFixed(2));
@@ -749,6 +786,16 @@ export default function Certificats() {
                       {formatCurrency(breakdown.grossCumulativeHt - breakdown.cumulativeRetenue - breakdown.cumulativeProrata)}
                     </span>
                   </div>
+                  {(breakdown.periodAcompteRecoupment > 0 || breakdown.cumulativeAcompteRecoupment > 0) && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-muted-foreground">
+                        − Remboursement d'Acompte (période{breakdown.cumulativeAcompteRecoupment > 0 ? ` — cumul ${formatCurrency(breakdown.cumulativeAcompteRecoupment)} / ${formatCurrency(paidAcompteAmount)}` : ""})
+                      </span>
+                      <span className="text-[13px] font-semibold text-red-600 dark:text-red-400" data-testid="text-calc-acompte-recoupment">
+                        −{formatCurrency(breakdown.periodAcompteRecoupment)}
+                      </span>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[11px] text-muted-foreground">− Previous Payments</span>
                     <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-previous">

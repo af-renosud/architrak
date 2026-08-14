@@ -23,6 +23,7 @@ vi.mock("../../storage", async () => {
       "sealCertificat",
       "getInvoice",
       "getSituationsByDevis",
+      "updateCertificat",
     ]),
   };
 });
@@ -32,14 +33,22 @@ vi.mock("../../communications/certificat-generator", () => ({
 vi.mock("../drive/upload-queue.service", () => ({
   enqueueDriveUpload: vi.fn().mockResolvedValue(undefined),
 }));
+// Task #462 — the seal re-resolves deductions authoritatively before
+// rendering. Mocked here; the default (set in beforeEach) mirrors the
+// stored figures so the no-drift path proceeds straight to sealing.
+vi.mock("../certificat-deductions.service", () => ({
+  resolveCertificatDeductions: vi.fn(),
+}));
 
 import { sealCertificat } from "../certificat-seal.service";
 import { storage } from "../../storage";
 import { generateCertificatPdf } from "../../communications/certificat-generator";
 import { enqueueDriveUpload } from "../drive/upload-queue.service";
+import { resolveCertificatDeductions } from "../certificat-deductions.service";
 
 const getCertificat = storage.getCertificat as unknown as ReturnType<typeof vi.fn>;
 const sealCertificatStore = storage.sealCertificat as unknown as ReturnType<typeof vi.fn>;
+const resolveDeductions = resolveCertificatDeductions as unknown as ReturnType<typeof vi.fn>;
 const getInvoice = storage.getInvoice as unknown as ReturnType<typeof vi.fn>;
 const getSituationsByDevis = storage.getSituationsByDevis as unknown as ReturnType<typeof vi.fn>;
 const generate = generateCertificatPdf as unknown as ReturnType<typeof vi.fn>;
@@ -57,6 +66,8 @@ const draftCert = {
   retenueGarantie: "50.00",
   cumulativeProrataDeduction: "0.00",
   periodProrataDeduction: "0.00",
+  cumulativeAcompteRecoupment: "0.00",
+  periodAcompteRecoupment: "0.00",
   netToPayHt: "950.00",
   tvaAmount: "190.00",
   netToPayTtc: "1140.00",
@@ -64,6 +75,19 @@ const draftCert = {
   pdfStorageKey: null,
   version: 1,
 };
+
+// Mirrors a certificat row's server-derived money fields back as the
+// resolver result — i.e. "the world has not moved since create/PATCH".
+const mirrorDeductions = (cert: typeof draftCert) => ({
+  retenueGarantie: cert.retenueGarantie,
+  cumulativeProrataDeduction: cert.cumulativeProrataDeduction,
+  periodProrataDeduction: cert.periodProrataDeduction,
+  cumulativeAcompteRecoupment: cert.cumulativeAcompteRecoupment,
+  periodAcompteRecoupment: cert.periodAcompteRecoupment,
+  netToPayHt: cert.netToPayHt,
+  tvaAmount: cert.tvaAmount,
+  netToPayTtc: cert.netToPayTtc,
+});
 
 const renderResult = (key: string, sourceInvoiceIds: number[] = []) => ({
   storageKey: key,

@@ -47,6 +47,10 @@ const serverDerivedDeductionFields = {
   retenueGarantie: true,
   cumulativeProrataDeduction: true,
   periodProrataDeduction: true,
+  // Task #462 — acompte recoupment amounts are computed from the devis'
+  // paid-deposit state + the marché rule; never client-settable.
+  cumulativeAcompteRecoupment: true,
+  periodAcompteRecoupment: true,
   netToPayHt: true,
   tvaAmount: true,
   netToPayTtc: true,
