@@ -55,7 +55,13 @@ const sealedCert = {
 beforeEach(() => {
   vi.clearAllMocks();
   buildBody.mockReturnValue("BODY");
-  getProject.mockResolvedValue({ id: 1, name: "Proj", clientName: "Client", clientAddress: "client@example.com" });
+  getProject.mockResolvedValue({
+    id: 1,
+    name: "Proj",
+    clientName: "Client",
+    clientAddress: "51 VICTORIA HOUSE, LONDON",
+    clientContactEmail: "client@example.com",
+  });
   getContractor.mockResolvedValue({ id: 2, name: "Contractor", ribDocumentUrl: null });
   seal.mockResolvedValue({ pdfStorageKey: "projects/1/CERT-C7.pdf", alreadySealed: false, certificat: sealedCert });
   createComm.mockImplementation(async (data: { dedupeKey?: string }) => ({ id: 55, ...data }));
@@ -94,5 +100,36 @@ describe("sendCertificat — dedupe key (Task #451)", () => {
     expect(a).toBe(b);
     expect(b).toBe(c);
     expect(seen.size).toBe(1);
+  });
+});
+
+describe("sendCertificat — recipient resolution (Task #478)", () => {
+  it("uses clientContactEmail as the recipient, never the postal clientAddress", async () => {
+    await sendCertificat(7);
+    expect(createComm).toHaveBeenCalledTimes(1);
+    expect(createComm.mock.calls[0][0].recipientEmail).toBe("client@example.com");
+  });
+
+  it("throws a clear validation error when clientContactEmail is missing", async () => {
+    getProject.mockResolvedValue({
+      id: 1,
+      name: "Proj",
+      clientName: "Client",
+      clientAddress: "51 VICTORIA HOUSE, LONDON",
+      clientContactEmail: null,
+    });
+    await expect(sendCertificat(7)).rejects.toThrow(/contact email missing/i);
+    expect(createComm).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-email clientContactEmail (e.g. a postal address pasted into the field)", async () => {
+    getProject.mockResolvedValue({
+      id: 1,
+      name: "Proj",
+      clientName: "Client",
+      clientContactEmail: "51 VICTORIA HOUSE, LONDON",
+    });
+    await expect(sendCertificat(7)).rejects.toThrow(/missing or invalid/i);
+    expect(createComm).not.toHaveBeenCalled();
   });
 });

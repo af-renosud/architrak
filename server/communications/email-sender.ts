@@ -84,6 +84,17 @@ export async function sendCertificat(certificatId: number): Promise<number> {
   const contractor = await storage.getContractor(certificat.contractorId);
   if (!contractor) throw new Error(`Contractor not found`);
 
+  // Task #478 — the recipient is the client's CONTACT EMAIL, never
+  // clientAddress (a postal address in real data). Fail loudly when it is
+  // missing rather than queueing an email Gmail will reject or misroute —
+  // and that the payment-reply scanner could never match.
+  const recipientEmail = (project.clientContactEmail ?? "").trim();
+  if (!recipientEmail || !recipientEmail.includes("@")) {
+    throw new Error(
+      `Client contact email missing or invalid on project "${project.name}" — set it on the project before sending the certificat`,
+    );
+  }
+
   const subject = buildCertificatEmailSubject({
     certificateRef: certificat.certificateRef,
     projectName: project.name,
@@ -107,7 +118,7 @@ export async function sendCertificat(certificatId: number): Promise<number> {
     projectId: project.id,
     type: "certificat_sent",
     recipientType: "client",
-    recipientEmail: project.clientAddress || "",
+    recipientEmail,
     recipientName: project.clientName,
     subject,
     body,
