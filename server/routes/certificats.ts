@@ -5,7 +5,11 @@ import { insertCertificatSchema, type InsertCertificat } from "@shared/schema";
 import { generateCertificatPdf, BankingDetailsMissingError, BankingMismatchError } from "../communications/certificat-generator";
 import { sendCertificat } from "../communications/email-sender";
 import { validateRequest } from "../middleware/validate";
-import { resolveCertificatDeductions } from "../services/certificat-deductions.service";
+import {
+  resolveCertificatDeductions,
+  SoldeConflictError,
+  ReleaseRequiresSoldeError,
+} from "../services/certificat-deductions.service";
 import { getDocumentBuffer } from "../storage/object-storage";
 
 const router = Router();
@@ -46,6 +50,15 @@ const deductionOverrideShape = {
       message: "TVA rate must be between 0 and 100",
     })
     .optional(),
+  // Task #464 — explicit retenue de garantie release on the solde
+  // certificat. NOT columns: the handler feeds `releaseRetenue` to the
+  // resolver (which derives the released state + amount) and stamps the
+  // audit reason/date itself. A release REQUIRES a reason.
+  releaseRetenue: z.boolean().optional(),
+  releaseReason: z.string().trim().min(1).max(500).optional(),
+  // Task #464 — solde designation. Routed through the resolver (single
+  // non-superseded solde per project+contractor), never written raw.
+  isSolde: z.boolean().optional(),
 };
 
 // Task #243 — these are SERVER-DERIVED money fields. The server is the sole
@@ -66,6 +79,15 @@ const serverDerivedDeductionFields = {
   // the raw columns are never client-settable.
   tvaRatePercent: true,
   tvaAutoliquidation: true,
+  // Task #464 — solde/release state is server-derived: `isSolde` comes back
+  // from the resolver (which enforces the single-solde rule) and the release
+  // fields are derived from the validated `releaseRetenue`/`releaseReason`
+  // request fields, never accepted as raw columns.
+  isSolde: true,
+  retenueReleased: true,
+  retenueReleaseAmount: true,
+  retenueReleaseReason: true,
+  retenueReleaseDate: true,
   netToPayHt: true,
   tvaAmount: true,
   netToPayTtc: true,
@@ -75,6 +97,18 @@ const serverDerivedDeductionFields = {
 // `superseded` is terminal and written ONLY by the atomic reissue
 // transaction, never accepted from a request body.
 const clientSettableStatus = z.enum(["draft", "ready", "sent", "paid"]);
+
+// Task #464 — map the resolver's typed solde-precondition errors onto
+// friendly HTTP responses (shared by create + PATCH).
+function mapSoldeError(err: unknown): { status: number; body: Record<string, unknown> } | null {
+  if (err instanceof SoldeConflictError) {
+    return { status: 409, body: { code: "SOLDE_ALREADY_EXISTS", message: err.message } };
+  }
+  if (err instanceof ReleaseRequiresSoldeError) {
+    return { status: 422, body: { code: "RELEASE_REQUIRES_SOLDE", message: err.message } };
+  }
+  return null;
+}
 
 const createCertificatBodySchema = insertCertificatSchema
   .omit({ projectId: true, certificateRef: true, ...serverDerivedDeductionFields })
@@ -99,34 +133,66 @@ router.post(
   validateRequest({ params: projectIdParams, body: createCertificatBodySchema }),
   async (req, res) => {
     const projectId = Number(req.params.projectId);
-    const { retenueOverride, prorataOverride, tvaRateOverride, ...body } = req.body as
+    const { retenueOverride, prorataOverride, tvaRateOverride, releaseRetenue, releaseReason, isSolde, ...body } = req.body as
       Omit<InsertCertificat, "projectId" | "certificateRef"> & {
         retenueOverride?: string;
         prorataOverride?: string;
         tvaRateOverride?: string;
+        releaseRetenue?: boolean;
+        releaseReason?: string;
+        isSolde?: boolean;
       };
+
+    // Task #464 — a release without a reason has no audit trail.
+    if (releaseRetenue === true && !releaseReason) {
+      return res.status(400).json({
+        code: "RELEASE_REASON_REQUIRED",
+        message: "Une raison est requise pour libérer la retenue de garantie.",
+      });
+    }
 
     // Task #243 — the server is authoritative for deduction money math.
     // Recompute Retenue de Garantie + Compte Prorata cumulatively from the
     // contract, overriding whatever the FE sent for the derived fields.
-    const deductions = await resolveCertificatDeductions({
-      projectId,
-      contractorId: body.contractorId,
-      totalWorksHt: body.totalWorksHt,
-      pvMvAdjustment: body.pvMvAdjustment,
-      previousPayments: body.previousPayments,
-      retenueOverride,
-      prorataOverride,
-      tvaRateOverride,
-    });
+    let deductions;
+    try {
+      deductions = await resolveCertificatDeductions({
+        projectId,
+        contractorId: body.contractorId,
+        totalWorksHt: body.totalWorksHt,
+        pvMvAdjustment: body.pvMvAdjustment,
+        previousPayments: body.previousPayments,
+        retenueOverride,
+        prorataOverride,
+        tvaRateOverride,
+        isSolde,
+        releaseRetenue,
+      });
+    } catch (err) {
+      const mapped = mapSoldeError(err);
+      if (mapped) return res.status(mapped.status).json(mapped.body);
+      throw err;
+    }
+
+    // Task #464 — release audit trail (reason architect-provided, date
+    // server-stamped) recorded only when the resolver confirmed the release.
+    const releaseAudit = deductions.retenueReleased
+      ? { retenueReleaseReason: releaseReason ?? null, retenueReleaseDate: new Date().toISOString().split("T")[0] }
+      : { retenueReleaseReason: null, retenueReleaseDate: null };
 
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const nextRef = await storage.getNextCertificateRef(projectId);
-        const cert = await storage.createCertificat({ ...body, ...deductions, projectId, certificateRef: nextRef });
+        const cert = await storage.createCertificat({ ...body, ...deductions, ...releaseAudit, projectId, certificateRef: nextRef });
         return res.status(201).json(cert);
       } catch (err) {
-        const { code } = pgErrorInfo(err);
+        const { code, constraint } = pgErrorInfo(err);
+        if (code === "23505" && constraint === "certificats_solde_unique") {
+          return res.status(409).json({
+            code: "SOLDE_ALREADY_EXISTS",
+            message: "Un certificat de solde existe déjà pour cette entreprise — un seul certificat de solde par marché.",
+          });
+        }
         if (code === "23505" && attempt < 2) continue;
         throw err;
       }
@@ -165,12 +231,18 @@ router.post(
     // Recompute the server-authoritative deductions from the cloned inputs,
     // EXCLUDING the superseded original from the prior set: the reissue
     // replaces it, so its cumulative figures must not feed the new draft.
+    // Task #464 — the clone carries the original's solde designation and
+    // release state (the reissue flow is precisely how a sealed release
+    // decision gets corrected: the clone is a draft again). Excluding the
+    // original from the prior set keeps the single-solde check happy.
     const deductions = await resolveCertificatDeductions({
       projectId: existing.projectId,
       contractorId: existing.contractorId,
       totalWorksHt: existing.totalWorksHt,
       pvMvAdjustment: existing.pvMvAdjustment,
       previousPayments: existing.previousPayments,
+      isSolde: existing.isSolde,
+      releaseRetenue: existing.retenueReleased,
       excludeCertificatId: id,
     });
 
@@ -190,6 +262,8 @@ router.post(
           pvMvAdjustment: existing.pvMvAdjustment,
           previousPayments: existing.previousPayments,
           ...deductions,
+          retenueReleaseReason: existing.retenueReleaseReason,
+          retenueReleaseDate: existing.retenueReleaseDate,
           status: "draft",
           notes: `Reissue of ${existing.certificateRef}${existing.notes ? ` — ${existing.notes}` : ""}`,
           reissuedFromCertificatId: id,
@@ -223,8 +297,15 @@ router.patch(
   validateRequest({ params: idParams, body: updateCertificatSchema }),
   async (req, res) => {
     const id = Number(req.params.id);
-    const { retenueOverride, prorataOverride, tvaRateOverride, ...body } = req.body as
-      Partial<InsertCertificat> & { retenueOverride?: string; prorataOverride?: string; tvaRateOverride?: string };
+    const { retenueOverride, prorataOverride, tvaRateOverride, releaseRetenue, releaseReason, isSolde, ...body } = req.body as
+      Partial<InsertCertificat> & {
+        retenueOverride?: string;
+        prorataOverride?: string;
+        tvaRateOverride?: string;
+        releaseRetenue?: boolean;
+        releaseReason?: string;
+        isSolde?: boolean;
+      };
 
     const existing = await storage.getCertificat(id);
     if (!existing) return res.status(404).json({ message: "Certificat not found" });
@@ -254,7 +335,17 @@ router.patch(
     if (existing.pdfStorageKey) {
       const allowedOnSealed = new Set(["status", "notes"]);
       const blocked = Object.keys(body).filter((k) => !allowedOnSealed.has(k));
-      if (blocked.length > 0 || retenueOverride !== undefined || prorataOverride !== undefined || tvaRateOverride !== undefined) {
+      // Task #464 — the solde designation and the retenue release state are
+      // frozen by the seal too; changing them post-issuance requires reissue.
+      if (
+        blocked.length > 0 ||
+        retenueOverride !== undefined ||
+        prorataOverride !== undefined ||
+        tvaRateOverride !== undefined ||
+        releaseRetenue !== undefined ||
+        releaseReason !== undefined ||
+        isSolde !== undefined
+      ) {
         return res.status(409).json({
           code: "CERTIFICAT_SEALED",
           message: `Certificat ${existing.certificateRef} has been issued and is sealed. Corrections require issuing a new certificat.`,
@@ -272,22 +363,57 @@ router.patch(
       "contractorId" in body ||
       retenueOverride !== undefined ||
       prorataOverride !== undefined ||
-      tvaRateOverride !== undefined;
+      tvaRateOverride !== undefined ||
+      // Task #464 — solde/release changes move money (the release line) and
+      // must run through the resolver's precondition checks.
+      releaseRetenue !== undefined ||
+      isSolde !== undefined;
+
+    // Task #464 — effective solde/release state after this PATCH: an
+    // explicit request field wins, otherwise the stored state is preserved
+    // through recomputes. Turning the solde flag off implicitly cancels any
+    // release (release only exists on the solde certificat).
+    const effectiveIsSolde = isSolde ?? existing.isSolde;
+    const effectiveRelease = effectiveIsSolde ? (releaseRetenue ?? existing.retenueReleased) : false;
+    if (releaseRetenue === true && !(releaseReason ?? existing.retenueReleaseReason)) {
+      return res.status(400).json({
+        code: "RELEASE_REASON_REQUIRED",
+        message: "Une raison est requise pour libérer la retenue de garantie.",
+      });
+    }
 
     let patch: Partial<InsertCertificat> = body;
     if (touchesFinancials) {
-      const deductions = await resolveCertificatDeductions({
-        projectId: existing.projectId,
-        contractorId: body.contractorId ?? existing.contractorId,
-        totalWorksHt: body.totalWorksHt ?? existing.totalWorksHt,
-        pvMvAdjustment: body.pvMvAdjustment ?? existing.pvMvAdjustment,
-        previousPayments: body.previousPayments ?? existing.previousPayments,
-        retenueOverride,
-        prorataOverride,
-        tvaRateOverride,
-        excludeCertificatId: id,
-      });
-      patch = { ...body, ...deductions };
+      let deductions;
+      try {
+        deductions = await resolveCertificatDeductions({
+          projectId: existing.projectId,
+          contractorId: body.contractorId ?? existing.contractorId,
+          totalWorksHt: body.totalWorksHt ?? existing.totalWorksHt,
+          pvMvAdjustment: body.pvMvAdjustment ?? existing.pvMvAdjustment,
+          previousPayments: body.previousPayments ?? existing.previousPayments,
+          retenueOverride,
+          prorataOverride,
+          tvaRateOverride,
+          isSolde: effectiveIsSolde,
+          releaseRetenue: effectiveRelease,
+          excludeCertificatId: id,
+        });
+      } catch (err) {
+        const mapped = mapSoldeError(err);
+        if (mapped) return res.status(mapped.status).json(mapped.body);
+        throw err;
+      }
+      // Release audit trail follows the resolved release state.
+      const releaseAudit = deductions.retenueReleased
+        ? {
+            retenueReleaseReason: releaseReason ?? existing.retenueReleaseReason,
+            retenueReleaseDate: existing.retenueReleased
+              ? existing.retenueReleaseDate
+              : new Date().toISOString().split("T")[0],
+          }
+        : { retenueReleaseReason: null, retenueReleaseDate: null };
+      patch = { ...body, ...deductions, ...releaseAudit };
     }
 
     // Task #451 — status/notes-only patches remain allowed on sealed rows;
@@ -295,12 +421,34 @@ router.patch(
     // update (WHERE pdf_storage_key IS NULL) so a PATCH authorized against
     // an unsealed row can never commit after a concurrent seal.
     const onlyLifecycleFields = Object.keys(patch).every((k) => k === "status" || k === "notes");
-    if (onlyLifecycleFields && retenueOverride === undefined && prorataOverride === undefined && tvaRateOverride === undefined) {
+    if (
+      onlyLifecycleFields &&
+      retenueOverride === undefined &&
+      prorataOverride === undefined &&
+      tvaRateOverride === undefined &&
+      releaseRetenue === undefined &&
+      isSolde === undefined
+    ) {
       const cert = await storage.updateCertificat(id, patch);
       if (!cert) return res.status(404).json({ message: "Certificat not found" });
       return res.json(cert);
     }
-    const cert = await storage.updateCertificatUnsealed(id, patch);
+    let cert;
+    try {
+      cert = await storage.updateCertificatUnsealed(id, patch);
+    } catch (err) {
+      // Task #464 — single-solde race: two concurrent PATCHes can both pass
+      // the resolver's friendly check; the partial unique index elects the
+      // winner and the loser gets a friendly 409 instead of a 500.
+      const { code, constraint } = pgErrorInfo(err);
+      if (code === "23505" && constraint === "certificats_solde_unique") {
+        return res.status(409).json({
+          code: "SOLDE_ALREADY_EXISTS",
+          message: "Un certificat de solde existe déjà pour cette entreprise — un seul certificat de solde par marché.",
+        });
+      }
+      throw err;
+    }
     if (!cert) {
       const current = await storage.getCertificat(id);
       if (!current) return res.status(404).json({ message: "Certificat not found" });

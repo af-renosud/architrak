@@ -575,6 +575,13 @@
       "when": 1786558800000,
       "tag": "0081_certificat_tva_regime",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1786645200000,
+      "tag": "0082_certificat_solde_retenue_release",
+      "breakpoints": true
     }
   ]
 }

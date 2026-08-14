@@ -551,6 +551,49 @@ export default function ProjectDetail() {
     defaultValues: { projectId: parseInt(projectId!), lotNumber: "", descriptionFr: "", descriptionUk: null },
   });
 
+  // Task #464 — GPA (garantie de parfait achèvement) ends one year after
+  // réception des travaux; derived, never stored.
+  // Date-only arithmetic in UTC: constructing local midnight and calling
+  // toISOString() shifts a positive-offset timezone (Europe/Paris) to the
+  // PREVIOUS UTC day, making the GPA end display/trigger a day early.
+  const gpaEndDate = (receptionDate: string): string | null => {
+    const d = new Date(`${receptionDate}T00:00:00Z`);
+    if (Number.isNaN(d.getTime())) return null;
+    d.setUTCFullYear(d.getUTCFullYear() + 1);
+    return d.toISOString().split("T")[0];
+  };
+
+  const localTodayIso = (): string => {
+    const now = new Date();
+    const mm = String(now.getMonth() + 1).padStart(2, "0");
+    const dd = String(now.getDate()).padStart(2, "0");
+    return `${now.getFullYear()}-${mm}-${dd}`;
+  };
+
+  // Release due: GPA expired, no caution bancaire, money is actually
+  // WITHHELD (latest non-superseded certificat carries a positive cumulative
+  // retenue), and no non-superseded certificat has released it yet.
+  const isRetenueReleaseDue = (m: Marche): boolean => {
+    if (!m.receptionDate || m.hasBankGuarantee) return false;
+    const end = gpaEndDate(m.receptionDate);
+    if (!end || end > localTodayIso()) return false;
+    const certs = (certificatsList ?? []).filter(
+      (c) => c.contractorId === m.contractorId && c.status !== "superseded",
+    );
+    if (certs.some((c) => c.retenueReleased)) return false;
+    const latest = certs
+      .slice()
+      .sort((a, b) => {
+        const da = a.dateIssued ?? "";
+        const db = b.dateIssued ?? "";
+        if (da !== db) return da < db ? -1 : 1;
+        return a.id - b.id;
+      })
+      .at(-1);
+    // Nothing withheld (no certificat yet, or 0% retenue) ⇒ nothing to release.
+    return latest != null && parseFloat(latest.retenueGarantie ?? "0") > 0;
+  };
+
   const marcheFormSchema = insertMarcheSchema.extend({
     totalHt: z.string().min(1, "Required"),
     totalTtc: z.string().min(1, "Required"),
@@ -564,6 +607,7 @@ export default function ProjectDetail() {
       hasBankGuarantee: false, isProrataManager: false,
       acompteRecoupmentRule: "asap", acompteRecoupmentPercent: null, acompteRecoupmentThresholdPercent: null,
       tvaRatePercent: null, tvaAutoliquidation: false,
+      receptionDate: null,
     },
   });
 
@@ -1541,6 +1585,7 @@ export default function ProjectDetail() {
                       hasBankGuarantee: false, isProrataManager: false,
                       acompteRecoupmentRule: "asap", acompteRecoupmentPercent: null, acompteRecoupmentThresholdPercent: null,
       tvaRatePercent: null, tvaAutoliquidation: false,
+                      receptionDate: null,
                     });
                     setMarcheDialogOpen(true);
                   }} disabled={isArchived} data-testid="button-new-marche">
@@ -1568,6 +1613,21 @@ export default function ProjectDetail() {
                             <span className="text-[10px] text-muted-foreground">{getContractorName(m.contractorId)}</span>
                           </div>
                           <div className="flex items-center gap-3 flex-wrap">
+                            {/* Task #464 — GPA indicator: réception + 1 an. Once
+                                past, a still-withholding contract owes the RG. */}
+                            {m.receptionDate && (
+                              <span className="text-[10px] text-muted-foreground" data-testid={`text-marche-gpa-${m.id}`}>
+                                GPA → {gpaEndDate(m.receptionDate)}
+                              </span>
+                            )}
+                            {isRetenueReleaseDue(m) && (
+                              <span
+                                className="text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                                data-testid={`badge-marche-release-due-${m.id}`}
+                              >
+                                Libération RG due
+                              </span>
+                            )}
                             <span className="text-[12px] font-semibold text-foreground">{formatCurrency(parseFloat(m.totalHt))} HT</span>
                             <StatusBadge status={m.status} />
                           </div>
@@ -1733,6 +1793,22 @@ export default function ProjectDetail() {
                           </FormItem>
                         )} />
                       )}
+                      {/* Task #464 — réception des travaux; the GPA (art.
+                          1792-6 C. civ.) runs one year from this date. */}
+                      <FormField control={marcheForm.control} name="receptionDate" render={({ field }) => (
+                        <FormItem>
+                          <FormLabel><TechnicalLabel>Réception des Travaux</TechnicalLabel></FormLabel>
+                          <FormControl>
+                            <Input type="date" {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} data-testid="input-marche-reception-date" />
+                          </FormControl>
+                          {field.value && (
+                            <p className="text-[10px] text-muted-foreground mt-0.5">
+                              Fin de GPA : {gpaEndDate(field.value) ?? "—"} (réception + 1 an)
+                            </p>
+                          )}
+                          <FormMessage />
+                        </FormItem>
+                      )} />
                       <FormField control={marcheForm.control} name="hasBankGuarantee" render={({ field }) => (
                         <FormItem className="flex items-center justify-between gap-2 rounded-lg border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] p-3">
                           <div>

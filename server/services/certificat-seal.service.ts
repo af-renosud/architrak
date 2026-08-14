@@ -73,6 +73,11 @@ export async function sealCertificat(certificatId: number): Promise<{
       // the seal silently revert to the contract regime. Autoliquidation
       // still wins inside the resolver (forces 0%).
       tvaRateOverride: existing.tvaRatePercent,
+      // Task #464 — the seal FREEZES the solde designation and the retenue
+      // release state as recorded on the draft; changing either after
+      // issuance requires the reissue flow.
+      isSolde: existing.isSolde,
+      releaseRetenue: existing.retenueReleased,
       excludeCertificatId: certificatId,
     });
     const drifted = (Object.entries(freshDeductions) as Array<[keyof typeof freshDeductions, string]>)
@@ -137,6 +142,11 @@ export async function sealCertificat(certificatId: number): Promise<{
       periodAcompteRecoupment: existing.periodAcompteRecoupment,
       tvaRatePercent: existing.tvaRatePercent,
       tvaAutoliquidation: existing.tvaAutoliquidation,
+      isSolde: existing.isSolde,
+      retenueReleased: existing.retenueReleased,
+      retenueReleaseAmount: existing.retenueReleaseAmount,
+      retenueReleaseReason: existing.retenueReleaseReason,
+      retenueReleaseDate: existing.retenueReleaseDate,
       netToPayHt: existing.netToPayHt,
       tvaAmount: existing.tvaAmount,
       netToPayTtc: existing.netToPayTtc,

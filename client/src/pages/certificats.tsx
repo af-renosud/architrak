@@ -8,6 +8,7 @@ import { FileCheck, Plus, Eye, ChevronRight, ExternalLink, RefreshCw, Download }
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -38,6 +39,11 @@ const certificatFormSchema = insertCertificatSchema.extend({
   // Task #463 — draft-only override of the applied TVA rate (%). Ignored by
   // the server on autoliquidation contracts.
   tvaRateOverride: z.string().optional(),
+  // Task #464 — solde designation + explicit retenue de garantie release.
+  // `releaseRetenue`/`releaseReason` are request fields (the server derives
+  // the released state, amount and date authoritatively).
+  releaseRetenue: z.boolean().optional(),
+  releaseReason: z.string().optional(),
 });
 
 type CertificatFormValues = z.infer<typeof certificatFormSchema>;
@@ -121,6 +127,21 @@ function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Certifica
                 <span className="text-[13px] font-semibold text-foreground" data-testid="text-cert-detail-acompte-recoupment">
                   {formatCurrency(parseFloat(cert.periodAcompteRecoupment ?? "0"))} / {formatCurrency(parseFloat(cert.cumulativeAcompteRecoupment ?? "0"))}
                 </span>
+              </div>
+            )}
+            {cert.isSolde && (
+              <div className="flex items-center justify-between gap-2" data-testid="text-cert-detail-solde">
+                <TechnicalLabel>Certificat de Solde</TechnicalLabel>
+                <span className="text-[13px] font-semibold text-foreground">
+                  {cert.retenueReleased
+                    ? `RG libérée ${formatCurrency(parseFloat(cert.retenueReleaseAmount ?? "0"))}${cert.retenueReleaseDate ? ` le ${cert.retenueReleaseDate}` : ""}`
+                    : "Retenue de Garantie conservée"}
+                </span>
+              </div>
+            )}
+            {cert.isSolde && cert.retenueReleased && cert.retenueReleaseReason && (
+              <div className="text-[10px] text-muted-foreground italic" data-testid="text-cert-detail-release-reason">
+                Raison : {cert.retenueReleaseReason}
               </div>
             )}
             <div className="border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] pt-3">
@@ -240,6 +261,9 @@ export default function Certificats() {
   const watchRetenueOverride = form.watch("retenueOverride");
   const watchProrataOverride = form.watch("prorataOverride");
   const watchTvaRateOverride = form.watch("tvaRateOverride");
+  // Task #464 — solde designation + explicit retenue release (live preview).
+  const watchIsSolde = form.watch("isSolde");
+  const watchReleaseRetenue = form.watch("releaseRetenue");
 
   // Task #243 — the contractor's marché carries the Retenue de Garantie rate,
   // the bank-guarantee bypass and the prorata-manager exemption; the project
@@ -309,6 +333,13 @@ export default function Certificats() {
     [projectDevis, watchContractorId],
   );
 
+  // Task #464 — an existing non-superseded solde certificat blocks a second
+  // one for the same (project, contractor) pair.
+  const existingSolde = useMemo(
+    () => priorCerts.find((c) => c.isSolde && c.status !== "superseded") ?? null,
+    [priorCerts],
+  );
+
   const latestPrior = useMemo(
     () =>
       priorCerts
@@ -342,7 +373,9 @@ export default function Certificats() {
     acompteRecoupmentThresholdPercent: selectedMarche?.acompteRecoupmentThresholdPercent != null ? parseFloat(selectedMarche.acompteRecoupmentThresholdPercent) : null,
     contractTotalHt: selectedMarche?.totalHt != null ? parseFloat(selectedMarche.totalHt) : null,
     tvaRate: appliedTvaRatePercent / 100,
-  }), [watchTotalWorks, watchPvMv, watchPrevious, retenuePercent, hasBankGuarantee, prorataPercent, isProrataManager, latestPrior, watchRetenueOverride, watchProrataOverride, paidAcompteAmount, selectedMarche, appliedTvaRatePercent]);
+    isSolde: watchIsSolde === true,
+    releaseRetenue: watchReleaseRetenue === true,
+  }), [watchTotalWorks, watchPvMv, watchPrevious, retenuePercent, hasBankGuarantee, prorataPercent, isProrataManager, latestPrior, watchRetenueOverride, watchProrataOverride, paidAcompteAmount, selectedMarche, appliedTvaRatePercent, watchIsSolde, watchReleaseRetenue]);
 
   useEffect(() => {
     form.setValue("retenueGarantie", breakdown.cumulativeRetenue.toFixed(2));
@@ -434,6 +467,9 @@ export default function Certificats() {
       retenueOverride: undefined,
       prorataOverride: undefined,
       tvaRateOverride: undefined,
+      isSolde: false,
+      releaseRetenue: false,
+      releaseReason: undefined,
     });
     setDialogOpen(true);
   };
@@ -819,6 +855,91 @@ export default function Certificats() {
                   />
                 </div>
 
+                {/* Task #464 — solde designation + explicit retenue release. */}
+                <div className="p-4 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] space-y-3">
+                  <FormField
+                    control={form.control}
+                    name="isSolde"
+                    render={({ field }) => (
+                      <FormItem className="flex items-center justify-between gap-2 space-y-0">
+                        <div>
+                          <FormLabel>
+                            <TechnicalLabel>Certificat de Solde (final)</TechnicalLabel>
+                          </FormLabel>
+                          <p className="text-[10px] text-muted-foreground mt-0.5">
+                            Un seul certificat de solde par marché
+                            {existingSolde ? ` — ${existingSolde.certificateRef} existe déjà` : ""}
+                          </p>
+                        </div>
+                        <FormControl>
+                          <Switch
+                            checked={field.value === true}
+                            disabled={!!existingSolde}
+                            onCheckedChange={(checked) => {
+                              field.onChange(checked);
+                              if (!checked) {
+                                form.setValue("releaseRetenue", false);
+                                form.setValue("releaseReason", undefined);
+                              }
+                            }}
+                            data-testid="switch-cert-solde"
+                          />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+                  {watchIsSolde === true && (
+                    <>
+                      <FormField
+                        control={form.control}
+                        name="releaseRetenue"
+                        render={({ field }) => (
+                          <FormItem className="flex items-center justify-between gap-2 space-y-0">
+                            <div>
+                              <FormLabel>
+                                <TechnicalLabel>Libérer la Retenue de Garantie</TechnicalLabel>
+                              </FormLabel>
+                              <p className="text-[10px] text-muted-foreground mt-0.5">
+                                Par défaut la retenue reste conservée. La libération ajoute le cumul retenu au net à payer (après parfait achèvement ou caution bancaire).
+                              </p>
+                            </div>
+                            <FormControl>
+                              <Switch
+                                checked={field.value === true}
+                                onCheckedChange={field.onChange}
+                                data-testid="switch-cert-release-retenue"
+                              />
+                            </FormControl>
+                          </FormItem>
+                        )}
+                      />
+                      {watchReleaseRetenue === true && (
+                        <FormField
+                          control={form.control}
+                          name="releaseReason"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>
+                                <TechnicalLabel>Raison de la libération (requis)</TechnicalLabel>
+                              </FormLabel>
+                              <FormControl>
+                                <Input
+                                  {...field}
+                                  value={field.value ?? ""}
+                                  onChange={(e) => field.onChange(e.target.value || undefined)}
+                                  placeholder="ex. GPA expirée — parfait achèvement constaté"
+                                  data-testid="input-cert-release-reason"
+                                />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      )}
+                    </>
+                  )}
+                </div>
+
                 <div className="p-4 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] space-y-2">
                   <TechnicalLabel>Deduction Breakdown (Cumulative)</TechnicalLabel>
                   <div className="flex items-center justify-between gap-2">
@@ -865,6 +986,19 @@ export default function Certificats() {
                       −{formatCurrency(parseFloat(watchPrevious || "0") || 0)}
                     </span>
                   </div>
+                  {watchIsSolde === true && breakdown.retenueReleaseAmount > 0 && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-muted-foreground">+ Libération Retenue de Garantie (solde)</span>
+                      <span className="text-[13px] font-semibold text-green-700 dark:text-green-500" data-testid="text-calc-retenue-release">
+                        +{formatCurrency(breakdown.retenueReleaseAmount)}
+                      </span>
+                    </div>
+                  )}
+                  {watchIsSolde === true && watchReleaseRetenue !== true && breakdown.cumulativeRetenue > 0 && (
+                    <div className="text-[10px] text-muted-foreground italic" data-testid="text-calc-retenue-withheld">
+                      Solde — Retenue de Garantie de {formatCurrency(breakdown.cumulativeRetenue)} conservée
+                    </div>
+                  )}
                   <div className="flex items-center justify-between gap-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                     <span className="text-[11px] text-muted-foreground">Net to Pay HT</span>
                     <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-net-ht">

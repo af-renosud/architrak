@@ -36,6 +36,31 @@ export interface ResolveCertificatDeductionsInput {
   tvaRateOverride?: string | null;
   /** When recomputing an existing certificat, exclude it from the prior set. */
   excludeCertificatId?: number;
+  /** Task #464 — designate this certificat as the solde (final) for its marché. */
+  isSolde?: boolean;
+  /**
+   * Task #464 — explicit architect release of the retenue de garantie.
+   * Only valid on a solde certificat (throws otherwise). Default withheld.
+   */
+  releaseRetenue?: boolean;
+}
+
+/** Task #464 — a non-superseded solde certificat already exists for the pair. */
+export class SoldeConflictError extends Error {
+  constructor(public readonly existingCertificateRef: string) {
+    super(
+      `Un certificat de solde (${existingCertificateRef}) existe déjà pour cette entreprise — un seul certificat de solde par marché.`,
+    );
+    this.name = "SoldeConflictError";
+  }
+}
+
+/** Task #464 — retenue release requested on a non-solde certificat. */
+export class ReleaseRequiresSoldeError extends Error {
+  constructor() {
+    super("La libération de la retenue de garantie n'est possible que sur le certificat de solde.");
+    this.name = "ReleaseRequiresSoldeError";
+  }
 }
 
 export interface ResolvedCertificatDeductions {
@@ -47,6 +72,10 @@ export interface ResolvedCertificatDeductions {
   /** Task #463 — the TVA rate (%) actually applied; audit trail. */
   tvaRatePercent: string;
   tvaAutoliquidation: boolean;
+  /** Task #464 — solde designation + retenue release state, server-derived. */
+  isSolde: boolean;
+  retenueReleased: boolean;
+  retenueReleaseAmount: string;
   netToPayHt: string;
   tvaAmount: string;
   netToPayTtc: string;
@@ -73,6 +102,18 @@ export async function resolveCertificatDeductions(
   const priorCerts = (
     await storage.getCertificatsByProjectAndContractor(input.projectId, input.contractorId)
   ).filter((c) => c.id !== input.excludeCertificatId && c.status !== "superseded");
+
+  // Task #464 — solde preconditions. At most one non-superseded solde
+  // certificat per (project, contractor) — friendly check here, race-free
+  // enforcement by the partial unique index `certificats_solde_unique`.
+  // A retenue release is only meaningful on the solde certificat.
+  const isSolde = input.isSolde === true;
+  const releaseRetenue = input.releaseRetenue === true;
+  if (isSolde) {
+    const existingSolde = priorCerts.find((c) => c.isSolde);
+    if (existingSolde) throw new SoldeConflictError(existingSolde.certificateRef);
+  }
+  if (releaseRetenue && !isSolde) throw new ReleaseRequiresSoldeError();
 
   // Both `retenueGarantie` and `cumulativeProrataDeduction` store the
   // cumulative-to-date figure on each certificat, so the *latest* prior
@@ -161,6 +202,8 @@ export async function resolveCertificatDeductions(
     acompteRecoupmentPercent: toNumberOrNull(marche?.acompteRecoupmentPercent),
     acompteRecoupmentThresholdPercent: toNumberOrNull(marche?.acompteRecoupmentThresholdPercent),
     contractTotalHt: toNumberOrNull(marche?.totalHt),
+    isSolde,
+    releaseRetenue,
   });
 
   return {
@@ -171,6 +214,9 @@ export async function resolveCertificatDeductions(
     periodAcompteRecoupment: result.periodAcompteRecoupment.toFixed(2),
     tvaRatePercent: resolvedTvaRatePercent.toFixed(2),
     tvaAutoliquidation,
+    isSolde,
+    retenueReleased: isSolde && releaseRetenue,
+    retenueReleaseAmount: result.retenueReleaseAmount.toFixed(2),
     netToPayHt: result.netToPayHt.toFixed(2),
     tvaAmount: result.tvaAmount.toFixed(2),
     netToPayTtc: result.netToPayTtc.toFixed(2),

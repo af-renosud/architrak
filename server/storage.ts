@@ -1923,13 +1923,19 @@ export class DatabaseStorage implements IStorage {
     // winner under concurrent reissues (the loser's INSERT throws 23505 and
     // its status update rolls back).
     return db.transaction(async (tx) => {
-      const [created] = await tx.insert(certificats).values(draft).returning();
+      // Task #464 — supersede the original BEFORE inserting the clone: the
+      // partial unique index certificats_solde_unique (one non-superseded
+      // solde per project+contractor) is non-deferrable, so a solde reissue
+      // must remove the original from the index's scope before the clone's
+      // INSERT is checked. Atomicity is unchanged — either write failing
+      // rolls back both.
       const [superseded] = await tx
         .update(certificats)
         .set({ status: "superseded", version: sql`${certificats.version} + 1` })
         .where(eq(certificats.id, originalId))
         .returning();
       if (!superseded) throw new Error(`Certificat ${originalId} disappeared during reissue`);
+      const [created] = await tx.insert(certificats).values(draft).returning();
       return created;
     });
   }

@@ -681,6 +681,11 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   // from this period's net (prior recoupments already reduced prior nets).
   const periodAcompteRecoupment = roundCurrency(parseFloat(certificat.periodAcompteRecoupment ?? "0"));
   const cumulativeAcompteRecoupment = roundCurrency(parseFloat(certificat.cumulativeAcompteRecoupment ?? "0"));
+  // Task #464 — solde certificat: the retenue release is a distinct POSITIVE
+  // line (never a rate change); a still-withheld solde shows the balance.
+  const isSolde = certificat.isSolde === true;
+  const retenueReleased = certificat.retenueReleased === true;
+  const retenueReleaseAmount = roundCurrency(parseFloat(certificat.retenueReleaseAmount ?? "0"));
 
   const primaryLot = devisDetails.find(d => d.lot)?.lot;
   const lotLabel = primaryLot ? `LOT ${primaryLot.lotNumber}` : "LOT";
@@ -1223,6 +1228,10 @@ function buildCertificatHtml(data: CertificatPdfData): string {
             <td>Previous Payments (cumulative)</td>
             <td style="text-align:right;color:#B23A48;">- ${formatCurrencyNoSymbol(previousPaymentsHt)}</td>
           </tr>
+          ${isSolde && retenueReleased ? `<tr>
+            <td>Lib\u00E9ration Retenue de Garantie (solde)</td>
+            <td style="text-align:right;color:#1B7A3D;">+ ${formatCurrencyNoSymbol(retenueReleaseAmount)}</td>
+          </tr>` : ""}
           <tr class="net-row">
             <td style="font-weight:700;color:#0B2545;">Net to Pay HT (this period)</td>
             <td style="text-align:right;font-weight:700;color:#0B2545;">${formatCurrencyNoSymbol(netHt)}</td>
@@ -1230,6 +1239,8 @@ function buildCertificatHtml(data: CertificatPdfData): string {
         </tbody>
       </table>
       ${cumulativeProrata > 0 ? `<div class="warning-note">The Compte Prorata (${formatCurrencyNoSymbol(cumulativeProrata)}) is levied on this certificat and paid to the site Compte Prorata manager.</div>` : ""}
+      ${isSolde && !retenueReleased && cumulativeRetenue > 0 ? `<div class="warning-note">Certificat de SOLDE \u2014 Retenue de Garantie de ${formatCurrencyNoSymbol(cumulativeRetenue)} CONSERV\u00C9E (\u00E0 lib\u00E9rer apr\u00E8s parfait ach\u00E8vement).</div>` : ""}
+      ${isSolde && retenueReleased ? `<div class="warning-note">Certificat de SOLDE \u2014 Retenue de Garantie lib\u00E9r\u00E9e${certificat.retenueReleaseDate ? ` le ${formatDateFr(certificat.retenueReleaseDate)}` : ""}${certificat.retenueReleaseReason ? ` \u2014 ${escapeHtml(certificat.retenueReleaseReason)}` : ""}.</div>` : ""}
     </div>
 
     <div class="cert-col">
@@ -1491,6 +1502,11 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     tvaAutoliquidation: false,
     tvaAmount: "2500.00",
     netToPayTtc: "15000.00",
+    isSolde: false,
+    retenueReleased: false,
+    retenueReleaseAmount: "0.00",
+    retenueReleaseReason: null,
+    retenueReleaseDate: null,
     status: "draft",
     notes: null,
     driveFileId: null,

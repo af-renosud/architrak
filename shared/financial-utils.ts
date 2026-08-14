@@ -71,6 +71,15 @@ export interface CertificatDeductionInput {
   acompteRecoupmentThresholdPercent?: number | null;
   /** Contract total HT (marché) used for threshold progress; null = unknown. */
   contractTotalHt?: number | null;
+  /** Task #464 — this certificat is the solde (final) certificat of its marché. */
+  isSolde?: boolean;
+  /**
+   * Task #464 — explicit architect release of the retenue de garantie.
+   * Only effective on a solde certificat: the cumulative retenue withheld
+   * to date is added BACK into the net to pay as a distinct positive line
+   * (never a rate change). Default false ⇒ holdback stays withheld.
+   */
+  releaseRetenue?: boolean;
 }
 
 export interface CertificatDeductionResult {
@@ -81,6 +90,8 @@ export interface CertificatDeductionResult {
   periodProrata: number;
   cumulativeAcompteRecoupment: number;
   periodAcompteRecoupment: number;
+  /** Task #464 — retenue added back on a released solde certificat (else 0). */
+  retenueReleaseAmount: number;
   netToPayHt: number;
   tvaAmount: number;
   netToPayTtc: number;
@@ -153,8 +164,17 @@ export function computeCertificatDeductions(input: CertificatDeductionInput): Ce
   );
   const periodAcompteRecoupment = roundCurrency(cumulativeAcompteRecoupment - priorRecouped);
 
+  // Task #464 — retenue de garantie release. Only a SOLDE certificat may
+  // release, and only when the architect explicitly asked. The cumulative
+  // retenue was withheld from every prior net (and from this period's math
+  // above), so adding the full cumulative back as a positive line pays out
+  // exactly what was held — never more (bank-guarantee contracts hold 0,
+  // so their release line is naturally 0).
+  const retenueReleaseAmount =
+    input.isSolde && input.releaseRetenue ? roundCurrency(Math.max(0, cumulativeRetenue)) : 0;
+
   const netToPayHt = roundCurrency(
-    grossCumulativeHt - cumulativeRetenue - cumulativeProrata - input.previousPayments - periodAcompteRecoupment,
+    grossCumulativeHt - cumulativeRetenue - cumulativeProrata - input.previousPayments - periodAcompteRecoupment + retenueReleaseAmount,
   );
   const tvaAmount = roundCurrency(netToPayHt * tvaRate);
   const netToPayTtc = roundCurrency(netToPayHt + tvaAmount);
@@ -167,6 +187,7 @@ export function computeCertificatDeductions(input: CertificatDeductionInput): Ce
     periodProrata,
     cumulativeAcompteRecoupment,
     periodAcompteRecoupment,
+    retenueReleaseAmount,
     netToPayHt,
     tvaAmount,
     netToPayTtc,

@@ -295,6 +295,13 @@ export const marches = pgTable("marches", {
   acompteRecoupmentRule: text("acompte_recoupment_rule").notNull().default("asap"),
   acompteRecoupmentPercent: numeric("acompte_recoupment_percent", { precision: 5, scale: 2 }),
   acompteRecoupmentThresholdPercent: numeric("acompte_recoupment_threshold_percent", { precision: 5, scale: 2 }),
+  // Task #464 — réception des travaux. The GPA (garantie de parfait
+  // achèvement, art. 1792-6 Code civil) runs for ONE YEAR from this date;
+  // its end date is derived (réception + 1 an), never stored. Once the GPA
+  // has expired the retenue de garantie of a still-withholding contract is
+  // due for release (surfaced in the UI, released explicitly on the solde
+  // certificat — never automatically).
+  receptionDate: date("reception_date"),
   // Task #463 — TVA regime for this contract's certificats de paiement.
   // `tvaRatePercent` NULL means "no contract-specific rate": fall back to
   // the contractor's default, then to the standard 20%. When
@@ -788,6 +795,22 @@ export const certificats = pgTable("certificats", {
   // rate 0.00 + the mandatory art. 283 CGI mention on the PDF.
   tvaRatePercent: numeric("tva_rate_percent", { precision: 5, scale: 2 }).notNull().default("20.00"),
   tvaAutoliquidation: boolean("tva_autoliquidation").notNull().default(false),
+  // Task #464 — solde (final) certificat for its marché. At most ONE
+  // non-superseded solde certificat may exist per (project, contractor):
+  // enforced by the partial unique index below + a friendly resolver check.
+  isSolde: boolean("is_solde").notNull().default(false),
+  // Task #464 — explicit retenue de garantie release on the solde
+  // certificat. Default is WITHHELD; the architect must explicitly toggle
+  // the release (after parfait achèvement, or when a caution bancaire
+  // replaces the holdback). `retenueReleaseAmount` is the cumulative
+  // retenue added BACK into the net to pay as a distinct positive line —
+  // server-derived, never client-settable. Reason + date are the audit
+  // trail (reason is architect-provided, date server-stamped). All four
+  // are frozen by the issuance seal; post-seal changes go through reissue.
+  retenueReleased: boolean("retenue_released").notNull().default(false),
+  retenueReleaseAmount: numeric("retenue_release_amount", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  retenueReleaseReason: text("retenue_release_reason"),
+  retenueReleaseDate: date("retenue_release_date"),
   netToPayHt: numeric("net_to_pay_ht", { precision: 12, scale: 2 }).notNull(),
   tvaAmount: numeric("tva_amount", { precision: 12, scale: 2 }).notNull(),
   netToPayTtc: numeric("net_to_pay_ttc", { precision: 12, scale: 2 }).notNull(),
@@ -829,6 +852,13 @@ export const certificats = pgTable("certificats", {
   uniqueIndex("certificats_reissued_from_unique")
     .on(table.reissuedFromCertificatId)
     .where(sql`${table.reissuedFromCertificatId} IS NOT NULL`),
+  // Task #464 — at most ONE non-superseded solde certificat per
+  // (project, contractor). Race-free at INSERT/UPDATE time; the reissue
+  // transaction supersedes the original BEFORE inserting the clone so a
+  // solde reissue never trips this index mid-transaction.
+  uniqueIndex("certificats_solde_unique")
+    .on(table.projectId, table.contractorId)
+    .where(sql`${table.isSolde} = true AND ${table.status} <> 'superseded'`),
   // Task #457 — closed status vocabulary; `superseded` is written only by
   // the atomic reissue transaction (enforced at the routes) and is terminal.
   check(
