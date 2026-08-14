@@ -1,7 +1,8 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { getUncachableGmailClient, isGmailConfigured } from "../gmail/client";
+import { getUncachableGmailClient, isGmailConfigured, isFakeGmailMode } from "../gmail/client";
+import { getGmailClientForUser } from "../gmail/user-client";
 import { storage } from "../storage";
 import { buildCertificatEmailBody } from "./certificat-generator";
 import { sealCertificat } from "../services/certificat-seal.service";
@@ -180,12 +181,8 @@ export function loadAssetAttachment(key: string): { filename: string; buffer: Bu
 
 export async function sendCommunication(
   communicationId: number,
-  opts?: { threadId?: string | null; inReplyToMessageId?: string | null },
+  opts?: { threadId?: string | null; inReplyToMessageId?: string | null; sentByUserId?: number | null },
 ): Promise<void> {
-  if (!isGmailConfigured()) {
-    throw new Error("Gmail not configured");
-  }
-
   const comm = await storage.getProjectCommunication(communicationId);
   if (!comm) throw new Error(`Communication ${communicationId} not found`);
 
@@ -198,7 +195,36 @@ export async function sendCommunication(
   }
 
   try {
-    const gmail = await getUncachableGmailClient();
+    // Task #466 — send through the INITIATING architect's linked Gmail
+    // client when they have one (gmail.modify scope includes send). Sending
+    // from their linked mailbox means client replies land in a mailbox we
+    // can READ, so the payment-reply scanner can watch the thread;
+    // `sentViaUserId` binds the communication to that mailbox. Explicit
+    // fallback: if the caller passed no user, or that user has not linked
+    // Gmail (or their client fails), send via the shared Replit connector —
+    // which requires the connector to be configured — and leave
+    // `sentViaUserId` null (legacy probe-every-inbox scan path). We never
+    // substitute a DIFFERENT user's mailbox: that would attribute the
+    // thread to someone who didn't send it and scan the wrong inbox.
+    let gmail: Awaited<ReturnType<typeof getUncachableGmailClient>> | null = null;
+    let sentViaUserId: number | null = null;
+    if (!isFakeGmailMode() && opts?.sentByUserId) {
+      const sender = await storage.getUser(opts.sentByUserId);
+      if (sender?.gmailRefreshToken) {
+        try {
+          gmail = await getGmailClientForUser(sender);
+          sentViaUserId = sender.id;
+        } catch (err) {
+          console.error(`[EmailSender] Linked Gmail client failed for sender ${sender.id}, falling back to connector:`, err);
+        }
+      }
+    }
+    if (!gmail) {
+      if (!isGmailConfigured()) {
+        throw new Error("Gmail not configured: no linked mailbox for the sender and the shared Gmail connector is not set up");
+      }
+      gmail = await getUncachableGmailClient();
+    }
 
     const attachments: Array<{ filename: string; content: string; contentType: string }> = [];
     const storageKeys = (comm.attachmentStorageKeys as string[]) || [];
@@ -287,6 +313,7 @@ export async function sendCommunication(
       sentAt: new Date(),
       emailMessageId: sendResult.data.id || undefined,
       emailThreadId: sendResult.data.threadId || undefined,
+      sentViaUserId,
     });
 
     console.log(`[EmailSender] Sent communication ${communicationId}: ${comm.subject}`);

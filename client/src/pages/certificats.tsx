@@ -19,7 +19,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { insertCertificatSchema } from "@shared/schema";
-import type { Project, Contractor, Certificat, CertificatPayment, Invoice, Marche, Devis } from "@shared/schema";
+import type { Project, Contractor, Certificat, CertificatPayment, CertificatPaymentSuggestion, Invoice, Marche, Devis } from "@shared/schema";
 import { computeCertificatDeductions } from "@shared/financial-utils";
 import { z } from "zod";
 
@@ -72,8 +72,15 @@ function CertificatPaymentsSection({ cert, projectId }: { cert: Certificat; proj
   const ledgerKey = ["/api/certificats", String(cert.id), "payments"];
   const { data: ledger } = useQuery<PaymentLedgerResponse>({ queryKey: ledgerKey });
 
+  // Task #466 — draft suggestions detected from client "paid" replies.
+  const suggestionsKey = ["/api/certificats", String(cert.id), "payment-suggestions"];
+  const { data: suggestions } = useQuery<CertificatPaymentSuggestion[]>({ queryKey: suggestionsKey });
+  const openSuggestions = (suggestions ?? []).filter((s) => s.status === "pending_review" || s.status === "ambiguous");
+
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ledgerKey });
+    queryClient.invalidateQueries({ queryKey: suggestionsKey });
+    queryClient.invalidateQueries({ queryKey: ["/api/certificat-payment-suggestions"] });
     queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "certificats"] });
     queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "certificat-payments"] });
   };
@@ -158,6 +165,10 @@ function CertificatPaymentsSection({ cert, projectId }: { cert: Certificat; proj
           )}
         </div>
       )}
+
+      {openSuggestions.map((s) => (
+        <PaymentSuggestionCard key={s.id} suggestion={s} onDone={invalidate} />
+      ))}
 
       {(ledger?.payments ?? []).map((p) => (
         <div key={p.id} className="flex items-center justify-between gap-2 text-[12px] border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] pt-2" data-testid={`row-payment-${p.id}`}>
@@ -247,6 +258,97 @@ function CertificatPaymentsSection({ cert, projectId }: { cert: Certificat; proj
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Task #466 — a single draft suggestion (client "paid" reply). Amount, date
+// and method are editable before confirmation; nothing is auto-recorded.
+function PaymentSuggestionCard({ suggestion, onDone }: { suggestion: CertificatPaymentSuggestion; onDone: () => void }) {
+  const { toast } = useToast();
+  const [datePaid, setDatePaid] = useState(suggestion.suggestedDate);
+  const [amount, setAmount] = useState(suggestion.suggestedAmount);
+  const [method, setMethod] = useState<"virement" | "cheque" | "autre">("virement");
+  const ambiguous = suggestion.status === "ambiguous";
+
+  const confirmMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/certificat-payment-suggestions/${suggestion.id}/confirm`, { datePaid, amount, method });
+      return res.json() as Promise<{ fullyPaid: boolean; overpaid: boolean }>;
+    },
+    onSuccess: (r) => {
+      onDone();
+      toast({
+        title: r.fullyPaid ? "Paiement confirmé — certificat soldé" : "Paiement confirmé",
+        description: r.overpaid ? "Attention : le total encaissé dépasse le montant TTC." : "Enregistré au journal des paiements (source e-mail).",
+        variant: r.overpaid ? "destructive" : undefined,
+      });
+    },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  const dismissMutation = useMutation({
+    mutationFn: async () => (await apiRequest("POST", `/api/certificat-payment-suggestions/${suggestion.id}/dismiss`, {})).json(),
+    onSuccess: () => {
+      onDone();
+      toast({ title: "Suggestion ignorée" });
+    },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  return (
+    <div
+      className="space-y-2 rounded-lg border border-amber-300/60 dark:border-amber-500/30 bg-amber-50/60 dark:bg-amber-950/20 p-3"
+      data-testid={`card-payment-suggestion-${suggestion.id}`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[9px] font-bold uppercase tracking-widest text-amber-700 dark:text-amber-400">
+          {ambiguous ? "Réponse client à vérifier" : "Paiement signalé par le client"}
+        </span>
+        <span className="text-[10px] text-muted-foreground">{new Date(suggestion.emailDate).toLocaleDateString("fr-FR")}</span>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Réponse de <span className="font-semibold text-foreground">{suggestion.senderEmail}</span>
+        {suggestion.matchedExcerpt && (
+          <>
+            {" — «\u00A0"}
+            <span className="italic" data-testid={`text-suggestion-excerpt-${suggestion.id}`}>{suggestion.matchedExcerpt}</span>
+            {"\u00A0»"}
+          </>
+        )}
+        {ambiguous && " — aucun mot-clé de paiement détecté, à vérifier manuellement."}
+      </p>
+      <div className="grid grid-cols-3 gap-2">
+        <Input type="date" value={datePaid} onChange={(e) => setDatePaid(e.target.value)} data-testid={`input-suggestion-date-${suggestion.id}`} />
+        <Input type="number" step="0.01" min="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} data-testid={`input-suggestion-amount-${suggestion.id}`} />
+        <Select value={method} onValueChange={(v) => setMethod(v as "virement" | "cheque" | "autre")}>
+          <SelectTrigger data-testid={`select-suggestion-method-${suggestion.id}`}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="virement">Virement</SelectItem>
+            <SelectItem value="cheque">Chèque</SelectItem>
+            <SelectItem value="autre">Autre</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="flex items-center gap-2 justify-end">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => dismissMutation.mutate()}
+          disabled={dismissMutation.isPending || confirmMutation.isPending}
+          data-testid={`button-dismiss-suggestion-${suggestion.id}`}
+        >
+          <span className="text-[8px] font-bold uppercase tracking-widest">Ignorer</span>
+        </Button>
+        <Button
+          size="sm"
+          onClick={() => confirmMutation.mutate()}
+          disabled={confirmMutation.isPending || dismissMutation.isPending || !datePaid || !amount || parseFloat(amount) <= 0}
+          data-testid={`button-confirm-suggestion-${suggestion.id}`}
+        >
+          <span className="text-[8px] font-bold uppercase tracking-widest">Confirmer le paiement</span>
+        </Button>
+      </div>
     </div>
   );
 }

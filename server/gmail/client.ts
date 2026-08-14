@@ -74,6 +74,11 @@ function buildFakeGmailClient() {
           get: async (_args: unknown) => ({ data: { data: "" } }),
         },
       },
+      // Task #466 — the payment-reply scanner calls threads.get; stub it as
+      // an empty thread so fake-mode polling stays silently happy.
+      threads: {
+        get: async (_args: unknown) => ({ data: { messages: [] } }),
+      },
       labels: {
         list: async (_args: unknown) => ({ data: { labels: [] } }),
         create: async (_args: unknown) => ({ data: { id: "fake-label-id" } }),

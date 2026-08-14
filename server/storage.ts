@@ -58,8 +58,9 @@ import {
   type MarcheDocument, type InsertMarcheDocument,
   type Certificat, type InsertCertificat,
   certificatSources, type CertificatSource, type InsertCertificatSource,
-  certificatPayments, certificatPaymentAudits,
+  certificatPayments, certificatPaymentAudits, certificatPaymentSuggestions,
   type CertificatPayment, type InsertCertificatPayment, type CertificatPaymentAudit,
+  type CertificatPaymentSuggestion, type InsertCertificatPaymentSuggestion,
   type Fee, type InsertFee,
   type FeeEntry, type InsertFeeEntry,
   designContracts, designContractMilestones,
@@ -369,6 +370,23 @@ export interface IStorage {
   updateCertificatPaymentAtomic(paymentId: number, patch: Partial<InsertCertificatPayment>, changedBy: string | null): Promise<CertificatPaymentMutationResult & { payment?: CertificatPayment }>;
   deleteCertificatPaymentAtomic(paymentId: number, changedBy: string | null): Promise<CertificatPaymentMutationResult>;
   getCertificatPaymentAudits(certificatId: number): Promise<CertificatPaymentAudit[]>;
+  // Task #466 — payment suggestions from client "paid" replies.
+  getCertificatPaymentSuggestion(id: number): Promise<CertificatPaymentSuggestion | undefined>;
+  getCertificatPaymentSuggestions(certificatId: number): Promise<CertificatPaymentSuggestion[]>;
+  getOpenPaymentSuggestionsWithContext(): Promise<Array<{ suggestion: CertificatPaymentSuggestion; certificateRef: string; projectName: string }>>;
+  getPaymentSuggestionByEmailMessageId(emailMessageId: string): Promise<CertificatPaymentSuggestion | undefined>;
+  createCertificatPaymentSuggestion(data: InsertCertificatPaymentSuggestion): Promise<CertificatPaymentSuggestion | null>;
+  confirmCertificatPaymentSuggestionAtomic(
+    suggestionId: number,
+    entry: InsertCertificatPayment,
+    reviewedBy: string | null,
+  ): Promise<
+    | { outcome: "not_found" | "already_reviewed" }
+    | { outcome: "superseded" | "draft" | "locked"; cert: Certificat }
+    | { outcome: "ok"; cert: Certificat; payment: CertificatPayment; suggestion: CertificatPaymentSuggestion; state: CertificatPaymentState }
+  >;
+  dismissCertificatPaymentSuggestion(suggestionId: number, reviewedBy: string | null): Promise<CertificatPaymentSuggestion | null>;
+  getCertificatCommunicationsAwaitingPayment(forUserId?: number | "unowned", limit?: number): Promise<Array<{ communication: ProjectCommunication; cert: Certificat }>>;
   // Task #451 — race-free edit lock: UPDATE guarded by pdf_storage_key IS
   // NULL. Returns null when the row is missing OR already sealed; callers
   // distinguish via a follow-up read.
@@ -2148,6 +2166,170 @@ export class DatabaseStorage implements IStorage {
       .from(certificatPaymentAudits)
       .where(eq(certificatPaymentAudits.certificatId, certificatId))
       .orderBy(certificatPaymentAudits.createdAt, certificatPaymentAudits.id);
+  }
+
+  // ── Task #466 — payment suggestions from client "paid" replies ──────────
+
+  async getCertificatPaymentSuggestion(id: number): Promise<CertificatPaymentSuggestion | undefined> {
+    const [row] = await db.select().from(certificatPaymentSuggestions).where(eq(certificatPaymentSuggestions.id, id));
+    return row;
+  }
+
+  async getCertificatPaymentSuggestions(certificatId: number): Promise<CertificatPaymentSuggestion[]> {
+    return db
+      .select()
+      .from(certificatPaymentSuggestions)
+      .where(eq(certificatPaymentSuggestions.certificatId, certificatId))
+      .orderBy(desc(certificatPaymentSuggestions.emailDate), desc(certificatPaymentSuggestions.id));
+  }
+
+  async getOpenPaymentSuggestionsWithContext(): Promise<
+    Array<{ suggestion: CertificatPaymentSuggestion; certificateRef: string; projectName: string }>
+  > {
+    const rows = await db
+      .select({ suggestion: certificatPaymentSuggestions, certificateRef: certificats.certificateRef, projectName: projects.name })
+      .from(certificatPaymentSuggestions)
+      .innerJoin(certificats, eq(certificatPaymentSuggestions.certificatId, certificats.id))
+      .innerJoin(projects, eq(certificatPaymentSuggestions.projectId, projects.id))
+      .where(inArray(certificatPaymentSuggestions.status, ["pending_review", "ambiguous"]))
+      .orderBy(desc(certificatPaymentSuggestions.emailDate));
+    return rows;
+  }
+
+  async getPaymentSuggestionByEmailMessageId(emailMessageId: string): Promise<CertificatPaymentSuggestion | undefined> {
+    const [row] = await db
+      .select()
+      .from(certificatPaymentSuggestions)
+      .where(eq(certificatPaymentSuggestions.emailMessageId, emailMessageId));
+    return row;
+  }
+
+  // Idempotent create: ON CONFLICT DO NOTHING on the unique email-message-id
+  // (re-polls replay harmlessly); the partial unique "one pending per
+  // certificat" index surfaces as a 23505 we swallow into null — a second
+  // "paid" reply while one suggestion is already open must not stack.
+  async createCertificatPaymentSuggestion(
+    data: InsertCertificatPaymentSuggestion,
+  ): Promise<CertificatPaymentSuggestion | null> {
+    try {
+      const [row] = await db
+        .insert(certificatPaymentSuggestions)
+        .values(data)
+        .onConflictDoNothing({ target: certificatPaymentSuggestions.emailMessageId })
+        .returning();
+      return row ?? null;
+    } catch (err) {
+      const cause = err instanceof Error && err.cause instanceof Error ? (err.cause as { code?: string }) : (err as { code?: string });
+      if (cause?.code === "23505") return null;
+      throw err;
+    }
+  }
+
+  // Confirm = ONE transaction: lock the suggestion, then the certificat
+  // (same lock the manual ledger uses), re-check preconditions, write the
+  // source='email' payment + audit + conditional paid flip, and close the
+  // suggestion. Lock order is always suggestion → certificat (only this
+  // method locks suggestions, so no deadlock cycle exists).
+  async confirmCertificatPaymentSuggestionAtomic(
+    suggestionId: number,
+    entry: InsertCertificatPayment,
+    reviewedBy: string | null,
+  ): Promise<
+    | { outcome: "not_found" | "already_reviewed" }
+    | { outcome: "superseded" | "draft" | "locked"; cert: Certificat }
+    | { outcome: "ok"; cert: Certificat; payment: CertificatPayment; suggestion: CertificatPaymentSuggestion; state: CertificatPaymentState }
+  > {
+    return db.transaction(async (tx) => {
+      const [suggestion] = await tx
+        .select()
+        .from(certificatPaymentSuggestions)
+        .where(eq(certificatPaymentSuggestions.id, suggestionId))
+        .for("update");
+      if (!suggestion) return { outcome: "not_found" as const };
+      if (suggestion.status !== "pending_review" && suggestion.status !== "ambiguous") {
+        return { outcome: "already_reviewed" as const };
+      }
+      const guard = await this.lockCertificatForPayments(tx, suggestion.certificatId);
+      if (guard.outcome !== "ok") return guard;
+      const [payment] = await tx
+        .insert(certificatPayments)
+        .values({ ...entry, certificatId: guard.cert.id, source: "email" })
+        .returning();
+      await tx.insert(certificatPaymentAudits).values({
+        certificatId: guard.cert.id,
+        paymentId: payment.id,
+        action: "created",
+        snapshot: null,
+        changedBy: reviewedBy,
+      });
+      const [updatedSuggestion] = await tx
+        .update(certificatPaymentSuggestions)
+        .set({ status: "confirmed", paymentId: payment.id, reviewedBy, reviewedAt: sql`CURRENT_TIMESTAMP` })
+        .where(eq(certificatPaymentSuggestions.id, suggestionId))
+        .returning();
+      const state = await this.flipPaidIfCovered(tx, guard.cert, [...guard.payments, payment]);
+      return { outcome: "ok" as const, cert: guard.cert, payment, suggestion: updatedSuggestion, state };
+    });
+  }
+
+  // Dismiss is a conditional single-row UPDATE — zero rows means the
+  // suggestion was already reviewed (or never existed), reported honestly.
+  async dismissCertificatPaymentSuggestion(
+    suggestionId: number,
+    reviewedBy: string | null,
+  ): Promise<CertificatPaymentSuggestion | null> {
+    const [row] = await db
+      .update(certificatPaymentSuggestions)
+      .set({ status: "dismissed", reviewedBy, reviewedAt: sql`CURRENT_TIMESTAMP` })
+      .where(
+        and(
+          eq(certificatPaymentSuggestions.id, suggestionId),
+          inArray(certificatPaymentSuggestions.status, ["pending_review", "ambiguous"]),
+        ),
+      )
+      .returning();
+    return row ?? null;
+  }
+
+  // Task #466 — sent certificat communications whose certificat could still
+  // receive a payment (not superseded; status-paid rows are excluded — their
+  // ledger may be grandfather-open but chasing replies for them is noise).
+  // No default cap: the awaiting-payment set is naturally bounded (a cert
+  // leaves it when paid/superseded), and a cap would permanently skip older
+  // unpaid threads. When `forUserId` is given, returns only communications
+  // SENT FROM that user's linked mailbox plus legacy connector sends
+  // (sent_via_user_id IS NULL) — other users' threads are unreadable by
+  // this client, so probing them would be pure noise.
+  async getCertificatCommunicationsAwaitingPayment(forUserId?: number | "unowned", limit?: number): Promise<
+    Array<{ communication: ProjectCommunication; cert: Certificat }>
+  > {
+    // "unowned" = connector/legacy sends only (the connector scan pass);
+    // a user id = rows sent from that user's mailbox PLUS unowned rows
+    // (probe coverage for the common case where the connector account is
+    // the same Gmail account the architect linked — the connector itself
+    // has no read scope, so a linked probe may be the only reader).
+    const ownership =
+      forUserId === undefined
+        ? []
+        : forUserId === "unowned"
+          ? [isNull(projectCommunications.sentViaUserId)]
+          : [or(eq(projectCommunications.sentViaUserId, forUserId), isNull(projectCommunications.sentViaUserId))!];
+    const query = db
+      .select({ communication: projectCommunications, cert: certificats })
+      .from(projectCommunications)
+      .innerJoin(certificats, eq(projectCommunications.relatedCertificatId, certificats.id))
+      .where(
+        and(
+          eq(projectCommunications.type, "certificat_sent"),
+          eq(projectCommunications.status, "sent"),
+          isNotNull(projectCommunications.emailThreadId),
+          ne(certificats.status, "superseded"),
+          ne(certificats.status, "paid"),
+          ...ownership,
+        ),
+      )
+      .orderBy(desc(projectCommunications.sentAt));
+    return limit ? query.limit(limit) : query;
   }
 
   async updateCertificat(id: number, data: Partial<InsertCertificat>): Promise<Certificat | undefined> {

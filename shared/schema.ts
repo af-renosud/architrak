@@ -916,6 +916,52 @@ export const certificatPaymentAudits = pgTable("certificat_payment_audits", {
 ]);
 
 /**
+ * Task #466 — draft payment suggestions detected from client "paid"
+ * confirmation replies in the Gmail thread of a sent certificat.
+ *
+ * NOTHING is auto-recorded: the architect confirms (creating a real
+ * certificat_payments row with source='email' via the atomic ledger tx) or
+ * dismisses. `emailMessageId` is UNIQUE — one suggestion per inbound reply,
+ * idempotent across polls. The partial unique index allows at most ONE
+ * open (pending_review) suggestion per certificat, so duplicate "paid"
+ * replies in the same thread never stack suggestions for the same
+ * outstanding balance. `ambiguous` rows are client replies on a certificat
+ * thread whose text did NOT deterministically confirm payment — surfaced
+ * in the communications hub for review instead of silently dropped.
+ * `paymentId` is a plain int (audit survives ledger edits).
+ */
+export const certificatPaymentSuggestions = pgTable("certificat_payment_suggestions", {
+  id: serial("id").primaryKey(),
+  certificatId: integer("certificat_id").notNull().references(() => certificats.id, { onDelete: "cascade" }),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  communicationId: integer("communication_id").notNull(),
+  emailMessageId: text("email_message_id").notNull(),
+  emailThreadId: text("email_thread_id").notNull(),
+  senderEmail: text("sender_email").notNull(),
+  emailDate: timestamp("email_date").notNull(),
+  matchedExcerpt: text("matched_excerpt"),
+  suggestedAmount: numeric("suggested_amount", { precision: 12, scale: 2 }).notNull(),
+  suggestedDate: date("suggested_date").notNull(),
+  status: text("status").notNull().default("pending_review"),
+  paymentId: integer("payment_id"),
+  reviewedBy: text("reviewed_by"),
+  reviewedAt: timestamp("reviewed_at"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  unique("certificat_payment_suggestions_message_unique").on(table.emailMessageId),
+  uniqueIndex("certificat_payment_suggestions_pending_unique")
+    .on(table.certificatId)
+    .where(sql`${table.status} = 'pending_review'`),
+  index("certificat_payment_suggestions_certificat_id_idx").on(table.certificatId),
+  index("certificat_payment_suggestions_project_id_idx").on(table.projectId),
+  index("certificat_payment_suggestions_status_idx").on(table.status),
+  check(
+    "certificat_payment_suggestions_status_check",
+    sql`${table.status} IN ('pending_review', 'ambiguous', 'confirmed', 'dismissed')`,
+  ),
+]);
+
+/**
  * Task #451 — certificat_sources: FK-grounded record of exactly which
  * documents a sealed certificat certifies. Replaces the loose free-text
  * `invoices.certificate_number` (dropped in migration 0071). Each row links
@@ -1610,6 +1656,11 @@ export const projectCommunications = pgTable("project_communications", {
   emailMessageId: text("email_message_id"),
   emailThreadId: text("email_thread_id"),
   dedupeKey: text("dedupe_key"),
+  // Task #466 — which architect's linked Gmail account (users.id) actually
+  // sent this email. Null = legacy sends through the shared connector
+  // mailbox; the payment-reply scanner probes those in every linked inbox,
+  // while owned rows are scanned only by their owner's client.
+  sentViaUserId: integer("sent_via_user_id").references(() => users.id, { onDelete: "set null" }),
   relatedCertificatId: integer("related_certificat_id").references(() => certificats.id),
   relatedInvoiceId: integer("related_invoice_id").references(() => invoices.id),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
@@ -2118,6 +2169,28 @@ export const insertCertificatPaymentSchema = createInsertSchema(certificatPaymen
 export type CertificatPayment = typeof certificatPayments.$inferSelect;
 export type InsertCertificatPayment = z.infer<typeof insertCertificatPaymentSchema>;
 export type CertificatPaymentAudit = typeof certificatPaymentAudits.$inferSelect;
+
+// Task #466 — payment suggestions detected from client "paid" replies.
+// Rows are created ONLY by the Gmail reply-scan (server-side); the API
+// mutates status via confirm/dismiss, so no client insert schema exists.
+export type CertificatPaymentSuggestion = typeof certificatPaymentSuggestions.$inferSelect;
+export type InsertCertificatPaymentSuggestion = typeof certificatPaymentSuggestions.$inferInsert;
+
+// Overrides the architect may apply when confirming a suggestion. Same
+// strictness as the manual ledger entry; everything optional — defaults
+// come from the suggestion itself.
+export const confirmPaymentSuggestionSchema = z.object({
+  datePaid: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  amount: z
+    .string()
+    .regex(/^\d{1,10}(\.\d{1,2})?$/)
+    .refine((v) => parseFloat(v) > 0, "amount must be positive")
+    .optional(),
+  method: z.enum(["virement", "cheque", "autre"]).optional(),
+  reference: z.string().trim().max(200).nullable().optional(),
+  reviewedBy: z.string().trim().max(200).optional(),
+});
+export type ConfirmPaymentSuggestion = z.infer<typeof confirmPaymentSuggestionSchema>;
 export type Fee = typeof fees.$inferSelect;
 export type InsertFee = z.infer<typeof insertFeeSchema>;
 export type FeeEntry = typeof feeEntries.$inferSelect;

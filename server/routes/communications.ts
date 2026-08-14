@@ -50,7 +50,9 @@ router.post(
   "/api/communications/:id/send",
   validateRequest({ params: idParams }),
   async (req, res) => {
-    await sendCommunication(Number(req.params.id));
+    // Task #466 — send from the initiating architect's linked mailbox so
+    // client replies can be scanned for payment confirmations.
+    await sendCommunication(Number(req.params.id), { sentByUserId: req.session.userId ?? null });
     const updated = await storage.getProjectCommunication(Number(req.params.id));
     res.json(updated);
   },

@@ -23,4 +23,5 @@
 - [Evidence attach transactionality](evidence-attach-transactionality.md) — claim source + attach evidence in ONE transaction with conditional WHEREs and a partial unique FK index; check-then-write gets rejected in review.
 - [Payment-ledger atomicity](payment-ledger-atomicity.md) — ledger mutations are one tx (cert row lock + re-check + audit + conditional one-way paid flip); lock on actual coverage, not status.
 - [Merge-corrupted source files](merge-corrupted-files.md) — a task merge can commit a spliced/broken file; rebuild from service+client contracts, and restart the workflow before trusting post-merge smoke failures.
+- [Regex accents & TS target](regex-accents-ts-target.md) — `\b` never matches after é/è and the `u` flag fails `npm run check`; use an explicit Latin-letter class boundary.
 - [Restore via cp, not git checkout](restore-via-cp-not-git-checkout.md) — `git checkout --` reverts to the last platform commit and silently wipes uncommitted session edits; snapshot with cp before temporary file mutations.

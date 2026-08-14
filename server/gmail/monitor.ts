@@ -15,6 +15,7 @@ import { getGmailClientForUser } from "./user-client";
 import { uploadDocument, isObjectStorageConfigured } from "../storage/object-storage";
 import { getEmailIntakeCutoff } from "../services/email-intake-cutoff";
 import { evaluateEmailPrefilter, UNMATCHED_SENDER_STATUS, type PrefilterContext } from "./email-prefilter";
+import { scanCertificatReplies } from "../services/certificat-payment-suggestions.service";
 import { storage } from "../storage";
 import type { gmail_v1 } from "googleapis";
 import type { InsertEmailDocument, User } from "@shared/schema";
@@ -108,6 +109,13 @@ export async function pollInbox(): Promise<{ processed: number; errors: number }
       const r = await pollOneInbox(fake, /*userId*/ 0);
       processed += r.processed;
       errors += r.errors;
+      // Task #466 — keep the payment-reply scan on the fake path too so the
+      // code path stays exercised in dev (fake threads.get returns empty).
+      const scan = await scanCertificatReplies(fake).catch((err) => {
+        console.error("[Gmail Monitor] Payment-reply scan failed (fake mode):", err);
+        return { scannedThreads: 0, suggestionsCreated: 0, ambiguousCreated: 0, errors: 1 };
+      });
+      errors += scan.errors;
       lastPollStatus = "completed";
       lastLinkedUserCount = 0;
       return { processed, errors };
@@ -127,7 +135,10 @@ export async function pollInbox(): Promise<{ processed: number; errors: number }
       lastPollStatus = "no_linked_users";
       lastPollError = "No architect has linked their Gmail inbox yet. Go to the dashboard and click 'Link my inbox' to start receiving devis emails automatically.";
       console.log("[Gmail Monitor] No users with linked inboxes — nothing to poll");
-      return { processed: 0, errors: 0 };
+      // Task #466 — even with no linked users, still attempt the connector
+      // scan pass so connector-only deployments get payment-reply coverage.
+      errors += await scanConnectorSentThreads();
+      return { processed: 0, errors };
     }
 
     console.log(`[Gmail Monitor] Polling ${users.length} linked inbox(es)`);
@@ -139,10 +150,31 @@ export async function pollInbox(): Promise<{ processed: number; errors: number }
         const r = await pollOneInbox(gmail, user.id);
         processed += r.processed;
         errors += r.errors;
+        // Task #466 — after the PDF-intake pass, scan sent-certificat threads
+        // for client "paid" replies (needs the same read-scoped user client).
+        // Scan errors count toward this user's poll status so failures are
+        // visible on the dashboard, never silently swallowed.
+        let scanErrors = 0;
+        let scanErrorMsg: string | null = null;
+        try {
+          const scan = await scanCertificatReplies(gmail, user.id);
+          if (scan.suggestionsCreated || scan.ambiguousCreated || scan.errors) {
+            console.log(
+              `[Gmail Monitor] Payment-reply scan (user ${user.id}): ${scan.scannedThreads} threads, ${scan.suggestionsCreated} suggestions, ${scan.ambiguousCreated} ambiguous, ${scan.errors} errors`,
+            );
+          }
+          scanErrors = scan.errors;
+          if (scan.errors > 0) scanErrorMsg = `Payment-reply scan: ${scan.errors} thread(s) failed (see server logs)`;
+        } catch (scanErr: any) {
+          scanErrors = 1;
+          scanErrorMsg = `Payment-reply scan failed: ${(scanErr?.message || "unknown error").slice(0, 300)}`;
+          console.error(`[Gmail Monitor] Payment-reply scan failed for user ${user.id}:`, scanErr);
+        }
+        errors += scanErrors;
         await storage.updateUserGmailPollStatus(user.id, {
           gmailLastPollAt: startedAt,
-          gmailLastPollStatus: r.errors === 0 ? "completed" : "completed_with_errors",
-          gmailLastPollError: null,
+          gmailLastPollStatus: r.errors + scanErrors === 0 ? "completed" : "completed_with_errors",
+          gmailLastPollError: scanErrorMsg,
         });
       } catch (err: any) {
         errors++;
@@ -161,6 +193,14 @@ export async function pollInbox(): Promise<{ processed: number; errors: number }
       }
     }
 
+    // Task #466 — connector scan pass for legacy/fallback sends
+    // (sent_via_user_id IS NULL): those threads live in the shared
+    // connector mailbox, which per-user scans can only reach when the
+    // architect linked the SAME account. Attempt a direct read here; the
+    // Replit connector historically has send-only scopes, so a 403 is
+    // expected and logged loudly (per-user probes remain the fallback).
+    errors += await scanConnectorSentThreads();
+
     lastPollStatus = errors === 0 ? "completed" : "completed_with_errors";
     console.log(`[Gmail Monitor] Poll complete: ${processed} processed, ${errors} errors across ${users.length} inbox(es)`);
   } catch (err: any) {
@@ -172,6 +212,40 @@ export async function pollInbox(): Promise<{ processed: number; errors: number }
   }
 
   return { processed, errors };
+}
+
+// Task #466 — scan legacy/fallback connector-sent certificat threads
+// (sent_via_user_id IS NULL) with the shared connector client itself.
+// Returns the error count to fold into the poll totals. A 403 scope denial
+// (the Replit connector historically lacks any read scope) aborts the pass
+// with ONE loud log line — never silently.
+let connectorScopeDeniedLogged = false;
+async function scanConnectorSentThreads(): Promise<number> {
+  if (!isGmailConfigured()) return 0;
+  try {
+    const unowned = await storage.getCertificatCommunicationsAwaitingPayment("unowned");
+    if (unowned.length === 0) return 0;
+    const connector = await getUncachableGmailClient();
+    const scan = await scanCertificatReplies(connector, "unowned");
+    if (scan.scopeDenied) {
+      if (!connectorScopeDeniedLogged) {
+        connectorScopeDeniedLogged = true;
+        console.error(
+          "[Gmail Monitor] Connector mailbox refuses thread reads (403, send-only scopes): replies to connector-sent certificats can only be detected if an architect links the SAME Gmail account. Link the sending inbox on the dashboard.",
+        );
+      }
+      return scan.errors;
+    }
+    if (scan.suggestionsCreated || scan.ambiguousCreated || scan.errors) {
+      console.log(
+        `[Gmail Monitor] Payment-reply scan (connector): ${scan.scannedThreads} threads, ${scan.suggestionsCreated} suggestions, ${scan.ambiguousCreated} ambiguous, ${scan.errors} errors`,
+      );
+    }
+    return scan.errors;
+  } catch (err) {
+    console.error("[Gmail Monitor] Connector payment-reply scan failed:", err);
+    return 1;
+  }
 }
 
 /**

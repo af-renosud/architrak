@@ -379,6 +379,7 @@ router.post(
       await sendCommunication(communicationId, {
         threadId: priorThread?.emailThreadId ?? null,
         inReplyToMessageId: priorThread?.emailMessageId ?? null,
+        sentByUserId: req.session.userId ?? null,
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Email send failed";

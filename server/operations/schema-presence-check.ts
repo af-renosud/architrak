@@ -139,6 +139,8 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0081_certificat_tva_regime", artifact: { kind: "column", table: "certificats", column: "tva_rate_percent" } },
   { tag: "0082_certificat_solde_retenue_release", artifact: { kind: "column", table: "certificats", column: "is_solde" } },
   { tag: "0083_certificat_payments", artifact: { kind: "table", table: "certificat_payments" } },
+  { tag: "0084_certificat_payment_suggestions", artifact: { kind: "table", table: "certificat_payment_suggestions" } },
+  { tag: "0085_project_communications_sent_via_user", artifact: { kind: "column", table: "project_communications", column: "sent_via_user_id" } },
 ];
 
 interface JournalFile {

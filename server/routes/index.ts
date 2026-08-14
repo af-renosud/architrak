@@ -20,6 +20,7 @@ import situationsRouter from "./situations";
 import marcheDocumentsRouter from "./marche-documents";
 import certificatsRouter from "./certificats";
 import certificatPaymentsRouter from "./certificat-payments";
+import certificatPaymentSuggestionsRouter from "./certificat-payment-suggestions";
 import feesRouter from "./fees";
 import financialRouter from "./financial";
 import dashboardRouter from "./dashboard";
@@ -108,6 +109,7 @@ export async function registerRoutes(
   app.use(marcheDocumentsRouter);
   app.use(certificatsRouter);
   app.use(certificatPaymentsRouter);
+  app.use(certificatPaymentSuggestionsRouter);
   app.use(documentChainRouter);
   app.use(feesRouter);
   app.use(architectFeeInvoicesRouter);

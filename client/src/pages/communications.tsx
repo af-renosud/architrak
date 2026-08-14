@@ -11,10 +11,92 @@ import {
 } from "@/components/communications/ContextEmailResendButton";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "wouter";
-import type { ProjectCommunication, Project } from "@shared/schema";
+import { Euro } from "lucide-react";
+import type { ProjectCommunication, Project, CertificatPaymentSuggestion } from "@shared/schema";
+
+function formatCurrency(value: number): string {
+  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
+}
+
+// Task #466 — open payment suggestions (client "paid" replies) surfaced in
+// the hub. Confirm records the suggested amount/date as a source='email'
+// ledger entry; finer edits live on the certificat detail dialog.
+type SuggestionWithContext = { suggestion: CertificatPaymentSuggestion; certificateRef: string; projectName: string };
+
+function PaymentSuggestionsPanel() {
+  const { toast } = useToast();
+  const { data: rows } = useQuery<SuggestionWithContext[]>({ queryKey: ["/api/certificat-payment-suggestions"] });
+
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["/api/certificat-payment-suggestions"] });
+
+  const confirmMutation = useMutation({
+    mutationFn: async (id: number) => (await apiRequest("POST", `/api/certificat-payment-suggestions/${id}/confirm`, {})).json(),
+    onSuccess: () => {
+      invalidate();
+      toast({ title: "Paiement confirmé", description: "Enregistré au journal des paiements (source e-mail)." });
+    },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  const dismissMutation = useMutation({
+    mutationFn: async (id: number) => (await apiRequest("POST", `/api/certificat-payment-suggestions/${id}/dismiss`, {})).json(),
+    onSuccess: () => {
+      invalidate();
+      toast({ title: "Suggestion ignorée" });
+    },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  if (!rows || rows.length === 0) return null;
+
+  return (
+    <LuxuryCard className="p-4 border-amber-300/60 dark:border-amber-500/30" data-testid="panel-payment-suggestions">
+      <div className="flex items-center gap-2 mb-3">
+        <Euro size={14} className="text-amber-600" />
+        <TechnicalLabel>Paiements signalés par les clients — à confirmer</TechnicalLabel>
+      </div>
+      <div className="space-y-3">
+        {rows.map(({ suggestion: s, certificateRef, projectName }) => (
+          <div key={s.id} className="flex items-start justify-between gap-3 border-t first:border-t-0 pt-3 first:pt-0" data-testid={`row-hub-suggestion-${s.id}`}>
+            <div className="text-xs text-muted-foreground min-w-0">
+              <p className="text-sm text-foreground font-semibold">
+                {certificateRef} · {projectName} — {formatCurrency(parseFloat(s.suggestedAmount))}
+              </p>
+              <p>
+                {s.status === "ambiguous" ? "Réponse client à vérifier" : "Paiement signalé"} par {s.senderEmail} le {formatDate(s.emailDate)}
+              </p>
+              {s.matchedExcerpt && <p className="italic truncate">«&nbsp;{s.matchedExcerpt}&nbsp;»</p>}
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => dismissMutation.mutate(s.id)}
+                disabled={dismissMutation.isPending || confirmMutation.isPending}
+                data-testid={`button-hub-dismiss-${s.id}`}
+              >
+                Ignorer
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => confirmMutation.mutate(s.id)}
+                disabled={confirmMutation.isPending || dismissMutation.isPending || s.status === "ambiguous"}
+                data-testid={`button-hub-confirm-${s.id}`}
+              >
+                Confirmer
+              </Button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </LuxuryCard>
+  );
+}
 
 function formatDate(date: string | Date | null): string {
   if (!date) return "—";
@@ -80,6 +162,8 @@ export default function Communications() {
     <AppLayout>
       <div className="space-y-8">
         <SectionHeader icon={MessageSquare} title="Communication Hub" subtitle={`${communications?.length ?? 0} communications across all projects`} />
+
+        <PaymentSuggestionsPanel />
 
         <div className="grid grid-cols-4 gap-4">
           <LuxuryCard className="p-4 text-center">

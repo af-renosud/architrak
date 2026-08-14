@@ -53,6 +53,9 @@ const { state, storageSpy, gmailSpy } = vi.hoisted(() => {
       return row;
     }),
     getProjectCommunication: vi.fn(async (id: number) => state.comms.find((c) => c.id === id)),
+    // Task #466 — sendCommunication now prefers a linked per-user Gmail
+    // client; no linked users in this suite → falls back to the connector.
+    listGmailPollingUsers: vi.fn(async () => []),
     updateProjectCommunication: vi.fn(async (id: number, patch: Record<string, unknown>) => {
       const row = state.comms.find((c) => c.id === id);
       if (row) Object.assign(row, patch);
@@ -65,6 +68,7 @@ const { state, storageSpy, gmailSpy } = vi.hoisted(() => {
 vi.mock("../../storage", () => ({ storage: storageSpy }));
 vi.mock("../../gmail/client", () => ({
   isGmailConfigured: () => true,
+  isFakeGmailMode: () => false,
   getUncachableGmailClient: vi.fn(async () => ({
     users: { messages: { send: gmailSpy.send } },
   })),

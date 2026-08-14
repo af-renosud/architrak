@@ -589,6 +589,20 @@
       "when": 1786731600000,
       "tag": "0083_certificat_payments",
       "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1786735200000,
+      "tag": "0084_certificat_payment_suggestions",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1786738800000,
+      "tag": "0085_project_communications_sent_via_user",
+      "breakpoints": true
     }
   ]
 }
