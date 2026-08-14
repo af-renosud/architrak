@@ -68,6 +68,11 @@ export async function sealCertificat(certificatId: number): Promise<{
       // never silently reverts an override to the standard rate math.
       retenueOverride: existing.retenueGarantie,
       prorataOverride: existing.cumulativeProrataDeduction,
+      // Task #463 — same reasoning for the applied TVA rate: it may embed a
+      // draft-time architect override, so pass it back rather than letting
+      // the seal silently revert to the contract regime. Autoliquidation
+      // still wins inside the resolver (forces 0%).
+      tvaRateOverride: existing.tvaRatePercent,
       excludeCertificatId: certificatId,
     });
     const drifted = (Object.entries(freshDeductions) as Array<[keyof typeof freshDeductions, string]>)
@@ -130,6 +135,8 @@ export async function sealCertificat(certificatId: number): Promise<{
       periodProrataDeduction: existing.periodProrataDeduction,
       cumulativeAcompteRecoupment: existing.cumulativeAcompteRecoupment,
       periodAcompteRecoupment: existing.periodAcompteRecoupment,
+      tvaRatePercent: existing.tvaRatePercent,
+      tvaAutoliquidation: existing.tvaAutoliquidation,
       netToPayHt: existing.netToPayHt,
       tvaAmount: existing.tvaAmount,
       netToPayTtc: existing.netToPayTtc,

@@ -136,6 +136,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0078_certificat_reissue", artifact: { kind: "column", table: "certificats", column: "reissued_from_certificat_id" } },
   { tag: "0079_certificat_status_check", artifact: { kind: "data_only", reason: "adds a CHECK constraint on certificats.status only — no table/column artifact to probe" } },
   { tag: "0080_acompte_recoupment", artifact: { kind: "column", table: "certificats", column: "cumulative_acompte_recoupment" } },
+  { tag: "0081_certificat_tva_regime", artifact: { kind: "column", table: "certificats", column: "tva_rate_percent" } },
 ];
 
 interface JournalFile {

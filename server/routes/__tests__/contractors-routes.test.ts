@@ -79,6 +79,8 @@ function makeContractor(overrides: Partial<Record<string, unknown>> = {}) {
     rcProPolicyNumber: null,
     rcProEndDate: null,
     specialConditions: null,
+    defaultTvaRatePercent: null,
+    defaultTvaAutoliquidation: false,
     createdAt: new Date("2026-01-01").toISOString(),
     ...overrides,
   };
@@ -106,6 +108,39 @@ describe("PATCH /api/contractors/:id (ArchiDoc-linked contractor)", () => {
     const [calledId, payload] = updateContractor.mock.calls[0];
     expect(calledId).toBe(7);
     expect(payload).toEqual({ notes: "Prefers email" });
+  });
+
+  // Task #463 — the default TVA regime is locally-managed fiscal config,
+  // editable even on ArchiDoc-linked contractors.
+  it("accepts default-TVA-regime updates on a linked contractor", async () => {
+    getContractor.mockResolvedValue(makeContractor());
+    updateContractor.mockImplementation(async (id: number, data: Record<string, unknown>) => ({
+      ...makeContractor({ id }),
+      ...data,
+    }));
+
+    const res = await fetch(`${baseUrl}/api/contractors/7`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ defaultTvaRatePercent: "8.50", defaultTvaAutoliquidation: false }),
+    });
+
+    expect(res.status).toBe(200);
+    const [, payload] = updateContractor.mock.calls[0];
+    expect(payload).toEqual({ defaultTvaRatePercent: "8.50", defaultTvaAutoliquidation: false });
+  });
+
+  it("rejects junk default TVA rates on a linked contractor", async () => {
+    getContractor.mockResolvedValue(makeContractor());
+    for (const bad of ["20oops", "-1", "100.01", "20.005", ""]) {
+      const res = await fetch(`${baseUrl}/api/contractors/7`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ defaultTvaRatePercent: bad }),
+      });
+      expect(res.status).toBe(400);
+    }
+    expect(updateContractor).not.toHaveBeenCalled();
   });
 
   it("rejects updates that touch ArchiDoc-owned fields with 400 and does not call storage", async () => {

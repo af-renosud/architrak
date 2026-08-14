@@ -568,6 +568,13 @@
       "when": 1786557600000,
       "tag": "0080_acompte_recoupment",
       "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1786558800000,
+      "tag": "0081_certificat_tva_regime",
+      "breakpoints": true
     }
   ]
 }

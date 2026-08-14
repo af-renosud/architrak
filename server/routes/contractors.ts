@@ -10,9 +10,22 @@ const idParams = z.object({ id: z.coerce.number().int().positive() });
 
 const updateContractorSchema = insertContractorSchema.partial();
 
+// Task #463 — the default TVA regime is locally-managed fiscal configuration
+// (never part of the ArchiDoc sync payload), so it stays editable even on
+// ArchiDoc-linked contractors. Same strict rate validation as the shared
+// insert schema.
 const linkedContractorUpdateSchema = z
   .object({
     notes: z.string().nullable().optional(),
+    defaultTvaRatePercent: z
+      .string()
+      .regex(/^\d{1,3}(\.\d{1,2})?$/, "TVA rate must be a decimal with at most 2 decimal places")
+      .refine((v) => { const n = parseFloat(v); return n >= 0 && n <= 100; }, {
+        message: "TVA rate must be between 0 and 100",
+      })
+      .nullable()
+      .optional(),
+    defaultTvaAutoliquidation: z.boolean().optional(),
   })
   .strict();
 
@@ -67,7 +80,7 @@ router.patch(
       const parsed = linkedContractorUpdateSchema.safeParse(req.body);
       if (!parsed.success) {
         return res.status(400).json({
-          message: "This contractor is managed in ArchiDoc. Only 'notes' can be edited locally.",
+          message: "This contractor is managed in ArchiDoc. Only 'notes' and the default TVA regime can be edited locally.",
           errors: parsed.error.flatten(),
         });
       }

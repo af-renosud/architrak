@@ -235,6 +235,11 @@ export const contractors = pgTable("contractors", {
   bankingVerifiedBy: text("banking_verified_by"),
   bankingAiExtractedData: jsonb("banking_ai_extracted_data"),
   archidocOrphanedAt: timestamp("archidoc_orphaned_at"),
+  // Task #463 — contractor-level default TVA regime, used when the marché
+  // carries no contract-specific rate. NULL rate = standard 20%. NOT part
+  // of the ArchiDoc sync payload (locally-managed fiscal configuration).
+  defaultTvaRatePercent: numeric("default_tva_rate_percent", { precision: 5, scale: 2 }),
+  defaultTvaAutoliquidation: boolean("default_tva_autoliquidation").notNull().default(false),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   unique("contractors_archidoc_id_unique").on(table.archidocId),
@@ -290,6 +295,14 @@ export const marches = pgTable("marches", {
   acompteRecoupmentRule: text("acompte_recoupment_rule").notNull().default("asap"),
   acompteRecoupmentPercent: numeric("acompte_recoupment_percent", { precision: 5, scale: 2 }),
   acompteRecoupmentThresholdPercent: numeric("acompte_recoupment_threshold_percent", { precision: 5, scale: 2 }),
+  // Task #463 — TVA regime for this contract's certificats de paiement.
+  // `tvaRatePercent` NULL means "no contract-specific rate": fall back to
+  // the contractor's default, then to the standard 20%. When
+  // `tvaAutoliquidation` is true (sous-traitance BTP, art. 283 CGI), the
+  // certificat applies 0% TVA and prints the mandatory legal mention —
+  // TVA is due by the client/main contractor, not by us.
+  tvaRatePercent: numeric("tva_rate_percent", { precision: 5, scale: 2 }),
+  tvaAutoliquidation: boolean("tva_autoliquidation").notNull().default(false),
   paymentSchedule: jsonb("payment_schedule"),
   signedDate: date("signed_date"),
   status: text("status").notNull().default("draft"),
@@ -769,6 +782,12 @@ export const certificats = pgTable("certificats", {
   // authoritatively server-side (see certificat-deductions.service).
   cumulativeAcompteRecoupment: numeric("cumulative_acompte_recoupment", { precision: 12, scale: 2 }).notNull().default("0.00"),
   periodAcompteRecoupment: numeric("period_acompte_recoupment", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  // Task #463 — the TVA rate actually APPLIED to this certificat (audit:
+  // the amount alone doesn't prove which rate produced it). Server-derived
+  // on every create/PATCH; frozen once sealed. `tvaAutoliquidation` true ⇔
+  // rate 0.00 + the mandatory art. 283 CGI mention on the PDF.
+  tvaRatePercent: numeric("tva_rate_percent", { precision: 5, scale: 2 }).notNull().default("20.00"),
+  tvaAutoliquidation: boolean("tva_autoliquidation").notNull().default(false),
   netToPayHt: numeric("net_to_pay_ht", { precision: 12, scale: 2 }).notNull(),
   tvaAmount: numeric("tva_amount", { precision: 12, scale: 2 }).notNull(),
   netToPayTtc: numeric("net_to_pay_ttc", { precision: 12, scale: 2 }).notNull(),
@@ -1802,6 +1821,16 @@ export const insertContractorSchema = createInsertSchema(contractors).omit({
       }
       return cleaned;
     }),
+  // Task #463 — contractor default TVA rate: strict scale-2 decimal, 0–100.
+  // NULL = standard 20%. Same strictness rationale as the marché fields.
+  defaultTvaRatePercent: z
+    .string()
+    .regex(/^\d{1,3}(\.\d{1,2})?$/, "TVA rate must be a decimal with at most 2 decimal places")
+    .refine((v) => { const n = parseFloat(v); return n >= 0 && n <= 100; }, {
+      message: "TVA rate must be between 0 and 100",
+    })
+    .nullable()
+    .optional(),
 });
 
 export const insertLotSchema = createInsertSchema(lots).omit({
@@ -1852,6 +1881,16 @@ export const insertMarcheSchema = createInsertSchema(marches, {
     .regex(/^\d{1,3}(\.\d{1,2})?$/, "Recoupment threshold must be a decimal with at most 2 decimal places")
     .refine((v) => { const n = parseFloat(v); return n >= 0 && n <= 100; }, {
       message: "Recoupment threshold must be between 0 and 100",
+    })
+    .nullable()
+    .optional(),
+  // Task #463 — contract TVA rate: strict scale-2 decimal, 0–100. NULL means
+  // "fall back to contractor default / standard 20%".
+  tvaRatePercent: z
+    .string()
+    .regex(/^\d{1,3}(\.\d{1,2})?$/, "TVA rate must be a decimal with at most 2 decimal places")
+    .refine((v) => { const n = parseFloat(v); return n >= 0 && n <= 100; }, {
+      message: "TVA rate must be between 0 and 100",
     })
     .nullable()
     .optional(),

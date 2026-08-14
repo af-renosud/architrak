@@ -36,6 +36,16 @@ function pgErrorInfo(err: unknown): { code?: string; constraint?: string } {
 const deductionOverrideShape = {
   retenueOverride: z.string().optional(),
   prorataOverride: z.string().optional(),
+  // Task #463 — draft-only override of the applied TVA rate (%). Strict
+  // scale-2 decimal 0–100; ignored by the resolver on autoliquidation
+  // contracts (the 0% rate is a legal consequence, not a preference).
+  tvaRateOverride: z
+    .string()
+    .regex(/^\d{1,3}(\.\d{1,2})?$/, "TVA rate must be a decimal with at most 2 decimal places")
+    .refine((v) => { const n = parseFloat(v); return n >= 0 && n <= 100; }, {
+      message: "TVA rate must be between 0 and 100",
+    })
+    .optional(),
 };
 
 // Task #243 — these are SERVER-DERIVED money fields. The server is the sole
@@ -51,6 +61,11 @@ const serverDerivedDeductionFields = {
   // paid-deposit state + the marché rule; never client-settable.
   cumulativeAcompteRecoupment: true,
   periodAcompteRecoupment: true,
+  // Task #463 — the applied TVA rate + autoliquidation flag are resolved
+  // from the marché/contractor regime (or the validated tvaRateOverride);
+  // the raw columns are never client-settable.
+  tvaRatePercent: true,
+  tvaAutoliquidation: true,
   netToPayHt: true,
   tvaAmount: true,
   netToPayTtc: true,
@@ -84,10 +99,11 @@ router.post(
   validateRequest({ params: projectIdParams, body: createCertificatBodySchema }),
   async (req, res) => {
     const projectId = Number(req.params.projectId);
-    const { retenueOverride, prorataOverride, ...body } = req.body as
+    const { retenueOverride, prorataOverride, tvaRateOverride, ...body } = req.body as
       Omit<InsertCertificat, "projectId" | "certificateRef"> & {
         retenueOverride?: string;
         prorataOverride?: string;
+        tvaRateOverride?: string;
       };
 
     // Task #243 — the server is authoritative for deduction money math.
@@ -101,6 +117,7 @@ router.post(
       previousPayments: body.previousPayments,
       retenueOverride,
       prorataOverride,
+      tvaRateOverride,
     });
 
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -206,8 +223,8 @@ router.patch(
   validateRequest({ params: idParams, body: updateCertificatSchema }),
   async (req, res) => {
     const id = Number(req.params.id);
-    const { retenueOverride, prorataOverride, ...body } = req.body as
-      Partial<InsertCertificat> & { retenueOverride?: string; prorataOverride?: string };
+    const { retenueOverride, prorataOverride, tvaRateOverride, ...body } = req.body as
+      Partial<InsertCertificat> & { retenueOverride?: string; prorataOverride?: string; tvaRateOverride?: string };
 
     const existing = await storage.getCertificat(id);
     if (!existing) return res.status(404).json({ message: "Certificat not found" });
@@ -237,7 +254,7 @@ router.patch(
     if (existing.pdfStorageKey) {
       const allowedOnSealed = new Set(["status", "notes"]);
       const blocked = Object.keys(body).filter((k) => !allowedOnSealed.has(k));
-      if (blocked.length > 0 || retenueOverride !== undefined || prorataOverride !== undefined) {
+      if (blocked.length > 0 || retenueOverride !== undefined || prorataOverride !== undefined || tvaRateOverride !== undefined) {
         return res.status(409).json({
           code: "CERTIFICAT_SEALED",
           message: `Certificat ${existing.certificateRef} has been issued and is sealed. Corrections require issuing a new certificat.`,
@@ -254,7 +271,8 @@ router.patch(
       "previousPayments" in body ||
       "contractorId" in body ||
       retenueOverride !== undefined ||
-      prorataOverride !== undefined;
+      prorataOverride !== undefined ||
+      tvaRateOverride !== undefined;
 
     let patch: Partial<InsertCertificat> = body;
     if (touchesFinancials) {
@@ -266,6 +284,7 @@ router.patch(
         previousPayments: body.previousPayments ?? existing.previousPayments,
         retenueOverride,
         prorataOverride,
+        tvaRateOverride,
         excludeCertificatId: id,
       });
       patch = { ...body, ...deductions };
@@ -276,7 +295,7 @@ router.patch(
     // update (WHERE pdf_storage_key IS NULL) so a PATCH authorized against
     // an unsealed row can never commit after a concurrent seal.
     const onlyLifecycleFields = Object.keys(patch).every((k) => k === "status" || k === "notes");
-    if (onlyLifecycleFields && retenueOverride === undefined && prorataOverride === undefined) {
+    if (onlyLifecycleFields && retenueOverride === undefined && prorataOverride === undefined && tvaRateOverride === undefined) {
       const cert = await storage.updateCertificat(id, patch);
       if (!cert) return res.status(404).json({ message: "Certificat not found" });
       return res.json(cert);

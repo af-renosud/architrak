@@ -563,6 +563,7 @@ export default function ProjectDetail() {
       retenueGarantiePercent: "5.00", paymentSchedule: null, signedDate: null, status: "draft",
       hasBankGuarantee: false, isProrataManager: false,
       acompteRecoupmentRule: "asap", acompteRecoupmentPercent: null, acompteRecoupmentThresholdPercent: null,
+      tvaRatePercent: null, tvaAutoliquidation: false,
     },
   });
 
@@ -1539,6 +1540,7 @@ export default function ProjectDetail() {
                       retenueGarantiePercent: "5.00", paymentSchedule: null, signedDate: null, status: "draft",
                       hasBankGuarantee: false, isProrataManager: false,
                       acompteRecoupmentRule: "asap", acompteRecoupmentPercent: null, acompteRecoupmentThresholdPercent: null,
+      tvaRatePercent: null, tvaAutoliquidation: false,
                     });
                     setMarcheDialogOpen(true);
                   }} disabled={isArchived} data-testid="button-new-marche">
@@ -1675,6 +1677,58 @@ export default function ProjectDetail() {
                             <FormLabel><TechnicalLabel>Seuil d'avancement (%)</TechnicalLabel></FormLabel>
                             <FormControl><Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} type="number" step="0.01" min="0" max="100" placeholder="ex: 30.00" data-testid="input-marche-acompte-threshold" /></FormControl>
                             <p className="text-[10px] text-muted-foreground mt-0.5">Recovery starts once cumulative works reach this share of the marché total.</p>
+                            <FormMessage />
+                          </FormItem>
+                        )} />
+                      )}
+                      {/* Task #463 — TVA regime for this contract's certificats.
+                          "Contractor default" leaves the rate NULL (falls back to
+                          the contractor's default, then the standard 20%). */}
+                      <FormItem>
+                        <FormLabel><TechnicalLabel>Régime de TVA</TechnicalLabel></FormLabel>
+                        <Select
+                          onValueChange={(v) => {
+                            if (v === "autoliquidation") {
+                              marcheForm.setValue("tvaAutoliquidation", true);
+                              marcheForm.setValue("tvaRatePercent", null);
+                            } else if (v === "default") {
+                              marcheForm.setValue("tvaAutoliquidation", false);
+                              marcheForm.setValue("tvaRatePercent", null);
+                            } else if (v === "custom") {
+                              marcheForm.setValue("tvaAutoliquidation", false);
+                              marcheForm.setValue("tvaRatePercent", marcheForm.getValues("tvaRatePercent") ?? "0.00");
+                            } else {
+                              marcheForm.setValue("tvaAutoliquidation", false);
+                              marcheForm.setValue("tvaRatePercent", v);
+                            }
+                          }}
+                          value={(() => {
+                            if (marcheForm.watch("tvaAutoliquidation")) return "autoliquidation";
+                            const r = marcheForm.watch("tvaRatePercent");
+                            if (r == null) return "default";
+                            if (["20.00", "10.00", "5.50"].includes(r)) return r;
+                            return "custom";
+                          })()}
+                        >
+                          <FormControl><SelectTrigger data-testid="select-marche-tva-regime"><SelectValue /></SelectTrigger></FormControl>
+                          <SelectContent>
+                            <SelectItem value="default">Défaut entrepreneur (sinon 20 %)</SelectItem>
+                            <SelectItem value="20.00">Taux normal — 20 %</SelectItem>
+                            <SelectItem value="10.00">Taux intermédiaire — 10 %</SelectItem>
+                            <SelectItem value="5.50">Taux réduit — 5,5 %</SelectItem>
+                            <SelectItem value="custom">Taux personnalisé</SelectItem>
+                            <SelectItem value="autoliquidation">Autoliquidation (art. 283 CGI) — 0 %</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">Applied to this contract's certificats de paiement.</p>
+                      </FormItem>
+                      {!marcheForm.watch("tvaAutoliquidation") &&
+                        marcheForm.watch("tvaRatePercent") != null &&
+                        !["20.00", "10.00", "5.50"].includes(marcheForm.watch("tvaRatePercent") ?? "") && (
+                        <FormField control={marcheForm.control} name="tvaRatePercent" render={({ field }) => (
+                          <FormItem>
+                            <FormLabel><TechnicalLabel>Taux de TVA personnalisé (%)</TechnicalLabel></FormLabel>
+                            <FormControl><Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} type="number" step="0.01" min="0" max="100" placeholder="ex: 8.50" data-testid="input-marche-tva-rate" /></FormControl>
                             <FormMessage />
                           </FormItem>
                         )} />

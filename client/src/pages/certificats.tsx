@@ -35,6 +35,9 @@ const certificatFormSchema = insertCertificatSchema.extend({
   // deductions. Sent to the server, never persisted as columns.
   retenueOverride: z.string().optional(),
   prorataOverride: z.string().optional(),
+  // Task #463 — draft-only override of the applied TVA rate (%). Ignored by
+  // the server on autoliquidation contracts.
+  tvaRateOverride: z.string().optional(),
 });
 
 type CertificatFormValues = z.infer<typeof certificatFormSchema>;
@@ -128,11 +131,18 @@ function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Certifica
                 </span>
               </div>
               <div className="flex items-center justify-between gap-2 mt-1">
-                <TechnicalLabel>TVA</TechnicalLabel>
+                <TechnicalLabel>
+                  {`TVA (${parseFloat(cert.tvaRatePercent ?? "20")}%${cert.tvaAutoliquidation ? " — autoliquidation" : ""})`}
+                </TechnicalLabel>
                 <span className="text-[13px] font-semibold text-foreground" data-testid="text-cert-detail-tva">
                   {formatCurrency(parseFloat(cert.tvaAmount))}
                 </span>
               </div>
+              {cert.tvaAutoliquidation && (
+                <div className="text-[10px] text-muted-foreground italic mt-1" data-testid="text-cert-detail-autoliquidation">
+                  Autoliquidation — TVA due par le preneur (art. 283 CGI)
+                </div>
+              )}
               <div className="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                 <span className="text-[11px] font-black uppercase tracking-widest text-foreground">Net to Pay TTC</span>
                 <span className="text-[16px] font-bold text-foreground" data-testid="text-cert-detail-net-ttc">
@@ -214,6 +224,7 @@ export default function Certificats() {
       notes: null,
       retenueOverride: undefined,
       prorataOverride: undefined,
+      tvaRateOverride: undefined,
     },
   });
 
@@ -228,6 +239,7 @@ export default function Certificats() {
   const watchPrevious = form.watch("previousPayments");
   const watchRetenueOverride = form.watch("retenueOverride");
   const watchProrataOverride = form.watch("prorataOverride");
+  const watchTvaRateOverride = form.watch("tvaRateOverride");
 
   // Task #243 — the contractor's marché carries the Retenue de Garantie rate,
   // the bank-guarantee bypass and the prorata-manager exemption; the project
@@ -242,6 +254,28 @@ export default function Certificats() {
   const prorataPercent = parseFloat(selectedProject?.prorataPercentage ?? "0") || 0;
   const hasBankGuarantee = selectedMarche?.hasBankGuarantee ?? false;
   const isProrataManager = selectedMarche?.isProrataManager ?? false;
+
+  // Task #463 — mirror the server's TVA regime resolution: marché rate →
+  // contractor default → 20%; autoliquidation forces 0% and no override.
+  const selectedContractor = useMemo(
+    () => contractors?.find((c) => c.id === watchContractorId) ?? null,
+    [contractors, watchContractorId],
+  );
+  const tvaAutoliquidation = selectedMarche?.tvaAutoliquidation
+    ? true
+    : selectedMarche?.tvaRatePercent != null
+      ? false
+      : selectedContractor?.defaultTvaAutoliquidation ?? false;
+  const overrideRate = watchTvaRateOverride ? parseFloat(watchTvaRateOverride) : NaN;
+  const appliedTvaRatePercent = tvaAutoliquidation
+    ? 0
+    : Number.isFinite(overrideRate)
+      ? overrideRate
+      : selectedMarche?.tvaRatePercent != null
+        ? parseFloat(selectedMarche.tvaRatePercent)
+        : selectedContractor?.defaultTvaRatePercent != null
+          ? parseFloat(selectedContractor.defaultTvaRatePercent)
+          : 20;
 
   // Task #457 — superseded certificats were replaced by a reissue; their
   // cumulative figures must not feed the live preview (mirrors the server
@@ -307,7 +341,8 @@ export default function Certificats() {
     acompteRecoupmentPercent: selectedMarche?.acompteRecoupmentPercent != null ? parseFloat(selectedMarche.acompteRecoupmentPercent) : null,
     acompteRecoupmentThresholdPercent: selectedMarche?.acompteRecoupmentThresholdPercent != null ? parseFloat(selectedMarche.acompteRecoupmentThresholdPercent) : null,
     contractTotalHt: selectedMarche?.totalHt != null ? parseFloat(selectedMarche.totalHt) : null,
-  }), [watchTotalWorks, watchPvMv, watchPrevious, retenuePercent, hasBankGuarantee, prorataPercent, isProrataManager, latestPrior, watchRetenueOverride, watchProrataOverride, paidAcompteAmount, selectedMarche]);
+    tvaRate: appliedTvaRatePercent / 100,
+  }), [watchTotalWorks, watchPvMv, watchPrevious, retenuePercent, hasBankGuarantee, prorataPercent, isProrataManager, latestPrior, watchRetenueOverride, watchProrataOverride, paidAcompteAmount, selectedMarche, appliedTvaRatePercent]);
 
   useEffect(() => {
     form.setValue("retenueGarantie", breakdown.cumulativeRetenue.toFixed(2));
@@ -398,6 +433,7 @@ export default function Certificats() {
       notes: null,
       retenueOverride: undefined,
       prorataOverride: undefined,
+      tvaRateOverride: undefined,
     });
     setDialogOpen(true);
   };
@@ -754,6 +790,33 @@ export default function Certificats() {
                       </FormItem>
                     )}
                   />
+                  {/* Task #463 — draft-only TVA rate override. Disabled on
+                      autoliquidation contracts (rate is legally 0%). */}
+                  <FormField
+                    control={form.control}
+                    name="tvaRateOverride"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>
+                          <TechnicalLabel>TVA Rate Override % (optional)</TechnicalLabel>
+                        </FormLabel>
+                        <FormControl>
+                          <Input
+                            {...field}
+                            value={field.value ?? ""}
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            max="100"
+                            placeholder={tvaAutoliquidation ? "Autoliquidation — 0%" : "Auto"}
+                            disabled={tvaAutoliquidation}
+                            data-testid="input-cert-tva-rate-override"
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
                 </div>
 
                 <div className="p-4 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] space-y-2">
@@ -809,11 +872,18 @@ export default function Certificats() {
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-muted-foreground">TVA</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      TVA ({appliedTvaRatePercent}%{tvaAutoliquidation ? " — autoliquidation" : ""})
+                    </span>
                     <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-tva">
                       {formatCurrency(breakdown.tvaAmount)}
                     </span>
                   </div>
+                  {tvaAutoliquidation && (
+                    <div className="text-[10px] text-muted-foreground italic" data-testid="text-calc-autoliquidation">
+                      Autoliquidation — TVA due par le preneur (art. 283 CGI)
+                    </div>
+                  )}
                   <div className="flex items-center justify-between gap-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                     <span className="text-[11px] font-black uppercase tracking-widest text-foreground">Net to Pay TTC</span>
                     <span className="text-[16px] font-bold text-foreground" data-testid="text-calc-net-ttc">

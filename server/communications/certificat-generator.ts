@@ -660,6 +660,13 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   const netTtc = parseFloat(certificat.netToPayTtc);
   const netHt = parseFloat(certificat.netToPayHt);
   const tvaAmount = parseFloat(certificat.tvaAmount);
+  // Task #463 — show the rate actually applied (audit column), and print the
+  // mandatory legal mention on autoliquidation certificats (art. 283 CGI).
+  const tvaRatePercent = parseFloat(certificat.tvaRatePercent ?? "20");
+  const tvaAutoliquidation = certificat.tvaAutoliquidation === true;
+  const tvaRateLabel = tvaAutoliquidation
+    ? "0&nbsp;%"
+    : `${escapeHtml(String(tvaRatePercent))}&nbsp;%`;
   const amountInWords = numberToEnglishWords(netTtc);
 
   // Task #243 — authoritative cumulative deduction figures persisted on the
@@ -1234,7 +1241,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
             <td class="num">${formatCurrencyNoSymbol(netHt)}</td>
           </tr>
           <tr>
-            <td>TVA <span class="totals-sub">Taxe sur la Valeur Ajout\u00E9e</span></td>
+            <td>TVA ${tvaRateLabel} <span class="totals-sub">Taxe sur la Valeur Ajout\u00E9e</span></td>
             <td class="num">${formatCurrencyNoSymbol(tvaAmount)}</td>
           </tr>
           <tr class="grand">
@@ -1243,6 +1250,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
           </tr>
         </tbody>
       </table>
+      ${tvaAutoliquidation ? `<div class="warning-note">Autoliquidation \u2014 TVA due par le preneur (art. 283 CGI)</div>` : ""}
 
       ${devisDetails.length > 0 ? `
       <div class="section-title" style="margin-top:4mm;">Summary by Devis Code</div>
@@ -1353,6 +1361,8 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     bankingVerifiedAt: now,
     bankingVerifiedBy: "architrak-sample",
     bankingAiExtractedData: null,
+    defaultTvaRatePercent: null,
+    defaultTvaAutoliquidation: false,
     archidocOrphanedAt: null,
     createdAt: now,
   };
@@ -1477,6 +1487,8 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     cumulativeProrataDeduction: "0.00",
     periodProrataDeduction: "0.00",
     netToPayHt: "12500.00",
+    tvaRatePercent: "20.00",
+    tvaAutoliquidation: false,
     tvaAmount: "2500.00",
     netToPayTtc: "15000.00",
     status: "draft",

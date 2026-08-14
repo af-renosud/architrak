@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "wouter";
@@ -80,6 +82,8 @@ export default function Contractors() {
       email: null,
       phone: null,
       notes: null,
+      defaultTvaRatePercent: null,
+      defaultTvaAutoliquidation: false,
     },
   });
 
@@ -125,6 +129,8 @@ export default function Contractors() {
       email: null,
       phone: null,
       notes: null,
+      defaultTvaRatePercent: null,
+      defaultTvaAutoliquidation: false,
     });
     setDialogOpen(true);
   };
@@ -140,14 +146,23 @@ export default function Contractors() {
       email: contractor.email,
       phone: contractor.phone,
       notes: contractor.notes,
+      defaultTvaRatePercent: contractor.defaultTvaRatePercent,
+      defaultTvaAutoliquidation: contractor.defaultTvaAutoliquidation,
     });
     setDialogOpen(true);
   };
 
   const onSubmit = (data: ContractorFormValues) => {
     if (editingContractor) {
+      // Task #463 — the default TVA regime is locally-managed fiscal config
+      // (never part of the ArchiDoc sync payload), so it stays editable even
+      // on ArchiDoc-linked contractors.
       const payload = editingContractor.archidocId
-        ? { notes: data.notes ?? null }
+        ? {
+            notes: data.notes ?? null,
+            defaultTvaRatePercent: data.defaultTvaRatePercent ?? null,
+            defaultTvaAutoliquidation: data.defaultTvaAutoliquidation ?? false,
+          }
         : data;
       updateMutation.mutate({ id: editingContractor.id, data: payload });
     } else {
@@ -211,7 +226,7 @@ export default function Contractors() {
                 className="rounded-md border border-blue-200 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/20 p-3 text-[10px] text-blue-800 dark:text-blue-200"
                 data-testid="text-archidoc-readonly-note"
               >
-                This contractor is managed in ArchiDoc. Synced fields are read-only here — only Notes can be edited locally.
+                This contractor is managed in ArchiDoc. Synced fields are read-only here — only Notes and the default TVA regime can be edited locally.
               </div>
             )}
             <Form {...form}>
@@ -288,6 +303,76 @@ export default function Contractors() {
                         <Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} disabled={isArchidocLinked} data-testid="input-contractor-address" />
                       </FormControl>
                       <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                {/* Task #463 — default TVA regime for this contractor's
+                    certificats (used when a marché has no explicit regime).
+                    Locally-managed: editable even on ArchiDoc-linked rows. */}
+                <FormItem>
+                  <FormLabel><TechnicalLabel>Default TVA Rate</TechnicalLabel></FormLabel>
+                  <Select
+                    onValueChange={(v) => {
+                      if (v === "custom") {
+                        form.setValue("defaultTvaRatePercent", form.getValues("defaultTvaRatePercent") ?? "0.00");
+                      } else {
+                        form.setValue("defaultTvaRatePercent", v === "default" ? null : v);
+                      }
+                    }}
+                    value={(() => {
+                      const r = form.watch("defaultTvaRatePercent");
+                      if (r == null) return "default";
+                      return ["20.00", "10.00", "5.50"].includes(r) ? r : "custom";
+                    })()}
+                    disabled={form.watch("defaultTvaAutoliquidation") ?? false}
+                  >
+                    <FormControl><SelectTrigger data-testid="select-contractor-tva-default"><SelectValue /></SelectTrigger></FormControl>
+                    <SelectContent>
+                      <SelectItem value="default">Standard — 20 % (no default)</SelectItem>
+                      <SelectItem value="20.00">Taux normal — 20 %</SelectItem>
+                      <SelectItem value="10.00">Taux intermédiaire — 10 %</SelectItem>
+                      <SelectItem value="5.50">Taux réduit — 5,5 %</SelectItem>
+                      <SelectItem value="custom">Taux personnalisé</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">Applied when a marché carries no contract-specific TVA regime.</p>
+                </FormItem>
+                {!(form.watch("defaultTvaAutoliquidation") ?? false) &&
+                  form.watch("defaultTvaRatePercent") != null &&
+                  !["20.00", "10.00", "5.50"].includes(form.watch("defaultTvaRatePercent") ?? "") && (
+                  <FormField
+                    control={form.control}
+                    name="defaultTvaRatePercent"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel><TechnicalLabel>Taux de TVA personnalisé (%)</TechnicalLabel></FormLabel>
+                        <FormControl>
+                          <Input {...field} value={field.value ?? ""} onChange={(e) => field.onChange(e.target.value || null)} type="number" step="0.01" min="0" max="100" placeholder="ex: 8.50" data-testid="input-contractor-tva-custom" />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                )}
+                <FormField
+                  control={form.control}
+                  name="defaultTvaAutoliquidation"
+                  render={({ field }) => (
+                    <FormItem className="flex items-center justify-between gap-2 rounded-lg border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] p-3">
+                      <div>
+                        <FormLabel><TechnicalLabel>Autoliquidation par défaut</TechnicalLabel></FormLabel>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">Art. 283 CGI — 0 % TVA, due par le preneur.</p>
+                      </div>
+                      <FormControl>
+                        <Switch
+                          checked={field.value ?? false}
+                          onCheckedChange={(checked) => {
+                            field.onChange(checked);
+                            if (checked) form.setValue("defaultTvaRatePercent", null);
+                          }}
+                          data-testid="switch-contractor-tva-autoliquidation"
+                        />
+                      </FormControl>
                     </FormItem>
                   )}
                 />

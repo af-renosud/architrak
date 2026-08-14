@@ -27,6 +27,13 @@ export interface ResolveCertificatDeductionsInput {
   retenueOverride?: string | null;
   /** Explicit architect override of the cumulative Compte Prorata. */
   prorataOverride?: string | null;
+  /**
+   * Task #463 — explicit architect override of the applied TVA rate (%).
+   * Draft-only (routes reject financial changes on sealed certificats).
+   * Ignored when the resolved regime is autoliquidation: the 0% rate is a
+   * legal consequence of art. 283 CGI, not an architect preference.
+   */
+  tvaRateOverride?: string | null;
   /** When recomputing an existing certificat, exclude it from the prior set. */
   excludeCertificatId?: number;
 }
@@ -37,6 +44,9 @@ export interface ResolvedCertificatDeductions {
   periodProrataDeduction: string;
   cumulativeAcompteRecoupment: string;
   periodAcompteRecoupment: string;
+  /** Task #463 — the TVA rate (%) actually applied; audit trail. */
+  tvaRatePercent: string;
+  tvaAutoliquidation: boolean;
   netToPayHt: string;
   tvaAmount: string;
   netToPayTtc: string;
@@ -108,7 +118,30 @@ export async function resolveCertificatDeductions(
     )
     .reduce((sum, d) => sum + (parseFloat(d.acompteAmountHt ?? "0") || 0), 0);
 
+  // Task #463 — TVA regime resolution: marché-specific rate → contractor
+  // default → standard 20%. Autoliquidation (art. 283 CGI — sous-traitance
+  // BTP) forces 0%: the TVA is due by the client/main contractor, and no
+  // architect override may reinstate a rate on an autoliquidation contract.
+  // The marché flag is NOT NULL (default false), so a bare `??` chain would
+  // never reach the contractor default. Rule: an explicit marché autoliq flag
+  // or an explicit marché rate is a contract-level decision that wins; only a
+  // marché with NO explicit regime (or no marché at all) falls back to the
+  // contractor default.
+  const contractor = await storage.getContractor(input.contractorId);
+  const tvaAutoliquidation = marche?.tvaAutoliquidation
+    ? true
+    : marche?.tvaRatePercent != null
+      ? false
+      : contractor?.defaultTvaAutoliquidation ?? false;
+  const resolvedTvaRatePercent = tvaAutoliquidation
+    ? 0
+    : toNumberOrNull(input.tvaRateOverride)
+      ?? toNumberOrNull(marche?.tvaRatePercent)
+      ?? toNumberOrNull(contractor?.defaultTvaRatePercent)
+      ?? 20;
+
   const result = computeCertificatDeductions({
+    tvaRate: resolvedTvaRatePercent / 100,
     totalWorksHt: parseFloat(input.totalWorksHt || "0"),
     pvMvAdjustment: parseFloat(input.pvMvAdjustment ?? "0") || 0,
     previousPayments: parseFloat(input.previousPayments ?? "0") || 0,
@@ -136,6 +169,8 @@ export async function resolveCertificatDeductions(
     periodProrataDeduction: result.periodProrata.toFixed(2),
     cumulativeAcompteRecoupment: result.cumulativeAcompteRecoupment.toFixed(2),
     periodAcompteRecoupment: result.periodAcompteRecoupment.toFixed(2),
+    tvaRatePercent: resolvedTvaRatePercent.toFixed(2),
+    tvaAutoliquidation,
     netToPayHt: result.netToPayHt.toFixed(2),
     tvaAmount: result.tvaAmount.toFixed(2),
     netToPayTtc: result.netToPayTtc.toFixed(2),

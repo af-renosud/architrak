@@ -23,6 +23,26 @@ const baseMarche = {
 const parse = (extra: Record<string, unknown>) =>
   insertMarcheSchema.safeParse({ ...baseMarche, ...extra });
 
+describe("insertMarcheSchema — TVA regime config (Task #463)", () => {
+  it("accepts valid rates (0, 5.5, 10, 20, 100), null and omission", () => {
+    for (const v of ["0", "5.5", "5.50", "10", "20", "20.00", "100", "100.00", null, undefined]) {
+      expect(parse({ tvaRatePercent: v }).success).toBe(true);
+    }
+  });
+
+  it("rejects junk, negative, >100 and >2-decimal rates", () => {
+    for (const v of ["20oops", "-1", "100.01", "101", "20.005", "", "abc", "1e2"]) {
+      expect(parse({ tvaRatePercent: v }).success).toBe(false);
+    }
+  });
+
+  it("accepts the autoliquidation flag as a boolean", () => {
+    expect(parse({ tvaAutoliquidation: true }).success).toBe(true);
+    expect(parse({ tvaAutoliquidation: false }).success).toBe(true);
+    expect(parse({ tvaAutoliquidation: "yes" }).success).toBe(false);
+  });
+});
+
 describe("insertMarcheSchema — acompte recoupment config", () => {
   it("accepts an ordinary marché payload without any recoupment fields (existing flows unchanged)", () => {
     expect(insertMarcheSchema.safeParse(baseMarche).success).toBe(true);
