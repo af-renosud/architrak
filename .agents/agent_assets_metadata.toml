@@ -12,5 +12,5 @@ description = "One-page A4 explainer attached to every signature-context email: 
 id = "iXHgK6v_LQJKRCkOHgAn4"
 uri = "file://attached_assets/generated/certificat-example-redesign.pdf"
 type = "pdf"
-title = "Exemple — Certificat de Paiement redessiné"
-description = "Sample certificat (CP-2026-007, Villa Exemple) with the new page border, prominent IBAN + SWIFT/BIC payment panel, and the plain-language explanation of Retenue de Garantie and Compte Prorata."
+title = "Sample certificat — revised (English, whole-project summary)"
+description = "English throughout with French terms kept and glossed; pay-now text points to this certificate; PV/MV explained; annexe renamed Financial Summary with a new Section 3 covering all live works on the whole project."

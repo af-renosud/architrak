@@ -1,6 +1,7 @@
 import { storage } from "../storage";
 import { uploadDocument, getDocumentBuffer } from "../storage/object-storage";
 import { convertHtmlToPdf } from "../services/docraptor";
+import { getProjectFinancialSummary } from "../services/financial-summary.service";
 import { roundCurrency } from "@shared/financial-utils";
 import type { Certificat, Project, Contractor, Devis, Lot, Invoice, Avenant } from "@shared/schema";
 import { formatLotDescription } from "@shared/lot-label";
@@ -91,10 +92,33 @@ interface PreviousCertificatRow {
   amountTtc: number;
 }
 
+interface ProjectSummaryRow {
+  devisCode: string;
+  description: string;
+  adjustedHt: number;
+  certifiedHt: number;
+  resteARealiser: number;
+}
+
+/** Task #485 — whole-project financial position (all live works, every
+ * contractor), sourced verbatim from the financial-summary service so the
+ * certificat can never disagree with the dashboard or the project overview
+ * PDF (which use the same service). */
+interface ProjectSummarySection {
+  rows: ProjectSummaryRow[];
+  totalContractedHt: number;
+  totalContractedTtc: number;
+  totalCertifiedHt: number;
+  totalCertifiedTtc: number;
+  totalResteARealiser: number;
+  totalResteARealiserTtc: number;
+}
+
 interface AnnexeData {
   projectName: string;
   projectCode: string;
   contractorName: string;
+  projectSummary: ProjectSummarySection;
   devisRows: DevisAnnexeRow[];
   previousCertificats: PreviousCertificatRow[];
   previousCumulativeHt: number;
@@ -302,10 +326,54 @@ async function buildAnnexeData(
   const resteARealiserHt = roundCurrency(grandTotalAdjustedHt - cumulativeTotalHt);
   const resteARealiserTtc = roundCurrency(grandTotalAdjustedTtc - cumulativeTotalTtc);
 
+  // Task #485 — whole-project section: every live devis across ALL
+  // contractors, from the same service that powers the in-app dashboard
+  // and the project overview PDF. Never recomputed locally.
+  const summaryResult = await getProjectFinancialSummary(certificat.projectId);
+  if (!summaryResult.success) {
+    throw new Error(`Project financial summary unavailable for project ${certificat.projectId}`);
+  }
+  const summary = summaryResult.data as {
+    devis: Array<{
+      devisCode: string;
+      descriptionFr: string | null;
+      descriptionUk: string | null;
+      status: string;
+      accountingState: string | null;
+      adjustedHt: number;
+      certifiedHt: number;
+      resteARealiser: number;
+    }>;
+    totalContractedHt: number;
+    totalContractedTtc: number;
+    totalCertifiedHt: number;
+    totalCertifiedTtc: number;
+    totalResteARealiser: number;
+    totalResteARealiserTtc: number;
+  };
+  const projectSummary: ProjectSummarySection = {
+    rows: summary.devis
+      .filter((d) => d.accountingState === "active" && d.status !== "void")
+      .map((d) => ({
+        devisCode: d.devisCode,
+        description: d.descriptionUk || d.descriptionFr || "\u2014",
+        adjustedHt: d.adjustedHt,
+        certifiedHt: d.certifiedHt,
+        resteARealiser: d.resteARealiser,
+      })),
+    totalContractedHt: summary.totalContractedHt,
+    totalContractedTtc: summary.totalContractedTtc,
+    totalCertifiedHt: summary.totalCertifiedHt,
+    totalCertifiedTtc: summary.totalCertifiedTtc,
+    totalResteARealiser: summary.totalResteARealiser,
+    totalResteARealiserTtc: summary.totalResteARealiserTtc,
+  };
+
   return {
     projectName: project.name,
     projectCode: project.code,
     contractorName: contractor.name,
+    projectSummary,
     devisRows,
     previousCertificats,
     previousCumulativeHt,
@@ -389,13 +457,13 @@ function buildAnnexeHtml(data: AnnexeData): string {
   return `
   <div class="annexe-section" style="page-break-before:always;">
     <div style="text-align:center;margin-bottom:4mm;">
-      <div style="font-size:13pt;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:#0B2545;">Financial Annexe</div>
+      <div style="font-size:13pt;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:#0B2545;">Financial Summary</div>
       <div style="font-size:8pt;color:#7E7F83;margin-top:2px;">${escapeHtml(data.projectName)} (${escapeHtml(data.projectCode)}) — ${escapeHtml(data.contractorName)}</div>
     </div>
     <div class="accent-bar"></div>
 
     <div style="font-size:10pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#0B2545;margin-bottom:2.5mm;padding-bottom:1.5mm;border-bottom:1px solid #E6E6E6;">
-      1. March\u00E9 — Devis &amp; Avenants Summary
+      1. This Contract — Devis &amp; Avenants
     </div>
     <table class="annexe-table" style="width:100%;border-collapse:collapse;margin-bottom:4mm;font-size:7pt;">
       <thead>
@@ -426,9 +494,12 @@ function buildAnnexeHtml(data: AnnexeData): string {
         </tr>
       </tfoot>
     </table>
+    <div style="font-size:6.5pt;color:#7E7F83;margin:-2mm 0 4mm 0;">
+      PV (plus-value) = agreed additional works added to the contract. MV (moins-value) = agreed reductions or omitted works deducted from the contract. The Adjusted column is the contract value after these approved variations.
+    </div>
 
     <div style="font-size:10pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#0B2545;margin-bottom:3mm;padding-bottom:1.5mm;border-bottom:1px solid #E6E6E6;">
-      2. Situation — Payment History
+      2. This Contract — Payment History
     </div>
     <table class="annexe-table" style="width:100%;border-collapse:collapse;margin-bottom:4mm;font-size:7pt;">
       <thead>
@@ -466,13 +537,75 @@ function buildAnnexeHtml(data: AnnexeData): string {
           <td style="text-align:right;font-weight:700;font-size:7pt;color:#0B2545;padding:6px;">${fmtNum(data.grandTotalAdjustedTtc)}</td>
         </tr>
         <tr style="background:#FDF8F3;border-top:1px solid #C1A27B;">
-          <td colspan="2" style="font-weight:800;font-size:7pt;color:#C1A27B;text-transform:uppercase;padding:6px;">RESTE \u00C0 R\u00C9ALISER</td>
+          <td colspan="2" style="font-weight:800;font-size:7pt;color:#C1A27B;text-transform:uppercase;padding:6px;">RESTE \u00C0 R\u00C9ALISER (WORKS REMAINING)</td>
           <td style="text-align:right;font-weight:800;font-size:7pt;color:#C1A27B;padding:6px;">${fmtNum(data.resteARealiserHt)}</td>
           <td style="text-align:right;font-weight:800;font-size:7pt;color:#C1A27B;padding:6px;">${fmtNum(data.resteARealiserTtc)}</td>
         </tr>
       </tfoot>
     </table>
+
+    ${buildProjectSummaryHtml(data.projectSummary)}
   </div>`;
+}
+
+/**
+ * Task #485 — Section 3: the whole project. Every live devis across ALL
+ * contractors, so the client always sees their total liability and the
+ * overall financial position, not just the contract this certificat covers.
+ */
+function buildProjectSummaryHtml(ps: ProjectSummarySection): string {
+  const fmtNum = (v: number) => formatCurrencyNoSymbol(v);
+  const th = (label: string, align: string) =>
+    `<th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:${align};">${label}</th>`;
+
+  let rows = "";
+  ps.rows.forEach((r, i) => {
+    const zebra = i % 2 === 1 ? ' style="background:#F8F9FA;"' : "";
+    rows += `<tr${zebra}>
+      <td style="font-weight:700;color:#0B2545;white-space:nowrap;">${escapeHtml(r.devisCode)}</td>
+      <td>${escapeHtml(r.description)}</td>
+      <td style="text-align:right;font-weight:600;">${fmtNum(r.adjustedHt)}</td>
+      <td style="text-align:right;">${fmtNum(r.certifiedHt)}</td>
+      <td style="text-align:right;font-weight:600;color:#C1A27B;">${fmtNum(r.resteARealiser)}</td>
+    </tr>`;
+  });
+  if (!rows) {
+    rows = `<tr><td colspan="5" style="color:#7E7F83;font-style:italic;padding:6px;">No live works on this project</td></tr>`;
+  }
+
+  return `
+    <div style="font-size:10pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#0B2545;margin-bottom:3mm;padding-bottom:1.5mm;border-bottom:1px solid #E6E6E6;">
+      3. Whole Project — All Live Works
+    </div>
+    <div style="font-size:6.5pt;color:#7E7F83;margin-bottom:2mm;">
+      All contracted works currently live on the project, across every contractor \u2014 your total commitment, what has been certified so far, and what remains to be invoiced.
+    </div>
+    <table class="annexe-table" style="width:100%;border-collapse:collapse;margin-bottom:4mm;font-size:7pt;">
+      <thead>
+        <tr>
+          ${th("Devis", "left")}
+          ${th("Description", "left")}
+          ${th("Contract Value HT", "right")}
+          ${th("Certified HT", "right")}
+          ${th("Remaining HT", "right")}
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+      <tfoot>
+        <tr style="border-top:2px solid #0B2545;background:#E8ECF1;">
+          <td colspan="2" style="font-weight:800;font-size:7pt;color:#0B2545;text-transform:uppercase;padding:6px;">TOTAL PROJECT COMMITMENT</td>
+          <td style="text-align:right;font-weight:800;font-size:7pt;color:#0B2545;padding:6px;">${fmtNum(ps.totalContractedHt)}</td>
+          <td style="text-align:right;font-weight:800;font-size:7pt;color:#0B2545;padding:6px;">${fmtNum(ps.totalCertifiedHt)}</td>
+          <td style="text-align:right;font-weight:800;font-size:7pt;color:#C1A27B;padding:6px;">${fmtNum(ps.totalResteARealiser)}</td>
+        </tr>
+        <tr style="background:#E8ECF1;">
+          <td colspan="2" style="text-align:right;font-size:6.5pt;color:#7E7F83;padding:3px 6px;">Totals TTC (incl. TVA)</td>
+          <td style="text-align:right;font-weight:700;font-size:7pt;color:#0B2545;padding:3px 6px;">${fmtNum(ps.totalContractedTtc)}</td>
+          <td style="text-align:right;font-weight:700;font-size:7pt;color:#0B2545;padding:3px 6px;">${fmtNum(ps.totalCertifiedTtc)}</td>
+          <td style="text-align:right;font-weight:700;font-size:7pt;color:#C1A27B;padding:3px 6px;">${fmtNum(ps.totalResteARealiserTtc)}</td>
+        </tr>
+      </tfoot>
+    </table>`;
 }
 
 /**
@@ -651,7 +784,7 @@ function renderBankingBlock(contractor: Contractor): string {
   const holderLine = `${escapeHtml(holder)}${contractor.bankName ? ` \u2014 ${escapeHtml(contractor.bankName)}` : ""}`;
   return `
   <div class="banking-card">
-    <div class="banking-card-title">Coordonn\u00E9es pour le virement</div>
+    <div class="banking-card-title">Bank details for your payment</div>
     <div class="banking-holder">${holderLine}</div>
     <div class="banking-keys">
       <div class="banking-key banking-key-iban">
@@ -712,8 +845,8 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   // certificat's state (standard holdback vs. released on solde).
   const retenueExplainText =
     isSolde && retenueReleased
-      ? "La retenue de garantie (5\u202F% cumul\u00E9s des travaux) conserv\u00E9e sur les certificats pr\u00E9c\u00E9dents est lib\u00E9r\u00E9e sur ce certificat de solde, les travaux \u00E9tant r\u00E9ceptionn\u00E9s. Le montant lib\u00E9r\u00E9 est ajout\u00E9 \u00E0 la ligne \u00AB\u202FLib\u00E9ration Retenue de Garantie\u202F\u00BB ci-dessus."
-      : "La retenue de garantie correspond \u00E0 5\u202F% cumul\u00E9s du montant des travaux. Elle est conserv\u00E9e pendant la garantie de parfait ach\u00E8vement et est lib\u00E9r\u00E9e conform\u00E9ment au march\u00E9, sous r\u00E9serve notamment de la lev\u00E9e des r\u00E9serves. Ce n'est pas une d\u00E9duction d\u00E9finitive\u202F: elle sera revers\u00E9e \u00E0 l'entreprise.";
+      ? "The retenue de garantie (a cumulative 5\u202F% retention on the works) held back on previous certificats is released on this final (solde) certificat, the works having been accepted. The released amount is added back on the \u201CLib\u00E9ration Retenue de Garantie\u201D line above."
+      : "The retenue de garantie is a retention of 5\u202F% of the cumulative value of the works, required under French construction practice. It is held during the parfait ach\u00E8vement (making-good) guarantee period and released in accordance with the contract, in particular once any reserves are lifted. It is not a permanent deduction: it will be paid to the contractor in due course.";
   const dateIssued = formatDateFr(certificat.dateIssued);
 
   const worksRows = devisDetails.map((dd, i) => {
@@ -1236,13 +1369,13 @@ function buildCertificatHtml(data: CertificatPdfData): string {
       color: #7E7F83;
     }
     @bottom-center {
-      content: "Annexe Financi\u00E8re";
+      content: "Financial Summary";
       font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       font-size: 7pt;
       color: #7E7F83;
     }
     @bottom-right {
-      content: "Annexe \u2014 Page " counter(page) " / " counter(pages);
+      content: "Summary \u2014 Page " counter(page) " / " counter(pages);
       font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       font-size: 7pt;
       color: #7E7F83;
@@ -1276,7 +1409,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
 
   <div class="parties-grid">
     <div class="party-card">
-      <div class="party-label">Ma\u00EEtre d'\u0152uvre</div>
+      <div class="party-label">Ma\u00EEtre d'\u0152uvre \u2014 Architect</div>
       <div class="party-name">SAS ARCHITECTS-FRANCE</div>
       <div class="party-detail">
         2 Route d'Aigues-Vives, 34480 Cabrerolles<br/>
@@ -1284,7 +1417,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
       </div>
     </div>
     <div class="party-card">
-      <div class="party-label">Ma\u00EEtre d'Ouvrage</div>
+      <div class="party-label">Ma\u00EEtre d'Ouvrage \u2014 Client</div>
       <div class="party-name">${escapeHtml(project.clientName)}</div>
       <div class="party-detail">
         ${project.siteAddress ? escapeHtml(project.siteAddress) : ""}
@@ -1358,7 +1491,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     </div>
 
     <div class="cert-col">
-      <div class="section-title">Financial Summary</div>
+      <div class="section-title">Certificate Totals</div>
       <table class="totals-table">
         <tbody>
           <tr>
@@ -1397,25 +1530,25 @@ function buildCertificatHtml(data: CertificatPdfData): string {
       This Requires Your Payment and Attention.
     </div>
     <div class="payment-instructions">
-      Please pay this now using the bank details provided in the email. If you need to pay from different accounts ensure that the total is the exact
+      Please pay this now using the bank details provided in this certificate. If you need to pay from different accounts ensure that the total is the exact
       amount as shown. Please make sure that your bank does not deduct a transfer fee from the recipient. All transaction fees remain yours. The
       contractor must receive the equivalent euros in full, exactly as indicated.
     </div>
   </div>
 
   <div class="explain-section">
-    <div class="explain-title">\u00C0 comprendre avant r\u00E8glement</div>
+    <div class="explain-title">Please read before payment</div>
     <div class="explain-cards">
       <div class="explain-card">
-        <div class="explain-card-title">Retenue de Garantie</div>
+        <div class="explain-card-title">Retenue de Garantie (retention)</div>
         <div class="explain-card-text">${retenueExplainText}</div>
       </div>
       <div class="explain-card">
-        <div class="explain-card-title">Compte Prorata</div>
-        <div class="explain-card-text">Le compte prorata est une participation aux frais communs du chantier (eau, \u00E9lectricit\u00E9, nettoyage, installations partag\u00E9es). Cette retenue est vers\u00E9e au gestionnaire du compte prorata du chantier, qui r\u00E8gle ces d\u00E9penses partag\u00E9es entre les entreprises.</div>
+        <div class="explain-card-title">Compte Prorata (shared site costs)</div>
+        <div class="explain-card-text">The compte prorata is each contractor's contribution to the shared costs of the site (water, electricity, cleaning, common facilities). This deduction is paid to the site's prorata account manager, who settles those shared expenses on behalf of all the contractors.</div>
       </div>
     </div>
-    <div class="explain-annexe-pointer">L'Annexe financi\u00E8re ci-apr\u00E8s pr\u00E9sente le d\u00E9tail de la situation financi\u00E8re du projet : montant total du march\u00E9, montants certifi\u00E9s \u00E0 ce jour et reste \u00E0 r\u00E9aliser.</div>
+    <div class="explain-annexe-pointer">The Financial Summary on the following page shows the position of the whole project: total value of the works, amounts certified to date and works remaining.</div>
   </div>
 
   <div class="doc-footer">
@@ -1659,6 +1792,37 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     projectName: project.name,
     projectCode: project.code,
     contractorName: contractor.name,
+    projectSummary: {
+      rows: [
+        {
+          devisCode: "DEV-2026-014",
+          description: "Masonry works - extension",
+          adjustedHt: 24500,
+          certifiedHt: 22500,
+          resteARealiser: 2000,
+        },
+        {
+          devisCode: "DEV-2026-021",
+          description: "Roofing and zinc works",
+          adjustedHt: 18200,
+          certifiedHt: 9100,
+          resteARealiser: 9100,
+        },
+        {
+          devisCode: "DEV-2026-025",
+          description: "Electrical installation",
+          adjustedHt: 12800,
+          certifiedHt: 0,
+          resteARealiser: 12800,
+        },
+      ],
+      totalContractedHt: 55500,
+      totalContractedTtc: 66600,
+      totalCertifiedHt: 31600,
+      totalCertifiedTtc: 37920,
+      totalResteARealiser: 23900,
+      totalResteARealiserTtc: 28680,
+    },
     devisRows: [
       {
         devisCode: devisRecord.devisCode,
