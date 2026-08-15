@@ -90,6 +90,10 @@ author = "agent"
 task = "workflow.run"
 args = "Start application"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "prepublish"
+
 [[workflows.workflow]]
 name = "Start application"
 author = "agent"
@@ -100,6 +104,17 @@ outputType = "webview"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "PUBLIC_BASE_URL=http://localhost:5000 E2E_FAKE_GMAIL=true ENABLE_DEV_LOGIN_FOR_E2E=true npm run dev"
+
+[[workflows.workflow]]
+name = "prepublish"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "npm run prepublish-check"
+
+[workflows.workflow.metadata]
+isValidation = true
 
 [agent]
 integrations = ["javascript_database:1.0.0", "javascript_openai_ai_integrations:2.0.0", "google-mail:1.0.0", "javascript_object_storage:2.0.0"]
