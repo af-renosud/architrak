@@ -423,6 +423,10 @@ export function SigningPanel({
   };
   const badge = envelopeStatus ? statusLabel[envelopeStatus] ?? { label: envelopeStatus, tone: "secondary" as const } : null;
 
+  // Signed (via Archisign or manual upload) ⇒ green panel frame instead of
+  // the red "action needed" frame.
+  const isSigned = envelopeStatus === "signed" || stage === "client_signed_off";
+
   const trimmedLen = personalMessage.trim().length;
   const composeValid = trimmedLen >= DEVIS_CLIENT_MESSAGE_MIN_LEN;
   const recipientName = (project?.clientContactName ?? "").trim() || project?.clientName || "—";
@@ -430,7 +434,14 @@ export function SigningPanel({
   const refLabel = d.devisNumber || d.devisCode;
 
   return (
-    <LuxuryCard className="p-3 space-y-3 border-2 border-destructive ring-1 ring-destructive/30 shadow-[0_0_0_3px_hsl(var(--destructive)/0.08)]" data-testid={`panel-signing-${devisId}`}>
+    <LuxuryCard
+      className={`p-3 space-y-3 border-2 ${
+        isSigned
+          ? "border-green-600 ring-1 ring-green-600/30 shadow-[0_0_0_3px_rgb(22_163_74_/_0.08)]"
+          : "border-destructive ring-1 ring-destructive/30 shadow-[0_0_0_3px_hsl(var(--destructive)/0.08)]"
+      }`}
+      data-testid={`panel-signing-${devisId}`}
+    >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Send className="h-4 w-4 text-[#0B2545]" />
