@@ -9,14 +9,23 @@ set -euo pipefail
 export DATABASE_URL="${DATABASE_URL:-postgres://drift:check@localhost:5432/drift}"
 
 echo "==> Running drizzle-kit generate to detect schema drift..."
+
+# Snapshot the migrations tree BEFORE generate: hand-written migrations may
+# legitimately be uncommitted while validation runs pre-commit (they are
+# committed together with the task's completion checkpoint). Only artifacts
+# NEWLY produced by drizzle-kit generate count as drift.
+BEFORE="$(git status --porcelain -- migrations/ || true)"
+
 npx drizzle-kit generate --name __schema_drift_check__ >/tmp/drizzle-drift.log 2>&1 || {
   cat /tmp/drizzle-drift.log
   echo "ERROR: drizzle-kit generate failed." >&2
   exit 2
 }
 
-# Detect any new or modified files in the migrations directory.
-DRIFT="$(git status --porcelain -- migrations/ || true)"
+AFTER="$(git status --porcelain -- migrations/ || true)"
+
+# Drift = entries present after generate that were not present before.
+DRIFT="$(comm -13 <(printf '%s\n' "$BEFORE" | sort) <(printf '%s\n' "$AFTER" | sort) | sed '/^$/d' || true)"
 
 if [[ -n "$DRIFT" ]]; then
   echo "ERROR: schema drift detected — shared/schema.ts has changes that are not"

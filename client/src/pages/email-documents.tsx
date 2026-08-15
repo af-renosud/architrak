@@ -39,7 +39,14 @@ const statusColors: Record<string, string> = {
   needs_review: "warning",
   skipped: "neutral",
   unmatched_sender: "neutral",
+  // Task #503 — evidence-tiered intake buckets.
+  low_relevance: "neutral",
+  archived_project_candidate: "neutral",
 };
+
+// Task #503 — statuses parked by the deterministic pre-filter (no AI run);
+// all are rescuable via force analysis.
+const PARKED_STATUSES = new Set(["unmatched_sender", "low_relevance", "archived_project_candidate"]);
 
 const typeLabels: Record<string, string> = {
   quotation: "Devis",
@@ -196,7 +203,9 @@ export default function EmailDocuments() {
     } else if (statusFilter === "all") {
       // Task #424 — removed (skipped) docs are hidden from the default view;
       // they remain visible under the explicit "Skipped" filter for audit.
-      if (doc.extractionStatus === "skipped") return false;
+      // Task #503 — low-relevance and archived-project candidates live in
+      // collapsed buckets below the main list, not the default view.
+      if (doc.extractionStatus === "skipped" || doc.extractionStatus === "low_relevance" || doc.extractionStatus === "archived_project_candidate") return false;
     } else if (doc.extractionStatus !== statusFilter) {
       return false;
     }
@@ -224,7 +233,11 @@ export default function EmailDocuments() {
 
   const pendingCount = emailDocs?.filter(d => d.extractionStatus === "pending" || d.extractionStatus === "needs_review").length ?? 0;
   const skippedCount = emailDocs?.filter(d => d.extractionStatus === "skipped").length ?? 0;
-  const activeCount = (emailDocs?.length ?? 0) - skippedCount;
+  // Task #503 — collapsed-bucket counts (shown as summary rows on the
+  // default view; opening a bucket switches the status filter to it).
+  const lowRelevanceCount = emailDocs?.filter(d => d.extractionStatus === "low_relevance").length ?? 0;
+  const archivedCandidateCount = emailDocs?.filter(d => d.extractionStatus === "archived_project_candidate").length ?? 0;
+  const activeCount = (emailDocs?.length ?? 0) - skippedCount - lowRelevanceCount - archivedCandidateCount;
 
   return (
     <AppLayout>
@@ -316,6 +329,8 @@ export default function EmailDocuments() {
               <SelectItem value="needs_project">Needs Project</SelectItem>
               <SelectItem value="failed">Failed</SelectItem>
               <SelectItem value="unmatched_sender">Unmatched Sender</SelectItem>
+              <SelectItem value="low_relevance">Low Relevance</SelectItem>
+              <SelectItem value="archived_project_candidate">Closed Projects</SelectItem>
               <SelectItem value="skipped">Skipped</SelectItem>
             </SelectContent>
           </Select>
@@ -390,6 +405,11 @@ export default function EmailDocuments() {
                         <div className="text-xs text-muted-foreground mt-0.5 truncate">
                           {doc.emailSubject || "No subject"}
                         </div>
+                        {PARKED_STATUSES.has(doc.extractionStatus) && doc.notes && (
+                          <div className="text-xs text-muted-foreground mt-1 italic" data-testid={`text-park-reason-${doc.id}`}>
+                            {doc.notes}
+                          </div>
+                        )}
                         {project && (
                           <div className="text-xs mt-1">
                             <span className="text-emerald-600 font-medium">Matched: {project.name}</span>
@@ -432,13 +452,13 @@ export default function EmailDocuments() {
                           </Button>
                         </a>
                       )}
-                      {(doc.extractionStatus === "failed" || doc.extractionStatus === "pending" || doc.extractionStatus === "unmatched_sender") && (
+                      {(doc.extractionStatus === "failed" || doc.extractionStatus === "pending" || PARKED_STATUSES.has(doc.extractionStatus)) && (
                         <Button
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8"
-                          title={doc.extractionStatus === "unmatched_sender" ? "Force AI analysis (bypass sender pre-filter)" : "Re-process"}
-                          onClick={() => processMutation.mutate({ id: doc.id, force: doc.extractionStatus === "unmatched_sender" })}
+                          title={PARKED_STATUSES.has(doc.extractionStatus) ? "Force AI analysis (bypass relevance pre-filter)" : "Re-process"}
+                          onClick={() => processMutation.mutate({ id: doc.id, force: PARKED_STATUSES.has(doc.extractionStatus) })}
                           disabled={processMutation.isPending}
                           data-testid={`button-reprocess-${doc.id}`}
                         >
@@ -465,6 +485,35 @@ export default function EmailDocuments() {
             })
           )}
         </div>
+
+        {statusFilter === "all" && (lowRelevanceCount > 0 || archivedCandidateCount > 0) && (
+          <div className="space-y-2">
+            {lowRelevanceCount > 0 && (
+              <LuxuryCard className="p-4 flex items-center justify-between gap-3" data-testid="bucket-low-relevance">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold">Low relevance ({lowRelevanceCount})</p>
+                  <p className="text-xs text-muted-foreground">Generic document keyword but no link to a client, active project or known contact. Not analysed automatically; expires after 30 days.</p>
+                </div>
+                <Button variant="outline" size="sm" onClick={() => setStatusFilterAndClear("low_relevance")} data-testid="button-open-low-relevance">
+                  <Eye size={14} />
+                  <span className="text-xs">Review</span>
+                </Button>
+              </LuxuryCard>
+            )}
+            {archivedCandidateCount > 0 && (
+              <LuxuryCard className="p-4 flex items-center justify-between gap-3" data-testid="bucket-archived-candidates">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold">Closed projects — late documents ({archivedCandidateCount})</p>
+                  <p className="text-xs text-muted-foreground">Matches an archived project only. Kept indefinitely; rescuable with force analysis or project assignment.</p>
+                </div>
+                <Button variant="outline" size="sm" onClick={() => setStatusFilterAndClear("archived_project_candidate")} data-testid="button-open-archived-candidates">
+                  <Eye size={14} />
+                  <span className="text-xs">Review</span>
+                </Button>
+              </LuxuryCard>
+            )}
+          </div>
+        )}
 
         <AlertDialog open={!!confirmDismissIds} onOpenChange={(open) => { if (!open) setConfirmDismissIds(null); }}>
           <AlertDialogContent>

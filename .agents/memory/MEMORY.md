@@ -6,6 +6,7 @@
 - [Reconciliation AI degradation](reconciliation-ai-degradation.md) — overlap-detection must degrade AI-error to deterministic arithmetic, never collapse null-verdict with "unrelated" (silent false-negatives).
 - [Fee-invoice ref reconciliation is global](fee-ref-global-scan.md) — ref-conflict scans must lock matching fee entries across ALL projects (SQL-side normalization), or cross-project double-records slip through.
 - [Server-authoritative money fields](server-authoritative-money-fields.md) — omit server-derived money cols from request Zod schemas (not just handler guards); read prior cumulative from the latest prior row, never max()/sum().
+- [Gmail tiered intake](gmail-tiered-intake.md) — only high-evidence mail reaches AI; archived evidence never qualifies; poll must page past processed ids AND persist dispositions, or it starves.
 - [Email sender pre-filter](email-prefilter.md) — AI extraction of email docs is gated by a deterministic sender/subject filter; unmatched docs park as `unmatched_sender`; freemail domains never whitelist by domain.
 - [Email-doc pipeline](email-doc-pipeline.md) — projectId assignment mirrors into intake (side-effectful); processing goes through the atomic claim; intake watermark + terminal skipped state enforced at capture/sweep/process/mirror.
 - [Intake queue drift](intake-queue-drift.md) — a doc can wedge on "analyzing" if its job goes terminal but the doc-state write fails; in_flight reclaim can't fix it, the sweeper drift-repair pass must.

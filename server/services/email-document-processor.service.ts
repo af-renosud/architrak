@@ -31,6 +31,12 @@ import { getEmailIntakeCutoff } from "./email-intake-cutoff";
 const SWEEP_INTERVAL_MS = 60_000;
 const SWEEP_BATCH_SIZE = 5;
 
+// Task #503 — retention window for parked low-value documents
+// (low_relevance / unmatched_sender). After this, they auto-expire to
+// terminal 'skipped' with an audit note (never deleted; still visible under
+// the Skipped filter). 'archived_project_candidate' never expires.
+const PARKED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
 export const MAX_CONCURRENT_EXTRACTIONS = 5;
 const PROCESSING_STALE_MS = 15 * 60_000;
 
@@ -45,6 +51,17 @@ export async function sweepPendingEmailDocuments(): Promise<void> {
     const reclaimed = await storage.reclaimStaleProcessingEmailDocuments(PROCESSING_STALE_MS);
     if (reclaimed > 0) {
       console.warn(`[EmailDocProcessor] Reclaimed ${reclaimed} document(s) wedged on 'processing' back to 'pending'.`);
+    }
+
+    // Task #503 — retention pass: expire parked low-value docs that nobody
+    // rescued within the window. Cheap conditional UPDATE, safe every tick.
+    try {
+      const expired = await storage.expireStaleParkedEmailDocuments(PARKED_RETENTION_MS);
+      if (expired > 0) {
+        console.log(`[EmailDocProcessor] Auto-expired ${expired} parked low-relevance/unmatched document(s) past the ${Math.round(PARKED_RETENTION_MS / 86_400_000)}-day retention window.`);
+      }
+    } catch (err) {
+      console.error("[EmailDocProcessor] Retention pass failed:", err);
     }
 
     const due = await storage.listDueEmailDocuments(SWEEP_BATCH_SIZE, getEmailIntakeCutoff());

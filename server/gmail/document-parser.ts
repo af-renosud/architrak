@@ -12,7 +12,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { env } from "../env";
 import { decideEmailDocRetry, EMAIL_DOC_MAX_ATTEMPTS } from "../services/email-doc-retry";
-import { evaluateEmailPrefilter, UNMATCHED_SENDER_STATUS } from "./email-prefilter";
+import { evaluateEmailPrefilter, tierToExtractionStatus } from "./email-prefilter";
 import { countItemRowCandidates, mergeContinuationFragments } from "../services/extraction-completeness";
 
 const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -1691,12 +1691,14 @@ export async function processEmailDocument(
     const projects = await storage.getProjects({ includeArchived: true });
     const contractors = await storage.getContractors();
 
-    // Task #323 — cheap deterministic pre-filter BEFORE any AI call. Docs
-    // with no sender/subject signal tying them to a client project are
-    // parked as 'unmatched_sender' (visible + rescuable in the email queue)
-    // without spending extraction tokens. Enforced at the processing
-    // boundary so every caller respects it; the manual re-analyze route can
-    // bypass it explicitly (operator judgement wins).
+    // Task #323/#503 — cheap deterministic pre-filter BEFORE any AI call,
+    // now evidence-tiered: docs whose only signal is a generic construction
+    // keyword park as 'low_relevance'; archived-project-only matches park
+    // as 'archived_project_candidate'; no-signal docs as 'unmatched_sender'.
+    // All are visible + rescuable in the email queue, none spends extraction
+    // tokens. Enforced at the processing boundary so every caller respects
+    // it; the manual re-analyze route can bypass it explicitly (operator
+    // judgement wins).
     if (!opts?.bypassPrefilter) {
       // Linked inboxes are a nice-to-have signal — never let their lookup
       // failure (or absence in a test double) fail the whole document.
@@ -1712,7 +1714,10 @@ export async function processEmailDocument(
       );
       const pre = evaluateEmailPrefilter(emailDoc, {
         contractors,
-        projects,
+        // Task #503 — live vs archived split: only live projects grant
+        // high-tier evidence; archived matches quarantine instead.
+        projects: projects.filter((p) => p.archivedAt == null),
+        archivedProjects: projects.filter((p) => p.archivedAt != null),
         knownEmails: linkedUsers.map((u) => u.email),
         firm: {
           legalNames: getFirmProfile().legalNames,
@@ -1720,13 +1725,14 @@ export async function processEmailDocument(
         },
       });
       if (!pre.pass) {
+        const parkStatus = tierToExtractionStatus(pre.tier);
         await storage.setEmailDocumentRetryState(emailDocumentId, {
-          extractionStatus: UNMATCHED_SENDER_STATUS,
+          extractionStatus: parkStatus,
           processingAttempts: emailDoc.processingAttempts ?? 0,
           nextProcessAttemptAt: null,
           notes: pre.reason,
         });
-        console.log(`[DocumentParser] Document ${emailDocumentId} parked as ${UNMATCHED_SENDER_STATUS} (no AI call): ${pre.reason}`);
+        console.log(`[DocumentParser] Document ${emailDocumentId} parked as ${parkStatus} (no AI call): ${pre.reason}`);
         return;
       }
     }

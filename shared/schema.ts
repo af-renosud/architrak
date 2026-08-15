@@ -1309,6 +1309,24 @@ export const emailDocuments = pgTable("email_documents", {
   index("email_documents_extraction_status_idx").on(table.extractionStatus),
 ]);
 
+// Task #503 — persistent processed-message exclusion for the Gmail poll.
+// Without label permissions, `-label:` never filters and each poll re-fetched
+// the same first 10 messages forever, starving newer mail. Every message is
+// recorded here once its disposition is durable; the poll skips recorded ids
+// regardless of label state.
+export const gmailProcessedMessages = pgTable("gmail_processed_messages", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull(),
+  messageId: text("message_id").notNull(),
+  // Gmail internalDate of the message — powers the durable backfill cursor
+  // (poll issues `before:<min(message_date)>` so backlog paging never
+  // restarts behind an ever-growing processed prefix).
+  messageDate: timestamp("message_date"),
+  processedAt: timestamp("processed_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  unique("gmail_processed_messages_user_message_unique").on(table.userId, table.messageId),
+]);
+
 export const projectDocuments = pgTable("project_documents", {
   id: serial("id").primaryKey(),
   projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),

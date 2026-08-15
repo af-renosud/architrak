@@ -4,27 +4,51 @@
  * previously each one burned a full AI extraction even when the sender had
  * nothing to do with any client project (newsletters, receipts, spam).
  *
- * A document passes when at least ONE deterministic signal ties it to the
- * business:
- *   - it was already assigned a project or contractor (operator rescue path);
- *   - the sender's exact email matches a known contractor email, a project's
- *     client contact email, or a linked architect inbox;
- *   - the sender's domain matches a known contractor/client domain
- *     (freemail domains like gmail.com are excluded from domain-level
- *     matching — one gmail contact must not whitelist all of Gmail);
- *   - the subject or attachment filename mentions a known project name,
- *     client name, or contractor name;
- *   - the subject or filename carries a French construction-document keyword
- *     (devis, facture, situation, avenant, …) — deliberately generous so a
- *     brand-new contractor's very first devis is never dropped.
+ * Task #503 — evidence-TIERED relevance, anchored on the LIVE project list.
+ * The old boolean pass promoted ANY generic construction keyword ("facture",
+ * "devis", "TTC"…) to full AI extraction — essentially every French
+ * invoice-like email — and archived projects still whitelisted senders.
+ * The prefilter now returns a tier:
  *
- * Failing documents are parked in extraction_status='unmatched_sender'
- * WITHOUT any AI call. They stay visible in the email queue where an
- * operator can assign a project or force a re-analysis (no silent loss).
+ *   - `high`      — real identity evidence ties the email to the business:
+ *                   assigned project/contractor (operator rescue), exact
+ *                   known contractor / LIVE-project client-contact / linked
+ *                   inbox address, the firm's own domain, a safe non-freemail
+ *                   domain matching a known contact, or a subject/filename
+ *                   mention of a LIVE project / client / contact / contractor
+ *                   / firm legal name. → stored `pending`, AI runs as before.
+ *   - `archived`  — the ONLY evidence points at an archived project (contact
+ *                   email/domain or project/client/contact name). → stored
+ *                   `archived_project_candidate`; no AI, rescuable, never
+ *                   silently dropped (a late invoice for a just-archived
+ *                   project stays visible in a collapsed bucket).
+ *   - `low`       — generic construction-document keyword with NO identity
+ *                   evidence. → stored `low_relevance`; no AI; collapsed
+ *                   bucket; auto-expires after a retention window. Keeps a
+ *                   brand-new contractor's very first devis rescuable
+ *                   without flooding the queue.
+ *   - `unmatched` — no signal at all. → `unmatched_sender` (as before).
+ *
+ * Contractors are never archived, so a contractor signal is always high.
+ * Freemail domains never whitelist by domain (exact address still passes).
  */
 import type { Contractor, Project } from "@shared/schema";
 
 export const UNMATCHED_SENDER_STATUS = "unmatched_sender";
+export const LOW_RELEVANCE_STATUS = "low_relevance";
+export const ARCHIVED_CANDIDATE_STATUS = "archived_project_candidate";
+
+export type PrefilterTier = "high" | "archived" | "low" | "unmatched";
+
+/** Map a tier to the extraction_status the captured document should get. */
+export function tierToExtractionStatus(tier: PrefilterTier): string {
+  switch (tier) {
+    case "high": return "pending";
+    case "archived": return ARCHIVED_CANDIDATE_STATUS;
+    case "low": return LOW_RELEVANCE_STATUS;
+    default: return UNMATCHED_SENDER_STATUS;
+  }
+}
 
 export interface PrefilterInput {
   emailFrom: string | null;
@@ -34,9 +58,17 @@ export interface PrefilterInput {
   contractorId?: number | null;
 }
 
+type PrefilterProject = Pick<Project, "id" | "name" | "clientName" | "clientContactName" | "clientContactEmail">;
+
 export interface PrefilterContext {
   contractors: Pick<Contractor, "id" | "name" | "email" | "website">[];
-  projects: Pick<Project, "id" | "name" | "clientName" | "clientContactName" | "clientContactEmail">[];
+  /** LIVE (non-archived) projects only — these grant high-tier evidence. */
+  projects: PrefilterProject[];
+  /**
+   * Task #503 — archived projects. Their identity data never grants high
+   * tier; a match here yields tier `archived` (quarantined, rescuable).
+   */
+  archivedProjects?: PrefilterProject[];
   /** Linked architect inbox addresses (forward-to-self is a valid signal). */
   knownEmails?: (string | null | undefined)[];
   /**
@@ -54,7 +86,9 @@ export interface PrefilterContext {
 }
 
 export interface PrefilterResult {
+  /** true only for tier `high` — kept for existing callers/tests. */
   pass: boolean;
+  tier: PrefilterTier;
   /** Human-readable explanation, stored in notes when the doc is parked. */
   reason: string;
 }
@@ -72,6 +106,8 @@ const FREEMAIL_DOMAINS = new Set([
 
 // French construction-document vocabulary. Single tokens are matched as
 // whole words; multi-word phrases as normalized substrings.
+// Task #503 — recognition unchanged, but a keyword alone is now LOW tier
+// (no AI) instead of a full pass: any French invoice says "facture TTC HT".
 const DOC_KEYWORDS = [
   "devis", "facture", "facturation", "proforma", "situation", "avenant",
   "acompte", "marche", "chantier", "travaux", "dpgf", "cctp", "dgd",
@@ -113,22 +149,51 @@ function websiteDomain(website: string | null | undefined): string | null {
   return cleaned.includes(".") ? cleaned : null;
 }
 
+/** Name candidates from a set of projects (project/client/contact names). */
+function projectNameCandidates(projects: PrefilterProject[]): { label: string; value: string | null | undefined }[] {
+  const out: { label: string; value: string | null | undefined }[] = [];
+  for (const p of projects) {
+    out.push({ label: "project", value: p.name });
+    out.push({ label: "client", value: p.clientName });
+    out.push({ label: "client contact", value: p.clientContactName });
+  }
+  return out;
+}
+
+function findNameMention(
+  haystackPadded: string,
+  candidates: { label: string; value: string | null | undefined }[],
+): { label: string; value: string } | null {
+  for (const cand of candidates) {
+    if (!cand.value) continue;
+    const norm = normalize(cand.value);
+    // Too-short names (e.g. "SA", "BAT") would false-positive constantly.
+    if (norm.replace(/\s+/g, "").length < 4) continue;
+    if (haystackPadded.includes(` ${norm} `)) {
+      return { label: cand.label, value: cand.value };
+    }
+  }
+  return null;
+}
+
 export function evaluateEmailPrefilter(
   input: PrefilterInput,
   ctx: PrefilterContext,
 ): PrefilterResult {
+  const high = (reason: string): PrefilterResult => ({ pass: true, tier: "high", reason });
+
   // Operator already tied the doc to the business — always pass.
   if (input.projectId != null) {
-    return { pass: true, reason: "project already assigned" };
+    return high("project already assigned");
   }
   if (input.contractorId != null) {
-    return { pass: true, reason: "contractor already assigned" };
+    return high("contractor already assigned");
   }
 
   const senderEmail = extractSenderEmail(input.emailFrom);
   const senderDomain = domainOf(senderEmail);
 
-  // ── Signal 1: exact sender address ─────────────────────────────────────
+  // ── Signal 1: exact sender address (live evidence only) ────────────────
   const knownAddresses = new Set<string>();
   for (const c of ctx.contractors) {
     const e = extractSenderEmail(c.email ?? null);
@@ -143,17 +208,26 @@ export function evaluateEmailPrefilter(
     if (norm) knownAddresses.add(norm);
   }
   if (senderEmail && knownAddresses.has(senderEmail)) {
-    return { pass: true, reason: `sender ${senderEmail} is a known contact` };
+    return high(`sender ${senderEmail} is a known contact`);
+  }
+
+  // Archived-project contact addresses — collected separately so they can
+  // NEVER grant high tier (Task #503).
+  const archivedAddresses = new Set<string>();
+  for (const p of ctx.archivedProjects ?? []) {
+    const e = extractSenderEmail(p.clientContactEmail ?? null);
+    if (e && !knownAddresses.has(e)) archivedAddresses.add(e);
   }
 
   // ── Signal 1b (Task #425): firm's own mail domain ──────────────────────
   // The firm forwarding/bcc'ing its own fee invoices is a first-class
   // signal — never park mail from the firm's own domain(s).
   if (senderDomain && ctx.firm?.domains.some((d) => d.toLowerCase() === senderDomain)) {
-    return { pass: true, reason: `sender domain ${senderDomain} is the firm's own domain` };
+    return high(`sender domain ${senderDomain} is the firm's own domain`);
   }
 
   // ── Signal 2: sender domain (non-freemail only) ────────────────────────
+  let archivedDomainHit = false;
   if (senderDomain && !FREEMAIL_DOMAINS.has(senderDomain)) {
     const knownDomains = new Set<string>();
     for (const addr of Array.from(knownAddresses)) {
@@ -165,54 +239,165 @@ export function evaluateEmailPrefilter(
       if (d && !FREEMAIL_DOMAINS.has(d)) knownDomains.add(d);
     }
     if (knownDomains.has(senderDomain)) {
-      return { pass: true, reason: `sender domain ${senderDomain} matches a known contact domain` };
+      return high(`sender domain ${senderDomain} matches a known contact domain`);
+    }
+    for (const addr of Array.from(archivedAddresses)) {
+      const d = domainOf(addr);
+      if (d && !FREEMAIL_DOMAINS.has(d) && d === senderDomain) archivedDomainHit = true;
     }
   }
 
-  // ── Signal 3: project / client / contractor name in subject or filename ─
+  // ── Signal 3: name mentions in subject or filename ─────────────────────
   const haystack = normalize(
     `${input.emailSubject ?? ""} ${input.attachmentFileName ?? ""}`,
   );
+  let archivedNameHit: { label: string; value: string } | null = null;
+  let keywordHit: string | null = null;
   if (haystack) {
-    const candidates: { label: string; value: string | null | undefined }[] = [];
-    for (const p of ctx.projects) {
-      candidates.push({ label: "project", value: p.name });
-      candidates.push({ label: "client", value: p.clientName });
-      candidates.push({ label: "client contact", value: p.clientContactName });
-    }
+    const padded = ` ${haystack} `;
+    const liveCandidates = projectNameCandidates(ctx.projects);
     for (const c of ctx.contractors) {
-      candidates.push({ label: "contractor", value: c.name });
+      liveCandidates.push({ label: "contractor", value: c.name });
     }
     // Task #425 — the firm's own legal name on a subject/filename (e.g.
     // "Facture-…-ARCHITECTS-FRANCE-F-2026-138.pdf") is a valid signal.
     for (const n of ctx.firm?.legalNames ?? []) {
-      candidates.push({ label: "firm", value: n });
+      liveCandidates.push({ label: "firm", value: n });
     }
-    const padded = ` ${haystack} `;
-    for (const cand of candidates) {
-      if (!cand.value) continue;
-      const norm = normalize(cand.value);
-      // Too-short names (e.g. "SA", "BAT") would false-positive constantly.
-      if (norm.replace(/\s+/g, "").length < 4) continue;
-      if (padded.includes(` ${norm} `)) {
-        return { pass: true, reason: `subject/filename mentions ${cand.label} "${cand.value}"` };
-      }
+    const liveHit = findNameMention(padded, liveCandidates);
+    if (liveHit) {
+      return high(`subject/filename mentions ${liveHit.label} "${liveHit.value}"`);
     }
+    archivedNameHit = findNameMention(padded, projectNameCandidates(ctx.archivedProjects ?? []));
 
-    // ── Signal 4: construction-document keywords ─────────────────────────
+    // ── Signal 4: construction-document keywords (LOW tier only) ─────────
     const tokens = new Set(haystack.split(" "));
     for (const kw of DOC_KEYWORDS) {
       const hit = kw.includes(" ") ? haystack.includes(kw) : tokens.has(kw);
-      if (hit) {
-        return { pass: true, reason: `subject/filename contains keyword "${kw}"` };
-      }
+      if (hit) { keywordHit = kw; break; }
     }
+  }
+
+  // ── Archived-only evidence → quarantine, never high, never dropped ─────
+  if (senderEmail && archivedAddresses.has(senderEmail)) {
+    return {
+      pass: false, tier: "archived",
+      reason: `Expéditeur ${senderEmail} : contact d'un projet archivé — document mis de côté (projet clos), récupérable manuellement.`,
+    };
+  }
+  if (archivedDomainHit) {
+    return {
+      pass: false, tier: "archived",
+      reason: `Domaine ${senderDomain} : contact d'un projet archivé — document mis de côté (projet clos), récupérable manuellement.`,
+    };
+  }
+  if (archivedNameHit) {
+    return {
+      pass: false, tier: "archived",
+      reason: `Sujet/fichier mentionne ${archivedNameHit.label === "project" ? "le projet archivé" : "un client de projet archivé"} « ${archivedNameHit.value} » — document mis de côté (projet clos), récupérable manuellement.`,
+    };
+  }
+
+  // ── Generic keyword with no identity evidence → LOW relevance ──────────
+  if (keywordHit) {
+    return {
+      pass: false, tier: "low",
+      reason: `Mot-clé générique « ${keywordHit} » sans lien identifié avec un client, un projet actif ou un intervenant connu — pertinence faible, analyse IA non lancée (récupérable manuellement).`,
+    };
   }
 
   return {
     pass: false,
+    tier: "unmatched",
     reason: senderEmail
       ? `Expéditeur inconnu (${senderEmail}) — aucun lien avec un intervenant, un client ou un projet, et aucun mot-clé de document de chantier dans le sujet ou le nom de fichier. Extraction IA non lancée.`
       : "Expéditeur illisible — aucun signal projet/intervenant détecté. Extraction IA non lancée.",
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Task #503 — targeted Gmail query batches. Built from LIVE, distinctive
+// identity signals only (known sender addresses + live project/client
+// names). Generic words like "facture"/"TTC"/"HT" are NEVER used alone as
+// a Gmail positive selector — they don't establish relevance. These batches
+// run BEFORE the broad backstop query so high-confidence mail is captured
+// first; the broad query remains the completeness/audit backstop.
+// ─────────────────────────────────────────────────────────────────────────
+
+const MAX_FROM_PER_QUERY = 20;
+const MAX_NAMES_PER_QUERY = 8;
+const MAX_TARGETED_QUERIES = 6;
+// Conservative serialized-length budget per Gmail search string — names and
+// addresses are unconstrained text, so item-count caps alone are not enough.
+const MAX_QUERY_CHARS = 700;
+
+/** Sanitize a name for use as a quoted Gmail phrase; null if unusable. */
+function gmailPhrase(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const cleaned = value.replace(/["()]/g, " ").replace(/\s+/g, " ").trim();
+  if (cleaned.replace(/\s/g, "").length < 4) return null;
+  return `"${cleaned}"`;
+}
+
+export function buildTargetedGmailQueries(
+  ctx: Pick<PrefilterContext, "contractors" | "projects" | "knownEmails">,
+  baseQuery: string,
+): string[] {
+  const addresses = new Set<string>();
+  for (const c of ctx.contractors) {
+    const e = extractSenderEmail(c.email ?? null);
+    if (e) addresses.add(e);
+  }
+  for (const p of ctx.projects) {
+    const e = extractSenderEmail(p.clientContactEmail ?? null);
+    if (e) addresses.add(e);
+  }
+
+  const phrases = new Set<string>();
+  for (const p of ctx.projects) {
+    for (const v of [p.name, p.clientName, p.clientContactName]) {
+      const ph = gmailPhrase(v);
+      if (ph) phrases.add(ph);
+    }
+  }
+
+  const queries: string[] = [];
+
+  // Chunk by BOTH item count and serialized character budget — client and
+  // project names are unconstrained text, so a count-only cap could still
+  // produce a query past Gmail's search-string limit. Overflowing terms
+  // roll into the next batch; anything beyond MAX_TARGETED_QUERIES is
+  // covered by the broad backstop query the caller always appends.
+  const emitChunked = (
+    terms: string[],
+    maxPerQuery: number,
+    wrap: (joined: string) => string,
+  ) => {
+    let chunk: string[] = [];
+    const flush = () => {
+      if (chunk.length > 0 && queries.length < MAX_TARGETED_QUERIES) {
+        queries.push(`${baseQuery} ${wrap(chunk.join(" OR "))}`);
+      }
+      chunk = [];
+    };
+    let len = 0;
+    for (const term of terms) {
+      // Skip pathological single terms that alone would blow the budget.
+      if (baseQuery.length + term.length + 12 > MAX_QUERY_CHARS) continue;
+      if (
+        chunk.length >= maxPerQuery ||
+        baseQuery.length + len + term.length + 4 /* " OR " */ + 12 /* wrapper */ > MAX_QUERY_CHARS
+      ) {
+        flush();
+        len = 0;
+      }
+      chunk.push(term);
+      len += term.length + 4;
+    }
+    flush();
+  };
+
+  emitChunked(Array.from(addresses), MAX_FROM_PER_QUERY, (j) => `from:(${j})`);
+  emitChunked(Array.from(phrases), MAX_NAMES_PER_QUERY, (j) => `(${j})`);
+  return queries;
 }

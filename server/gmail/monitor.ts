@@ -14,7 +14,12 @@ import { getUncachableGmailClient, isGmailConfigured, isFakeGmailMode } from "./
 import { getGmailClientForUser } from "./user-client";
 import { uploadDocument, isObjectStorageConfigured } from "../storage/object-storage";
 import { getEmailIntakeCutoff } from "../services/email-intake-cutoff";
-import { evaluateEmailPrefilter, UNMATCHED_SENDER_STATUS, type PrefilterContext } from "./email-prefilter";
+import {
+  evaluateEmailPrefilter,
+  buildTargetedGmailQueries,
+  tierToExtractionStatus,
+  type PrefilterContext,
+} from "./email-prefilter";
 import { scanCertificatReplies } from "../services/certificat-payment-suggestions.service";
 import { storage } from "../storage";
 import type { gmail_v1 } from "googleapis";
@@ -248,6 +253,133 @@ async function scanConnectorSentThreads(): Promise<number> {
   }
 }
 
+// Per-poll work budget and paging bounds. The persistent processed-message
+// exclusion alone is not enough: with `maxResults` capped, the FIRST page of
+// each query can consist entirely of already-handled ids (e.g. when label
+// filtering is a no-op for lack of permission), so the poll must PAGE PAST
+// locally-processed messages until it finds real work or exhausts the bound.
+const POLL_UNPROCESSED_TARGET = 10;
+const POLL_PAGE_SIZE = 10;
+const POLL_MAX_PAGES_PER_QUERY = 10;
+// Slots always reserved for the broad backstop and the backfill query, so a
+// sustained flood of high-evidence mail can never permanently starve
+// unknown-sender/keyword-only PDFs (backstop) or old backlog (backfill).
+// Both are issued unconditionally on every poll when applicable.
+const POLL_BROAD_RESERVE = 3;
+const POLL_BACKFILL_RESERVE = 3;
+// Page cap for the boundary-bucket backfill query only: its result set is
+// bounded to a single second of mail, so a generous cap (300 messages)
+// guarantees the bucket is drained rather than restarting behind its own
+// processed prefix each poll.
+const POLL_BUCKET_MAX_PAGES = 30;
+
+export interface PollQuerySet {
+  /** Targeted live-client queries (may be empty). */
+  targeted: string[];
+  /** Broad completeness/audit backstop — always issued. */
+  backstop: string;
+  /**
+   * Deep backfill query (`backstop + before:<cursor second, exclusive>`).
+   * Gmail search is second-granular while internalDate is ms-granular, so
+   * everything this lists is in a strictly OLDER second than the oldest
+   * processed message — its first page is guaranteed fresh work, no matter
+   * how deep the processed prefix grew. Bounded paging cannot starve it.
+   */
+  backfill?: string | null;
+  /**
+   * Boundary-bucket query bracketing the cursor's own second
+   * (`after:<cursor-1> before:<cursor+1>`). The deep query excludes that
+   * second entirely, so this query — whose result set is bounded to one
+   * second of mail — is paged until EXHAUSTED (higher page cap) to drain
+   * any partially-processed bucket pinning the cursor.
+   */
+  backfillBucket?: string | null;
+}
+
+/**
+ * Walk each Gmail query's result pages, excluding message ids already
+ * durably processed (gmail_processed_messages) and deduplicating across
+ * queries, until the unprocessed-work target is met or pages run out.
+ * Exported for tests.
+ */
+export async function collectUnprocessedMessageIds(
+  gmail: gmail_v1.Gmail,
+  userId: number,
+  querySet: PollQuerySet,
+): Promise<{ unprocessed: string[]; alreadyHandled: number; listErrors: number }> {
+  const seen = new Set<string>();
+  const unprocessed: string[] = [];
+  let alreadyHandled = 0;
+  let listErrors = 0;
+
+  const hasBackfill = !!querySet.backfill;
+  const backfillReserve = hasBackfill ? POLL_BACKFILL_RESERVE : 0;
+  const targetedCap = Math.max(1, POLL_UNPROCESSED_TARGET - POLL_BROAD_RESERVE - backfillReserve);
+  const broadCap = Math.max(targetedCap + 1, POLL_UNPROCESSED_TARGET - backfillReserve);
+
+  const runQuery = async (q: string, cap: number, maxPages = POLL_MAX_PAGES_PER_QUERY): Promise<void> => {
+    let pageToken: string | undefined;
+    for (let page = 0; page < maxPages && unprocessed.length < cap; page++) {
+      let response;
+      try {
+        response = await gmail.users.messages.list({
+          userId: "me",
+          q,
+          maxResults: POLL_PAGE_SIZE,
+          ...(pageToken ? { pageToken } : {}),
+        });
+      } catch (err) {
+        listErrors++;
+        console.error(`[Gmail Monitor] User ${userId}: message list failed for query "${q.slice(0, 120)}…" (page ${page + 1}):`, err);
+        return;
+      }
+      const pageIds: string[] = [];
+      for (const msg of response.data.messages || []) {
+        if (msg.id && !seen.has(msg.id)) {
+          seen.add(msg.id);
+          pageIds.push(msg.id);
+        }
+      }
+      if (pageIds.length > 0) {
+        const fresh = await storage.filterUnprocessedGmailMessageIds(userId, pageIds);
+        alreadyHandled += pageIds.length - fresh.length;
+        unprocessed.push(...fresh);
+      }
+      pageToken = response.data.nextPageToken ?? undefined;
+      if (!pageToken) return;
+    }
+  };
+
+  // Overshoot trim between phases: trimmed ids are not recorded as
+  // processed, so they are re-found and handled on the next poll.
+  for (const q of querySet.targeted) {
+    if (unprocessed.length >= targetedCap) break;
+    await runQuery(q, targetedCap);
+  }
+  if (unprocessed.length > targetedCap) unprocessed.length = targetedCap;
+
+  // The broad backstop ALWAYS runs so low-evidence mail keeps flowing into
+  // the parked buckets even when high-evidence mail floods the budget.
+  await runQuery(querySet.backstop, broadCap);
+  if (unprocessed.length > broadCap) unprocessed.length = broadCap;
+
+  // Boundary bucket first: one second of mail, paged until exhausted (its
+  // processed prefix is bounded by that second's volume, so a higher page
+  // cap guarantees progress even if 100+ processed messages share the
+  // cursor second).
+  if (querySet.backfillBucket) {
+    await runQuery(querySet.backfillBucket, POLL_UNPROCESSED_TARGET, POLL_BUCKET_MAX_PAGES);
+  }
+  // Deep backfill ALWAYS runs (when a cursor exists): it lists only seconds
+  // strictly older than every processed message, so page one is fresh work
+  // no matter how deep the processed prefix grew.
+  if (querySet.backfill) {
+    await runQuery(querySet.backfill, POLL_UNPROCESSED_TARGET);
+  }
+
+  return { unprocessed: unprocessed.slice(0, POLL_UNPROCESSED_TARGET), alreadyHandled, listErrors };
+}
+
 /**
  * Scan one user's inbox for unprocessed PDF attachments. Extracted from the
  * old monolithic pollInbox so it can run once per linked user. Returns
@@ -260,27 +392,65 @@ async function pollOneInbox(
   let processed = 0;
   let errors = 0;
 
-  const query = `has:attachment filename:pdf -label:${LABEL_NAME}`;
-  const response = await gmail.users.messages.list({
-    userId: "me",
-    q: query,
-    maxResults: 10,
-  });
+  const baseQuery = `has:attachment filename:pdf -label:${LABEL_NAME}`;
+
+  // Task #503 — targeted live-client batches run FIRST (known sender
+  // addresses + live project/client names) so high-confidence mail is
+  // captured with priority; the broad query stays as the completeness/audit
+  // backstop. Message ids are deduplicated across batches.
+  const ctx = await getPrefilterContext();
+  // Durable backfill cursor: oldest internalDate ever processed. `before:`
+  // is date-exclusive, so +1s keeps same-second messages listable (the
+  // processed-id filter dedupes any overlap). Clamped to the intake
+  // watermark: mail older than the cutoff is never captured, so once the
+  // cursor reaches it the backlog is fully drained and backfill stops.
+  // Pre-watermark processed rows are excluded from the cursor minimum so
+  // they can never collapse the cursor below the cutoff and starve valid
+  // post-cutoff backlog.
+  const cursor = await storage.getGmailBackfillCursor(userId, getEmailIntakeCutoff());
+  const cutoffSec = Math.floor(getEmailIntakeCutoff().getTime() / 1000);
+  const cursorSec = cursor ? Math.floor(cursor.getTime() / 1000) : null;
+  const hasBackfill = cursorSec !== null && cursorSec > cutoffSec;
+  // Deep query: strictly older SECONDS than the cursor — page one is
+  // prefix-free because nothing older than the minimum was processed.
+  const backfill = hasBackfill
+    ? `${baseQuery} before:${cursorSec} after:${cutoffSec}`
+    : null;
+  // Bucket query: brackets the cursor's own second, paged until exhausted,
+  // so 100+ processed messages sharing that second can't pin the cursor.
+  const backfillBucket = hasBackfill
+    ? `${baseQuery} after:${cursorSec! - 1} before:${cursorSec! + 1}`
+    : null;
+
+  const { unprocessed: messageIds, alreadyHandled, listErrors } =
+    await collectUnprocessedMessageIds(gmail, userId, {
+      targeted: buildTargetedGmailQueries(
+        { contractors: ctx.contractors, projects: ctx.projects, knownEmails: ctx.knownEmails },
+        baseQuery,
+      ),
+      backstop: baseQuery,
+      backfill,
+      backfillBucket,
+    });
+  errors += listErrors;
 
   const canModify = await ensureLabelSafe(gmail, userId);
 
-  const messages = response.data.messages || [];
-  if (messages.length > 0) {
-    console.log(`[Gmail Monitor] User ${userId}: found ${messages.length} unprocessed emails with PDFs`);
+  if (messageIds.length > 0) {
+    console.log(`[Gmail Monitor] User ${userId}: found ${messageIds.length} unprocessed emails with PDFs (${alreadyHandled} already handled)`);
   }
 
-  for (const msg of messages) {
+  for (const id of messageIds) {
     try {
-      await processMessage(gmail, msg.id!, canModify, userId);
+      const messageDate = await processMessage(gmail, id, canModify, userId);
+      // Disposition is durable (docs stored / message labeled or skipped) —
+      // record it (with the message date, feeding the backfill cursor) so a
+      // label failure can never wedge the poll on this id.
+      await storage.recordGmailMessageProcessed(userId, id, messageDate);
       processed++;
     } catch (err) {
       errors++;
-      console.error(`[Gmail Monitor] User ${userId}: error processing message ${msg.id}:`, err);
+      console.error(`[Gmail Monitor] User ${userId}: error processing message ${id}:`, err);
     }
   }
 
@@ -297,15 +467,32 @@ async function getPrefilterContext(): Promise<PrefilterContext> {
   if (prefilterCtxCache && now - prefilterCtxCache.fetchedAt < PREFILTER_CTX_TTL_MS) {
     return prefilterCtxCache.ctx;
   }
-  const [contractors, projects, linkedUsers] = await Promise.all([
+  const [contractors, allProjects, linkedUsers] = await Promise.all([
     storage.getContractors(),
     storage.getProjects({ includeArchived: true }),
     storage.listGmailPollingUsers().catch(() => []),
   ]);
+  // Task #503 — live vs archived split: only LIVE projects grant high-tier
+  // relevance; archived ones quarantine as 'archived_project_candidate'.
+  const projects = allProjects.filter((p) => p.archivedAt == null);
+  const archivedProjects = allProjects.filter((p) => p.archivedAt != null);
+  // Task #425/#503 — firm identity is a capture-time signal too, so the
+  // firm's own fee invoices are never demoted to low relevance at capture.
+  let firm: PrefilterContext["firm"];
+  try {
+    const { getFirmProfile, getFirmEmailDomains } = await import(
+      "../services/architect-fee-invoice.service"
+    );
+    firm = { legalNames: getFirmProfile().legalNames, domains: getFirmEmailDomains() };
+  } catch (err) {
+    console.error("[Gmail Monitor] Firm profile unavailable for prefilter context:", err);
+  }
   const ctx: PrefilterContext = {
     contractors,
     projects,
+    archivedProjects,
     knownEmails: linkedUsers.map((u) => u.email),
+    firm,
   };
   prefilterCtxCache = { ctx, fetchedAt: now };
   return ctx;
@@ -360,12 +547,17 @@ async function applyLabel(gmail: gmail_v1.Gmail, messageId: string, userId: numb
   }
 }
 
+/**
+ * Returns the message's authoritative date (internalDate, falling back to
+ * the parsed header date) so the caller can persist it with the
+ * processed-message record — it feeds the durable backfill cursor.
+ */
 async function processMessage(
   gmail: gmail_v1.Gmail,
   messageId: string,
   canModify: boolean,
   userId: number,
-): Promise<void> {
+): Promise<Date | null> {
   const msgDetail = await gmail.users.messages.get({
     userId: "me",
     id: messageId,
@@ -400,7 +592,7 @@ async function processMessage(
   if (emailReceivedAt < getEmailIntakeCutoff()) {
     console.log(`[Gmail Monitor] User ${userId}: skipping pre-watermark email ${messageId} (received ${emailReceivedAt.toISOString()})`);
     if (canModify) await applyLabel(gmail, messageId, userId);
-    return;
+    return emailReceivedAt;
   }
 
   const parts = flattenParts(msgDetail.data.payload);
@@ -413,7 +605,7 @@ async function processMessage(
 
   if (pdfParts.length === 0) {
     if (canModify) await applyLabel(gmail, messageId, userId);
-    return;
+    return emailReceivedAt;
   }
 
   for (const part of pdfParts) {
@@ -430,22 +622,33 @@ async function processMessage(
     });
 
     const data = attachRes.data.data;
-    if (!data) continue;
+    // Task #503 — a declared PDF part with no payload must FAIL the message,
+    // not skip silently: the caller only records a message as durably
+    // processed on success, so throwing here guarantees this message is
+    // re-fetched and retried on the next poll instead of being suppressed
+    // forever with the PDF never captured.
+    if (!data) {
+      throw new Error(`Attachment payload missing for declared PDF part "${fileName}" (message ${messageId})`);
+    }
 
     const buffer = Buffer.from(data, "base64url");
 
     const storageKey = await uploadDocument(null, fileName, buffer, "application/pdf");
 
-    // Task #323 — cheap deterministic pre-filter at capture time. Docs with
-    // no sender/subject/filename signal are stored as 'unmatched_sender' so
-    // the background sweeper (which only drains 'pending') never spends AI
-    // tokens on them. They remain visible + rescuable in the email queue.
+    // Task #323/#503 — cheap deterministic pre-filter at capture time, now
+    // evidence-TIERED: only high-tier docs are stored 'pending' (AI runs);
+    // generic-keyword-only mail parks as 'low_relevance', archived-project
+    // matches as 'archived_project_candidate', no-signal mail as
+    // 'unmatched_sender'. The background sweeper only drains 'pending', so
+    // none of the parked tiers ever spends AI tokens. All stay visible +
+    // rescuable in the email queue, with the reason persisted in notes.
     const prefilter = evaluateEmailPrefilter(
       { emailFrom: from, emailSubject: subject, attachmentFileName: fileName },
       await getPrefilterContext(),
     );
+    const captureStatus = tierToExtractionStatus(prefilter.tier);
     if (!prefilter.pass) {
-      console.log(`[Gmail Monitor] User ${userId}: parking ${messageId}/${fileName} as ${UNMATCHED_SENDER_STATUS} (no AI call): ${prefilter.reason}`);
+      console.log(`[Gmail Monitor] User ${userId}: parking ${messageId}/${fileName} as ${captureStatus} (no AI call): ${prefilter.reason}`);
     }
 
     const doc: InsertEmailDocument = {
@@ -458,7 +661,7 @@ async function processMessage(
       attachmentFileName: fileName,
       storageKey,
       documentType: "unknown",
-      extractionStatus: prefilter.pass ? "pending" : UNMATCHED_SENDER_STATUS,
+      extractionStatus: captureStatus,
       ...(prefilter.pass ? {} : { notes: prefilter.reason }),
       gmailLabelApplied: canModify,
     };
@@ -472,6 +675,8 @@ async function processMessage(
       await storage.updateEmailDocumentLabelStatus(messageId);
     } catch (_) {}
   }
+
+  return emailReceivedAt;
 }
 
 interface MessagePart {

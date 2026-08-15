@@ -154,7 +154,10 @@ import { processEmailDocument } from "../gmail/document-parser";
 function seedEmailDoc(overrides: Partial<EmailDocument> = {}): void {
   state.emailDocs.set(1, {
     id: 1,
-    emailSubject: "Devis piscine",
+    // Task #503 — the prefilter is now evidence-tiered: a generic keyword
+    // alone no longer reaches AI. Mention the live project so the doc is
+    // high-tier; this suite is about double-filing guards, not relevance.
+    emailSubject: "Devis piscine Famille Smith",
     attachmentFileName: "devis.pdf",
     storageKey: "email-docs/devis.pdf",
     extractionStatus: "pending",

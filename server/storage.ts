@@ -16,7 +16,7 @@ import {
   bankingMismatchOverrides,
   type BankingMismatchOverride, type InsertBankingMismatchOverride,
   archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog, archidocSiretIssues,
-  emailDocuments, projectDocuments, projectIntakeDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
+  emailDocuments, gmailProcessedMessages, projectDocuments, projectIntakeDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
   aiModelSettings, templateAssets, users, devisTranslations, wishListItems,
   benchmarkDocuments, benchmarkItems, benchmarkTags, benchmarkItemTags,
   devisChecks, devisCheckMessages, devisCheckTokens,
@@ -479,6 +479,14 @@ export interface IStorage {
   claimEmailDocumentForProcessing(id: number, minReceivedAt: Date): Promise<EmailDocument | undefined>;
 
   reclaimStaleProcessingEmailDocuments(staleMs: number): Promise<number>;
+
+  expireStaleParkedEmailDocuments(maxAgeMs: number): Promise<number>;
+
+  recordGmailMessageProcessed(userId: number, messageId: string, messageDate?: Date | null): Promise<void>;
+
+  filterUnprocessedGmailMessageIds(userId: number, messageIds: string[]): Promise<string[]>;
+
+  getGmailBackfillCursor(userId: number, notBefore?: Date): Promise<Date | null>;
 
   getProjectDocumentBySourceEmailDocumentId(sourceEmailDocumentId: number): Promise<ProjectDocument | undefined>;
 
@@ -3002,6 +3010,72 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(emailDocuments.extractionStatus, "processing"), lt(emailDocuments.updatedAt, threshold)))
       .returning({ id: emailDocuments.id });
     return rows.length;
+  }
+
+  /**
+   * Task #503 — retention: parked low-value documents that nobody touched
+   * within the retention window are auto-expired to terminal 'skipped'
+   * (status flip with an audit note — never a delete; they stay visible
+   * under the Skipped filter). Only 'low_relevance' and 'unmatched_sender'
+   * expire; 'archived_project_candidate' is kept indefinitely (a late
+   * invoice for a closed project must not silently vanish).
+   */
+  async expireStaleParkedEmailDocuments(maxAgeMs: number): Promise<number> {
+    const threshold = new Date(Date.now() - maxAgeMs);
+    const rows = await db
+      .update(emailDocuments)
+      .set({
+        extractionStatus: "skipped",
+        notes: sql`'Auto-expiré (aucune action pendant la période de rétention). ' || COALESCE(${emailDocuments.notes}, '')`,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        inArray(emailDocuments.extractionStatus, ["low_relevance", "unmatched_sender"]),
+        lt(emailDocuments.createdAt, threshold),
+      ))
+      .returning({ id: emailDocuments.id });
+    return rows.length;
+  }
+
+  // Task #503 — persistent processed-message exclusion for the Gmail poll.
+  async recordGmailMessageProcessed(userId: number, messageId: string, messageDate?: Date | null): Promise<void> {
+    await db.insert(gmailProcessedMessages)
+      .values({ userId, messageId, messageDate: messageDate ?? null })
+      .onConflictDoNothing();
+  }
+
+  /**
+   * Oldest Gmail internalDate ever durably processed for this user — the
+   * poll's durable backfill cursor. A `before:<cursor>` query's first page
+   * is guaranteed fresh work, so backlog draining never restarts behind an
+   * ever-growing processed prefix of newer messages.
+   */
+  async getGmailBackfillCursor(userId: number, notBefore?: Date): Promise<Date | null> {
+    // Rows at or before `notBefore` (the intake watermark) are excluded from
+    // the minimum: pre-watermark messages are recorded as processed too, and
+    // letting their old dates win would collapse the cursor below the
+    // cutoff and permanently disable deep-backlog draining for valid
+    // post-cutoff mail.
+    const conditions = [eq(gmailProcessedMessages.userId, userId)];
+    if (notBefore) conditions.push(gte(gmailProcessedMessages.messageDate, notBefore));
+    const [row] = await db
+      .select({ min: sql<string | null>`min(${gmailProcessedMessages.messageDate})` })
+      .from(gmailProcessedMessages)
+      .where(and(...conditions));
+    return row?.min ? new Date(row.min) : null;
+  }
+
+  async filterUnprocessedGmailMessageIds(userId: number, messageIds: string[]): Promise<string[]> {
+    if (messageIds.length === 0) return [];
+    const seen = await db
+      .select({ messageId: gmailProcessedMessages.messageId })
+      .from(gmailProcessedMessages)
+      .where(and(
+        eq(gmailProcessedMessages.userId, userId),
+        inArray(gmailProcessedMessages.messageId, messageIds),
+      ));
+    const seenSet = new Set(seen.map((r) => r.messageId));
+    return messageIds.filter((id) => !seenSet.has(id));
   }
 
   /**
