@@ -144,6 +144,58 @@ interface CertificatPdfData {
   companyLogoBase64: string | null;
   architectsLogoBase64: string | null;
   annexeData: AnnexeData | null;
+  /** Task #485 — the marché's configured retention rate (bank guarantee ⇒ 0),
+   * mirroring the deduction resolver. The explanation text only states this
+   * rate when the certificat's persisted retention amount actually matches
+   * it (architect amount-overrides take precedence in the resolver, so the
+   * rate is otherwise unprovable) — see buildRetenueExplainText. */
+  retenuePercent: number;
+  hasBankGuarantee: boolean;
+}
+
+/**
+ * Task #485 — plain-language client explanation of the Retenue de Garantie.
+ *
+ * Provenance-aware: the deduction resolver lets an architect override the
+ * cumulative retention amount, and that override wins over the marché rate.
+ * The certificat row persists only amounts (no rate/override provenance), so
+ * a percentage is stated ONLY when the persisted cumulative retention equals
+ * the marché rate applied to the gross cumulative works (within 1 cent).
+ * Otherwise the wording stays amount-based and rate-neutral, so the
+ * explanation can never contradict the figures printed above it.
+ * Exported for unit tests.
+ */
+export function buildRetenueExplainText(args: {
+  retenuePercent: number;
+  hasBankGuarantee: boolean;
+  grossCumulativeHt: number;
+  cumulativeRetenue: number;
+  isSolde: boolean;
+  retenueReleased: boolean;
+}): string {
+  const { retenuePercent, hasBankGuarantee, grossCumulativeHt, cumulativeRetenue, isSolde, retenueReleased } = args;
+
+  if (isSolde && retenueReleased) {
+    // Release amounts stem from prior certificats (possibly overridden);
+    // never claim a rate here.
+    return "The retenue de garantie (the cumulative retention held back on previous certificats) is released on this final (solde) certificat, the works having been accepted. The released amount is added back on the \u201CLib\u00E9ration Retenue de Garantie\u201D line above.";
+  }
+
+  if (cumulativeRetenue === 0) {
+    if (hasBankGuarantee) {
+      return "No cash retention (retenue de garantie) is withheld on this contract: the contractor has provided a bank guarantee, which replaces the usual cumulative holdback on the works.";
+    }
+    return "No retenue de garantie is withheld on this certificat.";
+  }
+
+  const expected = roundCurrency((grossCumulativeHt * retenuePercent) / 100);
+  const rateProven = retenuePercent > 0 && Math.abs(expected - cumulativeRetenue) <= 0.01;
+  const rateLabel = `${new Intl.NumberFormat("en-GB", { maximumFractionDigits: 2 }).format(retenuePercent)}%`;
+
+  if (rateProven) {
+    return `The retenue de garantie is a retention of ${rateLabel} of the cumulative value of the works, required under French construction practice. It is held during the parfait ach\u00E8vement (making-good) guarantee period and released in accordance with the contract, in particular once any reserves are lifted. It is not a permanent deduction: it will be paid to the contractor in due course.`;
+  }
+  return "The retenue de garantie is a cumulative retention on the value of the works, shown on the \u201CRetenue de Garantie\u201D line above. It is held during the parfait ach\u00E8vement (making-good) guarantee period and released in accordance with the contract, in particular once any reserves are lifted. It is not a permanent deduction: it will be paid to the contractor in due course.";
 }
 
 function formatCurrency(value: string | number): string {
@@ -713,7 +765,20 @@ export async function generateCertificatPdf(
 
   const annexeData = await buildAnnexeData(certificat, project, contractor, activeDevis);
 
-  const html = buildCertificatHtml({ certificat, project, contractor, devisDetails, companyLogoBase64, architectsLogoBase64, annexeData });
+  // Task #485 — resolve the actual retention rate the same way the
+  // deduction resolver does (marché rate, 5% default, bank guarantee ⇒ 0),
+  // so the explanation text matches the applied deduction.
+  const marche = (await storage.getMarchesByProject(project.id)).find(
+    (m) => m.contractorId === certificat.contractorId,
+  );
+  const hasBankGuarantee = marche?.hasBankGuarantee ?? false;
+  const retenuePercent = hasBankGuarantee
+    ? 0
+    : marche?.retenueGarantiePercent != null
+      ? parseFloat(marche.retenueGarantiePercent)
+      : 5;
+
+  const html = buildCertificatHtml({ certificat, project, contractor, devisDetails, companyLogoBase64, architectsLogoBase64, annexeData, retenuePercent, hasBankGuarantee });
 
   const dateStr = new Date().toISOString().split("T")[0].replace(/-/g, "");
   const projectCode = (project.code || "PROJ").replace(/[^a-zA-Z0-9]/g, "");
@@ -800,7 +865,7 @@ function renderBankingBlock(contractor: Contractor): string {
 }
 
 function buildCertificatHtml(data: CertificatPdfData): string {
-  const { certificat, project, contractor, devisDetails, companyLogoBase64, architectsLogoBase64, annexeData } = data;
+  const { certificat, project, contractor, devisDetails, companyLogoBase64, architectsLogoBase64, annexeData, retenuePercent, hasBankGuarantee } = data;
 
   const netTtc = parseFloat(certificat.netToPayTtc);
   const netHt = parseFloat(certificat.netToPayHt);
@@ -841,12 +906,16 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   const lotLabel = primaryLot ? `LOT ${primaryLot.lotNumber}` : "LOT";
   const compositeRef = `${lotLabel} ${certificat.certificateRef}`;
 
-  // Task #485 — plain-language retenue explainer, adapted to the
-  // certificat's state (standard holdback vs. released on solde).
-  const retenueExplainText =
-    isSolde && retenueReleased
-      ? "The retenue de garantie (a cumulative 5\u202F% retention on the works) held back on previous certificats is released on this final (solde) certificat, the works having been accepted. The released amount is added back on the \u201CLib\u00E9ration Retenue de Garantie\u201D line above."
-      : "The retenue de garantie is a retention of 5\u202F% of the cumulative value of the works, required under French construction practice. It is held during the parfait ach\u00E8vement (making-good) guarantee period and released in accordance with the contract, in particular once any reserves are lifted. It is not a permanent deduction: it will be paid to the contractor in due course.";
+  // Task #485 — plain-language retenue explainer; provenance-aware (see
+  // buildRetenueExplainText): only states a rate it can prove was applied.
+  const retenueExplainText = buildRetenueExplainText({
+    retenuePercent,
+    hasBankGuarantee,
+    grossCumulativeHt,
+    cumulativeRetenue,
+    isSolde,
+    retenueReleased,
+  });
   const dateIssued = formatDateFr(certificat.dateIssued);
 
   const worksRows = devisDetails.map((dd, i) => {
@@ -1871,6 +1940,8 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     companyLogoBase64,
     architectsLogoBase64,
     annexeData,
+    retenuePercent: 5,
+    hasBankGuarantee: false,
   });
 }
 
