@@ -539,6 +539,10 @@ export const devis = pgTable("devis", {
   // `any`. The DB enforces the constraint either way.
   acompteInvoiceId: integer("acompte_invoice_id"),
   acomptePaidAt: timestamp("acompte_paid_at", { withTimezone: true }),
+  // Task #491 — provenance of the 'paid' transition: 'invoice' (facture
+  // d'acompte path) or 'certificat_no_invoice' (deposit raised via the
+  // acompte certificat, no supplier invoice ever existed). Null until paid.
+  acomptePaidVia: text("acompte_paid_via"),
   allowProgressBeforeAcompte: boolean("allow_progress_before_acompte").notNull().default(false),
   // Task #225 — Gemini-extracted IBAN/BIC printed on the supplier devis.
   // Compared against contractors.iban at certificat-issue time; a mismatch
@@ -852,6 +856,13 @@ export const certificats = pgTable("certificats", {
   // certificat" race-free — concurrent reissues elect a single winner at
   // INSERT time, never via check-then-write.
   reissuedFromCertificatId: integer("reissued_from_certificat_id"),
+  // Task #491 — non-null marks this row as an ACOMPTE (opening/deposit)
+  // certificat raised straight from a signed devis, with no supplier
+  // invoice. Acompte certificats sit OUTSIDE the progress waterfall: the
+  // deductions resolver skips them when reading prior cumulatives, and the
+  // seal never re-resolves their money. At most one live acompte certificat
+  // per devis (partial unique below excludes superseded rows).
+  acompteDevisId: integer("acompte_devis_id"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   unique("certificats_project_ref_unique").on(table.projectId, table.certificateRef),
@@ -860,6 +871,12 @@ export const certificats = pgTable("certificats", {
   uniqueIndex("certificats_reissued_from_unique")
     .on(table.reissuedFromCertificatId)
     .where(sql`${table.reissuedFromCertificatId} IS NOT NULL`),
+  // Task #491 — at most ONE live acompte certificat per devis. Race-free at
+  // INSERT time; a superseded acompte certificat may be replaced by reissue.
+  foreignKey({ columns: [table.acompteDevisId], foreignColumns: [devis.id], name: "certificats_acompte_devis_fk" }),
+  uniqueIndex("certificats_acompte_devis_unique")
+    .on(table.acompteDevisId)
+    .where(sql`${table.acompteDevisId} IS NOT NULL AND ${table.status} <> 'superseded'`),
   // Task #464 — at most ONE non-superseded solde certificat per
   // (project, contractor). Race-free at INSERT/UPDATE time; the reissue
   // transaction supersedes the original BEFORE inserting the clone so a
@@ -2112,6 +2129,9 @@ export const insertCertificatSchema = createInsertSchema(certificats).omit({
   version: true,
   // Task #457 — reissue lineage is set exclusively by the reissue route.
   reissuedFromCertificatId: true,
+  // Task #491 — acompte linkage is set exclusively by the dedicated
+  // acompte-certificat route; never via the generic create/PATCH API.
+  acompteDevisId: true,
 });
 
 export const insertCertificatSourceSchema = createInsertSchema(certificatSources).omit({

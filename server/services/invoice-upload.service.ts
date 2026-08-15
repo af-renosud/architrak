@@ -7,7 +7,7 @@ import { reconcileAdvisories } from "./advisory-reconciler";
 import { enqueueDriveUpload } from "./drive/upload-queue.service";
 import { assertPdfMagic } from "../middleware/upload";
 import { INVOICE_UPLOAD_ERROR_CODES } from "../../shared/invoice-upload-errors";
-import { evaluateAcompteGate, gateInputsFromDevis, nextAcompteState } from "./acompte.service";
+import { evaluateAcompteGate, gateInputsFromDevis, linkAcompteInvoiceTx } from "./acompte.service";
 import { safeExtractIban, safeExtractBic } from "../../shared/iban";
 import type { ParsedDocument } from "../gmail/document-parser";
 
@@ -152,17 +152,22 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile, 
     // a concurrent /acompte/mark-paid) and silently overwriting a
     // newer state. If the state has moved on, skip silently — the
     // operator can still re-link via the dedicated route if needed.
+    // Task #491 — the link goes through the single transactional gate
+    // (devis row locked FOR UPDATE): it re-checks the lifecycle state under
+    // the lock AND refuses when a live acompte certificat already covers
+    // the deposit (no-invoice path) — linking a facture d'acompte on top
+    // would double-authorise the deposit. Refusals are silent here: the
+    // invoice row itself is kept, only the lifecycle link is skipped.
     try {
-      const fresh = await storage.getDevis(devisId);
-      const freshState = fresh?.acompteState;
-      if (fresh && (freshState === "pending" || freshState === "invoiced")) {
-        const target = nextAcompteState(freshState, "link_invoice");
-        if (target) {
-          await storage.updateDevis(devisId, {
-            acompteInvoiceId: invoice.id,
-            acompteState: target,
-          });
-        }
+      const result = await linkAcompteInvoiceTx({
+        devisId,
+        invoiceId: invoice.id,
+        invoiceDatePaid: invoice.datePaid ?? null,
+      });
+      if (!result.ok && result.code === "acompte_certificat_exists") {
+        console.warn(
+          `[Invoice Upload] Acompte auto-link skipped for devis ${devisId}: acompte certificat ${result.certificateRef} already covers the deposit.`,
+        );
       }
     } catch (linkErr) {
       console.warn(`[Invoice Upload] Acompte auto-link failed for devis ${devisId}:`, linkErr);

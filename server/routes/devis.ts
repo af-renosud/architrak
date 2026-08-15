@@ -939,6 +939,9 @@ router.patch(
     delete patchBody.acompteState;
     delete patchBody.acompteInvoiceId;
     delete patchBody.acomptePaidAt;
+    // Task #491 — paid-provenance audit column, written only by the acompte
+    // lifecycle routes.
+    delete patchBody.acomptePaidVia;
     // Task #232 — keep the accounting state machine sealed too. A devis only
     // moves between provisional/active/superseded via reconcileAccountingStates
     // or the authenticated /api/overlap-cases/:id/resolve endpoint, each of

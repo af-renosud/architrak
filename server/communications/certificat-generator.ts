@@ -151,6 +151,10 @@ interface CertificatPdfData {
    * rate is otherwise unprovable) — see buildRetenueExplainText. */
   retenuePercent: number;
   hasBankGuarantee: boolean;
+  /** Task #491 — acompte (opening/deposit) certificat: no supplier invoice,
+   * no waterfall deductions; labelled distinctly and explained as a deposit
+   * recovered in full on the next certificat. */
+  isAcompte: boolean;
 }
 
 /**
@@ -778,7 +782,7 @@ export async function generateCertificatPdf(
       ? parseFloat(marche.retenueGarantiePercent)
       : 5;
 
-  const html = buildCertificatHtml({ certificat, project, contractor, devisDetails, companyLogoBase64, architectsLogoBase64, annexeData, retenuePercent, hasBankGuarantee });
+  const html = buildCertificatHtml({ certificat, project, contractor, devisDetails, companyLogoBase64, architectsLogoBase64, annexeData, retenuePercent, hasBankGuarantee, isAcompte: certificat.acompteDevisId != null });
 
   const dateStr = new Date().toISOString().split("T")[0].replace(/-/g, "");
   const projectCode = (project.code || "PROJ").replace(/[^a-zA-Z0-9]/g, "");
@@ -865,7 +869,7 @@ function renderBankingBlock(contractor: Contractor): string {
 }
 
 function buildCertificatHtml(data: CertificatPdfData): string {
-  const { certificat, project, contractor, devisDetails, companyLogoBase64, architectsLogoBase64, annexeData, retenuePercent, hasBankGuarantee } = data;
+  const { certificat, project, contractor, devisDetails, companyLogoBase64, architectsLogoBase64, annexeData, retenuePercent, hasBankGuarantee, isAcompte } = data;
 
   const netTtc = parseFloat(certificat.netToPayTtc);
   const netHt = parseFloat(certificat.netToPayHt);
@@ -1467,9 +1471,9 @@ function buildCertificatHtml(data: CertificatPdfData): string {
       <span class="firm-name">${dateIssued}</span>
     </div>
     <div class="cover-header-bottom">
-      <div class="doc-title">Certificat de Paiement</div>
+      <div class="doc-title">Certificat de Paiement${isAcompte ? " — Acompte" : ""}</div>
       <div class="doc-ref">
-        Payment Authorisation
+        ${isAcompte ? "Opening / Deposit Payment" : "Payment Authorisation"}
         <strong>${escapeHtml(certificat.certificateRef)}</strong>
       </div>
     </div>
@@ -1608,14 +1612,17 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   <div class="explain-section">
     <div class="explain-title">Please read before payment</div>
     <div class="explain-cards">
-      <div class="explain-card">
+      ${isAcompte ? `<div class="explain-card">
+        <div class="explain-card-title">Acompte (opening / deposit payment)</div>
+        <div class="explain-card-text">This certificat authorises the contractor's opening deposit on the signed devis, requested before works are invoiced — standard French construction practice. No retention or shared-site deduction applies to the deposit itself. It is not an extra cost: the full deposit will be deducted from the next certificat de paiement for this contractor, so the total you pay over the project is unchanged.</div>
+      </div>` : `<div class="explain-card">
         <div class="explain-card-title">Retenue de Garantie (retention)</div>
         <div class="explain-card-text">${retenueExplainText}</div>
       </div>
       <div class="explain-card">
         <div class="explain-card-title">Compte Prorata (shared site costs)</div>
         <div class="explain-card-text">The compte prorata is each contractor's contribution to the shared costs of the site (water, electricity, cleaning, common facilities). This deduction is paid to the site's prorata account manager, who settles those shared expenses on behalf of all the contractors.</div>
-      </div>
+      </div>`}
     </div>
     <div class="explain-annexe-pointer">The Financial Summary on the following page shows the position of the whole project: total value of the works, amounts certified to date and works remaining.</div>
   </div>
@@ -1759,6 +1766,7 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     acompteState: "none",
     acompteInvoiceId: null,
     acomptePaidAt: null,
+    acomptePaidVia: null,
     allowProgressBeforeAcompte: false,
     archidocDqeExportId: null,
     archisignEnvelopeId: null,
@@ -1818,6 +1826,7 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     id: -1,
     projectId: -1,
     contractorId: -1,
+    acompteDevisId: null,
     cumulativeAcompteRecoupment: "0.00",
     periodAcompteRecoupment: "0.00",
     tvaRateSource: "default",
@@ -1942,6 +1951,7 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     annexeData,
     retenuePercent: 5,
     hasBankGuarantee: false,
+    isAcompte: false,
   });
 }
 

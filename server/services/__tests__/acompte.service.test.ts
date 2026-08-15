@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { evaluateAcompteGate, nextAcompteState, type GateInputs } from "../acompte.service";
+import { evaluateAcompteGate, nextAcompteState, resolveAcompteAmounts, type GateInputs } from "../acompte.service";
 import { buildAcompteInsertFields } from "../devis-upload.service";
 
 const baseGateInput = (over: Partial<GateInputs> = {}): GateInputs => ({
@@ -95,6 +95,45 @@ describe("acompte.service — nextAcompteState", () => {
 
   it("link_invoice: from 'applied' is rejected (terminal)", () => {
     expect(nextAcompteState("applied", "link_invoice")).toBeNull();
+  });
+
+  // Task #491 — no-invoice paid path (acompte certificat).
+  it("mark_paid_no_invoice: pending -> paid", () => {
+    expect(nextAcompteState("pending", "mark_paid_no_invoice")).toBe("paid");
+  });
+
+  it("mark_paid_no_invoice: from 'invoiced' is rejected (invoice path owns it)", () => {
+    expect(nextAcompteState("invoiced", "mark_paid_no_invoice")).toBeNull();
+  });
+
+  it("mark_paid_no_invoice: from 'none', 'paid', 'applied' is rejected", () => {
+    expect(nextAcompteState("none", "mark_paid_no_invoice")).toBeNull();
+    expect(nextAcompteState("paid", "mark_paid_no_invoice")).toBeNull();
+    expect(nextAcompteState("applied", "mark_paid_no_invoice")).toBeNull();
+  });
+});
+
+describe("acompte.service — resolveAcompteAmounts (Task #491)", () => {
+  const base = { amountHt: "10000.00", amountTtc: "12000.00" };
+
+  it("explicit HT amount wins; TTC follows the devis's own ratio", () => {
+    const r = resolveAcompteAmounts({ ...base, acompteAmountHt: "200.00", acomptePercent: "30.00" });
+    expect(r).toEqual({ amountHt: 200, amountTtc: 240 });
+  });
+
+  it("percent of devis HT/TTC when no explicit amount", () => {
+    const r = resolveAcompteAmounts({ ...base, acompteAmountHt: null, acomptePercent: "30.00" });
+    expect(r).toEqual({ amountHt: 3000, amountTtc: 3600 });
+  });
+
+  it("autoliquidation-style devis (TTC == HT) yields zero TVA on the deposit", () => {
+    const r = resolveAcompteAmounts({ amountHt: "10000.00", amountTtc: "10000.00", acompteAmountHt: null, acomptePercent: "10.00" });
+    expect(r).toEqual({ amountHt: 1000, amountTtc: 1000 });
+  });
+
+  it("returns null when no spec resolves to a positive amount", () => {
+    expect(resolveAcompteAmounts({ ...base, acompteAmountHt: null, acomptePercent: null })).toBeNull();
+    expect(resolveAcompteAmounts({ ...base, acompteAmountHt: "0.00", acomptePercent: "0.00" })).toBeNull();
   });
 });
 

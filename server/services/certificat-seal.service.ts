@@ -55,7 +55,12 @@ export async function sealCertificat(certificatId: number): Promise<{
     // the moment money actually leaves, so re-resolve authoritatively here;
     // if anything drifted, persist the fresh figures (bumps `version`) and
     // retry the loop so the render + snapshot use the corrected row.
-    const freshDeductions = await resolveCertificatDeductions({
+    // Task #491 — ACOMPTE certificats sit outside the progress waterfall:
+    // their money is fixed at creation from the devis's own acompte spec
+    // (no retenue, no prorata, no recoupment, no previous payments) and
+    // must never be re-resolved through the cumulative deduction engine —
+    // the resolver's prior-cumulative math is meaningless for a deposit.
+    const freshDeductions = existing.acompteDevisId != null ? null : await resolveCertificatDeductions({
       projectId: existing.projectId,
       contractorId: existing.contractorId,
       totalWorksHt: existing.totalWorksHt,
@@ -85,11 +90,13 @@ export async function sealCertificat(certificatId: number): Promise<{
       releaseRetenue: existing.retenueReleased,
       excludeCertificatId: certificatId,
     });
-    const drifted = (Object.entries(freshDeductions) as Array<[keyof typeof freshDeductions, string]>)
-      .some(([key, value]) => (existing[key] ?? "0.00") !== value);
-    if (drifted) {
-      await storage.updateCertificat(certificatId, freshDeductions);
-      continue;
+    if (freshDeductions) {
+      const drifted = (Object.entries(freshDeductions) as Array<[keyof typeof freshDeductions, string]>)
+        .some(([key, value]) => (existing[key] ?? "0.00") !== value);
+      if (drifted) {
+        await storage.updateCertificat(certificatId, freshDeductions);
+        continue;
+      }
     }
 
     // Version captured BEFORE rendering — the seal only commits if it still

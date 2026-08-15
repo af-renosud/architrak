@@ -238,16 +238,41 @@ router.post(
     // release state (the reissue flow is precisely how a sealed release
     // decision gets corrected: the clone is a draft again). Excluding the
     // original from the prior set keeps the single-solde check happy.
-    const deductions = await resolveCertificatDeductions({
-      projectId: existing.projectId,
-      contractorId: existing.contractorId,
-      totalWorksHt: existing.totalWorksHt,
-      pvMvAdjustment: existing.pvMvAdjustment,
-      previousPayments: existing.previousPayments,
-      isSolde: existing.isSolde,
-      releaseRetenue: existing.retenueReleased,
-      excludeCertificatId: id,
-    });
+    // Task #491 — ACOMPTE certificats sit outside the progress waterfall:
+    // their money is fixed from the devis's acompte spec (zero deductions)
+    // and must never be re-resolved through the cumulative engine. The
+    // clone carries the original's figures and its acompteDevisId link so
+    // the partial unique index (non-superseded only) keeps one live
+    // acompte certificat per devis — the original is superseded in the
+    // same transaction, so the insert never trips it.
+    const isAcompteCert = existing.acompteDevisId != null;
+    const deductions = isAcompteCert
+      ? {
+          retenueGarantie: existing.retenueGarantie ?? "0.00",
+          cumulativeProrataDeduction: existing.cumulativeProrataDeduction,
+          periodProrataDeduction: existing.periodProrataDeduction,
+          cumulativeAcompteRecoupment: existing.cumulativeAcompteRecoupment,
+          periodAcompteRecoupment: existing.periodAcompteRecoupment,
+          tvaRatePercent: existing.tvaRatePercent,
+          tvaAutoliquidation: existing.tvaAutoliquidation,
+          tvaRateSource: existing.tvaRateSource,
+          netToPayHt: existing.netToPayHt,
+          tvaAmount: existing.tvaAmount,
+          netToPayTtc: existing.netToPayTtc,
+          isSolde: existing.isSolde,
+          retenueReleased: existing.retenueReleased,
+          retenueReleaseAmount: existing.retenueReleaseAmount,
+        }
+      : await resolveCertificatDeductions({
+          projectId: existing.projectId,
+          contractorId: existing.contractorId,
+          totalWorksHt: existing.totalWorksHt,
+          pvMvAdjustment: existing.pvMvAdjustment,
+          previousPayments: existing.previousPayments,
+          isSolde: existing.isSolde,
+          releaseRetenue: existing.retenueReleased,
+          excludeCertificatId: id,
+        });
 
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -270,6 +295,9 @@ router.post(
           status: "draft",
           notes: `Reissue of ${existing.certificateRef}${existing.notes ? ` — ${existing.notes}` : ""}`,
           reissuedFromCertificatId: id,
+          // Task #491 — preserve the acompte link so the clone stays outside
+          // the waterfall (and the one-live-acompte-per-devis index holds).
+          acompteDevisId: existing.acompteDevisId,
         } as InsertCertificat & { reissuedFromCertificatId: number });
         return res.status(201).json(draft);
       } catch (err) {
@@ -370,6 +398,32 @@ router.patch(
         return res.status(409).json({
           code: "CERTIFICAT_SEALED",
           message: `Certificat ${existing.certificateRef} has been issued and is sealed. Corrections require issuing a new certificat.`,
+          blockedFields: blocked,
+        });
+      }
+    }
+
+    // Task #491 — an ACOMPTE certificat's money is fixed from the signed
+    // devis's deposit spec (zero deductions, outside the waterfall) and the
+    // seal deliberately never re-resolves it. Letting the generic PATCH
+    // touch its financial inputs would route them through the waterfall
+    // resolver and seal the corrupted figures. Only lifecycle fields
+    // (status, notes) are patchable; corrections go through reissue.
+    if (existing.acompteDevisId != null) {
+      const allowedOnAcompte = new Set(["status", "notes"]);
+      const blocked = Object.keys(body).filter((k) => !allowedOnAcompte.has(k));
+      if (
+        blocked.length > 0 ||
+        retenueOverride !== undefined ||
+        prorataOverride !== undefined ||
+        tvaRateOverride !== undefined ||
+        releaseRetenue !== undefined ||
+        releaseReason !== undefined ||
+        isSolde !== undefined
+      ) {
+        return res.status(409).json({
+          code: "CERTIFICAT_ACOMPTE_FIXED",
+          message: `Certificat ${existing.certificateRef} is an acompte certificat: its amounts are fixed from the signed devis's deposit. Corrections require a reissue.`,
           blockedFields: blocked,
         });
       }

@@ -111,7 +111,17 @@ export async function resolveCertificatDeductions(
   // certificat's math (the replacement carries the corrected cumulatives).
   const priorCerts = (
     await storage.getCertificatsByProjectAndContractor(input.projectId, input.contractorId)
-  ).filter((c) => c.id !== input.excludeCertificatId && c.status !== "superseded");
+  ).filter(
+    (c) =>
+      c.id !== input.excludeCertificatId &&
+      c.status !== "superseded" &&
+      // Task #491 — acompte certificats live outside the progress waterfall:
+      // their zero retenue/prorata/recoupment cumulatives must never become
+      // "the prior cumulative" for the next progress certificat. The deposit
+      // they pay is recovered through the paid-acompte recoupment path, not
+      // through previousPayments.
+      c.acompteDevisId == null,
+  );
 
   // Task #464 — solde preconditions. At most one non-superseded solde
   // certificat per (project, contractor) — friendly check here, race-free

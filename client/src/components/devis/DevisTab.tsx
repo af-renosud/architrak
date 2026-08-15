@@ -678,11 +678,23 @@ function AcompteBadge({ devis }: { devis: Devis }) {
   const { toast } = useToast();
   const state = devis.acompteState ?? "none";
   const blocking = state === "pending" || state === "invoiced";
-  // Strict state machine: mark-paid is only legal from 'invoiced'
-  // (i.e. after the facture d'acompte has been linked). Operators
-  // marking paid from 'pending' must first upload/link the deposit
-  // invoice via the standard facture upload flow.
-  const canMarkPaid = state === "invoiced";
+  // Strict state machine: mark-paid is legal from 'invoiced' (facture
+  // d'acompte linked) or — Task #491 — from 'pending' once an acompte
+  // certificat exists for the devis (no-invoice path). We only render the
+  // button when that certificat is actually visible in the project's
+  // certificat list (shared query, cached across badges); the server
+  // re-verifies regardless.
+  const { data: projectCerts } = useQuery<Array<{ acompteDevisId?: number | null; status?: string }>>({
+    queryKey: ["/api/projects", devis.projectId, "certificats"],
+    enabled: state === "pending",
+  });
+  const hasLiveAcompteCert = (projectCerts ?? []).some(
+    (c) => c.acompteDevisId === devis.id && c.status !== "superseded",
+  );
+  const canMarkPaid = state === "invoiced" || (state === "pending" && hasLiveAcompteCert);
+  // Task #491 — one-click acompte certificat, only on a client-signed devis
+  // whose deposit is still pending.
+  const canGenerateCert = state === "pending" && devis.signOffStage === "client_signed_off";
   const tone =
     state === "paid" || state === "applied"
       ? "bg-emerald-50 text-emerald-700 border-emerald-200"
@@ -695,6 +707,26 @@ function AcompteBadge({ devis }: { devis: Devis }) {
       : devis.acompteAmountHt
         ? `Acompte ${Number(devis.acompteAmountHt).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`
         : "Acompte";
+
+  const generateCert = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/devis/${devis.id}/acompte/generate-certificat`, {});
+      return res.json();
+    },
+    onSuccess: (cert: { certificateRef?: string }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", devis.projectId, "devis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", devis.projectId, "certificats"] });
+      toast({
+        title: "Certificat d'acompte créé",
+        description: cert.certificateRef
+          ? `${cert.certificateRef} — sans facture fournisseur. Marquez l'acompte payé une fois le virement effectué.`
+          : "Certificat d'acompte créé sans facture fournisseur.",
+      });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Échec", description: err.message, variant: "destructive" });
+    },
+  });
 
   const markPaid = useMutation({
     mutationFn: async () => {
@@ -717,6 +749,18 @@ function AcompteBadge({ devis }: { devis: Devis }) {
       onClick={(e) => e.stopPropagation()}
     >
       <span data-testid={`text-acompte-state-${devis.id}`}>{label} · {state}</span>
+      {canGenerateCert && (
+        <button
+          type="button"
+          className="rounded bg-white/60 px-1 text-[10px] font-bold hover:bg-white"
+          onClick={(e) => { e.stopPropagation(); generateCert.mutate(); }}
+          disabled={generateCert.isPending}
+          title="Générer le certificat d'acompte (sans facture fournisseur)"
+          data-testid={`button-acompte-generate-cert-${devis.id}`}
+        >
+          {generateCert.isPending ? "…" : "Certificat"}
+        </button>
+      )}
       {canMarkPaid && (
         <button
           type="button"

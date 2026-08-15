@@ -674,9 +674,14 @@ export default function Certificats() {
 
   // Task #457 — superseded certificats were replaced by a reissue; their
   // cumulative figures must not feed the live preview (mirrors the server
-  // resolver's exclusion).
+  // resolver's exclusion). Task #491 — acompte certificats sit outside the
+  // progress waterfall (zero cumulatives), so they too are excluded, exactly
+  // like the server resolver.
   const priorCerts = useMemo(
-    () => (allCertificats ?? []).filter((c) => c.contractorId === watchContractorId && c.status !== "superseded"),
+    () =>
+      (allCertificats ?? []).filter(
+        (c) => c.contractorId === watchContractorId && c.status !== "superseded" && c.acompteDevisId == null,
+      ),
     [allCertificats, watchContractorId],
   );
 
