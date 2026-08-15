@@ -14,10 +14,10 @@ AI extraction (Gemini) parses PDF attachments arriving by Gmail.
 
 - **Frontend**: React 18 + TypeScript, Vite, Tailwind, Shadcn UI, Wouter, TanStack Query
 - **Backend**: Node 20, Express 5, TypeScript (`tsx` in dev, `esbuild` for prod)
-- **DB**: PostgreSQL 16 + Drizzle ORM (56 application tables in `shared/schema.ts`, 41 hand-tracked SQL migrations)
+- **DB**: PostgreSQL 16 + Drizzle ORM (`shared/schema.ts`), hand-tracked SQL migrations
 - **AI**: Google Gemini (`@google/generative-ai`) for PDF extraction
 - **Storage**: Replit Object Storage (GCS-backed) for PDFs and uploads
-- **External services**: ArchiDoc, Archisign, DocRaptor (HTML→PDF), Gmail API
+- **External services**: ArchiDoc, Archisign, DocRaptor (HTML→PDF), Gmail API, Pennylane
 - **Auth**: Google Workspace OAuth 2.0 (`@renosud.com` domain-restricted)
 - **Tests**: Vitest (unit + integration), Playwright (browser, in `tests/browser/`)
 
@@ -26,7 +26,7 @@ AI extraction (Gemini) parses PDF attachments arriving by Gmail.
 ```
 client/        React app (entry: client/src/main.tsx)
 server/        Express app (entry: server/index.ts)
-  routes/      Domain routes (39 routers, mounted by routes/index.ts)
+  routes/      Domain routes (mounted by routes/index.ts)
   services/    Business logic
   archidoc/    ArchiDoc sync + import
   gmail/       Inbox polling + extraction
@@ -43,7 +43,7 @@ tests/browser/ Playwright e2e
 
 The `Start application` workflow runs:
 ```
-PUBLIC_BASE_URL=http://localhost:5000 E2E_FAKE_GMAIL=true npm run dev
+PUBLIC_BASE_URL=http://localhost:5000 E2E_FAKE_GMAIL=true ENABLE_DEV_LOGIN_FOR_E2E=true npm run dev
 ```
 Server on port **5000** (Vite mounted on the same port). `E2E_FAKE_GMAIL=true` short-circuits
 outbound Gmail to an in-memory fake — real send won't fire locally.
@@ -53,7 +53,7 @@ outbound Gmail to an in-memory fake — real send won't fire locally.
 | `npm run dev` | Dev server (tsx watch) |
 | `npm run check` | TypeScript type-check (no emit) |
 | `npm run build` | Production bundle (`script/build.ts` → `dist/`) |
-| `npm run prepublish-check` | **Run before each publish** — dependency audit (critical/high block the deploy security scan), type check, production build, and a safe smoke boot of `dist/index.cjs` |
+| `npm run prepublish-check` | **Run before each publish** — dependency audit, type check, schema-drift check, production build, safe smoke boot of `dist/index.cjs` |
 | `npm run start` | Run production bundle |
 | `npm run db:generate` | Generate a new Drizzle migration |
 | `npx tsx scripts/run-migrations.mjs` | Apply migrations (also runs at deploy) |
@@ -63,12 +63,8 @@ outbound Gmail to an in-memory fake — real send won't fire locally.
 ## Environment variables
 
 Validated via Zod in `server/env.ts` — server refuses to boot on invalid/missing required vars.
-**Required**: `DATABASE_URL`, `SESSION_SECRET`. **Feature-scoped** (each unlocks a feature when set):
-`GEMINI_API_KEY`, `GOOGLE_CLIENT_ID/SECRET`, `DOCRAPTOR_API_KEY`,
-`ARCHIDOC_BASE_URL` + `ARCHIDOC_SYNC_API_KEY` + `ARCHIDOC_WEBHOOK_SECRET`,
-`ARCHISIGN_BASE_URL` + `ARCHISIGN_API_KEY` + `ARCHISIGN_WEBHOOK_SECRET`,
-`ARCHITRAK_WEBHOOK_SECRET`, `DEFAULT_OBJECT_STORAGE_BUCKET_ID` + `PRIVATE_OBJECT_DIR`.
-Full list with comments in `server/env.ts`.
+**Required**: `DATABASE_URL`, `SESSION_SECRET`. Everything else is feature-scoped (each
+unlocks a feature when set) — full list with comments in `server/env.ts`.
 
 ### ⚠ Production safety flags
 `ENABLE_DEV_LOGIN_FOR_E2E` and `E2E_FAKE_GMAIL` MUST be unset in production. The boot
@@ -86,151 +82,54 @@ sequence (`assertNoDevLoginBackdoorInProduction`) hard-fails if either is truthy
 
 - **Three buckets**: Contracted, Certified, Reste à Réaliser.
 - **Two invoicing modes**: Mode A (tick-off line items), Mode B (% completion).
-- **Retenue de garantie**: 5% holdback.
-- **PV/MV**: variation orders on signed marchés.
+- **Retenue de garantie**: 5% holdback. **PV/MV**: variations on signed marchés.
 - **Fees**: works-percentage, conception, planning. Per-project `feePercentage`.
 - All financial math goes through `shared/financial-utils.ts` (strict 2-decimal rounding).
 
-## Inter-app contract gates (summary — full detail in `ARCHITECTURE.md`)
+## Inter-app contract gates (full detail in `ARCHITECTURE.md`)
 
-- **AT3 — Insurance sign-off gate**: live verdict from Archidoc, fired on PATCH crossing
-  into `sent_to_client`. Mirror is advisory only; transient failures are overridable
-  with audit row in `insurance_overrides`.
-- **AT4 — Archisign envelope orchestration**: outbound `/envelopes/create` + `/envelopes/send`,
-  inbound HMAC-v2 webhook (`/api/webhooks/archisign`) drives the devis sign-off lifecycle.
-  The invitation-email rendering guarantee (§3.5.1.1 + `emailRendering` echo) is **IN FORCE
-  since 2026-07-13** (Archisign countersigned rev2 on 2026-07-12; contract now v1.2, recorded
-  as v1.4 in Archisign's lineage): `subject` guaranteed verbatim as a contiguous substring of
-  the Subject header (Archisign firm-prefix framing permitted), `body` election RENDERED,
-  echo shipped — `subjectApplied=false` triggers an operator warning. Open verification item:
-  confirm the rendered body block on the next real envelope (our July 2026 inbox check
-  disputed it — see contract §3.5.1 dispute note).
-  A `subjectApplied: false` echo on /create is persisted as `devis.archisign_subject_drift_at`,
-  and a `bodyApplied: false` echo for a sent (non-empty) body — a breach since Archisign's
-  RENDERED election entered force — as `devis.archisign_body_drift_at` (both non-blocking).
-  Both are surfaced as SigningPanel badges + send-time toasts + the read-only
-  `/admin/ops/archisign-rendering-drift` page; each flag auto-clears on a fresh
-  drift-free /create and is sealed against the generic devis PATCH.
-- **AT5 — Outbound Architrak → Archidoc webhook delivery**: signed `/work-authorisations`
-  delivery with retry orchestrator, DLQ at `/admin/ops/webhook-dlq`, UUIDv7 idempotency,
-  canonical-form timestamps per contract §5.3.2.1.
-- **Drive auto-upload (Task #198, feature-flagged OFF by default)**: every devis +
-  facture PDF is mirrored into the Renosud shared Drive at
-  `{project}/FINANCIAL/LIVE PROJECT FINANCIAL/1 DEVIS & FACTURE FOLDERS/{Lot} {project} {devisCode}`.
-  ONE LOT → ONE FOLDER (all financial docs for that lot land alongside the original
-  devis). AT5-style retry queue (`drive_uploads`), 5 attempts with backoff, DLQ at
-  `/admin/ops/drive-uploads`. Service-account auth — set `GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON`,
-  `GOOGLE_DRIVE_SHARED_DRIVE_ID`, then flip `DRIVE_AUTO_UPLOAD_ENABLED=true` to turn on.
-  No backfill of pre-existing PDFs.
+- **AT3 — Insurance sign-off gate**: live Archidoc verdict on PATCH into `sent_to_client`;
+  mirror advisory only; overrides audited in `insurance_overrides`.
+- **AT4 — Archisign envelopes**: outbound create/send + HMAC-v2 webhook drives devis
+  sign-off. Email-rendering guarantee (§3.5.1.1) is IN FORCE: subject verbatim substring,
+  body RENDERED, echo persisted as drift flags (`archisign_subject/body_drift_at`,
+  non-blocking, surfaced in SigningPanel + `/admin/ops/archisign-rendering-drift`).
+- **AT5 — Architrak → Archidoc webhooks**: signed delivery, retry orchestrator,
+  DLQ at `/admin/ops/webhook-dlq`, UUIDv7 idempotency.
+- **Drive auto-upload** (flag OFF by default): devis/facture PDFs mirrored to the shared
+  Drive, ONE LOT → ONE FOLDER, retry queue + DLQ at `/admin/ops/drive-uploads`.
+
+## Key invariants (pointers, not spec — read the named files before touching)
+
+- **Certificat issuance seal**: previews persist nothing; issue/send goes through
+  `server/services/certificat-seal.service.ts` (version-guarded, idempotent, pins
+  `pdfStorageKey` + `issuanceSnapshot` and writes `certificat_sources` in ONE tx).
+  Sealed = locked: PATCH allows only `status`/`notes` (409 `CERTIFICAT_SEALED`);
+  corrections = reissue. `GET /api/certificats/:id/pdf` serves pinned bytes only.
+- **Acompte certificats** (deposit without supplier invoice): `certificats.acompteDevisId`
+  marks them; they are excluded from ALL waterfall/prior-cumulative math, never
+  re-resolved at seal, and money-locked against PATCH. All invoice-linking goes through
+  `linkAcompteInvoiceTx` in `server/services/acompte.service.ts` (mutual exclusion with
+  the no-invoice path, devis row lock).
+- **Contractor banking**: read-only in ArchiTrak (edited in ArchiDoc, revalidated on
+  sync via `shared/iban.ts`). Certificat generation hard-fails on missing IBAN or
+  unoverridden IBAN mismatch (422). Banking fields must NEVER appear on unauth
+  surfaces — see `server/routes/public-checks.ts buildPortalPayload`.
+- **Pennylane honoraires push** (flag OFF by default): architect fees only, idempotent
+  push chain + hourly paid-poller; admin at `/admin/ops/pennylane-pushes`; sandbox
+  cleanup script refuses non-sandbox hosts. Flags in `server/env.ts`.
 
 ## Operations gotchas
 
 - **Migrations are hand-tracked SQL** in `migrations/`. NEVER run `drizzle-kit push` or
   `npm run db:push` — it will desync the `drizzle.__drizzle_migrations` tracker.
-  Generate via `npm run db:generate`, edit the SQL by hand if needed, then add an entry
-  to both `migrations/meta/_journal.json` AND `server/operations/schema-presence-check.ts`.
-- **Boot invariants**: `server/operations/schema-presence-check.ts` (every migration must
-  declare a sentinel table/column) and `database-identity-guard` (refuses wrong DB).
+  Every new migration needs: the SQL file, a `migrations/meta/_journal.json` entry, AND
+  a `MIGRATION_ARTIFACTS` entry in `server/operations/schema-presence-check.ts`.
+- **Boot invariants**: schema-presence-check (sentinel per migration) and
+  database-identity-guard (refuses wrong DB).
 - **Deep healthcheck** at `GET /healthz/deep` is unauthenticated, used by post-deploy smoke.
 - **Migration replay gate**: `bash scripts/check-migration-replay.sh`.
 - **Tracker drift recovery**: `npx tsx scripts/reconcile-drizzle-tracker.ts`.
-
-## Contractor banking on certificats (Task #225)
-
-Banking fields (`iban`, `bic`, `bankName`, `accountHolderName`,
-`ribDocumentUrl`, `ribDocumentName`, `bankingVerifiedAt`,
-`bankingVerifiedBy`, `bankingAiExtractedData`) live on both
-`contractors` and the `archidoc_contractors` mirror — pushed in via
-the existing ArchiDoc contractor sync. ArchiTrak is read-only for
-these fields; edits happen in ArchiDoc. IBAN/BIC are revalidated
-(`shared/iban.ts`, mod-97 + ISO 9362) on every sync write; invalid
-values land as NULL rather than persisted garbage.
-
-- **Certificat gate**: `generateCertificatPdf` throws
-  `BankingDetailsMissingError` (no contractor IBAN) or
-  `BankingMismatchError` (any active devis/invoice has an
-  `extracted_iban` ≠ `contractor.iban` without an architect override
-  in `banking_mismatch_overrides`). Routes translate to 422 with
-  `code` + French `message` + `mismatches[]`; the FE shows a
-  destructive toast.
-- **Anti-fraud capture**: Gemini extracts IBAN/BIC from supplier
-  PDFs (devis + invoices); `safeExtractIban/Bic` validate and
-  normalise — invalid → NULL so the mismatch check never fires on
-  garbage. Re-runs on every devis rescrape.
-- **Portal whitelist**: `public-checks` / `public-client-checks` /
-  `archisign-public` expose only `contractor.name`. Banking fields
-  must never appear on any unauth surface — see the comment in
-  `server/routes/public-checks.ts buildPortalPayload`.
-- **RIB attachment**: `sendCertificat` fetches the RIB through the
-  authenticated ArchiDoc proxy (`ARCHIDOC_BASE_URL`, same-host guard,
-  30s timeout), mirrors to object storage, and appends to
-  `attachmentStorageKeys`. Failure is non-fatal — the certificat
-  itself always carries the IBAN block.
-
-## Certificat issuance seal + Document Chain (Task #451)
-
-- **Previews are ephemeral**: `generateCertificatPdf(id, { mode: "preview" })`
-  persists nothing. Explicit issue/send goes through
-  `server/services/certificat-seal.service.ts`: render once (`mode: "issue"`
-  uploads + Drive-enqueues), pin `certificats.pdfStorageKey` + freeze
-  `issuanceSnapshot`/`issuedAt` via a conditional UPDATE
-  (`WHERE pdf_storage_key IS NULL`) — idempotent under concurrent send; the
-  race loser reuses the winner's pinned bytes. The seal is additionally
-  guarded by `certificats.version` (bumped on every UPDATE, migration 0072):
-  the render captures the version first and the seal only commits if it still
-  matches, so pinned PDF, `issuanceSnapshot` and the persisted financial
-  fields always agree — an interleaved PATCH forces a re-render (bounded
-  retries). The seal columns and the `certificat_sources` rows commit in ONE
-  transaction inside `storage.sealCertificat`. The Drive mirror is enqueued
-  only by the seal winner with the pinned key (never inside the render). Sends always attach the pinned PDF and carry a
-  dedupe key stable per issuance (`certificat_sent:<id>:<storageKey>`), so
-  concurrent sends collapse onto one queued email;
-  `GET /api/certificats/:id/pdf` serves the pinned bytes (404 on drafts).
-  Status lifecycle is unchanged (draft → ready → sent → paid); sealed-ness is
-  tracked by `pdfStorageKey`/`issuedAt`, not a status. Bulk project export
-  uses pinned bytes for sealed certificats and only preview-renders unsealed
-  "ready" drafts.
-- **Sealed = locked**: PATCH on a sealed certificat rejects everything except
-  `status`/`notes` with 409 `CERTIFICAT_SEALED`. Corrections = issue a new
-  certificat.
-- **`certificat_sources` junction** FK-links each certificat to the
-  invoice(s)/situation(s) it certifies (written at seal time, indexed,
-  XOR check). It replaced the loose text `invoices.certificate_number`
-  (dropped in migration 0071).
-- **Document Chain view**: read-only per-devis audit at
-  `/devis/:id/document-chain` (page `client/src/pages/document-chain.tsx`,
-  API `GET /api/devis/:id/document-chain`): Devis → Marché → Situations
-  (Mode B only) → Factures → Certificats, with PDF downloads and conspicuous
-  missing-evidence flags.
-
-## Pennylane integration (Task #214, feature-flagged OFF by default)
-
-Architect honoraires push from Outstanding Fees to Pennylane.
-"Invoice fees now" → create Pennylane customer + customer_invoice → mirror
-the PDF into Object Storage → auto-email the client via the architect's
-Gmail. An hourly poller writes `paid_at` back when Pennylane reports the
-invoice as paid. **Architect honoraires only** — no contractor / supplier
-data is ever pushed.
-
-- Three push kinds (`pennylane_pushes.kind`): `customer`, `customer_invoice`,
-  `email_send`. Idempotent on `(kind, doc_id)`; chain is
-  `customer → customer_invoice → email_send`. Sweeper every 60s, max 5
-  attempts, exponential backoff (10s / 30s / 2m / 5m). Stale `in_flight`
-  rows are reclaimed after 10 min.
-- Paid-status poller (`server/services/pennylane/paid-poller.service.ts`)
-  ticks hourly, GETs each unpaid invoice, writes back `pennylane_paid_at`
-  + `pennylane_paid_amount` + `pennylane_status`.
-- Env flags (all in `server/env.ts`): `PENNYLANE_API_KEY`,
-  `PENNYLANE_BASE_URL` (defaults to v2 production — set to the sandbox host
-  for testing), `PENNYLANE_PUSH_ENABLED` (default OFF), `PENNYLANE_DRY_RUN`
-  (logs payload + writes sentinel `dry-run:…` ids; never hits the API),
-  `PENNYLANE_PROJECT_WHITELIST` (CSV of project ids; absent = all allowed,
-  empty string = kill-switch).
-- Admin surfaces: `/admin/ops/pennylane-pushes` (DLQ + retry),
-  `GET /api/admin/pennylane/me` (ping), `GET /api/pennylane/feature-flags`
-  (unauthenticated-safe flag probe powering the UI button swap).
-- Sandbox cleanup: `npx tsx scripts/pennylane-sandbox-cleanup.ts --confirm`
-  — hard-refuses unless `PENNYLANE_BASE_URL` looks like sandbox/staging/test.
 
 ## Development protocols
 
