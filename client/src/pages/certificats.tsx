@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
@@ -522,6 +522,12 @@ export default function Certificats() {
     const fromUrl = new URLSearchParams(window.location.search).get("projectId");
     return fromUrl && /^\d+$/.test(fromUrl) ? fromUrl : "";
   });
+  // Task #498 — deep-link: certificatId from URL opens the detail dialog once data loads.
+  const [deepLinkCertId] = useState<number | null>(() => {
+    const raw = new URLSearchParams(window.location.search).get("certificatId");
+    const parsed = raw ? parseInt(raw, 10) : NaN;
+    return Number.isFinite(parsed) ? parsed : null;
+  });
   const [viewingCert, setViewingCert] = useState<Certificat | null>(null);
   const { toast } = useToast();
 
@@ -601,6 +607,18 @@ export default function Certificats() {
     () => projects?.find((p) => String(p.id) === selectedProjectId),
     [projects, selectedProjectId],
   );
+
+  // Task #498 — once the certificat list loads, auto-open the one from the URL.
+  // Use a ref to consume the deep-link exactly once; closing the dialog must not reopen it.
+  const deepLinkConsumed = useRef(false);
+  useEffect(() => {
+    if (!deepLinkCertId || !allCertificats || deepLinkConsumed.current) return;
+    const target = allCertificats.find((c) => c.id === deepLinkCertId);
+    if (target) {
+      deepLinkConsumed.current = true;
+      setViewingCert(target);
+    }
+  }, [deepLinkCertId, allCertificats]);
 
   const watchContractorId = form.watch("contractorId");
   const watchTotalWorks = form.watch("totalWorksHt");

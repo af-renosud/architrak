@@ -395,7 +395,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                         if (link) {
                           return (
                             <Link
-                              href={`/certificats?projectId=${projectId}`}
+                              href={`/certificats?projectId=${projectId}&certificatId=${link.certificatId}`}
                               onClick={(e) => e.stopPropagation()}
                               data-testid={`badge-certified-facture-${inv.id}`}
                             >
