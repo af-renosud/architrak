@@ -642,15 +642,27 @@ function escapeCssString(s: string): string {
 function renderBankingBlock(contractor: Contractor): string {
   if (!contractor.iban) return "";
   const holder = contractor.accountHolderName || contractor.name;
-  const bank = contractor.bankName ? `<div class="banking-row"><span class="banking-label">Bank</span><span class="banking-value">${escapeHtml(contractor.bankName)}</span></div>` : "";
-  const bic = contractor.bic ? `<div class="banking-row"><span class="banking-label">BIC</span><span class="banking-value">${escapeHtml(contractor.bic)}</span></div>` : "";
+  // Task #485 — the payment keys (IBAN + SWIFT/BIC) are what clients
+  // transcribe into their bank; both are rendered LARGE and first-class.
+  // A missing BIC is shown explicitly, never silently omitted.
+  const bicValue = contractor.bic
+    ? `<div class="banking-key-value">${escapeHtml(contractor.bic)}</div>`
+    : `<div class="banking-key-missing">NON COMMUNIQU\u00C9 PAR L'\u00C9TABLISSEMENT</div>`;
+  const holderLine = `${escapeHtml(holder)}${contractor.bankName ? ` \u2014 ${escapeHtml(contractor.bankName)}` : ""}`;
   return `
-  <div class="section-title">Bank Details</div>
   <div class="banking-card">
-    <div class="banking-row"><span class="banking-label">Account Holder</span><span class="banking-value">${escapeHtml(holder)}</span></div>
-    <div class="banking-row"><span class="banking-label">IBAN</span><span class="banking-value banking-mono">${escapeHtml(formatIbanForPrint(contractor.iban))}</span></div>
-    ${bic}
-    ${bank}
+    <div class="banking-card-title">Coordonn\u00E9es pour le virement</div>
+    <div class="banking-holder">${holderLine}</div>
+    <div class="banking-keys">
+      <div class="banking-key banking-key-iban">
+        <div class="banking-key-label">IBAN</div>
+        <div class="banking-key-value">${escapeHtml(formatIbanForPrint(contractor.iban))}</div>
+      </div>
+      <div class="banking-key banking-key-bic">
+        <div class="banking-key-label">SWIFT / BIC</div>
+        ${bicValue}
+      </div>
+    </div>
   </div>`;
 }
 
@@ -695,6 +707,13 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   const primaryLot = devisDetails.find(d => d.lot)?.lot;
   const lotLabel = primaryLot ? `LOT ${primaryLot.lotNumber}` : "LOT";
   const compositeRef = `${lotLabel} ${certificat.certificateRef}`;
+
+  // Task #485 — plain-language retenue explainer, adapted to the
+  // certificat's state (standard holdback vs. released on solde).
+  const retenueExplainText =
+    isSolde && retenueReleased
+      ? "La retenue de garantie (5\u202F% cumul\u00E9s des travaux) conserv\u00E9e sur les certificats pr\u00E9c\u00E9dents est lib\u00E9r\u00E9e sur ce certificat de solde, les travaux \u00E9tant r\u00E9ceptionn\u00E9s. Le montant lib\u00E9r\u00E9 est ajout\u00E9 \u00E0 la ligne \u00AB\u202FLib\u00E9ration Retenue de Garantie\u202F\u00BB ci-dessus."
+      : "La retenue de garantie correspond \u00E0 5\u202F% cumul\u00E9s du montant des travaux. Elle est conserv\u00E9e pendant la garantie de parfait ach\u00E8vement et est lib\u00E9r\u00E9e conform\u00E9ment au march\u00E9, sous r\u00E9serve notamment de la lev\u00E9e des r\u00E9serves. Ce n'est pas une d\u00E9duction d\u00E9finitive\u202F: elle sera revers\u00E9e \u00E0 l'entreprise.";
   const dateIssued = formatDateFr(certificat.dateIssued);
 
   const worksRows = devisDetails.map((dd, i) => {
@@ -750,9 +769,14 @@ function buildCertificatHtml(data: CertificatPdfData): string {
 <meta charset="UTF-8">
 <title>${escapeHtml(compositeRef)} \u2014 Certificat de Paiement</title>
 <style>
+  /* Task #485 — page-box frame: Prince repeats @page border on every
+     physical page (including table-overflow pages). @page annexe does NOT
+     inherit, so both rules declare the same frame. */
   @page {
     size: A4;
-    margin: 12mm 18mm 18mm 18mm;
+    margin: 7mm 10mm 12mm 10mm;
+    border: 0.65pt solid #0B2545;
+    padding: 3mm 4mm 3mm 4mm;
     @bottom-left {
       content: "${escapeCssString(project.name)} \u2014 ${escapeCssString(project.clientName)}";
       font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
@@ -785,7 +809,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   .cover-header {
     background: #FFFFFF;
     color: #0B2545;
-    padding: 0 0 5px 0;
+    padding: 0 0 3px 0;
     margin: 0;
   }
   .cover-header-top {
@@ -795,7 +819,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     margin-bottom: 4px;
   }
   .cover-header-top img {
-    height: 58px;
+    height: 46px;
     width: auto;
   }
   .cover-header-top .firm-name {
@@ -836,12 +860,12 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   }
 
   .section-title {
-    font-size: 10.5pt;
+    font-size: 10pt;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: #0B2545;
-    margin-bottom: 2mm;
+    margin-bottom: 1.5mm;
     padding-bottom: 1mm;
     border-bottom: 1px solid #E6E6E6;
   }
@@ -849,13 +873,13 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   .parties-grid {
     display: flex;
     gap: 12px;
-    margin-bottom: 2.5mm;
+    margin-bottom: 2mm;
   }
   .party-card {
     flex: 1;
     background: #F8F9FA;
     border-left: 3pt solid #C1A27B;
-    padding: 5px 10px;
+    padding: 4px 10px;
   }
   .party-label {
     font-size: 8pt;
@@ -877,38 +901,74 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     line-height: 1.5;
   }
 
-  /* Task #225 — Coordonnées bancaires block */
+  /* Task #225/#485 — Coordonnées bancaires: the payment keys clients
+     transcribe. Large, distinctive, dignified. */
   .banking-card {
-    background: #F8F9FA;
-    border-left: 3pt solid #0B2545;
-    padding: 5px 10px;
-    margin-bottom: 2.5mm;
+    background: #F3F6F9;
+    border: 1pt solid #0B2545;
+    border-left: 3pt solid #C1A27B;
+    padding: 2mm 4mm 2.5mm;
+    margin-bottom: 2mm;
+    page-break-inside: avoid;
   }
-  .banking-row {
-    display: flex;
-    gap: 12px;
+  .banking-card-title {
     font-size: 9pt;
-    line-height: 1.6;
-    color: #34312D;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #0B2545;
+    margin-bottom: 1mm;
   }
-  .banking-label {
-    flex: 0 0 80px;
+  .banking-holder {
+    font-size: 8pt;
+    color: #34312D;
+    margin-bottom: 2mm;
+  }
+  .banking-keys {
+    display: flex;
+    gap: 3mm;
+  }
+  .banking-key {
+    background: #FFFFFF;
+    border: 0.5pt solid #C9D3DD;
+    padding: 2mm 3mm;
+  }
+  .banking-key-iban { flex: 0 0 68%; }
+  .banking-key-bic { flex: 1; }
+  .banking-key-label {
+    font-size: 7pt;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.08em;
+    color: #7E7F83;
+    margin-bottom: 1mm;
+  }
+  .banking-key-iban .banking-key-value {
+    font-family: "Courier New", monospace;
+    font-size: 14pt;
+    font-weight: 700;
+    letter-spacing: 0.055em;
+    color: #0B2545;
+    white-space: nowrap;
+  }
+  .banking-key-bic .banking-key-value {
+    font-family: "Courier New", monospace;
+    font-size: 12pt;
+    font-weight: 700;
+    letter-spacing: 0.055em;
+    color: #0B2545;
+    white-space: nowrap;
+  }
+  .banking-key-missing {
     font-size: 8pt;
     color: #7E7F83;
-  }
-  .banking-value { flex: 1; }
-  .banking-mono {
-    font-family: "Courier New", monospace;
-    letter-spacing: 0.04em;
+    font-style: italic;
   }
 
   table.works-table {
     width: 100%;
     border-collapse: collapse;
-    margin-bottom: 2.5mm;
+    margin-bottom: 2mm;
   }
   table.works-table th {
     background: #0B2545;
@@ -932,7 +992,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   .kpi-row {
     display: flex;
     gap: 10px;
-    margin-bottom: 4mm;
+    margin-bottom: 3mm;
   }
   .kpi-card {
     flex: 1;
@@ -972,7 +1032,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   .cert-grid {
     display: flex;
     gap: 10px;
-    margin-bottom: 2.5mm;
+    margin-bottom: 2mm;
     align-items: flex-start;
   }
   .cert-col {
@@ -1036,8 +1096,9 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   }
 
   .payment-section {
-    margin: 2.5mm 0;
-    padding: 8px 14px;
+    margin: 1.5mm 0;
+    padding: 5px 12px;
+    page-break-inside: avoid;
     background: linear-gradient(135deg, #f7f9fc 0%, #f0f4f8 100%);
     border-top: 3px solid #C1A27B;
     border-radius: 0 0 8px 8px;
@@ -1056,8 +1117,8 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     font-weight: 800;
     text-transform: uppercase;
     color: #0B2545;
-    margin: 5px 0;
-    padding: 6px;
+    margin: 4px 0;
+    padding: 4px;
     background: #FFFFFF;
     border: 1px solid #E6E6E6;
     border-left: 3pt solid #C1A27B;
@@ -1068,16 +1129,57 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     font-size: 9pt;
     font-weight: 800;
     text-transform: uppercase;
-    color: #c0392b;
+    color: #0B2545;
     margin: 4px 0;
     letter-spacing: 0.06em;
   }
   .payment-instructions {
+    font-size: 6.8pt;
+    color: #7E7F83;
+    line-height: 1.35;
+    margin-top: 3px;
+    text-align: justify;
+  }
+
+  /* Task #485 — plain-language client explainer (before the annexe) */
+  .explain-section {
+    margin: 2mm 0 0 0;
+    page-break-inside: avoid;
+  }
+  .explain-title {
+    font-size: 8.5pt;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #0B2545;
+    margin-bottom: 1mm;
+  }
+  .explain-cards {
+    display: flex;
+    gap: 3mm;
+  }
+  .explain-card {
+    flex: 1;
+    background: #F8F9FA;
+    border-left: 2pt solid #C1A27B;
+    padding: 2mm 2.5mm;
+  }
+  .explain-card-title {
+    font-size: 8pt;
+    font-weight: 700;
+    color: #0B2545;
+    margin-bottom: 1mm;
+  }
+  .explain-card-text {
+    font-size: 7.2pt;
+    color: #34312D;
+    line-height: 1.3;
+  }
+  .explain-annexe-pointer {
     font-size: 7pt;
     color: #7E7F83;
-    line-height: 1.4;
-    margin-top: 4px;
-    text-align: justify;
+    font-style: italic;
+    margin-top: 1mm;
   }
 
   .warning-note {
@@ -1090,22 +1192,25 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   }
 
   .doc-footer {
-    margin-top: 2.5mm;
-    padding-top: 2mm;
+    page-break-inside: avoid;
+    margin-top: 1mm;
+    padding-top: 1mm;
     border-top: 0.5pt solid #E6E6E6;
     display: flex;
     justify-content: space-between;
-    align-items: flex-end;
+    align-items: center;
   }
   .doc-footer-left {
-    font-size: 7pt;
+    font-size: 6.5pt;
     color: #7E7F83;
-    line-height: 1.5;
+    line-height: 1.3;
+    display: flex;
+    align-items: center;
+    gap: 4px;
   }
   .doc-footer-left img {
-    height: 24px;
+    height: 12px;
     width: auto;
-    margin-bottom: 3px;
     display: block;
   }
   .doc-footer-right {
@@ -1120,6 +1225,10 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     page: annexe;
   }
   @page annexe {
+    size: A4;
+    margin: 7mm 10mm 12mm 10mm;
+    border: 0.65pt solid #0B2545;
+    padding: 3mm 4mm 3mm 4mm;
     @bottom-left {
       content: "${escapeCssString(project.name)} \u2014 ${escapeCssString(contractor.name)}";
       font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
@@ -1294,7 +1403,20 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     </div>
   </div>
 
-  ${annexeData ? buildAnnexeHtml(annexeData) : ""}
+  <div class="explain-section">
+    <div class="explain-title">\u00C0 comprendre avant r\u00E8glement</div>
+    <div class="explain-cards">
+      <div class="explain-card">
+        <div class="explain-card-title">Retenue de Garantie</div>
+        <div class="explain-card-text">${retenueExplainText}</div>
+      </div>
+      <div class="explain-card">
+        <div class="explain-card-title">Compte Prorata</div>
+        <div class="explain-card-text">Le compte prorata est une participation aux frais communs du chantier (eau, \u00E9lectricit\u00E9, nettoyage, installations partag\u00E9es). Cette retenue est vers\u00E9e au gestionnaire du compte prorata du chantier, qui r\u00E8gle ces d\u00E9penses partag\u00E9es entre les entreprises.</div>
+      </div>
+    </div>
+    <div class="explain-annexe-pointer">L'Annexe financi\u00E8re ci-apr\u00E8s pr\u00E9sente le d\u00E9tail de la situation financi\u00E8re du projet : montant total du march\u00E9, montants certifi\u00E9s \u00E0 ce jour et reste \u00E0 r\u00E9aliser.</div>
+  </div>
 
   <div class="doc-footer">
     <div class="doc-footer-left">
@@ -1305,6 +1427,8 @@ function buildCertificatHtml(data: CertificatPdfData): string {
       ${escapeHtml(compositeRef)}
     </div>
   </div>
+
+  ${annexeData ? buildAnnexeHtml(annexeData) : ""}
 
 </body>
 </html>`;

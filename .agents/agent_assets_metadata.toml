@@ -7,3 +7,10 @@ uri = "file://attached_assets/architrak-signing-explainer-draft.pdf"
 type = "pdf"
 title = "Client guide — How signing & payment works"
 description = "One-page A4 explainer attached to every signature-context email: sign via Archisign, don't pay at signing, pay only against Payment Certificates."
+
+[[outputs]]
+id = "iXHgK6v_LQJKRCkOHgAn4"
+uri = "file://attached_assets/generated/certificat-example-redesign.pdf"
+type = "pdf"
+title = "Exemple — Certificat de Paiement redessiné"
+description = "Sample certificat (CP-2026-007, Villa Exemple) with the new page border, prominent IBAN + SWIFT/BIC payment panel, and the plain-language explanation of Retenue de Garantie and Compte Prorata."
