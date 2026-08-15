@@ -517,7 +517,11 @@ function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Certifica
 
 export default function Certificats() {
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [selectedProjectId, setSelectedProjectId] = useState<string>("");
+  // Task #496 — arriving from an invoice's "Certifié" badge pre-selects the project.
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(() => {
+    const fromUrl = new URLSearchParams(window.location.search).get("projectId");
+    return fromUrl && /^\d+$/.test(fromUrl) ? fromUrl : "";
+  });
   const [viewingCert, setViewingCert] = useState<Certificat | null>(null);
   const { toast } = useToast();
 

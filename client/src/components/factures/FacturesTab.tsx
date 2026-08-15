@@ -9,7 +9,8 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ChevronDown, ChevronRight, FileText, Upload, FileUp, Loader2, Save, Calendar, Building2, Hash, Receipt, CheckCircle2, ShieldCheck, AlertTriangle, Trash2, Sparkles, ExternalLink, PieChart, FileStack } from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, Upload, FileUp, Loader2, Save, Calendar, Building2, Hash, Receipt, CheckCircle2, ShieldCheck, AlertTriangle, Trash2, Sparkles, ExternalLink, PieChart, FileStack, Award, BadgeCheck } from "lucide-react";
+import { Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -68,6 +69,165 @@ function usePdfDownload() {
   return { download, pendingKey };
 }
 
+// Task #496 — invoice→certificat links (live certs only) for the "Certifié" badge.
+interface CertInvoiceLink {
+  invoiceId: number;
+  certificatId: number;
+  certificateRef: string;
+  certStatus: string;
+}
+
+interface CertificatPreview {
+  derivation: {
+    mode: "situation" | "invoice";
+    periodClaimHt: number;
+    totalWorksHt: string;
+    previousPayments: string;
+    priorCertificateRef: string | null;
+  };
+  deductions: {
+    retenueGarantie: string;
+    cumulativeProrataDeduction: string;
+    periodProrataDeduction: string;
+    periodAcompteRecoupment: string;
+    tvaRatePercent: string;
+    tvaAutoliquidation: boolean;
+    netToPayHt: string;
+    tvaAmount: string;
+    netToPayTtc: string;
+  };
+  nextRef: string;
+}
+
+// Task #496 — read-only confirmation dialog: everything server-derived, the
+// operator verifies and confirms — nothing to type.
+function CreateCertificatDialog({
+  invoice,
+  contractorName,
+  projectId,
+  onClose,
+}: {
+  invoice: Invoice;
+  contractorName: string;
+  projectId: string;
+  onClose: () => void;
+}) {
+  const { toast } = useToast();
+
+  const { data: preview, isLoading, error } = useQuery<CertificatPreview>({
+    queryKey: ["/api/invoices", invoice.id, "certificat-preview"],
+  });
+
+  const createMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/invoices/${invoice.id}/create-certificat`, {});
+      return res.json();
+    },
+    onSuccess: (cert: { certificateRef: string }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "certificats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "certificat-invoice-links"] });
+      toast({
+        title: `Certificat ${cert.certificateRef} créé`,
+        description: "Brouillon créé — retrouvez-le sur la page Certificats pour le vérifier et l'émettre.",
+      });
+      onClose();
+    },
+    onError: (err: Error) => {
+      toast({ title: "Création impossible", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const row = (label: string, value: string, opts?: { bold?: boolean; testId?: string }) => (
+    <div className="flex items-center justify-between gap-4 py-1.5 border-b border-border/40 last:border-0">
+      <span className="text-[11px] uppercase tracking-wider text-muted-foreground">{label}</span>
+      <span className={`text-[13px] tabular-nums ${opts?.bold ? "font-bold text-[#0B2545]" : "text-foreground"}`} data-testid={opts?.testId}>
+        {value}
+      </span>
+    </div>
+  );
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-lg" data-testid="dialog-create-certificat">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Award size={18} className="text-[#c1a27b]" />
+            Créer le certificat — Facture #{invoice.invoiceNumber}
+          </DialogTitle>
+          <DialogDescription>
+            Montants dérivés automatiquement de la facture et des certificats précédents. Vérifiez puis confirmez — rien à saisir.
+          </DialogDescription>
+        </DialogHeader>
+
+        {isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-6 w-full" />
+            <Skeleton className="h-6 w-full" />
+            <Skeleton className="h-6 w-2/3" />
+          </div>
+        ) : error ? (
+          <p className="text-[13px] text-destructive" data-testid="text-certificat-preview-error">
+            {(error as Error).message}
+          </p>
+        ) : preview ? (
+          <div className="space-y-3">
+            <div className="rounded-lg bg-muted/40 px-3 py-2">
+              {row("Référence", preview.nextRef, { testId: "text-preview-ref" })}
+              {row("Entreprise", contractorName)}
+              {row(
+                "Montant réclamé (période)",
+                formatCurrency(preview.derivation.periodClaimHt),
+                { testId: "text-preview-period" },
+              )}
+              {preview.derivation.mode === "situation" && (
+                <p className="text-[10px] text-muted-foreground pt-1">Dérivé de la situation liée à cette facture.</p>
+              )}
+            </div>
+            <div className="rounded-lg border border-border/60 px-3 py-2">
+              {row("Travaux cumulés HT", formatCurrency(parseFloat(preview.derivation.totalWorksHt)), { testId: "text-preview-total-works" })}
+              {row(
+                preview.derivation.priorCertificateRef
+                  ? `Paiements antérieurs (après ${preview.derivation.priorCertificateRef})`
+                  : "Paiements antérieurs",
+                formatCurrency(parseFloat(preview.derivation.previousPayments)),
+                { testId: "text-preview-previous" },
+              )}
+              {row("Retenue de garantie (cumul)", formatCurrency(parseFloat(preview.deductions.retenueGarantie)))}
+              {row("Compte prorata (période)", formatCurrency(parseFloat(preview.deductions.periodProrataDeduction)))}
+              {parseFloat(preview.deductions.periodAcompteRecoupment) > 0 &&
+                row("Récupération acompte (période)", `− ${formatCurrency(parseFloat(preview.deductions.periodAcompteRecoupment))}`)}
+              {row("Net à payer HT", formatCurrency(parseFloat(preview.deductions.netToPayHt)), { bold: true, testId: "text-preview-net-ht" })}
+              {row(
+                preview.deductions.tvaAutoliquidation ? "TVA (autoliquidation)" : `TVA (${preview.deductions.tvaRatePercent} %)`,
+                formatCurrency(parseFloat(preview.deductions.tvaAmount)),
+              )}
+              {row("Net à payer TTC", formatCurrency(parseFloat(preview.deductions.netToPayTtc)), { bold: true, testId: "text-preview-net-ttc" })}
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              Le certificat est créé en brouillon, lié à cette facture. Vous pourrez le vérifier et l'émettre depuis la page Certificats.
+            </p>
+          </div>
+        ) : null}
+
+        <div className="flex items-center justify-end gap-2 pt-1">
+          <Button variant="outline" onClick={onClose} data-testid="button-cancel-create-certificat">
+            Annuler
+          </Button>
+          <Button
+            className="bg-[#0B2545] hover:bg-[#0B2545]/90 text-white gap-1.5"
+            disabled={!preview || createMutation.isPending}
+            onClick={() => createMutation.mutate()}
+            data-testid="button-confirm-create-certificat"
+          >
+            {createMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <Award size={14} />}
+            Créer le certificat
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 interface FacturesTabProps {
   projectId: string;
   contractors: Contractor[];
@@ -90,6 +250,13 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
   const { data: devisList } = useQuery<Devis[]>({
     queryKey: ["/api/projects", projectId, "devis"],
   });
+
+  // Task #496 — which invoices are already certified (live certs only).
+  const { data: certLinks } = useQuery<CertInvoiceLink[]>({
+    queryKey: ["/api/projects", projectId, "certificat-invoice-links"],
+  });
+  const certLinkByInvoice = new Map((certLinks ?? []).map((l) => [l.invoiceId, l]));
+  const [certDialogInvoice, setCertDialogInvoice] = useState<Invoice | null>(null);
 
   const contractorMap = new Map(contractors.map(c => [c.id, c.name]));
   const devisMap = new Map((devisList ?? []).map(d => [d.id, d]));
@@ -221,6 +388,41 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                       </div>
                     </div>
                     <div className="flex items-center gap-3 flex-wrap">
+                      {(() => {
+                        // Task #496 — prominent one-click certificat action.
+                        const link = certLinkByInvoice.get(inv.id);
+                        const isAcompteInvoice = dv?.acompteInvoiceId === inv.id;
+                        if (link) {
+                          return (
+                            <Link
+                              href={`/certificats?projectId=${projectId}`}
+                              onClick={(e) => e.stopPropagation()}
+                              data-testid={`badge-certified-facture-${inv.id}`}
+                            >
+                              <Badge className="bg-emerald-700/10 text-emerald-800 border border-emerald-700/30 hover:bg-emerald-700/20 gap-1 cursor-pointer">
+                                <BadgeCheck size={12} />
+                                Certifié — {link.certificateRef}
+                              </Badge>
+                            </Link>
+                          );
+                        }
+                        if (isAcompteInvoice || inv.status === "void") return null;
+                        return (
+                          <Button
+                            size="sm"
+                            className="h-8 px-4 gap-1.5 bg-[#0B2545] hover:bg-[#0B2545]/90 text-white shadow-sm"
+                            disabled={isArchived}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setCertDialogInvoice(inv);
+                            }}
+                            data-testid={`button-create-certificat-facture-${inv.id}`}
+                          >
+                            <Award size={13} />
+                            <span className="text-[10px] font-bold uppercase tracking-widest">Créer le certificat</span>
+                          </Button>
+                        );
+                      })()}
                       {inv.pdfPath && (
                         <Button
                           variant="outline"
@@ -305,6 +507,15 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
             No invoices for this project yet. Upload an invoice PDF to get started.
           </p>
         </LuxuryCard>
+      )}
+
+      {certDialogInvoice && (
+        <CreateCertificatDialog
+          invoice={certDialogInvoice}
+          contractorName={contractorMap.get(certDialogInvoice.contractorId) ?? `#${certDialogInvoice.contractorId}`}
+          projectId={projectId}
+          onClose={() => setCertDialogInvoice(null)}
+        />
       )}
 
       <Dialog open={uploadDialogOpen} onOpenChange={(open) => { if (!uploadMutation.isPending) setUploadDialogOpen(open); }}>
