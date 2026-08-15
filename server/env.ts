@@ -237,6 +237,14 @@ const envSchema = z.object({
   // bundled-send flow without hitting a real Gmail OAuth connection.
   E2E_FAKE_GMAIL: booleanFlag(false),
 
+  // --- Pre-publish smoke boot (script/prepublish-check.ts) -------------
+  // When true, server boot skips ALL background workers: schedulers,
+  // sweepers, boot-time reconciliation and seeding. Used to safely
+  // smoke-boot the production bundle locally without any side effects
+  // (no emails, no external syncs, no boot writes). Never set in a real
+  // deployment — the app would serve requests but do no background work.
+  SMOKE_BOOT: booleanFlag(false),
+
   // --- Replit connector identity (Gmail OAuth bridge) ------------------
   REPLIT_CONNECTORS_HOSTNAME: optionalString(),
   REPL_IDENTITY: optionalString(),

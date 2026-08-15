@@ -168,6 +168,13 @@ app.use((req, res, next) => {
   registerObjectStorageRoutes(app);
   await registerRoutes(httpServer, app);
 
+  // SMOKE_BOOT (script/prepublish-check.ts): skip ALL background workers,
+  // boot-time reconciliation and seeding so a local production-bundle
+  // smoke boot has zero side effects (no emails, no external syncs, no
+  // boot writes). The block below is skipped wholesale.
+  if (env.SMOKE_BOOT) {
+    console.log("[smoke-boot] SMOKE_BOOT=true — skipping all schedulers, sweepers, boot reconciliation and seeding");
+  } else {
   // Task #198 — Drive auto-upload sweeper. No-op when feature flag is
   // off (safe to call unconditionally on every boot).
   try {
@@ -295,6 +302,7 @@ app.use((req, res, next) => {
   seedBenchmarkTags(SEED_BENCHMARK_TAGS).catch(err => {
     console.warn("[Benchmark] tag seed failed:", (err as Error).message);
   });
+  } // end !env.SMOKE_BOOT
 
   app.use(errorHandler);
 

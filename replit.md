@@ -53,6 +53,7 @@ outbound Gmail to an in-memory fake — real send won't fire locally.
 | `npm run dev` | Dev server (tsx watch) |
 | `npm run check` | TypeScript type-check (no emit) |
 | `npm run build` | Production bundle (`script/build.ts` → `dist/`) |
+| `npm run prepublish-check` | **Run before each publish** — dependency audit (critical/high block the deploy security scan), type check, production build, and a safe smoke boot of `dist/index.cjs` |
 | `npm run start` | Run production bundle |
 | `npm run db:generate` | Generate a new Drizzle migration |
 | `npx tsx scripts/run-migrations.mjs` | Apply migrations (also runs at deploy) |
