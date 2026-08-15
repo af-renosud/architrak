@@ -4,7 +4,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { FileCheck, Plus, Eye, ChevronRight, ExternalLink, RefreshCw, Download } from "lucide-react";
+import { FileCheck, Plus, Eye, ChevronRight, ExternalLink, RefreshCw, Download, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -391,6 +391,27 @@ function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Certifica
               <TechnicalLabel>Contractor</TechnicalLabel>
               <p className="text-[13px] font-semibold text-foreground mt-1" data-testid="text-cert-detail-contractor">
                 {contractor.name}
+              </p>
+            </div>
+          )}
+
+          {/* Task #487 — non-blocking BIC warning in the detail dialog */}
+          {contractor && !contractor.bic && (
+            <div
+              className="flex items-start gap-2 rounded-md border border-amber-300/70 dark:border-amber-500/30 bg-amber-50/70 dark:bg-amber-950/20 px-3 py-2"
+              data-testid="warning-bic-missing-detail"
+            >
+              <AlertTriangle size={13} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+              <p className="text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
+                <span className="font-semibold">{contractor.name}</span> has no SWIFT/BIC on file — the certificat
+                prints &quot;NON COMMUNIQUÉ PAR L&apos;ÉTABLISSEMENT&quot; in the payment panel.{" "}
+                <a
+                  href="/contractors"
+                  className="underline font-semibold hover:opacity-80"
+                  data-testid="link-bic-missing-detail"
+                >
+                  Manage banking details
+                </a>
               </p>
             </div>
           )}
@@ -902,8 +923,27 @@ export default function Certificats() {
               const totalTtc = parseFloat(cert.netToPayTtc);
               const partiallyPaid = cert.status !== "paid" && paidToDate > 0;
               const sealedPaidFlip = nextStatus === "paid" && !!cert.pdfStorageKey;
+              // Task #487 — flag missing BIC on unsent certs so the architect
+              // can chase the contractor before the client receives the PDF.
+              const certContractor = contractors?.find((c) => c.id === cert.contractorId);
+              const missingBic = certContractor && !certContractor.bic && (cert.status === "draft" || cert.status === "ready");
               return (
                 <LuxuryCard key={cert.id} data-testid={`card-certificat-${cert.id}`}>
+                  {missingBic && (
+                    <div
+                      className="flex items-start gap-2 rounded-md border border-amber-300/70 dark:border-amber-500/30 bg-amber-50/70 dark:bg-amber-950/20 px-3 py-2 mb-3"
+                      data-testid={`warning-bic-missing-card-${cert.id}`}
+                    >
+                      <AlertTriangle size={12} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                      <p className="text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
+                        <span className="font-semibold">{certContractor.name}</span> has no SWIFT/BIC on file — the
+                        certificat will print &quot;NON COMMUNIQUÉ PAR L&apos;ÉTABLISSEMENT&quot;.{" "}
+                        <a href="/contractors" className="underline font-semibold hover:opacity-80">
+                          Manage banking details
+                        </a>
+                      </p>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between gap-3 flex-wrap">
                     <div className="flex items-center gap-4 flex-wrap">
                       <div>
@@ -1062,6 +1102,26 @@ export default function Certificats() {
                     </FormItem>
                   )}
                 />
+                {/* Task #487 — non-blocking BIC warning in the create form */}
+                {selectedContractor && !selectedContractor.bic && (
+                  <div
+                    className="flex items-start gap-2 rounded-md border border-amber-300/70 dark:border-amber-500/30 bg-amber-50/70 dark:bg-amber-950/20 px-3 py-2"
+                    data-testid="warning-bic-missing-form"
+                  >
+                    <AlertTriangle size={13} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                    <p className="text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
+                      <span className="font-semibold">{selectedContractor.name}</span> has no SWIFT/BIC on file — the
+                      certificat will print &quot;NON COMMUNIQUÉ PAR L&apos;ÉTABLISSEMENT&quot; in the payment panel.{" "}
+                      <a
+                        href="/contractors"
+                        className="underline font-semibold hover:opacity-80"
+                        data-testid="link-bic-missing-contractors"
+                      >
+                        Manage banking details
+                      </a>
+                    </p>
+                  </div>
+                )}
                 <div className="p-3 rounded-md border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                   <TechnicalLabel>Certificate Reference</TechnicalLabel>
                   <p className="text-[14px] font-semibold text-foreground mt-1" data-testid="text-next-cert-ref">
