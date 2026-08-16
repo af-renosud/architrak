@@ -110,7 +110,9 @@ export function buildProjectOverviewData(
   const allRows: OverviewDevisRow[] = activeDevis.map((d) => ({
     devisCode: d.devisCode,
     description: d.descriptionFr || d.descriptionUk || "",
-    signed: d.signOffStage === "signed_off",
+    // NB: the canonical signed terminal stage is "client_signed_off" — a
+    // prior version compared against "signed_off", which does not exist.
+    signed: d.signOffStage === "client_signed_off",
     adjustedHt: d.adjustedHt,
     certifiedHt: d.certifiedHt,
     resteARealiser: d.resteARealiser,
@@ -319,7 +321,7 @@ export function buildProjectOverviewHtml(
   <div style="font-size:6.5pt;color:${GREY};border-top:1px solid #E6E6E6;padding-top:2mm;">
     Montants ajustés des avenants approuvés (plus-values / moins-values). Document d'information établi par
     l'architecte à la date indiquée&nbsp;; les montants «&nbsp;Facturé&nbsp;» correspondent aux factures
-    enregistrées à ce jour.
+    enregistrées à ce jour, ainsi qu'aux acomptes certifiés non encore récupérés.
   </div>
 </body>
 </html>`;

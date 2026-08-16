@@ -84,6 +84,8 @@ interface DevisSummary {
   adjustedTtc: number;
   certifiedHt: number;
   certifiedTtc: number;
+  acompteCertifiedHt?: number;
+  acompteCertifiedTtc?: number;
   resteARealiser: number;
   resteARealiserTtc: number;
   invoiceCount: number;
@@ -1434,6 +1436,11 @@ export default function ProjectDetail() {
                               {ds.mvTotal > 0 && (
                                 <span className="text-[10px] text-red-600 dark:text-red-400">
                                   MV: -{formatCurrency(ds.mvTotal)}
+                                </span>
+                              )}
+                              {(ds.acompteCertifiedHt ?? 0) > 0 && (
+                                <span className="text-[10px] text-emerald-600 dark:text-emerald-400" data-testid={`text-acompte-certified-${ds.devisId}`}>
+                                  incl. acompte {formatCurrency(ds.acompteCertifiedHt ?? 0)}
                                 </span>
                               )}
                             </div>

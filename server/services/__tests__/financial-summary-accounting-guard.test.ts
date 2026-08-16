@@ -7,6 +7,7 @@ vi.mock("../../storage", () => ({
     getDevisByProject: vi.fn(),
     getInvoicesByProject: vi.fn(),
     getAvenantsByDevis: vi.fn(),
+    getCertificatsByProject: vi.fn(),
   },
 }));
 
@@ -37,6 +38,7 @@ describe("financial-summary — Contracted accounting guard (Task #232)", () => 
     vi.clearAllMocks();
     mockedStorage.getProject.mockResolvedValue({ id: 1, name: "P", code: "P1" });
     mockedStorage.getInvoicesByProject.mockResolvedValue([]);
+    mockedStorage.getCertificatsByProject.mockResolvedValue([]);
     mockedStorage.getAvenantsByDevis.mockResolvedValue([]);
   });
 

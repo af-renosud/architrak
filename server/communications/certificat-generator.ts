@@ -385,7 +385,13 @@ async function buildAnnexeData(
   // Task #485 — whole-project section: every live devis across ALL
   // contractors, from the same service that powers the in-app dashboard
   // and the project overview PDF. Never recomputed locally.
-  const summaryResult = await getProjectFinancialSummary(certificat.projectId);
+  // Task #546 — the issuance render runs while this certificat is still
+  // `draft` (the seal flips status after the PDF commits), so an acompte
+  // certificat must be treated as issued here or its own whole-project
+  // table would show it as uncertified.
+  const summaryResult = await getProjectFinancialSummary(certificat.projectId, {
+    treatAsIssuedCertificatIds: [certificat.id],
+  });
   if (!summaryResult.success) {
     throw new Error(`Project financial summary unavailable for project ${certificat.projectId}`);
   }
@@ -634,7 +640,7 @@ function buildProjectSummaryHtml(ps: ProjectSummarySection): string {
       3. Whole Project — All Live Works
     </div>
     <div style="font-size:6.5pt;color:#7E7F83;margin-bottom:2mm;">
-      All contracted works currently live on the project, across every contractor \u2014 your total commitment, what has been certified so far, and what remains to be invoiced.
+      All contracted works currently live on the project, across every contractor \u2014 your total commitment, what has been certified to date (contractor invoices plus any deposit certificats not yet recovered, including this one), and what remains to be invoiced.
     </div>
     <table class="annexe-table" style="width:100%;border-collapse:collapse;margin-bottom:4mm;font-size:7pt;">
       <thead>

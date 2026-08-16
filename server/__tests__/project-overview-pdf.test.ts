@@ -17,7 +17,7 @@ function devisRow(overrides: Record<string, unknown> = {}) {
     descriptionUk: "Masonry",
     status: "approved",
     accountingState: "active",
-    signOffStage: "signed_off",
+    signOffStage: "client_signed_off",
     contractorId: 10,
     invoicingMode: "standard",
     originalHt: 10000,
@@ -111,11 +111,11 @@ describe("buildProjectOverviewData", () => {
     expect(data.devisRows.map((r) => r.devisCode)).toEqual(["D-A"]);
   });
 
-  it("flags a devis as signed only when signOffStage is signed_off", () => {
+  it("flags a devis as signed only when signOffStage is client_signed_off", () => {
     const data = buildProjectOverviewData(
       summary({
         devis: [
-          devisRow({ devisCode: "D-A", signOffStage: "signed_off" }),
+          devisRow({ devisCode: "D-A", signOffStage: "client_signed_off" }),
           devisRow({ devisCode: "D-B", signOffStage: "sent" }),
           devisRow({ devisCode: "D-C", signOffStage: null }),
         ],
