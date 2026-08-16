@@ -54,6 +54,7 @@ import {
 } from "@/components/devis/draft-warnings";
 import { SigningPanel, OPEN_SIGNING_SEND_EVENT } from "@/components/devis/SigningPanel";
 import { CertificatPanel } from "@/components/devis/CertificatPanel";
+import { countDevisSignOff } from "@/components/devis/devis-counters";
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
@@ -1501,8 +1502,7 @@ export function DevisTab({
   const totalDevisCount = activeDevis.length;
   const totalAmountTtc = activeDevis.reduce((sum, d) => sum + parseFloat(d.amountTtc?.toString() ?? "0"), 0);
   const totalAmountHt = activeDevis.reduce((sum, d) => sum + parseFloat(d.amountHt?.toString() ?? "0"), 0);
-  const pendingDevisCount = activeDevis.filter(d => d.signOffStage !== "signed").length;
-  const signedDevisCount = activeDevis.filter(d => d.signOffStage === "signed").length;
+  const { pendingDevisCount, signedDevisCount } = countDevisSignOff(activeDevis);
 
   const uploadMutation = useMutation({
     mutationFn: async (file: File) => {
