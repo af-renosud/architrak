@@ -88,6 +88,27 @@ export default function EmailDocuments() {
     queryKey: ["/api/gmail/status"],
   });
 
+  // Task #550 — auto-purge retention window (days) for skipped documents.
+  const { data: purgeSettings } = useQuery<{ purgeDays: number }>({
+    queryKey: ["/api/email-documents/settings/purge"],
+  });
+  const [purgeDaysDraft, setPurgeDaysDraft] = useState<string | null>(null);
+  const savePurgeDays = async (value: string) => {
+    const n = Number(value);
+    if (!Number.isInteger(n) || n < 0 || n > 3650) {
+      toast({ title: "Enter a number of days between 0 and 3650", variant: "destructive" });
+      return;
+    }
+    try {
+      await apiRequest("PUT", "/api/email-documents/settings/purge", { purgeDays: n });
+      queryClient.invalidateQueries({ queryKey: ["/api/email-documents/settings/purge"] });
+      setPurgeDaysDraft(null);
+      toast({ title: n === 0 ? "Auto-delete disabled" : `Removed documents will be permanently deleted after ${n} day${n > 1 ? "s" : ""}` });
+    } catch (err) {
+      toast({ title: "Could not save setting", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    }
+  };
+
   // Task #318 — drain progress banner: polls queue stats every 30 s while the
   // backlog sweeper works through pending emails.
   const { data: queueStats } = useQuery<{
@@ -148,21 +169,26 @@ export default function EmailDocuments() {
   const setTypeFilter = (v: string) => { setSelectedIds(new Set()); setTypeFilterState(v); };
   const setSearchQuery = (v: string) => { setSelectedIds(new Set()); setSearchQueryState(v); };
 
-  // Dismiss sequentially so per-document refusals (already promoted into a
-  // devis/facture → 409) surface individually in the summary toast.
+  // Task #550 — bulk dismissal in ONE server call; per-document refusals
+  // (already promoted into a devis/facture) come back in the results and
+  // surface in the summary toast. Already-skipped rows are permanently
+  // purged server-side (that's how the Skipped view is emptied).
   const dismissDocuments = async (ids: number[]) => {
     setIsDismissing(true);
     let removed = 0;
     const refused: string[] = [];
     try {
-      for (const id of ids) {
-        try {
-          await apiRequest("DELETE", `/api/email-documents/${id}`);
-          removed++;
-        } catch (err) {
-          refused.push(err instanceof Error ? err.message : String(err));
-        }
+      // The endpoint caps a request at 500 ids — chunk larger selections.
+      for (let i = 0; i < ids.length; i += 500) {
+        const res = await apiRequest("POST", "/api/email-documents/bulk-dismiss", { ids: ids.slice(i, i + 500) });
+        const body = await res.json() as { removed: number; refused: number; results: Array<{ id: number; outcome: string; message?: string }> };
+        removed += body.removed;
+        body.results.forEach(r => {
+          if (r.outcome === "refused" || r.outcome === "error") refused.push(r.message ?? `Document ${r.id} refused`);
+        });
       }
+    } catch (err) {
+      refused.push(err instanceof Error ? err.message : String(err));
     } finally {
       setIsDismissing(false);
       setConfirmDismissIds(null);
@@ -362,6 +388,45 @@ export default function EmailDocuments() {
           )}
         </div>
 
+        <div className="flex items-center justify-between flex-wrap gap-3 px-1">
+          {filtered.length > 0 ? (
+            <div className="flex items-center gap-2">
+              <Checkbox
+                checked={filtered.length > 0 && filtered.every(d => selectedIds.has(d.id))}
+                onCheckedChange={(checked) => {
+                  setSelectedIds(prev => {
+                    const next = new Set(prev);
+                    filtered.forEach(d => { if (checked === true) next.add(d.id); else next.delete(d.id); });
+                    return next;
+                  });
+                }}
+                data-testid="checkbox-select-all"
+              />
+              <span className="text-xs text-muted-foreground">
+                Select all shown ({filtered.length})
+              </span>
+            </div>
+          ) : <div />}
+          <div className="flex items-center gap-2 text-xs text-muted-foreground" title="Removed (skipped) documents are permanently deleted after this many days. 0 = keep forever.">
+            <span>Auto-delete removed after</span>
+            <Input
+              type="number"
+              min={0}
+              max={3650}
+              className="h-7 w-20 text-xs"
+              value={purgeDaysDraft ?? String(purgeSettings?.purgeDays ?? "")}
+              onChange={(e) => setPurgeDaysDraft(e.target.value)}
+              data-testid="input-purge-days"
+            />
+            <span>days</span>
+            {purgeDaysDraft != null && purgeDaysDraft !== String(purgeSettings?.purgeDays ?? "") && (
+              <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => savePurgeDays(purgeDaysDraft)} data-testid="button-save-purge-days">
+                Save
+              </Button>
+            )}
+          </div>
+        </div>
+
         <div className="space-y-3">
           {filtered.length === 0 ? (
             <LuxuryCard className="p-8 text-center">
@@ -376,14 +441,12 @@ export default function EmailDocuments() {
                 <LuxuryCard key={doc.id} className="p-4" data-testid={`card-email-doc-${doc.id}`}>
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex items-start gap-3 flex-1 min-w-0">
-                      {doc.extractionStatus !== "skipped" && (
-                        <Checkbox
-                          className="mt-3"
-                          checked={selectedIds.has(doc.id)}
-                          onCheckedChange={(checked) => toggleSelected(doc.id, checked === true)}
-                          data-testid={`checkbox-select-doc-${doc.id}`}
-                        />
-                      )}
+                      <Checkbox
+                        className="mt-3"
+                        checked={selectedIds.has(doc.id)}
+                        onCheckedChange={(checked) => toggleSelected(doc.id, checked === true)}
+                        data-testid={`checkbox-select-doc-${doc.id}`}
+                      />
                       <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-950/30 flex items-center justify-center flex-shrink-0">
                         <FileText size={16} className="text-blue-600" />
                       </div>
@@ -531,10 +594,10 @@ export default function EmailDocuments() {
                 Remove {confirmDismissIds?.length === 1 ? "this document" : `${confirmDismissIds?.length} documents`} from the queue?
               </AlertDialogTitle>
               <AlertDialogDescription>
-                The document{confirmDismissIds && confirmDismissIds.length > 1 ? "s" : ""} will be marked as not
-                relevant, removed from the pending queue, and the stored file deleted. It stays visible under the
-                "Skipped" filter for audit. Documents already turned into a devis or facture cannot be removed
-                this way.
+                Active documents are marked as not relevant, removed from the pending queue, and their stored
+                files deleted — they stay visible under the "Skipped" filter for audit. Documents already under
+                "Skipped" are permanently deleted. Documents already turned into a devis or facture are never
+                removed.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>

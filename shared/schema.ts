@@ -1918,6 +1918,14 @@ export const templateAssets = pgTable("template_assets", {
   uploadedAt: timestamp("uploaded_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
+// Task #550 — small key/value store for operator-configurable settings
+// (first use: email-document purge retention window in days).
+export const appSettings = pgTable("app_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
 export const aiModelSettings = pgTable("ai_model_settings", {
   id: serial("id").primaryKey(),
   taskType: text("task_type").notNull().unique(),

@@ -18,7 +18,7 @@ import {
   type BankingMismatchOverride, type InsertBankingMismatchOverride,
   archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog, archidocSiretIssues,
   emailDocuments, gmailProcessedMessages, gmailMessageFailures, projectDocuments, projectIntakeDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
-  aiModelSettings, templateAssets, users, devisTranslations, wishListItems,
+  aiModelSettings, appSettings, templateAssets, users, devisTranslations, wishListItems,
   benchmarkDocuments, benchmarkItems, benchmarkTags, benchmarkItemTags,
   devisChecks, devisCheckMessages, devisCheckTokens,
   clientChecks, clientCheckMessages, clientCheckTokens,
@@ -562,6 +562,17 @@ export interface IStorage {
     | { outcome: "dismissed"; storageKey: string | null }
   >;
   isStorageKeyReferencedElsewhere(storageKey: string, excludingEmailDocumentId: number): Promise<boolean>;
+
+  // Task #550 — permanent purge of old skipped email documents. Per-row
+  // transactional guards mirror dismissEmailDocumentAtomically (promoted
+  // docs and promoted mirrors are never purged). Returns purged ids and
+  // their storage keys for post-commit object cleanup.
+  purgeExpiredSkippedEmailDocuments(maxAgeMs: number, limit?: number): Promise<Array<{ id: number; storageKey: string | null }>>;
+  purgeSkippedEmailDocumentAtomically(id: number, threshold?: Date): Promise<{ id: number; storageKey: string | null } | null>;
+
+  // Task #550 — key/value operator settings.
+  getAppSetting(key: string): Promise<string | null>;
+  setAppSetting(key: string, value: string): Promise<void>;
 
   getProjectCommunications(projectId: number): Promise<ProjectCommunication[]>;
 
@@ -3467,6 +3478,15 @@ export class DatabaseStorage implements IStorage {
         if (mirror.analysisState === "analyzing") {
           return { outcome: "refused" as const, message: "This document is currently being analyzed — retry in a moment." };
         }
+        // Task #550 — the mirror may be evidence for a fee invoice,
+        // situation, or marché document via SET NULL provenance FKs;
+        // deleting it would silently sever that link. Refuse.
+        if (await this.intakeMirrorHasProvenanceRefs(tx, mirror.id)) {
+          return {
+            outcome: "refused" as const,
+            message: "This document backs an accounting record (fee invoice, situation, or marché document) — handle that record first.",
+          };
+        }
         const deleted = await tx.delete(projectIntakeDocuments)
           .where(and(eq(projectIntakeDocuments.id, mirror.id), isNull(projectIntakeDocuments.promotedId)))
           .returning({ id: projectIntakeDocuments.id });
@@ -3481,6 +3501,25 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
+  // Task #550 — an intake mirror can be evidence for other rows via
+  // ON DELETE SET NULL provenance FKs (fee invoices, situations, marché
+  // documents). Those deletes "succeed" while silently severing the
+  // evidence link, so every mirror deletion must check them first.
+  private async intakeMirrorHasProvenanceRefs(
+    tx: Pick<typeof db, "select">,
+    mirrorId: number,
+  ): Promise<boolean> {
+    const [fee] = await tx.select({ id: architectFeeInvoices.id }).from(architectFeeInvoices)
+      .where(eq(architectFeeInvoices.intakeDocumentId, mirrorId)).limit(1);
+    if (fee) return true;
+    const [sit] = await tx.select({ id: situations.id }).from(situations)
+      .where(eq(situations.sourceIntakeDocumentId, mirrorId)).limit(1);
+    if (sit) return true;
+    const [md] = await tx.select({ id: marcheDocuments.id }).from(marcheDocuments)
+      .where(eq(marcheDocuments.sourceIntakeDocumentId, mirrorId)).limit(1);
+    return !!md;
+  }
+
   async isStorageKeyReferencedElsewhere(storageKey: string, excludingEmailDocumentId: number): Promise<boolean> {
     // Task #421 — the email doc's storage key can be shared (intake mirror
     // uses the same key; legacy/manual project_documents may too). Never
@@ -3493,7 +3532,98 @@ export class DatabaseStorage implements IStorage {
     if (pid) return true;
     const [ed] = await db.select({ id: emailDocuments.id }).from(emailDocuments)
       .where(and(eq(emailDocuments.storageKey, storageKey), ne(emailDocuments.id, excludingEmailDocumentId))).limit(1);
-    return !!ed;
+    if (ed) return true;
+    // Task #550 — architect fee invoices captured from Gmail retain the
+    // same storage key as evidence; never delete the object under them.
+    const [fee] = await db.select({ id: architectFeeInvoices.id }).from(architectFeeInvoices)
+      .where(eq(architectFeeInvoices.storageKey, storageKey)).limit(1);
+    return !!fee;
+  }
+
+  async purgeExpiredSkippedEmailDocuments(maxAgeMs: number, limit = 100): Promise<Array<{ id: number; storageKey: string | null }>> {
+    // Task #550 — skipped rows are terminal but were previously kept forever.
+    // Hard-delete those older than the retention window (measured from
+    // updatedAt, i.e. N days after they were skipped, not after arrival).
+    // Guards per row, inside a transaction with FOR UPDATE locks:
+    //  - never purge a doc linked to a devis/facture,
+    //  - never purge while an intake mirror was promoted (delete unpromoted
+    //    mirrors along with the doc).
+    const threshold = new Date(Date.now() - maxAgeMs);
+    const candidates = await db
+      .select({ id: emailDocuments.id })
+      .from(emailDocuments)
+      .where(and(
+        eq(emailDocuments.extractionStatus, "skipped"),
+        lt(emailDocuments.updatedAt, threshold),
+        isNull(emailDocuments.devisId),
+        isNull(emailDocuments.invoiceId),
+      ))
+      .limit(limit);
+
+    const purged: Array<{ id: number; storageKey: string | null }> = [];
+    for (const { id } of candidates) {
+      try {
+        const row = await this.purgeSkippedEmailDocumentAtomically(id, threshold);
+        if (row) purged.push(row);
+      } catch (err) {
+        // One protected/failing candidate (e.g. an unexpected restrictive
+        // FK) must not starve the rest of the batch.
+        console.warn(`[storage] Purge of skipped email doc ${id} failed (continuing):`, err);
+      }
+    }
+    return purged;
+  }
+
+  async purgeSkippedEmailDocumentAtomically(
+    id: number,
+    threshold?: Date,
+  ): Promise<{ id: number; storageKey: string | null } | null> {
+    // Task #550 — hard-delete ONE skipped row under FOR UPDATE guards:
+    // never a doc linked to a devis/facture, never one whose intake mirror
+    // was promoted; unpromoted mirrors are deleted alongside. `threshold`
+    // (retention purge) additionally requires updatedAt older than it.
+    return await db.transaction(async (tx) => {
+      const [doc] = await tx.select().from(emailDocuments)
+        .where(eq(emailDocuments.id, id)).for("update");
+      if (!doc) return null;
+      if (doc.extractionStatus !== "skipped") return null;
+      if (doc.devisId != null || doc.invoiceId != null) return null;
+      if (threshold && doc.updatedAt != null && doc.updatedAt >= threshold) return null;
+      // Provenance guards — never hard-delete a doc still referenced by a
+      // retained fee invoice (FK is ON DELETE SET NULL, so the delete would
+      // silently sever evidence) or a project document (restrictive FK
+      // would make the DELETE throw).
+      const [feeRef] = await tx.select({ id: architectFeeInvoices.id }).from(architectFeeInvoices)
+        .where(eq(architectFeeInvoices.emailDocumentId, id)).limit(1);
+      if (feeRef) return null;
+      const [pdRef] = await tx.select({ id: projectDocuments.id }).from(projectDocuments)
+        .where(eq(projectDocuments.sourceEmailDocumentId, id)).limit(1);
+      if (pdRef) return null;
+      const [mirror] = await tx.select().from(projectIntakeDocuments)
+        .where(eq(projectIntakeDocuments.sourceEmailDocumentId, id)).for("update");
+      if (mirror) {
+        if (mirror.promotedId != null) return null;
+        // Provenance can point at the intake mirror instead of the email
+        // doc (SET NULL FKs) — deleting the mirror would silently sever
+        // that evidence. Refuse.
+        if (await this.intakeMirrorHasProvenanceRefs(tx, mirror.id)) return null;
+        await tx.delete(projectIntakeDocuments)
+          .where(and(eq(projectIntakeDocuments.id, mirror.id), isNull(projectIntakeDocuments.promotedId)));
+      }
+      await tx.delete(emailDocuments).where(eq(emailDocuments.id, id));
+      return { id, storageKey: doc.storageKey ?? null };
+    });
+  }
+
+  async getAppSetting(key: string): Promise<string | null> {
+    const [row] = await db.select().from(appSettings).where(eq(appSettings.key, key));
+    return row?.value ?? null;
+  }
+
+  async setAppSetting(key: string, value: string): Promise<void> {
+    await db.insert(appSettings)
+      .values({ key, value, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: appSettings.key, set: { value, updatedAt: new Date() } });
   }
 
   async getProjectCommunications(projectId: number): Promise<ProjectCommunication[]> {

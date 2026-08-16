@@ -64,6 +64,17 @@ export async function sweepPendingEmailDocuments(): Promise<void> {
       console.error("[EmailDocProcessor] Retention pass failed:", err);
     }
 
+    // Task #550 — purge pass: permanently delete skipped documents older
+    // than the operator-configured retention window (default 30 days,
+    // 0 = keep forever). Guards live in the storage method (promoted docs
+    // and promoted mirrors are never purged); object files are deleted
+    // post-commit only when no other row references the same storage key.
+    try {
+      await purgeExpiredSkippedDocuments();
+    } catch (err) {
+      console.error("[EmailDocProcessor] Purge pass failed:", err);
+    }
+
     const due = await storage.listDueEmailDocuments(SWEEP_BATCH_SIZE, getEmailIntakeCutoff());
     if (due.length === 0) return;
 
@@ -85,6 +96,36 @@ export async function sweepPendingEmailDocuments(): Promise<void> {
   } finally {
     sweeping = false;
   }
+}
+
+// Task #550 — retention window setting for the permanent purge of skipped docs.
+export const EMAIL_PURGE_DAYS_KEY = "email_doc_purge_days";
+export const EMAIL_PURGE_DAYS_DEFAULT = 30;
+
+// Task #550 — exported for tests.
+export async function purgeExpiredSkippedDocuments(): Promise<number> {
+  const raw = await storage.getAppSetting(EMAIL_PURGE_DAYS_KEY);
+  const days = raw != null && Number.isFinite(Number(raw)) ? Number(raw) : EMAIL_PURGE_DAYS_DEFAULT;
+  if (days <= 0) return 0; // auto-purge disabled
+
+  const purged = await storage.purgeExpiredSkippedEmailDocuments(days * 24 * 60 * 60 * 1000);
+  if (purged.length === 0) return 0;
+
+  const { deleteDocument } = await import("../storage/object-storage");
+  for (const { id, storageKey } of purged) {
+    if (!storageKey) continue;
+    try {
+      if (await storage.isStorageKeyReferencedElsewhere(storageKey, id)) {
+        console.log(`[EmailDocProcessor] Purged email doc ${id}; storage key still referenced elsewhere — keeping object`);
+      } else {
+        await deleteDocument(storageKey);
+      }
+    } catch (err) {
+      console.warn(`[EmailDocProcessor] Failed to delete storage object for purged email doc ${id} (continuing):`, err);
+    }
+  }
+  console.log(`[EmailDocProcessor] Purged ${purged.length} skipped email document(s) past the ${days}-day retention window.`);
+  return purged.length;
 }
 
 export function startEmailDocumentSweeper(intervalMs: number = SWEEP_INTERVAL_MS): void {

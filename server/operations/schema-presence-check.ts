@@ -148,6 +148,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0090_contractor_receipt_suggestions", artifact: { kind: "column", table: "certificat_payment_suggestions", column: "kind" } },
   { tag: "0091_communications_archive", artifact: { kind: "column", table: "project_communications", column: "archived_at" } },
   { tag: "0092_email_doc_fingerprint", artifact: { kind: "column", table: "email_documents", column: "content_fingerprint" } },
+  { tag: "0093_app_settings", artifact: { kind: "table", table: "app_settings" } },
 ];
 
 interface JournalFile {

@@ -50,3 +50,27 @@ export async function dismissEmailDocument(id: number): Promise<DismissOutcome> 
   console.log(`[email-dismiss] Dismissed email document ${id} as not relevant`);
   return { outcome: "dismissed", id };
 }
+
+/**
+ * Task #550 — permanently delete an ALREADY-skipped document (operator
+ * emptying the Skipped view). Same atomic guards as the retention purge:
+ * promoted docs/mirrors are never deleted; object removed post-commit only
+ * when no other row references the storage key.
+ */
+export async function purgeSkippedEmailDocument(id: number): Promise<boolean> {
+  const row = await storage.purgeSkippedEmailDocumentAtomically(id);
+  if (!row) return false;
+  if (row.storageKey) {
+    try {
+      if (await storage.isStorageKeyReferencedElsewhere(row.storageKey, id)) {
+        console.log(`[email-dismiss] Purged email doc ${id}; storage key still referenced elsewhere — keeping object`);
+      } else {
+        await deleteDocument(row.storageKey);
+      }
+    } catch (err) {
+      console.warn(`[email-dismiss] Failed to delete storage object for purged email doc ${id} (continuing):`, err);
+    }
+  }
+  console.log(`[email-dismiss] Permanently purged skipped email document ${id}`);
+  return true;
+}

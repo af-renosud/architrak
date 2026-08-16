@@ -6,7 +6,8 @@ import { processEmailDocument } from "../gmail/document-parser";
 import { insertEmailDocumentSchema, type InsertEmailDocument } from "@shared/schema";
 import { classifyGmailPollHealth, type GmailPollHealth } from "@shared/gmail-poll-health";
 import { validateRequest } from "../middleware/validate";
-import { dismissEmailDocument, DismissRefusedError } from "../services/email-document-dismiss.service";
+import { dismissEmailDocument, purgeSkippedEmailDocument, DismissRefusedError } from "../services/email-document-dismiss.service";
+import { EMAIL_PURGE_DAYS_KEY, EMAIL_PURGE_DAYS_DEFAULT } from "../services/email-document-processor.service";
 
 /** Task #506 — messages failing this many consecutive polls are surfaced in the dashboard. */
 export const PERSISTENT_FAILURE_THRESHOLD = 5;
@@ -144,11 +145,69 @@ router.get(
   },
 );
 
-router.get("/api/email-documents/:id", async (req, res) => {
-    const doc = await storage.updateEmailDocument(Number(req.params.id), req.body);
+// Task #550 — retention window (days) after which skipped documents are
+// permanently purged by the background sweeper. 0 disables auto-purge.
+// NB: registered BEFORE `/:id` so "settings" is never parsed as an id.
+router.get("/api/email-documents/settings/purge", async (_req, res) => {
+  const raw = await storage.getAppSetting(EMAIL_PURGE_DAYS_KEY);
+  const days = raw != null && Number.isFinite(Number(raw)) ? Number(raw) : EMAIL_PURGE_DAYS_DEFAULT;
+  res.json({ purgeDays: days });
+});
+const purgeSettingsSchema = z.object({ purgeDays: z.number().int().min(0).max(3650) });
+router.put(
+  "/api/email-documents/settings/purge",
+  validateRequest({ body: purgeSettingsSchema }),
+  async (req, res) => {
+    const { purgeDays } = req.body as z.infer<typeof purgeSettingsSchema>;
+    await storage.setAppSetting(EMAIL_PURGE_DAYS_KEY, String(purgeDays));
+    res.json({ purgeDays });
+  },
+);
+
+router.get("/api/email-documents/:id", validateRequest({ params: idParams }), async (req, res) => {
+  // (was mistakenly calling update with the request body — read-only now)
+  const doc = await storage.getEmailDocument(Number(req.params.id));
   if (!doc) return res.status(404).json({ message: "Document not found" });
   res.json(doc);
 });
+
+// Task #550 — bulk "not relevant" dismissal in ONE call. Reuses the atomic
+// per-document dismissal (promoted docs refused, storage-key safety),
+// returning per-id results so the UI can report refusals.
+const bulkDismissSchema = z.object({
+  ids: z.array(z.number().int().positive()).min(1).max(500),
+});
+router.post(
+  "/api/email-documents/bulk-dismiss",
+  validateRequest({ body: bulkDismissSchema }),
+  async (req, res) => {
+    const { ids } = req.body as z.infer<typeof bulkDismissSchema>;
+    const uniqueIds = Array.from(new Set(ids));
+    const results: Array<{ id: number; outcome: string; message?: string }> = [];
+    for (const id of uniqueIds) {
+      try {
+        const result = await dismissEmailDocument(id);
+        if (result.outcome === "already_dismissed") {
+          // Already skipped ("removed") — the operator is emptying the
+          // Skipped view: permanently purge it now.
+          const purged = await purgeSkippedEmailDocument(id);
+          results.push({ id, outcome: purged ? "purged" : "refused", message: purged ? undefined : "Could not purge — linked to a record or busy." });
+        } else {
+          results.push({ id, outcome: result.outcome });
+        }
+      } catch (err) {
+        if (err instanceof DismissRefusedError) {
+          results.push({ id, outcome: "refused", message: err.message });
+        } else {
+          results.push({ id, outcome: "error", message: err instanceof Error ? err.message : String(err) });
+        }
+      }
+    }
+    const removed = results.filter(r => r.outcome === "dismissed" || r.outcome === "already_dismissed" || r.outcome === "purged").length;
+    const refused = results.filter(r => r.outcome === "refused" || r.outcome === "error").length;
+    res.json({ removed, refused, results });
+  },
+);
 
 router.patch(
   "/api/email-documents/:id",

@@ -652,6 +652,13 @@
       "when": 1787260000000,
       "tag": "0092_email_doc_fingerprint",
       "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1787270000000,
+      "tag": "0093_app_settings",
+      "breakpoints": true
     }
   ]
 }
