@@ -8,6 +8,9 @@ import { classifyGmailPollHealth, type GmailPollHealth } from "@shared/gmail-pol
 import { validateRequest } from "../middleware/validate";
 import { dismissEmailDocument, DismissRefusedError } from "../services/email-document-dismiss.service";
 
+/** Task #506 — messages failing this many consecutive polls are surfaced in the dashboard. */
+export const PERSISTENT_FAILURE_THRESHOLD = 5;
+
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
 // Task #322 — extractionStatus is server-authoritative (state machine:
@@ -69,8 +72,51 @@ router.get("/api/gmail/status", async (_req, res) => {
     console.error("[Gmail] needs-project count failed:", err);
   }
 
-  res.json({ ...getGmailMonitorStatus(), pollHealth, needsProjectCount });
+  // Task #506 — count messages that have failed >= PERSISTENT_FAILURE_THRESHOLD
+  // consecutive polls so the banner can alert the architect.
+  let persistentFailureCount = 0;
+  try {
+    persistentFailureCount = await storage.getPersistentGmailFailureCount(PERSISTENT_FAILURE_THRESHOLD);
+  } catch (err) {
+    console.error("[Gmail] persistent-failure count failed:", err);
+  }
+
+  res.json({ ...getGmailMonitorStatus(), pollHealth, needsProjectCount, persistentFailureCount });
 });
+
+// Task #506 — list messages stuck in repeated poll failures.
+router.get("/api/gmail/stuck-messages", async (_req, res) => {
+  try {
+    const rows = await storage.getPersistentGmailFailures(PERSISTENT_FAILURE_THRESHOLD);
+    res.json(rows);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ message: `Failed to load stuck messages: ${message}` });
+  }
+});
+
+// Task #506 — skip a specific (userId, messageId) pair so the poll never retries it.
+// Scoped to the exact user whose inbox produced the failure; never bulk-skips other users.
+// Audit-noted via skip_reason; the original email is never deleted from Gmail.
+router.post(
+  "/api/gmail/stuck-messages/:messageId/skip",
+  validateRequest({
+    params: z.object({ messageId: z.string().min(1) }),
+    body: z.object({ userId: z.number().int().positive(), reason: z.string().optional() }),
+  }),
+  async (req, res) => {
+    const { messageId } = req.params as { messageId: string };
+    const { userId, reason } = req.body as { userId: number; reason?: string };
+    const skipReason = reason ?? "Manually skipped by operator";
+    try {
+      await storage.skipGmailMessage(userId, messageId, skipReason);
+      res.json({ skipped: true, messageId, userId });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Skip failed: ${message}` });
+    }
+  },
+);
 
 router.post("/api/gmail/poll", validateRequest({ body: z.object({}).strict().optional() }), async (_req, res) => {
   try {

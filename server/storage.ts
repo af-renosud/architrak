@@ -16,7 +16,7 @@ import {
   bankingMismatchOverrides,
   type BankingMismatchOverride, type InsertBankingMismatchOverride,
   archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog, archidocSiretIssues,
-  emailDocuments, gmailProcessedMessages, projectDocuments, projectIntakeDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
+  emailDocuments, gmailProcessedMessages, gmailMessageFailures, projectDocuments, projectIntakeDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
   aiModelSettings, templateAssets, users, devisTranslations, wishListItems,
   benchmarkDocuments, benchmarkItems, benchmarkTags, benchmarkItemTags,
   devisChecks, devisCheckMessages, devisCheckTokens,
@@ -487,6 +487,28 @@ export interface IStorage {
   filterUnprocessedGmailMessageIds(userId: number, messageIds: string[]): Promise<string[]>;
 
   getGmailBackfillCursor(userId: number, notBefore?: Date): Promise<Date | null>;
+
+  /** Task #506 — increment fail count for a message that errored on this poll pass. */
+  recordGmailMessageFailure(userId: number, messageId: string): Promise<void>;
+
+  /** Task #506 — count non-skipped messages with fail_count >= minFailures. */
+  getPersistentGmailFailureCount(minFailures: number): Promise<number>;
+
+  /** Task #506 — list non-skipped messages with fail_count >= minFailures. */
+  getPersistentGmailFailures(minFailures: number): Promise<{ userId: number; messageId: string; failCount: number; lastFailedAt: Date }[]>;
+
+  /**
+   * Task #506 — mark a failing message as skipped (audit-noted, never deleted).
+   * Also records it as "processed" so the poll excludes it permanently.
+   */
+  skipGmailMessage(userId: number, messageId: string, reason: string): Promise<void>;
+
+  /**
+   * Task #506 — clear the failure record when a message processes successfully.
+   * The audit trail lives in gmail_processed_messages; the failure row is removed
+   * so the dashboard alert extinguishes once the underlying problem is gone.
+   */
+  clearGmailMessageFailure(userId: number, messageId: string): Promise<void>;
 
   getProjectDocumentBySourceEmailDocumentId(sourceEmailDocumentId: number): Promise<ProjectDocument | undefined>;
 
@@ -3076,6 +3098,76 @@ export class DatabaseStorage implements IStorage {
       ));
     const seenSet = new Set(seen.map((r) => r.messageId));
     return messageIds.filter((id) => !seenSet.has(id));
+  }
+
+  // Task #506 — record that a specific message failed during this poll pass.
+  // Uses upsert so every poll adds 1 to the counter without losing prior state.
+  async recordGmailMessageFailure(userId: number, messageId: string): Promise<void> {
+    await db.insert(gmailMessageFailures)
+      .values({ userId, messageId, failCount: 1, lastFailedAt: new Date() })
+      .onConflictDoUpdate({
+        target: [gmailMessageFailures.userId, gmailMessageFailures.messageId],
+        set: {
+          failCount: sql`${gmailMessageFailures.failCount} + 1`,
+          lastFailedAt: new Date(),
+        },
+      });
+  }
+
+  async getPersistentGmailFailureCount(minFailures: number): Promise<number> {
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(gmailMessageFailures)
+      .where(and(
+        sql`${gmailMessageFailures.failCount} >= ${minFailures}`,
+        isNull(gmailMessageFailures.skippedAt),
+      ));
+    return row?.count ?? 0;
+  }
+
+  async getPersistentGmailFailures(minFailures: number): Promise<{ userId: number; messageId: string; failCount: number; lastFailedAt: Date }[]> {
+    const rows = await db
+      .select({
+        userId: gmailMessageFailures.userId,
+        messageId: gmailMessageFailures.messageId,
+        failCount: gmailMessageFailures.failCount,
+        lastFailedAt: gmailMessageFailures.lastFailedAt,
+      })
+      .from(gmailMessageFailures)
+      .where(and(
+        sql`${gmailMessageFailures.failCount} >= ${minFailures}`,
+        isNull(gmailMessageFailures.skippedAt),
+      ))
+      .orderBy(desc(gmailMessageFailures.failCount));
+    return rows.map((r) => ({ ...r, lastFailedAt: new Date(r.lastFailedAt) }));
+  }
+
+  async skipGmailMessage(userId: number, messageId: string, reason: string): Promise<void> {
+    const now = new Date();
+    // Mark as skipped in the failure table (upsert in case we haven't seen a
+    // failure row yet — operator may skip pre-emptively from an admin list).
+    await db.insert(gmailMessageFailures)
+      .values({ userId, messageId, failCount: 0, lastFailedAt: now, skippedAt: now, skipReason: reason })
+      .onConflictDoUpdate({
+        target: [gmailMessageFailures.userId, gmailMessageFailures.messageId],
+        set: { skippedAt: now, skipReason: reason },
+      });
+    // Also record as "processed" so the poll's filterUnprocessedGmailMessageIds
+    // permanently excludes this message id from future fetches.
+    await db.insert(gmailProcessedMessages)
+      .values({ userId, messageId, messageDate: null })
+      .onConflictDoNothing();
+  }
+
+  // Task #506 — delete the failure row once the message processes successfully.
+  // The processing audit trail lives in gmail_processed_messages; removing the
+  // failure row ensures the dashboard alert extinguishes when the problem clears.
+  async clearGmailMessageFailure(userId: number, messageId: string): Promise<void> {
+    await db.delete(gmailMessageFailures)
+      .where(and(
+        eq(gmailMessageFailures.userId, userId),
+        eq(gmailMessageFailures.messageId, messageId),
+      ));
   }
 
   /**

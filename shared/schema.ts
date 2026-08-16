@@ -1327,6 +1327,25 @@ export const gmailProcessedMessages = pgTable("gmail_processed_messages", {
   unique("gmail_processed_messages_user_message_unique").on(table.userId, table.messageId),
 ]);
 
+// Task #506 — per-message failure counter for the Gmail poll.
+// When processMessage() throws for the same message on consecutive polls
+// (e.g. a corrupt attachment), errors recur silently every 15 minutes.
+// This table tracks the count so the dashboard can surface stuck messages
+// and let the architect skip them (audit-noted, never deleted).
+export const gmailMessageFailures = pgTable("gmail_message_failures", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull(),
+  messageId: text("message_id").notNull(),
+  failCount: integer("fail_count").notNull().default(1),
+  lastFailedAt: timestamp("last_failed_at").notNull(),
+  skippedAt: timestamp("skipped_at"),
+  skipReason: text("skip_reason"),
+}, (table) => [
+  unique("gmail_message_failures_user_message_unique").on(table.userId, table.messageId),
+]);
+
+export type GmailMessageFailure = typeof gmailMessageFailures.$inferSelect;
+
 export const projectDocuments = pgTable("project_documents", {
   id: serial("id").primaryKey(),
   projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),

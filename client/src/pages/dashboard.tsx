@@ -10,6 +10,13 @@ import { LuxuryCard } from "@/components/ui/luxury-card";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { StatusBadge } from "@/components/ui/status-badge";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import {
   FolderOpen,
   AlertTriangle,
   Receipt,
@@ -134,11 +141,15 @@ function GmailStatusBar({
   const { data: gmailStatus } = useQuery<{
     pollHealth?: { level: string; ageMs: number | null; message: string | null };
     needsProjectCount?: number;
+    persistentFailureCount?: number;
   }>({
     queryKey: ["/api/gmail/status"],
   });
   const pollHealth = gmailStatus?.pollHealth;
   const needsProjectCount = gmailStatus?.needsProjectCount ?? 0;
+  // Task #506 — messages stuck failing on every poll pass.
+  const persistentFailureCount = gmailStatus?.persistentFailureCount ?? 0;
+  const [showStuckDialog, setShowStuckDialog] = useState(false);
   const isStaleScan = pollHealth?.level === "stale" || pollHealth?.level === "never";
   const status = data?.gmailLastPollStatus ?? "idle";
   const isPermsError = status === "insufficient_permissions"; // legacy — superseded by no_linked_users
@@ -152,7 +163,7 @@ function GmailStatusBar({
   const isHealthAuthRevoked = pollHealth?.level === "auth_revoked";
   const hasIssue =
     notConfigured || isPermsError || isNoLinkedUsers || isAuthRevoked || isOtherError ||
-    pollingDisabled || !meLinked || isStaleScan || isHealthAuthRevoked;
+    pollingDisabled || !meLinked || isStaleScan || isHealthAuthRevoked || persistentFailureCount > 0;
 
   const tone = hasIssue
     ? "border-amber-300 bg-amber-50/70 dark:border-amber-700 dark:bg-amber-950/30"
@@ -251,6 +262,23 @@ function GmailStatusBar({
         </Link>
       )}
 
+      {/* Task #506 — stuck-message alert */}
+      {persistentFailureCount > 0 && (
+        <button
+          onClick={() => setShowStuckDialog(true)}
+          className="flex items-center gap-1.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300 underline ml-1 hover:no-underline bg-transparent border-0 p-0 cursor-pointer"
+          data-testid="link-gmail-stuck-messages"
+        >
+          <span
+            className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold no-underline"
+            data-testid="badge-gmail-stuck-messages"
+          >
+            {persistentFailureCount}
+          </span>
+          inbox message{persistentFailureCount === 1 ? "" : "s"} stuck — click to manage →
+        </button>
+      )}
+
       <div className="ml-auto">
         <Button
           variant="ghost"
@@ -264,7 +292,86 @@ function GmailStatusBar({
           {pollMutation.isPending ? "Checking..." : "Check now"}
         </Button>
       </div>
+
+      {/* Task #506 — dialog to inspect and skip persistent failures */}
+      <StuckMessagesDialog open={showStuckDialog} onClose={() => setShowStuckDialog(false)} />
     </div>
+  );
+}
+
+/** Task #506 — dialog listing Gmail messages that have failed N consecutive polls. */
+function StuckMessagesDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { toast } = useToast();
+  const { data: stuckMessages, isLoading, refetch } = useQuery<
+    { userId: number; messageId: string; failCount: number; lastFailedAt: string }[]
+  >({
+    queryKey: ["/api/gmail/stuck-messages"],
+    enabled: open,
+  });
+
+  const skipMutation = useMutation({
+    mutationFn: async ({ userId, messageId }: { userId: number; messageId: string }) => {
+      const res = await apiRequest("POST", `/api/gmail/stuck-messages/${encodeURIComponent(messageId)}/skip`, {
+        userId,
+        reason: "Manually skipped by operator from dashboard",
+      });
+      return res.json();
+    },
+    onSuccess: (_data, { messageId }) => {
+      toast({ title: "Message skipped", description: `Message ${messageId.slice(0, 16)}… will no longer be retried.` });
+      refetch();
+      queryClient.invalidateQueries({ queryKey: ["/api/gmail/status"] });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Skip failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-lg" data-testid="dialog-stuck-gmail-messages">
+        <DialogHeader>
+          <DialogTitle>Stuck Gmail messages</DialogTitle>
+          <DialogDescription>
+            These messages have failed {"\u2265"}5 consecutive inbox scans (e.g. corrupt attachment).
+            Skipping stops future retries — the original email is never deleted.
+          </DialogDescription>
+        </DialogHeader>
+        {isLoading && <p className="text-sm text-muted-foreground py-4 text-center">Loading…</p>}
+        {!isLoading && stuckMessages?.length === 0 && (
+          <p className="text-sm text-muted-foreground py-4 text-center">No stuck messages — all clear.</p>
+        )}
+        {!isLoading && stuckMessages && stuckMessages.length > 0 && (
+          <div className="space-y-2 max-h-72 overflow-y-auto">
+            {stuckMessages.map((msg) => (
+              <div
+                key={`${msg.userId}:${msg.messageId}`}
+                className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2"
+                data-testid={`row-stuck-message-${msg.messageId}`}
+              >
+                <div className="min-w-0">
+                  <p className="text-[11px] font-mono text-foreground truncate">{msg.messageId}</p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                    {msg.failCount} failure{msg.failCount === 1 ? "" : "s"} · last{" "}
+                    {formatTimeAgo(msg.lastFailedAt)}
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-[10px] shrink-0"
+                  disabled={skipMutation.isPending}
+                  onClick={() => skipMutation.mutate({ userId: msg.userId, messageId: msg.messageId })}
+                  data-testid={`button-skip-stuck-message-${msg.messageId}`}
+                >
+                  Skip
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
 

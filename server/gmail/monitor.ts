@@ -447,10 +447,24 @@ async function pollOneInbox(
       // record it (with the message date, feeding the backfill cursor) so a
       // label failure can never wedge the poll on this id.
       await storage.recordGmailMessageProcessed(userId, id, messageDate);
+      // Task #506 — if this message previously accumulated failure counts,
+      // clear the record now that it processed successfully.  The alert should
+      // extinguish as soon as the underlying problem is gone.  Fire-and-forget:
+      // a failure here must never shadow the successful processing.
+      storage.clearGmailMessageFailure(userId, id).catch((clearErr) => {
+        console.error(`[Gmail Monitor] User ${userId}: could not clear failure record for message ${id}:`, clearErr);
+      });
       processed++;
     } catch (err) {
       errors++;
       console.error(`[Gmail Monitor] User ${userId}: error processing message ${id}:`, err);
+      // Task #506 — increment the per-message failure counter so the dashboard
+      // can surface messages that fail on every poll (e.g. corrupt attachment).
+      // Fire-and-forget: a failure to record the counter must never shadow the
+      // original processing error.
+      storage.recordGmailMessageFailure(userId, id).catch((counterErr) => {
+        console.error(`[Gmail Monitor] User ${userId}: could not record failure counter for message ${id}:`, counterErr);
+      });
     }
   }
 
