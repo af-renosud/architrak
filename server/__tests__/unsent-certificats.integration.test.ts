@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { db } from "../db";
 import { storage } from "../storage";
+import { sendCertificat } from "../communications/email-sender";
 import { certificats, projects, contractors, projectCommunications } from "@shared/schema";
 import { eq, inArray } from "drizzle-orm";
 
@@ -117,5 +118,115 @@ describe("getUnsentReadyCertificats (real DB)", () => {
     } finally {
       await db.update(projects).set({ archivedAt: null }).where(eq(projects.id, projectId));
     }
+  });
+});
+
+/**
+ * Task #540 — requeue behaviour: a FAILED certificat_sent communication must
+ * flip back to queued (archivedAt cleared) when the architect clicks Send
+ * again from the "Awaiting certificat send" alert.
+ *
+ * The test exercises `sendCertificat` directly to stay out of the route-level
+ * devis-validation layer. It pre-seeds a pinned pdfStorageKey on the certificat
+ * so `sealCertificat` returns immediately without running the PDF pipeline.
+ * The stable dedupeKey (`certificat_sent:<certId>:<storageKey>`) means
+ * createProjectCommunication returns the existing FAILED row, and the
+ * requeue branch flips it to queued with archivedAt cleared.
+ */
+describe("sendCertificat — retry from FAILED state", () => {
+  let retryProjectId: number;
+  let retryContractorId: number;
+  let retryCertId: number;
+
+  beforeAll(async () => {
+    const [p] = await db
+      .insert(projects)
+      .values({
+        code: `T540-${Date.now()}`,
+        name: "Retry Send Test",
+        clientName: "Test Client",
+        clientContactEmail: "client@example.test",
+        status: "active",
+      })
+      .returning();
+    retryProjectId = p.id;
+    const [c] = await db
+      .insert(contractors)
+      .values({ name: `T540 Contractor ${Date.now()}` })
+      .returning();
+    retryContractorId = c.id;
+  });
+
+  afterAll(async () => {
+    if (retryCertId) {
+      await db
+        .delete(projectCommunications)
+        .where(eq(projectCommunications.relatedCertificatId, retryCertId));
+      await db.delete(certificats).where(eq(certificats.id, retryCertId));
+    }
+    await db.delete(contractors).where(eq(contractors.id, retryContractorId));
+    await db.delete(projects).where(eq(projects.id, retryProjectId));
+  });
+
+  it("flips the failed comm to queued (archivedAt cleared) and removes the cert from the unsent list", async () => {
+    // Use a deterministic storage key so we can build the dedupeKey before
+    // calling sendCertificat. A pre-pinned pdfStorageKey means sealCertificat
+    // returns immediately (early-return branch) — no PDF pipeline needed.
+    const storageKey = `test/cert-retry-t540-${Date.now()}.pdf`;
+
+    const [cert] = await db
+      .insert(certificats)
+      .values({
+        projectId: retryProjectId,
+        contractorId: retryContractorId,
+        certificateRef: `T540-${Date.now()}`,
+        status: "ready",
+        totalWorksHt: "1000.00",
+        netToPayHt: "1000.00",
+        netToPayTtc: "1200.00",
+        tvaAmount: "200.00",
+        pdfStorageKey: storageKey,
+        pdfFileName: "CERT.pdf",
+      })
+      .returning();
+    retryCertId = cert.id;
+
+    // Seed the pre-existing FAILED send — archived to simulate a dismissed
+    // failed notice so we can confirm archivedAt is cleared on requeue.
+    const dedupeKey = `certificat_sent:${cert.id}:${storageKey}`;
+    const [failedComm] = await db
+      .insert(projectCommunications)
+      .values({
+        projectId: retryProjectId,
+        type: "certificat_sent",
+        recipientType: "client",
+        recipientEmail: "client@example.test",
+        subject: "Test certificat",
+        body: "Test",
+        status: "failed",
+        relatedCertificatId: cert.id,
+        dedupeKey,
+        archivedAt: new Date(),
+      })
+      .returning();
+
+    // Cert must appear in the unsent list before retry (failed send = still unsent).
+    const before = await storage.getUnsentReadyCertificats();
+    expect(before.some((r) => r.certificatId === cert.id)).toBe(true);
+
+    // Trigger send — sealCertificat short-circuits on the pre-pinned key.
+    const commId = await sendCertificat(cert.id);
+
+    // Must return the SAME communication row (dedupe key matched).
+    expect(commId).toBe(failedComm.id);
+
+    // The row must now be queued with archivedAt cleared.
+    const comm = await storage.getProjectCommunication(commId);
+    expect(comm?.status).toBe("queued");
+    expect(comm?.archivedAt).toBeNull();
+
+    // The cert must no longer appear in the unsent list.
+    const after = await storage.getUnsentReadyCertificats();
+    expect(after.some((r) => r.certificatId === cert.id)).toBe(false);
   });
 });
