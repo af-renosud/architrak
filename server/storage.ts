@@ -386,6 +386,10 @@ export interface IStorage {
     | { outcome: "ok"; cert: Certificat; payment: CertificatPayment; suggestion: CertificatPaymentSuggestion; state: CertificatPaymentState }
   >;
   dismissCertificatPaymentSuggestion(suggestionId: number, reviewedBy: string | null): Promise<CertificatPaymentSuggestion | null>;
+  // Task #519 — the queued/failed contractor payment notice riding along
+  // with a certificat's client send (auto-dispatched after the client email
+  // actually goes out).
+  getQueuedContractorNoticeForCertificat(certificatId: number): Promise<ProjectCommunication | undefined>;
   getCertificatCommunicationsAwaitingPayment(forUserId?: number | "unowned", limit?: number): Promise<Array<{ communication: ProjectCommunication; cert: Certificat }>>;
   // Task #451 — race-free edit lock: UPDATE guarded by pdf_storage_key IS
   // NULL. Returns null when the row is missing OR already sealed; callers
@@ -2297,6 +2301,22 @@ export class DatabaseStorage implements IStorage {
         .set({ status: "confirmed", paymentId: payment.id, reviewedBy, reviewedAt: sql`CURRENT_TIMESTAMP` })
         .where(eq(certificatPaymentSuggestions.id, suggestionId))
         .returning();
+      // Task #519 — the client's "we paid" and the contractor's "we
+      // received it" describe the SAME transfer. Confirming either one
+      // records the ledger entry; leaving the OPPOSITE-kind counterpart open
+      // would let a second click double-record that transfer. Dismissal is
+      // narrowly scoped to the other kind — same-kind ambiguous replies
+      // (potentially a separate payment) stay in the review queue.
+      await tx
+        .update(certificatPaymentSuggestions)
+        .set({ status: "dismissed", reviewedBy: reviewedBy ?? "auto:counterpart-confirmed", reviewedAt: sql`CURRENT_TIMESTAMP` })
+        .where(
+          and(
+            eq(certificatPaymentSuggestions.certificatId, guard.cert.id),
+            ne(certificatPaymentSuggestions.kind, updatedSuggestion.kind),
+            inArray(certificatPaymentSuggestions.status, ["pending_review", "ambiguous"]),
+          ),
+        );
       const state = await this.flipPaidIfCovered(tx, guard.cert, [...guard.payments, payment]);
       return { outcome: "ok" as const, cert: guard.cert, payment, suggestion: updatedSuggestion, state };
     });
@@ -2319,6 +2339,22 @@ export class DatabaseStorage implements IStorage {
       )
       .returning();
     return row ?? null;
+  }
+
+  async getQueuedContractorNoticeForCertificat(certificatId: number): Promise<ProjectCommunication | undefined> {
+    const [row] = await db
+      .select()
+      .from(projectCommunications)
+      .where(
+        and(
+          eq(projectCommunications.relatedCertificatId, certificatId),
+          eq(projectCommunications.type, "certificat_contractor_notice"),
+          inArray(projectCommunications.status, ["queued", "failed"]),
+        ),
+      )
+      .orderBy(desc(projectCommunications.id))
+      .limit(1);
+    return row;
   }
 
   // Task #466 — sent certificat communications whose certificat could still
@@ -2350,7 +2386,9 @@ export class DatabaseStorage implements IStorage {
       .innerJoin(certificats, eq(projectCommunications.relatedCertificatId, certificats.id))
       .where(
         and(
-          eq(projectCommunications.type, "certificat_sent"),
+          // Task #519 — the scan watches BOTH the client certificat thread
+          // and the contractor payment-notice thread.
+          inArray(projectCommunications.type, ["certificat_sent", "certificat_contractor_notice"]),
           eq(projectCommunications.status, "sent"),
           isNotNull(projectCommunications.emailThreadId),
           ne(certificats.status, "superseded"),

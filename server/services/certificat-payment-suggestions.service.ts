@@ -42,6 +42,23 @@ const PAID_PATTERNS: RegExp[] = [
   `transfer\\s+(?:sent|made|completed)`,
 ].map((core) => new RegExp(`${B}(${core})${E}`, "i"));
 
+// Task #519 — closed phrase set for CONTRACTOR receipt confirmations on the
+// certificat_contractor_notice thread. Same strictness philosophy: "j'attends
+// le virement" / "not received yet" must NOT match. Negations are excluded by
+// keeping the set to past-tense "received" phrasings.
+const RECEIVED_PATTERNS: RegExp[] = [
+  `paiements?\\s+(?:a\\s+(?:bien\\s+)?[ée]t[ée]\\s+)?(?:bien\\s+)?re[çc]us?`,   // paiement (a été) (bien) reçu
+  `virements?\\s+(?:a\\s+(?:bien\\s+)?[ée]t[ée]\\s+)?(?:bien\\s+)?re[çc]us?`,   // virement (a été) (bien) reçu
+  `r[èe]glements?\\s+(?:a\\s+(?:bien\\s+)?[ée]t[ée]\\s+)?(?:bien\\s+)?re[çc]us?`, // règlement (a été) (bien) reçu
+  `sommes?\\s+(?:a\\s+(?:bien\\s+)?[ée]t[ée]\\s+)?(?:bien\\s+)?re[çc]ues?`,     // somme (a été) (bien) reçue
+  `fonds\\s+(?:bien\\s+)?re[çc]us`,                   // fonds reçus
+  `bien\\s+re[çc]u\\s+(?:le\\s+|votre\\s+)?(?:paiement|virement|r[èe]glement)`,
+  `encaiss[ée]e?s?`,                                  // encaissé
+  `payment\\s+(?:well\\s+)?received`,
+  `funds\\s+received`,
+  `received\\s+(?:the\\s+|your\\s+)?(?:payment|transfer|funds)`,
+].map((core) => new RegExp(`${B}(${core})${E}`, "i"));
+
 export interface PaidDetection {
   matched: boolean;
   excerpt: string | null;
@@ -62,9 +79,9 @@ export function stripQuotedReply(text: string): string {
   return kept.join("\n");
 }
 
-export function detectPaidConfirmation(rawText: string): PaidDetection {
+function detectAgainst(rawText: string, patterns: RegExp[]): PaidDetection {
   const text = stripQuotedReply(rawText);
-  for (const re of PAID_PATTERNS) {
+  for (const re of patterns) {
     const m = re.exec(text);
     if (m) {
       // Group 1 is the phrase itself (group 0 may include the boundary char).
@@ -76,6 +93,15 @@ export function detectPaidConfirmation(rawText: string): PaidDetection {
     }
   }
   return { matched: false, excerpt: null };
+}
+
+export function detectPaidConfirmation(rawText: string): PaidDetection {
+  return detectAgainst(rawText, PAID_PATTERNS);
+}
+
+/** Task #519 — contractor "payment received" confirmations. */
+export function detectReceivedConfirmation(rawText: string): PaidDetection {
+  return detectAgainst(rawText, RECEIVED_PATTERNS);
 }
 
 /** Extract the bare address from a From header ("Name <a@b.c>" → a@b.c). */
@@ -155,16 +181,22 @@ export async function scanCertificatReplies(gmail: gmail_v1.Gmail, scope?: numbe
       const messages = thread.data.messages ?? [];
       if (messages.length === 0) continue;
 
-      const clientAddress = (comm.recipientEmail ?? "").trim().toLowerCase();
-      if (!clientAddress) continue;
+      // Task #519 — the same scan covers BOTH thread kinds: the client
+      // certificat thread ("we paid") and the contractor notice thread
+      // ("we received the payment"). The counterparty is always the
+      // communication's recipient; only the phrase set and the suggestion
+      // kind differ.
+      const isContractorNotice = comm.type === "certificat_contractor_notice";
+      const counterpartyAddress = (comm.recipientEmail ?? "").trim().toLowerCase();
+      if (!counterpartyAddress) continue;
 
       for (const msg of messages) {
         const messageId = msg.id;
         if (!messageId || messageId === comm.emailMessageId) continue;
         const sender = extractAddress(headerOf(msg, "From"));
-        // Only the client on THIS thread can confirm payment — our own
+        // Only the counterparty on THIS thread can confirm — our own
         // follow-ups and third parties are skipped.
-        if (sender !== clientAddress) continue;
+        if (sender !== counterpartyAddress) continue;
         if (await storage.getPaymentSuggestionByEmailMessageId(messageId)) continue;
 
         const payments = await storage.getCertificatPayments(cert.id);
@@ -172,7 +204,9 @@ export async function scanCertificatReplies(gmail: gmail_v1.Gmail, scope?: numbe
         // Fully covered — nothing left to suggest for.
         if (state.fullyPaid || state.outstanding <= 0) continue;
 
-        const detection = detectPaidConfirmation(extractPlainText(msg));
+        const detection = isContractorNotice
+          ? detectReceivedConfirmation(extractPlainText(msg))
+          : detectPaidConfirmation(extractPlainText(msg));
         const emailDate = msg.internalDate ? new Date(Number(msg.internalDate)) : new Date();
         const created = await storage.createCertificatPaymentSuggestion({
           certificatId: cert.id,
@@ -181,6 +215,7 @@ export async function scanCertificatReplies(gmail: gmail_v1.Gmail, scope?: numbe
           emailMessageId: messageId,
           emailThreadId: comm.emailThreadId,
           senderEmail: sender,
+          kind: isContractorNotice ? "contractor_received" : "client_paid",
           emailDate,
           matchedExcerpt: detection.excerpt,
           suggestedAmount: state.outstanding.toFixed(2),
@@ -188,14 +223,15 @@ export async function scanCertificatReplies(gmail: gmail_v1.Gmail, scope?: numbe
           status: detection.matched ? "pending_review" : "ambiguous",
         });
         if (created) {
+          const who = isContractorNotice ? "contractor" : "client";
           if (detection.matched) {
             result.suggestionsCreated++;
             console.log(
-              `[PaymentSuggestions] cert ${cert.certificateRef}: "paid" reply from ${sender} → suggestion #${created.id} (${state.outstanding.toFixed(2)} € outstanding)`,
+              `[PaymentSuggestions] cert ${cert.certificateRef}: "${isContractorNotice ? "received" : "paid"}" ${who} reply from ${sender} → suggestion #${created.id} (${state.outstanding.toFixed(2)} € outstanding)`,
             );
           } else {
             result.ambiguousCreated++;
-            console.log(`[PaymentSuggestions] cert ${cert.certificateRef}: ambiguous client reply from ${sender} parked for review`);
+            console.log(`[PaymentSuggestions] cert ${cert.certificateRef}: ambiguous ${who} reply from ${sender} parked for review`);
           }
         }
       }

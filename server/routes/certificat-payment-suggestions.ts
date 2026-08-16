@@ -54,7 +54,11 @@ router.post(
         datePaid: req.body.datePaid ?? suggestion.suggestedDate,
         amount: req.body.amount ?? suggestion.suggestedAmount,
         method: req.body.method ?? "virement",
-        reference: req.body.reference ?? `Confirmation client du ${suggestion.suggestedDate}`,
+        reference:
+          req.body.reference ??
+          (suggestion.kind === "contractor_received"
+            ? `Confirmation entreprise du ${suggestion.suggestedDate}`
+            : `Confirmation client du ${suggestion.suggestedDate}`),
         loggedBy: actor,
       },
       actor,

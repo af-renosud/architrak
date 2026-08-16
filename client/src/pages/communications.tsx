@@ -58,7 +58,7 @@ function PaymentSuggestionsPanel() {
     <LuxuryCard className="p-4 border-amber-300/60 dark:border-amber-500/30" data-testid="panel-payment-suggestions">
       <div className="flex items-center gap-2 mb-3">
         <Euro size={14} className="text-amber-600" />
-        <TechnicalLabel>Paiements signalés par les clients — à confirmer</TechnicalLabel>
+        <TechnicalLabel>Paiements signalés par e-mail — à confirmer</TechnicalLabel>
       </div>
       <div className="space-y-3">
         {rows.map(({ suggestion: s, certificateRef, projectName }) => (
@@ -68,7 +68,10 @@ function PaymentSuggestionsPanel() {
                 {certificateRef} · {projectName} — {formatCurrency(parseFloat(s.suggestedAmount))}
               </p>
               <p>
-                {s.status === "ambiguous" ? "Réponse client à vérifier" : "Paiement signalé"} par {s.senderEmail} le {formatDate(s.emailDate)}
+                {s.kind === "contractor_received"
+                  ? (s.status === "ambiguous" ? "Réponse entreprise à vérifier" : "Réception confirmée par l'entreprise")
+                  : (s.status === "ambiguous" ? "Réponse client à vérifier" : "Paiement signalé par le client")}
+                {" "}— {s.senderEmail} le {formatDate(s.emailDate)}
               </p>
               {s.matchedExcerpt && <p className="italic truncate">«&nbsp;{s.matchedExcerpt}&nbsp;»</p>}
             </div>
@@ -105,6 +108,7 @@ function formatDate(date: string | Date | null): string {
 
 const typeIcons: Record<string, typeof Send> = {
   certificat_sent: FileCheck,
+  certificat_contractor_notice: FileCheck,
   payment_chase: Clock,
   contractor_query: MessageSquare,
   client_update: Send,
@@ -114,6 +118,7 @@ const typeIcons: Record<string, typeof Send> = {
 
 const typeLabels: Record<string, string> = {
   certificat_sent: "Certificat Sent",
+  certificat_contractor_notice: "Contractor Payment Notice",
   payment_chase: "Payment Chase",
   contractor_query: "Contractor Query",
   client_update: "Client Update",

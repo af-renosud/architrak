@@ -967,6 +967,12 @@ export const certificatPaymentSuggestions = pgTable("certificat_payment_suggesti
   matchedExcerpt: text("matched_excerpt"),
   suggestedAmount: numeric("suggested_amount", { precision: 12, scale: 2 }).notNull(),
   suggestedDate: date("suggested_date").notNull(),
+  // Task #519 — who is confirming what: 'client_paid' = the client says
+  // they paid (reply on the certificat_sent thread); 'contractor_received'
+  // = the contractor confirms the money arrived (reply on the
+  // certificat_contractor_notice thread). Same review queue, same atomic
+  // confirm — the kind only changes labelling and the default reference.
+  kind: text("kind").notNull().default("client_paid"),
   status: text("status").notNull().default("pending_review"),
   paymentId: integer("payment_id"),
   reviewedBy: text("reviewed_by"),
@@ -974,8 +980,11 @@ export const certificatPaymentSuggestions = pgTable("certificat_payment_suggesti
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   unique("certificat_payment_suggestions_message_unique").on(table.emailMessageId),
+  // Task #519 — pending-uniqueness is per (certificat, kind): a client
+  // "paid" suggestion must not block the contractor "received" one, but
+  // duplicates of the same kind still never stack.
   uniqueIndex("certificat_payment_suggestions_pending_unique")
-    .on(table.certificatId)
+    .on(table.certificatId, table.kind)
     .where(sql`${table.status} = 'pending_review'`),
   index("certificat_payment_suggestions_certificat_id_idx").on(table.certificatId),
   index("certificat_payment_suggestions_project_id_idx").on(table.projectId),
@@ -983,6 +992,10 @@ export const certificatPaymentSuggestions = pgTable("certificat_payment_suggesti
   check(
     "certificat_payment_suggestions_status_check",
     sql`${table.status} IN ('pending_review', 'ambiguous', 'confirmed', 'dismissed')`,
+  ),
+  check(
+    "certificat_payment_suggestions_kind_check",
+    sql`${table.kind} IN ('client_paid', 'contractor_received')`,
   ),
 ]);
 

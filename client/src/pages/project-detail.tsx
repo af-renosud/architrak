@@ -2637,7 +2637,7 @@ export default function ProjectDetail() {
                               communicationId={comm.id}
                               projectId={comm.projectId}
                             />
-                          ) : (comm.status === "draft" || comm.status === "queued") &&
+                          ) : (comm.status === "draft" || comm.status === "queued" || comm.status === "failed") &&
                             comm.type !== "devis_signature_context" && (
                             <Button
                               variant="outline"

@@ -70,6 +70,55 @@ export function buildCertificatEmailSubject(opts: {
   return `Certificat de Paiement ${opts.certificateRef} - ${opts.projectName}`;
 }
 
+/**
+ * Task #519 — strict single-address validation before ANY raw RFC-2822
+ * assembly. `includes("@")` is not validation: CR/LF in a stored address
+ * would inject headers into the hand-built `To:` line. One address only —
+ * no display names, no commas/semicolons, no angle brackets, no whitespace.
+ * Exported for unit tests.
+ */
+export function isValidRecipientEmail(addr: string): boolean {
+  if (!addr || /[\r\n]/.test(addr)) return false;
+  return /^[^\s@,;<>"()[\]\\]+@[^\s@,;<>"()[\]\\]+\.[A-Za-z0-9-]{2,}$/.test(addr);
+}
+
+/**
+ * Task #519 — subject/body of the contractor payment-notice email queued
+ * alongside every certificat client send. Contractor-facing → French (like
+ * the devis-check bundle). The body invites a plain REPLY on receipt of the
+ * payment; the reply-scan (detectReceivedConfirmation) watches this thread
+ * and turns matching replies into `contractor_received` suggestions.
+ * Exported for unit tests.
+ */
+export function buildContractorNoticeEmailSubject(opts: {
+  certificateRef: string;
+  projectName: string;
+}): string {
+  return `Certificat de Paiement ${opts.certificateRef} – ${opts.projectName} – Paiement demandé au client`;
+}
+
+export function buildContractorNoticeEmailBody(opts: {
+  contractorName: string;
+  certificateRef: string;
+  projectName: string;
+  netToPayTtc: string;
+}): string {
+  const n = Number(opts.netToPayTtc);
+  const amount = Number.isFinite(n)
+    ? new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)
+    : opts.netToPayTtc;
+  return (
+    `Bonjour ${opts.contractorName},\n\n` +
+    `Nous vous informons que le certificat de paiement ${opts.certificateRef} concernant le projet ` +
+    `« ${opts.projectName} » a été transmis ce jour au maître d'ouvrage, avec instruction de régler ` +
+    `la somme de ${amount} € TTC en votre faveur.\n\n` +
+    `Afin de nous permettre de suivre ce règlement, nous vous remercions de répondre simplement à ` +
+    `cet e-mail dès réception du paiement (par exemple : « Paiement bien reçu le JJ/MM/AAAA »).\n\n` +
+    `N'hésitez pas à nous signaler tout retard de règlement.\n\n` +
+    `Cordialement,\nSAS Architects-France\n`
+  );
+}
+
 export async function sendCertificat(certificatId: number): Promise<number> {
   // Task #451 — issuance seal FIRST: render once, pin the bytes. Re-sends
   // and concurrent sends all attach the same pinned PDF (idempotent inside
@@ -133,6 +182,40 @@ export async function sendCertificat(certificatId: number): Promise<number> {
   };
 
   const created = await storage.createProjectCommunication(comm);
+
+  // Task #519 — queue the contractor payment notice alongside the client
+  // send. Never blocks the client certificat: a missing/invalid contractor
+  // email queues a FAILED communication row (visible in the hub, retryable
+  // once the email is fixed) instead of silently skipping. Same stable
+  // dedupe key scheme as the client comm, so re-sends share one row.
+  const contractorEmail = (contractor.email ?? "").trim();
+  const contractorEmailValid = isValidRecipientEmail(contractorEmail);
+  await storage.createProjectCommunication({
+    projectId: project.id,
+    type: "certificat_contractor_notice",
+    recipientType: "contractor",
+    recipientEmail: contractorEmail,
+    recipientName: contractor.name,
+    subject: buildContractorNoticeEmailSubject({
+      certificateRef: certificat.certificateRef,
+      projectName: project.name,
+    }),
+    body: buildContractorNoticeEmailBody({
+      contractorName: contractor.name,
+      certificateRef: certificat.certificateRef,
+      projectName: project.name,
+      netToPayTtc: certificat.netToPayTtc,
+    }),
+    status: contractorEmailValid ? "queued" : "failed",
+    relatedCertificatId: certificatId,
+    dedupeKey: `certificat_contractor_notice:${certificatId}:${storageKey}`,
+  });
+  if (!contractorEmailValid) {
+    console.warn(
+      `[Certificat] Contractor "${contractor.name}" has no valid email — contractor payment notice for ${certificat.certificateRef} queued as FAILED (fix the contractor email, then retry the send from the communications hub)`,
+    );
+  }
+
   // NB: Drive enqueue happens inside the issuance render (Task #198 /
   // Task #451) — previews no longer persist or mirror anything.
   return created.id;
@@ -203,6 +286,30 @@ export async function sendCommunication(
   }
   if (comm.status === "failed") {
     await storage.updateProjectCommunication(communicationId, { status: "queued" });
+  }
+
+  // Task #519 — a communication can be queued as `failed` precisely because
+  // the recipient email is missing (contractor notice without an email on
+  // file). Guard every send so Gmail never receives an empty or
+  // header-injectable To: value. For contractor notices, refresh the address
+  // from the linked contractor record first, so fixing the contractor's
+  // email makes the failed row retryable without manual row surgery.
+  let recipient = (comm.recipientEmail ?? "").trim();
+  if (!isValidRecipientEmail(recipient) && comm.type === "certificat_contractor_notice" && comm.relatedCertificatId) {
+    const cert = await storage.getCertificat(comm.relatedCertificatId);
+    const contractor = cert ? await storage.getContractor(cert.contractorId) : undefined;
+    const fresh = (contractor?.email ?? "").trim();
+    if (isValidRecipientEmail(fresh)) {
+      recipient = fresh;
+      await storage.updateProjectCommunication(communicationId, { recipientEmail: fresh });
+      comm.recipientEmail = fresh;
+    }
+  }
+  if (!isValidRecipientEmail(recipient)) {
+    await storage.updateProjectCommunication(communicationId, { status: "failed" });
+    throw new Error(
+      `Recipient email missing or invalid for this communication — set the ${comm.recipientType === "contractor" ? "contractor's" : "recipient's"} email, then retry`,
+    );
   }
 
   try {
@@ -333,6 +440,26 @@ export async function sendCommunication(
       status: "failed",
     });
     throw err;
+  }
+
+  // Task #519 — the contractor payment notice rides along with the client
+  // certificat send: once the certificat email actually goes out, dispatch
+  // the queued sibling notice automatically. Failure is ISOLATED — the
+  // client send already succeeded, and a failed notice stays visible and
+  // retryable in the communications hub. Only certificat_sent triggers the
+  // chain, so there is no recursion.
+  if (comm.type === "certificat_sent" && comm.relatedCertificatId) {
+    try {
+      const notice = await storage.getQueuedContractorNoticeForCertificat(comm.relatedCertificatId);
+      if (notice) {
+        await sendCommunication(notice.id, { sentByUserId: opts?.sentByUserId ?? null });
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[EmailSender] Contractor payment notice for certificat ${comm.relatedCertificatId} failed (client send unaffected): ${message}`,
+      );
+    }
   }
 }
 

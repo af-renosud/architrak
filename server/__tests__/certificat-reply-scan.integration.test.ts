@@ -70,7 +70,11 @@ function stubGmail(threads: Record<string, gmail_v1.Schema$Message[]>) {
   return { gmail, fetched };
 }
 
-async function makeCertWithComm(threadId: string, sentViaUserId: number | null, opts?: { ttc?: string }) {
+async function makeCertWithComm(
+  threadId: string,
+  sentViaUserId: number | null,
+  opts?: { ttc?: string; type?: string; recipientType?: string; recipientEmail?: string },
+) {
   const [cert] = await db
     .insert(certificats)
     .values({
@@ -88,9 +92,9 @@ async function makeCertWithComm(threadId: string, sentViaUserId: number | null, 
     .insert(projectCommunications)
     .values({
       projectId,
-      type: "certificat_sent",
-      recipientType: "client",
-      recipientEmail: "client@example.com",
+      type: opts?.type ?? "certificat_sent",
+      recipientType: opts?.recipientType ?? "client",
+      recipientEmail: opts?.recipientEmail ?? "client@example.com",
       subject: `Certificat ${cert.certificateRef}`,
       status: "sent",
       emailMessageId: `sent-${threadId}`,
@@ -226,5 +230,104 @@ describe("payment-reply scan mailbox ownership (real DB + Gmail stub)", () => {
     expect(suggestions.length).toBe(1);
     expect(suggestions[0].status).toBe("ambiguous");
     expect(suggestions[0].senderEmail).toBe("client@example.com");
+  });
+
+  // Task #519 — contractor payment-notice threads are scanned too: a
+  // contractor "reçu" reply creates a kind='contractor_received' suggestion,
+  // and it coexists with an open client_paid suggestion on the same cert.
+  it("creates a contractor_received suggestion from the notice thread, alongside a client_paid one", async () => {
+    const clientThread = `t519-cl-${Date.now()}`;
+    const { cert } = await makeCertWithComm(clientThread, userAId);
+    const noticeThread = `t519-co-${Date.now()}`;
+    await db.insert(projectCommunications).values({
+      projectId,
+      type: "certificat_contractor_notice",
+      recipientType: "contractor",
+      recipientEmail: "entreprise@example.com",
+      subject: `Certificat de Paiement ${cert.certificateRef}`,
+      status: "sent",
+      emailMessageId: `sent-${noticeThread}`,
+      emailThreadId: noticeThread,
+      sentViaUserId: userAId,
+      relatedCertificatId: cert.id,
+      dedupeKey: `test-t519-${noticeThread}`,
+    });
+    const g = stubGmail({
+      [clientThread]: [reply(`r1-${clientThread}`, "client@example.com", "Virement effectué ce jour.")],
+      [noticeThread]: [reply(`r1-${noticeThread}`, "Entreprise <entreprise@example.com>", "Paiement bien reçu le 14/08/2026, merci.")],
+    });
+    const r = await scanCertificatReplies(g.gmail, userAId);
+    expect(r.suggestionsCreated).toBe(2);
+    const suggestions = await storage.getCertificatPaymentSuggestions(cert.id);
+    expect(suggestions.length).toBe(2);
+    const contractorSug = suggestions.find((s) => s.kind === "contractor_received");
+    const clientSug = suggestions.find((s) => s.kind === "client_paid");
+    expect(contractorSug?.status).toBe("pending_review");
+    expect(contractorSug?.senderEmail).toBe("entreprise@example.com");
+    expect(contractorSug?.matchedExcerpt?.toLowerCase()).toContain("bien reçu");
+    expect(clientSug?.status).toBe("pending_review");
+  });
+
+  it("a client 'we paid' phrasing on the CONTRACTOR thread parks as ambiguous, not received", async () => {
+    const noticeThread = `t519-amb-${Date.now()}`;
+    const { cert } = await makeCertWithComm(noticeThread, userAId, {
+      type: "certificat_contractor_notice",
+      recipientType: "contractor",
+      recipientEmail: "entreprise@example.com",
+    });
+    const g = stubGmail({
+      [noticeThread]: [reply(`r1-${noticeThread}`, "entreprise@example.com", "Nous attendons toujours le virement.")],
+    });
+    const r = await scanCertificatReplies(g.gmail, userAId);
+    expect(r.suggestionsCreated).toBe(0);
+    expect(r.ambiguousCreated).toBe(1);
+    const [s] = await storage.getCertificatPaymentSuggestions(cert.id);
+    expect(s.kind).toBe("contractor_received");
+    expect(s.status).toBe("ambiguous");
+  });
+
+  // Task #519 — both kinds describe the SAME transfer: confirming one must
+  // auto-dismiss the open counterpart so a second click can't double-record.
+  it("confirming one kind auto-dismisses the open counterpart suggestion", async () => {
+    const clientThread = `t519-x-${Date.now()}`;
+    const { cert } = await makeCertWithComm(clientThread, userAId);
+    const noticeThread = `t519-y-${Date.now()}`;
+    await db.insert(projectCommunications).values({
+      projectId,
+      type: "certificat_contractor_notice",
+      recipientType: "contractor",
+      recipientEmail: "entreprise@example.com",
+      subject: `Certificat de Paiement ${cert.certificateRef}`,
+      status: "sent",
+      emailMessageId: `sent-${noticeThread}`,
+      emailThreadId: noticeThread,
+      sentViaUserId: userAId,
+      relatedCertificatId: cert.id,
+      dedupeKey: `test-t519-x-${noticeThread}`,
+    });
+    const g = stubGmail({
+      [clientThread]: [reply(`r1-${clientThread}`, "client@example.com", "Virement effectué ce jour.")],
+      [noticeThread]: [reply(`r1-${noticeThread}`, "entreprise@example.com", "Virement bien reçu, merci.")],
+    });
+    await scanCertificatReplies(g.gmail, userAId);
+    const open = await storage.getCertificatPaymentSuggestions(cert.id);
+    expect(open.length).toBe(2);
+    const clientSug = open.find((s) => s.kind === "client_paid")!;
+    const result = await storage.confirmCertificatPaymentSuggestionAtomic(
+      clientSug.id,
+      { certificatId: cert.id, amount: "1000.00", datePaid: "2026-08-14", method: "virement", reference: "test", source: "email" },
+      "tester",
+    );
+    expect(result.outcome).toBe("ok");
+    const after = await storage.getCertificatPaymentSuggestions(cert.id);
+    const contractorSug = after.find((s) => s.kind === "contractor_received")!;
+    expect(contractorSug.status).toBe("dismissed");
+    // Confirming the dismissed counterpart must now be refused.
+    const second = await storage.confirmCertificatPaymentSuggestionAtomic(
+      contractorSug.id,
+      { certificatId: cert.id, amount: "1000.00", datePaid: "2026-08-14", method: "virement", reference: "test2", source: "email" },
+      "tester",
+    );
+    expect(second.outcome).toBe("already_reviewed");
   });
 });

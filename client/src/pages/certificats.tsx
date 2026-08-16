@@ -304,7 +304,9 @@ function PaymentSuggestionCard({ suggestion, onDone }: { suggestion: CertificatP
     >
       <div className="flex items-center justify-between gap-2">
         <span className="text-[9px] font-bold uppercase tracking-widest text-amber-700 dark:text-amber-400">
-          {ambiguous ? "Réponse client à vérifier" : "Paiement signalé par le client"}
+          {suggestion.kind === "contractor_received"
+            ? (ambiguous ? "Réponse entreprise à vérifier" : "Réception confirmée par l'entreprise")
+            : (ambiguous ? "Réponse client à vérifier" : "Paiement signalé par le client")}
         </span>
         <span className="text-[10px] text-muted-foreground">{new Date(suggestion.emailDate).toLocaleDateString("fr-FR")}</span>
       </div>

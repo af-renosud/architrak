@@ -145,6 +145,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0087_acompte_certificat_no_invoice", artifact: { kind: "column", table: "certificats", column: "acompte_devis_id" } },
   { tag: "0088_gmail_processed_messages", artifact: { kind: "table", table: "gmail_processed_messages" } },
   { tag: "0089_gmail_message_failures", artifact: { kind: "table", table: "gmail_message_failures" } },
+  { tag: "0090_contractor_receipt_suggestions", artifact: { kind: "column", table: "certificat_payment_suggestions", column: "kind" } },
 ];
 
 interface JournalFile {
