@@ -1644,7 +1644,8 @@ function buildCertificatHtml(data: CertificatPdfData): string {
 </html>`;
 }
 
-export async function buildCertificatPreviewHtml(): Promise<string> {
+export async function buildCertificatPreviewHtml(opts?: { isAcompte?: boolean }): Promise<string> {
+  const isAcompte = opts?.isAcompte ?? false;
   const [companyLogoBase64, architectsLogoBase64] = await Promise.all([
     loadLogoAsBase64("company_logo"),
     loadLogoAsBase64("architects_order_logo"),
@@ -1827,7 +1828,7 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     id: -1,
     projectId: -1,
     contractorId: -1,
-    acompteDevisId: null,
+    acompteDevisId: isAcompte ? -2 : null,
     cumulativeAcompteRecoupment: "0.00",
     periodAcompteRecoupment: "0.00",
     tvaRateSource: "default",
@@ -1952,7 +1953,7 @@ export async function buildCertificatPreviewHtml(): Promise<string> {
     annexeData,
     retenuePercent: 5,
     hasBankGuarantee: false,
-    isAcompte: false,
+    isAcompte,
   });
 }
 
