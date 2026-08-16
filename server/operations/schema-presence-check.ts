@@ -149,6 +149,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0091_communications_archive", artifact: { kind: "column", table: "project_communications", column: "archived_at" } },
   { tag: "0092_email_doc_fingerprint", artifact: { kind: "column", table: "email_documents", column: "content_fingerprint" } },
   { tag: "0093_app_settings", artifact: { kind: "table", table: "app_settings" } },
+  { tag: "0094_backfill_certificat_sent_status", artifact: { kind: "data_only", reason: "one-shot backfill advancing already-emailed certificats from ready to sent — no schema change" } },
 ];
 
 interface JournalFile {

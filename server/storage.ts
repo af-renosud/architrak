@@ -606,6 +606,7 @@ export interface IStorage {
   createProjectCommunication(data: InsertProjectCommunication): Promise<ProjectCommunication>;
 
   updateProjectCommunication(id: number, data: Partial<InsertProjectCommunication>): Promise<ProjectCommunication | undefined>;
+  markProjectCommunicationSent(id: number, data: Partial<InsertProjectCommunication>, relatedCertificatId?: number | null): Promise<ProjectCommunication | undefined>;
   claimProjectCommunicationForSending(id: number): Promise<ProjectCommunication | undefined>;
   requeueFailedProjectCommunication(id: number): Promise<ProjectCommunication | undefined>;
 
@@ -3888,6 +3889,35 @@ export class DatabaseStorage implements IStorage {
       data.status === "queued" ? { ...data, archivedAt: null } : data;
     const [comm] = await db.update(projectCommunications).set(set).where(eq(projectCommunications.id, id)).returning();
     return comm;
+  }
+
+  // Task #554 — mark a communication sent AND advance the linked certificat
+  // to 'sent' in ONE transaction. Sending an email is the authoritative
+  // "sent" event for a certificat; leaving the row at 'ready' shows a
+  // misleading "Mark sent / Ready to send" on every surface. The flip is
+  // one-way (only draft/ready advance — sent/paid/superseded never move)
+  // and covers every dispatch path because all of them run this success
+  // update.
+  async markProjectCommunicationSent(
+    id: number,
+    data: Partial<InsertProjectCommunication>,
+    relatedCertificatId?: number | null,
+  ): Promise<ProjectCommunication | undefined> {
+    return db.transaction(async (tx) => {
+      const [comm] = await tx.update(projectCommunications)
+        .set({ ...data, status: "sent" })
+        .where(eq(projectCommunications.id, id))
+        .returning();
+      if (comm && relatedCertificatId != null) {
+        await tx.update(certificats)
+          .set({ status: "sent", version: sql`${certificats.version} + 1` })
+          .where(and(
+            eq(certificats.id, relatedCertificatId),
+            inArray(certificats.status, ["draft", "ready"]),
+          ));
+      }
+      return comm;
+    });
   }
 
   async claimProjectCommunicationForSending(id: number): Promise<ProjectCommunication | undefined> {

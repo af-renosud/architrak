@@ -483,13 +483,21 @@ export async function sendCommunication(
       requestBody,
     });
 
-    await storage.updateProjectCommunication(communicationId, {
-      status: "sent",
-      sentAt: new Date(),
-      emailMessageId: sendResult.data.id || undefined,
-      emailThreadId: sendResult.data.threadId || undefined,
-      sentViaUserId,
-    });
+    // Task #554 — the success update also advances the linked certificat to
+    // 'sent' in the SAME transaction (only for the client-facing
+    // certificat_sent email — contractor notices must not flip status).
+    // Without this, every surface kept showing "Ready to send / Mark sent"
+    // after the email was demonstrably in the Gmail Sent folder.
+    await storage.markProjectCommunicationSent(
+      communicationId,
+      {
+        sentAt: new Date(),
+        emailMessageId: sendResult.data.id || undefined,
+        emailThreadId: sendResult.data.threadId || undefined,
+        sentViaUserId,
+      },
+      comm.type === "certificat_sent" ? comm.relatedCertificatId : null,
+    );
 
     console.log(`[EmailSender] Sent communication ${communicationId}: ${comm.subject}`);
   } catch (err: unknown) {

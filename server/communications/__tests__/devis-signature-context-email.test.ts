@@ -56,6 +56,11 @@ const { state, storageSpy, gmailSpy } = vi.hoisted(() => {
     // Task #466 — sendCommunication now prefers a linked per-user Gmail
     // client; no linked users in this suite → falls back to the connector.
     listGmailPollingUsers: vi.fn(async () => []),
+    markProjectCommunicationSent: vi.fn(async (id: number, patch: Record<string, unknown>) => {
+      const row = state.comms.find((c) => c.id === id);
+      if (row) Object.assign(row, patch, { status: "sent" });
+      return row;
+    }),
     updateProjectCommunication: vi.fn(async (id: number, patch: Record<string, unknown>) => {
       const row = state.comms.find((c) => c.id === id);
       if (row) Object.assign(row, patch);

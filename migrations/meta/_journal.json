@@ -659,6 +659,13 @@
       "when": 1787270000000,
       "tag": "0093_app_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1787280000000,
+      "tag": "0094_backfill_certificat_sent_status",
+      "breakpoints": true
     }
   ]
 }

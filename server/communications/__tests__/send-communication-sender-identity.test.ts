@@ -23,6 +23,11 @@ const { state, storageSpy, connectorSend, userSend } = vi.hoisted(() => {
   const userSend = vi.fn(async () => ({ data: { id: "user_msg", threadId: "user_thr" } }));
   const storageSpy = {
     getProjectCommunication: vi.fn(async (id: number) => state.comms.find((c) => c.id === id)),
+    markProjectCommunicationSent: vi.fn(async (id: number, patch: Record<string, unknown>) => {
+      const row = state.comms.find((c) => c.id === id);
+      if (row) Object.assign(row, patch, { status: "sent" });
+      return row;
+    }),
     updateProjectCommunication: vi.fn(async (id: number, patch: Record<string, unknown>) => {
       const row = state.comms.find((c) => c.id === id);
       if (row) Object.assign(row, patch);
