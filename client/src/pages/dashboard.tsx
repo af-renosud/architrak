@@ -334,7 +334,7 @@ function UnsentCertificatsAlert() {
       return res.json();
     },
     onSuccess: (_data, cert) => {
-      toast({ title: "Certificat queued for sending", description: cert.certificateRef });
+      toast({ title: "Certificat sent", description: cert.certificateRef });
       refetch();
       queryClient.invalidateQueries({ queryKey: ["/api/projects", String(cert.projectId), "certificats"] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects", String(cert.projectId), "communications"] });

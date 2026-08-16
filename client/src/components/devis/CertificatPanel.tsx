@@ -74,7 +74,7 @@ export function CertificatPanel({
       return res.json();
     },
     onSuccess: () => {
-      toast({ title: "Certificat queued for sending" });
+      toast({ title: "Certificat sent" });
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "certificats") });
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "communications") });
       queryClient.invalidateQueries({ queryKey: ["/api/certificats/unsent"] });

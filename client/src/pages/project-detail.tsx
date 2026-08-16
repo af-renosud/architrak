@@ -802,7 +802,7 @@ export default function ProjectDetail() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "communications") });
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "certificats") });
-      toast({ title: "Certificat queued for sending" });
+      toast({ title: "Certificat sent" });
     },
     onError: (error: Error) => {
       // Task #225 — same banking-gate translation as previewCertPdf.

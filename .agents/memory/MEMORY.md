@@ -30,5 +30,6 @@
 - [SMOKE_BOOT safe mode](smoke-boot-mode.md) — boot the prod bundle with zero side effects via SMOKE_BOOT=true (all workers skipped); email safety must be app-level, never a timing window.
 - [Payment suggestion kinds](payment-suggestion-kinds.md) — client "paid" + contractor "received" are one transfer; confirm must auto-dismiss the counterpart in-tx; strict email validation before raw RFC-2822.
 - [Hub archive visibility](hub-archive-visibility.md) — archive is visibility-only; requeue clears the flag, and bulk archives must recompute in-tx against the confirmed preview (409 on drift).
+- [Comm dispatch claim](comm-dispatch-claim.md) — email dispatch requires the atomic queued→sending compare-and-set claim; read-then-send double-sends payment emails under concurrency.
 - [Dedupe send requeue](dedupe-send-requeue.md) — dedupe-keyed re-sends return the old row; a prior FAILED comm must be flipped back to queued or "Send" silently no-ops; archived projects blocked at endpoint too.
 - [Restore via cp, not git checkout](restore-via-cp-not-git-checkout.md) — `git checkout --` reverts to the last platform commit and silently wipes uncommitted session edits; snapshot with cp before temporary file mutations.

@@ -61,6 +61,20 @@ const { state, storageSpy, gmailSpy } = vi.hoisted(() => {
       if (row) Object.assign(row, patch);
       return row;
     }),
+    // Task #543 — atomic dispatch claim contract: only queued/failed/draft
+    // rows are claimable; the claim flips them to "sending".
+    claimProjectCommunicationForSending: vi.fn(async (id: number) => {
+      const row = state.comms.find((c) => c.id === id);
+      if (!row || !["queued", "failed", "draft"].includes(row.status as string)) return undefined;
+      Object.assign(row, { status: "sending", archivedAt: null });
+      return row;
+    }),
+    requeueFailedProjectCommunication: vi.fn(async (id: number) => {
+      const row = state.comms.find((c) => c.id === id);
+      if (!row || row.status !== "failed") return undefined;
+      Object.assign(row, { status: "queued", archivedAt: null });
+      return row;
+    }),
   };
   return { state, storageSpy, gmailSpy };
 });

@@ -189,8 +189,12 @@ export async function sendCertificat(certificatId: number): Promise<number> {
   // clearing any archive flag via updateProjectCommunication), not report
   // success while nothing is pending. queued/sent rows pass through
   // untouched — that is the idempotent double-click case.
+  // Task #543 — the requeue is a conditional CAS (WHERE status='failed'):
+  // a concurrent retry that lost the race must NOT stomp a row already
+  // claimed into 'sending' back to 'queued' (that would let a second
+  // dispatch claim succeed and email a duplicate payment instruction).
   if (created.status === "failed") {
-    const requeued = await storage.updateProjectCommunication(created.id, { status: "queued" });
+    const requeued = await storage.requeueFailedProjectCommunication(created.id);
     if (requeued) created = requeued;
   }
 
@@ -284,19 +288,43 @@ export function loadAssetAttachment(key: string): { filename: string; buffer: Bu
   return { filename, buffer: fs.readFileSync(filePath) };
 }
 
+/**
+ * Task #543 — thrown when another request holds the dispatch claim for the
+ * same communication row. Callers treat this as "already being sent right
+ * now": no duplicate email went out and nothing needs retrying.
+ */
+export class CommunicationSendInProgressError extends Error {
+  constructor(public readonly communicationId: number) {
+    super("This communication is already being sent");
+    this.name = "CommunicationSendInProgressError";
+  }
+}
+
 export async function sendCommunication(
   communicationId: number,
   opts?: { threadId?: string | null; inReplyToMessageId?: string | null; sentByUserId?: number | null },
 ): Promise<void> {
-  const comm = await storage.getProjectCommunication(communicationId);
-  if (!comm) throw new Error(`Communication ${communicationId} not found`);
-
-  // Allow retrying a previously failed send. Block only if it actually went out.
-  if (comm.status === "sent") {
-    throw new Error(`Communication is already sent`);
-  }
-  if (comm.status === "failed") {
-    await storage.updateProjectCommunication(communicationId, { status: "queued" });
+  // Task #543 — atomic dispatch claim BEFORE any Gmail work. The conditional
+  // queued/failed/draft → 'sending' compare-and-set in storage guarantees
+  // exactly one caller dispatches a given row: concurrent send requests
+  // (double-click, browser retry, two surfaces at once) all race on the same
+  // stable-dedupe row, and every loser gets a loud error here instead of
+  // sending a duplicate payment instruction. Retrying a previously FAILED
+  // send is still allowed (failed is a claimable state); only terminal
+  // 'sent' and an in-flight 'sending' are blocked.
+  const comm = await storage.claimProjectCommunicationForSending(communicationId);
+  if (!comm) {
+    const current = await storage.getProjectCommunication(communicationId);
+    if (!current) throw new Error(`Communication ${communicationId} not found`);
+    if (current.status === "sent") {
+      throw new Error(`Communication is already sent`);
+    }
+    if (current.status === "sending") {
+      throw new CommunicationSendInProgressError(communicationId);
+    }
+    throw new Error(
+      `Communication ${communicationId} is not in a sendable state (status: ${current.status})`,
+    );
   }
 
   // Task #519/521 — a communication can be queued as `failed` precisely

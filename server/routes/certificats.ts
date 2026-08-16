@@ -3,7 +3,7 @@ import { z } from "zod";
 import { storage } from "../storage";
 import { insertCertificatSchema, type InsertCertificat } from "@shared/schema";
 import { generateCertificatPdf, BankingDetailsMissingError, BankingMismatchError } from "../communications/certificat-generator";
-import { sendCertificat } from "../communications/email-sender";
+import { sendCertificat, sendCommunication, CommunicationSendInProgressError } from "../communications/email-sender";
 import { validateRequest } from "../middleware/validate";
 import {
   resolveCertificatDeductions,
@@ -964,7 +964,39 @@ router.post(
         });
       }
 
+      // Task #543 — one-click send: queue AND dispatch. sendCertificat()
+      // only creates/requeues the communication rows; without the dispatch
+      // below they sat "queued" forever until the user found them in the
+      // Communications hub. sendCommunication() marks the row sent (and
+      // chains the contractor notice) or flips it to a visible, retryable
+      // FAILED row before rethrowing — never a silent queued row.
       const commId = await sendCertificat(certId);
+      try {
+        await sendCommunication(commId, { sentByUserId: req.session.userId ?? null });
+      } catch (sendErr: unknown) {
+        // Concurrent request already holds the dispatch claim — no duplicate
+        // email went out; report it without flagging a failure.
+        if (sendErr instanceof CommunicationSendInProgressError) {
+          const comm = await storage.getProjectCommunication(commId);
+          return res.status(409).json({
+            code: "CERTIFICAT_SEND_IN_PROGRESS",
+            message: "This certificat is already being sent — check the Communications tab in a moment.",
+            communication: comm,
+          });
+        }
+        const message = sendErr instanceof Error ? sendErr.message : String(sendErr);
+        const failedComm = await storage.getProjectCommunication(commId);
+        // Idempotent double-click: the other request finished first and the
+        // email is out — that is success, not an error.
+        if (failedComm?.status === "sent") {
+          return res.json(failedComm);
+        }
+        return res.status(502).json({
+          code: "CERTIFICAT_SEND_FAILED",
+          message: `Certificat email could not be sent: ${message}. The communication is marked failed — fix the issue and retry from the Communications tab.`,
+          communication: failedComm,
+        });
+      }
       const comm = await storage.getProjectCommunication(commId);
       res.json(comm);
     } catch (err: unknown) {
@@ -988,7 +1020,7 @@ router.post(
         });
       }
       const message = err instanceof Error ? err.message : String(err);
-      res.status(500).json({ message: `Failed to queue certificat: ${message}` });
+      res.status(500).json({ message: `Failed to send certificat: ${message}` });
     }
   },
 );

@@ -595,6 +595,8 @@ export interface IStorage {
   createProjectCommunication(data: InsertProjectCommunication): Promise<ProjectCommunication>;
 
   updateProjectCommunication(id: number, data: Partial<InsertProjectCommunication>): Promise<ProjectCommunication | undefined>;
+  claimProjectCommunicationForSending(id: number): Promise<ProjectCommunication | undefined>;
+  requeueFailedProjectCommunication(id: number): Promise<ProjectCommunication | undefined>;
 
   getPaymentReminders(projectId: number): Promise<PaymentReminder[]>;
 
@@ -3756,6 +3758,42 @@ export class DatabaseStorage implements IStorage {
       data.status === "queued" ? { ...data, archivedAt: null } : data;
     const [comm] = await db.update(projectCommunications).set(set).where(eq(projectCommunications.id, id)).returning();
     return comm;
+  }
+
+  async claimProjectCommunicationForSending(id: number): Promise<ProjectCommunication | undefined> {
+    // Task #543 — atomic dispatch claim. Only ONE caller may transition a
+    // communication into 'sending' and actually call Gmail: the conditional
+    // WHERE makes the queued/failed/draft → sending flip a compare-and-set,
+    // so concurrent send requests (double-clicks, browser retries, two
+    // surfaces at once) cannot both dispatch a duplicate payment email.
+    // The claim also clears the archive flag (same rationale as the
+    // status='queued' transition above — an in-flight send must be visible).
+    const [claimed] = await db
+      .update(projectCommunications)
+      .set({ status: "sending", archivedAt: null })
+      .where(
+        and(
+          eq(projectCommunications.id, id),
+          inArray(projectCommunications.status, ["queued", "failed", "draft"]),
+        ),
+      )
+      .returning();
+    return claimed;
+  }
+
+  async requeueFailedProjectCommunication(id: number): Promise<ProjectCommunication | undefined> {
+    // Task #543 — conditional failed → queued requeue. The WHERE on status
+    // makes this a compare-and-set, so a concurrent retry can never stomp a
+    // row another request has already claimed into 'sending' back to
+    // 'queued' (which would let a second dispatch claim succeed and email a
+    // duplicate payment instruction). Clears the archive flag like every
+    // other transition back into the active queue.
+    const [row] = await db
+      .update(projectCommunications)
+      .set({ status: "queued", archivedAt: null })
+      .where(and(eq(projectCommunications.id, id), eq(projectCommunications.status, "failed")))
+      .returning();
+    return row;
   }
 
   async getPaymentReminders(projectId: number): Promise<PaymentReminder[]> {

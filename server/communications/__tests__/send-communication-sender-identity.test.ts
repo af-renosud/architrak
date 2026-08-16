@@ -28,6 +28,14 @@ const { state, storageSpy, connectorSend, userSend } = vi.hoisted(() => {
       if (row) Object.assign(row, patch);
       return row;
     }),
+    // Task #543 — atomic dispatch claim contract: only queued/failed/draft
+    // rows are claimable; the claim flips them to "sending".
+    claimProjectCommunicationForSending: vi.fn(async (id: number) => {
+      const row = state.comms.find((c) => c.id === id);
+      if (!row || !["queued", "failed", "draft"].includes(row.status)) return undefined;
+      Object.assign(row, { status: "sending", archivedAt: null });
+      return row;
+    }),
     getUser: vi.fn(async (id: number) => state.users.get(id)),
   };
   return { state, storageSpy, connectorSend, userSend };
