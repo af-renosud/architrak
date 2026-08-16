@@ -17,7 +17,6 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link, useParams, useSearch } from "wouter";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient, ApiError } from "@/lib/queryClient";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
@@ -37,6 +36,7 @@ import { NeedsReviewTab } from "@/components/reconciliation/NeedsReviewTab";
 import { AccountingStatusBadge } from "@/components/reconciliation/AccountingStatusBadge";
 import { Receipt, Inbox } from "lucide-react";
 import { z } from "zod";
+import { apiRequest, queryClient, ApiError, projectScopedKey } from "@/lib/queryClient";
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
@@ -106,7 +106,7 @@ function CommissionInput({ projectId, initialValue }: { projectId: number; initi
     },
     onSuccess: (_data, newPct) => {
       setSavedValue(newPct);
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId)] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId) });
       toast({ title: "Commission rate saved" });
     },
     onError: (error: Error) => {
@@ -153,7 +153,7 @@ function ProrataInput({ projectId, initialValue }: { projectId: number; initialV
     },
     onSuccess: (_data, newPct) => {
       setSavedValue(newPct);
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId)] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId) });
       toast({ title: "Compte Prorata rate saved" });
     },
     onError: (error: Error) => {
@@ -427,27 +427,27 @@ export default function ProjectDetail() {
   const [exporting, setExporting] = useState(false);
 
   const { data: project, isLoading } = useQuery<Project>({
-    queryKey: ["/api/projects", String(projectId)],
+    queryKey: projectScopedKey(projectId),
   });
 
   const { data: devisList } = useQuery<Devis[]>({
-    queryKey: ["/api/projects", String(projectId), "devis"],
+    queryKey: projectScopedKey(projectId, "devis"),
     enabled: !!project,
   });
 
   const { data: lotsList } = useQuery<Lot[]>({
-    queryKey: ["/api/projects", String(projectId), "lots"],
+    queryKey: projectScopedKey(projectId, "lots"),
     enabled: !!project,
   });
 
   const { data: marchesList } = useQuery<Marche[]>({
-    queryKey: ["/api/projects", String(projectId), "marches"],
+    queryKey: projectScopedKey(projectId, "marches"),
     enabled: !!project && !!project.hasMarche,
   });
 
   // Task #465 — client-payment ledger for paid/partial badges + summary.
   const { data: projectPayments } = useQuery<CertificatPayment[]>({
-    queryKey: ["/api/projects", String(projectId), "certificat-payments"],
+    queryKey: projectScopedKey(projectId, "certificat-payments"),
   });
   const paidByCert = useMemo(() => {
     const map = new Map<number, number>();
@@ -462,17 +462,17 @@ export default function ProjectDetail() {
   );
 
   const { data: certificatsList } = useQuery<Certificat[]>({
-    queryKey: ["/api/projects", String(projectId), "certificats"],
+    queryKey: projectScopedKey(projectId, "certificats"),
     enabled: !!project,
   });
 
   const { data: feesList } = useQuery<Fee[]>({
-    queryKey: ["/api/projects", String(projectId), "fees"],
+    queryKey: projectScopedKey(projectId, "fees"),
     enabled: !!project,
   });
 
   const { data: feeEntries } = useQuery<FeeEntry[]>({
-    queryKey: ["/api/projects", String(projectId), "fee-entries"],
+    queryKey: projectScopedKey(projectId, "fee-entries"),
     enabled: !!project,
   });
 
@@ -482,22 +482,22 @@ export default function ProjectDetail() {
   });
 
   const { data: projectInvoices } = useQuery<Invoice[]>({
-    queryKey: ["/api/projects", String(projectId), "invoices"],
+    queryKey: projectScopedKey(projectId, "invoices"),
     enabled: !!project,
   });
 
   const { data: financialSummary } = useQuery<FinancialSummary>({
-    queryKey: ["/api/projects", String(projectId), "financial-summary"],
+    queryKey: projectScopedKey(projectId, "financial-summary"),
     enabled: !!project,
   });
 
   const { data: accountingStatus } = useQuery<AccountingStatusSummary>({
-    queryKey: ["/api/projects", String(projectId), "accounting-status"],
+    queryKey: projectScopedKey(projectId, "accounting-status"),
     enabled: !!project,
   });
 
   const { data: projectDocuments } = useQuery<ProjectDocument[]>({
-    queryKey: ["/api/projects", String(projectId), "documents"],
+    queryKey: projectScopedKey(projectId, "documents"),
     enabled: !!project,
   });
 
@@ -522,12 +522,12 @@ export default function ProjectDetail() {
   const visibleDocs = docFilter === "orphans" ? orphanDocs : (projectDocuments ?? []);
 
   const { data: projectComms } = useQuery<ProjectCommunication[]>({
-    queryKey: ["/api/projects", String(projectId), "communications"],
+    queryKey: projectScopedKey(projectId, "communications"),
     enabled: !!project,
   });
 
   const { data: reminders } = useQuery<PaymentReminder[]>({
-    queryKey: ["/api/projects", String(projectId), "reminders"],
+    queryKey: projectScopedKey(projectId, "reminders"),
     enabled: !!project,
   });
 
@@ -634,7 +634,7 @@ export default function ProjectDetail() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "lots"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "lots") });
       setLotDialogOpen(false);
       lotForm.reset();
       toast({ title: "Lot created successfully" });
@@ -650,7 +650,7 @@ export default function ProjectDetail() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "lots"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "lots") });
       setEditingLot(null);
       setLotDialogOpen(false);
       lotForm.reset();
@@ -667,7 +667,7 @@ export default function ProjectDetail() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "marches"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "marches") });
       setMarcheDialogOpen(false);
       marcheForm.reset();
       toast({ title: "Marché created successfully" });
@@ -683,7 +683,7 @@ export default function ProjectDetail() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "certificats"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "certificats") });
       setCertDialogOpen(false);
       certForm.reset();
       toast({ title: "Certificat created successfully" });
@@ -699,7 +699,7 @@ export default function ProjectDetail() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "certificats"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "certificats") });
       toast({ title: "Status updated" });
     },
     onError: (error: Error) => {
@@ -713,7 +713,7 @@ export default function ProjectDetail() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "fees"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "fees") });
       setFeeDialogOpen(false);
       feeForm.reset();
       toast({ title: "Fee created successfully" });
@@ -729,8 +729,8 @@ export default function ProjectDetail() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "fee-entries"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "fees"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "fee-entries") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "fees") });
       setEntryDialogOpen(false);
       entryForm.reset();
       toast({ title: "Entry created" });
@@ -746,8 +746,8 @@ export default function ProjectDetail() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "fee-entries"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "fees"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "fee-entries") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "fees") });
       setEntryDialogOpen(false);
       setEditingEntryId(null);
       entryForm.reset();
@@ -766,8 +766,8 @@ export default function ProjectDetail() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "fee-entries"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "fees"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "fee-entries") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "fees") });
       setMarkInvoicedEntryId(null);
       setMarkInvoicedRef("");
       toast({ title: "Commission marked as invoiced" });
@@ -786,7 +786,7 @@ export default function ProjectDetail() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "documents"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "documents") });
       toast({ title: "Document uploaded" });
     },
     onError: (error: Error) => {
@@ -800,8 +800,8 @@ export default function ProjectDetail() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "communications"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "certificats"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "communications") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "certificats") });
       toast({ title: "Certificat queued for sending" });
     },
     onError: (error: Error) => {
@@ -837,7 +837,7 @@ export default function ProjectDetail() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "communications"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "communications") });
       toast({ title: "Communication sent" });
     },
     onError: (error: Error) => {
@@ -851,7 +851,7 @@ export default function ProjectDetail() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "reminders"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "reminders") });
       toast({ title: "Reminder cancelled" });
     },
   });
@@ -862,7 +862,7 @@ export default function ProjectDetail() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId)] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId) });
       queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
       toast({ title: "Project restored", description: "Project is back in the active list." });
     },
@@ -877,7 +877,7 @@ export default function ProjectDetail() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId)] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId) });
       queryClient.invalidateQueries({ queryKey: ["/api/contractors"] });
       toast({ title: "Project refreshed from ArchiDoc" });
     },

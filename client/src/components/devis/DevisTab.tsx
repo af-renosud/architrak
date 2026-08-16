@@ -23,7 +23,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
 import { useAuth } from "@/hooks/use-auth";
-import { apiRequest, queryClient, ApiError } from "@/lib/queryClient";
+import { apiRequest, queryClient, ApiError, projectScopedKey } from "@/lib/queryClient";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { insertDevisLineItemSchema, insertAvenantSchema, insertLotSchema } from "@shared/schema";
@@ -467,8 +467,8 @@ function InvoiceUploadDialog({
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "financial-summary"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "invoices"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "financial-summary") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "invoices") });
       onOpenChange(false);
       const ext = data.extraction;
       if (ext.confidence === "low") {
@@ -580,7 +580,7 @@ function AvenantDialog({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "avenants"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "financial-summary"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "financial-summary") });
       onOpenChange(false);
       form.reset(defaultAvenantValues);
       toast({ title: "Avenant created successfully" });
@@ -689,7 +689,7 @@ function AcompteBadge({ devis }: { devis: Devis }) {
   // (pending: cert just created, paid/applied: deposit marked paid via cert).
   // The pending-only guards on canGenerateCert / canMarkPaid are separate.
   const { data: projectCerts } = useQuery<Array<{ id: number; acompteDevisId?: number | null; status?: string; certificateRef?: string }>>({
-    queryKey: ["/api/projects", String(devis.projectId), "certificats"],
+    queryKey: projectScopedKey(devis.projectId, "certificats"),
     enabled: state === "pending" || state === "paid" || state === "applied",
   });
   const liveAcompteCert = (projectCerts ?? []).find(
@@ -719,8 +719,8 @@ function AcompteBadge({ devis }: { devis: Devis }) {
       return res.json();
     },
     onSuccess: (cert: { id?: number; certificateRef?: string }) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(devis.projectId), "devis"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(devis.projectId), "certificats"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(devis.projectId, "devis") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(devis.projectId, "certificats") });
       const certUrl = cert.id
         ? `/certificats?projectId=${devis.projectId}&certificatId=${cert.id}`
         : `/certificats?projectId=${devis.projectId}`;
@@ -747,7 +747,7 @@ function AcompteBadge({ devis }: { devis: Devis }) {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(devis.projectId), "devis"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(devis.projectId, "devis") });
       toast({ title: "Acompte marqué payé" });
     },
     onError: (err: Error) => {
@@ -1021,8 +1021,8 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
       return res.json();
     },
     onSuccess: (data: { devis?: Devis }) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "devis"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "financial-summary"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "financial-summary") });
       toast({ title: "Draft reopened", description: "The devis is back in Draft — review and confirm it again when ready." });
       setReopenConfirmOpen(false);
       if (data?.devis) onReviewDraft(data.devis);
@@ -1389,14 +1389,14 @@ export function DevisTab({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: devisList, isLoading, dataUpdatedAt: devisUpdatedAt } = useQuery<Devis[]>({
-    queryKey: ["/api/projects", String(projectId), "devis"],
+    queryKey: projectScopedKey(projectId, "devis"),
   });
   const { data: openChecksByDevis = {}, dataUpdatedAt: checksUpdatedAt } = useQuery<Record<number, number>>({
-    queryKey: ["/api/projects", String(projectId), "devis-checks", "open-counts"],
+    queryKey: projectScopedKey(projectId, "devis-checks", "open-counts"),
   });
   // Task #374 — ONE batch readiness call for the whole list (never per-card).
   const { data: readinessByDevis = {} } = useQuery<Record<number, DevisReadiness>>({
-    queryKey: ["/api/projects", String(projectId), "devis-readiness"],
+    queryKey: projectScopedKey(projectId, "devis-readiness"),
   });
   // staleTime is Infinity app-wide, so the readiness strip must be re-derived
   // whenever the inputs it summarises change. Rather than chasing every
@@ -1411,7 +1411,7 @@ export function DevisTab({
     const devisRefetched = prev.devis !== 0 && prev.devis !== devisUpdatedAt;
     const checksRefetched = prev.checks !== 0 && prev.checks !== checksUpdatedAt;
     if (devisRefetched || checksRefetched) {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "devis-readiness"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis-readiness") });
     }
   }, [devisUpdatedAt, checksUpdatedAt, projectId]);
 
@@ -1526,8 +1526,8 @@ export function DevisTab({
       return res.json();
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "devis"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "financial-summary"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "financial-summary") });
       setUploading(false);
       if (data.devis?.status === "draft" && data.validation) {
         setDraftReviewData({
@@ -1865,7 +1865,7 @@ function DevisRefEditsHistory({ devisId, projectId }: { devisId: number; project
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "devis"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis") });
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "ref-edits"] });
       toast({ title: "Reference reverted" });
       setRevertCandidate(null);
@@ -2012,7 +2012,7 @@ function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDev
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "devis"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis") });
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id, "ref-edits"] });
       toast({ title: "References updated" });
       onClose();
@@ -2356,9 +2356,9 @@ function LotReferenceWarningBanner({
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "lots"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "devis"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "financial-summary"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "lots") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "financial-summary") });
       toast({ title: "Lot assigned" });
     },
     onError: (error: Error) => {
@@ -2590,8 +2590,8 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "devis"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "financial-summary"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "financial-summary") });
       toast({ title: "Devis confirmed", description: "Draft has been confirmed and is now pending" });
       onClose();
     },
@@ -2618,9 +2618,9 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "devis"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "financial-summary"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "intake"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "financial-summary") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "intake") });
       toast({ title: "Draft discarded", description: "The draft devis has been voided" });
       onClose();
     },
@@ -3703,7 +3703,7 @@ function ClientPortalPanel({
   // contact fields. Cached centrally so this doesn't fan out per-devis on
   // pages that already query the project.
   const { data: project } = useQuery<ProjectClientContact>({
-    queryKey: ["/api/projects", String(projectId)],
+    queryKey: projectScopedKey(projectId),
   });
 
   const invalidate = () => {
@@ -3987,13 +3987,13 @@ type ProjectShareState = {
 
 function useProjectShareState(projectId: string) {
   return useQuery<ProjectShareState>({
-    queryKey: ["/api/projects", String(projectId), "client-share"],
+    queryKey: projectScopedKey(projectId, "client-share"),
   });
 }
 
 function invalidateProjectShare(projectId: string) {
   // Prefix invalidation also refreshes the audit-history query below.
-  queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "client-share"] });
+  queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "client-share") });
 }
 
 // Task #394 — append-only audit trail of link actions (issue / rotate /
@@ -4020,7 +4020,7 @@ const SHARE_AUDIT_ACTION_STYLES: Record<ProjectShareAuditEntry["action"], string
 function ProjectShareHistory({ projectId }: { projectId: string }) {
   const [open, setOpen] = useState(false);
   const { data } = useQuery<{ entries: ProjectShareAuditEntry[] }>({
-    queryKey: ["/api/projects", String(projectId), "client-share", "audit"],
+    queryKey: projectScopedKey(projectId, "client-share", "audit"),
     enabled: open,
   });
   const entries = data?.entries ?? [];
@@ -4078,7 +4078,7 @@ export function ProjectClientSharePanel({
 
   const { data, isLoading } = useProjectShareState(projectId);
   const { data: project } = useQuery<ProjectClientContact>({
-    queryKey: ["/api/projects", String(projectId)],
+    queryKey: projectScopedKey(projectId),
   });
 
   const issueMutation = useMutation({
@@ -4791,7 +4791,7 @@ function ChecksPanel({
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "checks"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "devis-checks", "open-counts"] });
+    queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis-checks", "open-counts") });
   };
 
   // Variant B models a single editable general question. Multiple historical
@@ -5611,7 +5611,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id] });
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id, "line-items"] });
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id, "translation"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "devis"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis") });
     },
     onError: (err: Error) => {
       toast({
@@ -5697,9 +5697,9 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "devis"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "financial-summary"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "intake"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "financial-summary") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "intake") });
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id] });
     },
   });
@@ -5717,9 +5717,9 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "lots"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "devis"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "financial-summary"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "lots") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "financial-summary") });
       toast({ title: "Lot assigned" });
     },
     onError: (error: Error) => {
