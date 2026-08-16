@@ -977,6 +977,10 @@ export const certificatPaymentSuggestions = pgTable("certificat_payment_suggesti
   paymentId: integer("payment_id"),
   reviewedBy: text("reviewed_by"),
   reviewedAt: timestamp("reviewed_at"),
+  // Task #529 — visibility-only archive flag (see project_communications).
+  // Only already-reviewed suggestions are ever archived; open ones stay
+  // in the review queue regardless.
+  archivedAt: timestamp("archived_at"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   unique("certificat_payment_suggestions_message_unique").on(table.emailMessageId),
@@ -1738,6 +1742,10 @@ export const projectCommunications = pgTable("project_communications", {
   sentViaUserId: integer("sent_via_user_id").references(() => users.id, { onDelete: "set null" }),
   relatedCertificatId: integer("related_certificat_id").references(() => certificats.id),
   relatedInvoiceId: integer("related_invoice_id").references(() => invoices.id),
+  // Task #529 — visibility-only archive flag. Archived rows drop out of the
+  // hub's default view (and its counters) but are never deleted; the
+  // Archives toggle shows them. Server-written only via the archive routes.
+  archivedAt: timestamp("archived_at"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   index("project_communications_project_id_idx").on(table.projectId),
@@ -2314,6 +2322,9 @@ export const insertProjectIntakeDocumentSchema = createInsertSchema(projectIntak
 export const insertProjectCommunicationSchema = createInsertSchema(projectCommunications).omit({
   id: true,
   createdAt: true,
+  // Task #529 — archive flag is server-written only (archive routes);
+  // a create payload must never smuggle it in.
+  archivedAt: true,
 });
 
 export const insertPaymentReminderSchema = createInsertSchema(paymentReminders).omit({

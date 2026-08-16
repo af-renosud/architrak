@@ -1,4 +1,5 @@
 import { db } from "./db";
+import { createHash, randomUUID } from "node:crypto";
 import { computeCertificatPaymentState, type CertificatPaymentState } from "@shared/financial-utils";
 import { eq, ne, desc, asc, and, or, inArray, isNotNull, isNull, lt, lte, gte, like, ilike, sql, type SQL } from "drizzle-orm";
 import {
@@ -545,7 +546,20 @@ export interface IStorage {
 
   getProjectCommunications(projectId: number): Promise<ProjectCommunication[]>;
 
-  getAllCommunications(): Promise<ProjectCommunication[]>;
+  getAllCommunications(view?: "active" | "archived" | "all"): Promise<ProjectCommunication[]>;
+
+  // Task #529 — visibility-only archive for the communications hub.
+  setCommunicationArchived(id: number, archived: boolean): Promise<ProjectCommunication | null>;
+  setPaymentSuggestionArchived(id: number, archived: boolean): Promise<CertificatPaymentSuggestion | null>;
+  getFreshStartPreview(cutoff: Date): Promise<{ sentCommunications: number; reviewedSuggestions: number; token: string }>;
+  runFreshStartArchive(
+    cutoff: Date,
+    token: string,
+  ): Promise<
+    | { outcome: "ok"; archivedCommunications: number; archivedSuggestions: number }
+    | { outcome: "stale_preview"; sentCommunications: number; reviewedSuggestions: number; token: string }
+  >;
+  getArchivedPaymentSuggestionsWithContext(): Promise<Array<{ suggestion: CertificatPaymentSuggestion; certificateRef: string; projectName: string }>>;
 
   // Task #521 — failed contractor notices grouped by contractor, for the
   // bulk-retry panel in the communications hub.
@@ -3387,8 +3401,179 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(projectCommunications).where(eq(projectCommunications.projectId, projectId)).orderBy(desc(projectCommunications.createdAt));
   }
 
-  async getAllCommunications(): Promise<ProjectCommunication[]> {
-    return db.select().from(projectCommunications).orderBy(desc(projectCommunications.createdAt));
+  async getAllCommunications(view: "active" | "archived" | "all" = "active"): Promise<ProjectCommunication[]> {
+    const base = db.select().from(projectCommunications);
+    const filtered =
+      view === "active"
+        ? base.where(isNull(projectCommunications.archivedAt))
+        : view === "archived"
+          ? base.where(isNotNull(projectCommunications.archivedAt))
+          : base;
+    return filtered.orderBy(desc(projectCommunications.createdAt));
+  }
+
+  // Task #529 — archive is a visibility flag only, never a delete. A QUEUED
+  // communication is an in-flight send and may not be archived (the caller
+  // gets null back and answers 409); unarchive is always allowed.
+  async setCommunicationArchived(id: number, archived: boolean): Promise<ProjectCommunication | null> {
+    const [row] = await db
+      .update(projectCommunications)
+      .set({ archivedAt: archived ? new Date() : null })
+      .where(
+        archived
+          ? and(eq(projectCommunications.id, id), ne(projectCommunications.status, "queued"))
+          : eq(projectCommunications.id, id),
+      )
+      .returning();
+    return row ?? null;
+  }
+
+  // Open (pending_review/ambiguous) suggestions stay in the review queue —
+  // archiving them would hide money awaiting a decision, so only reviewed
+  // (confirmed/dismissed) suggestions may be archived.
+  async setPaymentSuggestionArchived(id: number, archived: boolean): Promise<CertificatPaymentSuggestion | null> {
+    const [row] = await db
+      .update(certificatPaymentSuggestions)
+      .set({ archivedAt: archived ? new Date() : null })
+      .where(
+        archived
+          ? and(
+              eq(certificatPaymentSuggestions.id, id),
+              inArray(certificatPaymentSuggestions.status, ["confirmed", "dismissed"]),
+            )
+          : eq(certificatPaymentSuggestions.id, id),
+      )
+      .returning();
+    return row ?? null;
+  }
+
+  // Fresh-start scope (preview and archive MUST use the same predicates):
+  //   - communications: status='sent' only (failed/queued/draft stay
+  //     visible — they still need attention), sent before the cutoff.
+  //   - suggestions: already reviewed (confirmed/dismissed), reviewed
+  //     before the cutoff.
+  // Already-archived rows are excluded so the preview counts what would
+  // actually change.
+  private freshStartCommWhere(cutoff: Date) {
+    return and(
+      isNull(projectCommunications.archivedAt),
+      eq(projectCommunications.status, "sent"),
+      sql`COALESCE(${projectCommunications.sentAt}, ${projectCommunications.createdAt}) < ${cutoff}`,
+    );
+  }
+
+  private freshStartSuggestionWhere(cutoff: Date) {
+    return and(
+      isNull(certificatPaymentSuggestions.archivedAt),
+      inArray(certificatPaymentSuggestions.status, ["confirmed", "dismissed"]),
+      sql`COALESCE(${certificatPaymentSuggestions.reviewedAt}, ${certificatPaymentSuggestions.createdAt}) < ${cutoff}`,
+    );
+  }
+
+  // Fresh-start concurrency design: the preview stores the EXACT eligible id
+  // set server-side, keyed by an opaque token. The confirmed run archives
+  // exactly that snapshot — never "whatever is eligible now" — so:
+  //   - rows that became eligible AFTER the preview are simply not touched
+  //     (no phantom-read race exists, the predicate is never re-trusted);
+  //   - any snapshot member that LEFT eligibility (sent→failed retry,
+  //     manual archive, requeue…) is detected under row locks and the whole
+  //     transaction rolls back with stale_preview (→ HTTP 409).
+  // The operator therefore archives exactly what they were shown, or nothing.
+  private freshStartPreviews = new Map<
+    string,
+    { cutoffMs: number; commIds: number[]; suggestionIds: number[]; createdAt: number }
+  >();
+  private static readonly FRESH_START_PREVIEW_TTL_MS = 15 * 60 * 1000;
+
+  private pruneFreshStartPreviews() {
+    const cut = Date.now() - DatabaseStorage.FRESH_START_PREVIEW_TTL_MS;
+    for (const [token, snap] of Array.from(this.freshStartPreviews.entries())) {
+      if (snap.createdAt < cut) this.freshStartPreviews.delete(token);
+    }
+  }
+
+  async getFreshStartPreview(cutoff: Date): Promise<{ sentCommunications: number; reviewedSuggestions: number; token: string }> {
+    const [comms, suggestions] = await Promise.all([
+      db.select({ id: projectCommunications.id }).from(projectCommunications).where(this.freshStartCommWhere(cutoff)),
+      db.select({ id: certificatPaymentSuggestions.id }).from(certificatPaymentSuggestions).where(this.freshStartSuggestionWhere(cutoff)),
+    ]);
+    const commIds = comms.map(r => r.id);
+    const suggestionIds = suggestions.map(r => r.id);
+    this.pruneFreshStartPreviews();
+    const token = createHash("sha256")
+      .update(`${cutoff.getTime()}|${randomUUID()}|comm:${commIds.join(",")}|sugg:${suggestionIds.join(",")}`)
+      .digest("hex");
+    this.freshStartPreviews.set(token, { cutoffMs: cutoff.getTime(), commIds, suggestionIds, createdAt: Date.now() });
+    return { sentCommunications: commIds.length, reviewedSuggestions: suggestionIds.length, token };
+  }
+
+  async runFreshStartArchive(
+    cutoff: Date,
+    token: string,
+  ): Promise<
+    | { outcome: "ok"; archivedCommunications: number; archivedSuggestions: number }
+    | { outcome: "stale_preview"; sentCommunications: number; reviewedSuggestions: number; token: string }
+  > {
+    this.pruneFreshStartPreviews();
+    const snapshot = this.freshStartPreviews.get(token);
+    if (!snapshot || snapshot.cutoffMs !== cutoff.getTime()) {
+      // Unknown/expired token or mismatched cutoff: issue a fresh preview
+      // so the operator can re-confirm against current reality.
+      const fresh = await this.getFreshStartPreview(cutoff);
+      return { outcome: "stale_preview" as const, ...fresh };
+    }
+    const now = new Date();
+    const result = await db.transaction(async (tx) => {
+      // Lock ONLY the snapshot members that are still eligible; if any
+      // member left eligibility since the preview, abort before updating.
+      const comms = snapshot.commIds.length
+        ? await tx
+            .select({ id: projectCommunications.id })
+            .from(projectCommunications)
+            .where(and(inArray(projectCommunications.id, snapshot.commIds), this.freshStartCommWhere(cutoff)))
+            .for("update")
+        : [];
+      const suggestions = snapshot.suggestionIds.length
+        ? await tx
+            .select({ id: certificatPaymentSuggestions.id })
+            .from(certificatPaymentSuggestions)
+            .where(and(inArray(certificatPaymentSuggestions.id, snapshot.suggestionIds), this.freshStartSuggestionWhere(cutoff)))
+            .for("update")
+        : [];
+      if (comms.length !== snapshot.commIds.length || suggestions.length !== snapshot.suggestionIds.length) {
+        return null; // a previewed item changed state — archive nothing
+      }
+      // Archive exactly the locked snapshot; concurrent new eligible rows
+      // are intentionally untouched (they were never shown to the operator).
+      if (comms.length) {
+        await tx.update(projectCommunications).set({ archivedAt: now }).where(inArray(projectCommunications.id, comms.map(r => r.id)));
+      }
+      if (suggestions.length) {
+        await tx.update(certificatPaymentSuggestions).set({ archivedAt: now }).where(inArray(certificatPaymentSuggestions.id, suggestions.map(r => r.id)));
+      }
+      return { archivedCommunications: comms.length, archivedSuggestions: suggestions.length };
+    });
+    if (result === null) {
+      this.freshStartPreviews.delete(token);
+      const fresh = await this.getFreshStartPreview(cutoff);
+      return { outcome: "stale_preview" as const, ...fresh };
+    }
+    this.freshStartPreviews.delete(token); // one-shot: a token cannot be replayed
+    return { outcome: "ok" as const, ...result };
+  }
+
+  // Archived (reviewed) suggestions with context, for the hub's Archives
+  // view — the counterpart of getOpenPaymentSuggestionsWithContext.
+  async getArchivedPaymentSuggestionsWithContext(): Promise<
+    Array<{ suggestion: CertificatPaymentSuggestion; certificateRef: string; projectName: string }>
+  > {
+    return db
+      .select({ suggestion: certificatPaymentSuggestions, certificateRef: certificats.certificateRef, projectName: projects.name })
+      .from(certificatPaymentSuggestions)
+      .innerJoin(certificats, eq(certificatPaymentSuggestions.certificatId, certificats.id))
+      .innerJoin(projects, eq(certificatPaymentSuggestions.projectId, projects.id))
+      .where(isNotNull(certificatPaymentSuggestions.archivedAt))
+      .orderBy(desc(certificatPaymentSuggestions.archivedAt));
   }
 
   // Task #521 — join failed contractor notices to their certificat's
@@ -3466,7 +3651,13 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateProjectCommunication(id: number, data: Partial<InsertProjectCommunication>): Promise<ProjectCommunication | undefined> {
-    const [comm] = await db.update(projectCommunications).set(data).where(eq(projectCommunications.id, id)).returning();
+    // Task #529 — an in-flight send must never be hidden: any transition to
+    // 'queued' (retry, re-send) clears the archive flag so the row is back
+    // in the hub's default view. Archiving a queued row is refused at the
+    // archive route; this closes the reverse ordering (archive then queue).
+    const set: Partial<InsertProjectCommunication> & { archivedAt?: null } =
+      data.status === "queued" ? { ...data, archivedAt: null } : data;
+    const [comm] = await db.update(projectCommunications).set(set).where(eq(projectCommunications.id, id)).returning();
     return comm;
   }
 

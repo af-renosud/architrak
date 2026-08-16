@@ -4,7 +4,18 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { MessageSquare, Send, FileCheck, Clock, AlertTriangle, Filter, ChevronDown, ChevronUp, PenLine, RefreshCw } from "lucide-react";
+import { MessageSquare, Send, FileCheck, Clock, AlertTriangle, Filter, ChevronDown, ChevronUp, PenLine, RefreshCw, Archive, ArchiveRestore, Sparkles } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   ContextEmailResendButton,
   parseDevisIdFromContextEmailDedupeKey,
@@ -111,6 +122,59 @@ type FailedContractorNoticeGroup = {
 
 // Task #521 — surface failed contractor payment notices grouped by contractor
 // so fixing the email + one click retries them all.
+// Task #529 — archived reviewed suggestions, shown only in the Archives
+// view, each restorable back into the certificat's history surfaces.
+function ArchivedSuggestionsPanel() {
+  const { toast } = useToast();
+  const { data: rows } = useQuery<SuggestionWithContext[]>({ queryKey: ["/api/certificat-payment-suggestions/archived"] });
+
+  const unarchiveMutation = useMutation({
+    mutationFn: async (id: number) => (await apiRequest("POST", `/api/certificat-payment-suggestions/${id}/unarchive`)).json(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/certificat-payment-suggestions/archived"] });
+      toast({ title: "Suggestion restaurée" });
+    },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  if (!rows || rows.length === 0) return null;
+
+  return (
+    <LuxuryCard className="p-4" data-testid="panel-archived-suggestions">
+      <div className="flex items-center gap-2 mb-3">
+        <Archive size={14} className="text-muted-foreground" />
+        <TechnicalLabel>Suggestions de paiement archivées</TechnicalLabel>
+      </div>
+      <div className="space-y-3">
+        {rows.map(({ suggestion: s, certificateRef, projectName }) => (
+          <div key={s.id} className="flex items-start justify-between gap-3 border-t first:border-t-0 pt-3 first:pt-0" data-testid={`row-archived-suggestion-${s.id}`}>
+            <div className="text-xs text-muted-foreground min-w-0">
+              <p className="text-sm text-foreground font-semibold">
+                {certificateRef} · {projectName} — {formatCurrency(parseFloat(s.suggestedAmount))}
+              </p>
+              <p>
+                {s.status === "confirmed" ? "Confirmée" : "Ignorée"}
+                {s.reviewedAt ? ` le ${formatDate(s.reviewedAt)}` : ""} · {s.senderEmail}
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="flex-shrink-0 gap-1.5"
+              disabled={unarchiveMutation.isPending}
+              onClick={() => unarchiveMutation.mutate(s.id)}
+              data-testid={`button-unarchive-suggestion-${s.id}`}
+            >
+              <ArchiveRestore size={12} />
+              Restaurer
+            </Button>
+          </div>
+        ))}
+      </div>
+    </LuxuryCard>
+  );
+}
+
 function FailedContractorNoticesPanel() {
   const { toast } = useToast();
   const { data: groups, isLoading } = useQuery<FailedContractorNoticeGroup[]>({
@@ -208,13 +272,132 @@ const typeLabels: Record<string, string> = {
   general: "General",
 };
 
+// Task #529 — guarded "fresh start": pick a cutoff, preview exactly what
+// would be archived (sent communications + reviewed suggestions only),
+// confirm, archive. Nothing is deleted; the Archives toggle shows it all.
+function FreshStartDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+  const { toast } = useToast();
+  const [cutoff, setCutoff] = useState<string>(() => new Date().toISOString().slice(0, 10));
+
+  const { data: preview, isLoading: previewLoading } = useQuery<{ sentCommunications: number; reviewedSuggestions: number; token: string }>({
+    queryKey: [`/api/communications/fresh-start/preview?cutoff=${cutoff}`],
+    enabled: open && !!cutoff,
+  });
+
+  const archiveMutation = useMutation({
+    mutationFn: async () =>
+      (await apiRequest("POST", "/api/communications/fresh-start", {
+        cutoff,
+        // The run is bound to the previewed id set via this token: if
+        // anything changed in between, the server archives nothing and
+        // answers 409 with fresh counts.
+        token: preview?.token ?? "",
+      })).json() as Promise<{
+        archivedCommunications: number;
+        archivedSuggestions: number;
+      }>,
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/communications"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/communications?view=archived"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/certificat-payment-suggestions/archived"] });
+      onOpenChange(false);
+      toast({
+        title: "Archivage effectué",
+        description: `${data.archivedCommunications} communication${data.archivedCommunications !== 1 ? "s" : ""} et ${data.archivedSuggestions} suggestion${data.archivedSuggestions !== 1 ? "s" : ""} archivées. Rien n'a été supprimé.`,
+      });
+    },
+    onError: (error: Error) => {
+      // 409 stale preview: refresh the counts so the operator re-confirms
+      // against what is actually there now.
+      queryClient.invalidateQueries({ queryKey: [`/api/communications/fresh-start/preview?cutoff=${cutoff}`] });
+      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const total = (preview?.sentCommunications ?? 0) + (preview?.reviewedSuggestions ?? 0);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent data-testid="dialog-fresh-start">
+        <DialogHeader>
+          <DialogTitle>Repartir sur une base propre</DialogTitle>
+          <DialogDescription>
+            Archive les communications envoyées et les suggestions déjà traitées avant la date choisie.
+            Les éléments en échec, en attente d'envoi ou à confirmer ne sont jamais archivés.
+            Rien n'est supprimé — tout reste consultable via l'interrupteur «&nbsp;Archives&nbsp;».
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="fresh-start-cutoff">Archiver tout ce qui est antérieur au</Label>
+            <Input
+              id="fresh-start-cutoff"
+              type="date"
+              value={cutoff}
+              onChange={(e) => setCutoff(e.target.value)}
+              data-testid="input-fresh-start-cutoff"
+            />
+          </div>
+          <div className="text-sm text-muted-foreground" data-testid="text-fresh-start-preview">
+            {previewLoading || !preview ? (
+              "Calcul en cours…"
+            ) : (
+              <>
+                Seront archivées&nbsp;: <span className="font-semibold text-foreground">{preview.sentCommunications}</span> communication{preview.sentCommunications !== 1 ? "s" : ""} envoyée{preview.sentCommunications !== 1 ? "s" : ""} et{" "}
+                <span className="font-semibold text-foreground">{preview.reviewedSuggestions}</span> suggestion{preview.reviewedSuggestions !== 1 ? "s" : ""} déjà traitée{preview.reviewedSuggestions !== 1 ? "s" : ""}.
+              </>
+            )}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => onOpenChange(false)} data-testid="button-fresh-start-cancel">
+            Annuler
+          </Button>
+          <Button
+            onClick={() => archiveMutation.mutate()}
+            disabled={archiveMutation.isPending || previewLoading || total === 0}
+            data-testid="button-fresh-start-confirm"
+          >
+            <Archive size={14} className="mr-1.5" />
+            Archiver {total > 0 ? `${total} élément${total !== 1 ? "s" : ""}` : ""}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function Communications() {
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [showArchives, setShowArchives] = useState(false);
+  const [freshStartOpen, setFreshStartOpen] = useState(false);
+  const { toast } = useToast();
 
+  // Default view = active (non-archived) items only; the Archives toggle
+  // swaps the list to the archived set. Counters always reflect active.
   const { data: communications, isLoading } = useQuery<ProjectCommunication[]>({
     queryKey: ["/api/communications"],
+  });
+  const { data: archivedCommunications } = useQuery<ProjectCommunication[]>({
+    queryKey: ["/api/communications?view=archived"],
+    enabled: showArchives,
+  });
+
+  const invalidateComms = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/communications"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/communications?view=archived"] });
+  };
+
+  const archiveCommMutation = useMutation({
+    mutationFn: async ({ id, archive }: { id: number; archive: boolean }) =>
+      (await apiRequest("POST", `/api/communications/${id}/${archive ? "archive" : "unarchive"}`)).json(),
+    onSuccess: (_data, vars) => {
+      invalidateComms();
+      toast({ title: vars.archive ? "Communication archivée" : "Communication restaurée" });
+    },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
   });
 
   const { data: projects } = useQuery<Project[]>({
@@ -224,7 +407,8 @@ export default function Communications() {
   const projectMap = new Map<number, Project>();
   projects?.forEach(p => projectMap.set(p.id, p));
 
-  const filtered = communications?.filter(comm => {
+  const displayed = showArchives ? archivedCommunications : communications;
+  const filtered = displayed?.filter(comm => {
     if (typeFilter !== "all" && comm.type !== typeFilter) return false;
     if (statusFilter !== "all" && comm.status !== statusFilter) return false;
     return true;
@@ -248,15 +432,34 @@ export default function Communications() {
   return (
     <AppLayout>
       <div className="space-y-8">
-        <SectionHeader icon={MessageSquare} title="Communication Hub" subtitle={`${communications?.length ?? 0} communications across all projects`} />
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <SectionHeader icon={MessageSquare} title="Communication Hub" subtitle={`${communications?.length ?? 0} communications actives`} />
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <Switch id="toggle-archives" checked={showArchives} onCheckedChange={setShowArchives} data-testid="switch-archives" />
+              <Label htmlFor="toggle-archives" className="text-sm text-muted-foreground cursor-pointer">Archives</Label>
+            </div>
+            <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setFreshStartOpen(true)} data-testid="button-fresh-start">
+              <Sparkles size={14} />
+              Repartir à zéro
+            </Button>
+          </div>
+        </div>
 
-        <PaymentSuggestionsPanel />
+        <FreshStartDialog open={freshStartOpen} onOpenChange={setFreshStartOpen} />
 
-        <FailedContractorNoticesPanel />
+        {showArchives ? (
+          <ArchivedSuggestionsPanel />
+        ) : (
+          <>
+            <PaymentSuggestionsPanel />
+            <FailedContractorNoticesPanel />
+          </>
+        )}
 
         <div className="grid grid-cols-4 gap-4">
           <LuxuryCard className="p-4 text-center">
-            <TechnicalLabel>Total</TechnicalLabel>
+            <TechnicalLabel>Actives</TechnicalLabel>
             <p className="text-2xl font-bold mt-1" data-testid="text-total-comms">{communications?.length ?? 0}</p>
           </LuxuryCard>
           <LuxuryCard className="p-4 text-center">
@@ -354,6 +557,22 @@ export default function Communications() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">
+                      {comm.status !== "queued" && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 flex-shrink-0"
+                          title={showArchives ? "Restaurer" : "Archiver"}
+                          disabled={archiveCommMutation.isPending}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            archiveCommMutation.mutate({ id: comm.id, archive: !showArchives });
+                          }}
+                          data-testid={`button-archive-comm-${comm.id}`}
+                        >
+                          {showArchives ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+                        </Button>
+                      )}
                       {contextEmailDevisId !== null && (
                         <ContextEmailResendButton
                           devisId={contextEmailDevisId}

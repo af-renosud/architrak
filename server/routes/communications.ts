@@ -24,10 +24,78 @@ const scheduleRemindersBodySchema = z.object({
   recipientEmail: z.string().email().optional().or(z.literal("")),
 }).partial();
 
-router.get("/api/communications", async (_req, res) => {
-  const comms = await storage.getAllCommunications();
+// Task #529 — the hub defaults to ACTIVE (non-archived) items; ?view=
+// archived|all exposes the rest. Archive is a visibility flag only.
+const viewQuerySchema = z.object({ view: z.enum(["active", "archived", "all"]).optional() });
+
+router.get("/api/communications", validateRequest({ query: viewQuerySchema }), async (req, res) => {
+  const view = (req.query.view as "active" | "archived" | "all" | undefined) ?? "active";
+  const comms = await storage.getAllCommunications(view);
   res.json(comms);
 });
+
+router.post(
+  "/api/communications/:id/archive",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    const row = await storage.setCommunicationArchived(Number(req.params.id), true);
+    if (!row) {
+      const exists = await storage.getProjectCommunication(Number(req.params.id));
+      if (!exists) return res.status(404).json({ message: "Communication introuvable" });
+      return res.status(409).json({ code: "COMMUNICATION_QUEUED", message: "Un envoi en attente ne peut pas être archivé." });
+    }
+    res.json(row);
+  },
+);
+
+router.post(
+  "/api/communications/:id/unarchive",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    const row = await storage.setCommunicationArchived(Number(req.params.id), false);
+    if (!row) return res.status(404).json({ message: "Communication introuvable" });
+    res.json(row);
+  },
+);
+
+// Fresh-start bulk archive: preview counts first, then a confirmed run.
+// Scope is strictly sent communications + reviewed suggestions older than
+// the cutoff — failed/queued comms and open suggestions are never touched.
+const cutoffQuerySchema = z.object({ cutoff: z.coerce.date() });
+const cutoffBodySchema = z.object({
+  cutoff: z.coerce.date(),
+  // The preview token the operator confirmed (digest of the exact eligible
+  // id set). The run is bound to it — ANY set drift, even with equal
+  // counts, gets a 409 and archives NOTHING.
+  token: z.string().min(1),
+});
+
+router.get(
+  "/api/communications/fresh-start/preview",
+  validateRequest({ query: cutoffQuerySchema }),
+  async (req, res) => {
+    // validateRequest already coerced ?cutoff= into a Date via zod.
+    res.json(await storage.getFreshStartPreview(req.query.cutoff as unknown as Date));
+  },
+);
+
+router.post(
+  "/api/communications/fresh-start",
+  validateRequest({ body: cutoffBodySchema }),
+  async (req, res) => {
+    const result = await storage.runFreshStartArchive(new Date(req.body.cutoff), req.body.token);
+    if (result.outcome === "stale_preview") {
+      return res.status(409).json({
+        code: "FRESH_START_STALE_PREVIEW",
+        message: "Le contenu a changé depuis l'aperçu — vérifiez les nouveaux comptes et confirmez à nouveau.",
+        sentCommunications: result.sentCommunications,
+        reviewedSuggestions: result.reviewedSuggestions,
+        token: result.token,
+      });
+    }
+    res.json({ archivedCommunications: result.archivedCommunications, archivedSuggestions: result.archivedSuggestions });
+  },
+);
 
 // Task #521 — failed contractor notices grouped by contractor, so the hub
 // can surface a single "retry all" action per contractor.

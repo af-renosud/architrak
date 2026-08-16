@@ -95,4 +95,37 @@ router.post(
   },
 );
 
+// Task #529 — archived (reviewed) suggestions with context, for the hub's
+// Archives view.
+router.get("/api/certificat-payment-suggestions/archived", async (_req, res) => {
+  res.json(await storage.getArchivedPaymentSuggestionsWithContext());
+});
+
+// Task #529 — visibility-only archive of a REVIEWED suggestion (confirmed
+// or dismissed). Open suggestions cannot be archived: they are pending
+// money decisions and must stay in the review queue.
+router.post(
+  "/api/certificat-payment-suggestions/:id/archive",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    const row = await storage.setPaymentSuggestionArchived(Number(req.params.id), true);
+    if (!row) {
+      const exists = await storage.getCertificatPaymentSuggestion(Number(req.params.id));
+      if (!exists) return res.status(404).json({ message: "Suggestion introuvable" });
+      return res.status(409).json({ code: "SUGGESTION_OPEN", message: "Une suggestion en attente de revue ne peut pas être archivée." });
+    }
+    res.json(row);
+  },
+);
+
+router.post(
+  "/api/certificat-payment-suggestions/:id/unarchive",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    const row = await storage.setPaymentSuggestionArchived(Number(req.params.id), false);
+    if (!row) return res.status(404).json({ message: "Suggestion introuvable" });
+    res.json(row);
+  },
+);
+
 export default router;

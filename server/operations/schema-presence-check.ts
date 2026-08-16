@@ -146,6 +146,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0088_gmail_processed_messages", artifact: { kind: "table", table: "gmail_processed_messages" } },
   { tag: "0089_gmail_message_failures", artifact: { kind: "table", table: "gmail_message_failures" } },
   { tag: "0090_contractor_receipt_suggestions", artifact: { kind: "column", table: "certificat_payment_suggestions", column: "kind" } },
+  { tag: "0091_communications_archive", artifact: { kind: "column", table: "project_communications", column: "archived_at" } },
 ];
 
 interface JournalFile {
