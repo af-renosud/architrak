@@ -5,6 +5,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
+import { CertificateRefBadge } from "@/components/ui/certificate-ref-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import {
@@ -252,7 +253,7 @@ export default function DocumentChainPage() {
               certificats.map((c) => (
                 <DocRow key={c.id} testId={`chain-certificat-${c.id}`}>
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-[13px] font-bold text-[#0B2545]">{c.certificateRef}</span>
+                    <CertificateRefBadge data-testid={`chain-cert-ref-${c.id}`}>{c.certificateRef}</CertificateRefBadge>
                     <StatusBadge status={c.status} />
                     <TechnicalLabel>Net {formatCurrency(c.netToPayTtc)} TTC</TechnicalLabel>
                     {c.dateIssued && <TechnicalLabel>Issued {c.dateIssued}</TechnicalLabel>}

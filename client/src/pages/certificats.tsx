@@ -4,6 +4,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
+import { CertificateRefBadge } from "@/components/ui/certificate-ref-badge";
 import { FileCheck, Plus, Eye, ChevronRight, ExternalLink, RefreshCw, Download, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -986,7 +987,7 @@ export default function Certificats() {
                   <div className="flex items-center justify-between gap-3 flex-wrap">
                     <div className="flex items-center gap-4 flex-wrap">
                       <div>
-                        <TechnicalLabel data-testid={`text-cert-ref-${cert.id}`}>{cert.certificateRef}</TechnicalLabel>
+                        <CertificateRefBadge data-testid={`text-cert-ref-${cert.id}`}>{cert.certificateRef}</CertificateRefBadge>
                         <p className="text-[12px] text-foreground mt-0.5">
                           {getContractorName(cert.contractorId)}
                         </p>

@@ -4,6 +4,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
+import { CertificateRefBadge } from "@/components/ui/certificate-ref-badge";
 import { FolderOpen, ArrowLeft, MapPin, User, FileText, Layers, ScrollText, Award, Coins, BarChart3, Plus, Eye, EyeOff, ChevronRight, Pencil, Upload, Download, ExternalLink, MessageSquare, Send, Clock, RefreshCw, FileCheck, AlertTriangle, Settings, Loader2, FolderDown, Archive, ArchiveRestore, Mail, Phone, Lock, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1882,7 +1883,7 @@ export default function ProjectDetail() {
                       <LuxuryCard key={c.id} data-testid={`card-certificat-tab-${c.id}`}>
                         <div className="flex items-center justify-between gap-3 flex-wrap">
                           <div>
-                            <TechnicalLabel data-testid={`text-cert-ref-tab-${c.id}`}>{c.certificateRef}</TechnicalLabel>
+                            <CertificateRefBadge data-testid={`text-cert-ref-tab-${c.id}`}>{c.certificateRef}</CertificateRefBadge>
                             <p className="text-[12px] text-foreground mt-0.5">{getContractorName(c.contractorId)}</p>
                             {c.dateIssued && (
                               <p className="text-[10px] text-muted-foreground mt-0.5">{c.dateIssued}</p>
