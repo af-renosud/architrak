@@ -288,22 +288,40 @@ export async function sendCommunication(
     await storage.updateProjectCommunication(communicationId, { status: "queued" });
   }
 
-  // Task #519 — a communication can be queued as `failed` precisely because
-  // the recipient email is missing (contractor notice without an email on
-  // file). Guard every send so Gmail never receives an empty or
-  // header-injectable To: value. For contractor notices, refresh the address
-  // from the linked contractor record first, so fixing the contractor's
-  // email makes the failed row retryable without manual row surgery.
+  // Task #519/521 — a communication can be queued as `failed` precisely
+  // because the recipient email is missing or was wrong (contractor notice
+  // without an email on file, or with a stale address). Guard every send so
+  // Gmail never receives an empty or header-injectable To: value.
+  //
+  // For contractor notices, ALWAYS re-resolve the address from the linked
+  // contractor record and use it unconditionally — never fall back to the
+  // previously stored value. This ensures:
+  //   (a) fixing the contractor email makes the retry succeed, and
+  //   (b) clearing or invalidating it after a prior valid send fails closed
+  //       rather than disclosing payment content to a stale address.
   let recipient = (comm.recipientEmail ?? "").trim();
-  if (!isValidRecipientEmail(recipient) && comm.type === "certificat_contractor_notice" && comm.relatedCertificatId) {
+  if (comm.type === "certificat_contractor_notice") {
+    // Every contractor notice MUST have a linked certificat so we can look up
+    // the contractor's current email. A notice with no cert link cannot be
+    // safely sent — there is no trusted source for the recipient — so we
+    // fail closed rather than using whatever stale address the row holds.
+    if (!comm.relatedCertificatId) {
+      await storage.updateProjectCommunication(communicationId, { status: "failed" });
+      throw new Error(
+        "Contractor payment notice has no linked certificat — cannot resolve recipient address; inspect the communications row and retry",
+      );
+    }
     const cert = await storage.getCertificat(comm.relatedCertificatId);
     const contractor = cert ? await storage.getContractor(cert.contractorId) : undefined;
     const fresh = (contractor?.email ?? "").trim();
-    if (isValidRecipientEmail(fresh)) {
-      recipient = fresh;
+    // Unconditionally replace recipient — if fresh is invalid the guard below
+    // will fail closed. Persist only when the address actually changed so
+    // the comm row reflects the address that was (or would be) used.
+    if (fresh !== recipient) {
       await storage.updateProjectCommunication(communicationId, { recipientEmail: fresh });
       comm.recipientEmail = fresh;
     }
+    recipient = fresh;
   }
   if (!isValidRecipientEmail(recipient)) {
     await storage.updateProjectCommunication(communicationId, { status: "failed" });
