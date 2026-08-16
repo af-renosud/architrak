@@ -547,6 +547,16 @@ export interface IStorage {
 
   getAllCommunications(): Promise<ProjectCommunication[]>;
 
+  // Task #521 — failed contractor notices grouped by contractor, for the
+  // bulk-retry panel in the communications hub.
+  getFailedContractorNoticeGroups(): Promise<Array<{
+    contractorId: number;
+    contractorName: string;
+    contractorEmail: string | null;
+    failedCount: number;
+    communicationIds: number[];
+  }>>;
+
   getProjectCommunication(id: number): Promise<ProjectCommunication | undefined>;
 
   createProjectCommunication(data: InsertProjectCommunication): Promise<ProjectCommunication>;
@@ -3379,6 +3389,53 @@ export class DatabaseStorage implements IStorage {
 
   async getAllCommunications(): Promise<ProjectCommunication[]> {
     return db.select().from(projectCommunications).orderBy(desc(projectCommunications.createdAt));
+  }
+
+  // Task #521 — join failed contractor notices to their certificat's
+  // contractor, then group client-side so the hub can render one row per
+  // contractor with a single "retry all" action.
+  async getFailedContractorNoticeGroups(): Promise<Array<{
+    contractorId: number;
+    contractorName: string;
+    contractorEmail: string | null;
+    failedCount: number;
+    communicationIds: number[];
+  }>> {
+    const rows = await db
+      .select({
+        commId: projectCommunications.id,
+        contractorId: contractors.id,
+        contractorName: contractors.name,
+        contractorEmail: contractors.email,
+      })
+      .from(projectCommunications)
+      .innerJoin(certificats, eq(projectCommunications.relatedCertificatId, certificats.id))
+      .innerJoin(contractors, eq(certificats.contractorId, contractors.id))
+      .where(
+        and(
+          eq(projectCommunications.type, "certificat_contractor_notice"),
+          eq(projectCommunications.status, "failed"),
+        ),
+      )
+      .orderBy(contractors.name, desc(projectCommunications.id));
+
+    const groups = new Map<number, { contractorId: number; contractorName: string; contractorEmail: string | null; failedCount: number; communicationIds: number[] }>();
+    for (const row of rows) {
+      const existing = groups.get(row.contractorId);
+      if (existing) {
+        existing.communicationIds.push(row.commId);
+        existing.failedCount++;
+      } else {
+        groups.set(row.contractorId, {
+          contractorId: row.contractorId,
+          contractorName: row.contractorName,
+          contractorEmail: row.contractorEmail,
+          failedCount: 1,
+          communicationIds: [row.commId],
+        });
+      }
+    }
+    return Array.from(groups.values());
   }
 
   async getProjectCommunication(id: number): Promise<ProjectCommunication | undefined> {

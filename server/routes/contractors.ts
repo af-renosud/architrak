@@ -4,6 +4,7 @@ import { storage } from "../storage";
 import { insertContractorSchema } from "@shared/schema";
 import { validateRequest } from "../middleware/validate";
 import { runContractorAutoSync, getLastContractorAutoSync } from "../archidoc/contractor-auto-sync";
+import { sendCommunication } from "../communications/email-sender";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
@@ -108,5 +109,42 @@ router.get("/api/contractors/:id/invoices", async (req, res) => {
   const invoices = await storage.getInvoicesByContractor(Number(req.params.id));
   res.json(invoices);
 });
+
+// Task #521 — bulk-retry all failed certificat_contractor_notice
+// communications for a given contractor in one action. Each send goes
+// through the strict recipient validation in sendCommunication (which
+// refreshes the address from the contractor record), so fixing the
+// contractor's email is sufficient before pressing "retry all".
+router.post(
+  "/api/contractors/:id/retry-failed-notices",
+  validateRequest({ params: idParams }),
+  async (req, res) => {
+    const contractorId = Number(req.params.id);
+    const contractor = await storage.getContractor(contractorId);
+    if (!contractor) return res.status(404).json({ message: "Contractor not found" });
+
+    const groups = await storage.getFailedContractorNoticeGroups();
+    const group = groups.find(g => g.contractorId === contractorId);
+    if (!group || group.communicationIds.length === 0) {
+      return res.json({ retried: 0, succeeded: 0, failed: 0 });
+    }
+
+    const sentByUserId = req.session.userId ?? null;
+    const results = await Promise.allSettled(
+      group.communicationIds.map(id => sendCommunication(id, { sentByUserId })),
+    );
+
+    const succeeded = results.filter(r => r.status === "fulfilled").length;
+    const failed = results.filter(r => r.status === "rejected").length;
+    const firstError = results.find((r): r is PromiseRejectedResult => r.status === "rejected")?.reason;
+
+    res.json({
+      retried: group.communicationIds.length,
+      succeeded,
+      failed,
+      firstError: firstError instanceof Error ? firstError.message : firstError ? String(firstError) : undefined,
+    });
+  },
+);
 
 export default router;

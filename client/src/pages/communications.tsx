@@ -4,7 +4,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { MessageSquare, Send, FileCheck, Clock, AlertTriangle, Filter, ChevronDown, ChevronUp, PenLine } from "lucide-react";
+import { MessageSquare, Send, FileCheck, Clock, AlertTriangle, Filter, ChevronDown, ChevronUp, PenLine, RefreshCw } from "lucide-react";
 import {
   ContextEmailResendButton,
   parseDevisIdFromContextEmailDedupeKey,
@@ -101,6 +101,88 @@ function PaymentSuggestionsPanel() {
   );
 }
 
+type FailedContractorNoticeGroup = {
+  contractorId: number;
+  contractorName: string;
+  contractorEmail: string | null;
+  failedCount: number;
+  communicationIds: number[];
+};
+
+// Task #521 — surface failed contractor payment notices grouped by contractor
+// so fixing the email + one click retries them all.
+function FailedContractorNoticesPanel() {
+  const { toast } = useToast();
+  const { data: groups, isLoading } = useQuery<FailedContractorNoticeGroup[]>({
+    queryKey: ["/api/failed-contractor-notices"],
+  });
+
+  const retryMutation = useMutation({
+    mutationFn: async (contractorId: number) => {
+      const res = await apiRequest("POST", `/api/contractors/${contractorId}/retry-failed-notices`, {});
+      return res.json() as Promise<{ retried: number; succeeded: number; failed: number; firstError?: string }>;
+    },
+    onSuccess: (data, contractorId) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/failed-contractor-notices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/communications"] });
+      if (data.failed > 0) {
+        toast({
+          title: `${data.succeeded} relancé${data.succeeded !== 1 ? "s" : ""}, ${data.failed} échec${data.failed !== 1 ? "s" : ""}`,
+          description: data.firstError ?? "Certains envois ont échoué — vérifiez l'adresse e-mail.",
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: `${data.succeeded} avis relancé${data.succeeded !== 1 ? "s" : ""}`,
+          description: "Tous les avis ont été renvoyés avec succès.",
+        });
+      }
+    },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  if (isLoading || !groups || groups.length === 0) return null;
+
+  return (
+    <LuxuryCard className="p-4 border-red-300/60 dark:border-red-500/30" data-testid="panel-failed-contractor-notices">
+      <div className="flex items-center gap-2 mb-3">
+        <AlertTriangle size={14} className="text-red-600" />
+        <TechnicalLabel>Avis entreprise en échec — relance disponible</TechnicalLabel>
+      </div>
+      <div className="space-y-3">
+        {groups.map(group => (
+          <div
+            key={group.contractorId}
+            className="flex items-center justify-between gap-3 border-t first:border-t-0 pt-3 first:pt-0"
+            data-testid={`row-failed-notices-${group.contractorId}`}
+          >
+            <div className="text-xs text-muted-foreground min-w-0">
+              <p className="text-sm text-foreground font-semibold">{group.contractorName}</p>
+              <p>
+                {group.failedCount} avis en échec
+                {group.contractorEmail
+                  ? ` · adresse actuelle : ${group.contractorEmail}`
+                  : " · aucune adresse e-mail enregistrée"}
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="flex-shrink-0 gap-1.5"
+              disabled={retryMutation.isPending}
+              onClick={() => retryMutation.mutate(group.contractorId)}
+              data-testid={`button-retry-notices-${group.contractorId}`}
+            >
+              <RefreshCw size={12} />
+              Renvoyer tout
+            </Button>
+          </div>
+        ))}
+      </div>
+    </LuxuryCard>
+  );
+}
+
 function formatDate(date: string | Date | null): string {
   if (!date) return "—";
   return new Date(date).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -169,6 +251,8 @@ export default function Communications() {
         <SectionHeader icon={MessageSquare} title="Communication Hub" subtitle={`${communications?.length ?? 0} communications across all projects`} />
 
         <PaymentSuggestionsPanel />
+
+        <FailedContractorNoticesPanel />
 
         <div className="grid grid-cols-4 gap-4">
           <LuxuryCard className="p-4 text-center">

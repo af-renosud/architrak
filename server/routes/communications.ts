@@ -29,6 +29,13 @@ router.get("/api/communications", async (_req, res) => {
   res.json(comms);
 });
 
+// Task #521 — failed contractor notices grouped by contractor, so the hub
+// can surface a single "retry all" action per contractor.
+router.get("/api/failed-contractor-notices", async (_req, res) => {
+  const groups = await storage.getFailedContractorNoticeGroups();
+  res.json(groups);
+});
+
 router.get("/api/projects/:projectId/communications", async (req, res) => {
   const comms = await storage.getProjectCommunications(Number(req.params.projectId));
   res.json(comms);
