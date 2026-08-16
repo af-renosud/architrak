@@ -7,19 +7,37 @@
  *    caller bypasses the route schema;
  *  - assigning a project to a skipped doc must NOT mirror it into intake.
  */
-import { describe, it, expect, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { readFileSync } from "node:fs";
 import { insertEmailDocumentSchema } from "@shared/schema";
 import { storage } from "../storage";
 import { db } from "../db";
-import { emailDocuments, projectIntakeDocuments, intakeJobs } from "@shared/schema";
+import { emailDocuments, projectIntakeDocuments, intakeJobs, projects } from "@shared/schema";
 import { eq, like } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 
 const MSG_ID = "test-322-skipped-immutable";
 
+// Own a dedicated project fixture so we are immune to other tests
+// concurrently inserting or deleting projects (FK violation on assignment).
+let testProjectId: number;
+
+beforeAll(async () => {
+  const [proj] = await db
+    .insert(projects)
+    .values({
+      name: "Test 322 Skipped Immutable",
+      code: "TEST-322",
+      clientName: "Test Client 322",
+      status: "active",
+    })
+    .returning({ id: projects.id });
+  testProjectId = proj.id;
+});
+
 afterAll(async () => {
   await db.delete(emailDocuments).where(like(emailDocuments.emailMessageId, `${MSG_ID}%`));
+  await db.delete(projects).where(eq(projects.id, testProjectId));
 });
 
 describe("skipped email documents are terminal (Task #322)", () => {
@@ -56,9 +74,7 @@ describe("skipped email documents are terminal (Task #322)", () => {
     expect(updated?.notes).toBe("revival attempt");
 
     // Assigning a project must not mirror a skipped doc into intake.
-    const projects = await storage.getProjects();
-    expect(projects.length).toBeGreaterThan(0);
-    await storage.updateEmailDocument(row.id, { projectId: projects[0].id } as never);
+    await storage.updateEmailDocument(row.id, { projectId: testProjectId } as never);
     const mirrored = await db
       .select()
       .from(projectIntakeDocuments)
@@ -112,8 +128,7 @@ describe("skipped email documents are terminal (Task #322)", () => {
   });
 
   it("migrations 0057+0058 dump a queued pre-watermark doc AND remove its intake mirror/job", async () => {
-    const projects = await storage.getProjects();
-    const projectId = projects[0].id;
+    const projectId = testProjectId;
 
     // Seed: pre-watermark pending email doc already assigned a project,
     // with an existing intake mirror and a queued intake job.

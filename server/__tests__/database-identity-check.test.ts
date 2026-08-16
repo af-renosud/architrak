@@ -76,11 +76,10 @@ describe("database-identity helpers (Task #137 — pure)", () => {
     expect(parseDbUrl(null)).toEqual({ host: "", dbname: "" });
   });
 
-  it("expectedIdentityFor returns NONPROD_IDENTITY_NAME when fingerprint is not bootstrapped", () => {
-    // The committed default state: EXPECTED_PROD_HOST is empty.
-    // Until the operator runs scripts/print-database-host.mjs and
-    // pastes the host, every URL maps to non-prod.
-    expect(isFingerprintBootstrapped()).toBe(false);
+  it("expectedIdentityFor returns NONPROD_IDENTITY_NAME for a URL that does not match the bootstrapped prod host", () => {
+    // EXPECTED_PROD_HOST has been committed (fingerprint IS bootstrapped),
+    // but a URL with an unrecognized host must still map to non-prod.
+    expect(isFingerprintBootstrapped()).toBe(true);
     expect(expectedIdentityFor("postgres://x:y@anything/anything")).toBe(
       NONPROD_IDENTITY_NAME,
     );

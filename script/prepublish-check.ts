@@ -8,10 +8,15 @@
  *      vulnerabilities (the deployment security scan blocks on these;
  *      it blocked the 2026-08-15 publish).
  *   2. Type check        — `tsc`.
- *   3. Production build  — `npm run build` (includes schema-drift and
+ *   3. Unit / convention tests — `npx vitest run --no-file-parallelism`.
+ *      Serialised because several integration tests share the dev database
+ *      and fail under Vitest's default cross-file parallelism. Includes the
+ *      project-scoped query-key enforcement test that blocks bare numeric
+ *      project ids in TanStack Query keys.
+ *   4. Production build  — `npm run build` (includes schema-drift and
  *      applied-migrations drift checks, vite client build, esbuild
  *      server bundle, server-assets copy).
- *   4. Smoke boot        — briefly boot `dist/index.cjs` (the real
+ *   5. Smoke boot        — briefly boot `dist/index.cjs` (the real
  *      production bundle, NODE_ENV baked to "production") and wait for
  *      GET /healthz to answer 200. Catches bundle-only crashes such as
  *      ESM-only deps left external ("(0 , X.default) is not a function").
@@ -270,6 +275,7 @@ async function smokeBoot(): Promise<boolean> {
   const gates: Array<() => boolean | Promise<boolean>> = [
     checkAudit,
     () => runStreaming("Type check (tsc)", "npx", ["tsc"]),
+    () => runStreaming("Unit / convention tests (vitest)", "npx", ["vitest", "run", "--no-file-parallelism"]),
     () => runStreaming("Production build (npm run build)", "npm", ["run", "build"]),
     smokeBoot,
   ];
@@ -278,7 +284,13 @@ async function smokeBoot(): Promise<boolean> {
     if (!ok) break; // later gates depend on earlier ones; stop at first failure
   }
   // Record skipped gates so the summary is honest about what did not run.
-  const names = ["Dependency audit", "Type check (tsc)", "Production build (npm run build)", "Smoke boot"];
+  const names = [
+    "Dependency audit",
+    "Type check (tsc)",
+    "Unit / convention tests (vitest)",
+    "Production build (npm run build)",
+    "Smoke boot",
+  ];
   for (const n of names) {
     if (!results.find((r) => r.name === n)) {
       results.push({ name: n, ok: false, detail: "skipped (earlier gate failed)" });

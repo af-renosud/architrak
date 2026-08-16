@@ -126,6 +126,7 @@ const { state, storageSpy, objectStorageSpy, driveSpy } = vi.hoisted(() => {
       { id: 700, contractId: 70, sequence: 1, labelFr: "OUVERTURE ADMINISTRATIVE DE DOSSIER", labelEn: null, amountTtc: "1200.00", status: "pending" },
       { id: 701, contractId: 70, sequence: 2, labelFr: "AVANT-PROJET SOMMAIRE", labelEn: null, amountTtc: "3600.00", status: "pending" },
     ]),
+    getPendingWorksFeeCandidates: vi.fn(async () => []),
   };
 
   const objectStorageSpy = {

@@ -110,6 +110,7 @@ const { state, storageSpy, dbSpy } = vi.hoisted(() => {
     getAiModelSetting: vi.fn(async () => undefined),
     getBenchmarkTags: vi.fn(async () => []),
     setBenchmarkItemTags: vi.fn(async () => undefined),
+    revokeDevisCheckTokenIfFullyInvoiced: vi.fn(async () => undefined),
   };
 
   // Minimal drizzle-shaped tx for confirmDevisAndMirror. Each fake table is
