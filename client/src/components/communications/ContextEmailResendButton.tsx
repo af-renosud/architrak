@@ -58,7 +58,7 @@ export function ContextEmailResendButton({
     if (projectId) {
       // Project-detail keys its communications query on the *string* route
       // param, the communications hub uses numeric ids — invalidate both.
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "communications"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "communications"] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "communications"] });
     }
   };

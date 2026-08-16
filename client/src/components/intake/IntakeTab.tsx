@@ -112,7 +112,7 @@ function AttachEvidenceDialog({
   const [situationId, setSituationId] = useState<string>("");
 
   const { data: devisList } = useQuery<Devis[]>({
-    queryKey: ["/api/projects", projectId, "devis"],
+    queryKey: ["/api/projects", String(projectId), "devis"],
   });
   const { data: situationsList } = useQuery<Situation[]>({
     queryKey: ["/api/devis", devisId, "situations"],
@@ -133,8 +133,8 @@ function AttachEvidenceDialog({
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "intake"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "marche-documents"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "intake"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "marche-documents"] });
       if (devisId) queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "situations"] });
       toast({
         title: kind === "situation" ? "Situation PDF attached" : "Bon de commande retained",
@@ -234,7 +234,7 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
   const dragDepth = useRef(0);
 
   const { data: intakeDocs, isLoading } = useQuery<IntakeListItem[]>({
-    queryKey: ["/api/projects", projectId, "intake", showVoid ? "?includeVoid=true" : ""],
+    queryKey: ["/api/projects", String(projectId), "intake", showVoid ? "?includeVoid=true" : ""],
     // Task #327 — poll while any document is still being processed so the
     // status badge advances (pending → analyzing → analyzed/failed) without
     // a manual page refresh. Once every doc is terminal, polling stops.
@@ -277,10 +277,10 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
       // and need nothing.
       staleKinds = new Set();
       const cachedDevis = queryClient.getQueryData<{ id: number }[]>(
-        ["/api/projects", projectId, "devis"],
+        ["/api/projects", String(projectId), "devis"],
       );
       const cachedInvoices = queryClient.getQueryData<{ id: number }[]>(
-        ["/api/projects", projectId, "invoices"],
+        ["/api/projects", String(projectId), "invoices"],
       );
       for (const d of promotedDocs) {
         if (
@@ -305,12 +305,12 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
     if (staleKinds.size === 0) return;
     const kinds = staleKinds;
     if (kinds.has("devis")) {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis-readiness"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis-checks", "open-counts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "devis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "devis-readiness"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "devis-checks", "open-counts"] });
     }
     if (kinds.has("invoice")) {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "invoices"] });
     }
     if (kinds.has("situation")) {
       // Task #450 — situations lists live per-devis; invalidate them all so
@@ -322,8 +322,8 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
           q.queryKey[2] === "situations",
       });
     }
-    queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "accounting-status"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "financial-summary"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "accounting-status"] });
   }, [intakeDocs, projectId]);
 
   const uploadMutation = useMutation({
@@ -347,7 +347,7 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
     },
     onSuccess: ({ uploaded, failures }) => {
       if (uploaded > 0) {
-        queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "intake"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "intake"] });
         toast({
           title: uploaded === 1 ? "Document uploaded" : `${uploaded} documents uploaded`,
           description: "Parked in intake for analysis.",
@@ -371,7 +371,7 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
       return apiRequest("POST", `/api/intake-documents/${intakeDocumentId}/reanalyze`);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "intake"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "intake"] });
       toast({ title: "Re-analysis triggered", description: "The document is being re-classified and routed." });
     },
     onError: (error: Error) => {
@@ -387,7 +387,7 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
       return apiRequest("DELETE", `/api/intake-documents/${intakeDocumentId}`);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "intake"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "intake"] });
       toast({ title: "Document deleted", description: "The intake document and its stored file were removed." });
       setDeleteTarget(null);
     },

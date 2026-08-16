@@ -53,7 +53,7 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
   const [pendingReplace, setPendingReplace] = useState<ConfirmedDesignContract | null>(null);
 
   const { data, isLoading, error } = useQuery<DesignContractResponse | null>({
-    queryKey: ["/api/projects", projectId, "design-contract"],
+    queryKey: ["/api/projects", String(projectId), "design-contract"],
     queryFn: async () => {
       const res = await fetch(`/api/projects/${projectId}/design-contract`, { credentials: "include" });
       if (res.status === 404) return null;
@@ -80,7 +80,7 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "design-contract"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "design-contract"] });
       setPendingReplace(null);
       toast({ title: "Design contract saved", description: "The new contract has been stored and the previous version archived." });
     },
@@ -101,7 +101,7 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "design-contract"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "design-contract"] });
       toast({ title: "Milestone marked reached" });
     },
     onError: (err: Error) => {

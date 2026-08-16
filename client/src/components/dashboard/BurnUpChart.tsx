@@ -97,7 +97,7 @@ function CustomTooltip({ active, payload, label }: CustomTooltipProps) {
 
 export default function BurnUpChart({ projectId }: { projectId: number }) {
   const { data, isLoading } = useQuery<BurnUpData>({
-    queryKey: ["/api/projects", projectId, "burn-up"],
+    queryKey: ["/api/projects", String(projectId), "burn-up"],
     enabled: projectId > 0,
   });
 

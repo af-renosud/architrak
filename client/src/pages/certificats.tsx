@@ -540,19 +540,19 @@ export default function Certificats() {
   });
 
   const { data: allCertificats, isLoading: loadingCerts } = useQuery<Certificat[]>({
-    queryKey: ["/api/projects", selectedProjectId, "certificats"],
+    queryKey: ["/api/projects", String(selectedProjectId), "certificats"],
     enabled: !!selectedProjectId,
   });
 
   const { data: projectInvoices } = useQuery<Invoice[]>({
-    queryKey: ["/api/projects", selectedProjectId, "invoices"],
+    queryKey: ["/api/projects", String(selectedProjectId), "invoices"],
     enabled: !!selectedProjectId,
   });
 
   // Task #465 — project-wide payment ledger for list badges (paid-to-date /
   // partial). Detail-level reconciliation lives in CertificatPaymentsSection.
   const { data: projectPayments } = useQuery<CertificatPayment[]>({
-    queryKey: ["/api/projects", selectedProjectId, "certificat-payments"],
+    queryKey: ["/api/projects", String(selectedProjectId), "certificat-payments"],
     enabled: !!selectedProjectId,
   });
   const paidByCert = useMemo(() => {
@@ -564,18 +564,18 @@ export default function Certificats() {
   }, [projectPayments]);
 
   const { data: nextRefData } = useQuery<{ nextRef: string }>({
-    queryKey: ["/api/projects", selectedProjectId, "certificats", "next-ref"],
+    queryKey: ["/api/projects", String(selectedProjectId), "certificats", "next-ref"],
     enabled: !!selectedProjectId,
   });
 
   const { data: marches } = useQuery<Marche[]>({
-    queryKey: ["/api/projects", selectedProjectId, "marches"],
+    queryKey: ["/api/projects", String(selectedProjectId), "marches"],
     enabled: !!selectedProjectId,
   });
 
   // Task #462 — needed to compute the paid deposit (acompte) to recoup.
   const { data: projectDevis } = useQuery<Devis[]>({
-    queryKey: ["/api/projects", selectedProjectId, "devis"],
+    queryKey: ["/api/projects", String(selectedProjectId), "devis"],
     enabled: !!selectedProjectId,
   });
 
@@ -790,8 +790,8 @@ export default function Certificats() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "certificats"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "certificats", "next-ref"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "certificats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "certificats", "next-ref"] });
       setDialogOpen(false);
       form.reset();
       toast({ title: "Certificat created successfully" });
@@ -807,7 +807,7 @@ export default function Certificats() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "certificats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "certificats"] });
       toast({ title: "Status updated" });
     },
     onError: (error: Error) => {
@@ -824,8 +824,8 @@ export default function Certificats() {
       return res.json() as Promise<Certificat>;
     },
     onSuccess: (draft) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "certificats"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "certificats", "next-ref"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "certificats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "certificats", "next-ref"] });
       toast({
         title: `Reissued as ${draft.certificateRef}`,
         description: "A new draft was created with the financials pre-filled; the original is now marked superseded.",

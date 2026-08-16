@@ -67,6 +67,24 @@ export const getQueryFn: <T>(options: {
     return await res.json();
   };
 
+/**
+ * Task #508 — canonical query-key convention for project-scoped data.
+ *
+ * TanStack Query compares key segments strictly (9 !== "9"), and with
+ * `staleTime: Infinity` a missed invalidation shows stale data until a full
+ * page reload (the prod "No Certificat de Paiement" bug). The project id
+ * segment of every `["/api/projects", id, ...]` key must therefore ALWAYS be
+ * a string: build keys and invalidations with `String(projectId)` (route
+ * params are already strings; DB-derived ids like `devis.projectId` are
+ * numbers). Prefer this helper so keys and invalidations can't drift.
+ */
+export function projectScopedKey(
+  projectId: string | number,
+  ...rest: string[]
+): (string | undefined)[] {
+  return ["/api/projects", String(projectId), ...rest];
+}
+
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

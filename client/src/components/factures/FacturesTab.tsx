@@ -124,8 +124,8 @@ function CreateCertificatDialog({
       return res.json();
     },
     onSuccess: (cert: { certificateRef: string }) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "certificats"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "certificat-invoice-links"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "certificats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "certificat-invoice-links"] });
       toast({
         title: `Certificat ${cert.certificateRef} créé`,
         description: "Brouillon créé — retrouvez-le sur la page Certificats pour le vérifier et l'émettre.",
@@ -244,16 +244,16 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: invoices, isLoading } = useQuery<Invoice[]>({
-    queryKey: ["/api/projects", projectId, "invoices"],
+    queryKey: ["/api/projects", String(projectId), "invoices"],
   });
 
   const { data: devisList } = useQuery<Devis[]>({
-    queryKey: ["/api/projects", projectId, "devis"],
+    queryKey: ["/api/projects", String(projectId), "devis"],
   });
 
   // Task #496 — which invoices are already certified (live certs only).
   const { data: certLinks } = useQuery<CertInvoiceLink[]>({
-    queryKey: ["/api/projects", projectId, "certificat-invoice-links"],
+    queryKey: ["/api/projects", String(projectId), "certificat-invoice-links"],
   });
   const certLinkByInvoice = new Map((certLinks ?? []).map((l) => [l.invoiceId, l]));
   const [certDialogInvoice, setCertDialogInvoice] = useState<Invoice | null>(null);
@@ -278,8 +278,8 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
       return res.json();
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "financial-summary"] });
       setUploadDialogOpen(false);
       setSelectedDevisId(null);
       const ext = data.extraction;
@@ -630,8 +630,8 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "financial-summary"] });
       toast({ title: "Invoice confirmed", description: "Invoice moved to pending — ready for approval" });
     },
     onError: (error: Error) => {
@@ -644,8 +644,8 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
       await apiRequest("DELETE", `/api/invoices/${invoice.id}`);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "financial-summary"] });
       toast({ title: "Draft discarded", description: "The draft invoice has been deleted" });
     },
     onError: (error: Error) => {
@@ -793,7 +793,7 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
       await apiRequest("PATCH", `/api/invoices/${invoice.id}`, { notes: newNotes });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "invoices"] });
       setNotesEditing(false);
       toast({ title: "Notes saved" });
     },
@@ -808,10 +808,10 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
       return res.json();
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "fees"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "fee-entries"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "fees"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "fee-entries"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "financial-summary"] });
       const commission = data.commissionAmount;
       if (commission > 0) {
         toast({ title: "Invoice approved", description: `${formatCurrency(commission)} commission added to Honoraires` });
@@ -833,8 +833,8 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "financial-summary"] });
       toast({ title: "Draft reopened", description: "The invoice is back in Draft — review and confirm it again when ready." });
       setReopenConfirmOpen(false);
     },

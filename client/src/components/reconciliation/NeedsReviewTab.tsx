@@ -159,11 +159,11 @@ function DecisionCard({ card, projectId }: { card: ReviewCard; projectId: string
       return res.json();
     },
     onSuccess: (_data, decision) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "overlap-cases"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "accounting-status"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "financial-summary"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "devis"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "overlap-cases"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "accounting-status"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "financial-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "devis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId)] });
       toast({
         title: decision === "confirm" ? "Overlap confirmed" : "Kept separate",
         description: decision === "confirm"
@@ -318,10 +318,10 @@ export function NeedsReviewTab({ projectId }: { projectId: string }) {
   const [showResolved, setShowResolved] = useState(false);
 
   const { data, isLoading } = useQuery<ProjectReviewCasesResponse>({
-    queryKey: ["/api/projects", projectId, "overlap-cases"],
+    queryKey: ["/api/projects", String(projectId), "overlap-cases"],
   });
   const { data: status } = useQuery<AccountingStatus>({
-    queryKey: ["/api/projects", projectId, "accounting-status"],
+    queryKey: ["/api/projects", String(projectId), "accounting-status"],
   });
 
   if (isLoading) {

@@ -642,7 +642,7 @@ function ProjectCard({
   const isArchived = !!project.archivedAt;
 
   const { data: summary } = useQuery<FinancialSummary>({
-    queryKey: ["/api/projects", project.id, "financial-summary"],
+    queryKey: ["/api/projects", String(project.id), "financial-summary"],
   });
 
   const deleteMutation = useMutation({

@@ -56,7 +56,7 @@ function renderWithDevis(
   client.setQueryData(["/api/devis", (devis as { id: number }).id], devis);
   if (opts.project) {
     client.setQueryData(
-      ["/api/projects", (devis as { projectId: number }).projectId],
+      ["/api/projects", String((devis as { projectId: number }).projectId)],
       opts.project,
     );
   }

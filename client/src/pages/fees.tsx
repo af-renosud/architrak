@@ -132,17 +132,17 @@ export default function Fees() {
   });
 
   const { data: feesList, isLoading: loadingFees } = useQuery<Fee[]>({
-    queryKey: ["/api/projects", selectedProjectId, "fees"],
+    queryKey: ["/api/projects", String(selectedProjectId), "fees"],
     enabled: !!selectedProjectId,
   });
 
   const { data: feeEntries } = useQuery<FeeEntry[]>({
-    queryKey: ["/api/projects", selectedProjectId, "fee-entries"],
+    queryKey: ["/api/projects", String(selectedProjectId), "fee-entries"],
     enabled: !!selectedProjectId,
   });
 
   const { data: phaseData } = useQuery<PhaseByData>({
-    queryKey: ["/api/projects", selectedProjectId, "fees", "by-phase"],
+    queryKey: ["/api/projects", String(selectedProjectId), "fees", "by-phase"],
     enabled: !!selectedProjectId,
   });
 
@@ -183,7 +183,7 @@ export default function Fees() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "fees"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "fees"] });
       setFeeDialogOpen(false);
       feeForm.reset();
       toast({ title: "Fee created successfully" });
@@ -199,7 +199,7 @@ export default function Fees() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "fees"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "fees"] });
       toast({ title: "Fee updated" });
     },
     onError: (error: Error) => {
@@ -213,8 +213,8 @@ export default function Fees() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "fee-entries"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "fees"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "fee-entries"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "fees"] });
       setEntryDialogOpen(false);
       entryForm.reset();
       toast({ title: "Entry created successfully" });
@@ -230,8 +230,8 @@ export default function Fees() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "fee-entries"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", selectedProjectId, "fees"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "fee-entries"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "fees"] });
       setEntryDialogOpen(false);
       setEditingEntryId(null);
       entryForm.reset();

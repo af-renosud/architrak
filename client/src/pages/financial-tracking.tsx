@@ -47,7 +47,7 @@ interface FinancialSummary {
 
 function ProjectFinancialCard({ project }: { project: Project }) {
   const { data: summary, isLoading } = useQuery<FinancialSummary>({
-    queryKey: ["/api/projects", project.id, "financial-summary"],
+    queryKey: ["/api/projects", String(project.id), "financial-summary"],
     queryFn: async () => {
       const res = await fetch(`/api/projects/${project.id}/financial-summary`);
       if (!res.ok) throw new Error("Failed to fetch");

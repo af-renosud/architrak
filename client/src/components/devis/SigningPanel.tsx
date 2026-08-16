@@ -300,7 +300,7 @@ export function SigningPanel({
   // Project data feeds the pre-filled message template and the recap step
   // (recipient name/email). Loaded lazily once the devis row is available.
   const projectQuery = useQuery<Project>({
-    queryKey: ["/api/projects", d?.projectId],
+    queryKey: ["/api/projects", String(d?.projectId)],
     enabled: Boolean(d?.projectId),
   });
   const project = projectQuery.data;
