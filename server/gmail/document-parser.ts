@@ -1785,6 +1785,28 @@ export async function processEmailDocument(
 
     const match = await matchToProject(parsed, projects, contractors);
 
+    // Task #531 — deterministic single-candidate fallback. When AI-based
+    // matching produced no project, but the capture evidence (client-contact
+    // sender or a subject/filename mentioning exactly ONE live project) is
+    // unambiguous, assign that project. Ambiguous evidence assigns nothing —
+    // the doc stays in the needs-project bucket.
+    if (match.projectId == null) {
+      const { resolveUniqueProjectEvidence } = await import("./email-prefilter");
+      const evidence = resolveUniqueProjectEvidence(
+        {
+          emailFrom: emailDoc.emailFrom,
+          emailSubject: emailDoc.emailSubject,
+          attachmentFileName: emailDoc.attachmentFileName,
+        },
+        projects.filter((p) => p.archivedAt == null),
+      );
+      if (evidence) {
+        match.projectId = evidence.projectId;
+        match.matchedFields.projectEvidence = evidence.reason;
+        console.log(`[DocumentParser] Document ${emailDocumentId} project auto-assigned from capture evidence: ${evidence.reason}`);
+      }
+    }
+
     const validation = validateExtraction(parsed);
     const lotWarnings = await checkLotReferencesAgainstCatalog(parsed);
     const allWarnings = [...validation.warnings, ...lotWarnings, ...match.warnings];

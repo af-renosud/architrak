@@ -176,6 +176,28 @@ function findNameMention(
   return null;
 }
 
+// Task #531 — self-echo suppression. The app's own outbound mail comes back
+// through the monitored inbox as "new" documents: signature-envelope
+// confirmations (Docusign/Archisign), PDF-service receipts (DocRaptor), and
+// re-sends of app-generated files. These are echoes of documents the app
+// already holds, so they park as low relevance (rescuable) instead of
+// burning AI extraction and cluttering the queue.
+const SERVICE_ECHO_DOMAINS = ["docusign.net", "docusign.com", "docraptor.com"];
+// Normalized markers that only appear on app-generated artifacts.
+const APP_ECHO_MARKERS = [
+  "electronic signature request",
+  "demande de signature electronique",
+  "archidoc proposal",
+];
+
+function matchesServiceDomain(senderDomain: string | null): string | null {
+  if (!senderDomain) return null;
+  for (const d of SERVICE_ECHO_DOMAINS) {
+    if (senderDomain === d || senderDomain.endsWith(`.${d}`)) return d;
+  }
+  return null;
+}
+
 export function evaluateEmailPrefilter(
   input: PrefilterInput,
   ctx: PrefilterContext,
@@ -193,7 +215,39 @@ export function evaluateEmailPrefilter(
   const senderEmail = extractSenderEmail(input.emailFrom);
   const senderDomain = domainOf(senderEmail);
 
+  // ── Signal 0 (Task #531): self-echo suppression ─────────────────────────
+  // Checked before any identity signal: a Docusign envelope confirmation or
+  // a re-send of an app-generated file is an echo even when it mentions a
+  // live project. Content dedupe upstream already collapses byte-identical
+  // copies; this catches the service-generated variants (signed envelope
+  // PDFs, receipts).
+  const echoHaystack = normalize(
+    `${input.emailSubject ?? ""} ${input.attachmentFileName ?? ""}`,
+  );
+  const serviceDomainHit = matchesServiceDomain(senderDomain);
+  if (serviceDomainHit) {
+    return {
+      pass: false, tier: "low",
+      reason: `Expéditeur de service (${serviceDomainHit}) — écho d'un envoi de l'application (enveloppe de signature / reçu de service), document déjà conservé par l'application. Analyse IA non lancée (récupérable manuellement).`,
+    };
+  }
+  const echoMarker = APP_ECHO_MARKERS.find((m) => echoHaystack.includes(m));
+  if (echoMarker) {
+    return {
+      pass: false, tier: "low",
+      reason: `Sujet/fichier généré par l'application (« ${echoMarker} ») — écho d'un envoi de l'application, document déjà conservé. Analyse IA non lancée (récupérable manuellement).`,
+    };
+  }
+
   // ── Signal 1: exact sender address (live evidence only) ────────────────
+  // Task #531 — the firm's own linked inbox addresses are handled separately
+  // below: mail from ourselves needs document evidence (keyword or live-name
+  // mention) to pass, otherwise internal working files flood the queue.
+  const selfAddresses = new Set<string>();
+  for (const e of ctx.knownEmails ?? []) {
+    const norm = extractSenderEmail(e ?? null);
+    if (norm) selfAddresses.add(norm);
+  }
   const knownAddresses = new Set<string>();
   for (const c of ctx.contractors) {
     const e = extractSenderEmail(c.email ?? null);
@@ -203,11 +257,9 @@ export function evaluateEmailPrefilter(
     const e = extractSenderEmail(p.clientContactEmail ?? null);
     if (e) knownAddresses.add(e);
   }
-  for (const e of ctx.knownEmails ?? []) {
-    const norm = extractSenderEmail(e ?? null);
-    if (norm) knownAddresses.add(norm);
-  }
-  if (senderEmail && knownAddresses.has(senderEmail)) {
+  for (const e of Array.from(selfAddresses)) knownAddresses.add(e);
+  const senderIsSelf = senderEmail != null && selfAddresses.has(senderEmail);
+  if (senderEmail && knownAddresses.has(senderEmail) && !senderIsSelf) {
     return high(`sender ${senderEmail} is a known contact`);
   }
 
@@ -219,9 +271,54 @@ export function evaluateEmailPrefilter(
     if (e && !knownAddresses.has(e)) archivedAddresses.add(e);
   }
 
-  // ── Signal 1b (Task #425): firm's own mail domain ──────────────────────
-  // The firm forwarding/bcc'ing its own fee invoices is a first-class
-  // signal — never park mail from the firm's own domain(s).
+  // ── Signal 3/4 precompute: name mentions + document keywords ────────────
+  // Computed early because the firm/self gate below (Task #531) needs them.
+  const haystack = echoHaystack;
+  let liveHit: { label: string; value: string } | null = null;
+  let archivedNameHit: { label: string; value: string } | null = null;
+  let keywordHit: string | null = null;
+  if (haystack) {
+    const padded = ` ${haystack} `;
+    const liveCandidates = projectNameCandidates(ctx.projects);
+    for (const c of ctx.contractors) {
+      liveCandidates.push({ label: "contractor", value: c.name });
+    }
+    // Task #425 — the firm's own legal name on a subject/filename (e.g.
+    // "Facture-…-ARCHITECTS-FRANCE-F-2026-138.pdf") is a valid signal.
+    for (const n of ctx.firm?.legalNames ?? []) {
+      liveCandidates.push({ label: "firm", value: n });
+    }
+    liveHit = findNameMention(padded, liveCandidates);
+    archivedNameHit = findNameMention(padded, projectNameCandidates(ctx.archivedProjects ?? []));
+
+    const tokens = new Set(haystack.split(" "));
+    for (const kw of DOC_KEYWORDS) {
+      const hit = kw.includes(" ") ? haystack.includes(kw) : tokens.has(kw);
+      if (hit) { keywordHit = kw; break; }
+    }
+  }
+
+  // ── Signal 1b (Task #425, tightened by #531) ────────────────────────────
+  // The LINKED INBOX's own address is where the app's echoes and internal
+  // working files come from: mail from ourselves needs document evidence
+  // (keyword or live-name mention) to pass; with none it parks as internal
+  // mail (rescuable). Checked BEFORE the firm-domain allowance so self mail
+  // never rides the unconditional firm pass.
+  if (senderIsSelf) {
+    if (liveHit) {
+      return high(`firm-origin mail; subject/filename mentions ${liveHit.label} "${liveHit.value}"`);
+    }
+    if (keywordHit) {
+      return high(`firm-origin mail with document keyword "${keywordHit}"`);
+    }
+    return {
+      pass: false, tier: "low",
+      reason: `Courrier interne (${senderEmail ?? senderDomain}) sans mot-clé de document ni mention d'un projet actif — probablement un fichier de travail ou un écho d'envoi. Analyse IA non lancée (récupérable manuellement).`,
+    };
+  }
+  // Task #425 — other firm-domain senders (e.g. compta@) stay a first-class
+  // signal: the firm's outbound honoraires invoices must reach AI
+  // classification even with no keyword or name mention.
   if (senderDomain && ctx.firm?.domains.some((d) => d.toLowerCase() === senderDomain)) {
     return high(`sender domain ${senderDomain} is the firm's own domain`);
   }
@@ -247,35 +344,9 @@ export function evaluateEmailPrefilter(
     }
   }
 
-  // ── Signal 3: name mentions in subject or filename ─────────────────────
-  const haystack = normalize(
-    `${input.emailSubject ?? ""} ${input.attachmentFileName ?? ""}`,
-  );
-  let archivedNameHit: { label: string; value: string } | null = null;
-  let keywordHit: string | null = null;
-  if (haystack) {
-    const padded = ` ${haystack} `;
-    const liveCandidates = projectNameCandidates(ctx.projects);
-    for (const c of ctx.contractors) {
-      liveCandidates.push({ label: "contractor", value: c.name });
-    }
-    // Task #425 — the firm's own legal name on a subject/filename (e.g.
-    // "Facture-…-ARCHITECTS-FRANCE-F-2026-138.pdf") is a valid signal.
-    for (const n of ctx.firm?.legalNames ?? []) {
-      liveCandidates.push({ label: "firm", value: n });
-    }
-    const liveHit = findNameMention(padded, liveCandidates);
-    if (liveHit) {
-      return high(`subject/filename mentions ${liveHit.label} "${liveHit.value}"`);
-    }
-    archivedNameHit = findNameMention(padded, projectNameCandidates(ctx.archivedProjects ?? []));
-
-    // ── Signal 4: construction-document keywords (LOW tier only) ─────────
-    const tokens = new Set(haystack.split(" "));
-    for (const kw of DOC_KEYWORDS) {
-      const hit = kw.includes(" ") ? haystack.includes(kw) : tokens.has(kw);
-      if (hit) { keywordHit = kw; break; }
-    }
+  // ── Signal 3: name mentions in subject or filename (precomputed) ───────
+  if (liveHit) {
+    return high(`subject/filename mentions ${liveHit.label} "${liveHit.value}"`);
   }
 
   // ── Archived-only evidence → quarantine, never high, never dropped ─────
@@ -312,6 +383,78 @@ export function evaluateEmailPrefilter(
     reason: senderEmail
       ? `Expéditeur inconnu (${senderEmail}) — aucun lien avec un intervenant, un client ou un projet, et aucun mot-clé de document de chantier dans le sujet ou le nom de fichier. Extraction IA non lancée.`
       : "Expéditeur illisible — aucun signal projet/intervenant détecté. Extraction IA non lancée.",
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Task #531 — deterministic single-candidate project resolution. Used at
+// processing time as a fallback when AI-based matching produced no project:
+// if the capture evidence (sender = client contact of exactly one live
+// project, or subject/filename mentioning exactly one live project) is
+// unambiguous, assign that project; ambiguous evidence assigns nothing.
+// ─────────────────────────────────────────────────────────────────────────
+
+export function resolveUniqueProjectEvidence(
+  input: Pick<PrefilterInput, "emailFrom" | "emailSubject" | "attachmentFileName">,
+  liveProjects: PrefilterProject[],
+): { projectId: number; reason: string } | null {
+  const senderEmail = extractSenderEmail(input.emailFrom);
+
+  // Evidence A: sender is the client contact of a live project.
+  const byContact = senderEmail
+    ? liveProjects.filter(
+        (p) => extractSenderEmail(p.clientContactEmail ?? null) === senderEmail,
+      )
+    : [];
+
+  // Evidence B: subject/filename mentions of live projects. Full
+  // name/client/contact mentions count, and so do DISTINCTIVE single tokens
+  // (≥5 letters, not a construction keyword) from those names — real
+  // filenames say "DEVIS FEATHERSTONE POMPE", not "Featherstone Lot 40".
+  // Safety comes from the uniqueness requirement: a token shared by two
+  // live projects resolves nothing.
+  const haystack = normalize(
+    `${input.emailSubject ?? ""} ${input.attachmentFileName ?? ""}`,
+  );
+  const padded = ` ${haystack} `;
+  const haystackTokens = new Set(haystack.split(" "));
+  const mentioned = new Map<number, { project: PrefilterProject; hit: { label: string; value: string } }>();
+  for (const p of haystack ? liveProjects : []) {
+    let hit = findNameMention(padded, projectNameCandidates([p]));
+    if (!hit) {
+      outer: for (const cand of projectNameCandidates([p])) {
+        if (!cand.value) continue;
+        for (const token of normalize(cand.value).split(" ")) {
+          if (token.length < 5) continue;
+          if (DOC_KEYWORDS.includes(token)) continue;
+          if (haystackTokens.has(token)) {
+            hit = { label: cand.label, value: cand.value };
+            break outer;
+          }
+        }
+      }
+    }
+    if (hit) mentioned.set(p.id, { project: p, hit });
+  }
+  // Combine BOTH signals: the union of contact-based and mention-based
+  // candidates must point at exactly ONE project. A client-contact sender
+  // whose attachment names a different project is a conflict → nothing.
+  const combined = new Set<number>([
+    ...byContact.map((p) => p.id),
+    ...Array.from(mentioned.keys()),
+  ]);
+  if (combined.size !== 1) return null;
+  const projectId = Array.from(combined)[0];
+  if (byContact.length === 1 && byContact[0].id === projectId) {
+    return {
+      projectId,
+      reason: `sender ${senderEmail} is the client contact of project "${byContact[0].name}"`,
+    };
+  }
+  const only = mentioned.get(projectId)!;
+  return {
+    projectId,
+    reason: `subject/filename mentions ${only.hit.label} "${only.hit.value}" of project "${only.project.name}" (only live candidate)`,
   };
 }
 

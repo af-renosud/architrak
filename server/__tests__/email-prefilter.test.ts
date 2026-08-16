@@ -9,6 +9,7 @@ import {
   extractSenderEmail,
   tierToExtractionStatus,
   buildTargetedGmailQueries,
+  resolveUniqueProjectEvidence,
   type PrefilterContext,
 } from "../gmail/email-prefilter";
 
@@ -46,6 +47,8 @@ describe("extractSenderEmail", () => {
 });
 
 describe("evaluateEmailPrefilter", () => {
+  // Task #425 guarantee kept intact by #531: firm-domain senders other than
+  // the linked inbox itself still pass unconditionally (fee invoices).
   it("passes mail from the firm's own domain even with no other signal (Task #425)", () => {
     const r = evaluateEmailPrefilter(
       { ...base, emailFrom: "Compta <compta@renosud.com>", emailSubject: "Document", attachmentFileName: "piece.pdf" },
@@ -53,6 +56,46 @@ describe("evaluateEmailPrefilter", () => {
     );
     expect(r.pass).toBe(true);
     expect(r.reason).toContain("firm's own domain");
+  });
+
+  it("parks linked-inbox (self) mail with no document evidence, but passes a self forward with a keyword (Task #531)", () => {
+    const parked = evaluateEmailPrefilter(
+      { ...base, emailFrom: "architecte@cabinet-arch.fr", emailSubject: "notes", attachmentFileName: "working-file.pdf" },
+      ctx,
+    );
+    expect(parked.pass).toBe(false);
+    expect(parked.tier).toBe("low");
+    const forwarded = evaluateEmailPrefilter(
+      { ...base, emailFrom: "architecte@cabinet-arch.fr", emailSubject: "Fwd: devis toiture", attachmentFileName: "doc.pdf" },
+      ctx,
+    );
+    expect(forwarded.pass).toBe(true);
+  });
+
+  it("parks signature/PDF service senders as echoes even with project evidence (Task #531)", () => {
+    const docusign = evaluateEmailPrefilter(
+      { ...base, emailFrom: "Docusign via Docusign <dse@docusign.net>", emailSubject: "Completed: DEVIS Villa Beaulieu", attachmentFileName: "signed.pdf" },
+      ctx,
+    );
+    expect(docusign.pass).toBe(false);
+    expect(docusign.tier).toBe("low");
+    expect(docusign.reason).toContain("écho");
+    const docraptor = evaluateEmailPrefilter(
+      { ...base, emailFrom: "DocRaptor <support@docraptor.com>", emailSubject: "Your receipt", attachmentFileName: "_797530737.pdf" },
+      ctx,
+    );
+    expect(docraptor.pass).toBe(false);
+    expect(docraptor.tier).toBe("low");
+  });
+
+  it("parks app-generated envelope filenames as echoes regardless of sender (Task #531)", () => {
+    const r = evaluateEmailPrefilter(
+      { ...base, emailFrom: "help@renosud.com", emailSubject: "Fwd", attachmentFileName: "signed_Electronic_signature_request___devis_D123.pdf" },
+      ctx,
+    );
+    expect(r.pass).toBe(false);
+    expect(r.tier).toBe("low");
+    expect(r.reason).toContain("écho");
   });
 
   it("passes when the filename mentions a firm legal name (Task #425)", () => {

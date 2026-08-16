@@ -1306,6 +1306,13 @@ export const emailDocuments = pgTable("email_documents", {
   matchConfidence: numeric("match_confidence", { precision: 5, scale: 2 }),
   matchedFields: jsonb("matched_fields"),
   gmailLabelApplied: boolean("gmail_label_applied").notNull().default(false),
+  // Task #531 — attachment-content dedupe. sha256 hex of the PDF bytes,
+  // set at capture time; the same bytes arriving via another email are
+  // recorded as an entry in additional_sources on the FIRST row instead of
+  // creating a duplicate row. Both server-authoritative (omitted from the
+  // insert schema so the generic PATCH body cannot touch them).
+  contentFingerprint: text("content_fingerprint"),
+  additionalSources: jsonb("additional_sources"),
   // Tombstone: set when an operator deletes the mirrored intake document.
   // Blocks mirrorEmailDocumentToIntake from silently recreating the intake
   // row on the next email-document update. NULL = never intentionally deleted.
@@ -2306,6 +2313,9 @@ export const insertEmailDocumentSchema = createInsertSchema(emailDocuments).omit
   // settable through the generic PATCH body.
   processingAttempts: true,
   nextProcessAttemptAt: true,
+  // Task #531 — dedupe bookkeeping is capture-time server state.
+  contentFingerprint: true,
+  additionalSources: true,
 });
 
 export const insertProjectDocumentSchema = createInsertSchema(projectDocuments).omit({

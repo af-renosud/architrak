@@ -10,6 +10,7 @@
 // working without needing a real Google login. In that mode we do one polling
 // pass per tick (no user iteration) and label everything as user "0".
 
+import { createHash } from "crypto";
 import { getUncachableGmailClient, isGmailConfigured, isFakeGmailMode } from "./client";
 import { getGmailClientForUser } from "./user-client";
 import { uploadDocument, isObjectStorageConfigured } from "../storage/object-storage";
@@ -647,6 +648,25 @@ async function processMessage(
 
     const buffer = Buffer.from(data, "base64url");
 
+    // Task #531 — attachment-content dedupe. The same PDF frequently arrives
+    // through several emails (contractor copy, Docusign copy, help@ forward).
+    // Fingerprint the bytes BEFORE uploading: when the fingerprint already
+    // exists, record this email as an additional source on the existing
+    // document and store nothing new (no upload, no row, no AI).
+    const fingerprint = createHash("sha256").update(buffer).digest("hex");
+    const duplicateOf = await storage.getEmailDocumentByFingerprint(fingerprint);
+    if (duplicateOf) {
+      await storage.appendEmailDocumentSource(duplicateOf.id, {
+        emailMessageId: `${messageId}_${fileName}`,
+        emailFrom: from,
+        emailSubject: subject,
+        emailReceivedAt: emailReceivedAt.toISOString(),
+        emailLink,
+      });
+      console.log(`[Gmail Monitor] User ${userId}: ${messageId}/${fileName} is a duplicate of email document ${duplicateOf.id} (same content) — recorded as additional source`);
+      continue;
+    }
+
     const storageKey = await uploadDocument(null, fileName, buffer, "application/pdf");
 
     // Task #323/#503 — cheap deterministic pre-filter at capture time, now
@@ -680,7 +700,29 @@ async function processMessage(
       gmailLabelApplied: canModify,
     };
 
-    await storage.createEmailDocument(doc);
+    try {
+      await storage.createEmailDocument({ ...doc, contentFingerprint: fingerprint });
+    } catch (err) {
+      // Task #531 — two concurrent pollers can both miss the pre-insert
+      // fingerprint lookup; the unique index makes the second insert fail.
+      // The loser records itself as an additional source on the winner.
+      const cause = (err as any)?.cause ?? err;
+      if ((cause as any)?.code === "23505" && String((cause as any)?.constraint ?? "").includes("content_fingerprint")) {
+        const winner = await storage.getEmailDocumentByFingerprint(fingerprint);
+        if (winner && winner.emailMessageId !== doc.emailMessageId) {
+          await storage.appendEmailDocumentSource(winner.id, {
+            emailMessageId: doc.emailMessageId,
+            emailFrom: from,
+            emailSubject: subject,
+            emailReceivedAt: emailReceivedAt.toISOString(),
+            emailLink,
+          });
+          console.log(`[Gmail Monitor] User ${userId}: concurrent duplicate of email document ${winner.id} — recorded as additional source`);
+        }
+      } else {
+        throw err;
+      }
+    }
   }
 
   if (canModify) {

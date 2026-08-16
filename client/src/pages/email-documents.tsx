@@ -396,6 +396,15 @@ export default function EmailDocuments() {
                           <span className="text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
                             {typeLabels[doc.documentType] || doc.documentType}
                           </span>
+                          {Array.isArray(doc.additionalSources) && (doc.additionalSources as unknown[]).length > 0 && (
+                            <span
+                              className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-300"
+                              title="Le même document est arrivé par plusieurs emails — une seule copie est conservée."
+                              data-testid={`badge-doc-copies-${doc.id}`}
+                            >
+                              +{(doc.additionalSources as unknown[]).length} copie{(doc.additionalSources as unknown[]).length > 1 ? "s" : ""}
+                            </span>
+                          )}
                         </div>
                         <div className="text-xs text-muted-foreground mt-1">
                           <span>From: {doc.emailFrom || "Unknown"}</span>

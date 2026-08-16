@@ -471,7 +471,9 @@ export interface IStorage {
 
   getEmailDocumentByMessageId(messageId: string): Promise<EmailDocument | undefined>;
 
-  createEmailDocument(data: InsertEmailDocument): Promise<EmailDocument>;
+  createEmailDocument(data: InsertEmailDocument & { contentFingerprint?: string | null }): Promise<EmailDocument>;
+  getEmailDocumentByFingerprint(fingerprint: string): Promise<EmailDocument | undefined>;
+  appendEmailDocumentSource(id: number, source: { emailMessageId: string; emailFrom: string | null; emailSubject: string | null; emailReceivedAt: string | null; emailLink: string | null }): Promise<void>;
 
   updateEmailDocument(id: number, data: Partial<InsertEmailDocument>): Promise<EmailDocument | undefined>;
 
@@ -2920,9 +2922,39 @@ export class DatabaseStorage implements IStorage {
     return doc;
   }
 
-  async createEmailDocument(data: InsertEmailDocument): Promise<EmailDocument> {
+  async createEmailDocument(data: InsertEmailDocument & { contentFingerprint?: string | null }): Promise<EmailDocument> {
     const [doc] = await db.insert(emailDocuments).values(data).returning();
     return doc;
+  }
+
+  // Task #531 — attachment-content dedupe. Returns the FIRST (oldest)
+  // document that captured these exact bytes, if any.
+  async getEmailDocumentByFingerprint(fingerprint: string): Promise<EmailDocument | undefined> {
+    const [doc] = await db.select().from(emailDocuments)
+      .where(eq(emailDocuments.contentFingerprint, fingerprint))
+      .orderBy(emailDocuments.createdAt)
+      .limit(1);
+    return doc;
+  }
+
+  /**
+   * Task #531 — record another email carrying the same attachment bytes as
+   * an additional source on the existing document. Row-locked read-modify-
+   * write; idempotent on the source's emailMessageId.
+   */
+  async appendEmailDocumentSource(
+    id: number,
+    source: { emailMessageId: string; emailFrom: string | null; emailSubject: string | null; emailReceivedAt: string | null; emailLink: string | null },
+  ): Promise<void> {
+    await db.transaction(async (tx) => {
+      const [row] = await tx.select().from(emailDocuments).where(eq(emailDocuments.id, id)).for("update");
+      if (!row) return;
+      const existing = Array.isArray(row.additionalSources) ? (row.additionalSources as any[]) : [];
+      if (existing.some((s) => s && s.emailMessageId === source.emailMessageId)) return;
+      await tx.update(emailDocuments)
+        .set({ additionalSources: [...existing, source], updatedAt: new Date() })
+        .where(eq(emailDocuments.id, id));
+    });
   }
 
   async updateEmailDocument(id: number, data: Partial<InsertEmailDocument> & { extractionStatus?: string }): Promise<EmailDocument | undefined> {
