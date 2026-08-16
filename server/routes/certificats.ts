@@ -124,6 +124,15 @@ const updateCertificatSchema = insertCertificatSchema
   .partial()
   .extend({ ...deductionOverrideShape, status: clientSettableStatus.optional() });
 
+// Task #539 — cross-project list of ready-but-unsent certificats feeding the
+// dashboard "Awaiting certificat send" alert and the per-devis certificat
+// section. "Unsent" is defined ONCE server-side (storage), never inferred
+// client-side.
+router.get("/api/certificats/unsent", async (_req, res) => {
+  const rows = await storage.getUnsentReadyCertificats();
+  res.json(rows);
+});
+
 router.get("/api/projects/:projectId/certificats", async (req, res) => {
   const certs = await storage.getCertificatsByProject(Number(req.params.projectId));
   res.json(certs);
@@ -922,6 +931,16 @@ router.post(
       const cert = await storage.getCertificat(certId);
       if (!cert) return res.status(404).json({ message: "Certificat not found" });
       if (cert.projectId !== projectId) return res.status(400).json({ message: "Certificat does not belong to this project" });
+      // Task #539 — archived projects must not emit payment instructions.
+      // The UI disables Send on archived projects; enforce it server-side
+      // too so no other surface (e.g. the dashboard alert) can bypass it.
+      const project = await storage.getProject(projectId);
+      if (project?.archivedAt) {
+        return res.status(409).json({
+          code: "PROJECT_ARCHIVED",
+          message: "This project is archived — unarchive it before sending a certificat.",
+        });
+      }
       // Task #457 — a superseded certificat was replaced by a reissue; its
       // pinned PDF is corrected history and must never be (re)sent.
       if (cert.status === "superseded") {

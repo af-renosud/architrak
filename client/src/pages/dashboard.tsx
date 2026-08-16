@@ -299,6 +299,126 @@ function GmailStatusBar({
   );
 }
 
+/** Task #539 — a ready-but-unsent certificat as reported by the server. */
+interface UnsentCertificat {
+  certificatId: number;
+  certificateRef: string;
+  netToPayTtc: string;
+  isSolde: boolean;
+  projectId: number;
+  projectName: string;
+  contractorId: number;
+  contractorName: string;
+}
+
+/**
+ * Task #539 — "Awaiting certificat send" alert. Certificats that are ready
+ * but never queued/sent are an important workflow stage that used to be
+ * invisible outside each project. Card with count → dialog listing them,
+ * modeled on the stuck-Gmail-messages dialog, with a per-row Send reusing
+ * the exact same endpoint as the Communications tab.
+ */
+function UnsentCertificatsAlert() {
+  const [open, setOpen] = useState(false);
+  const { toast } = useToast();
+  const { data: unsent, refetch } = useQuery<UnsentCertificat[]>({
+    queryKey: ["/api/certificats/unsent"],
+  });
+
+  const sendMutation = useMutation({
+    mutationFn: async (cert: UnsentCertificat) => {
+      const res = await apiRequest(
+        "POST",
+        `/api/projects/${cert.projectId}/certificats/${cert.certificatId}/send`,
+      );
+      return res.json();
+    },
+    onSuccess: (_data, cert) => {
+      toast({ title: "Certificat queued for sending", description: cert.certificateRef });
+      refetch();
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(cert.projectId), "certificats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(cert.projectId), "communications"] });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Send failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  if (!unsent || unsent.length === 0) return null;
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="w-full text-left bg-transparent border-0 p-0 cursor-pointer"
+        data-testid="card-unsent-certificats"
+      >
+        <LuxuryCard className="hover-elevate transition-all border-amber-400 border">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="p-1.5 rounded-lg bg-amber-50 dark:bg-amber-950/30">
+                <Award size={14} className="text-amber-500" />
+              </div>
+              <span className="text-[12px] text-foreground">
+                Awaiting certificat send — {unsent.length} certificat{unsent.length === 1 ? "" : "s"} ready but not sent
+              </span>
+            </div>
+            <span
+              className="inline-flex items-center justify-center min-w-[20px] h-[20px] px-1.5 rounded-full bg-amber-500 text-white text-[11px] font-bold shrink-0"
+              data-testid="badge-unsent-certificats-count"
+            >
+              {unsent.length}
+            </span>
+          </div>
+        </LuxuryCard>
+      </button>
+
+      <Dialog open={open} onOpenChange={(v) => { if (!v) setOpen(false); }}>
+        <DialogContent className="max-w-lg" data-testid="dialog-unsent-certificats">
+          <DialogHeader>
+            <DialogTitle>Certificats awaiting send</DialogTitle>
+            <DialogDescription>
+              These certificats de paiement are ready but have never been sent to the client.
+              Send them here, or open the project for the full context.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 max-h-72 overflow-y-auto">
+            {unsent.map((cert) => (
+              <div
+                key={cert.certificatId}
+                className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2"
+                data-testid={`row-unsent-certificat-${cert.certificatId}`}
+              >
+                <div className="min-w-0">
+                  <Link href={`/projets/${cert.projectId}`} onClick={() => setOpen(false)}>
+                    <p className="text-[11px] font-semibold text-foreground truncate underline-offset-2 hover:underline cursor-pointer">
+                      {cert.projectName} — {cert.certificateRef}
+                      {cert.isSolde ? " (solde)" : ""}
+                    </p>
+                  </Link>
+                  <p className="text-[10px] text-muted-foreground mt-0.5 truncate">
+                    {cert.contractorName} · {formatCurrency(parseFloat(cert.netToPayTtc))}
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-[10px] shrink-0"
+                  disabled={sendMutation.isPending}
+                  onClick={() => sendMutation.mutate(cert)}
+                  data-testid={`button-send-unsent-certificat-${cert.certificatId}`}
+                >
+                  Send
+                </Button>
+              </div>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 /** Task #506 — dialog listing Gmail messages that have failed N consecutive polls. */
 function StuckMessagesDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { toast } = useToast();
@@ -522,6 +642,8 @@ export default function Dashboard() {
         </div>
 
         <DesignFeeActionsStrip />
+
+        <UnsentCertificatsAlert />
 
         {data && data.urgentItems.length > 0 && (
           <div>

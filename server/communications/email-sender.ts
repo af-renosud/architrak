@@ -181,7 +181,18 @@ export async function sendCertificat(certificatId: number): Promise<number> {
     dedupeKey: `certificat_sent:${certificatId}:${storageKey}`,
   };
 
-  const created = await storage.createProjectCommunication(comm);
+  let created = await storage.createProjectCommunication(comm);
+
+  // Task #539 — retryability: the stable dedupe key means a PREVIOUSLY
+  // FAILED client send returns the existing failed row instead of inserting
+  // a new one. A "Send" click must then actually requeue that row (also
+  // clearing any archive flag via updateProjectCommunication), not report
+  // success while nothing is pending. queued/sent rows pass through
+  // untouched — that is the idempotent double-click case.
+  if (created.status === "failed") {
+    const requeued = await storage.updateProjectCommunication(created.id, { status: "queued" });
+    if (requeued) created = requeued;
+  }
 
   // Task #519 — queue the contractor payment notice alongside the client
   // send. Never blocks the client certificat: a missing/invalid contractor

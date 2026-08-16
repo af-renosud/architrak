@@ -354,6 +354,23 @@ export interface IStorage {
 
   getCertificatsByProject(projectId: number): Promise<Certificat[]>;
 
+  // Task #539 — cross-project list of ready-but-unsent certificats for the
+  // dashboard "Awaiting certificat send" alert. Single authoritative
+  // definition of "unsent": status='ready' AND no certificat_sent
+  // communication in queued/sent for the certificat.
+  getUnsentReadyCertificats(): Promise<
+    Array<{
+      certificatId: number;
+      certificateRef: string;
+      netToPayTtc: string;
+      isSolde: boolean;
+      projectId: number;
+      projectName: string;
+      contractorId: number;
+      contractorName: string;
+    }>
+  >;
+
   getCertificatsByProjectAndContractor(projectId: number, contractorId: number): Promise<Certificat[]>;
 
   getCertificat(id: number): Promise<Certificat | undefined>;
@@ -1976,6 +1993,54 @@ export class DatabaseStorage implements IStorage {
 
   async getCertificatsByProject(projectId: number): Promise<Certificat[]> {
     return db.select().from(certificats).where(eq(certificats.projectId, projectId)).orderBy(desc(certificats.createdAt));
+  }
+
+  // Task #539 — see interface note: "unsent" = status='ready' with no
+  // certificat_sent communication in queued/sent. Superseded/draft/sent/paid
+  // rows never appear here.
+  async getUnsentReadyCertificats(): Promise<
+    Array<{
+      certificatId: number;
+      certificateRef: string;
+      netToPayTtc: string;
+      isSolde: boolean;
+      projectId: number;
+      projectName: string;
+      contractorId: number;
+      contractorName: string;
+    }>
+  > {
+    const rows = await db
+      .select({
+        certificatId: certificats.id,
+        certificateRef: certificats.certificateRef,
+        netToPayTtc: certificats.netToPayTtc,
+        isSolde: certificats.isSolde,
+        projectId: certificats.projectId,
+        projectName: projects.name,
+        contractorId: certificats.contractorId,
+        contractorName: contractors.name,
+      })
+      .from(certificats)
+      .innerJoin(projects, eq(certificats.projectId, projects.id))
+      .innerJoin(contractors, eq(certificats.contractorId, contractors.id))
+      .where(
+        and(
+          eq(certificats.status, "ready"),
+          // Archived projects never surface in the alert — sending payment
+          // instructions from an archived project is blocked UI-side and at
+          // the send endpoint.
+          isNull(projects.archivedAt),
+          sql`NOT EXISTS (
+            SELECT 1 FROM ${projectCommunications}
+            WHERE ${projectCommunications.relatedCertificatId} = ${certificats.id}
+              AND ${projectCommunications.type} = 'certificat_sent'
+              AND ${projectCommunications.status} IN ('queued', 'sent')
+          )`,
+        ),
+      )
+      .orderBy(asc(projects.name), asc(certificats.certificateRef));
+    return rows;
   }
 
   async getCertificatsByProjectAndContractor(projectId: number, contractorId: number): Promise<Certificat[]> {

@@ -53,6 +53,7 @@ import {
   type FragmentLineItemLike,
 } from "@/components/devis/draft-warnings";
 import { SigningPanel, OPEN_SIGNING_SEND_EVENT } from "@/components/devis/SigningPanel";
+import { CertificatPanel } from "@/components/devis/CertificatPanel";
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
@@ -4922,6 +4923,7 @@ function ChecksPanel({
       <ProjectSharePublishControl projectId={projectId} devisId={devisId} isArchived={isArchived} />
       <InsurancePanel devisId={devisId} isArchived={isArchived} />
       <SigningPanel devisId={devisId} isArchived={isArchived} />
+      <CertificatPanel devisId={devisId} projectId={projectId} isArchived={isArchived} />
 
       {/* Bottom mirror — variant B "Inline composer + bottom mirror".
           Navy-bordered card showing the architect exactly what will be
