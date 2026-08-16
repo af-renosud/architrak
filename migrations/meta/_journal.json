@@ -666,6 +666,13 @@
       "when": 1787280000000,
       "tag": "0094_backfill_certificat_sent_status",
       "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1787290000000,
+      "tag": "0095_refire_certificat_sent_backfill",
+      "breakpoints": true
     }
   ]
 }

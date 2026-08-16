@@ -37,7 +37,7 @@ import { resolveMigrationsFolder } from "../migrate";
 export type ArtifactKind =
   | { kind: "table"; table: string }
   | { kind: "column"; table: string; column: string }
-  | { kind: "data_only"; reason: string };
+  | { kind: "data_only"; reason: string; rerunnable?: boolean };
 
 export interface MigrationArtifact {
   tag: string;
@@ -53,6 +53,15 @@ export interface MigrationArtifact {
  * Adding a new migration MUST add a row here; the assertion throws if
  * the tracker has a hash that the journal lists but this table does
  * not cover.
+ *
+ * `rerunnable: true` on a data_only entry is an audited promise that the
+ * migration's SQL is pure, idempotent DML (guarded UPDATE/INSERT — no
+ * DDL, no unguarded constraint/index/drop) that is SAFE to execute again
+ * even if it already ran. Only rerunnable data-only migrations are
+ * executed by the tracker self-heal (Task #561); a data_only entry
+ * WITHOUT the flag is stamped-only during self-heal, so if its effect
+ * matters in production it must be re-shipped as a new rerunnable
+ * migration. Set the flag on every new data-only DML backfill.
  */
 export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0000_baseline", artifact: { kind: "table", table: "ai_model_settings" } },
@@ -149,7 +158,8 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0091_communications_archive", artifact: { kind: "column", table: "project_communications", column: "archived_at" } },
   { tag: "0092_email_doc_fingerprint", artifact: { kind: "column", table: "email_documents", column: "content_fingerprint" } },
   { tag: "0093_app_settings", artifact: { kind: "table", table: "app_settings" } },
-  { tag: "0094_backfill_certificat_sent_status", artifact: { kind: "data_only", reason: "one-shot backfill advancing already-emailed certificats from ready to sent — no schema change" } },
+  { tag: "0094_backfill_certificat_sent_status", artifact: { kind: "data_only", reason: "one-shot backfill advancing already-emailed certificats from ready to sent — no schema change", rerunnable: true } },
+  { tag: "0095_refire_certificat_sent_backfill", artifact: { kind: "data_only", reason: "re-fire of the 0094 backfill, which was tracker-stamped in prod without executing; identical idempotent UPDATE", rerunnable: true } },
 ];
 
 interface JournalFile {
@@ -324,6 +334,53 @@ export async function assertSchemaMatchesTracker(
     console.warn(
       `[migrate] tracker-behind drift detected for ${trackerBehindEntries.length} migration(s) (${tags}); attempting self-heal via reconcileTracker.`,
     );
+    // Task #561 — reconcileTracker blanket-inserts a tracker row for EVERY
+    // journal entry missing from the tracker, including pending `data_only`
+    // migrations whose SQL has NOT run yet (they are skipped by the drift
+    // probe above, so they can be pending without being "behind"). Stamping
+    // them as applied without executing them silently swallows their one-shot
+    // UPDATEs — exactly what happened to the 0094 certificat backfill in
+    // production. So before reconciling, execute the SQL of every pending
+    // data-only migration explicitly flagged `rerunnable` (an audited
+    // promise of idempotent, DDL-free DML — see MIGRATION_ARTIFACTS doc),
+    // in journal order. The flag gate matters: many historical data_only
+    // entries contain unguarded DDL (constraints, drops) whose tracker row
+    // can legitimately be missing while their SQL already applied —
+    // re-executing those would crash a valid recovery. Rerunnable DML is
+    // safe both ways: if it already ran it's a no-op, and a crash between
+    // this execution and the tracker insert just re-runs it next boot.
+    const pendingDataOnly = journal.entries
+      .filter((e) => {
+        const artifact = MIGRATION_ARTIFACTS.find((m) => m.tag === e.tag)!.artifact;
+        return artifact.kind === "data_only" && artifact.rerunnable === true && !trackerWhens.has(e.when);
+      })
+      .sort((a, b) => a.when - b.when);
+    for (const entry of pendingDataOnly) {
+      const sqlPath = path.join(migrationsFolder, `${entry.tag}.sql`);
+      const raw = fs.readFileSync(sqlPath, "utf-8");
+      const statements = raw
+        .split("--> statement-breakpoint")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      console.warn(
+        `[migrate] executing pending data-only migration ${entry.tag} (${statements.length} statement(s)) before tracker reconcile — reconcile alone would stamp it applied without running it.`,
+      );
+      const client = await opts.pool.connect();
+      try {
+        await client.query("BEGIN");
+        for (const stmt of statements) {
+          await client.query(stmt);
+        }
+        await client.query("COMMIT");
+      } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw new Error(
+          `[migrate] FATAL — pending data-only migration ${entry.tag} failed during self-heal: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      } finally {
+        client.release();
+      }
+    }
     const { reconcileTracker } = await import(
       "../../scripts/reconcile-drizzle-tracker"
     );

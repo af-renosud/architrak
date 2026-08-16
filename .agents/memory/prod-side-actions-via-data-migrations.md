@@ -8,6 +8,7 @@ description: How to trigger a production-side data action (e.g. re-queue a wedge
 **Why:** Task agents cannot press Publish (`suggestDeploy` is main-agent-only) and cannot authenticate to the production UI (domain-restricted Google OAuth); the prod DB replica is read-only. The migration tracker is the only one-shot, deploy-coupled hook available.
 
 **How to apply:**
+- CRITICAL: the tracker self-heal (reconcile on tracker-behind drift) stamps journal entries as applied. Only data-only artifacts flagged `rerunnable: true` get their SQL executed during self-heal; anything else pending at that moment is stamped WITHOUT running (this silently swallowed a prod backfill once). So every new data-only DML backfill must be pure idempotent DML AND carry `rerunnable: true` in the artifact list.
 - Guard the UPDATE tightly (exact id + state + error-note signature) so it is a no-op in dev, replay DBs, and if the record has already moved on. Use a CTE so dependent queue-row resets only fire when the primary guard matched.
 - `data_only` migrations are an established pattern here — add the journal entry AND a `kind: "data_only"` row in the schema-presence-check artifact list.
 - Verify with the replay gate + dev migration run; dev/prod share the object-storage bucket, so the actual production file can be pulled and run through the fixed code path locally as proof.

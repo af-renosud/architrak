@@ -267,6 +267,120 @@ describe.skipIf(skipModule !== null)("schema-presence check (Task #136)", () => 
     expect(total.rows[0].n).toBe(journal.entries.length);
   }, 60_000);
 
+  it("self-heal EXECUTES pending data-only migrations instead of just stamping them (Task #561)", async (t) => {
+    if (ctx.skipReason || !ctx.replayPool) {
+      t.skip();
+      return;
+    }
+    // Reproduce the production incident: tracker is missing BOTH a
+    // schema migration whose artifact is present (0020 → triggers the
+    // self-heal) AND a pending data-only migration (0094, the certificat
+    // backfill). The old behavior blanket-inserted 0094's tracker row
+    // without running its UPDATE, silently swallowing the repair. The
+    // fixed self-heal must execute 0094's SQL before reconciling.
+    const journalPath = path.join(migrationsFolder, "meta", "_journal.json");
+    const journal = JSON.parse(fs.readFileSync(journalPath, "utf-8")) as {
+      entries: Array<{ tag: string; when: number }>;
+    };
+    const schemaEntry = journal.entries.find((e) => e.tag === "0020_per_line_pdf_bbox")!;
+    const dataOnlyEntry = journal.entries.find(
+      (e) => e.tag === "0094_backfill_certificat_sent_status",
+    )!;
+
+    for (const e of [schemaEntry, dataOnlyEntry]) {
+      const del = await ctx.replayPool.query(
+        `DELETE FROM drizzle.__drizzle_migrations WHERE created_at = $1`,
+        [e.when],
+      );
+      expect(del.rowCount).toBe(1);
+    }
+
+    // Seed a stale certificat exactly like prod C1: status 'ready' with
+    // a sent certificat_sent communication.
+    const proj = await ctx.replayPool.query<{ id: number }>(
+      `INSERT INTO projects (name, code, client_name) VALUES ('T561', 'T561-${Date.now()}', 'T561') RETURNING id`,
+    );
+    const contractor = await ctx.replayPool.query<{ id: number }>(
+      `INSERT INTO contractors (name) VALUES ('T561') RETURNING id`,
+    );
+    const cert = await ctx.replayPool.query<{ id: number }>(
+      `INSERT INTO certificats (project_id, contractor_id, certificate_ref, total_works_ht, net_to_pay_ht, tva_amount, net_to_pay_ttc, status)
+       VALUES ($1, $2, 'T561-C1', '100.00', '100.00', '20.00', '120.00', 'ready') RETURNING id`,
+      [proj.rows[0].id, contractor.rows[0].id],
+    );
+    await ctx.replayPool.query(
+      `INSERT INTO project_communications (project_id, type, recipient_type, subject, status, related_certificat_id)
+       VALUES ($1, 'certificat_sent', 'client', 'T561', 'sent', $2)`,
+      [proj.rows[0].id, cert.rows[0].id],
+    );
+
+    await expect(
+      assertSchemaMatchesTracker({
+        pool: ctx.replayPool,
+        migrationsFolder,
+      }),
+    ).resolves.toBeUndefined();
+
+    // The data-only UPDATE must actually have run — the stale
+    // certificat is now 'sent', not merely tracker-stamped.
+    const after = await ctx.replayPool.query<{ status: string; version: number }>(
+      `SELECT status, version FROM certificats WHERE id = $1`,
+      [cert.rows[0].id],
+    );
+    expect(after.rows[0].status).toBe("sent");
+
+    // And the tracker is back in full sync.
+    const total = await ctx.replayPool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations`,
+    );
+    expect(total.rows[0].n).toBe(journal.entries.length);
+
+    // Cleanup seeds so later replay assertions aren't polluted.
+    await ctx.replayPool.query(`DELETE FROM project_communications WHERE project_id = $1`, [proj.rows[0].id]);
+    await ctx.replayPool.query(`DELETE FROM certificats WHERE id = $1`, [cert.rows[0].id]);
+    await ctx.replayPool.query(`DELETE FROM projects WHERE id = $1`, [proj.rows[0].id]);
+    await ctx.replayPool.query(`DELETE FROM contractors WHERE id = $1`, [contractor.rows[0].id]);
+  }, 60_000);
+
+  it("self-heal does NOT execute non-rerunnable data-only migrations — stamp-only (Task #561)", async (t) => {
+    if (ctx.skipReason || !ctx.replayPool) {
+      t.skip();
+      return;
+    }
+    // 0079_certificat_status_check is data_only WITHOUT the rerunnable
+    // flag: its SQL is an unguarded ADD CONSTRAINT that already applied.
+    // If the self-heal tried to execute it again the whole recovery
+    // would FATAL with "constraint already exists". Deleting its
+    // tracker row alongside a schema migration's must still self-heal
+    // cleanly by stamping only.
+    const journalPath = path.join(migrationsFolder, "meta", "_journal.json");
+    const journal = JSON.parse(fs.readFileSync(journalPath, "utf-8")) as {
+      entries: Array<{ tag: string; when: number }>;
+    };
+    const schemaEntry = journal.entries.find((e) => e.tag === "0020_per_line_pdf_bbox")!;
+    const nonRerunnable = journal.entries.find((e) => e.tag === "0079_certificat_status_check")!;
+
+    for (const e of [schemaEntry, nonRerunnable]) {
+      const del = await ctx.replayPool.query(
+        `DELETE FROM drizzle.__drizzle_migrations WHERE created_at = $1`,
+        [e.when],
+      );
+      expect(del.rowCount).toBe(1);
+    }
+
+    await expect(
+      assertSchemaMatchesTracker({
+        pool: ctx.replayPool,
+        migrationsFolder,
+      }),
+    ).resolves.toBeUndefined();
+
+    const total = await ctx.replayPool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations`,
+    );
+    expect(total.rows[0].n).toBe(journal.entries.length);
+  }, 60_000);
+
   it("MIGRATION_ARTIFACTS covers every journal entry exactly once", () => {
     const journalPath = path.join(migrationsFolder, "meta", "_journal.json");
     const journal = JSON.parse(fs.readFileSync(journalPath, "utf-8")) as {
