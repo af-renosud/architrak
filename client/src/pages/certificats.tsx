@@ -21,6 +21,9 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { insertCertificatSchema } from "@shared/schema";
 import type { Project, Contractor, Certificat, CertificatPayment, CertificatPaymentSuggestion, Invoice, Marche, Devis } from "@shared/schema";
+
+// Task #556 — server enriches "sent" certificats with the email evidence.
+type CertificatWithSentInfo = Certificat & { sentAt?: string; sentToEmail?: string };
 import { computeCertificatDeductions, computeEffectiveTvaRatePercent } from "@shared/financial-utils";
 import { z } from "zod";
 
@@ -543,7 +546,7 @@ export default function Certificats() {
     const parsed = raw ? parseInt(raw, 10) : NaN;
     return Number.isFinite(parsed) ? parsed : null;
   });
-  const [viewingCert, setViewingCert] = useState<Certificat | null>(null);
+  const [viewingCert, setViewingCert] = useState<CertificatWithSentInfo | null>(null);
   const { toast } = useToast();
 
   const { data: projects, isLoading: loadingProjects } = useQuery<Project[]>({
@@ -554,7 +557,7 @@ export default function Certificats() {
     queryKey: ["/api/contractors"],
   });
 
-  const { data: allCertificats, isLoading: loadingCerts } = useQuery<Certificat[]>({
+  const { data: allCertificats, isLoading: loadingCerts } = useQuery<CertificatWithSentInfo[]>({
     queryKey: ["/api/projects", String(selectedProjectId), "certificats"],
     enabled: !!selectedProjectId,
   });
@@ -1015,6 +1018,17 @@ export default function Certificats() {
                         </span>
                       )}
                       <StatusBadge status={cert.status} />
+                      {/* Task #556 — show send evidence for "sent" and "paid" certificats */}
+                      {(cert.status === "sent" || cert.status === "paid") && cert.sentAt && cert.sentToEmail && (
+                        <span
+                          className="text-[9px] text-muted-foreground"
+                          data-testid={`text-cert-sent-info-${cert.id}`}
+                          title={`Envoyé à ${cert.sentToEmail}`}
+                        >
+                          Envoyé à <span className="font-semibold text-foreground">{cert.sentToEmail}</span>{" "}
+                          le {new Date(cert.sentAt).toLocaleDateString("fr-FR")}
+                        </span>
+                      )}
                       {cert.driveWebViewLink && (
                         <a
                           href={cert.driveWebViewLink}

@@ -135,7 +135,16 @@ router.get("/api/certificats/unsent", async (_req, res) => {
 
 router.get("/api/projects/:projectId/certificats", async (req, res) => {
   const certs = await storage.getCertificatsByProject(Number(req.params.projectId));
-  res.json(certs);
+  // Task #556 — enrich each certificat with its sent-email evidence so the UI
+  // can display "Sent to <email> on <date>" without a separate request.
+  const sentComms = await storage.getCertificatSentComms(certs.map((c) => c.id));
+  const enriched = certs.map((c) => {
+    const sent = sentComms.get(c.id);
+    return sent
+      ? { ...c, sentAt: sent.sentAt.toISOString(), sentToEmail: sent.recipientEmail }
+      : c;
+  });
+  res.json(enriched);
 });
 
 router.get("/api/projects/:projectId/certificats/next-ref", async (req, res) => {
@@ -332,6 +341,12 @@ router.post(
 router.get("/api/certificats/:id", async (req, res) => {
   const cert = await storage.getCertificat(Number(req.params.id));
   if (!cert) return res.status(404).json({ message: "Certificat not found" });
+  // Task #556 — include sent-email evidence on single-cert detail too.
+  const sentComms = await storage.getCertificatSentComms([cert.id]);
+  const sent = sentComms.get(cert.id);
+  if (sent) {
+    return res.json({ ...cert, sentAt: sent.sentAt.toISOString(), sentToEmail: sent.recipientEmail });
+  }
   res.json(cert);
 });
 

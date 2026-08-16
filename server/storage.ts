@@ -354,6 +354,12 @@ export interface IStorage {
 
   getCertificatsByProject(projectId: number): Promise<Certificat[]>;
 
+  // Task #556 — fetch the latest successful certificat_sent communication for
+  // each certificat in the given list. Returns a map keyed by certificatId.
+  getCertificatSentComms(certificatIds: number[]): Promise<
+    Map<number, { sentAt: Date; recipientEmail: string }>
+  >;
+
   // Task #539 — cross-project list of ready-but-unsent certificats for the
   // dashboard "Awaiting certificat send" alert. Single authoritative
   // definition of "unsent": status='ready' AND no certificat_sent
@@ -2007,6 +2013,42 @@ export class DatabaseStorage implements IStorage {
 
   async getCertificatsByProject(projectId: number): Promise<Certificat[]> {
     return db.select().from(certificats).where(eq(certificats.projectId, projectId)).orderBy(desc(certificats.createdAt));
+  }
+
+  // Task #556 — for each certificat in the list, find the latest
+  // certificat_sent communication with status='sent' (i.e. actually
+  // delivered). Returns a Map keyed by certificatId; missing entries mean
+  // the cert was never successfully emailed.
+  async getCertificatSentComms(
+    certificatIds: number[],
+  ): Promise<Map<number, { sentAt: Date; recipientEmail: string }>> {
+    if (certificatIds.length === 0) return new Map();
+    const rows = await db
+      .select({
+        certId: projectCommunications.relatedCertificatId,
+        sentAt: projectCommunications.sentAt,
+        recipientEmail: projectCommunications.recipientEmail,
+      })
+      .from(projectCommunications)
+      .where(
+        and(
+          inArray(projectCommunications.relatedCertificatId, certificatIds),
+          eq(projectCommunications.type, "certificat_sent"),
+          eq(projectCommunications.status, "sent"),
+          isNotNull(projectCommunications.sentAt),
+          isNotNull(projectCommunications.recipientEmail),
+        ),
+      )
+      .orderBy(desc(projectCommunications.sentAt));
+    // Keep only the latest sent comm per certificat (rows already ordered newest-first).
+    const out = new Map<number, { sentAt: Date; recipientEmail: string }>();
+    for (const row of rows) {
+      if (row.certId == null || row.sentAt == null || !row.recipientEmail) continue;
+      if (!out.has(row.certId)) {
+        out.set(row.certId, { sentAt: row.sentAt, recipientEmail: row.recipientEmail });
+      }
+    }
+    return out;
   }
 
   // Task #539 — see interface note: "unsent" = status='ready' with no

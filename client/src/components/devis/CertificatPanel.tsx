@@ -10,6 +10,9 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient, projectScopedKey, ApiError } from "@/lib/queryClient";
 import type { Devis, Certificat } from "@shared/schema";
 
+// Task #556 — server enriches "sent" certificats with the email evidence.
+type CertificatWithSentInfo = Certificat & { sentAt?: string; sentToEmail?: string };
+
 /**
  * Task #539 — per-devis certificat section, rendered immediately below the
  * electronic-signature panel so the workflow reads linearly:
@@ -61,7 +64,7 @@ export function CertificatPanel({
   const devisQuery = useQuery<Devis>({ queryKey: ["/api/devis", devisId] });
   const d = devisQuery.data;
 
-  const certsQuery = useQuery<Certificat[]>({
+  const certsQuery = useQuery<CertificatWithSentInfo[]>({
     queryKey: projectScopedKey(projectId, "certificats"),
     enabled: Boolean(d),
   });
@@ -96,7 +99,7 @@ export function CertificatPanel({
     },
   });
 
-  const certs = useMemo(() => {
+  const certs = useMemo<CertificatWithSentInfo[]>(() => {
     if (!d || !certsQuery.data) return [];
     return certsQuery.data.filter(
       (c) => c.contractorId === d.contractorId && c.status !== "superseded",
@@ -146,15 +149,26 @@ export function CertificatPanel({
                 className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2"
                 data-testid={`row-devis-certificat-${cert.id}`}
               >
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-[11px] font-semibold text-foreground truncate">
-                    {cert.certificateRef}
-                  </span>
-                  <Badge className={`text-[9px] ${badge.className}`} data-testid={`badge-devis-cert-status-${cert.id}`}>
-                    {badge.label}
-                  </Badge>
-                  {cert.isSolde && (
-                    <Badge variant="outline" className="text-[9px]">Solde</Badge>
+                <div className="flex flex-col gap-0.5 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-[11px] font-semibold text-foreground truncate">
+                      {cert.certificateRef}
+                    </span>
+                    <Badge className={`text-[9px] ${badge.className}`} data-testid={`badge-devis-cert-status-${cert.id}`}>
+                      {badge.label}
+                    </Badge>
+                    {cert.isSolde && (
+                      <Badge variant="outline" className="text-[9px]">Solde</Badge>
+                    )}
+                  </div>
+                  {/* Task #556 — send evidence for sent/paid certificats */}
+                  {(cert.status === "sent" || cert.status === "paid") && cert.sentAt && cert.sentToEmail && (
+                    <span
+                      className="text-[9px] text-muted-foreground"
+                      data-testid={`text-devis-cert-sent-info-${cert.id}`}
+                    >
+                      Envoyé à {cert.sentToEmail} le {new Date(cert.sentAt).toLocaleDateString("fr-FR")}
+                    </span>
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
