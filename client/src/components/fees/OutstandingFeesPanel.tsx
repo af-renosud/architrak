@@ -97,9 +97,9 @@ function InvoiceNowAction({
       queryClient.invalidateQueries({ queryKey: ["/api/fees/outstanding"] });
       const pid = scope === "project" ? projectId : entry.projectId;
       if (pid !== undefined) {
-        const pidStr = String(pid);
+        const pidStr = String(pid); // project-key-string-ok
         queryClient.invalidateQueries({
-          queryKey: ["/api/projects", pidStr, "fees", "outstanding"],
+          queryKey: ["/api/projects", pidStr, "fees", "outstanding"], // project-key-string-ok
         });
       }
       queryClient.invalidateQueries({ queryKey: ["/api/admin/pennylane/pushes"] });
@@ -162,12 +162,12 @@ function MarkInvoicedAction({
       queryClient.invalidateQueries({ queryKey: ["/api/fees/outstanding"] });
       const pid = scope === "project" ? projectId : entry.projectId;
       if (pid !== undefined) {
-        const pidStr = String(pid);
+        const pidStr = String(pid); // project-key-string-ok
         queryClient.invalidateQueries({
-          queryKey: ["/api/projects", pidStr, "fees", "outstanding"],
+          queryKey: ["/api/projects", pidStr, "fees", "outstanding"], // project-key-string-ok
         });
-        queryClient.invalidateQueries({ queryKey: ["/api/projects", pidStr, "fee-entries"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/projects", pidStr, "fees"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/projects", pidStr, "fee-entries"] }); // project-key-string-ok
+        queryClient.invalidateQueries({ queryKey: ["/api/projects", pidStr, "fees"] }); // project-key-string-ok
       }
       setOpen(false);
       setRef("");

@@ -689,7 +689,7 @@ function AcompteBadge({ devis }: { devis: Devis }) {
   // (pending: cert just created, paid/applied: deposit marked paid via cert).
   // The pending-only guards on canGenerateCert / canMarkPaid are separate.
   const { data: projectCerts } = useQuery<Array<{ id: number; acompteDevisId?: number | null; status?: string; certificateRef?: string }>>({
-    queryKey: ["/api/projects", devis.projectId, "certificats"],
+    queryKey: ["/api/projects", String(devis.projectId), "certificats"],
     enabled: state === "pending" || state === "paid" || state === "applied",
   });
   const liveAcompteCert = (projectCerts ?? []).find(
@@ -719,8 +719,8 @@ function AcompteBadge({ devis }: { devis: Devis }) {
       return res.json();
     },
     onSuccess: (cert: { id?: number; certificateRef?: string }) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", devis.projectId, "devis"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", devis.projectId, "certificats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(devis.projectId), "devis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(devis.projectId), "certificats"] });
       const certUrl = cert.id
         ? `/certificats?projectId=${devis.projectId}&certificatId=${cert.id}`
         : `/certificats?projectId=${devis.projectId}`;
@@ -747,7 +747,7 @@ function AcompteBadge({ devis }: { devis: Devis }) {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", devis.projectId, "devis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(devis.projectId), "devis"] });
       toast({ title: "Acompte marqué payé" });
     },
     onError: (err: Error) => {
