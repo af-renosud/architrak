@@ -841,7 +841,7 @@ function escapeCssString(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-function renderBankingBlock(contractor: Contractor): string {
+function renderBankingBlock(contractor: Contractor, proposeHtml: string = ""): string {
   if (!contractor.iban) return "";
   const holder = contractor.accountHolderName || contractor.name;
   // Task #485 — the payment keys (IBAN + SWIFT/BIC) are what clients
@@ -853,6 +853,7 @@ function renderBankingBlock(contractor: Contractor): string {
   const holderLine = `${escapeHtml(holder)}${contractor.bankName ? ` \u2014 ${escapeHtml(contractor.bankName)}` : ""}`;
   return `
   <div class="banking-card">
+    ${proposeHtml}
     <div class="banking-card-title">Bank details for your payment</div>
     <div class="banking-holder">${holderLine}</div>
     <div class="banking-keys">
@@ -1154,7 +1155,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     font-size: 14pt;
     font-weight: 700;
     letter-spacing: 0.055em;
-    color: #0B2545;
+    color: #B23A48;
     white-space: nowrap;
   }
   .banking-key-bic .banking-key-value {
@@ -1162,7 +1163,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     font-size: 12pt;
     font-weight: 700;
     letter-spacing: 0.055em;
-    color: #0B2545;
+    color: #B23A48;
     white-space: nowrap;
   }
   .banking-key-missing {
@@ -1505,8 +1506,6 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     </div>
   </div>
 
-  ${renderBankingBlock(contractor)}
-
   <div class="section-title">Works Description</div>
   <table class="works-table">
     <thead>
@@ -1591,14 +1590,16 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     </div>
   </div>
 
-  <div class="payment-section">
-    <div class="payment-propose">
+  <div class="payment-amount-words" style="margin-bottom:2mm;">
+    In words : ${amountInWords}
+  </div>
+
+  ${renderBankingBlock(contractor, `<div class="payment-propose" style="margin-bottom:1.5mm;">
       In view of the progress of the work, <strong>SAS ARCHITECTS-FRANCE</strong> proposes that the client pay the sum of :
       <strong>${formatCurrencyNoSymbol(netTtc)}</strong>
-    </div>
-    <div class="payment-amount-words">
-      In words : ${amountInWords}
-    </div>
+    </div>`)}
+
+  <div class="payment-section">
     <div class="payment-attention">
       This Requires Your Payment and Attention.
     </div>

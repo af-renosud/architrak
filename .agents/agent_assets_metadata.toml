@@ -14,3 +14,10 @@ uri = "file://attached_assets/generated/certificat-example-redesign.pdf"
 type = "pdf"
 title = "Sample certificat — revised (English, whole-project summary)"
 description = "English throughout with French terms kept and glossed; pay-now text points to this certificate; PV/MV explained; annexe renamed Financial Summary with a new Section 3 covering all live works on the whole project."
+
+[[outputs]]
+id = "DV30vOkOS7cPfmh4KgKqS"
+uri = "file://cert-preview-task535.pdf"
+type = "pdf"
+title = "Certificat de Paiement — Sample (updated)"
+description = "Payment proposal sentence now sits inside the banking-details box, alongside the red IBAN/SWIFT — amount and recipient in one frame."
