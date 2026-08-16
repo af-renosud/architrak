@@ -3,7 +3,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { Building2, ArrowLeft, Mail, Phone, MapPin, FileText, Receipt, Shield, Globe, User, RefreshCw, Link2, AlertTriangle } from "lucide-react";
+import { Building2, ArrowLeft, Mail, Phone, MapPin, FileText, Receipt, Shield, Globe, User, RefreshCw, Link2, AlertTriangle, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -38,6 +38,46 @@ export default function ContractorDetail() {
   const { data: allProjects } = useQuery<Project[]>({
     queryKey: ["/api/projects"],
     enabled: !!contractor,
+  });
+
+  type FailedNoticeGroup = {
+    contractorId: number;
+    contractorName: string;
+    contractorEmail: string | null;
+    failedCount: number;
+    communicationIds: number[];
+  };
+
+  const { data: failedNoticeGroups } = useQuery<FailedNoticeGroup[]>({
+    queryKey: ["/api/failed-contractor-notices"],
+    enabled: !!contractor,
+    refetchInterval: 30_000,
+  });
+
+  const failedGroup = failedNoticeGroups?.find(
+    (g) => g.contractorId === Number(contractorId),
+  ) ?? null;
+
+  const retryFailedMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/contractors/${contractorId}/retry-failed-notices`, {});
+      return res.json();
+    },
+    onSuccess: (data: { retried: number; succeeded: number; failed: number; firstError?: string }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/failed-contractor-notices"] });
+      if (data.failed === 0) {
+        toast({ title: "Avis renvoyés", description: `${data.succeeded} avis envoyé(s) avec succès.` });
+      } else {
+        toast({
+          title: "Envoi partiel",
+          description: `${data.succeeded} réussi(s), ${data.failed} échoué(s).${data.firstError ? ` Erreur : ${data.firstError}` : ""}`,
+          variant: "destructive",
+        });
+      }
+    },
+    onError: (error: Error) => {
+      toast({ title: "Erreur", description: error.message, variant: "destructive" });
+    },
   });
 
   if (isLoading) {
@@ -122,6 +162,36 @@ export default function ContractorDetail() {
             )}
           </div>
         </div>
+
+        {failedGroup && (
+          <div
+            className="flex items-center justify-between gap-4 rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3"
+            data-testid="banner-failed-notices"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <XCircle size={14} className="text-destructive shrink-0" />
+              <p className="text-[11px] text-destructive font-medium">
+                {failedGroup.failedCount} avis de passage en échec
+                {failedGroup.contractorEmail
+                  ? ` — adresse : ${failedGroup.contractorEmail}`
+                  : " — aucune adresse email renseignée"}
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => retryFailedMutation.mutate()}
+              disabled={retryFailedMutation.isPending}
+              className="shrink-0 border-destructive/40 text-destructive hover:bg-destructive/10"
+              data-testid="button-retry-failed-notices"
+            >
+              <RefreshCw size={12} className={retryFailedMutation.isPending ? "animate-spin" : ""} />
+              <span className="text-[9px] font-bold uppercase tracking-widest">
+                {retryFailedMutation.isPending ? "Envoi…" : "Renvoyer les avis en échec"}
+              </span>
+            </Button>
+          </div>
+        )}
 
         <SectionHeader
           icon={Building2}
