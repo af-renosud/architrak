@@ -21,6 +21,7 @@ import { getDevisUploadErrorTitle } from "@shared/devis-upload-errors";
 import { getInvoiceUploadErrorTitle } from "@shared/invoice-upload-errors";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+import { ToastAction } from "@/components/ui/toast";
 import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, queryClient, ApiError } from "@/lib/queryClient";
 import { useForm } from "react-hook-form";
@@ -684,13 +685,17 @@ function AcompteBadge({ devis }: { devis: Devis }) {
   // button when that certificat is actually visible in the project's
   // certificat list (shared query, cached across badges); the server
   // re-verifies regardless.
-  const { data: projectCerts } = useQuery<Array<{ acompteDevisId?: number | null; status?: string }>>({
-    queryKey: ["/api/projects", String(devis.projectId), "certificats"],
-    enabled: state === "pending",
+  // Query runs for every state where a live acompte certificat may exist
+  // (pending: cert just created, paid/applied: deposit marked paid via cert).
+  // The pending-only guards on canGenerateCert / canMarkPaid are separate.
+  const { data: projectCerts } = useQuery<Array<{ id: number; acompteDevisId?: number | null; status?: string; certificateRef?: string }>>({
+    queryKey: ["/api/projects", devis.projectId, "certificats"],
+    enabled: state === "pending" || state === "paid" || state === "applied",
   });
-  const hasLiveAcompteCert = (projectCerts ?? []).some(
+  const liveAcompteCert = (projectCerts ?? []).find(
     (c) => c.acompteDevisId === devis.id && c.status !== "superseded",
   );
+  const hasLiveAcompteCert = !!liveAcompteCert;
   const canMarkPaid = state === "invoiced" || (state === "pending" && hasLiveAcompteCert);
   // Task #491 — one-click acompte certificat, only on a client-signed devis
   // whose deposit is still pending.
@@ -713,14 +718,22 @@ function AcompteBadge({ devis }: { devis: Devis }) {
       const res = await apiRequest("POST", `/api/devis/${devis.id}/acompte/generate-certificat`, {});
       return res.json();
     },
-    onSuccess: (cert: { certificateRef?: string }) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(devis.projectId), "devis"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(devis.projectId), "certificats"] });
+    onSuccess: (cert: { id?: number; certificateRef?: string }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", devis.projectId, "devis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", devis.projectId, "certificats"] });
+      const certUrl = cert.id
+        ? `/certificats?projectId=${devis.projectId}&certificatId=${cert.id}`
+        : `/certificats?projectId=${devis.projectId}`;
       toast({
         title: "Certificat d'acompte créé",
         description: cert.certificateRef
-          ? `${cert.certificateRef} — sans facture fournisseur. Marquez l'acompte payé une fois le virement effectué.`
+          ? `${cert.certificateRef} — brouillon, sans facture fournisseur. Marquez l'acompte payé une fois le virement effectué.`
           : "Certificat d'acompte créé sans facture fournisseur.",
+        action: (
+          <ToastAction altText="Voir le certificat" onClick={() => { window.location.href = certUrl; }}>
+            Voir →
+          </ToastAction>
+        ),
       });
     },
     onError: (err: Error) => {
@@ -734,7 +747,7 @@ function AcompteBadge({ devis }: { devis: Devis }) {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(devis.projectId), "devis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", devis.projectId, "devis"] });
       toast({ title: "Acompte marqué payé" });
     },
     onError: (err: Error) => {
@@ -749,7 +762,18 @@ function AcompteBadge({ devis }: { devis: Devis }) {
       onClick={(e) => e.stopPropagation()}
     >
       <span data-testid={`text-acompte-state-${devis.id}`}>{label} · {state}</span>
-      {canGenerateCert && (
+      {liveAcompteCert && (
+        <a
+          href={`/certificats?projectId=${devis.projectId}&certificatId=${liveAcompteCert.id}`}
+          className="rounded bg-white/60 px-1 text-[10px] font-bold hover:bg-white"
+          onClick={(e) => e.stopPropagation()}
+          title={`Voir le certificat d'acompte${liveAcompteCert.certificateRef ? ` ${liveAcompteCert.certificateRef}` : ""}`}
+          data-testid={`link-acompte-cert-view-${devis.id}`}
+        >
+          {liveAcompteCert.certificateRef ?? "Voir certificat"} →
+        </a>
+      )}
+      {canGenerateCert && !hasLiveAcompteCert && (
         <button
           type="button"
           className="rounded bg-white/60 px-1 text-[10px] font-bold hover:bg-white"

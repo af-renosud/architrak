@@ -386,6 +386,18 @@ function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Certifica
             </div>
           </div>
 
+          {cert.status === "draft" && !cert.driveWebViewLink && (
+            <div
+              className="flex items-start gap-2 rounded-md border border-sky-300/70 dark:border-sky-600/30 bg-sky-50/70 dark:bg-sky-950/20 px-3 py-2"
+              data-testid="notice-cert-draft-no-pdf"
+            >
+              <AlertTriangle size={13} className="mt-0.5 shrink-0 text-sky-600 dark:text-sky-400" />
+              <p className="text-[11px] text-sky-800 dark:text-sky-300 leading-snug">
+                Brouillon — aucun PDF généré pour l'instant. Le document sera disponible une fois le certificat émis.
+              </p>
+            </div>
+          )}
+
           {contractor && (
             <div>
               <TechnicalLabel>Contractor</TechnicalLabel>
