@@ -88,6 +88,9 @@ export async function sealCertificat(certificatId: number): Promise<{
       // issuance requires the reissue flow.
       isSolde: existing.isSolde,
       releaseRetenue: existing.retenueReleased,
+      // Task #566 — a recorded override on the row keeps satisfying the PV
+      // de réception gate through the seal recompute.
+      pvOverride: existing.pvOverrideReason != null,
       excludeCertificatId: certificatId,
     });
     if (freshDeductions) {

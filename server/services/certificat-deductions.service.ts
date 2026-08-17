@@ -1,5 +1,6 @@
 import { storage } from "../storage";
 import { computeCertificatDeductions, computeEffectiveTvaRatePercent } from "@shared/financial-utils";
+import { assertPvReceptionForSolde } from "./pv-reception.service";
 
 /**
  * Task #243 — Server-side authoritative resolver for a certificat's deductions.
@@ -43,6 +44,12 @@ export interface ResolveCertificatDeductionsInput {
    * Only valid on a solde certificat (throws otherwise). Default withheld.
    */
   releaseRetenue?: boolean;
+  /**
+   * Task #566 — the caller holds a recorded, audited override of the PV de
+   * réception gate (legacy projects). Without it, a solde certificat is
+   * refused unless the marché's PV is approved with a reception date.
+   */
+  pvOverride?: boolean;
 }
 
 /** Task #464 — a non-superseded solde certificat already exists for the pair. */
@@ -132,6 +139,10 @@ export async function resolveCertificatDeductions(
   if (isSolde) {
     const existingSolde = priorCerts.find((c) => c.isSolde);
     if (existingSolde) throw new SoldeConflictError(existingSolde.certificateRef);
+    // Task #566 — final payment is gated on the formalised réception des
+    // travaux: the marché must carry an APPROVED PV de réception (with its
+    // reception date) unless the caller recorded an audited override.
+    assertPvReceptionForSolde(marche, input.pvOverride === true);
   }
   if (releaseRetenue && !isSolde) throw new ReleaseRequiresSoldeError();
 

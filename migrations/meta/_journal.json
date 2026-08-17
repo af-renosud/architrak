@@ -673,6 +673,13 @@
       "when": 1787290000000,
       "tag": "0095_refire_certificat_sent_backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1787300000000,
+      "tag": "0096_pv_reception_gate",
+      "breakpoints": true
     }
   ]
 }

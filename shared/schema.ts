@@ -302,6 +302,21 @@ export const marches = pgTable("marches", {
   // due for release (surfaced in the UI, released explicitly on the solde
   // certificat — never automatically).
   receptionDate: date("reception_date"),
+  // Task #566 — PV de réception (procès-verbal). Formalises the réception
+  // des travaux with a draft → approved lifecycle: a draft carries either an
+  // uploaded PV document OR a manual attestation note, plus the reception
+  // date (written into `receptionDate` so GPA/RG timing reads ONE source).
+  // Approval is server-set only (dedicated endpoint stamps approver + time
+  // in the same row update, atomically with the date). The final-payment
+  // gate (solde certificat / retenue release / seal / send) requires
+  // status 'approved' with a reception date — see
+  // server/services/pv-reception.service.ts. NULL status = no PV yet.
+  pvReceptionStatus: text("pv_reception_status"),
+  pvDocumentStorageKey: text("pv_document_storage_key"),
+  pvDocumentFileName: text("pv_document_file_name"),
+  pvAttestationNote: text("pv_attestation_note"),
+  pvApprovedByUserId: integer("pv_approved_by_user_id").references(() => users.id),
+  pvApprovedAt: timestamp("pv_approved_at"),
   // Task #463 — TVA regime for this contract's certificats de paiement.
   // `tvaRatePercent` NULL means "no contract-specific rate": fall back to
   // the contractor's default, then to the standard 20%. When
@@ -823,6 +838,14 @@ export const certificats = pgTable("certificats", {
   retenueReleaseAmount: numeric("retenue_release_amount", { precision: 12, scale: 2 }).notNull().default("0.00"),
   retenueReleaseReason: text("retenue_release_reason"),
   retenueReleaseDate: date("retenue_release_date"),
+  // Task #566 — audited escape hatch for the PV de réception gate. A solde
+  // certificat is normally refused until the marché's PV is approved; for
+  // legacy projects the architect may override with an explicit reason.
+  // Reason is architect-provided at create/PATCH; who/when are server-set.
+  // All three frozen by the issuance seal (changes require reissue).
+  pvOverrideReason: text("pv_override_reason"),
+  pvOverrideByUserId: integer("pv_override_by_user_id").references(() => users.id),
+  pvOverrideAt: timestamp("pv_override_at"),
   netToPayHt: numeric("net_to_pay_ht", { precision: 12, scale: 2 }).notNull(),
   tvaAmount: numeric("tva_amount", { precision: 12, scale: 2 }).notNull(),
   netToPayTtc: numeric("net_to_pay_ttc", { precision: 12, scale: 2 }).notNull(),

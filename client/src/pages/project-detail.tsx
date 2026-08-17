@@ -37,6 +37,7 @@ import { AccountingStatusBadge } from "@/components/reconciliation/AccountingSta
 import { Receipt, Inbox } from "lucide-react";
 import { z } from "zod";
 import { apiRequest, queryClient, ApiError, projectScopedKey } from "@/lib/queryClient";
+import { PvReceptionBadge, PvReceptionDialog } from "@/components/marche/PvReceptionDialog";
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
@@ -807,6 +808,16 @@ export default function ProjectDetail() {
       toast({ title: "Certificat sent" });
     },
     onError: (error: Error) => {
+      // Task #566 — PV de réception gate on the solde certificat.
+      if (error instanceof ApiError && error.status === 422 && error.code === "PV_RECEPTION_REQUIRED") {
+        toast({
+          title: "PV de r\u00E9ception requis",
+          description: error.message,
+          variant: "destructive",
+          duration: 12000,
+        });
+        return;
+      }
       // Task #225 — same banking-gate translation as previewCertPdf.
       if (error instanceof ApiError && error.status === 422 && error.code === "BANKING_DETAILS_MISSING") {
         const data = error.data as { contractorName?: string } | undefined;
@@ -1659,6 +1670,9 @@ export default function ProjectDetail() {
                             )}
                             <span className="text-[12px] font-semibold text-foreground">{formatCurrency(parseFloat(m.totalHt))} HT</span>
                             <StatusBadge status={m.status} />
+                            {/* Task #566 — PV de réception status + record/approve dialog. */}
+                            <PvReceptionBadge marche={m} />
+                            <PvReceptionDialog marche={m} projectId={projectId!} disabled={isArchived} />
                           </div>
                         </div>
                     ))}

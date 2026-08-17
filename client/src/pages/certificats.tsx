@@ -15,7 +15,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Skeleton } from "@/components/ui/skeleton";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, ApiError } from "@/lib/queryClient";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
@@ -48,6 +48,10 @@ const certificatFormSchema = insertCertificatSchema.extend({
   // the released state, amount and date authoritatively).
   releaseRetenue: z.boolean().optional(),
   releaseReason: z.string().optional(),
+  // Task #566 — audited override of the PV de réception gate. Only relevant
+  // on a solde certificat whose marché has no approved PV; the server stamps
+  // who/when authoritatively.
+  pvOverrideReason: z.string().optional(),
 });
 
 type CertificatFormValues = z.infer<typeof certificatFormSchema>;
@@ -815,6 +819,17 @@ export default function Certificats() {
       toast({ title: "Certificat created successfully" });
     },
     onError: (error: Error) => {
+      // Task #566 — final-payment gate: solde refused without an approved PV
+      // de réception (or a recorded, motivated override).
+      if (error instanceof ApiError && error.status === 422 && error.code === "PV_RECEPTION_REQUIRED") {
+        toast({
+          title: "PV de réception requis",
+          description: error.message,
+          variant: "destructive",
+          duration: 12000,
+        });
+        return;
+      }
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
@@ -886,6 +901,7 @@ export default function Certificats() {
       isSolde: false,
       releaseRetenue: false,
       releaseReason: undefined,
+      pvOverrideReason: undefined,
     });
     setDialogOpen(true);
   };
@@ -1374,6 +1390,7 @@ export default function Certificats() {
                               if (!checked) {
                                 form.setValue("releaseRetenue", false);
                                 form.setValue("releaseReason", undefined);
+                                form.setValue("pvOverrideReason", undefined);
                               }
                             }}
                             data-testid="switch-cert-solde"
@@ -1384,6 +1401,47 @@ export default function Certificats() {
                   />
                   {watchIsSolde === true && (
                     <>
+                      {/* Task #566 — PV de réception gate. The server refuses
+                          a solde without an approved PV; surface the state
+                          here and collect the motivated override if needed. */}
+                      {!(selectedMarche?.pvReceptionStatus === "approved" && selectedMarche?.receptionDate) && (
+                        <div
+                          className="p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 space-y-2"
+                          data-testid="warning-cert-pv-gate"
+                        >
+                          <div className="flex items-start gap-2">
+                            <AlertTriangle size={14} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+                            <p className="text-[11px] text-amber-800 dark:text-amber-300">
+                              {selectedMarche == null
+                                ? "Aucun marché enregistré pour cette entreprise : le certificat de solde exige un PV de réception approuvé sur le marché."
+                                : selectedMarche.pvReceptionStatus === "draft"
+                                  ? "Le PV de réception du marché est en brouillon — approuvez-le (page projet, onglet Marché) ou saisissez une dérogation motivée."
+                                  : "Aucun PV de réception approuvé sur le marché — enregistrez-le (page projet, onglet Marché) ou saisissez une dérogation motivée."}
+                            </p>
+                          </div>
+                          <FormField
+                            control={form.control}
+                            name="pvOverrideReason"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>
+                                  <TechnicalLabel>Dérogation motivée (audit)</TechnicalLabel>
+                                </FormLabel>
+                                <FormControl>
+                                  <Input
+                                    {...field}
+                                    value={field.value ?? ""}
+                                    onChange={(e) => field.onChange(e.target.value || undefined)}
+                                    placeholder="ex. Chantier réceptionné avant la mise en place des PV dans l'outil"
+                                    data-testid="input-cert-pv-override-reason"
+                                  />
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                        </div>
+                      )}
                       <FormField
                         control={form.control}
                         name="releaseRetenue"

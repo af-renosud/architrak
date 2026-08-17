@@ -38,6 +38,10 @@ const baseMarche = {
   totalHt: null,
   tvaRatePercent: null,
   tvaAutoliquidation: false,
+  // Task #566 — the solde path is gated on an approved PV de réception;
+  // these fixtures test the solde/release math, so the gate is satisfied.
+  pvReceptionStatus: "approved",
+  receptionDate: "2026-01-15",
 };
 
 function setup(opts: { priorCerts?: unknown[]; marche?: Partial<typeof baseMarche> } = {}) {

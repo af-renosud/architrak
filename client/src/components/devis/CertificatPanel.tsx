@@ -83,6 +83,16 @@ export function CertificatPanel({
       queryClient.invalidateQueries({ queryKey: ["/api/certificats/unsent"] });
     },
     onError: (error: Error) => {
+      // Task #566 — PV de réception gate on the solde certificat.
+      if (error instanceof ApiError && error.status === 422 && error.code === "PV_RECEPTION_REQUIRED") {
+        toast({
+          title: "PV de réception requis",
+          description: error.message,
+          variant: "destructive",
+          duration: 12000,
+        });
+        return;
+      }
       // Same banking-gate translation as the Communications tab send.
       if (error instanceof ApiError && error.status === 422) {
         const data = error.data as { contractorName?: string } | undefined;

@@ -1835,6 +1835,10 @@ export async function buildCertificatPreviewHtml(opts?: { isAcompte?: boolean })
     projectId: -1,
     contractorId: -1,
     acompteDevisId: isAcompte ? -2 : null,
+    // Task #566 — PV-gate override audit fields (unused by the sample).
+    pvOverrideReason: null,
+    pvOverrideByUserId: null,
+    pvOverrideAt: null,
     cumulativeAcompteRecoupment: "0.00",
     periodAcompteRecoupment: "0.00",
     tvaRateSource: "default",

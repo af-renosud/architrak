@@ -10,6 +10,7 @@ import {
   SoldeConflictError,
   ReleaseRequiresSoldeError,
 } from "../services/certificat-deductions.service";
+import { PvReceptionRequiredError, isPvReceptionApproved } from "../services/pv-reception.service";
 import { getDocumentBuffer } from "../storage/object-storage";
 import { reconcilePayments } from "../services/certificat-payments.service";
 import { db } from "../db";
@@ -63,6 +64,9 @@ const deductionOverrideShape = {
   // Task #464 — solde designation. Routed through the resolver (single
   // non-superseded solde per project+contractor), never written raw.
   isSolde: z.boolean().optional(),
+  // Task #566 — audited override of the PV de réception gate (legacy
+  // projects). Reason is architect-provided; who/when are server-stamped.
+  pvOverrideReason: z.string().trim().min(1).max(500).optional(),
 };
 
 // Task #243 — these are SERVER-DERIVED money fields. The server is the sole
@@ -94,6 +98,12 @@ const serverDerivedDeductionFields = {
   retenueReleaseAmount: true,
   retenueReleaseReason: true,
   retenueReleaseDate: true,
+  // Task #566 — PV-gate override audit trail: reason arrives through the
+  // validated request field above, who/when are server-stamped. The raw
+  // columns are never client-settable.
+  pvOverrideReason: true,
+  pvOverrideByUserId: true,
+  pvOverrideAt: true,
   netToPayHt: true,
   tvaAmount: true,
   netToPayTtc: true,
@@ -112,6 +122,13 @@ function mapSoldeError(err: unknown): { status: number; body: Record<string, unk
   }
   if (err instanceof ReleaseRequiresSoldeError) {
     return { status: 422, body: { code: "RELEASE_REQUIRES_SOLDE", message: err.message } };
+  }
+  // Task #566 — final payment gated on the approved PV de réception.
+  if (err instanceof PvReceptionRequiredError) {
+    return {
+      status: 422,
+      body: { code: "PV_RECEPTION_REQUIRED", message: err.message, marcheId: err.marcheId, pvStatus: err.pvStatus },
+    };
   }
   return null;
 }
@@ -157,7 +174,7 @@ router.post(
   validateRequest({ params: projectIdParams, body: createCertificatBodySchema }),
   async (req, res) => {
     const projectId = Number(req.params.projectId);
-    const { retenueOverride, prorataOverride, tvaRateOverride, releaseRetenue, releaseReason, isSolde, ...body } = req.body as
+    const { retenueOverride, prorataOverride, tvaRateOverride, releaseRetenue, releaseReason, isSolde, pvOverrideReason, ...body } = req.body as
       Omit<InsertCertificat, "projectId" | "certificateRef"> & {
         retenueOverride?: string;
         prorataOverride?: string;
@@ -165,6 +182,7 @@ router.post(
         releaseRetenue?: boolean;
         releaseReason?: string;
         isSolde?: boolean;
+        pvOverrideReason?: string;
       };
 
     // Task #464 — a release without a reason has no audit trail.
@@ -191,12 +209,20 @@ router.post(
         tvaRateOverride,
         isSolde,
         releaseRetenue,
+        // Task #566 — a motivated override reason satisfies the PV gate.
+        pvOverride: pvOverrideReason != null,
       });
     } catch (err) {
       const mapped = mapSoldeError(err);
       if (mapped) return res.status(mapped.status).json(mapped.body);
       throw err;
     }
+
+    // Task #566 — PV-gate override audit trail: recorded only on a solde
+    // certificat with an architect-provided reason (who/when server-set).
+    const pvAudit = deductions.isSolde && pvOverrideReason
+      ? { pvOverrideReason, pvOverrideByUserId: req.session.userId ?? null, pvOverrideAt: new Date() }
+      : { pvOverrideReason: null, pvOverrideByUserId: null, pvOverrideAt: null };
 
     // Task #464 — release audit trail (reason architect-provided, date
     // server-stamped) recorded only when the resolver confirmed the release.
@@ -207,7 +233,7 @@ router.post(
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const nextRef = await storage.getNextCertificateRef(projectId);
-        const cert = await storage.createCertificat({ ...body, ...deductions, ...releaseAudit, projectId, certificateRef: nextRef });
+        const cert = await storage.createCertificat({ ...body, ...deductions, ...releaseAudit, ...pvAudit, projectId, certificateRef: nextRef });
         return res.status(201).json(cert);
       } catch (err) {
         const { code, constraint } = pgErrorInfo(err);
@@ -292,6 +318,9 @@ router.post(
           previousPayments: existing.previousPayments,
           isSolde: existing.isSolde,
           releaseRetenue: existing.retenueReleased,
+          // Task #566 — the clone inherits the original's recorded PV-gate
+          // override so a legitimate legacy reissue is not re-blocked.
+          pvOverride: existing.pvOverrideReason != null,
           excludeCertificatId: id,
         });
 
@@ -313,6 +342,10 @@ router.post(
           ...deductions,
           retenueReleaseReason: existing.retenueReleaseReason,
           retenueReleaseDate: existing.retenueReleaseDate,
+          // Task #566 — carry the PV-gate override audit onto the clone.
+          pvOverrideReason: existing.pvOverrideReason,
+          pvOverrideByUserId: existing.pvOverrideByUserId,
+          pvOverrideAt: existing.pvOverrideAt,
           status: "draft",
           notes: `Reissue of ${existing.certificateRef}${existing.notes ? ` — ${existing.notes}` : ""}`,
           reissuedFromCertificatId: id,
@@ -355,7 +388,7 @@ router.patch(
   validateRequest({ params: idParams, body: updateCertificatSchema }),
   async (req, res) => {
     const id = Number(req.params.id);
-    const { retenueOverride, prorataOverride, tvaRateOverride, releaseRetenue, releaseReason, isSolde, ...body } = req.body as
+    const { retenueOverride, prorataOverride, tvaRateOverride, releaseRetenue, releaseReason, isSolde, pvOverrideReason, ...body } = req.body as
       Partial<InsertCertificat> & {
         retenueOverride?: string;
         prorataOverride?: string;
@@ -363,6 +396,7 @@ router.patch(
         releaseRetenue?: boolean;
         releaseReason?: string;
         isSolde?: boolean;
+        pvOverrideReason?: string;
       };
 
     const existing = await storage.getCertificat(id);
@@ -420,7 +454,8 @@ router.patch(
         tvaRateOverride !== undefined ||
         releaseRetenue !== undefined ||
         releaseReason !== undefined ||
-        isSolde !== undefined
+        isSolde !== undefined ||
+        pvOverrideReason !== undefined
       ) {
         return res.status(409).json({
           code: "CERTIFICAT_SEALED",
@@ -446,7 +481,8 @@ router.patch(
         tvaRateOverride !== undefined ||
         releaseRetenue !== undefined ||
         releaseReason !== undefined ||
-        isSolde !== undefined
+        isSolde !== undefined ||
+        pvOverrideReason !== undefined
       ) {
         return res.status(409).json({
           code: "CERTIFICAT_ACOMPTE_FIXED",
@@ -469,7 +505,10 @@ router.patch(
       // Task #464 — solde/release changes move money (the release line) and
       // must run through the resolver's precondition checks.
       releaseRetenue !== undefined ||
-      isSolde !== undefined;
+      isSolde !== undefined ||
+      // Task #566 — a new PV-gate override must run through the resolver so
+      // the gate re-evaluates with it.
+      pvOverrideReason !== undefined;
 
     // Task #464 — effective solde/release state after this PATCH: an
     // explicit request field wins, otherwise the stored state is preserved
@@ -477,6 +516,10 @@ router.patch(
     // release (release only exists on the solde certificat).
     const effectiveIsSolde = isSolde ?? existing.isSolde;
     const effectiveRelease = effectiveIsSolde ? (releaseRetenue ?? existing.retenueReleased) : false;
+    // Task #566 — PV-gate override effective after this PATCH: a request
+    // reason wins, otherwise the recorded one persists; dropping the solde
+    // flag clears it (the gate only exists on the solde certificat).
+    const effectivePvOverrideReason = effectiveIsSolde ? (pvOverrideReason ?? existing.pvOverrideReason) : null;
     if (releaseRetenue === true && !(releaseReason ?? existing.retenueReleaseReason)) {
       return res.status(400).json({
         code: "RELEASE_REASON_REQUIRED",
@@ -499,6 +542,7 @@ router.patch(
           tvaRateOverride,
           isSolde: effectiveIsSolde,
           releaseRetenue: effectiveRelease,
+          pvOverride: effectivePvOverrideReason != null,
           excludeCertificatId: id,
         });
       } catch (err) {
@@ -515,7 +559,15 @@ router.patch(
               : new Date().toISOString().split("T")[0],
           }
         : { retenueReleaseReason: null, retenueReleaseDate: null };
-      patch = { ...body, ...deductions, ...releaseAudit };
+      // Task #566 — PV-gate override audit: a newly provided reason stamps
+      // who/when; an inherited one keeps its original stamps; a non-solde
+      // result clears all three.
+      const pvAudit = !deductions.isSolde
+        ? { pvOverrideReason: null, pvOverrideByUserId: null, pvOverrideAt: null }
+        : pvOverrideReason != null && pvOverrideReason !== existing.pvOverrideReason
+          ? { pvOverrideReason, pvOverrideByUserId: req.session.userId ?? null, pvOverrideAt: new Date() }
+          : {};
+      patch = { ...body, ...deductions, ...releaseAudit, ...pvAudit };
     }
 
     // Task #451 — status/notes-only patches remain allowed on sealed rows;
@@ -529,7 +581,8 @@ router.patch(
       prorataOverride === undefined &&
       tvaRateOverride === undefined &&
       releaseRetenue === undefined &&
-      isSolde === undefined
+      isSolde === undefined &&
+      pvOverrideReason === undefined
     ) {
       const cert = await storage.updateCertificat(id, patch);
       if (!cert) return res.status(404).json({ message: "Certificat not found" });
@@ -963,6 +1016,23 @@ router.post(
           code: "CERTIFICAT_SUPERSEDED",
           message: `Certificat ${cert.certificateRef} was superseded by a reissue and cannot be sent. Send the replacement instead.`,
         });
+      }
+      // Task #566 — final-payment gate at the last exit: a solde certificat
+      // (already-sealed rows included, which skip the seal's resolver
+      // recompute) must not go out without an approved PV de réception or a
+      // recorded, audited override.
+      if (cert.isSolde && cert.pvOverrideReason == null) {
+        const projectMarches = await storage.getMarchesByProject(projectId);
+        const marche = projectMarches.find((m) => m.contractorId === cert.contractorId);
+        if (!isPvReceptionApproved(marche)) {
+          return res.status(422).json({
+            code: "PV_RECEPTION_REQUIRED",
+            message:
+              "Ce certificat de solde ne peut pas être envoyé : le PV de réception du marché n'est pas approuvé. Approuvez le PV (ou enregistrez une dérogation motivée sur le certificat) avant l'envoi.",
+            marcheId: marche?.id ?? null,
+            pvStatus: marche?.pvReceptionStatus ?? null,
+          });
+        }
       }
 
       const devisList = await storage.getDevisByProject(projectId);

@@ -247,6 +247,22 @@ export interface IStorage {
   createMarche(data: InsertMarche): Promise<Marche>;
 
   updateMarche(id: number, data: Partial<InsertMarche>): Promise<Marche | undefined>;
+  // Task #566 — race-safe PV de réception lifecycle transitions. Each write
+  // carries its own state predicate in the SQL WHERE so a concurrent approval
+  // can never be overwritten by a draft (or a stale date PATCH): a `undefined`
+  // return with an existing row means the predicate lost the race → 409.
+  recordMarchePvDraft(
+    id: number,
+    data: Pick<
+      InsertMarche,
+      | "receptionDate"
+      | "pvDocumentStorageKey"
+      | "pvDocumentFileName"
+      | "pvAttestationNote"
+    >,
+  ): Promise<Marche | undefined>;
+  approveMarchePv(id: number, approvedByUserId: number | null): Promise<Marche | undefined>;
+  updateMarcheWithPvDateGuard(id: number, data: Partial<InsertMarche>): Promise<Marche | undefined>;
 
   getDevisByProject(projectId: number): Promise<Devis[]>;
   // Batched variant for the projects-list accounting-status rollup: one query
@@ -1611,6 +1627,84 @@ export class DatabaseStorage implements IStorage {
 
   async updateMarche(id: number, data: Partial<InsertMarche>): Promise<Marche | undefined> {
     const [marche] = await db.update(marches).set(data).where(eq(marches.id, id)).returning();
+    return marche;
+  }
+
+  // Task #566 — draft PV write is only valid while the PV is unrecorded or
+  // still a draft; the predicate makes that atomic vs a concurrent approval.
+  async recordMarchePvDraft(
+    id: number,
+    data: Pick<
+      InsertMarche,
+      "receptionDate" | "pvDocumentStorageKey" | "pvDocumentFileName" | "pvAttestationNote"
+    >,
+  ): Promise<Marche | undefined> {
+    const [marche] = await db
+      .update(marches)
+      .set({
+        ...data,
+        pvReceptionStatus: "draft",
+        pvApprovedByUserId: null,
+        pvApprovedAt: null,
+      })
+      .where(
+        and(
+          eq(marches.id, id),
+          or(isNull(marches.pvReceptionStatus), eq(marches.pvReceptionStatus, "draft")),
+        ),
+      )
+      .returning();
+    return marche;
+  }
+
+  // Task #566 — approval only transitions draft→approved and requires the
+  // reception date to be present, all inside the UPDATE predicate.
+  async approveMarchePv(id: number, approvedByUserId: number | null): Promise<Marche | undefined> {
+    const [marche] = await db
+      .update(marches)
+      .set({
+        pvReceptionStatus: "approved",
+        pvApprovedByUserId: approvedByUserId,
+        pvApprovedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(marches.id, id),
+          eq(marches.pvReceptionStatus, "draft"),
+          isNotNull(marches.receptionDate),
+        ),
+      )
+      .returning();
+    return marche;
+  }
+
+  // Task #566 — generic marché update that enforces the approved-PV date
+  // lock in SQL: when the payload would change receptionDate, the row is only
+  // touched if the PV is not approved OR the date is unchanged.
+  async updateMarcheWithPvDateGuard(
+    id: number,
+    data: Partial<InsertMarche>,
+  ): Promise<Marche | undefined> {
+    if (!("receptionDate" in data)) return this.updateMarche(id, data);
+    const requested = data.receptionDate ?? null;
+    const dateUnchanged =
+      requested === null
+        ? isNull(marches.receptionDate)
+        : eq(marches.receptionDate, requested);
+    const [marche] = await db
+      .update(marches)
+      .set(data)
+      .where(
+        and(
+          eq(marches.id, id),
+          or(
+            isNull(marches.pvReceptionStatus),
+            ne(marches.pvReceptionStatus, "approved"),
+            dateUnchanged,
+          ),
+        ),
+      )
+      .returning();
     return marche;
   }
 
