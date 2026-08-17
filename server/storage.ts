@@ -1086,6 +1086,9 @@ export interface IStorage {
 
   getDesignContractMilestones(contractId: number): Promise<DesignContractMilestone[]>;
 
+  /** Map milestoneId → human-visible Pennylane invoice number (or legacy manual ref) via confirmed architect-fee-invoice evidence. */
+  getMilestonePennylaneNumbers(milestoneIds: number[]): Promise<Map<number, string>>;
+
   createDesignContractMilestones(rows: InsertDesignContractMilestone[]): Promise<DesignContractMilestone[]>;
 
   updateDesignContractMilestone(id: number, data: Partial<InsertDesignContractMilestone>): Promise<DesignContractMilestone | undefined>;
@@ -2699,6 +2702,30 @@ export class DatabaseStorage implements IStorage {
       .from(designContractMilestones)
       .where(eq(designContractMilestones.contractId, contractId))
       .orderBy(asc(designContractMilestones.sequence));
+  }
+
+  async getMilestonePennylaneNumbers(milestoneIds: number[]): Promise<Map<number, string>> {
+    const out = new Map<number, string>();
+    if (milestoneIds.length === 0) return out;
+    const rows = await db
+      .select({
+        milestoneId: architectFeeInvoices.milestoneId,
+        pennylaneInvoiceNumber: feeEntries.pennylaneInvoiceNumber,
+        pennylaneInvoiceRef: feeEntries.pennylaneInvoiceRef,
+      })
+      .from(architectFeeInvoices)
+      .innerJoin(feeEntries, eq(architectFeeInvoices.feeEntryId, feeEntries.id))
+      .where(
+        and(
+          inArray(architectFeeInvoices.milestoneId, milestoneIds),
+          eq(architectFeeInvoices.status, "confirmed"),
+        ),
+      );
+    for (const row of rows) {
+      const num = row.pennylaneInvoiceNumber ?? row.pennylaneInvoiceRef;
+      if (row.milestoneId != null && num) out.set(row.milestoneId, num);
+    }
+    return out;
   }
 
   async createDesignContractMilestones(rows: InsertDesignContractMilestone[]): Promise<DesignContractMilestone[]> {

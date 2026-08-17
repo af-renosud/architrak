@@ -39,6 +39,7 @@ import {
   validateConfirmedSchedule,
   type ExtractedDesignContract,
 } from "../services/design-contract-parser";
+import { getMilestonesWithPennylane } from "../services/design-contract-read.service";
 import { roundCurrency } from "../../shared/financial-utils";
 import { DESIGN_CONTRACT_ERROR_CODES } from "../../shared/design-contract-errors";
 import {
@@ -360,7 +361,7 @@ router.get(
       const projectId = Number(req.params.id);
       const contract = await storage.getDesignContractByProject(projectId);
       if (!contract) return res.status(404).json({ message: "No design contract on this project" });
-      const milestones = await storage.getDesignContractMilestones(contract.id);
+      const milestones = await getMilestonesWithPennylane(contract.id);
       return res.status(200).json({ contract, milestones });
     } catch (err) {
       next(err);

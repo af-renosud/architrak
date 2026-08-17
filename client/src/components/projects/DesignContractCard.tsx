@@ -24,9 +24,13 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { DesignContractUpload, type ConfirmedDesignContract } from "./DesignContractUpload";
 import type { DesignContract, DesignContractMilestone, DesignContractTriggerEvent } from "@shared/schema";
 
+type MilestoneWithPennylane = DesignContractMilestone & {
+  pennylaneInvoiceNumber?: string | null;
+};
+
 interface DesignContractResponse {
   contract: DesignContract;
-  milestones: DesignContractMilestone[];
+  milestones: MilestoneWithPennylane[];
 }
 
 const TRIGGER_LABELS: Record<DesignContractTriggerEvent, string> = {
@@ -252,6 +256,11 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
                   Trigger: {TRIGGER_LABELS[m.triggerEvent as DesignContractTriggerEvent]}
                   {m.reachedAt ? ` · reached ${new Date(m.reachedAt).toLocaleDateString()}` : ""}
                   {m.invoicedAt ? ` · invoiced ${new Date(m.invoicedAt).toLocaleDateString()}` : ""}
+                  {(m.status === "invoiced" || m.status === "paid") && m.pennylaneInvoiceNumber ? (
+                    <span data-testid={`text-milestone-pennylane-number-${m.id}`}>
+                      {" · Pennylane "}{m.pennylaneInvoiceNumber}
+                    </span>
+                  ) : null}
                   {m.paidAt ? ` · paid ${new Date(m.paidAt).toLocaleDateString()}` : ""}
                 </div>
               </div>
