@@ -16,7 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ExternalLink, AlertTriangle, Plus } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, invalidateCertificatPaymentData } from "@/lib/queryClient";
 import type { Certificat, Contractor, CertificatPayment, CertificatPaymentSuggestion } from "@shared/schema";
 
 import { Amount } from "@/components/ui/amount";
@@ -123,7 +123,7 @@ function PaymentSuggestionCard({ suggestion, onDone }: { suggestion: CertificatP
 }
 
 // Task #465 — structured client-payment ledger on the certificat detail.
-export function CertificatPaymentsSection({ cert, projectId }: { cert: Certificat; projectId: number }) {
+export function CertificatPaymentsSection({ cert }: { cert: Certificat }) {
   const { toast } = useToast();
   const [editingId, setEditingId] = useState<number | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -140,13 +140,10 @@ export function CertificatPaymentsSection({ cert, projectId }: { cert: Certifica
   const { data: suggestions } = useQuery<CertificatPaymentSuggestion[]>({ queryKey: suggestionsKey });
   const openSuggestions = (suggestions ?? []).filter((s) => s.status === "pending_review" || s.status === "ambiguous");
 
-  const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ledgerKey });
-    queryClient.invalidateQueries({ queryKey: suggestionsKey });
-    queryClient.invalidateQueries({ queryKey: ["/api/certificat-payment-suggestions"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "certificats"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "certificat-payments"] });
-  };
+  // Task #590 — shared helper covers the ledger, suggestions, project
+  // certificat lists, financial summary and dashboard, so a paid flip is
+  // visible everywhere without a manual reload.
+  const invalidate = () => invalidateCertificatPaymentData();
 
   const resetForm = () => {
     setEditingId(null);
@@ -485,7 +482,7 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
             </div>
           </div>
 
-          {cert.status !== "draft" && <CertificatPaymentsSection cert={cert} projectId={cert.projectId} />}
+          {cert.status !== "draft" && <CertificatPaymentsSection cert={cert} />}
 
           {cert.notes && (
             <div>

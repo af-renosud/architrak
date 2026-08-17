@@ -24,7 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, invalidateCertificatPaymentData } from "@/lib/queryClient";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "wouter";
 import { Euro } from "lucide-react";
@@ -49,7 +49,10 @@ function PaymentSuggestionsPanel() {
   const confirmMutation = useMutation({
     mutationFn: async (id: number) => (await apiRequest("POST", `/api/certificat-payment-suggestions/${id}/confirm`, {})).json(),
     onSuccess: () => {
-      invalidate();
+      // Task #590 — a confirm writes the ledger and may flip the certificat
+      // to "paid"; refresh every surface that renders paid state, not just
+      // the suggestions queue (queries otherwise cache forever).
+      invalidateCertificatPaymentData();
       toast({ title: "Paiement confirmé", description: "Enregistré au journal des paiements (source e-mail)." });
     },
     onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
@@ -127,7 +130,9 @@ function PaymentSuggestionsPanel() {
           onClose={() => setReviewing(null)}
           onDone={() => {
             setReviewing(null);
-            invalidate();
+            // Task #590 — the review dialog may have confirmed a payment;
+            // refresh all paid-status surfaces, not just the queue.
+            invalidateCertificatPaymentData();
           }}
         />
       )}

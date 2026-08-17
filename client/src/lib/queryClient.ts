@@ -85,6 +85,31 @@ export function projectScopedKey(
   return ["/api/projects", String(projectId), ...rest];
 }
 
+// Task #590 — queries cache forever (staleTime Infinity), so any mutation that
+// records a certificat payment or flips paid status must invalidate EVERY
+// surface that renders paid state. Confirm paths (hub one-click, hub review
+// dialog, certificat detail dialog, manual ledger entries) call this shared
+// helper instead of hand-picking keys, so a new confirm path can't miss one.
+// Predicate-based: matches project-scoped and certificat-scoped keys without
+// needing to know the projectId (the hub only knows the certificatId).
+export function invalidateCertificatPaymentData() {
+  const segments = [
+    "certificats",
+    "certificat-payments",
+    "payments",
+    "payment-suggestions",
+    "financial-summary",
+  ];
+  queryClient.invalidateQueries({
+    predicate: (query) =>
+      query.queryKey.some(
+        (part) => typeof part === "string" && segments.includes(part),
+      ),
+  });
+  queryClient.invalidateQueries({ queryKey: ["/api/certificat-payment-suggestions"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/dashboard/summary"] });
+}
+
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

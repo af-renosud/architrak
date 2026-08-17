@@ -38,9 +38,11 @@ interface Seed {
   confirmCert: SeededCert;
   dismissCert: SeededCert;
   hubCert: SeededCert;
+  flipCert: SeededCert;
   confirmSugId: number;
   dismissSugId: number;
   hubSugId: number;
+  flipSugId: number;
 }
 
 async function closeDialog(page: import("@playwright/test").Page) {
@@ -125,7 +127,7 @@ async function insertSuggestion(
 
 async function cleanup(db: Client, s: Seed | null) {
   if (!s) return;
-  const certIds = [s.confirmCert.id, s.dismissCert.id, s.hubCert.id];
+  const certIds = [s.confirmCert.id, s.dismissCert.id, s.hubCert.id, s.flipCert.id];
   const stmts: Array<[string, unknown[]]> = [
     // suggestions + payments cascade on certificat delete, but be explicit
     ["DELETE FROM certificat_payment_suggestions WHERE certificat_id = ANY($1::int[])", [certIds]],
@@ -171,6 +173,7 @@ test.describe("Client payment suggestions — confirm/dismiss (task #476)", () =
       const confirmCert = await createSentCertificat(api, project.id, contractor.id);
       const dismissCert = await createSentCertificat(api, project.id, contractor.id);
       const hubCert = await createSentCertificat(api, project.id, contractor.id);
+      const flipCert = await createSentCertificat(api, project.id, contractor.id);
 
       const confirmSugId = await insertSuggestion(db, {
         certificatId: confirmCert.id,
@@ -196,15 +199,27 @@ test.describe("Client payment suggestions — confirm/dismiss (task #476)", () =
         excerpt: "paiement envoyé hier",
         amount: "250.00",
       });
+      // Task #590 — full-TTC suggestion so a one-click hub confirm flips the
+      // certificat to "paid" (server recomputes TTC; use its value).
+      const flipSugId = await insertSuggestion(db, {
+        certificatId: flipCert.id,
+        projectId: project.id,
+        uniq,
+        tag: "flip",
+        excerpt: "virement du montant total effectué",
+        amount: flipCert.netToPayTtc,
+      });
       s = {
         projectId: project.id,
         contractorId: contractor.id,
         confirmCert,
         dismissCert,
         hubCert,
+        flipCert,
         confirmSugId,
         dismissSugId,
         hubSugId,
+        flipSugId,
       };
 
       const page = await context.newPage();
@@ -308,6 +323,34 @@ test.describe("Client payment suggestions — confirm/dismiss (task #476)", () =
       const hubLedger = await api.get(`/api/certificats/${hubCert.id}/payments`);
       const hubLedgerBody = (await hubLedger.json()) as { payments: unknown[] };
       expect(hubLedgerBody.payments.length).toBe(0);
+
+      // ------------------------------------------------------------------
+      // Phase 5 (task #590) — a hub one-click confirm must propagate the
+      // paid status to the certificats page WITHOUT a page reload. Queries
+      // cache forever (staleTime Infinity), so this exercises the shared
+      // cache invalidation: populate the certificats-page cache (badge
+      // SENT), navigate back to the hub via the sidebar (client-side, cache
+      // kept), confirm, then return to certificats and expect PAID.
+      // ------------------------------------------------------------------
+      const selectFlipProject = async () => {
+        await page.getByTestId("select-project-filter").click();
+        await page.getByRole("option", { name: new RegExp(`PS-${uniq}`) }).click();
+      };
+      await page.getByTestId("link-nav-certificats").click();
+      await selectFlipProject();
+      const flipCard = page.getByTestId(`card-certificat-${flipCert.id}`);
+      await expect(flipCard).toBeVisible();
+      await expect(flipCard).toContainText("SENT");
+
+      await page.getByTestId("link-nav-communications").click();
+      await page.getByTestId(`button-hub-confirm-${flipSugId}`).click();
+      await expect(page.getByTestId(`row-hub-suggestion-${flipSugId}`)).toHaveCount(0);
+
+      await page.getByTestId("link-nav-certificats").click();
+      await selectFlipProject();
+      await expect(flipCard).toBeVisible();
+      await expect(flipCard).toContainText("PAID");
+      await expect(flipCard).not.toContainText("SENT");
     } finally {
       try {
         await cleanup(db, s);
