@@ -1,6 +1,44 @@
 # ArchiTrak — Architecture Constitution
 
-This document is the immutable reference for all ArchiTrak development. Read it before starting any task. Every pattern described here is enforced by tests, code review, and convention. Deviating from these rules requires explicit sign-off.
+This document is the map of the system and the reasoning behind it: components, data flows, invariants, and the trade-offs that shaped them. Read it before starting any task. Every pattern described here is enforced by tests, code review, and convention. Deviating from these rules requires explicit sign-off — and for the sections marked constitutional, an ADR in `docs/decisions/`.
+
+**Boundary with `replit.md`:** this file answers *"why does it work this way?"*. Commands, dev workflow, repo layout, and how-to recipes live in `replit.md`. Facts derivable from the code (table lists, index inventories, counts, env-var catalogs) are intentionally NOT duplicated here — the code is their single source of truth.
+
+---
+
+## 0. System Map
+
+### Components
+
+```
+                 ┌────────────┐  one-way sync   ┌────────────┐
+                 │  ArchiDoc  │ ───────────────▶│  ArchiTrak │◀── Google OAuth (@renosud.com)
+                 │  (master:  │  webhooks/pull  │            │
+                 │  projects, │                 │  Express 5 │──▶ DocRaptor (HTML→PDF)
+                 │contractors,│◀────────────────│  + React   │──▶ Pennylane (architect fees only)
+                 │   trades)  │  AT5 webhooks   │            │──▶ Google Drive (PDF mirror)
+                 └────────────┘                 └─────┬──────┘
+                 ┌────────────┐   envelopes /         │
+                 │ Archisign  │◀── HMAC webhooks ────▶│        PostgreSQL (Drizzle, versioned migrations)
+                 │(e-signature)│                       │        Replit Object Storage (all PDFs)
+                 └────────────┘                 Gmail (send + monitored inbox)
+```
+
+### The three core data flows
+
+1. **Document intake → financial record**: PDF arrives (Gmail monitor or manual upload) → Gemini structured extraction → deterministic validation cross-checks → record persisted as `draft` → architect reviews and confirms → `pending` → (invoices) approval triggers fee calculation. AI never commits financial data; a human always does (§1.2).
+2. **Certificat → payment ledger**: devis/situations aggregate into a Certificat de Paiement → sealed issuance (immutable PDF + snapshot) → sent to client → payment evidence and confirmations recorded against an atomic, audited ledger.
+3. **Master-data sync (one-way)**: projects, contractors, trades, proposal fees flow FROM ArchiDoc INTO ArchiTrak via signed webhooks (or legacy polling). ArchiTrak never writes these back (§4.1); its own outbound events to ArchiDoc travel a separate signed channel (AT5).
+
+### Who masters what
+
+| Data | Master | ArchiTrak's role |
+|---|---|---|
+| Projects, contractors, trades, proposal fees, contractor banking | ArchiDoc | Read-only mirror; re-validates on ingest |
+| Devis, invoices, situations, certificats, fees | ArchiTrak | System of record |
+| E-signature envelopes | Archisign | Initiates + mirrors status via webhooks |
+| Architect fee invoices (honoraires) in the books | Pennylane | Pushes fee entries; polls paid status back |
+| Document files (PDFs) | Object Storage | Canonical bytes; Drive holds convenience mirrors |
 
 ---
 
@@ -10,70 +48,30 @@ This document is the immutable reference for all ArchiTrak development. Read it 
 
 No financial record (Devis, Invoice, Certificat, Fee) is committed to the database without passing through the financial calculation and validation layers.
 
-**Financial calculations** use `shared/financial-utils.ts` exclusively:
+**All financial math goes through `shared/financial-utils.ts`** — rounding, TVA/TTC, adjusted amounts, reste à réaliser, fees, French-locale formatting, and legal amounts in words. Every function applies `roundCurrency()` (2-decimal half-up via `Number.EPSILON`) before returning, guaranteeing 2-decimal precision at every step of a calculation chain.
 
-| Function | Purpose |
-|---|---|
-| `roundCurrency(value)` | 2-decimal half-up rounding via `Number.EPSILON`. Use for ALL currency values |
-| `calculateTva(amountHt, tvaRate)` | TVA = HT * rate / 100, rounded |
-| `calculateTtc(amountHt, tvaRate)` | TTC = HT + TVA, rounded |
-| `calculateHtFromTtc(amountTtc, tvaRate)` | Reverse: HT = TTC / (1 + rate/100), rounded |
-| `calculateAdjustedAmount(originalHt, pvTotal, mvTotal)` | Adjusted = Original + PV - MV, rounded |
-| `calculateResteARealiser(adjustedHt, certifiedHt)` | Remaining = Adjusted - Certified, rounded |
-| `calculateFeeAmount(invoiceHt, feeRate)` | Fee = Invoice * rate / 100, rounded |
-| `calculateFeeTtc(feeAmountHt, tvaRate)` | Fee TTC, rounded |
-| `formatCurrencyEur(value)` | French locale EUR format with currency style (e.g. "1 234,56 EUR") |
-| `formatCurrencyNoSymbol(value)` | French locale 2-decimal format + " \u20AC" suffix (e.g. "1 234,56 \u20AC") |
-| `numberToFrenchWords(n)` | Legal amount in French words (e.g. "MILLE DEUX CENT EUROS") |
+**Never write inline arithmetic** like `ht * 1.2` or `Math.round(x * 100) / 100`. Always call the appropriate function. *Why:* floating-point drift compounds across chained calculations, and French accounting documents are legally exact to the centime — one path for rounding means one place to be correct.
 
-**Never write inline arithmetic** like `ht * 1.2` or `Math.round(x * 100) / 100`. Always call the appropriate function above.
-
-**AI-extracted records** must additionally pass `validateExtraction()` from `server/services/extraction-validator.ts` before database commit. This runs 7 cross-checks:
-
-1. HT + TVA = TTC consistency (tolerance: 0.01 EUR)
-2. TVA amount verification against rate
-3. Auto-liquidation rules (if `autoLiquidation === true`, tvaRate and tvaAmount must be 0)
-4. Line items sum vs amountHt (tolerance: 1.00 EUR)
-5. Retenue de garantie reasonableness (~5% of TTC)
-6. Net-a-payer = TTC - retenue de garantie
-7. Auto-correction of deterministically calculable missing values
-
-The validator produces a `ValidationResult` with `isValid`, `warnings[]`, `correctedValues`, and `confidenceScore` (0-100).
+**AI-extracted records** must additionally pass `validateExtraction()` (`server/services/extraction-validator.ts`) before database commit: HT+TVA=TTC consistency, TVA-vs-rate verification, auto-liquidation rules (rate and amount forced to 0), line-item sums, retenue-de-garantie reasonableness, net-à-payer derivation, and auto-correction of deterministically calculable missing values. It produces `isValid`, `warnings[]`, `correctedValues`, and a 0–100 `confidenceScore`.
 
 ### 1.2 Human-in-the-Loop
 
 AI (Gemini) suggests data. A human must explicitly confirm it.
 
 ```
-PDF Upload
-  -> Gemini structured extraction (Expert-Comptable BTP prompt)
-  -> validateExtraction() cross-checks
-  -> Record created as status "draft"
-     (with validationWarnings, aiExtractedData, aiConfidence columns)
-  -> Architect reviews in DraftReviewPanel (editable fields, warning badges)
-  -> Architect clicks "Confirm"
-  -> Status transitions: draft -> pending
-  -> For invoices: pending -> approved (separate step, triggers fee calculation)
+PDF → Gemini structured extraction → validateExtraction() cross-checks
+    → record created as "draft" (with validationWarnings, aiExtractedData, aiConfidence)
+    → architect reviews in DraftReviewPanel → explicit Confirm
+    → draft → pending (→ approved for invoices, which triggers fee calculation)
 ```
 
-Confirm endpoints enforce `status === "draft"` precondition:
-- `POST /api/devis/:id/confirm` — optional body with corrected values, re-validates, moves to "pending"
-- `POST /api/invoices/:id/confirm` — same pattern, then existing approval flow applies
+Confirm endpoints enforce the `status === "draft"` precondition. *Why:* extraction is probabilistic; money movements are not. The draft state is the firewall between the two, and the status precondition makes confirmation idempotent and un-skippable.
 
-The architect NEVER creates invoices. Invoices enter the system only via AI extraction (Gmail monitor or manual PDF upload).
+**The architect NEVER creates invoices.** Invoices enter the system only via AI extraction (Gmail monitor or manual PDF upload). *Why:* every invoice must trace to a real contractor document; hand-created invoices would break that provenance.
 
 ### 1.3 Single-Firm Model
 
-ArchiTrak serves one firm. Its identity is hardcoded:
-
-```
-SAS Architects-France
-2 Route d'Aigues-Vives, 34480 Cabrerolles
-SIRET: 953 443 918 00016
-Order of Architects Occitanie: S24348
-```
-
-All Certificats de Paiement, email signatures, and PDF headers reference this firm. There is no multi-tenant abstraction.
+ArchiTrak serves one firm (SAS Architects-France, Cabrerolles — SIRET 953 443 918 00016, Ordre des Architectes Occitanie S24348). Its identity is hardcoded in certificats, email signatures, and PDF headers. There is no multi-tenant abstraction. *Why:* the single-tenant assumption is load-bearing — authorization is domain-level (`@renosud.com`), not row-level. Before adding anything multi-tenant, read the IDOR comment block at the top of `server/routes/index.ts`.
 
 ---
 
@@ -81,117 +79,52 @@ All Certificats de Paiement, email signatures, and PDF headers reference this fi
 
 ### 2.1 Service / Router Split
 
-**Routers** (`server/routes/*.ts`) are thin HTTP handlers. They:
-- Parse and validate request params/body using Zod schemas from `drizzle-zod`
-- Call a service function or a storage method
-- Return the response with appropriate status code
-- Wrap in try/catch with descriptive error messages
+**Routers** (`server/routes/*.ts`) are thin HTTP handlers: parse/validate with Zod, call a service or storage method, return a response, wrap in try/catch.
 
-**Services** (`server/services/*.service.ts`) contain business logic. They:
-- Orchestrate storage calls, calculations, and side effects
-- Use `roundCurrency()` and friends for all financial math
-- Return structured results (not HTTP responses)
-- Never import `express` or touch `req`/`res`
+**Services** (`server/services/*.service.ts`) contain business logic: orchestrate storage calls, calculations, and side effects; use `financial-utils` for all money math; return structured results; never import `express` or touch `req`/`res`.
 
-**Never put calculation logic, multi-step orchestration, or storage calls directly in a router.**
+**Never put calculation logic, multi-step orchestration, or storage calls directly in a router.** *Why:* services are testable without HTTP and reusable from workers/schedulers; routers that accrete logic become untestable and duplicate it across entry points (HTTP, webhook, cron).
 
 ### 2.2 Shared Schema — Single Source of Truth
 
-`shared/schema.ts` defines everything:
-- Drizzle ORM table definitions (all tables)
-- Insert schemas via `createInsertSchema(table).omit({ id: true, createdAt: true })`
-- Insert types via `z.infer<typeof insertSchema>`
-- Select types via `typeof table.$inferSelect`
+`shared/schema.ts` defines all Drizzle tables, insert schemas (`createInsertSchema(table).omit(...)`), and both insert/select types. Client and server import the same types — the wire contract cannot drift from the database.
 
-Rules:
-- Array columns: always `text().array()` — never `array(text())`
-- Lot numbers are TEXT (e.g. "FN", "GO", "VRD", "EL") — never integers
-- Status fields use `text()` — no DB-level enums. Valid values are enforced by application logic
-- All `numeric` columns use `{ precision: 12, scale: 2 }` for currency
+Conventions (each exists for a reason):
+- Array columns: always `text().array()` — never `array(text())`.
+- Lot numbers are TEXT (e.g. "FN", "GO", "VRD") — never integers; they are trade codes, not ordinals.
+- Status fields use `text()`, no DB-level enums — valid values are enforced by application logic (and targeted CHECK constraints where money is at stake), because Postgres enum migrations are painful and statuses evolve.
+- All currency columns are `numeric` with `{ precision: 12, scale: 2 }` — floats never touch money at rest.
 
 ### 2.2.1 Index and Constraint Policy
 
-**Every foreign key column MUST have a corresponding index.** PostgreSQL does not auto-index FK columns. Without indexes, queries filtering by FK degrade to full table scans as data grows.
+**Every foreign key column MUST have a corresponding index — non-negotiable.** PostgreSQL does not auto-index FK columns; without indexes, FK-filtered queries degrade to full table scans as data grows. The authoritative inventory of indexes and constraints is `shared/schema.ts` itself; the schema-drift gate (`scripts/check-schema-drift.sh`, run in CI and at build time) keeps the committed migrations in lockstep with it.
 
-Current indexes (26 custom indexes across all tables):
-
-| Table | Index | Columns |
-|---|---|---|
-| lots | `lots_project_id_idx` | `project_id` |
-| marches | `marches_project_id_idx` | `project_id` |
-| marches | `marches_contractor_id_idx` | `contractor_id` |
-| devis | `devis_project_id_idx` | `project_id` |
-| devis | `devis_contractor_id_idx` | `contractor_id` |
-| devis_line_items | `devis_line_items_devis_id_idx` | `devis_id` |
-| avenants | `avenants_devis_id_idx` | `devis_id` |
-| invoices | `invoices_project_id_idx` | `project_id` |
-| invoices | `invoices_devis_id_idx` | `devis_id` |
-| invoices | `invoices_contractor_id_idx` | `contractor_id` |
-| situations | `situations_devis_id_idx` | `devis_id` |
-| situation_lines | `situation_lines_situation_id_idx` | `situation_id` |
-| situation_lines | `situation_lines_devis_line_item_id_idx` | `devis_line_item_id` |
-| certificats | `certificats_project_contractor_idx` | `(project_id, contractor_id)` composite |
-| fees | `fees_project_id_idx` | `project_id` |
-| fee_entries | `fee_entries_fee_id_idx` | `fee_id` |
-| email_documents | `email_documents_project_id_idx` | `project_id` |
-| email_documents | `email_documents_extraction_status_idx` | `extraction_status` |
-| project_documents | `project_documents_project_id_idx` | `project_id` |
-| project_documents | `project_documents_source_email_doc_idx` | `source_email_document_id` |
-| project_communications | `project_communications_project_id_idx` | `project_id` |
-| payment_reminders | `payment_reminders_project_id_idx` | `project_id` |
-| payment_reminders | `payment_reminders_status_date_idx` | `(status, scheduled_date)` composite |
-| client_payment_evidence | `client_payment_evidence_project_id_idx` | `project_id` |
-| messages | `messages_conversation_id_idx` | `conversation_id` |
-| session | `sessions_expire_idx` | `expire` |
-
-Unique constraints enforcing data integrity:
-
-| Table | Constraint | Columns | Rationale |
-|---|---|---|---|
-| projects | `projects_archidoc_id_unique` | `archidoc_id` | 1:1 mapping with ArchiDoc |
-| contractors | `contractors_archidoc_id_unique` | `archidoc_id` | 1:1 mapping with ArchiDoc |
-| lots | `lots_project_lot_unique` | `(project_id, lot_number)` | No duplicate lot numbers per project |
-| certificats | `certificats_project_ref_unique` | `(project_id, certificate_ref)` | No duplicate certificate refs per project |
-| archidoc_proposal_fees | `archidoc_proposal_fees_project_unique` | `archidoc_project_id` | One fee record per ArchiDoc project |
+**Financial-state invariants are DB-enforced**, not merely validated in code: non-negativity CHECKs on invoice/situation/fee amounts, uniqueness on situation numbers per devis, at-most-one fee entry per invoice (idempotent approval), XOR subject constraints on advisories, webhook event-id primary keys (idempotency), and 1:1 unique mappings to ArchiDoc ids. *Why:* multiple code paths write financial state (HTTP, webhooks, workers, migrations); the database is the only layer they all share.
 
 ### 2.2.2 ON DELETE Policy
 
-Child records follow a strict cascade/set-null policy:
+Child records follow a strict cascade/set-null/restrict policy, chosen per relationship:
 
-| FK Column | ON DELETE | Rationale |
+| Pattern | ON DELETE | Rationale |
 |---|---|---|
-| `*.project_id` (most tables) | `CASCADE` | When a project is deleted, all child records are removed |
-| `email_documents.project_id` | `SET NULL` | Email docs survive project deletion (nullable FK) |
-| `devis.lot_id` | `SET NULL` | Devis records survive lot deletion |
-| `devis.marche_id` | `SET NULL` | Devis records survive marche deletion |
-| `situations.invoice_id` | `SET NULL` | Situations survive invoice deletion |
-| `*.contractor_id` (all tables) | `RESTRICT` (default) | Contractors are ArchiDoc-mastered — cannot be deleted if referenced |
-| `devis_line_items.devis_id` | `CASCADE` | Line items are owned by devis |
-| `avenants.devis_id` | `CASCADE` | Avenants are owned by devis |
-| `invoices.devis_id` | `CASCADE` | Invoices are owned by devis |
+| Most `*.project_id` | `CASCADE` | Project deletion removes its children (but see the retention gate, §Operational Policies) |
+| `email_documents.project_id` | `SET NULL` | Email evidence survives project deletion |
+| `devis.lot_id`, `devis.marche_id`, `situations.invoice_id` | `SET NULL` | Financial records outlive organizational groupings |
+| All `*.contractor_id` | `RESTRICT` | Contractors are ArchiDoc-mastered — never deletable while referenced |
+| Owned children (`devis_line_items`, `avenants`, `invoices` → devis) | `CASCADE` | Lifetime bound to the parent document |
 
-**When adding a new foreign key, you MUST also add an index on that column.** This is non-negotiable.
+**When adding a new foreign key, you MUST also add an index on that column.**
 
 ### 2.3 Storage Interface
 
-All database access goes through `IStorage` defined in `server/storage.ts`. Routes and services never import `db` or Drizzle query builders directly.
-
-To add a new query:
-1. Add the method signature to the `IStorage` interface
-2. Implement it in the `DatabaseStorage` class below
-3. Use it via the exported `storage` singleton
+All database access goes through `IStorage` in `server/storage.ts` (interface → `DatabaseStorage` implementation → exported `storage` singleton). Routes and services never import `db` or Drizzle query builders directly. *Why:* one seam for every query makes cross-cutting concerns (transactions, locking discipline, test doubles) enforceable in review.
 
 ### 2.4 Authentication and Domain Restriction
 
-- Google OAuth 2.0 via `google-auth-library` (no Passport)
-- Domain restricted to `@renosud.com` — enforced at three layers:
-  1. Google `hd` parameter in auth URL
-  2. Server-side email suffix check in callback
-  3. `email_verified` must be true
-- Session stored in PostgreSQL via `connect-pg-simple` (7-day cookie)
-- Session ID regenerated on login (prevents fixation)
-- `requireAuth` middleware on all `/api/*` routes
-- Public paths (no auth required): `/auth/login`, `/auth/callback`, `/auth/logout`, `/auth/user`, `/webhooks/archidoc`
+- Google OAuth 2.0 via `google-auth-library` (no Passport).
+- Domain restricted to `@renosud.com`, enforced at three layers: the Google `hd` parameter, a server-side email-suffix check in the callback, and a mandatory `email_verified`. *Why three layers:* the `hd` hint is client-influencable; defense in depth on the only tenant boundary the system has.
+- Sessions in PostgreSQL (`connect-pg-simple`, 7-day cookie); session ID regenerated on login (fixation prevention).
+- `requireAuth` on all `/api/*`; the only public paths are the auth endpoints and inbound webhooks (which carry their own HMAC auth, §4.2).
 
 ---
 
@@ -205,100 +138,43 @@ const ttc = ht * 1.2;
 const rounded = Math.round(ttc * 100) / 100;
 
 // CORRECT — use financial-utils
-import { calculateTtc, roundCurrency } from "@shared/financial-utils";
+import { calculateTtc } from "@shared/financial-utils";
 const ttc = calculateTtc(ht, 20);
 ```
 
-Every function in `financial-utils.ts` applies `roundCurrency()` before returning. This guarantees 2-decimal precision at every step of a calculation chain.
-
 ### 3.2 Testing Requirements
 
-- **Framework**: Vitest 4.x with path aliases (`@shared/*`, `@/*`)
-- **Run**: `npx vitest run` (all tests) or `npx vitest` (watch mode)
-- **Scope**: `shared/__tests__/**/*.test.ts`
-- **Current test count**: 119 tests across 3 files:
-  - `financial-utils.test.ts` — 46 tests (rounding, TVA/TTC, Three Buckets, fees, formatting)
-  - `number-to-french-words.test.ts` — 49 tests (French number conversion)
-  - `extraction-validator.test.ts` — 24 tests (cross-checks, auto-correction, confidence)
-- **Rule**: All 119 tests must remain green after every change. Any new financial utility or validation function must have a corresponding test file.
+- **All tests must stay green after every change** — the suite (Vitest unit/integration plus Playwright browser tests) is the regression floor; no change ships that turns any part of it red.
+- Any new financial utility or validation function must land with its own test file beside the existing suites in `shared/__tests__/`.
+- Commands and runner details live in `replit.md` (Dev workflow).
 
 ### 3.3 PDF Generation
 
-All client-facing PDFs follow the `certificat-generator.ts` pattern:
+All client-facing PDFs follow the `certificat-generator.ts` pattern: aggregate data server-side in a single pass → build a self-contained HTML string (no external CSS/JS) → DocRaptor (PrinceXML) → PDF buffer → Object Storage. *Why self-contained:* DocRaptor cannot fetch external URLs, so logos are base64 data URIs and styles are inline.
 
-1. Aggregate data server-side in a single pass
-2. Build a self-contained HTML string (no external CSS/JS)
-3. Send to DocRaptor API (`server/services/docraptor.ts`) which uses PrinceXML
-4. Receive PDF buffer, upload to Object Storage
+**PDF design tokens:** Navy `#0B2545` (headers, KPIs), Gold `#C1A27B` (accents, Reste à Réaliser), Background `#F8F9FA`, Charcoal `#34312D` (body), Grey `#7E7F83` (captions), Inter with system fallbacks.
 
-**Design system for PDFs:**
-
-| Token | Value | Usage |
-|---|---|---|
-| Navy | `#0B2545` | Headers, titles, KPI values, table headers |
-| Gold | `#C1A27B` | Accent bars, borders, highlights, Reste a Realiser |
-| Background | `#F8F9FA` | Zebra rows, party cards, info boxes |
-| Charcoal | `#34312D` | Body text |
-| Grey | `#7E7F83` | Labels, captions, footers |
-| Font | Inter | All text (with system fallbacks) |
-
-**Print CSS rules:**
-- `@page` for margins, running headers/footers, page counters
-- `page-break-before: always` for new sections (e.g. Financial Annexe)
-- Single `<table>` with `<thead>` / `<tbody>` / `<tfoot>` — PrinceXML repeats `<thead>` on each page automatically
-- Font sizes: 7pt for table content, 6.5pt for avenant sub-rows, 14pt for KPI values
-- Logos embedded as base64 data URIs (DocRaptor cannot fetch external URLs)
-
-**Scaling for large documents (50+ avenants):**
-- Use one `<table>` per logical section, not one per devis
-- Avenant sub-rows are compact (6.5pt, 3px padding) and grouped under parent devis
-- PrinceXML handles table pagination natively — no manual page-break calculations needed
+**Print CSS:** `@page` for margins/running headers/counters; `page-break-before: always` for new sections; a single `<table>` per logical section with `<thead>`/`<tbody>`/`<tfoot>` — PrinceXML repeats `<thead>` per page and paginates tables natively, so never hand-calculate page breaks. PrinceXML ignores `display:grid` (renders stacked); use flexbox or tables. Compact sub-rows (avenants) stay grouped under their parent devis rather than getting their own tables — one table per devis breaks pagination at 50+ avenants.
 
 ### 3.4 Frontend Patterns
 
-**Data fetching — TanStack Query v5:**
-```typescript
-// CORRECT — object form, default queryFn, array key segments
-const { data, isLoading } = useQuery<MyType>({
-  queryKey: ["/api/projects", projectId, "fees"],
-  enabled: !!projectId,
-});
+**Data fetching — TanStack Query v5**, object form with the pre-configured default `queryFn` and URL-segment array keys:
 
-// WRONG — custom queryFn (default is already configured)
-const { data } = useQuery({
-  queryKey: ["fees"],
-  queryFn: () => fetch("/api/fees").then(r => r.json()),
-});
+```typescript
+const { data } = useQuery<MyType>({ queryKey: ["/api/projects", projectId, "fees"], enabled: !!projectId });
 ```
 
-**Mutations:**
-```typescript
-import { apiRequest } from "@/lib/queryClient";
-import { queryClient } from "@/lib/queryClient";
+**Mutations** use `apiRequest` from `@/lib/queryClient` and invalidate the affected query keys on success.
 
-const mutation = useMutation({
-  mutationFn: (data: InsertFee) => apiRequest("POST", "/api/fees", data),
-  onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "fees"] }),
-});
-```
+**Forms:** shadcn `Form` + `react-hook-form` + `zodResolver` with insert schemas from `@shared/schema` — the same Zod objects the server validates with, so client and server can't disagree.
 
-**Forms:** shadcn `Form` + `react-hook-form` + `zodResolver` with insert schemas from `@shared/schema`.
+**Routing:** `wouter`; pages in `client/src/pages/`, registered in `App.tsx`. **Icons:** `lucide-react` for actions, `react-icons/si` for company logos.
 
-**Routing:** `wouter` — pages in `client/src/pages/`, registered in `App.tsx`.
+**Test IDs:** `data-testid` on every interactive element (`button-submit`, `input-email`) and meaningful display element (`text-username`); dynamic elements append the entity id (`card-product-${id}`).
 
-**Icons:** `lucide-react` for actions, `react-icons/si` for company logos.
+**Language rules:** French domain terms preserved verbatim (Devis, Avenant, Marché, Certificat, Honoraires, Lot, Situation, Retenue de Garantie, PV/MV, TVA, SIRET); all other UI text in English; no emoji anywhere.
 
-**Test IDs:** `data-testid` on every interactive element (`button-submit`, `input-email`) and meaningful display element (`text-username`, `status-payment`). Dynamic elements append unique ID: `card-product-${id}`.
-
-**Language rules:**
-- French domain terms preserved: Devis, Avenant, Marche, Certificat, Honoraires, Lot, Situation, Retenue de Garantie, PV/MV, TVA, SIRET
-- All other UI text in English
-- No emoji anywhere
-
-**Express 5 rules:**
-- No `*` wildcards in route paths
-- Always validate `Number(req.params.id)` for NaN before use
-- Wrap route handlers in try/catch
+**Express 5 rules:** no `*` wildcards in route paths; always validate `Number(req.params.id)` for NaN; wrap route handlers in try/catch.
 
 ---
 
@@ -306,466 +182,156 @@ const mutation = useMutation({
 
 ### 4.1 One-Way Sync — ArchiDoc is Master
 
-Projects and Contractors flow FROM ArchiDoc TO ArchiTrak. Never the reverse.
+Projects and Contractors flow FROM ArchiDoc TO ArchiTrak. Never the reverse. **Never create a Project manually in ArchiTrak.** *Why:* two writable masters for the same entities guarantees divergence; ArchiDoc owns firm-wide project identity, ArchiTrak owns only the financial layer on top of it.
 
-**Never create a Project manually in ArchiTrak.** All projects originate in ArchiDoc and are imported via:
-- Webhook push (default mode): ArchiDoc sends events to `POST /api/webhooks/archidoc`
-- API pull (legacy mode): ArchiTrak polls `ARCHIDOC_BASE_URL` endpoints
+Import happens via webhook push (default) to `POST /api/webhooks/archidoc`, or legacy API pull against `ARCHIDOC_BASE_URL`. The webhook event vocabulary covers created/updated/deleted for projects, contractors, trades, and proposal fees, plus a `sync.full` re-sync. `project.deleted` marks the project inactive rather than deleting (retention, §Operational Policies).
 
-**13 webhook event types:**
-
-| Event | Action |
-|---|---|
-| `project.created` / `project.updated` | Upsert project from ArchiDoc data |
-| `project.deleted` | Mark project inactive |
-| `contractor.created` / `contractor.updated` | Upsert contractor |
-| `contractor.deleted` | Remove contractor |
-| `trade.created` / `trade.updated` | Upsert trade/lot |
-| `trade.deleted` | Remove trade |
-| `proposal_fee.created` / `proposal_fee.updated` | Upsert proposal fee |
-| `proposal_fee.deleted` | Remove proposal fee |
-| `sync.full` | Full re-sync of all data |
-
-**Environment controls:**
-- `ARCHIDOC_POLLING_ENABLED=true` — re-enables legacy polling (default: disabled, webhook mode). Affects ArchiDoc sync only — Gmail inbox scanning is gated by its own `GMAIL_POLLING_ENABLED` flag (default ON).
-- `ARCHIDOC_BASE_URL` — ArchiDoc API base URL
-- `ARCHIDOC_SYNC_API_KEY` — API key for pull-mode sync
+Polling is gated by `ARCHIDOC_POLLING_ENABLED` (default off — webhook mode). Gmail inbox scanning has its own independent flag (`GMAIL_POLLING_ENABLED`, default ON): the two were once coupled and switching ArchiDoc to webhooks silently killed Gmail scanning in production — they must never share a flag again.
 
 ### 4.2 Webhook Security
 
-All inbound webhooks pass through `server/middleware/webhook-auth.ts`:
-
-1. **Secret check**: `ARCHIDOC_WEBHOOK_SECRET` must be configured
-2. **Signature verification**: Header `X-Archidoc-Signature: sha256=<hex>` — HMAC-SHA256 of raw request body using the shared secret
-3. **Timestamp replay protection**: `X-Archidoc-Timestamp` header is MANDATORY. Tolerance: 5 minutes. Requests outside window are rejected with 401
-
-The raw body is captured via `express.json({ verify })` callback and stored on `req.rawBody` for HMAC computation.
+All inbound webhooks pass `server/middleware/webhook-auth.ts`: shared-secret presence check, `X-Archidoc-Signature: sha256=<hex>` HMAC-SHA256 over the **raw** request body, and a mandatory `X-Archidoc-Timestamp` with a 5-minute replay window (401 outside it). The raw body is captured via `express.json({ verify })` — HMAC over re-serialized JSON would be a different byte sequence.
 
 ### 4.3 AI Extraction Pipeline
 
-**Gemini structured output:**
-- `responseMimeType: "application/json"` with `responseSchema` — guarantees valid JSON
-- System prompt: Expert-Comptable specialise BTP (French Construction Accountant)
-- Knows: Auto-liquidation de TVA (Article 283-2 nonies CGI), Retenue de Garantie (Loi n 71-584), SIRET/RCS extraction, lot references, Acompte vs Situation distinction
-- Extracts 20+ fields: invoiceNumber, devisNumber, siret, autoLiquidation, retenueDeGarantie, netAPayer, paymentTerms, lotReferences, lineItems, amounts
-
-**After extraction:**
-1. `validateExtraction()` cross-checks all amounts
-2. Record created as `draft` with `validationWarnings` (jsonb), `aiExtractedData` (jsonb), `aiConfidence` (integer 0-100)
-3. DraftReviewPanel displays editable fields with validation badges
-4. Architect confirms or discards
+Gemini structured output (`responseMimeType: "application/json"` + `responseSchema` — guarantees parseable JSON). The system prompt is an Expert-Comptable spécialisé BTP: it knows auto-liquidation de TVA (Art. 283-2 nonies CGI), retenue de garantie (Loi n°71-584), SIRET/RCS extraction, lot references, and the acompte-vs-situation distinction. Extraction feeds `validateExtraction()` and the draft→confirm workflow (§1.2) — never the database directly.
 
 ### 4.4 Gmail Integration
 
-- Connector provides send-only scope (no read access in production)
-- Monitor detects 403 on first poll attempt, pauses with clear log message
-- Label operations (categorizing processed emails) conditionally skipped when permissions are insufficient
-- Extracted documents follow the same AI pipeline: parse -> validate -> draft -> review
+The connector provides send-only scope in production (no read access). The monitor detects 403 on first poll and pauses with a clear log message; label operations are conditionally skipped when permissions are insufficient. Extracted documents follow the same pipeline: parse → validate → draft → review.
 
-### 4.5 Drive Auto-Upload (Task #198, feature-flagged)
+### 4.5 Drive Mirroring (feature-flagged)
 
-Every devis / facture / certificat PDF stored in object storage is mirrored
-into the Renosud shared Google Drive at:
+Every devis / facture / certificat PDF in object storage is mirrored into the Renosud shared Google Drive under `{project}/FINANCIAL/LIVE PROJECT FINANCIAL/1 DEVIS & FACTURE FOLDERS/{Lot} {project} {devisCode}/`.
 
-```
-{project name}/FINANCIAL/LIVE PROJECT FINANCIAL/1 DEVIS & FACTURE FOLDERS/
-  {Lot} {project} {devisCode}/
-```
+**Invariants and their reasons:**
 
-**Invariants**:
-
-- **ONE LOT → ONE FOLDER** — devis, factures, and certificats for a single lot
-  share a single Drive folder. The folder name is seeded from the originating
-  devis code so it stays canonical regardless of which doc lands first.
-- **Auth is service-account only** (`GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON`,
-  domain-wide delegation NOT used — the SA itself is granted Editor on the
-  shared drive). User OAuth is intentionally rejected so no one operator's
-  identity is on the audit trail.
-- **Project root resolution is strict-exact-match-only** on the
-  case-and-accent-normalised folder name. Ambiguity (≥2 matches) is fatal —
-  the operator must rename in Drive then click Retry. Step-by-step location
-  also requires `FINANCIAL/LIVE PROJECT FINANCIAL/1 DEVIS & FACTURE FOLDERS`
-  to exist verbatim — these intermediate folders are NEVER auto-created.
-- **Concurrency** — `pg_advisory_xact_lock(198, lotId)` serialises per-lot
-  folder creation so two concurrent uploads can't create duplicate folders
-  before either has persisted `lots.drive_folder_id`.
-- **AT5-style retry** — `drive_uploads` table, 5 attempts with
-  10s/30s/2m/5m backoff, then `dead_letter`. Folder-not-found errors are
-  treated as transient (operator may not have created the client folder
-  yet). Crashed `in_flight` rows older than 10 min are reclaimed by the
-  sweeper.
-- **Admin DLQ** at `/admin/ops/drive-uploads` — list/filter/retry. Retry is
-  only permitted on `dead_letter` and `failed` rows (resetting `succeeded`
-  would create duplicate Drive copies; resetting `in_flight` would race the
-  worker).
-- **Feature flag** — `DRIVE_AUTO_UPLOAD_ENABLED=false` by default. When off,
-  `enqueueDriveUpload` is a silent no-op so wire-in callers don't need to
-  gate themselves. No backfill of pre-existing PDFs.
-- **Gmail-scrape ingestion** — when `processEmailDocument` matches a
-  scraped PDF to a project AND the parsed `documentType` is `devis` or
-  `invoice`, the PDF is enqueued under `doc_kind = "scrape"` against the
-  newly-created `project_documents.id`. The scrape lands in the
-  project's `(unassigned-lot)` fallback because the lot isn't known
-  until the operator promotes the draft. Once promoted, the
-  devis/invoice upload services enqueue again under their own
-  doc_kind, producing a second authoritative copy in the correct lot
-  folder. Migration `0033_drive_uploads_scrape_kind.sql` adds the
-  fourth doc_kind.
-- **Out of scope (this iteration)**: `avoirs` / credit-note table does not
-  exist in the schema; if introduced later, add a new `doc_kind` to
-  `DRIVE_UPLOAD_DOC_KINDS` + the writeback switch in
-  `server/services/drive/upload-queue.service.ts`.
+- **ONE LOT → ONE FOLDER** — all documents for a lot share a single Drive folder, its name seeded from the originating devis code so it stays canonical regardless of which document lands first.
+- **Service-account auth only** (no domain-wide delegation; the SA itself is Editor on the shared drive). User OAuth is intentionally rejected so no individual operator's identity is on the audit trail.
+- **Project root resolution is strict-exact-match-only** on the case/accent-normalised folder name; ambiguity (≥2 matches) is fatal and the operator must rename in Drive, then retry. The intermediate `FINANCIAL/...` folders must exist verbatim and are NEVER auto-created — silently creating structure would hide operator filing mistakes.
+- **Per-lot advisory locks** serialise folder creation so concurrent uploads can't create duplicate folders before either has persisted the folder id.
+- **Persistent retry queue with dead-letter** — bounded attempts with escalating backoff, then `dead_letter`; folder-not-found is treated as *transient* (the operator may simply not have created the client folder yet). Stale `in_flight` rows are reclaimed by a sweeper. Admin DLQ at `/admin/ops/drive-uploads`; retry is only permitted on `dead_letter`/`failed` rows — resetting `succeeded` would duplicate Drive copies, resetting `in_flight` would race the worker.
+- **Feature flag default OFF** (`DRIVE_AUTO_UPLOAD_ENABLED`); when off, enqueue is a silent no-op so call sites don't gate themselves. No backfill of pre-existing PDFs.
+- **Gmail-scrape ingestion**: a scraped PDF matched to a project is mirrored immediately under the project's `(unassigned-lot)` fallback (the lot isn't known until the operator promotes the draft); promotion enqueues a second, authoritative copy in the correct lot folder.
+- **Credit notes (avoirs) are out of scope** until such a table exists; adding one requires a new doc kind in the upload queue service.
 
 ### 4.6 Object Storage
 
-All documents stored in Replit Object Storage via `server/storage/object-storage.ts`:
+All documents live in Replit Object Storage behind `server/storage/object-storage.ts` (upload / buffer / stream / delete — see the module). Keys are structured as `/${bucket}/${PRIVATE_OBJECT_DIR}/projects/${projectId}/documents/${timestamp}_${safeName}`, with an `unmatched/documents/` prefix for documents that have no project yet. *Why keyed by project:* retention and access control operate on the project prefix (§Operational Policies).
 
-| Function | Purpose |
-|---|---|
-| `uploadDocument(projectId, fileName, buffer, contentType)` | Upload, returns storage key |
-| `getDocumentBuffer(storageKey)` | Download as Buffer |
-| `getDocumentStream(storageKey)` | Download as Readable stream + metadata |
-| `deleteDocument(storageKey)` | Delete from bucket |
+### 4.7 Pennylane Outbound (feature-flagged)
 
-**Key structure:** `/${bucketName}/${PRIVATE_OBJECT_DIR}/projects/${projectId}/documents/${timestamp}_${safeName}`
+Architect-honoraires-only outbound to Pennylane: the operator triggers a push on Outstanding Fees → an idempotent queue runs the `customer → customer_invoice → email_send` chain, mirrors the rendered PDF into Object Storage, and auto-emails the client via the architect's Gmail. An hourly poller writes paid status back.
 
-Unmatched documents (no projectId): `/${bucketName}/${PRIVATE_OBJECT_DIR}/unmatched/documents/${timestamp}_${safeName}`
+**Scope guardrail (constitutional, non-negotiable):** Only the architect's `fee_entries` are pushable. Contractor-side data (`devis`, `factures`, `contractors`, `lots`) MUST never be mapped to a Pennylane customer or invoice — the architect is not the contractor's customer, and pushing supplier data would corrupt the firm's books. **Adding any new push kind requires an ADR in `docs/decisions/` + amendment of this section.**
 
----
+**Idempotency is two-sided by design:** stable external ids (`architrak:client:project:{projectId}`, `architrak:fee_entry:{feeEntryId}`) make Pennylane's upsert-by-external-id the de-dup mechanism on their side; a `(kind, doc_id)` unique index is ours. Either side alone would leave a double-push window.
 
-### 4.7 Pennylane Push (Task #214, feature-flagged)
+**Operational semantics that are easy to get wrong:**
+- `PENNYLANE_PROJECT_WHITELIST`: **absent = all projects allowed; empty string = kill-switch (zero allowed).** Enforced at enqueue time, not sweep time — already-queued rows drain even if the whitelist tightens mid-flight.
+- `PENNYLANE_DRY_RUN=true` runs the whole chain end-to-end writing `dry-run:{kind}:{docId}` sentinel ids, never contacting the API — for verifying mapping on real data with zero side effects.
+- `PENNYLANE_PUSH_ENABLED` defaults OFF everywhere; the sweeper and paid-poller are not even scheduled when off. Enabling it without an API key is caught by the boot env validator.
+- Admin DLQ at `/admin/ops/pennylane-pushes`; live ping and env-only feature-flag probes exist under `/api/admin/pennylane/*` and `/api/pennylane/feature-flags`.
+- The sandbox cleanup script refuses to run against any base URL that isn't sandbox/staging/test.
 
-Architect-honoraires-only outbound to Pennylane. Operator clicks **Invoice fees now**
-on Outstanding Fees → idempotent queue runs `customer → customer_invoice → email_send`,
-mirroring the rendered PDF into Object Storage and auto-emailing the client through the
-architect's Gmail. An hourly poller writes `paid_at` back when Pennylane reports paid.
+Implementation lives under `server/services/pennylane/` (client, pure mappers, push-queue sweeper, paid poller).
 
-**Scope guardrail (constitutional, non-negotiable):** Only the architect's `fee_entries`
-are pushable. Contractor-side data (`devis`, `factures`, `contractors`, `lots`) MUST
-never be mapped to a Pennylane customer or invoice. Adding any new push kind requires an
-ADR + amendment of this section.
+### 4.8 Contractor Banking Wire Contract — ArchiDoc → ArchiTrak (v1)
 
-| Column / file | Role |
-|---|---|
-| `pennylane_pushes(kind, doc_id)` UNIQUE | Idempotency key |
-| `kind` enum: `customer` / `customer_invoice` / `email_send` | Chain steps |
-| `projects.pennylane_customer_id` | Mirror of the remote customer id |
-| `fee_entries.pennylane_invoice_id` + `_pdf_storage_key` + `_pushed_at` + `_paid_at` + `_paid_amount` + `_status` | Per-entry mirror |
-| `server/services/pennylane/client.ts` | HTTP client (cursor pagination, 429-aware backoff) |
-| `server/services/pennylane/mappers.ts` | Pure project→customer / fee_entry→invoice mappers |
-| `server/services/pennylane/push-queue.service.ts` | Sweeper (60s tick, 5 attempts, 10s/30s/2m/5m backoff, 10-min stale reclaim) |
-| `server/services/pennylane/paid-poller.service.ts` | Hourly paid-status poller |
-| `scripts/pennylane-sandbox-cleanup.ts` | Sandbox teardown (refuses if base URL is not sandbox/staging/test) |
+Frozen 2026-05-27. Both sides pin the wire shape with symmetric fixture-based contract tests; those tests are the backstop, and the listed re-verify events are the ONLY triggers for a fresh inter-app check — no periodic re-verify.
 
-**External-id scheme:** customer = `architrak:client:project:{projectId}`,
-invoice = `architrak:fee_entry:{feeEntryId}`. Stable across re-pushes — Pennylane's
-upsert-by-external-id is the de-dup mechanism on their side, the `(kind, doc_id)`
-unique index is ours.
-
-**Dry-run mode:** `PENNYLANE_DRY_RUN=true` logs the outbound payload and writes
-sentinel ids of the form `dry-run:{kind}:{docId}` into the mirror columns so the chain
-fires end-to-end without ever contacting the Pennylane API. Useful for staging
-smoke-tests and for keeping the UI responsive while the env is partially configured.
-
-**Whitelist:** `PENNYLANE_PROJECT_WHITELIST` is a CSV of project ids. **Absent = all
-projects allowed.** **Empty string = kill-switch (zero projects allowed).** Whitelist
-is enforced at enqueue time, not at sweep time — already-queued rows continue to drain
-if the whitelist tightens mid-flight.
-
-**Admin surfaces:**
-- `/admin/ops/pennylane-pushes` — DLQ list, filter by kind/state, manual retry
-- `GET /api/admin/pennylane/me` — live ping (hits Pennylane)
-- `GET /api/pennylane/feature-flags` — env-only probe (no API call); powers the
-  Outstanding-Fees button swap between auto-flow and legacy "Mark Invoiced"
-
-**Production safety:** `PENNYLANE_PUSH_ENABLED` defaults OFF in every environment.
-The sweeper and paid-poller are NOT scheduled when the flag is off. Turning the flag
-on without `PENNYLANE_API_KEY` is detected by the boot env validator.
-
-### 4.8 Contractor Banking Wire Contract — ArchiDoc → ArchiTrak (v1, Task #225 / #226)
-
-Frozen 2026-05-27. Both sides have a symmetric fixture-based contract
-test; the listed re-verify events are the only triggers for a fresh
-inter-agent check. No periodic re-verify.
-
-**Endpoint** — `GET /api/sync/contractors[?since=<ISO8601>]` against
-`ARCHIDOC_BASE_URL`. Bearer auth via `ARCHIDOC_SYNC_API_KEY` (the
-single shared key, also used by `/api/sync/projects`, `/api/sync/trades`,
-`/api/sync/proposal-fees`). On invalid `since=` ArchiDoc silently
-returns the full set — incremental sync therefore never throws on a
-malformed timestamp.
+**Endpoint** — `GET /api/sync/contractors[?since=<ISO8601>]` against `ARCHIDOC_BASE_URL`, bearer-authed with the single shared sync key (also used by the projects/trades/proposal-fees sync paths). On an invalid `since=`, ArchiDoc silently returns the full set — incremental sync never throws on a malformed timestamp.
 
 **Banking block — exact key names** (nested under each contractor):
 
 ```jsonc
 {
-  "id": "uuid",
-  "name": "string",
-  // ... non-banking fields ...
   "banking": {
-    "accountHolderName":     "string",   // verbatim
-    "iban":                  "string",   // pre-normalised; we re-validate (mod-97)
-    "bic":                   "string",   // pre-normalised; we re-validate (ISO 9362)
-    "bankName":              "string",
-    "ribDocumentUrl":        "/objects/contractors/<contractorId>/<filename>",
-    "ribDocumentName":       "string",
-    "bankingVerifiedAt":     "ISO8601",  // PREFIXED — not `verifiedAt`
-    "bankingVerifiedBy":     "string",   // PREFIXED — not `verifiedBy`
+    "accountHolderName":      "string",   // verbatim
+    "iban":                   "string",   // pre-normalised; we re-validate (mod-97)
+    "bic":                    "string",   // pre-normalised; we re-validate (ISO 9362)
+    "bankName":               "string",
+    "ribDocumentUrl":         "/objects/contractors/<contractorId>/<filename>",
+    "ribDocumentName":        "string",
+    "bankingVerifiedAt":      "ISO8601",  // PREFIXED — not `verifiedAt`
+    "bankingVerifiedBy":      "string",   // PREFIXED — not `verifiedBy`
     "bankingAiExtractedData": { /* opaque */ }  // PREFIXED — not `aiExtractedData`
   }
 }
 ```
 
-The three audit fields use the **prefixed** form (`bankingVerifiedAt` /
-`By` / `AiExtractedData`) — mirroring ArchiDoc's column names. The
-short forms were a silent NULL-coercer in Task #225's first cut and
-were eliminated in Task #226. The interface in
-`server/archidoc/sync-client.ts:ArchidocContractorData.banking`
-declares only the prefixed keys so the TS compiler enforces the
-contract; the fixture test in
-`server/archidoc/__tests__/banking-wire-shape.test.ts` pins the
-exact wire shape and fails CI on drift.
+The three audit fields use the **prefixed** form, mirroring ArchiDoc's column names — the short forms were once a silent NULL-coercer. The TypeScript interface in `server/archidoc/sync-client.ts` declares only the prefixed keys so the compiler enforces the contract; the fixture test pins the exact wire shape and fails CI on drift.
 
-**Re-validation on persist** — IBAN/BIC are re-checked by
-`shared/iban.ts` (`validateIban` / `validateBic`) inside
-`server/archidoc/sync-service.ts#upsertContractor` before write.
-Anything that fails validation lands as NULL, not as persisted
-garbage; the certificat gate then refuses to issue, which is the
-intended failure mode.
+**Re-validation on persist** — IBAN/BIC are re-checked by `shared/iban.ts` before write. Anything failing validation lands as NULL, not persisted garbage; the certificat gate then refuses to issue — that refusal is the *intended* failure mode (bad banking data must block payment instructions, not flow into them).
 
-**RIB proxy contract (v1)** — When `banking.ribDocumentUrl` is
-present, `sendCertificat` fetches it through:
+**RIB proxy contract** — when `ribDocumentUrl` is present, certificat sending fetches it through ArchiDoc's `/objects/...` path with the shared bearer key (30s timeout, same-host guard). On ArchiDoc's side, the `/objects/*` sensitive-prefix gate MUST cover both `contractors/` and `insurance-certificates/` prefixes and force bearer auth on them — without that gate, RIB PDFs and insurance certificates would be publicly fetchable by URL. Success returns PDF bytes we mirror and attach; a miss is a structured JSON 404, never an HTML error page. RIB fetch failure is **non-fatal** — the certificat always carries the IBAN block; the RIB attachment is a convenience.
 
-- `GET <ARCHIDOC_BASE_URL>/objects/contractors/<id>/<filename>`
-- `Authorization: Bearer <ARCHIDOC_SYNC_API_KEY>` (same shared key)
-- 30s timeout, same-host guard
-- Success: `application/pdf` bytes — we mirror into object storage
-  and append to `attachmentStorageKeys`
-- Miss: HTTP 404 with structured JSON `{ "error": "Object not found" }`
-  — never an HTML error page
-- Sensitive-prefix gate on ArchiDoc covers `contractors/` and
-  `insurance-certificates/`, forcing bearer auth on those paths
+**Re-verify triggers (events, not calendar):** rename/type change of any `banking` field; a new field in the block (additive + null-by-default is non-breaking, but ping the other side); changes to IBAN/BIC validation rules; changes to the `/objects/*` sensitive-prefix gate or bearer scope; changes to any `/api/sync/*` path or its `?since=` semantics.
 
-RIB fetch failure is **non-fatal** — the certificat itself always
-carries the IBAN block; the RIB attachment is a convenience.
-
-**Re-verify triggers (events, not calendar)** — A fresh inter-app
-check is required if any of the following changes on either side:
-
-1. Rename or type change to any field in the `banking` block.
-2. New field added to the block (treat as additive + null-by-default
-   so it's a non-breaking change, but ping the other side so they
-   can pre-wire).
-3. Change to IBAN/BIC validation rules in `shared/iban.ts`
-   (mod-97 / ISO 9362).
-4. Change to the `/objects/*` sensitive-prefix gate or bearer scope.
-5. Change to any of the four `/api/sync/*` paths or their `?since=`
-   semantics.
-
-Outside those events the fixture tests on both sides are the
-backstop; no scheduled re-verify.
-
-**Single-tenant invariant** — Banking fields MUST NEVER appear on
-any unauthenticated surface (`public-checks`, `public-client-checks`,
-`archisign-public`). See the inline comment block in
-`server/routes/public-checks.ts#buildPortalPayload`. Adding a new
-public surface requires explicitly whitelisting only the
-non-banking fields.
+**Single-tenant invariant** — banking fields MUST NEVER appear on any unauthenticated surface (`public-checks`, `public-client-checks`, `archisign-public`); see the comment block in `server/routes/public-checks.ts`. A new public surface must explicitly whitelist only non-banking fields.
 
 ---
 
 ## 5. Directory Map
 
-```
-client/src/
-  pages/              — Route-level page components
-  components/         — Reusable UI components (dashboard/, devis/, factures/, etc.)
-  hooks/              — Custom hooks (use-auth, use-toast, use-mobile)
-  lib/                — queryClient, utils
-server/
-  auth/               — Google OAuth: google-oauth.ts, routes.ts, middleware.ts
-  routes/             — Thin HTTP routers (16 files)
-    index.ts          — Router registration
-    projects.ts, contractors.ts, marches.ts, lots.ts
-    devis.ts, invoices.ts, situations.ts
-    certificats.ts, fees.ts, financial.ts
-    dashboard.ts, export.ts
-    archidoc.ts, gmail.ts, documents.ts
-    communications.ts, settings.ts, webhooks.ts
-    benchmarks.ts       — Cost benchmark library (search, upload, edit/delete)
-  services/           — Business logic (no HTTP concerns)
-    devis-upload.service.ts, invoice-upload.service.ts
-    extraction-validator.ts
-    invoice-approval.service.ts, fee-calculation.service.ts
-    financial-summary.service.ts, dashboard.service.ts
-    bulk-export.service.ts, webhook.service.ts
-    docraptor.ts
-  archidoc/           — ArchiDoc sync: sync-client, sync-service, import-service
-  gmail/              — Gmail monitoring: client, monitor, document-parser
-  communications/     — certificat-generator, email-sender, payment-scheduler
-  middleware/         — webhook-auth.ts (HMAC verification)
-  storage/            — object-storage.ts (Replit Object Storage wrapper)
-shared/
-  schema.ts           — Drizzle tables + Zod schemas + types (single source of truth)
-  financial-utils.ts  — Pure financial functions (roundCurrency, TVA, TTC, formatting)
-  __tests__/          — Vitest test files (119 tests)
-```
+See `replit.md` → *Repo layout* for the authoritative directory structure. The structural rule this constitution adds: `shared/` is imported by BOTH client and server and must stay dependency-light; `server/routes/` stays thin per §2.1; and `docs/` holds inter-app contract specs and wire fixtures plus `docs/decisions/` for ADRs.
 
 ---
 
-## 6. Environment Secrets
+## 6. Environment Configuration
 
-| Variable | Purpose |
-|---|---|
-| `DATABASE_URL` | PostgreSQL connection string (auto-configured by Replit) |
-| `SESSION_SECRET` | Express session encryption key |
-| `GOOGLE_CLIENT_ID` | Google OAuth 2.0 client ID |
-| `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 client secret |
-| `GEMINI_API_KEY` | Google Gemini API key for AI document extraction |
-| `DOCRAPTOR_API_KEY` | DocRaptor API key for HTML-to-PDF conversion |
-| `ARCHIDOC_BASE_URL` | ArchiDoc API base URL for project sync |
-| `ARCHIDOC_SYNC_API_KEY` | ArchiDoc API authentication key |
-| `ARCHIDOC_WEBHOOK_SECRET` | HMAC-SHA256 shared secret for webhook signature verification |
-| `ARCHIDOC_POLLING_ENABLED` | Set to `"true"` to enable legacy polling (default: webhook mode) |
-| `GMAIL_POLLING_ENABLED` | Gmail inbox scanning kill switch — defaults ON; set `"false"` to disable the 15-minute inbox monitor |
-| `DEFAULT_OBJECT_STORAGE_BUCKET_ID` | Replit Object Storage bucket identifier |
-| `PRIVATE_OBJECT_DIR` | Object Storage directory prefix for private documents |
-| `PUBLIC_OBJECT_SEARCH_PATHS` | Object Storage public asset search paths |
+`server/env.ts` is the single, Zod-validated source of truth for every server-side environment variable — names, defaults, feature-scoping, and boot-time safety checks (dev-login backdoor refusal, misconfigured-ArchiDoc-host warning, alert-recipient warnings) are all defined and documented there. This document intentionally carries no env-var catalog.
+
+Policies the code enforces and future changes must preserve:
+- **Fail-fast, never leak**: invalid env aborts boot logging key *names* only, never values.
+- **Required = boot-critical only** (`DATABASE_URL`, `SESSION_SECRET`); everything else is feature-scoped and its absence disables the feature rather than crashing.
+- **Dev/test backdoors** (`ENABLE_DEV_LOGIN_FOR_E2E`, `E2E_FAKE_GMAIL`, `E2E_FAKE_GEMINI`) hard-fail boot in production.
+
+---
 
 ## Operational Policies
 
-### Database Migrations
+### Database Migrations — decisions
 
-The repo uses **versioned migrations** as the source of truth for schema state. `drizzle-kit push` is reserved for throwaway local scratch databases and is gated behind an explicit env flag — it is never wired into the post-merge hook or any deployment path.
+- **Versioned migrations are the source of truth for schema state.** `migrations/` (SQL + drizzle journal) is committed; every shared environment converges on schema exclusively through those files, applied by `runMigrations()` at server start (before the HTTP listener binds) and by the post-merge hook.
+- **`drizzle-kit push` is banned on shared databases** (dev, staging, production). It bypasses the migration journal and can drop columns silently, drifting the live schema away from what `runMigrations()` will reapply. It is allowed only against throwaway local scratch databases through a gated wrapper that refuses hosted-Postgres hosts.
+- **Drift is caught twice**: the CI workflow on any PR touching schema/migrations, and again at the start of the deploy build — so a deploy from a branch that bypassed PR review still aborts if `shared/schema.ts` and committed migrations disagree. Both run `scripts/check-schema-drift.sh`.
+- Deployment containers must ship `migrations/` alongside `dist/`; `RUN_MIGRATIONS_ON_START=false` exists for read-only replicas and one-off scripts.
 
-**File layout**
-
-- `migrations/` — generated SQL migration files, committed to source control
-- `migrations/meta/` — drizzle's snapshot + journal (DO NOT hand-edit)
-- `migrations/0000_baseline.sql` — initial baseline captured from the live schema
-
-**Workflow for schema changes**
-
-1. Edit `shared/schema.ts`.
-2. Generate a new migration file:
-   ```
-   npx drizzle-kit generate --name <change-summary>
-   ```
-   Review the SQL diff, commit both the new `NNNN_*.sql` and the updated `migrations/meta/` files.
-3. Locally, apply with `npx drizzle-kit migrate` (or restart the server — see below).
-
-**Scratch-DB-only push (never against shared databases)**
-
-`drizzle-kit push` bypasses the migration journal and can drop columns silently. It MUST NOT be run against the shared dev DB, staging, or production — doing so will drift the live schema away from `migrations/` and from what `runMigrations()` will reapply on the next deploy.
-
-For a local-only scratch database, use the gated wrapper:
-
-```
-ALLOW_DESTRUCTIVE_PUSH=true \
-DATABASE_URL=postgres://localhost:5432/architrak_scratch \
-  bash scripts/db-push-scratch.sh
-```
-
-The wrapper refuses to run unless `ALLOW_DESTRUCTIVE_PUSH=true` is set, and rejects any `DATABASE_URL` whose host matches known hosted-Postgres providers (Neon, Supabase, RDS, Render, Railway, Replit, pooler hosts, …).
-
-**Resetting a scratch DB**
-
-To start over against a local scratch DB:
-
-```
-psql "$DATABASE_URL" -c 'drop schema public cascade; create schema public;'
-npx tsx scripts/run-migrations.mjs   # apply the committed migration history
-```
-
-Use `db-push-scratch.sh` only when iterating on `shared/schema.ts` before you are ready to generate a migration. Once the schema is settled, run `npx drizzle-kit generate --name <change-summary>` and commit the result — that committed SQL is what will run on the shared DB and in production via `runMigrations()`.
-
-**Post-merge hook**
-
-`scripts/post-merge.sh` runs `npm install` followed by `npx tsx scripts/run-migrations.mjs`. It does NOT call `drizzle-kit push` — every shared environment converges on schema state exclusively through committed migration files.
-
-**Application at deploy / start time**
-
-`server/index.ts` calls `runMigrations()` (see `server/migrate.ts`) before binding the HTTP listener. This uses drizzle-orm's `node-postgres` migrator to apply any pending files from the `migrations/` folder against `DATABASE_URL`. On a fresh database, the baseline migration creates every table/index/constraint; on an existing database, drizzle's `__drizzle_migrations` table tracks what's been applied and only new entries run.
-
-- The behavior can be disabled by setting `RUN_MIGRATIONS_ON_START=false` (useful for read-only replicas or one-off scripts).
-- The migrations folder location can be overridden with `MIGRATIONS_FOLDER`; otherwise it resolves to `<cwd>/migrations`.
-- Deployment containers must ship the `migrations/` directory alongside `dist/`. The autoscale deployment includes the full repo, so no extra build step is required.
-
-**CI gate**
-
-The GitHub Actions workflow `.github/workflows/schema-drift.yml` runs on every PR that touches `shared/schema.ts`, `migrations/`, or `drizzle.config.ts`. It executes `scripts/check-schema-drift.sh`, which runs `npx drizzle-kit generate` and fails if any new SQL file or `migrations/meta/` change is produced — i.e. the committed migrations are out of sync with the schema. To fix a failing run locally, run `npx drizzle-kit generate --name <change-summary>` and commit the new migration plus the updated `migrations/meta/` files.
-
-**Deploy-time gate**
-
-The same `scripts/check-schema-drift.sh` check is invoked at the start of `script/build.ts` (i.e. `npm run build`, which is the deploy build command in `.replit`). This guarantees that a deploy triggered from a branch that bypassed PR review — or a manual deploy — will still abort if `shared/schema.ts` and the committed `migrations/` are out of sync, before the server bundle is produced.
+Commands, scratch-DB recipes, and the journal/artifact checklist live in `replit.md` (→ *Migrations*).
 
 ### Document Retention (French Legal Requirements)
 
-Per Code de commerce **L123-22** and Livre des procédures fiscales **L102 B**, accounting records must be retained for **10 years**. This applies to:
+Per Code de commerce **L123-22** and LPF **L102 B**, accounting records are retained **10 years**: `invoices`, `certificats`, `situations`, accounting-record `email_documents`, `archidoc_sync_log`, and the source PDFs in Object Storage.
 
-- `invoices` rows and the original PDFs in Object Storage
-- `certificats` rows and any generated PDFs
-- `situations` rows
-- `email_documents` (where the source attachment is itself an accounting record)
-- `archidoc_sync_log` (audit trail)
-
-**Policy decisions**:
-
-- These tables use **hard deletes only when triggered by a deliberate operator action** with audit logging, and never via automatic GC.
-- Cascades from `projects.deleted` are intentionally NOT used for `invoices` rows older than the retention horizon. Project deletion is gated by `server/services/project.service.ts#deleteProject`, which inside one transaction (1) takes a `SELECT ... FOR UPDATE` row lock on the `projects` row, (2) takes a `SELECT ... FOR UPDATE` lock on every `devis` row for the project (situations FK to `devis`, not directly to `projects`, so this second lock is required to block concurrent situation inserts), (3) counts retained `invoices`, `situations` (joined via `devis`), and `certificats`, and (4) issues the `DELETE`. Any concurrent transaction trying to insert an invoice/certificat (FK to projects), a new devis (FK to projects), or a situation against an existing devis (FK to devis) is forced to wait on the FK key-share lock until our transaction commits or rolls back, closing the TOCTOU window. Refusal is signalled with `ProjectRetentionError` (HTTP 409, code `PROJECT_RETENTION_BLOCKED`, payload `{ retained: { invoices, situations, certificats } }`).
-- Object Storage objects under `PRIVATE_OBJECT_DIR` should be retained for at least 10 years; bucket lifecycle rules MUST be set to never auto-expire those prefixes.
-
-### Database Invariants (DB-enforced)
-
-The schema includes the following CHECK / UNIQUE constraints to keep financial state consistent regardless of which code path writes:
-
-| Table | Constraint | Purpose |
-|---|---|---|
-| `invoices` | `invoices_amount_ht_nonneg` | HT amount cannot be negative |
-| `invoices` | `invoices_amount_ttc_nonneg` | TTC amount cannot be negative |
-| `invoices` | `invoices_tva_amount_nonneg` | VAT amount cannot be negative |
-| `situations` | `situations_devis_number_unique` | Situation numbers are unique within a devis |
-| `situations` | `situations_cumulative_ht_nonneg` | Cumulative HT cannot go negative |
-| `situations` | `situations_net_to_pay_ttc_nonneg` | Net-to-pay TTC cannot be negative |
-| `fee_entries` | `fee_entries_invoice_unique` (partial) | At most one fee entry per invoice — guarantees idempotent approval |
-| `fee_entries` | `fee_entries_fee_amount_nonneg` | Fee amount cannot be negative |
-| `fee_entries` | `fee_entries_fee_rate_pct` | Fee rate is in `[0, 100]` |
-| `document_advisories` | `document_advisories_subject_check` | XOR on `(devis_id, invoice_id)` |
-| `webhook_events` | `event_id` PK | Idempotency key for inbound webhooks |
-| `projects` | `projects_archidoc_id_unique` | 1:1 mapping with ArchiDoc |
-| `contractors` | `contractors_archidoc_id_unique` | 1:1 mapping with ArchiDoc |
-| `lots` | `lots_project_lot_unique` | No duplicate lot numbers per project |
-| `archidoc_proposal_fees` | `archidoc_proposal_fees_project_unique` | One proposal-fee row per project |
-| `certificats` | `certificats_project_ref_unique` | Certificate refs are unique per project |
+- Hard deletes on these tables happen only via deliberate, audited operator action — never automatic GC.
+- **Project deletion is gated** by `server/services/project.service.ts#deleteProject`: in one transaction it row-locks the project, locks every devis (situations FK to devis, so this second lock blocks concurrent situation inserts), counts retained records, and only then deletes. Concurrent inserts of invoices/certificats/devis/situations wait on the FK key-share locks until commit — closing the check-then-delete TOCTOU window. Refusal surfaces as HTTP 409 `PROJECT_RETENTION_BLOCKED` with the retained counts.
+- Object Storage lifecycle rules MUST never auto-expire the private document prefixes.
 
 ### Concurrency & Idempotency
 
-- **Invoice approval** (`server/services/invoice-approval.service.ts`) runs in a single DB transaction with `SELECT ... FOR UPDATE` on the invoice row, and is idempotent at the storage layer via the `fee_entries` partial unique index.
-- **Advisory reconciliation** (`server/services/advisory-reconciler.ts`) uses `SELECT ... FOR UPDATE` per subject and is append-only for resolved/acknowledged history.
-- **Inbound webhooks** (`server/services/webhook.service.ts`) check `webhook_events` by `event_id` before processing. The ID is taken from the payload when present and otherwise derived as `derived:<sha256(event|timestamp|data)>`.
+- **Invoice approval** runs in a single transaction with `SELECT ... FOR UPDATE` on the invoice row, idempotent via the one-fee-entry-per-invoice partial unique index.
+- **Advisory reconciliation** locks per subject and is append-only for resolved/acknowledged history.
+- **Inbound webhooks** are idempotent by event id (from the payload when present, otherwise derived as a hash of event+timestamp+data).
+
+The general rule: any mutation that moves money or fires an external side effect must be (a) transactional with explicit row locks, and (b) idempotent under replay. Check-then-write without a lock is rejected in review.
 
 ### Logging & Observability
 
-- Every API request gets an `X-Request-Id` header (random UUID v4 unless the caller supplied a sane value), echoed back to the client and recorded in the access log.
-- Access log lines never include the response body — financial payloads, extracted email content, and contractor PII would otherwise leak into stdout/log aggregators.
+- Every API request gets an `X-Request-Id` (random UUIDv4 unless the caller supplied a sane one), echoed to the client and recorded in the access log.
+- Access logs never include response bodies — financial payloads, extracted email content, and contractor PII must not leak into stdout/log aggregators.
 - Mutating endpoints log `userId` only; sensitive fields are never logged.
 
 ### Rate Limiting
 
-In-process token-bucket limits (see `server/middleware/rate-limit.ts`) are applied at three tiers:
-
-- `/api/webhooks/*` — 60 req/min (unauthenticated, external traffic)
-- Upload endpoints — 20 req/min (each upload triggers expensive AI extraction)
-- All other `/api/*` — 600 req/min (belt-and-braces guard)
-
-Keys are derived from the authenticated `userId` when available, otherwise the client IP (`X-Forwarded-For` aware).
+In-process token-bucket limits (`server/middleware/rate-limit.ts`) at three tiers: strictest on unauthenticated webhook paths, tight on upload endpoints (each upload triggers expensive AI extraction), and a belt-and-braces guard on all other `/api/*`. Keys derive from the authenticated `userId` when available, else the `X-Forwarded-For`-aware client IP. Exact budgets live in the middleware.
 
 ### File Upload Validation
 
-`server/middleware/upload.ts` enforces:
+`server/middleware/upload.ts` enforces PDF-only uploads: MIME check, `.pdf` extension, a `%PDF` magic-byte check in the upload service before extraction (extension and MIME are client-controlled; bytes are not), a hard size cap, and one file per request.
 
-- `multipart/form-data` MIME of `application/pdf` (or `application/x-pdf`)
-- `.pdf` extension
-- `%PDF` magic-byte check applied in the upload service before extraction
-- Max file size: 25 MB
-- Max files per request: 1
+---
+
+## Amendments
+
+Sections marked **constitutional** (e.g. the Pennylane scope guardrail, the banking single-tenant invariant) change only via an ADR in `docs/decisions/` plus an amendment to this document. For anything else, keep the boundary: if a change only touches *how* something is done, update the code and `replit.md`; update this file only when the *shape or reasoning* of the system changes.

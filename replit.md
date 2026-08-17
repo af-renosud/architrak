@@ -131,6 +131,21 @@ sequence (`assertNoDevLoginBackdoorInProduction`) hard-fails if either is truthy
 - **Migration replay gate**: `bash scripts/check-migration-replay.sh`.
 - **Tracker drift recovery**: `npx tsx scripts/reconcile-drizzle-tracker.ts`.
 
+## Migrations
+
+Decisions and rationale in `ARCHITECTURE.md` (→ Operational Policies). The how-to:
+
+1. Edit `shared/schema.ts`, then generate: `npx drizzle-kit generate --name <change-summary>`
+   (or write the SQL by hand — then also add the `migrations/meta/_journal.json` entry).
+2. Add a `MIGRATION_ARTIFACTS` entry in `server/operations/schema-presence-check.ts`.
+3. Apply: `npx tsx scripts/run-migrations.mjs` (also runs automatically at boot/deploy).
+4. Verify: `bash scripts/check-schema-drift.sh` and `bash scripts/check-migration-replay.sh`.
+- Scratch-only prototyping: `bash scripts/db-push-scratch.sh` (refuses hosted DBs). NEVER
+  `drizzle-kit push` against dev/staging/prod.
+- If the drift check fails: review the generated SQL in `migrations/`, then commit it with
+  the updated `migrations/meta/` files — or discard with
+  `git checkout -- migrations/ && git clean -fd migrations/`.
+
 ## Development protocols
 
 - **Zero-tolerance TypeScript**: no `any`, no `@ts-ignore`, no `@ts-expect-error`.
