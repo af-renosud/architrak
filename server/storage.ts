@@ -2533,11 +2533,18 @@ export class DatabaseStorage implements IStorage {
         .insert(certificatPayments)
         .values({ ...entry, certificatId: guard.cert.id, source: "email" })
         .returning();
+      // Task #570 — when the classifier parked the reply as "ambiguous",
+      // confirmation only happens after a human reviewed the email evidence;
+      // stamp that fact into the audit trail so the ledger entry's origin
+      // (AI suggestion + explicit human review) stays reconstructible.
       await tx.insert(certificatPaymentAudits).values({
         certificatId: guard.cert.id,
         paymentId: payment.id,
         action: "created",
-        snapshot: null,
+        snapshot:
+          suggestion.status === "ambiguous"
+            ? { suggestionId: suggestion.id, ambiguousSuggestionHumanReview: true }
+            : null,
         changedBy: reviewedBy,
       });
       const [updatedSuggestion] = await tx

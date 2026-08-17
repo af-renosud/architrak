@@ -135,6 +135,49 @@ describe("payment suggestions (real DB)", () => {
     expect((await storage.getCertificatPayments(certId)).length).toBe(1);
   });
 
+  it("confirms an ambiguous suggestion after human review and stamps the audit (Task #570)", async () => {
+    const certId = await makeCert();
+    const s = await storage.createCertificatPaymentSuggestion({
+      ...suggestionData(certId, `msg-ambiguous-${certId}`),
+      status: "ambiguous",
+      matchedExcerpt: null,
+    });
+    const r = await storage.confirmCertificatPaymentSuggestionAtomic(
+      s!.id,
+      { certificatId: certId, datePaid: "2026-08-14", amount: "500.00", method: "cheque", reference: "chèque n°42", loggedBy: "tester" },
+      "tester",
+    );
+    expect(r.outcome).toBe("ok");
+    if (r.outcome === "ok") {
+      expect(r.suggestion.status).toBe("confirmed");
+      expect(r.payment.amount).toBe("500.00");
+    }
+    const audits = await storage.getCertificatPaymentAudits(certId);
+    expect(audits.length).toBe(1);
+    expect(audits[0].snapshot).toEqual({ suggestionId: s!.id, ambiguousSuggestionHumanReview: true });
+
+    // A pending_review confirm keeps a null snapshot (no human-review stamp).
+    const certId2 = await makeCert();
+    const s2 = await storage.createCertificatPaymentSuggestion(suggestionData(certId2, `msg-clear-${certId2}`));
+    const r2 = await storage.confirmCertificatPaymentSuggestionAtomic(
+      s2!.id,
+      { certificatId: certId2, datePaid: "2026-08-13", amount: "1000.00", method: "virement", reference: null, loggedBy: "tester" },
+      "tester",
+    );
+    expect(r2.outcome).toBe("ok");
+    const audits2 = await storage.getCertificatPaymentAudits(certId2);
+    expect(audits2[0].snapshot).toBeNull();
+
+    // Second confirm of the ambiguous suggestion: already reviewed.
+    const again = await storage.confirmCertificatPaymentSuggestionAtomic(
+      s!.id,
+      { certificatId: certId, datePaid: "2026-08-14", amount: "500.00", method: "cheque", reference: null, loggedBy: "tester" },
+      "tester",
+    );
+    expect(again.outcome).toBe("already_reviewed");
+    expect((await storage.getCertificatPayments(certId)).length).toBe(1);
+  });
+
   it("confirm refuses draft and superseded certificats", async () => {
     for (const status of ["draft", "superseded"] as const) {
       const certId = await makeCert(status);

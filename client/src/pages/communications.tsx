@@ -42,6 +42,9 @@ type SuggestionWithContext = { suggestion: CertificatPaymentSuggestion; certific
 function PaymentSuggestionsPanel() {
   const { toast } = useToast();
   const { data: rows } = useQuery<SuggestionWithContext[]>({ queryKey: ["/api/certificat-payment-suggestions"] });
+  // Task #570 — ambiguous suggestions (no payment keyword detected) are not
+  // one-click confirmable; they open a review dialog with the email evidence.
+  const [reviewing, setReviewing] = useState<SuggestionWithContext | null>(null);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["/api/certificat-payment-suggestions"] });
 
@@ -96,19 +99,165 @@ function PaymentSuggestionsPanel() {
               >
                 Ignorer
               </Button>
-              <Button
-                size="sm"
-                onClick={() => confirmMutation.mutate(s.id)}
-                disabled={confirmMutation.isPending || dismissMutation.isPending || s.status === "ambiguous"}
-                data-testid={`button-hub-confirm-${s.id}`}
-              >
-                Confirmer
-              </Button>
+              {s.status === "ambiguous" ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setReviewing({ suggestion: s, certificateRef, projectName })}
+                  disabled={confirmMutation.isPending || dismissMutation.isPending}
+                  data-testid={`button-hub-review-${s.id}`}
+                >
+                  Vérifier
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  onClick={() => confirmMutation.mutate(s.id)}
+                  disabled={confirmMutation.isPending || dismissMutation.isPending}
+                  data-testid={`button-hub-confirm-${s.id}`}
+                >
+                  Confirmer
+                </Button>
+              )}
             </div>
           </div>
         ))}
       </div>
+      {reviewing && (
+        <AmbiguousSuggestionReviewDialog
+          row={reviewing}
+          onClose={() => setReviewing(null)}
+          onDone={() => {
+            setReviewing(null);
+            invalidate();
+          }}
+        />
+      )}
     </LuxuryCard>
+  );
+}
+
+// Task #570 — human review of an "ambiguous" suggestion: the classifier saw a
+// reply on a payment thread but no clear payment keyword, so the architect
+// must read the evidence and confirm explicitly (with editable details) or
+// ignore. Confirming records the same source='email' ledger entry as the
+// one-click path; the server stamps the audit entry as human-reviewed.
+function AmbiguousSuggestionReviewDialog({
+  row: { suggestion: s, certificateRef, projectName },
+  onClose,
+  onDone,
+}: {
+  row: SuggestionWithContext;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { toast } = useToast();
+  const [datePaid, setDatePaid] = useState(s.suggestedDate);
+  const [amount, setAmount] = useState(s.suggestedAmount);
+  const [method, setMethod] = useState<"virement" | "cheque" | "autre">("virement");
+  const [reference, setReference] = useState("");
+
+  const confirmMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/certificat-payment-suggestions/${s.id}/confirm`, {
+        datePaid,
+        amount: amount.replace(",", "."),
+        method,
+        ...(reference.trim() ? { reference: reference.trim() } : {}),
+      });
+      return res.json() as Promise<{ fullyPaid: boolean; overpaid: boolean }>;
+    },
+    onSuccess: (r) => {
+      onDone();
+      toast({
+        title: r.fullyPaid ? "Paiement confirmé — certificat soldé" : "Paiement confirmé",
+        description: r.overpaid ? "Attention : le total encaissé dépasse le montant TTC." : "Enregistré au journal des paiements (source e-mail).",
+        variant: r.overpaid ? "destructive" : undefined,
+      });
+    },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  const dismissMutation = useMutation({
+    mutationFn: async () => (await apiRequest("POST", `/api/certificat-payment-suggestions/${s.id}/dismiss`, {})).json(),
+    onSuccess: () => {
+      onDone();
+      toast({ title: "Suggestion ignorée" });
+    },
+    onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+
+  const amountValid = /^\d{1,10}([.,]\d{1,2})?$/.test(amount) && parseFloat(amount.replace(",", ".")) > 0;
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-md" data-testid="dialog-hub-suggestion-review">
+        <DialogHeader>
+          <DialogTitle className="text-[15px] font-black uppercase tracking-tight">Vérifier la réponse — {certificateRef}</DialogTitle>
+          <DialogDescription>
+            {projectName} — aucun mot-clé de paiement n'a été détecté dans cette réponse. Lisez l'extrait ci-dessous et confirmez uniquement si le paiement est bien annoncé.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="rounded-lg border border-amber-300/60 dark:border-amber-500/30 bg-amber-50/60 dark:bg-amber-950/20 p-3 text-[12px] space-y-1">
+            <p>
+              <span className="font-semibold text-foreground">{s.senderEmail}</span>
+              <span className="text-muted-foreground"> — le {formatDate(s.emailDate)}</span>
+            </p>
+            {s.matchedExcerpt ? (
+              <p className="italic text-muted-foreground" data-testid="text-hub-review-excerpt">«&nbsp;{s.matchedExcerpt}&nbsp;»</p>
+            ) : (
+              <p className="text-muted-foreground" data-testid="text-hub-review-no-excerpt">Aucun extrait disponible — consultez l'e-mail dans Gmail avant de confirmer.</p>
+            )}
+            <p className="text-muted-foreground">
+              {s.kind === "contractor_received" ? "Réception annoncée par l'entreprise" : "Paiement annoncé par le client"} — montant suggéré {formatCurrency(parseFloat(s.suggestedAmount))}
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase tracking-widest">Date du paiement</Label>
+              <Input type="date" value={datePaid} onChange={(e) => setDatePaid(e.target.value)} data-testid="input-hub-review-date" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase tracking-widest">Montant (€)</Label>
+              <Input type="number" step="0.01" min="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} data-testid="input-hub-review-amount" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase tracking-widest">Moyen</Label>
+              <Select value={method} onValueChange={(v) => setMethod(v as "virement" | "cheque" | "autre")}>
+                <SelectTrigger data-testid="select-hub-review-method"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="virement">Virement</SelectItem>
+                  <SelectItem value="cheque">Chèque</SelectItem>
+                  <SelectItem value="autre">Autre</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[10px] uppercase tracking-widest">Référence (optionnel)</Label>
+              <Input value={reference} maxLength={200} onChange={(e) => setReference(e.target.value)} data-testid="input-hub-review-reference" />
+            </div>
+          </div>
+        </div>
+        <DialogFooter className="gap-2">
+          <Button
+            variant="ghost"
+            onClick={() => dismissMutation.mutate()}
+            disabled={dismissMutation.isPending || confirmMutation.isPending}
+            data-testid="button-hub-review-dismiss"
+          >
+            Ignorer
+          </Button>
+          <Button
+            onClick={() => confirmMutation.mutate()}
+            disabled={confirmMutation.isPending || dismissMutation.isPending || !datePaid || !amountValid}
+            data-testid="button-hub-review-confirm"
+          >
+            Confirmer le paiement
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
