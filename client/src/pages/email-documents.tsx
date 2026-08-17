@@ -56,6 +56,7 @@ const typeLabels: Record<string, string> = {
   acompte: "Acompte",
   commande: "Bon de commande",
   architect_fee_invoice: "Facture d'honoraires",
+  payment_confirmation: "Confirmation de paiement",
   other: "Other",
   unknown: "Unknown",
 };
@@ -370,6 +371,10 @@ export default function EmailDocuments() {
               <SelectItem value="invoice">Facture</SelectItem>
               <SelectItem value="situation">Situation</SelectItem>
               <SelectItem value="avenant">Avenant</SelectItem>
+              <SelectItem value="acompte">Acompte</SelectItem>
+              <SelectItem value="commande">Bon de commande</SelectItem>
+              <SelectItem value="architect_fee_invoice">Facture d'honoraires</SelectItem>
+              <SelectItem value="payment_confirmation">Confirmation de paiement</SelectItem>
               <SelectItem value="other">Other</SelectItem>
               <SelectItem value="unknown">Unknown</SelectItem>
             </SelectContent>

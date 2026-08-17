@@ -45,7 +45,7 @@ function getGeminiClient() {
 }
 
 export interface ParsedDocument {
-  documentType: "quotation" | "invoice" | "situation" | "avenant" | "acompte" | "commande" | "architect_fee_invoice" | "other" | "unknown";
+  documentType: "quotation" | "invoice" | "situation" | "avenant" | "acompte" | "commande" | "architect_fee_invoice" | "payment_confirmation" | "other" | "unknown";
   // Task #449 — for situations de travaux: the situation sequence number
   // printed on the document (e.g. 3 for "Situation n°3"). Used to attach
   // the signed PDF to the matching situations row.
@@ -225,11 +225,12 @@ Extraction Rules:
 - For each line item, also populate "bbox": the rectangle on the page image that visually contains that line's row in the table. Coordinates MUST be normalized to the [0, 1] range of the page image (x and w as a fraction of the image width; y and h as a fraction of the image height; origin at the top-left of the image). Make the box tight to the line row, including the description and the amount, but not neighbouring rows. If you cannot determine the box with confidence, omit bbox for that line — do not guess.
 - A single numbered item's description often spans MULTIPLE paragraphs or wrapped lines. All descriptive text between one priced row and the next belongs to the SAME line item — append it to that item's description. NEVER emit a separate line item for a continuation paragraph: a row that has no printed unit price and no printed total of its own is not a new line item.
 - If a field is not visible on the document, omit it (do not guess).
-- Architect fee invoices (honoraires): when the ISSUER of the invoice (letterhead entity) is the architecture firm itself — e.g. "ARCHITECTS-FRANCE" / "SAS ARCHITECTS-FRANCE" — invoicing its own client for fees/honoraires (mission d'architecte, ouverture de dossier, phases de conception, etc.), use documentType="architect_fee_invoice". In that case contractorName is the ARCHITECTURE FIRM (the issuer) and clientName is the maitre d'ouvrage being billed. Never classify such a document as a contractor "invoice".`;
+- Architect fee invoices (honoraires): when the ISSUER of the invoice (letterhead entity) is the architecture firm itself — e.g. "ARCHITECTS-FRANCE" / "SAS ARCHITECTS-FRANCE" — invoicing its own client for fees/honoraires (mission d'architecte, ouverture de dossier, phases de conception, etc.), use documentType="architect_fee_invoice". In that case contractorName is the ARCHITECTURE FIRM (the issuer) and clientName is the maitre d'ouvrage being billed. Never classify such a document as a contractor "invoice".
+- Payment confirmations (confirmation de paiement): a document that confirms a payment has been made or received — e.g. bank transfer receipts ("avis de virement", "relevé de virement"), payment receipts ("reçu de paiement", "accusé de réception de paiement"), or bank confirmation slips. Use documentType="payment_confirmation". Do NOT confuse with a facture d'acompte (which is a request for payment, not a confirmation) or with a situation de travaux.`;
 
 const USER_PROMPT = `Analyze this French construction document and extract the following fields:
 
-- documentType: "quotation" (devis), "invoice" (facture), "situation" (situation de travaux), "avenant" (amendment), "acompte" (facture d'acompte / deposit invoice), "commande" (bon de commande / signed purchase order), "architect_fee_invoice" (facture d'honoraires ISSUED BY the architecture firm itself to its client), "other", or "unknown"
+- documentType: "quotation" (devis), "invoice" (facture), "situation" (situation de travaux), "avenant" (amendment), "acompte" (facture d'acompte / deposit invoice), "commande" (bon de commande / signed purchase order), "architect_fee_invoice" (facture d'honoraires ISSUED BY the architecture firm itself to its client), "payment_confirmation" (avis de virement, reçu de paiement, bank confirmation slip — a document that confirms a payment was made or received, NOT a request for payment), "other", or "unknown"
 - situationNumber: integer — for situations de travaux only, the situation sequence number printed on the document (e.g. 3 for "Situation n°3"). Omit when not a situation or not visible.
 - acompteRequired: boolean — true if this devis explicitly requires a deposit on order/signature (look at payment-terms and any "Conditions de règlement" block). Omit on factures.
 - acomptePercent: number 0..100 — the deposit percentage if stated (e.g. 30 for "30%"). Omit if not stated.
@@ -266,8 +267,8 @@ const EXTRACTION_SCHEMA: ResponseSchema = {
     documentType: {
       type: SchemaType.STRING,
       format: "enum",
-      description: "Type of document: quotation, invoice, situation, avenant, acompte, commande, architect_fee_invoice, other, or unknown",
-      enum: ["quotation", "invoice", "situation", "avenant", "acompte", "commande", "architect_fee_invoice", "other", "unknown"],
+      description: "Type of document: quotation, invoice, situation, avenant, acompte, commande, architect_fee_invoice, payment_confirmation, other, or unknown",
+      enum: ["quotation", "invoice", "situation", "avenant", "acompte", "commande", "architect_fee_invoice", "payment_confirmation", "other", "unknown"],
     },
     situationNumber: {
       type: SchemaType.NUMBER,
