@@ -4,10 +4,7 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { OutstandingFeeSummary } from "@shared/fee-description";
-
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
-}
+import { Amount } from "@/components/ui/amount";
 
 interface Props {
   scope: "global" | "project";
@@ -58,7 +55,7 @@ export function OutstandingFeesBanner({ scope, projectId, href, dismissKey, onVi
         <span className="text-muted-foreground">
           {" "}· total {" "}
           <span className="font-semibold text-foreground" data-testid="text-banner-outstanding-total">
-            {formatCurrency(data.totalFeeHt)} HT
+            <Amount value={data.totalFeeHt} denomination="HT" />
           </span>
         </span>
       </div>

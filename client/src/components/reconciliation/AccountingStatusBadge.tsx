@@ -1,9 +1,6 @@
 import { cn } from "@/lib/utils";
 import { AlertTriangle, CheckCircle2, Clock, ShieldCheck } from "lucide-react";
-
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(value);
-}
+import { Amount } from "@/components/ui/amount";
 
 export type AccountingStatusValue = "clean" | "pending_analysis" | "needs_review" | "resolved";
 
@@ -73,7 +70,7 @@ export function AccountingStatusBadge({ status, eurosAtRisk = 0, needsReviewCoun
       </span>
       {showEuros && (
         <span className="font-bold normal-case tracking-normal opacity-90" data-testid="text-accounting-euros-at-risk">
-          {formatCurrency(eurosAtRisk)} at risk
+          <Amount value={eurosAtRisk} denomination="HT" /> at risk
         </span>
       )}
     </span>

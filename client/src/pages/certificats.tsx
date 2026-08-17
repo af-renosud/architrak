@@ -28,9 +28,8 @@ type CertificatWithSentInfo = Certificat & { sentAt?: string; sentToEmail?: stri
 import { computeCertificatDeductions, computeEffectiveTvaRatePercent } from "@shared/financial-utils";
 import { z } from "zod";
 
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
-}
+import { Amount } from "@/components/ui/amount";
+import { formatCurrency as fmt } from "@/lib/utils";
 
 const certificatFormSchema = insertCertificatSchema.extend({
   totalWorksHt: z.string().min(1, "Works HT amount is required"),
@@ -542,17 +541,16 @@ export default function Certificats() {
                     <div className="flex items-center gap-3 flex-wrap">
                       <div className="text-right">
                         <span className="text-[14px] font-semibold text-foreground" data-testid={`text-cert-amount-${cert.id}`}>
-                          {formatCurrency(parseFloat(cert.netToPayTtc))}
+                          <Amount value={parseFloat(cert.netToPayTtc)} denomination="TTC" />
                         </span>
-                        <p className="text-[9px] text-muted-foreground">TTC</p>
                       </div>
                       {partiallyPaid && (
                         <span
                           className="text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
                           data-testid={`badge-cert-partial-${cert.id}`}
-                          title={`Encaissé ${formatCurrency(paidToDate)} sur ${formatCurrency(totalTtc)}`}
+                          title={`Encaissé ${fmt(paidToDate)} sur ${fmt(totalTtc)}`}
                         >
-                          Partiel {formatCurrency(paidToDate)} TTC
+                          Partiel <Amount value={paidToDate} denomination="TTC" />
                         </span>
                       )}
                       <StatusBadge status={cert.status} />
@@ -1019,7 +1017,7 @@ export default function Certificats() {
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[11px] text-muted-foreground">Montant Brut Cumulé HT</span>
                     <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-gross">
-                      {formatCurrency(breakdown.grossCumulativeHt)}
+                      <Amount value={breakdown.grossCumulativeHt} denomination="HT" />
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-2">
@@ -1027,7 +1025,7 @@ export default function Certificats() {
                       − Retenue de Garantie HT{hasBankGuarantee ? " (bypass — caution bancaire)" : ` (${retenuePercent}%)`}
                     </span>
                     <span className="text-[13px] font-semibold text-red-600 dark:text-red-400" data-testid="text-calc-retenue">
-                      −{formatCurrency(breakdown.cumulativeRetenue)}
+                      −<Amount value={breakdown.cumulativeRetenue} denomination="HT" />
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-2">
@@ -1035,48 +1033,48 @@ export default function Certificats() {
                       − Compte Prorata HT{isProrataManager ? " (exempt — gestionnaire)" : ` (${prorataPercent}%)`}
                     </span>
                     <span className="text-[13px] font-semibold text-red-600 dark:text-red-400" data-testid="text-calc-prorata">
-                      −{formatCurrency(breakdown.cumulativeProrata)}
+                      −<Amount value={breakdown.cumulativeProrata} denomination="HT" />
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                     <span className="text-[11px] text-foreground">Montant Net Cumulé Autorisé HT</span>
                     <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-net-cumul">
-                      {formatCurrency(breakdown.grossCumulativeHt - breakdown.cumulativeRetenue - breakdown.cumulativeProrata)}
+                      <Amount value={breakdown.grossCumulativeHt - breakdown.cumulativeRetenue - breakdown.cumulativeProrata} denomination="HT" />
                     </span>
                   </div>
                   {(breakdown.periodAcompteRecoupment > 0 || breakdown.cumulativeAcompteRecoupment > 0) && (
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[11px] text-muted-foreground">
-                        − Remboursement d'Acompte HT (période{breakdown.cumulativeAcompteRecoupment > 0 ? ` — cumul ${formatCurrency(breakdown.cumulativeAcompteRecoupment)} / ${formatCurrency(paidAcompteAmount)} HT` : ""})
+                        − Remboursement d'Acompte HT (période{breakdown.cumulativeAcompteRecoupment > 0 ? ` — cumul ${fmt(breakdown.cumulativeAcompteRecoupment)} / ${fmt(paidAcompteAmount)} HT` : ""})
                       </span>
                       <span className="text-[13px] font-semibold text-red-600 dark:text-red-400" data-testid="text-calc-acompte-recoupment">
-                        −{formatCurrency(breakdown.periodAcompteRecoupment)}
+                        −<Amount value={breakdown.periodAcompteRecoupment} denomination="HT" />
                       </span>
                     </div>
                   )}
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[11px] text-muted-foreground">− Previous Payments HT</span>
                     <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-previous">
-                      −{formatCurrency(parseFloat(watchPrevious || "0") || 0)}
+                      −<Amount value={parseFloat(watchPrevious || "0") || 0} denomination="HT" />
                     </span>
                   </div>
                   {watchIsSolde === true && breakdown.retenueReleaseAmount > 0 && (
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[11px] text-muted-foreground">+ Libération Retenue de Garantie HT (solde)</span>
                       <span className="text-[13px] font-semibold text-green-700 dark:text-green-500" data-testid="text-calc-retenue-release">
-                        +{formatCurrency(breakdown.retenueReleaseAmount)}
+                        +<Amount value={breakdown.retenueReleaseAmount} denomination="HT" />
                       </span>
                     </div>
                   )}
                   {watchIsSolde === true && watchReleaseRetenue !== true && breakdown.cumulativeRetenue > 0 && (
                     <div className="text-[10px] text-muted-foreground italic" data-testid="text-calc-retenue-withheld">
-                      Solde — Retenue de Garantie de {formatCurrency(breakdown.cumulativeRetenue)} HT conservée
+                      Solde — Retenue de Garantie de <Amount value={breakdown.cumulativeRetenue} denomination="HT" /> conservée
                     </div>
                   )}
                   <div className="flex items-center justify-between gap-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                     <span className="text-[11px] text-muted-foreground">Net to Pay HT</span>
                     <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-net-ht">
-                      {formatCurrency(breakdown.netToPayHt)}
+                      <Amount value={breakdown.netToPayHt} denomination="HT" />
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-2">
@@ -1086,7 +1084,7 @@ export default function Certificats() {
                         : `TVA (${appliedTvaRatePercent}%${tvaAutoliquidation ? " — autoliquidation" : ""})`}
                     </span>
                     <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-tva">
-                      {formatCurrency(breakdown.tvaAmount)}
+                      <Amount value={breakdown.tvaAmount} denomination="TVA" />
                     </span>
                   </div>
                   {tvaAutoliquidation && (
@@ -1097,7 +1095,7 @@ export default function Certificats() {
                   <div className="flex items-center justify-between gap-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                     <span className="text-[11px] font-black uppercase tracking-widest text-foreground">Net to Pay TTC</span>
                     <span className="text-[16px] font-bold text-foreground" data-testid="text-calc-net-ttc">
-                      {formatCurrency(breakdown.netToPayTtc)}
+                      <Amount value={breakdown.netToPayTtc} denomination="TTC" />
                     </span>
                   </div>
                 </div>

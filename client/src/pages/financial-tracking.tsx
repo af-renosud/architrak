@@ -10,9 +10,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import type { Project } from "@shared/schema";
 
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
-}
+import { Amount } from "@/components/ui/amount";
 
 interface DevisSummary {
   devisId: number;
@@ -53,6 +51,7 @@ interface FinancialSummary {
   totalMv: number;
 }
 
+// hint: Logic changed on both sides. Requires understanding intent of each change.
 function ProjectFinancialCard({ project }: { project: Project }) {
   const { data: summary, isLoading } = useQuery<FinancialSummary>({
     queryKey: ["/api/projects", String(project.id), "financial-summary"],
@@ -101,28 +100,28 @@ function ProjectFinancialCard({ project }: { project: Project }) {
         <div>
           <TechnicalLabel>Contracted</TechnicalLabel>
           <p className="text-[13px] font-semibold text-foreground mt-0.5" data-testid={`text-contracted-${project.id}`}>
-            {formatCurrency(summary.totalContractedHt)} <span className="text-[9px] text-muted-foreground font-normal">HT</span>
+            <Amount value={summary.totalContractedHt} denomination="HT" />
           </p>
           <p className="text-[11px] text-muted-foreground" data-testid={`text-contracted-ttc-${project.id}`}>
-            {formatCurrency(summary.totalContractedTtc)} <span className="text-[9px] font-normal">TTC</span>
+            <Amount value={summary.totalContractedTtc} denomination="TTC" />
           </p>
         </div>
         <div>
           <TechnicalLabel>Certified</TechnicalLabel>
           <p className="text-[13px] font-semibold text-foreground mt-0.5" data-testid={`text-certified-${project.id}`}>
-            {formatCurrency(summary.totalCertifiedHt)} <span className="text-[9px] text-muted-foreground font-normal">HT</span>
+            <Amount value={summary.totalCertifiedHt} denomination="HT" />
           </p>
           <p className="text-[11px] text-muted-foreground" data-testid={`text-certified-ttc-${project.id}`}>
-            {formatCurrency(summary.totalCertifiedTtc)} <span className="text-[9px] font-normal">TTC</span>
+            <Amount value={summary.totalCertifiedTtc} denomination="TTC" />
           </p>
         </div>
         <div>
           <TechnicalLabel>Remaining</TechnicalLabel>
           <p className={`text-[13px] font-semibold mt-0.5 ${summary.totalResteARealiser < 0 ? "text-red-500" : "text-foreground"}`} data-testid={`text-remaining-${project.id}`}>
-            {formatCurrency(summary.totalResteARealiser)} <span className="text-[9px] text-muted-foreground font-normal">HT</span>
+            <Amount value={summary.totalResteARealiser} denomination="HT" />
           </p>
           <p className={`text-[11px] ${summary.totalResteARealiserTtc < 0 ? "text-red-400" : "text-muted-foreground"}`} data-testid={`text-remaining-ttc-${project.id}`}>
-            {formatCurrency(summary.totalResteARealiserTtc)} <span className="text-[9px] font-normal">TTC</span>
+            <Amount value={summary.totalResteARealiserTtc} denomination="TTC" />
           </p>
         </div>
       </div>
@@ -160,10 +159,10 @@ function ProjectFinancialCard({ project }: { project: Project }) {
                   <span className="text-[10px] text-muted-foreground min-w-[50px] text-right">{pct.toFixed(0)}%</span>
                   <div className={`text-right min-w-[80px] ${isAnomaly ? "text-red-500" : "text-foreground"}`}>
                     <div className="text-[10px] font-semibold">
-                      {formatCurrency(d.resteARealiser)} <span className="text-[8px] font-normal opacity-70">HT</span>
+                      <Amount value={d.resteARealiser} denomination="HT" />
                     </div>
                     <div className="text-[9px] opacity-60">
-                      {formatCurrency(d.resteARealiserTtc)} <span className="text-[8px] font-normal">TTC</span>
+                      <Amount value={d.resteARealiserTtc} denomination="TTC" />
                     </div>
                   </div>
                 </div>

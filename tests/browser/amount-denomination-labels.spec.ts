@@ -207,16 +207,15 @@ test.describe("Amount denomination labels (task #579)", () => {
       await expect(netHtEl).toBeVisible();
       await expect(netHtEl).toContainText("€");
 
-      // ── 5. denomination="none" guard: the net-TTC *amount* span must
-      //    NOT end with "TTC" — the label lives in the adjacent heading,
-      //    not duplicated inside the value cell itself.
-      //    (After the Amount migration, denomination="none" is expected
-      //    here so that the hardcoded heading row does the labelling.)
+      // ── 5. denomination="TTC" guard: the net-TTC *amount* span must
+      //    include the "TTC" denomination label rendered by <Amount>.
+      //    After the Task #578 migration, CertificatDetailDialog uses
+      //    denomination="TTC" so the label is part of the value cell itself.
       const netTtcText = await netTtcEl.textContent();
       expect(
         netTtcText?.trim().endsWith("TTC"),
-        `text-cert-detail-net-ttc should not contain a "TTC" suffix (got: "${netTtcText?.trim()}")`,
-      ).toBe(false);
+        `text-cert-detail-net-ttc should end with "TTC" (got: "${netTtcText?.trim()}")`,
+      ).toBe(true);
     } finally {
       try {
         await cleanup(db, s);

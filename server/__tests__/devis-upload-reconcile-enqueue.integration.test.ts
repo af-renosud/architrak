@@ -28,7 +28,7 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const { port } = server.address() as AddressInfo;
   baseUrl = `http://127.0.0.1:${port}`;
-});
+}, 30_000);
 
 afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));

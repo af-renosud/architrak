@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Amount } from "@/components/ui/amount";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -73,7 +74,7 @@ function DesignFeeActionsStrip() {
                   </div>
                 </div>
                 <span className="text-[11px] font-semibold text-foreground whitespace-nowrap shrink-0">
-                  {new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(parseFloat(a.amountTtc))} <span className="text-[9px] text-muted-foreground font-normal">TTC</span>
+                  <Amount value={parseFloat(a.amountTtc)} denomination="TTC" />
                 </span>
               </div>
             </LuxuryCard>
@@ -82,10 +83,6 @@ function DesignFeeActionsStrip() {
       </div>
     </div>
   );
-}
-
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
 }
 
 function GmailStatusBar({
@@ -397,7 +394,7 @@ function UnsentCertificatsAlert() {
                     </p>
                   </Link>
                   <p className="text-[10px] text-muted-foreground mt-0.5 truncate">
-                    {cert.contractorName} · {formatCurrency(parseFloat(cert.netToPayTtc))} TTC
+                    {cert.contractorName} · <Amount value={parseFloat(cert.netToPayTtc)} denomination="TTC" />
                   </p>
                 </div>
                 <Button
@@ -620,7 +617,7 @@ export default function Dashboard() {
                         </p>
                       </div>
                       <span className="text-[11px] font-semibold text-foreground whitespace-nowrap shrink-0" data-testid={`text-activity-amount-${idx}`}>
-                        {formatCurrency(parseFloat(item.amount))} <span className="text-[9px] text-muted-foreground font-normal">TTC</span>
+                        <Amount value={parseFloat(item.amount)} denomination="TTC" />
                       </span>
                     </div>
                   </Link>
@@ -682,7 +679,7 @@ export default function Dashboard() {
                       </div>
                       {parseFloat(item.amount) > 0 && (
                         <span className="text-[12px] font-semibold text-foreground" data-testid={`text-urgent-amount-${idx}`}>
-                          {formatCurrency(parseFloat(item.amount))} <span className="text-[9px] text-muted-foreground font-normal">TTC</span>
+                          <Amount value={parseFloat(item.amount)} denomination="TTC" />
                         </span>
                       )}
                     </div>

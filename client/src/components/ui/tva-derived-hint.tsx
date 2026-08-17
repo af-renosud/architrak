@@ -1,9 +1,6 @@
 import { Info } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
-}
+import { Amount } from "@/components/ui/amount";
 
 interface TvaDerivedHintProps {
   amountHt: string | number | null | undefined;
@@ -22,7 +19,7 @@ export function TvaDerivedHint({ amountHt, amountTtc, testId, className }: TvaDe
       className={`flex items-center gap-1 text-[10px] text-muted-foreground ${className ?? ""}`}
       data-testid={testId}
     >
-      <span>TVA = TTC − HT = {formatCurrency(tva)}</span>
+      <span>TVA = TTC − HT = <Amount value={tva} denomination="TVA" /></span>
       <Tooltip>
         <TooltipTrigger asChild>
           <button

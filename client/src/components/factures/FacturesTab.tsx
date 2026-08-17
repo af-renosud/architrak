@@ -18,10 +18,9 @@ import type { Invoice, Contractor, Devis } from "@shared/schema";
 import { getInvoiceUploadErrorTitle } from "@shared/invoice-upload-errors";
 import { AdvisoriesList, AdvisoryBadge } from "@/components/advisories/AdvisoriesList";
 import { TvaDerivedHint } from "@/components/ui/tva-derived-hint";
-
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
-}
+import { type ReactNode } from "react";
+import { Amount } from "@/components/ui/amount";
+import { formatCurrency as fmt } from "@/lib/utils";
 
 // Task #413 — fetch a generated PDF (slow: rendered on demand) and open it in
 // a new tab, keeping a spinner on the button while it generates.
@@ -137,7 +136,7 @@ function CreateCertificatDialog({
     },
   });
 
-  const row = (label: string, value: string, opts?: { bold?: boolean; testId?: string }) => (
+  const row = (label: string, value: ReactNode, opts?: { bold?: boolean; testId?: string }) => (
     <div className="flex items-center justify-between gap-4 py-1.5 border-b border-border/40 last:border-0">
       <span className="text-[11px] uppercase tracking-wider text-muted-foreground">{label}</span>
       <span className={`text-[13px] tabular-nums ${opts?.bold ? "font-bold text-[#0B2545]" : "text-foreground"}`} data-testid={opts?.testId}>
@@ -176,7 +175,7 @@ function CreateCertificatDialog({
               {row("Entreprise", contractorName)}
               {row(
                 "Montant réclamé (période)",
-                formatCurrency(preview.derivation.periodClaimHt),
+                <Amount value={preview.derivation.periodClaimHt} denomination="HT" />,
                 { testId: "text-preview-period" },
               )}
               {preview.derivation.mode === "situation" && (
@@ -184,24 +183,24 @@ function CreateCertificatDialog({
               )}
             </div>
             <div className="rounded-lg border border-border/60 px-3 py-2">
-              {row("Travaux cumulés HT", formatCurrency(parseFloat(preview.derivation.totalWorksHt)), { testId: "text-preview-total-works" })}
+              {row("Travaux cumulés HT", <Amount value={parseFloat(preview.derivation.totalWorksHt)} denomination="HT" />, { testId: "text-preview-total-works" })}
               {row(
                 preview.derivation.priorCertificateRef
                   ? `Paiements antérieurs (après ${preview.derivation.priorCertificateRef})`
                   : "Paiements antérieurs",
-                formatCurrency(parseFloat(preview.derivation.previousPayments)),
+                <Amount value={parseFloat(preview.derivation.previousPayments)} denomination="HT" />,
                 { testId: "text-preview-previous" },
               )}
-              {row("Retenue de garantie (cumul)", formatCurrency(parseFloat(preview.deductions.retenueGarantie)))}
-              {row("Compte prorata (période)", formatCurrency(parseFloat(preview.deductions.periodProrataDeduction)))}
+              {row("Retenue de garantie (cumul)", <Amount value={parseFloat(preview.deductions.retenueGarantie)} denomination="HT" />)}
+              {row("Compte prorata (période)", <Amount value={parseFloat(preview.deductions.periodProrataDeduction)} denomination="HT" />)}
               {parseFloat(preview.deductions.periodAcompteRecoupment) > 0 &&
-                row("Récupération acompte (période)", `− ${formatCurrency(parseFloat(preview.deductions.periodAcompteRecoupment))}`)}
-              {row("Net à payer HT", formatCurrency(parseFloat(preview.deductions.netToPayHt)), { bold: true, testId: "text-preview-net-ht" })}
+                row("Récupération acompte (période)", <>− <Amount value={parseFloat(preview.deductions.periodAcompteRecoupment)} denomination="HT" /></>)}
+              {row("Net à payer HT", <Amount value={parseFloat(preview.deductions.netToPayHt)} denomination="HT" />, { bold: true, testId: "text-preview-net-ht" })}
               {row(
                 preview.deductions.tvaAutoliquidation ? "TVA (autoliquidation)" : `TVA (${preview.deductions.tvaRatePercent} %)`,
-                formatCurrency(parseFloat(preview.deductions.tvaAmount)),
+                <Amount value={parseFloat(preview.deductions.tvaAmount)} denomination="TVA" />,
               )}
-              {row("Net à payer TTC", formatCurrency(parseFloat(preview.deductions.netToPayTtc)), { bold: true, testId: "text-preview-net-ttc" })}
+              {row("Net à payer TTC", <Amount value={parseFloat(preview.deductions.netToPayTtc)} denomination="TTC" />, { bold: true, testId: "text-preview-net-ttc" })}
             </div>
             <p className="text-[10px] text-muted-foreground">
               Le certificat est créé en brouillon, lié à cette facture. Vous pourrez le vérifier et l'émettre depuis la page Certificats.
@@ -286,7 +285,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
       if (ext.confidence === "low") {
         toast({ title: "Invoice uploaded — review needed", description: `${data.fileName} — amounts could not be extracted automatically. Please check the invoice record.`, variant: "destructive" });
       } else {
-        toast({ title: "Invoice uploaded successfully", description: `${data.fileName} — ${formatCurrency(ext.amountHt)} HT / ${formatCurrency(ext.amountTtc)} TTC detected` });
+        toast({ title: "Invoice uploaded successfully", description: `${data.fileName} — ${fmt(ext.amountHt)} HT / ${fmt(ext.amountTtc)} TTC detected` });
       }
     },
     onError: (error: Error & { code?: string }) => {
@@ -320,8 +319,8 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
         </LuxuryCard>
         <LuxuryCard data-testid="card-factures-total">
           <TechnicalLabel>Total Amount</TechnicalLabel>
-          <p className="text-[16px] font-semibold text-foreground mt-1">{formatCurrency(totalTtc)} <span className="text-[9px] text-muted-foreground">TTC</span></p>
-          <p className="text-[10px] text-muted-foreground">{formatCurrency(totalHt)} HT</p>
+          <p className="text-[16px] font-semibold text-foreground mt-1"><Amount value={totalTtc} denomination="TTC" /></p>
+          <p className="text-[10px] text-muted-foreground"><Amount value={totalHt} denomination="HT" /></p>
         </LuxuryCard>
         {draftCount > 0 && (
           <LuxuryCard data-testid="card-factures-draft">
@@ -475,11 +474,10 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                       )}
                       <div className="text-right">
                         <span className="text-[14px] font-semibold text-foreground" data-testid={`text-facture-ttc-${inv.id}`}>
-                          {formatCurrency(parseFloat(inv.amountTtc))}
+                          <Amount value={parseFloat(inv.amountTtc)} denomination="TTC" />
                         </span>
-                        <p className="text-[9px] text-muted-foreground">TTC</p>
                         <span className="text-[10px] text-muted-foreground" data-testid={`text-facture-ht-${inv.id}`}>
-                          {formatCurrency(parseFloat(inv.amountHt))} HT
+                          <Amount value={parseFloat(inv.amountHt)} denomination="HT" />
                         </span>
                       </div>
                       <AdvisoryBadge subject={{ type: "invoice", id: inv.id }} />
@@ -542,7 +540,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                   <option value="">Select a Devis...</option>
                   {(devisList ?? []).filter(d => d.status !== "void").map(d => (
                     <option key={d.id} value={d.id}>
-                      {d.devisCode} — {contractorMap.get(d.contractorId) ?? `#${d.contractorId}`} — {formatCurrency(parseFloat(d.amountTtc))} TTC
+                      {d.devisCode} — {contractorMap.get(d.contractorId) ?? `#${d.contractorId}`} — {fmt(parseFloat(d.amountTtc))} TTC
                     </option>
                   ))}
                 </select>
@@ -814,7 +812,7 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "financial-summary") });
       const commission = data.commissionAmount;
       if (commission > 0) {
-        toast({ title: "Invoice approved", description: `${formatCurrency(commission)} commission added to Honoraires` });
+        toast({ title: "Invoice approved", description: `${fmt(commission)} commission added to Honoraires` });
       } else {
         toast({ title: "Invoice approved", description: "No commission rate set — set Honoraires % in the project header" });
       }
@@ -925,19 +923,19 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
             <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
               <TechnicalLabel>Amount HT</TechnicalLabel>
               <p className="text-[15px] font-semibold text-foreground mt-1" data-testid={`text-detail-ht-${invoice.id}`}>
-                {formatCurrency(parseFloat(invoice.amountHt))}
+                <Amount value={parseFloat(invoice.amountHt)} denomination="HT" />
               </p>
             </div>
             <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
               <TechnicalLabel>TVA (derived)</TechnicalLabel>
               <p className="text-[15px] font-semibold text-foreground mt-1" data-testid={`text-detail-tva-${invoice.id}`}>
-                {formatCurrency(parseFloat(invoice.amountTtc) - parseFloat(invoice.amountHt))}
+                <Amount value={parseFloat(invoice.amountTtc) - parseFloat(invoice.amountHt)} denomination="TVA" />
               </p>
             </div>
             <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
               <TechnicalLabel>Amount TTC</TechnicalLabel>
               <p className="text-[15px] font-semibold text-[#0B2545] mt-1" data-testid={`text-detail-ttc-${invoice.id}`}>
-                {formatCurrency(parseFloat(invoice.amountTtc))}
+                <Amount value={parseFloat(invoice.amountTtc)} denomination="TTC" />
               </p>
             </div>
             <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">

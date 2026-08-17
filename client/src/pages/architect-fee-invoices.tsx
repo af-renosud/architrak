@@ -13,12 +13,7 @@ import { useState } from "react";
 import { FileText, ExternalLink, XCircle, ReceiptEuro } from "lucide-react";
 import type { ArchitectFeeInvoice } from "@shared/schema";
 
-function formatCurrency(value: string | null): string {
-  if (value == null) return "—";
-  const n = parseFloat(value);
-  if (!Number.isFinite(n)) return "—";
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(n);
-}
+import { Amount } from "@/components/ui/amount";
 
 interface RankedProject {
   projectId: number;
@@ -155,7 +150,7 @@ function ConfirmControls({ row, candidates }: { row: ArchitectFeeInvoice; candid
               data-testid={`option-fee-invoice-works-${row.id}-${w.feeEntryId}`}
             >
               Commission travaux · {w.contractorName ?? "?"}
-              {w.devisNumber ? ` (devis ${w.devisNumber})` : ""} — {formatCurrency(w.feeAmount)} HT
+              {w.devisNumber ? ` (devis ${w.devisNumber})` : ""} — <Amount value={parseFloat(w.feeAmount ?? "0")} denomination="HT" />
             </SelectItem>
           ))}
         </SelectContent>
@@ -265,9 +260,9 @@ export default function ArchitectFeeInvoices() {
                         {row.fileName && <span className="break-all">{row.fileName}</span>}
                       </div>
                       <div className="mt-2 flex gap-4 text-sm">
-                        <span>HT {formatCurrency(row.amountHt)}</span>
-                        <span>TVA {formatCurrency(row.tvaAmount)}</span>
-                        <span className="font-medium">TTC {formatCurrency(row.amountTtc)}</span>
+                        <span>HT {row.amountHt != null ? <Amount value={parseFloat(row.amountHt)} denomination="none" /> : "—"}</span>
+                        <span>TVA {row.tvaAmount != null ? <Amount value={parseFloat(row.tvaAmount)} denomination="none" /> : "—"}</span>
+                        <span className="font-medium">TTC {row.amountTtc != null ? <Amount value={parseFloat(row.amountTtc)} denomination="none" /> : "—"}</span>
                       </div>
                       {row.identityReason && (
                         <p className="mt-2 text-xs text-muted-foreground">Identification : {row.identityReason}</p>
@@ -317,7 +312,7 @@ export default function ArchitectFeeInvoices() {
                               <ul className="mt-1 ml-4 list-disc text-xs text-muted-foreground">
                                 {candidates.milestones[String(p.projectId)].map((m) => (
                                   <li key={m.milestoneId}>
-                                    Jalon #{m.sequence} · {m.labelFr} — {formatCurrency(m.amountTtc)} TTC ({m.reasons.join(", ")})
+                                    Jalon #{m.sequence} · {m.labelFr} — {m.amountTtc != null ? <Amount value={parseFloat(m.amountTtc)} denomination="TTC" /> : "—"} ({m.reasons.join(", ")})
                                   </li>
                                 ))}
                               </ul>
@@ -327,7 +322,7 @@ export default function ArchitectFeeInvoices() {
                                 {(candidates.worksFees?.[String(p.projectId)] ?? []).map((w) => (
                                   <li key={w.feeEntryId} data-testid={`text-fee-invoice-works-candidate-${row.id}-${w.feeEntryId}`}>
                                     Commission travaux · {w.contractorName ?? "?"}
-                                    {w.devisNumber ? ` (devis ${w.devisNumber})` : ""} — {formatCurrency(w.feeAmount)} HT ({w.reasons.join(", ")})
+                                    {w.devisNumber ? ` (devis ${w.devisNumber})` : ""} — <Amount value={parseFloat(w.feeAmount ?? "0")} denomination="HT" /> ({w.reasons.join(", ")})
                                   </li>
                                 ))}
                               </ul>

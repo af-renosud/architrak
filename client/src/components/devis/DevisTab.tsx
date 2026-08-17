@@ -56,9 +56,8 @@ import { SigningPanel, OPEN_SIGNING_SEND_EVENT } from "@/components/devis/Signin
 import { CertificatPanel } from "@/components/devis/CertificatPanel";
 import { countDevisSignOff } from "@/components/devis/devis-counters";
 
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
-}
+import { Amount } from "@/components/ui/amount";
+import { formatCurrency as fmt } from "@/lib/utils";
 
 export type LotCodeValue = {
   lotCatalogId: number | null;
@@ -476,7 +475,7 @@ function InvoiceUploadDialog({
       if (ext.confidence === "low") {
         toast({ title: "Invoice uploaded — review needed", description: `${data.fileName} — amounts could not be extracted automatically. Please check the invoice record.`, variant: "destructive" });
       } else {
-        toast({ title: "Invoice uploaded successfully", description: `${data.fileName} — ${formatCurrency(ext.amountHt)} HT detected` });
+        toast({ title: "Invoice uploaded successfully", description: `${data.fileName} — ${fmt(ext.amountHt)} HT detected` });
       }
     },
     onError: (error: Error & { code?: string }) => {
@@ -1260,11 +1259,10 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
               {/* Slot: Totals — anchored hard right with navy left rule */}
               <div className="pl-4 border-l-2 border-[#0B2545]/20 min-w-[10rem] text-right tabular-nums">
                 <div className="text-[18px] font-black tracking-tight leading-none text-[#0B2545]" data-testid={`text-devis-ttc-${d.id}`}>
-                  {formatCurrency(parseFloat(d.amountTtc))}
+                  <Amount value={parseFloat(d.amountTtc)} denomination="TTC" />
                 </div>
-                <p className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground mt-1">TTC</p>
                 <span className="text-[10px] text-muted-foreground" data-testid={`text-devis-ht-${d.id}`}>
-                  {formatCurrency(parseFloat(d.amountHt))} HT
+                  <Amount value={parseFloat(d.amountHt)} denomination="HT" />
                 </span>
               </div>
             </div>
@@ -1544,7 +1542,7 @@ export function DevisTab({
           : "";
         toast({
           title: "Devis created from PDF",
-          description: `${ext.documentType || "document"} — ${formatCurrency(parseFloat(data.devis.amountHt))} HT${matchInfo}${ext.lineItemsCreated > 0 ? ` • ${ext.lineItemsCreated} line items` : ""}`,
+          description: `${ext.documentType || "document"} — ${fmt(parseFloat(data.devis.amountHt))} HT${matchInfo}${ext.lineItemsCreated > 0 ? ` • ${ext.lineItemsCreated} line items` : ""}`,
         });
       }
     },
@@ -1579,8 +1577,8 @@ export function DevisTab({
         </LuxuryCard>
         <LuxuryCard data-testid="card-devis-total">
           <TechnicalLabel>Total Amount</TechnicalLabel>
-          <p className="text-[16px] font-semibold text-foreground mt-1">{formatCurrency(totalAmountTtc)} <span className="text-[9px] text-muted-foreground">TTC</span></p>
-          <p className="text-[10px] text-muted-foreground">{formatCurrency(totalAmountHt)} HT</p>
+          <p className="text-[16px] font-semibold text-foreground mt-1"><Amount value={totalAmountTtc} denomination="TTC" /></p>
+          <p className="text-[10px] text-muted-foreground"><Amount value={totalAmountHt} denomination="HT" /></p>
         </LuxuryCard>
         <LuxuryCard data-testid="card-devis-pending">
           <TechnicalLabel>Pending</TechnicalLabel>
@@ -3173,8 +3171,8 @@ function LineItemWithCheck({
           )}
         </td>
         <td className="py-1.5 px-2 text-[11px] text-right">{li.quantity}</td>
-        <td className="py-1.5 px-2 text-[11px] text-right">{li.unitPriceHt ? formatCurrency(parseFloat(li.unitPriceHt)) : "-"}</td>
-        <td className="py-1.5 px-2 text-[11px] text-right font-medium">{formatCurrency(parseFloat(li.totalHt))}</td>
+        <td className="py-1.5 px-2 text-[11px] text-right">{li.unitPriceHt ? <Amount value={parseFloat(li.unitPriceHt)} denomination="HT" /> : "-"}</td>
+        <td className="py-1.5 px-2 text-[11px] text-right font-medium"><Amount value={parseFloat(li.totalHt)} denomination="HT" /></td>
         <td className="py-1.5 px-2 relative">
           {popoverOpen && openCheck && (
             <div
@@ -3195,7 +3193,7 @@ function LineItemWithCheck({
                 </button>
               </div>
               <p className="text-[10px] text-slate-500 mb-1.5">
-                Ligne {li.lineNumber} · {formatCurrency(parseFloat(li.totalHt))} HT
+                Ligne {li.lineNumber} · <Amount value={parseFloat(li.totalHt)} denomination="HT" />
               </p>
               <Textarea
                 autoFocus
@@ -5501,7 +5499,7 @@ function DevisDetailTabs({
                 </div>
                 <div className="flex items-center gap-2">
                   <span className={`text-[12px] font-semibold ${a.type === "pv" ? "text-emerald-600" : "text-rose-500"}`}>
-                    {a.type === "pv" ? "+" : "-"}{formatCurrency(parseFloat(a.amountHt))} HT
+                    {a.type === "pv" ? "+" : "-"}<Amount value={parseFloat(a.amountHt)} denomination="HT" />
                   </span>
                   <StatusBadge status={a.status} />
                 </div>
@@ -5543,7 +5541,7 @@ function DevisDetailTabs({
                   <span className="text-[11px]">Invoice #{inv.invoiceNumber}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-[12px] font-semibold text-foreground">{formatCurrency(parseFloat(inv.amountHt))} HT</span>
+                  <span className="text-[12px] font-semibold text-foreground"><Amount value={parseFloat(inv.amountHt)} denomination="HT" /></span>
                   <StatusBadge status={inv.status} />
                 </div>
               </div>
@@ -6218,25 +6216,25 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
       <div className="grid grid-cols-4 gap-3">
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
           <TechnicalLabel>Original Contracted</TechnicalLabel>
-          <p className="text-[13px] font-semibold text-foreground mt-1">{formatCurrency(originalTtc)} <span className="text-[9px] text-muted-foreground">TTC</span></p>
-          <p className="text-[10px] text-muted-foreground">{formatCurrency(originalHt)} HT</p>
+          <p className="text-[13px] font-semibold text-foreground mt-1"><Amount value={originalTtc} denomination="TTC" /></p>
+          <p className="text-[10px] text-muted-foreground"><Amount value={originalHt} denomination="HT" /></p>
         </div>
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
           <TechnicalLabel>Adjusted (+ PV/MV)</TechnicalLabel>
-          <p className="text-[13px] font-semibold text-foreground mt-1">{formatCurrency(adjustedTtc)} <span className="text-[9px] text-muted-foreground">TTC</span></p>
-          <p className="text-[10px] text-muted-foreground">{formatCurrency(adjustedHt)} HT</p>
+          <p className="text-[13px] font-semibold text-foreground mt-1"><Amount value={adjustedTtc} denomination="TTC" /></p>
+          <p className="text-[10px] text-muted-foreground"><Amount value={adjustedHt} denomination="HT" /></p>
         </div>
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
           <TechnicalLabel>Invoiced</TechnicalLabel>
-          <p className="text-[13px] font-semibold text-emerald-600 mt-1">{formatCurrency(invoicedTtc)} <span className="text-[9px] text-muted-foreground">TTC</span></p>
-          <p className="text-[10px] text-muted-foreground">{formatCurrency(invoicedHt)} HT</p>
+          <p className="text-[13px] font-semibold text-emerald-600 mt-1"><Amount value={invoicedTtc} denomination="TTC" /></p>
+          <p className="text-[10px] text-muted-foreground"><Amount value={invoicedHt} denomination="HT" /></p>
         </div>
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
           <TechnicalLabel>Reste à Réaliser</TechnicalLabel>
           <p className={`text-[13px] font-semibold mt-1 ${remainingHt < 0 ? "text-red-600" : "text-amber-600"}`}>
-            {formatCurrency(remainingTtc)} <span className="text-[9px] text-muted-foreground">TTC</span>
+            <Amount value={remainingTtc} denomination="TTC" />
           </p>
-          <p className="text-[10px] text-muted-foreground">{formatCurrency(remainingHt)} HT</p>
+          <p className="text-[10px] text-muted-foreground"><Amount value={remainingHt} denomination="HT" /></p>
         </div>
       </div>
       <TvaDerivedHint

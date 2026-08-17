@@ -14,10 +14,7 @@ import {
   type OutstandingFeeEntry,
   type OutstandingFeeSummary,
 } from "@shared/fee-description";
-
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
-}
+import { Amount } from "@/components/ui/amount";
 
 interface Props {
   scope: "global" | "project";
@@ -314,7 +311,7 @@ export function OutstandingFeesPanel({ scope, projectId, compact }: Props) {
           <p className="text-[11px] text-muted-foreground mt-0.5">
             Approved invoices missing a Penny Lane commission reference. Total fees:{" "}
             <span className="font-semibold text-foreground" data-testid="text-outstanding-total">
-              {formatCurrency(data.totalFeeHt)} HT
+              <Amount value={data.totalFeeHt} denomination="HT" />
             </span>
           </p>
         </div>
@@ -338,7 +335,7 @@ export function OutstandingFeesPanel({ scope, projectId, compact }: Props) {
               {b.count}
             </p>
             <p className="text-[10px] text-muted-foreground">
-              {formatCurrency(b.totalFeeHt)}
+              <Amount value={b.totalFeeHt} denomination="HT" />
             </p>
           </div>
         ))}
@@ -359,7 +356,7 @@ export function OutstandingFeesPanel({ scope, projectId, compact }: Props) {
                       {p.projectCode}
                     </span>
                     <span className="text-[11px] font-semibold text-amber-600 dark:text-amber-400">
-                      {formatCurrency(p.totalFeeHt)}
+                      <Amount value={p.totalFeeHt} denomination="HT" />
                     </span>
                   </div>
                   <p className="text-[10px] text-muted-foreground truncate">
@@ -412,13 +409,13 @@ export function OutstandingFeesPanel({ scope, projectId, compact }: Props) {
                 <p className="text-[10px] text-muted-foreground mt-0.5 truncate">
                   Facture {e.invoiceNumber ?? "—"}
                   {e.devisCode ? ` · Devis ${e.devisCode}` : ""}
-                  {" · "}HT {formatCurrency(e.amountHt)}
-                  {" · "}TTC {formatCurrency(e.amountTtc)}
+                  {" · "}<Amount value={e.amountHt} denomination="HT" />
+                  {" · "}<Amount value={e.amountTtc} denomination="TTC" />
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
                 <span className="text-[12px] font-semibold text-amber-600 dark:text-amber-400" data-testid={`text-outstanding-fee-${e.entryId}`}>
-                  {formatCurrency(e.feeAmountHt)}
+                  <Amount value={e.feeAmountHt} denomination="HT" />
                 </span>
                 <CopyButton entry={e} />
                 <MarkInvoicedAction entry={e} scope={scope} projectId={projectId} />

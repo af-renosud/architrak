@@ -30,9 +30,7 @@ import { Link } from "wouter";
 import { Euro } from "lucide-react";
 import type { ProjectCommunication, Project, CertificatPaymentSuggestion } from "@shared/schema";
 
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
-}
+import { Amount } from "@/components/ui/amount";
 
 // Task #466 — open payment suggestions (client "paid" replies) surfaced in
 // the hub. Confirm records the suggested amount/date as a source='email'
@@ -79,7 +77,7 @@ function PaymentSuggestionsPanel() {
           <div key={s.id} className="flex items-start justify-between gap-3 border-t first:border-t-0 pt-3 first:pt-0" data-testid={`row-hub-suggestion-${s.id}`}>
             <div className="text-xs text-muted-foreground min-w-0">
               <p className="text-sm text-foreground font-semibold">
-                {certificateRef} · {projectName} — {formatCurrency(parseFloat(s.suggestedAmount))}
+                {certificateRef} · {projectName} — <Amount value={parseFloat(s.suggestedAmount)} denomination="TTC" />
               </p>
               <p>
                 {s.kind === "contractor_received"
@@ -210,7 +208,7 @@ function AmbiguousSuggestionReviewDialog({
               <p className="text-muted-foreground" data-testid="text-hub-review-no-excerpt">Aucun extrait disponible — consultez l'e-mail dans Gmail avant de confirmer.</p>
             )}
             <p className="text-muted-foreground">
-              {s.kind === "contractor_received" ? "Réception annoncée par l'entreprise" : "Paiement annoncé par le client"} — montant suggéré {formatCurrency(parseFloat(s.suggestedAmount))}
+              {s.kind === "contractor_received" ? "Réception annoncée par l'entreprise" : "Paiement annoncé par le client"} — montant suggéré <Amount value={parseFloat(s.suggestedAmount)} denomination="TTC" />
             </p>
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -299,7 +297,7 @@ function ArchivedSuggestionsPanel() {
           <div key={s.id} className="flex items-start justify-between gap-3 border-t first:border-t-0 pt-3 first:pt-0" data-testid={`row-archived-suggestion-${s.id}`}>
             <div className="text-xs text-muted-foreground min-w-0">
               <p className="text-sm text-foreground font-semibold">
-                {certificateRef} · {projectName} — {formatCurrency(parseFloat(s.suggestedAmount))}
+                {certificateRef} · {projectName} — <Amount value={parseFloat(s.suggestedAmount)} denomination="TTC" />
               </p>
               <p>
                 {s.status === "confirmed" ? "Confirmée" : "Ignorée"}

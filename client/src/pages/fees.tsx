@@ -23,9 +23,7 @@ import { insertFeeSchema, insertFeeEntrySchema } from "@shared/schema";
 import type { Project, Fee, FeeEntry } from "@shared/schema";
 import { z } from "zod";
 
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
-}
+import { Amount } from "@/components/ui/amount";
 
 const PHASE_OPTIONS = [
   { value: "conception", label: "Conception" },
@@ -427,10 +425,10 @@ export default function Fees() {
                     <PhaseBadge phase={phaseGroup.phase} />
                   </div>
                   <p className="text-[16px] font-light text-foreground" data-testid={`text-phase-total-${phaseGroup.phase}`}>
-                    {formatCurrency(phaseGroup.totalHt)} <span className="text-[10px] text-muted-foreground font-normal">HT</span>
+                    <Amount value={phaseGroup.totalHt} denomination="HT" />
                   </p>
                   <p className="text-[12px] text-muted-foreground" data-testid={`text-phase-total-ttc-${phaseGroup.phase}`}>
-                    {formatCurrency(phaseGroup.totalTtc)} <span className="text-[9px] font-normal">TTC</span>
+                    <Amount value={phaseGroup.totalTtc} denomination="TTC" />
                   </p>
                   <div className="h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800 mt-2 mb-1">
                     <div
@@ -441,8 +439,8 @@ export default function Fees() {
                   </div>
                   <div className="flex items-center justify-between gap-2 flex-wrap">
                     <div className="text-[10px] text-muted-foreground">
-                      <div>Invoiced: {formatCurrency(phaseGroup.totalInvoiced)} HT</div>
-                      <div>{formatCurrency(phaseGroup.totalInvoicedTtc)} TTC</div>
+                      <div>Invoiced: <Amount value={phaseGroup.totalInvoiced} denomination="HT" /></div>
+                      <div><Amount value={phaseGroup.totalInvoicedTtc} denomination="TTC" /></div>
                     </div>
                     <span className="text-[10px] font-semibold text-foreground">
                       {progress.toFixed(0)}%
@@ -475,28 +473,28 @@ export default function Fees() {
               <LuxuryCard data-testid="card-total-fee-earned">
                 <TechnicalLabel>Total Honoraires</TechnicalLabel>
                 <p className="text-[20px] font-light text-foreground mt-2" data-testid="text-total-earned">
-                  {formatCurrency(totalFeeEarned)} <span className="text-[11px] text-muted-foreground font-normal">HT</span>
+                  <Amount value={totalFeeEarned} denomination="HT" />
                 </p>
                 <p className="text-[13px] text-muted-foreground" data-testid="text-total-earned-ttc">
-                  {formatCurrency(totalFeeEarnedTtc)} <span className="text-[10px] font-normal">TTC</span>
+                  <Amount value={totalFeeEarnedTtc} denomination="TTC" />
                 </p>
               </LuxuryCard>
               <LuxuryCard data-testid="card-total-invoiced">
                 <TechnicalLabel>Total Invoiced (Penny Lane)</TechnicalLabel>
                 <p className="text-[20px] font-light text-emerald-600 dark:text-emerald-400 mt-2" data-testid="text-total-invoiced">
-                  {formatCurrency(totalInvoiced)} <span className="text-[11px] text-muted-foreground font-normal">HT</span>
+                  <Amount value={totalInvoiced} denomination="HT" />
                 </p>
                 <p className="text-[13px] text-muted-foreground" data-testid="text-total-invoiced-ttc">
-                  {formatCurrency(totalInvoicedTtc)} <span className="text-[10px] font-normal">TTC</span>
+                  <Amount value={totalInvoicedTtc} denomination="TTC" />
                 </p>
               </LuxuryCard>
               <LuxuryCard data-testid="card-total-remaining">
                 <TechnicalLabel>Remaining to Invoice</TechnicalLabel>
                 <p className="text-[20px] font-light text-amber-600 dark:text-amber-400 mt-2" data-testid="text-total-remaining">
-                  {formatCurrency(totalRemaining)} <span className="text-[11px] text-muted-foreground font-normal">HT</span>
+                  <Amount value={totalRemaining} denomination="HT" />
                 </p>
                 <p className="text-[13px] text-muted-foreground" data-testid="text-total-remaining-ttc">
-                  {formatCurrency(totalRemainingTtc)} <span className="text-[10px] font-normal">TTC</span>
+                  <Amount value={totalRemainingTtc} denomination="TTC" />
                 </p>
               </LuxuryCard>
             </div>
@@ -549,28 +547,28 @@ export default function Fees() {
                         <div>
                           <TechnicalLabel>Amount HT</TechnicalLabel>
                           <p className="text-[13px] font-semibold text-foreground mt-0.5" data-testid={`text-fee-amount-${fee.id}`}>
-                            {formatCurrency(feeHt)} <span className="text-[9px] text-muted-foreground font-normal">HT</span>
+                            <Amount value={feeHt} denomination="HT" />
                           </p>
                           <p className="text-[11px] text-muted-foreground" data-testid={`text-fee-amount-ttc-${fee.id}`}>
-                            {formatCurrency(feeTtc)} <span className="text-[9px] font-normal">TTC</span>
+                            <Amount value={feeTtc} denomination="TTC" />
                           </p>
                         </div>
                         <div>
                           <TechnicalLabel>Invoiced</TechnicalLabel>
                           <p className="text-[13px] font-semibold text-emerald-600 dark:text-emerald-400 mt-0.5" data-testid={`text-fee-invoiced-${fee.id}`}>
-                            {formatCurrency(invoiced)} <span className="text-[9px] text-muted-foreground font-normal">HT</span>
+                            <Amount value={invoiced} denomination="HT" />
                           </p>
                           <p className="text-[11px] text-muted-foreground" data-testid={`text-fee-invoiced-ttc-${fee.id}`}>
-                            {formatCurrency(invoicedTtc)} <span className="text-[9px] font-normal">TTC</span>
+                            <Amount value={invoicedTtc} denomination="TTC" />
                           </p>
                         </div>
                         <div>
                           <TechnicalLabel>Remaining</TechnicalLabel>
                           <p className="text-[13px] font-semibold text-amber-600 dark:text-amber-400 mt-0.5" data-testid={`text-fee-remaining-${fee.id}`}>
-                            {formatCurrency(remaining)} <span className="text-[9px] text-muted-foreground font-normal">HT</span>
+                            <Amount value={remaining} denomination="HT" />
                           </p>
                           <p className="text-[11px] text-muted-foreground" data-testid={`text-fee-remaining-ttc-${fee.id}`}>
-                            {formatCurrency(remainingTtc)} <span className="text-[9px] font-normal">TTC</span>
+                            <Amount value={remainingTtc} denomination="TTC" />
                           </p>
                         </div>
                       </div>
@@ -595,7 +593,7 @@ export default function Fees() {
                                 <div className="min-w-0">
                                   <div className="flex items-center gap-2 flex-wrap">
                                     <span className="text-[11px] text-foreground">
-                                      Base: {formatCurrency(parseFloat(entry.baseHt))} HT
+                                      Base: <Amount value={parseFloat(entry.baseHt)} denomination="HT" />
                                     </span>
                                     <span className="text-[10px] text-muted-foreground">
                                       x {entry.feeRate}%
@@ -612,7 +610,7 @@ export default function Fees() {
                                 </div>
                                 <div className="flex items-center gap-2 flex-wrap">
                                   <span className="text-[12px] font-semibold text-foreground" data-testid={`text-entry-amount-${entry.id}`}>
-                                    {formatCurrency(parseFloat(entry.feeAmount))} <span className="text-[9px] text-muted-foreground font-normal">HT</span>
+                                    <Amount value={parseFloat(entry.feeAmount)} denomination="HT" />
                                   </span>
                                   <StatusBadge status={entry.status} />
                                   {fee.feeType === "works_percentage" &&

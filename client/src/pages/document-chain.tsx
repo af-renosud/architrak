@@ -55,11 +55,7 @@ interface DocumentChain {
   certificats: ChainCertificat[];
 }
 
-function formatCurrency(value: string): string {
-  const n = parseFloat(value);
-  if (Number.isNaN(n)) return value;
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(n);
-}
+import { Amount } from "@/components/ui/amount";
 
 function MissingFlag({ label, testId }: { label: string; testId: string }) {
   return (
@@ -156,7 +152,7 @@ export default function DocumentChainPage() {
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-[13px] font-bold text-[#0B2545]">{devis.devisCode}</span>
                 <StatusBadge status={devis.status} />
-                <TechnicalLabel>{formatCurrency(devis.amountTtc)} TTC</TechnicalLabel>
+                <TechnicalLabel><Amount value={parseFloat(devis.amountTtc)} denomination="TTC" /></TechnicalLabel>
                 {devis.dateSigned && <TechnicalLabel>Signed {devis.dateSigned}</TechnicalLabel>}
                 {!devis.hasSourcePdf && <MissingFlag label="Source PDF missing" testId="flag-devis-source-missing" />}
                 {isSigned && !devis.hasSignedPdf && <MissingFlag label="Signed PDF missing" testId="flag-devis-signed-missing" />}
@@ -183,7 +179,7 @@ export default function DocumentChainPage() {
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-[13px] font-bold text-[#0B2545]">{marche.marcheNumber || `Marché #${marche.id}`}</span>
                   <StatusBadge status={marche.status} />
-                  <TechnicalLabel>{formatCurrency(marche.totalTtc)} TTC</TechnicalLabel>
+                  <TechnicalLabel><Amount value={parseFloat(marche.totalTtc)} denomination="TTC" /></TechnicalLabel>
                   {marche.signedDate
                     ? <TechnicalLabel>Signed {marche.signedDate}</TechnicalLabel>
                     : <MissingFlag label="Not signed" testId="flag-marche-unsigned" />}
@@ -207,8 +203,8 @@ export default function DocumentChainPage() {
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-[13px] font-bold text-[#0B2545]">Situation n°{s.situationNumber}</span>
                       <StatusBadge status={s.status} />
-                      <TechnicalLabel>Cumul {formatCurrency(s.cumulativeHt)} HT</TechnicalLabel>
-                      <TechnicalLabel>Net {formatCurrency(s.netToPayTtc)} TTC</TechnicalLabel>
+                      <TechnicalLabel>Cumul <Amount value={parseFloat(s.cumulativeHt)} denomination="HT" /></TechnicalLabel>
+                      <TechnicalLabel>Net <Amount value={parseFloat(s.netToPayTtc)} denomination="TTC" /></TechnicalLabel>
                       {s.dateIssued && <TechnicalLabel>{s.dateIssued}</TechnicalLabel>}
                       {s.invoiceId == null && <MissingFlag label="No facture linked" testId={`flag-situation-${s.id}-no-invoice`} />}
                     </div>
@@ -228,7 +224,7 @@ export default function DocumentChainPage() {
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-[13px] font-bold text-[#0B2545]">Facture #{inv.invoiceNumber}</span>
                     <StatusBadge status={inv.status} />
-                    <TechnicalLabel>{formatCurrency(inv.amountTtc)} TTC</TechnicalLabel>
+                    <TechnicalLabel><Amount value={parseFloat(inv.amountTtc)} denomination="TTC" /></TechnicalLabel>
                     {inv.datePaid && <TechnicalLabel>Paid {inv.datePaid}</TechnicalLabel>}
                     {!inv.hasSourcePdf && <MissingFlag label="Source PDF missing" testId={`flag-invoice-${inv.id}-pdf-missing`} />}
                     {inv.certificatIds.length === 0 && <MissingFlag label="Not certified" testId={`flag-invoice-${inv.id}-uncertified`} />}
@@ -255,7 +251,7 @@ export default function DocumentChainPage() {
                   <div className="flex items-center gap-2 flex-wrap">
                     <CertificateRefBadge data-testid={`chain-cert-ref-${c.id}`}>{c.certificateRef}</CertificateRefBadge>
                     <StatusBadge status={c.status} />
-                    <TechnicalLabel>Net {formatCurrency(c.netToPayTtc)} TTC</TechnicalLabel>
+                    <TechnicalLabel>Net <Amount value={parseFloat(c.netToPayTtc)} denomination="TTC" /></TechnicalLabel>
                     {c.dateIssued && <TechnicalLabel>Issued {c.dateIssued}</TechnicalLabel>}
                     {c.reissuedFromCertificatId != null && (
                       <span

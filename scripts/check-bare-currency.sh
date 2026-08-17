@@ -23,25 +23,6 @@ set -euo pipefail
 # Do NOT add new files here; use <Amount> instead.
 # ---------------------------------------------------------------------------
 ALLOWLIST=(
-  "client/src/components/certificats/CertificatDetailDialog.tsx"
-  "client/src/components/devis/DevisTab.tsx"
-  "client/src/components/devis/SituationsSection.tsx"
-  "client/src/components/factures/FacturesTab.tsx"
-  "client/src/components/fees/OutstandingFeesBanner.tsx"
-  "client/src/components/fees/OutstandingFeesPanel.tsx"
-  "client/src/components/reconciliation/AccountingStatusBadge.tsx"
-  "client/src/components/reconciliation/NeedsReviewTab.tsx"
-  "client/src/components/ui/tva-derived-hint.tsx"
-  "client/src/pages/architect-fee-invoices.tsx"
-  "client/src/pages/certificats.tsx"
-  "client/src/pages/communications.tsx"
-  "client/src/pages/contractor-detail.tsx"
-  "client/src/pages/dashboard.tsx"
-  "client/src/pages/document-chain.tsx"
-  "client/src/pages/fees.tsx"
-  "client/src/pages/financial-tracking.tsx"
-  "client/src/pages/project-detail.tsx"
-  "client/src/pages/projects.tsx"
   # utils.ts is the canonical definition — the export itself is not a bare call.
   "client/src/lib/utils.ts"
   # amount.tsx is the <Amount> component itself — it calls formatCurrency internally.

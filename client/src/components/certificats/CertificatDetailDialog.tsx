@@ -19,9 +19,8 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Certificat, Contractor, CertificatPayment, CertificatPaymentSuggestion } from "@shared/schema";
 
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
-}
+import { Amount } from "@/components/ui/amount";
+import { formatCurrency as fmt } from "@/lib/utils";
 
 interface PaymentLedgerResponse {
   payments: CertificatPayment[];
@@ -217,15 +216,15 @@ export function CertificatPaymentsSection({ cert, projectId }: { cert: Certifica
       {ledger && (
         <div className="flex items-center justify-between gap-2 text-[12px]">
           <span className="text-muted-foreground">
-            Encaissé <span className="font-semibold text-foreground" data-testid="text-cert-paid-to-date">{formatCurrency(ledger.paidToDate)} TTC</span>
-            {" / "}{formatCurrency(parseFloat(cert.netToPayTtc))} TTC
+            Encaissé <span className="font-semibold text-foreground" data-testid="text-cert-paid-to-date">{<Amount value={ledger.paidToDate} denomination="TTC" />}</span>
+            {" / "}{<Amount value={parseFloat(cert.netToPayTtc)} denomination="TTC" />}
           </span>
           {ledger.overpaid ? (
             <span className="text-[10px] font-bold uppercase tracking-widest text-red-600 dark:text-red-400" data-testid="badge-cert-overpaid">Trop-perçu</span>
           ) : ledger.fullyPaid ? (
             <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-700 dark:text-emerald-400" data-testid="badge-cert-fully-paid">Soldé</span>
           ) : (
-            <span className="text-muted-foreground" data-testid="text-cert-outstanding">Reste dû {formatCurrency(ledger.outstanding)} TTC</span>
+            <span className="text-muted-foreground" data-testid="text-cert-outstanding">Reste dû {<Amount value={ledger.outstanding} denomination="TTC" />}</span>
           )}
         </div>
       )}
@@ -237,7 +236,7 @@ export function CertificatPaymentsSection({ cert, projectId }: { cert: Certifica
       {(ledger?.payments ?? []).map((p) => (
         <div key={p.id} className="flex items-center justify-between gap-2 text-[12px] border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] pt-2" data-testid={`row-payment-${p.id}`}>
           <div>
-            <span className="font-semibold text-foreground">{formatCurrency(parseFloat(p.amount))} TTC</span>
+            <span className="font-semibold text-foreground">{<Amount value={parseFloat(p.amount)} denomination="TTC" />}</span>
             <span className="text-muted-foreground"> — {methodLabel[p.method] ?? p.method} le {p.datePaid}</span>
             {p.reference && <span className="text-[10px] text-muted-foreground italic"> (réf. {p.reference})</span>}
           </div>
@@ -405,38 +404,38 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
             <div className="flex items-center justify-between gap-2">
               <TechnicalLabel>Total Works HT</TechnicalLabel>
               <span className="text-[13px] font-semibold text-foreground" data-testid="text-cert-detail-works">
-                {formatCurrency(parseFloat(cert.totalWorksHt))}
+                {<Amount value={parseFloat(cert.totalWorksHt)} denomination="HT" />}
               </span>
             </div>
             <div className="flex items-center justify-between gap-2">
               <TechnicalLabel>PV/MV Adjustment HT</TechnicalLabel>
               <span className={`text-[13px] font-semibold ${parseFloat(cert.pvMvAdjustment ?? "0") >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`} data-testid="text-cert-detail-pvmv">
-                {formatCurrency(parseFloat(cert.pvMvAdjustment ?? "0"))}
+                {<Amount value={parseFloat(cert.pvMvAdjustment ?? "0")} denomination="HT" />}
               </span>
             </div>
             <div className="flex items-center justify-between gap-2">
               <TechnicalLabel>Previous Payments HT</TechnicalLabel>
               <span className="text-[13px] font-semibold text-foreground" data-testid="text-cert-detail-previous">
-                {formatCurrency(parseFloat(cert.previousPayments ?? "0"))}
+                {<Amount value={parseFloat(cert.previousPayments ?? "0")} denomination="HT" />}
               </span>
             </div>
             <div className="flex items-center justify-between gap-2">
               <TechnicalLabel>Retenue de Garantie HT</TechnicalLabel>
               <span className="text-[13px] font-semibold text-foreground" data-testid="text-cert-detail-retenue">
-                {formatCurrency(parseFloat(cert.retenueGarantie ?? "0"))}
+                {<Amount value={parseFloat(cert.retenueGarantie ?? "0")} denomination="HT" />}
               </span>
             </div>
             <div className="flex items-center justify-between gap-2">
               <TechnicalLabel>Compte Prorata HT</TechnicalLabel>
               <span className="text-[13px] font-semibold text-foreground" data-testid="text-cert-detail-prorata">
-                {formatCurrency(parseFloat(cert.cumulativeProrataDeduction ?? "0"))}
+                {<Amount value={parseFloat(cert.cumulativeProrataDeduction ?? "0")} denomination="HT" />}
               </span>
             </div>
             {parseFloat(cert.cumulativeAcompteRecoupment ?? "0") > 0 && (
               <div className="flex items-center justify-between gap-2">
                 <TechnicalLabel>Remboursement d'Acompte HT (période / cumul)</TechnicalLabel>
                 <span className="text-[13px] font-semibold text-foreground" data-testid="text-cert-detail-acompte-recoupment">
-                  {formatCurrency(parseFloat(cert.periodAcompteRecoupment ?? "0"))} / {formatCurrency(parseFloat(cert.cumulativeAcompteRecoupment ?? "0"))}
+                  <Amount value={parseFloat(cert.periodAcompteRecoupment ?? "0")} denomination="HT" /> / <Amount value={parseFloat(cert.cumulativeAcompteRecoupment ?? "0")} denomination="HT" />
                 </span>
               </div>
             )}
@@ -445,7 +444,7 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
                 <TechnicalLabel>Certificat de Solde</TechnicalLabel>
                 <span className="text-[13px] font-semibold text-foreground">
                   {cert.retenueReleased
-                    ? `RG libérée ${formatCurrency(parseFloat(cert.retenueReleaseAmount ?? "0"))} HT${cert.retenueReleaseDate ? ` le ${cert.retenueReleaseDate}` : ""}`
+                    ? `RG libérée ${fmt(parseFloat(cert.retenueReleaseAmount ?? "0"))} HT${cert.retenueReleaseDate ? ` le ${cert.retenueReleaseDate}` : ""}`
                     : "Retenue de Garantie conservée"}
                 </span>
               </div>
@@ -459,7 +458,7 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
               <div className="flex items-center justify-between gap-2">
                 <TechnicalLabel>Net to Pay HT</TechnicalLabel>
                 <span className="text-[13px] font-semibold text-foreground" data-testid="text-cert-detail-net-ht">
-                  {formatCurrency(parseFloat(cert.netToPayHt))}
+                  {<Amount value={parseFloat(cert.netToPayHt)} denomination="HT" />}
                 </span>
               </div>
               <div className="flex items-center justify-between gap-2 mt-1">
@@ -469,7 +468,7 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
                     : `TVA (${parseFloat(cert.tvaRatePercent ?? "20")}%${cert.tvaAutoliquidation ? " — autoliquidation" : ""})`}
                 </TechnicalLabel>
                 <span className="text-[13px] font-semibold text-foreground" data-testid="text-cert-detail-tva">
-                  {formatCurrency(parseFloat(cert.tvaAmount))}
+                  {<Amount value={parseFloat(cert.tvaAmount)} denomination="TVA" />}
                 </span>
               </div>
               {cert.tvaAutoliquidation && (
@@ -480,7 +479,7 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
               <div className="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                 <span className="text-[11px] font-black uppercase tracking-widest text-foreground">Net to Pay TTC</span>
                 <span className="text-[16px] font-bold text-foreground" data-testid="text-cert-detail-net-ttc">
-                  {formatCurrency(parseFloat(cert.netToPayTtc))}
+                  {<Amount value={parseFloat(cert.netToPayTtc)} denomination="TTC" />}
                 </span>
               </div>
             </div>

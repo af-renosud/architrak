@@ -30,6 +30,8 @@ import type {
   ReviewCard,
   ReviewDevisSummary,
 } from "@shared/reconciliation-dto";
+import { Amount } from "@/components/ui/amount";
+import { formatCurrency as fmt } from "@/lib/utils";
 
 interface AccountingStatus {
   projectId: number;
@@ -40,12 +42,8 @@ interface AccountingStatus {
   eurosAtRisk: number;
 }
 
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
-}
-
 function formatCentsAsEur(cents: number): string {
-  return formatCurrency(cents / 100);
+  return fmt(cents / 100);
 }
 
 const RELATIONSHIP_HEADLINE: Record<ReviewCard["relationshipType"], (n: number) => string> = {
@@ -88,7 +86,7 @@ function DevisSummaryCard({ summary, tone, label, testId }: {
       <p className="text-[11px] text-foreground truncate" title={summary.contractorName}>{summary.contractorName}</p>
       <p className="text-[10px] text-muted-foreground line-clamp-2 mt-0.5" title={summary.descriptionFr}>{summary.descriptionFr}</p>
       <p className="text-[13px] font-semibold text-foreground mt-1.5" data-testid={`${testId}-ht`}>
-        {formatCurrency(parseFloat(summary.amountHt))} <span className="text-[9px] text-muted-foreground">HT</span>
+        <Amount value={parseFloat(summary.amountHt)} denomination="HT" />
       </p>
     </div>
   );
@@ -136,7 +134,7 @@ function CitationsList({ card }: { card: ReviewCard }) {
               <span className="font-semibold">{cit.devisCode ?? `Devis #${cit.devisId}`}</span>
               {cit.lineNumber != null && <span className="text-muted-foreground"> · line {cit.lineNumber}</span>}
               {" — "}{cit.description}
-              {cit.totalHt != null && <span className="text-muted-foreground"> ({formatCurrency(parseFloat(cit.totalHt))} HT)</span>}
+              {cit.totalHt != null && <span className="text-muted-foreground"> (<Amount value={parseFloat(cit.totalHt)} denomination="HT" />)</span>}
             </span>
           </li>
         ))}
@@ -167,7 +165,7 @@ function DecisionCard({ card, projectId }: { card: ReviewCard; projectId: string
       toast({
         title: decision === "confirm" ? "Overlap confirmed" : "Kept separate",
         description: decision === "confirm"
-          ? `Earlier devis superseded — ${formatCurrency(card.impactEuros)} removed from Contracted.`
+          ? `Earlier devis superseded — ${fmt(card.impactEuros)} removed from Contracted.`
           : "The devis were left as separate, genuinely-contracted documents.",
       });
     },
@@ -214,7 +212,7 @@ function DecisionCard({ card, projectId }: { card: ReviewCard; projectId: string
         <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-3 flex items-center gap-2" data-testid={`impact-${card.id}`}>
           <AlertTriangle size={14} className="text-amber-600 shrink-0" />
           <p className="text-[12px] text-amber-800">
-            Confirming removes <span className="font-bold" data-testid={`impact-euros-${card.id}`}>{formatCurrency(card.impactEuros)}</span> of double-counting from Contracted.
+            Confirming removes <span className="font-bold" data-testid={`impact-euros-${card.id}`}><Amount value={card.impactEuros} denomination="HT" /></span> of double-counting from Contracted.
           </p>
         </div>
 

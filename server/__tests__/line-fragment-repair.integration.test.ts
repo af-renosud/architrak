@@ -247,6 +247,8 @@ describe("repairLineFragment — DVP0000661-shaped repair (real DB)", () => {
   it("route refuses an ambiguous devis number (no uniqueness constraint on devis_number)", async () => {
     // Two devis sharing the same supplier reference — the route must 409,
     // never silently pick one and rewrite its lines.
+    // Timeout raised to 30 s: dynamic import of the route inside this test
+    // body triggers a cold module load that can exceed the default 5 s in CI.
     const a = await seedDevis();
     const b = await seedDevis();
     const dupNumber = `DUP-${SUFFIX}`;
@@ -284,5 +286,5 @@ describe("repairLineFragment — DVP0000661-shaped repair (real DB)", () => {
     } finally {
       await new Promise((r) => server.close(r));
     }
-  });
+  }, 30_000);
 });

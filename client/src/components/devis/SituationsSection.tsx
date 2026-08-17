@@ -16,10 +16,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Situation } from "@shared/schema";
 import { Check, ChevronDown, ChevronRight, FileText, Loader2, AlertTriangle } from "lucide-react";
-
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
-}
+import { Amount } from "@/components/ui/amount";
 
 interface SituationReviewLine {
   id: number;
@@ -104,7 +101,7 @@ function SituationLineRow({
             })}
           </div>
         </td>
-        <td className="py-1.5 px-2 text-[11px] text-right font-medium">{formatCurrency(parseFloat(line.totalHt))}</td>
+        <td className="py-1.5 px-2 text-[11px] text-right font-medium"><Amount value={parseFloat(line.totalHt)} denomination="HT" /></td>
         <td className="py-1.5 px-2 text-[11px] text-right text-muted-foreground" data-testid={`text-prev-percent-${line.id}`}>
           {line.previousPercent}%
         </td>
@@ -282,9 +279,9 @@ function SituationReviewPanel({ situationId, devisId, isArchived }: { situationI
       </div>
       <div className="flex items-center justify-between mt-3 pt-2 border-t border-[rgba(0,0,0,0.06)]">
         <div className="text-[10px] text-muted-foreground" data-testid={`text-situation-totals-${situationId}`}>
-          Cumulé {formatCurrency(parseFloat(review.situation.cumulativeHt))} HT · Précédent{" "}
-          {formatCurrency(parseFloat(review.situation.previousHt))} HT · Net{" "}
-          {formatCurrency(parseFloat(review.situation.netHt))} HT
+          Cumulé <Amount value={parseFloat(review.situation.cumulativeHt)} denomination="HT" /> · Précédent{" "}
+          <Amount value={parseFloat(review.situation.previousHt)} denomination="HT" /> · Net{" "}
+          <Amount value={parseFloat(review.situation.netHt)} denomination="HT" />
         </div>
         {isDraft && (
           <div className="flex items-center gap-2">
@@ -346,7 +343,7 @@ export function SituationsSection({ devisId, isArchived }: { devisId: number; is
                 )}
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-[12px] font-semibold text-foreground">{formatCurrency(parseFloat(s.netHt))} HT</span>
+                <span className="text-[12px] font-semibold text-foreground"><Amount value={parseFloat(s.netHt)} denomination="HT" /></span>
                 <span
                   className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-widest ${s.status === "confirmed" ? "bg-emerald-600 text-white" : "bg-amber-400 text-amber-950"}`}
                   data-testid={`chip-situation-status-${s.id}`}

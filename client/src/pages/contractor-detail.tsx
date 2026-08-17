@@ -12,9 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Contractor, Devis, Invoice, Project } from "@shared/schema";
 
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
-}
+import { Amount } from "@/components/ui/amount";
 
 export default function ContractorDetail() {
   const params = useParams<{ id: string }>();
@@ -319,7 +317,7 @@ export default function ContractorDetail() {
               <LuxuryCard data-testid="card-total-devis">
                 <TechnicalLabel>Total Devis HT</TechnicalLabel>
                 <p className="text-[18px] font-light text-foreground mt-2" data-testid="text-total-devis">
-                  {formatCurrency(totalDevisHt)}
+                  <Amount value={totalDevisHt} denomination="HT" />
                 </p>
                 <p className="text-[10px] text-muted-foreground mt-1">
                   {contractorDevis?.length ?? 0} devis
@@ -328,7 +326,7 @@ export default function ContractorDetail() {
               <LuxuryCard data-testid="card-total-invoiced">
                 <TechnicalLabel>Total Invoiced HT</TechnicalLabel>
                 <p className="text-[18px] font-light text-emerald-600 dark:text-emerald-400 mt-2" data-testid="text-total-invoiced">
-                  {formatCurrency(totalInvoicedHt)}
+                  <Amount value={totalInvoicedHt} denomination="HT" />
                 </p>
                 <p className="text-[10px] text-muted-foreground mt-1">
                   {contractorInvoices?.length ?? 0} invoices
@@ -367,7 +365,7 @@ export default function ContractorDetail() {
                       )}
                     </div>
                     <div className="flex items-center gap-3 flex-wrap">
-                      <span className="text-[12px] font-semibold text-foreground">{formatCurrency(parseFloat(d.amountHt))} HT</span>
+                      <span className="text-[12px] font-semibold text-foreground"><Amount value={parseFloat(d.amountHt)} denomination="HT" /></span>
                       <StatusBadge status={d.status} />
                     </div>
                   </div>
@@ -415,8 +413,8 @@ export default function ContractorDetail() {
                     </div>
                     <div className="flex items-center gap-3 flex-wrap">
                       <div className="text-right">
-                        <span className="text-[12px] font-semibold text-foreground block">{formatCurrency(parseFloat(inv.amountHt))} HT</span>
-                        <span className="text-[10px] text-muted-foreground">{formatCurrency(parseFloat(inv.amountTtc))} TTC</span>
+                        <span className="text-[12px] font-semibold text-foreground block"><Amount value={parseFloat(inv.amountHt)} denomination="HT" /></span>
+                        <span className="text-[10px] text-muted-foreground"><Amount value={parseFloat(inv.amountTtc)} denomination="TTC" /></span>
                       </div>
                       <StatusBadge status={inv.status} />
                     </div>

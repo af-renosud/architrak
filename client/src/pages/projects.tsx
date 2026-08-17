@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Amount } from "@/components/ui/amount";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
@@ -61,10 +62,6 @@ interface ProjectAccountingStatusSummary {
   supersededCount: number;
   needsReviewCount: number;
   eurosAtRisk: number;
-}
-
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
 }
 
 type ProjectsView = "active" | "archived";
@@ -807,19 +804,19 @@ function ProjectCard({
               <div className="flex items-center justify-between gap-2">
                 <TechnicalLabel>Contracted HT</TechnicalLabel>
                 <span className="text-[11px] font-semibold text-foreground" data-testid={`text-contracted-${project.id}`}>
-                  {formatCurrency(contracted)}
+                  <Amount value={contracted} denomination="HT" />
                 </span>
               </div>
               <div className="flex items-center justify-between gap-2">
                 <TechnicalLabel>Certified HT</TechnicalLabel>
                 <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400" data-testid={`text-certified-${project.id}`}>
-                  {formatCurrency(certified)}
+                  <Amount value={certified} denomination="HT" />
                 </span>
               </div>
               <div className="flex items-center justify-between gap-2">
                 <TechnicalLabel>Reste à Réaliser</TechnicalLabel>
                 <span className="text-[11px] font-semibold text-amber-600 dark:text-amber-400" data-testid={`text-reste-${project.id}`}>
-                  {formatCurrency(reste)}
+                  <Amount value={reste} denomination="HT" />
                 </span>
               </div>
               <div className="h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800 mt-1">

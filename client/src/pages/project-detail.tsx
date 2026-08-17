@@ -40,9 +40,8 @@ import { apiRequest, queryClient, ApiError, projectScopedKey } from "@/lib/query
 import { PvReceptionBadge, PvReceptionDialog } from "@/components/marche/PvReceptionDialog";
 import { CertificatDetailDialog } from "@/components/certificats/CertificatDetailDialog";
 
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
-}
+import { Amount } from "@/components/ui/amount";
+import { formatCurrency as fmt } from "@/lib/utils";
 
 interface FinancialSummary {
   projectId: number;
@@ -1345,28 +1344,28 @@ export default function ProjectDetail() {
                   <LuxuryCard data-testid="card-total-contracted">
                     <TechnicalLabel>Total Contracted</TechnicalLabel>
                     <p className="text-[20px] font-light text-foreground mt-2" data-testid="text-total-contracted">
-                      {formatCurrency(financialSummary.totalContractedTtc)} <span className="text-[11px] text-muted-foreground">TTC</span>
+                       <Amount value={financialSummary.totalContractedTtc} denomination="TTC" />
                     </p>
-                    <p className="text-[12px] text-muted-foreground">{formatCurrency(financialSummary.totalContractedHt)} HT</p>
+                     <p className="text-[12px] text-muted-foreground"><Amount value={financialSummary.totalContractedHt} denomination="HT" /></p>
                   </LuxuryCard>
                   <LuxuryCard data-testid="card-total-certified">
                     <TechnicalLabel>Total Certified</TechnicalLabel>
                     <p className="text-[20px] font-light text-emerald-600 dark:text-emerald-400 mt-2" data-testid="text-total-certified">
-                      {formatCurrency(financialSummary.totalCertifiedTtc)} <span className="text-[11px] text-muted-foreground">TTC</span>
+                       <Amount value={financialSummary.totalCertifiedTtc} denomination="TTC" />
                     </p>
-                    <p className="text-[12px] text-muted-foreground">{formatCurrency(financialSummary.totalCertifiedHt)} HT</p>
+                     <p className="text-[12px] text-muted-foreground"><Amount value={financialSummary.totalCertifiedHt} denomination="HT" /></p>
                     {/* Task #465 — payments actually received from the client
                         against the certified totals (structured ledger). */}
                     <p className="text-[12px] text-muted-foreground mt-1" data-testid="text-total-client-paid">
-                      Encaissé client : <span className="font-semibold text-foreground">{formatCurrency(totalClientPaid)}</span>
+                       Encaissé client : <span className="font-semibold text-foreground"><Amount value={totalClientPaid} denomination="TTC" /></span>
                     </p>
                   </LuxuryCard>
                   <LuxuryCard data-testid="card-total-reste">
                     <TechnicalLabel>Reste à Réaliser</TechnicalLabel>
                     <p className="text-[20px] font-light text-amber-600 dark:text-amber-400 mt-2" data-testid="text-total-reste">
-                      {formatCurrency(financialSummary.totalResteARealiserTtc)} <span className="text-[11px] text-muted-foreground">TTC</span>
+                       <Amount value={financialSummary.totalResteARealiserTtc} denomination="TTC" />
                     </p>
-                    <p className="text-[12px] text-muted-foreground">{formatCurrency(financialSummary.totalResteARealiser)} HT</p>
+                     <p className="text-[12px] text-muted-foreground"><Amount value={financialSummary.totalResteARealiser} denomination="HT" /></p>
                   </LuxuryCard>
                 </div>
 
@@ -1411,23 +1410,23 @@ export default function ProjectDetail() {
                               <div>
                                 <TechnicalLabel>Contracted</TechnicalLabel>
                                 <p className="text-[12px] font-semibold text-foreground mt-0.5">
-                                  {formatCurrency(ds.adjustedTtc)} <span className="text-[9px] text-muted-foreground font-normal">TTC</span>
+                                  <Amount value={ds.adjustedTtc} denomination="TTC" />
                                 </p>
-                                <p className="text-[10px] text-muted-foreground">{formatCurrency(ds.adjustedHt)} HT</p>
+                                <p className="text-[10px] text-muted-foreground"><Amount value={ds.adjustedHt} denomination="HT" /></p>
                               </div>
                               <div>
                                 <TechnicalLabel>Certified</TechnicalLabel>
                                 <p className="text-[12px] font-semibold text-emerald-600 dark:text-emerald-400 mt-0.5">
-                                  {formatCurrency(ds.certifiedTtc)} <span className="text-[9px] text-muted-foreground font-normal">TTC</span>
+                                  <Amount value={ds.certifiedTtc} denomination="TTC" />
                                 </p>
-                                <p className="text-[10px] text-muted-foreground">{formatCurrency(ds.certifiedHt)} HT</p>
+                                <p className="text-[10px] text-muted-foreground"><Amount value={ds.certifiedHt} denomination="HT" /></p>
                               </div>
                               <div>
                                 <TechnicalLabel>Remaining</TechnicalLabel>
                                 <p className="text-[12px] font-semibold text-amber-600 dark:text-amber-400 mt-0.5">
-                                  {formatCurrency(ds.resteARealiserTtc)} <span className="text-[9px] text-muted-foreground font-normal">TTC</span>
+                                  <Amount value={ds.resteARealiserTtc} denomination="TTC" />
                                 </p>
-                                <p className="text-[10px] text-muted-foreground">{formatCurrency(ds.resteARealiser)} HT</p>
+                                <p className="text-[10px] text-muted-foreground"><Amount value={ds.resteARealiser} denomination="HT" /></p>
                               </div>
                             </div>
                             <div className="h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800">
@@ -1445,17 +1444,17 @@ export default function ProjectDetail() {
                               </span>
                               {ds.pvTotal > 0 && (
                                 <span className="text-[10px] text-emerald-600 dark:text-emerald-400">
-                                  PV: +{formatCurrency(ds.pvTotal)} HT
+                                  PV: +{<Amount value={ds.pvTotal} denomination="HT" />}
                                 </span>
                               )}
                               {ds.mvTotal > 0 && (
                                 <span className="text-[10px] text-red-600 dark:text-red-400">
-                                  MV: -{formatCurrency(ds.mvTotal)} HT
+                                  MV: -{<Amount value={ds.mvTotal} denomination="HT" />}
                                 </span>
                               )}
                               {(ds.acompteCertifiedHt ?? 0) > 0 && (
                                 <span className="text-[10px] text-emerald-600 dark:text-emerald-400" data-testid={`text-acompte-certified-${ds.devisId}`}>
-                                  incl. acompte {formatCurrency(ds.acompteCertifiedHt ?? 0)} HT
+                                  incl. acompte {<Amount value={ds.acompteCertifiedHt ?? 0} denomination="HT" />}
                                 </span>
                               )}
                             </div>
@@ -1673,8 +1672,8 @@ export default function ProjectDetail() {
                               </span>
                             )}
                             <span className="text-[12px] font-semibold text-foreground">
-                              {formatCurrency(parseFloat(m.totalTtc))} <span className="text-[9px] text-muted-foreground font-normal">TTC</span>
-                              <span className="text-[10px] text-muted-foreground font-normal"> · {formatCurrency(parseFloat(m.totalHt))} HT</span>
+                               <Amount value={parseFloat(m.totalTtc)} denomination="TTC" />
+                               <span className="text-[10px] text-muted-foreground font-normal"> · <Amount value={parseFloat(m.totalHt)} denomination="HT" /></span>
                             </span>
                             <StatusBadge status={m.status} />
                             {/* Task #566 — PV de réception status + record/approve dialog. */}
@@ -1920,17 +1919,16 @@ export default function ProjectDetail() {
                           <div className="flex items-center gap-3 flex-wrap">
                             <div className="text-right">
                               <span className="text-[14px] font-semibold text-foreground" data-testid={`text-cert-ttc-tab-${c.id}`}>
-                                {formatCurrency(parseFloat(c.netToPayTtc))}
+                                 <Amount value={parseFloat(c.netToPayTtc)} denomination="TTC" />
                               </span>
-                              <p className="text-[9px] text-muted-foreground">TTC</p>
                             </div>
                             {c.status !== "paid" && (paidByCert.get(c.id) ?? 0) > 0 && (
                               <span
                                 className="text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
                                 data-testid={`badge-cert-partial-tab-${c.id}`}
-                                title={`Encaissé ${formatCurrency(paidByCert.get(c.id) ?? 0)} sur ${formatCurrency(parseFloat(c.netToPayTtc))}`}
+                                title={`Encaissé ${fmt(paidByCert.get(c.id) ?? 0)} sur ${fmt(parseFloat(c.netToPayTtc))}`}
                               >
-                                Partiel {formatCurrency(paidByCert.get(c.id) ?? 0)} TTC
+                                Partiel <Amount value={paidByCert.get(c.id) ?? 0} denomination="TTC" />
                               </span>
                             )}
                             <StatusBadge status={c.status} />
@@ -1972,19 +1970,19 @@ export default function ProjectDetail() {
                         <div className="grid grid-cols-4 gap-3 mt-3 pt-3 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                           <div>
                             <TechnicalLabel>Travaux HT</TechnicalLabel>
-                            <p className="text-[11px] font-semibold text-foreground mt-0.5">{formatCurrency(parseFloat(c.totalWorksHt))}</p>
+                             <p className="text-[11px] font-semibold text-foreground mt-0.5"><Amount value={parseFloat(c.totalWorksHt)} denomination="HT" /></p>
                           </div>
                           <div>
                             <TechnicalLabel>PV/MV</TechnicalLabel>
-                            <p className="text-[11px] font-semibold text-foreground mt-0.5">{formatCurrency(parseFloat(c.pvMvAdjustment ?? "0"))}</p>
+                             <p className="text-[11px] font-semibold text-foreground mt-0.5"><Amount value={parseFloat(c.pvMvAdjustment ?? "0")} denomination="HT" /></p>
                           </div>
                           <div>
                             <TechnicalLabel>Retenue</TechnicalLabel>
-                            <p className="text-[11px] font-semibold text-foreground mt-0.5">{formatCurrency(parseFloat(c.retenueGarantie ?? "0"))}</p>
+                             <p className="text-[11px] font-semibold text-foreground mt-0.5"><Amount value={parseFloat(c.retenueGarantie ?? "0")} denomination="HT" /></p>
                           </div>
                           <div>
                             <TechnicalLabel>Net HT</TechnicalLabel>
-                            <p className="text-[11px] font-semibold text-foreground mt-0.5">{formatCurrency(parseFloat(c.netToPayHt))}</p>
+                             <p className="text-[11px] font-semibold text-foreground mt-0.5"><Amount value={parseFloat(c.netToPayHt)} denomination="HT" /></p>
                           </div>
                         </div>
                       </LuxuryCard>
@@ -2085,15 +2083,15 @@ export default function ProjectDetail() {
                       <TechnicalLabel>Summary</TechnicalLabel>
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-[11px] text-muted-foreground">Net HT</span>
-                        <span className="text-[13px] font-semibold text-foreground">{formatCurrency(parseFloat(certForm.watch("netToPayHt") || "0"))}</span>
+                         <span className="text-[13px] font-semibold text-foreground"><Amount value={parseFloat(certForm.watch("netToPayHt") || "0")} denomination="HT" /></span>
                       </div>
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-[11px] text-muted-foreground">TVA</span>
-                        <span className="text-[13px] font-semibold text-foreground">{formatCurrency(parseFloat(certForm.watch("tvaAmount") || "0"))}</span>
+                         <span className="text-[13px] font-semibold text-foreground"><Amount value={parseFloat(certForm.watch("tvaAmount") || "0")} denomination="TVA" /></span>
                       </div>
                       <div className="flex items-center justify-between gap-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                         <span className="text-[11px] font-black uppercase tracking-widest">Net TTC</span>
-                        <span className="text-[16px] font-bold text-foreground">{formatCurrency(parseFloat(certForm.watch("netToPayTtc") || "0"))}</span>
+                         <span className="text-[16px] font-bold text-foreground"><Amount value={parseFloat(certForm.watch("netToPayTtc") || "0")} denomination="TTC" /></span>
                       </div>
                     </div>
                     <FormField control={certForm.control} name="notes" render={({ field }) => (
@@ -2124,19 +2122,19 @@ export default function ProjectDetail() {
                   <div>
                     <TechnicalLabel>Total Honoraires</TechnicalLabel>
                     <p className="text-[16px] font-light text-foreground mt-1" data-testid="text-tab-fee-total">
-                      {formatCurrency((feesList ?? []).reduce((s, f) => s + parseFloat(f.feeAmountHt), 0))}
+                       <Amount value={(feesList ?? []).reduce((s, f) => s + parseFloat(f.feeAmountHt), 0)} denomination="HT" />
                     </p>
                   </div>
                   <div>
                     <TechnicalLabel>Invoiced</TechnicalLabel>
                     <p className="text-[16px] font-light text-emerald-600 dark:text-emerald-400 mt-1" data-testid="text-tab-fee-invoiced">
-                      {formatCurrency((feesList ?? []).reduce((s, f) => s + parseFloat(f.invoicedAmount ?? "0"), 0))}
+                       <Amount value={(feesList ?? []).reduce((s, f) => s + parseFloat(f.invoicedAmount ?? "0"), 0)} denomination="HT" />
                     </p>
                   </div>
                   <div>
                     <TechnicalLabel>Remaining</TechnicalLabel>
                     <p className="text-[16px] font-light text-amber-600 dark:text-amber-400 mt-1" data-testid="text-tab-fee-remaining">
-                      {formatCurrency((feesList ?? []).reduce((s, f) => s + parseFloat(f.feeAmountHt) - parseFloat(f.invoicedAmount ?? "0"), 0))}
+                       <Amount value={(feesList ?? []).reduce((s, f) => s + parseFloat(f.feeAmountHt) - parseFloat(f.invoicedAmount ?? "0"), 0)} denomination="HT" />
                     </p>
                   </div>
                 </div>
@@ -2175,15 +2173,15 @@ export default function ProjectDetail() {
                         <div className="grid grid-cols-3 gap-4 mb-3">
                           <div>
                             <TechnicalLabel>Amount HT</TechnicalLabel>
-                            <p className="text-[13px] font-semibold text-foreground mt-0.5" data-testid={`text-fee-ht-tab-${f.id}`}>{formatCurrency(feeHt)}</p>
+                             <p className="text-[13px] font-semibold text-foreground mt-0.5" data-testid={`text-fee-ht-tab-${f.id}`}><Amount value={feeHt} denomination="HT" /></p>
                           </div>
                           <div>
                             <TechnicalLabel>Invoiced</TechnicalLabel>
-                            <p className="text-[13px] font-semibold text-emerald-600 dark:text-emerald-400 mt-0.5">{formatCurrency(invoiced)}</p>
+                             <p className="text-[13px] font-semibold text-emerald-600 dark:text-emerald-400 mt-0.5"><Amount value={invoiced} denomination="HT" /></p>
                           </div>
                           <div>
                             <TechnicalLabel>Remaining</TechnicalLabel>
-                            <p className="text-[13px] font-semibold text-amber-600 dark:text-amber-400 mt-0.5">{formatCurrency(feeHt - invoiced)}</p>
+                             <p className="text-[13px] font-semibold text-amber-600 dark:text-amber-400 mt-0.5"><Amount value={feeHt - invoiced} denomination="HT" /></p>
                           </div>
                         </div>
                         <div className="h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800 mb-3">
@@ -2210,7 +2208,7 @@ export default function ProjectDetail() {
                                         </p>
                                       ) : null;
                                     })()}
-                                    <span className="text-[11px] text-foreground">Base: {formatCurrency(parseFloat(entry.baseHt))} x {entry.feeRate}%</span>
+                                    <span className="text-[11px] text-foreground">Base: <Amount value={parseFloat(entry.baseHt)} denomination="HT" /> x {entry.feeRate}%</span>
                                     {entry.pennylaneInvoiceRef && <p className="text-[10px] text-muted-foreground mt-0.5">Ref: {entry.pennylaneInvoiceRef}</p>}
                                     {entry.status === "invoiced" && !entry.pennylaneInvoiceRef && (
                                       <div className="flex items-center gap-1 mt-0.5 text-amber-600 dark:text-amber-400" data-testid={`warning-missing-ref-${entry.id}`}>
@@ -2221,7 +2219,7 @@ export default function ProjectDetail() {
                                     {entry.dateInvoiced && <p className="text-[10px] text-muted-foreground">{entry.dateInvoiced}</p>}
                                   </div>
                                   <div className="flex items-center gap-2 flex-wrap">
-                                    <span className="text-[12px] font-semibold text-foreground">{formatCurrency(parseFloat(entry.feeAmount))}</span>
+                                    <span className="text-[12px] font-semibold text-foreground">{<Amount value={parseFloat(entry.feeAmount)} denomination="HT" />}</span>
                                     <StatusBadge status={entry.status} />
                                     {entry.status === "pending" && (
                                       <Button
