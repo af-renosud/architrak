@@ -97,6 +97,60 @@ async function cleanup(db: Client, s: Seed | null) {
   }
 }
 
+test.describe("Amount denomination labels — /certificats list page (task #583)", () => {
+  test("certificats list page shows TTC label next to a numeric figure on each card", async ({
+    browser,
+  }) => {
+    const databaseUrl = process.env.DATABASE_URL;
+    expect(databaseUrl, "DATABASE_URL must be set for this test").toBeTruthy();
+
+    const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+    const email = `e2e-amt-list-${uniq}@local.test`;
+    const db = new Client({ connectionString: databaseUrl! });
+    await db.connect();
+
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    let s: Seed | null = null;
+
+    try {
+      await devLogin(context.request, email);
+      s = await seed(context.request, uniq);
+
+      const page = await context.newPage();
+      // Navigate to the top-level certificats list page.
+      await page.goto("/certificats");
+
+      // Wait for the page title to confirm the page has loaded.
+      await expect(page.getByTestId("text-page-title")).toBeVisible();
+
+      // Select the seeded project from the project filter dropdown.
+      // The SelectTrigger opens the dropdown; then click the matching item.
+      await page.getByTestId("select-project-filter").click();
+      await page.getByRole("option", { name: new RegExp(`AL-${uniq}`) }).click();
+
+      // Wait for the seeded certificat card to appear.
+      const certCard = page.getByTestId(`card-certificat-${s.certId}`);
+      await expect(certCard).toBeVisible();
+
+      // ── 1. The amount cell is visible and euro-formatted ───────────────
+      const amountEl = page.getByTestId(`text-cert-amount-${s.certId}`);
+      await expect(amountEl).toBeVisible();
+      await expect(amountEl).toContainText("€");
+
+      // ── 2. A "TTC" denomination label sits next to the numeric figure ──
+      // The card renders a <p>TTC</p> sibling directly below the amount span.
+      await expect(certCard.getByText("TTC").first()).toBeVisible();
+    } finally {
+      try {
+        await cleanup(db, s);
+      } finally {
+        await db.end();
+        await context.close();
+      }
+    }
+  });
+});
+
 test.describe("Amount denomination labels (task #579)", () => {
   test("certificat detail dialog shows HT and TTC labels next to numeric figures", async ({
     browser,
