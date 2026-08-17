@@ -506,8 +506,11 @@ export default function Fees() {
                 {filteredFees.map((fee) => {
                   const entries = (feeEntries ?? []).filter((e) => e.feeId === fee.id);
                   const feeHt = parseFloat(fee.feeAmountHt);
+                  const feeTtc = feeHt * (1 + FEE_TVA_RATE);
                   const invoiced = parseFloat(fee.invoicedAmount ?? "0");
+                  const invoicedTtc = invoiced * (1 + FEE_TVA_RATE);
                   const remaining = feeHt - invoiced;
+                  const remainingTtc = feeTtc - invoicedTtc;
                   const progress = feeHt > 0 ? Math.min((invoiced / feeHt) * 100, 100) : 0;
 
                   return (
@@ -546,7 +549,10 @@ export default function Fees() {
                         <div>
                           <TechnicalLabel>Amount HT</TechnicalLabel>
                           <p className="text-[13px] font-semibold text-foreground mt-0.5" data-testid={`text-fee-amount-${fee.id}`}>
-                            {formatCurrency(feeHt)}
+                            {formatCurrency(feeHt)} <span className="text-[9px] text-muted-foreground font-normal">HT</span>
+                          </p>
+                          <p className="text-[11px] text-muted-foreground" data-testid={`text-fee-amount-ttc-${fee.id}`}>
+                            {formatCurrency(feeTtc)} <span className="text-[9px] font-normal">TTC</span>
                           </p>
                         </div>
                         <div>
@@ -554,11 +560,17 @@ export default function Fees() {
                           <p className="text-[13px] font-semibold text-emerald-600 dark:text-emerald-400 mt-0.5" data-testid={`text-fee-invoiced-${fee.id}`}>
                             {formatCurrency(invoiced)} <span className="text-[9px] text-muted-foreground font-normal">HT</span>
                           </p>
+                          <p className="text-[11px] text-muted-foreground" data-testid={`text-fee-invoiced-ttc-${fee.id}`}>
+                            {formatCurrency(invoicedTtc)} <span className="text-[9px] font-normal">TTC</span>
+                          </p>
                         </div>
                         <div>
                           <TechnicalLabel>Remaining</TechnicalLabel>
                           <p className="text-[13px] font-semibold text-amber-600 dark:text-amber-400 mt-0.5" data-testid={`text-fee-remaining-${fee.id}`}>
                             {formatCurrency(remaining)} <span className="text-[9px] text-muted-foreground font-normal">HT</span>
+                          </p>
+                          <p className="text-[11px] text-muted-foreground" data-testid={`text-fee-remaining-ttc-${fee.id}`}>
+                            {formatCurrency(remainingTtc)} <span className="text-[9px] font-normal">TTC</span>
                           </p>
                         </div>
                       </div>
