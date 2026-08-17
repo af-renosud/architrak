@@ -1411,20 +1411,23 @@ export default function ProjectDetail() {
                               <div>
                                 <TechnicalLabel>Contracted</TechnicalLabel>
                                 <p className="text-[12px] font-semibold text-foreground mt-0.5">
-                                  {formatCurrency(ds.adjustedHt)}
+                                  {formatCurrency(ds.adjustedTtc)} <span className="text-[9px] text-muted-foreground font-normal">TTC</span>
                                 </p>
+                                <p className="text-[10px] text-muted-foreground">{formatCurrency(ds.adjustedHt)} HT</p>
                               </div>
                               <div>
                                 <TechnicalLabel>Certified</TechnicalLabel>
                                 <p className="text-[12px] font-semibold text-emerald-600 dark:text-emerald-400 mt-0.5">
-                                  {formatCurrency(ds.certifiedHt)}
+                                  {formatCurrency(ds.certifiedTtc)} <span className="text-[9px] text-muted-foreground font-normal">TTC</span>
                                 </p>
+                                <p className="text-[10px] text-muted-foreground">{formatCurrency(ds.certifiedHt)} HT</p>
                               </div>
                               <div>
                                 <TechnicalLabel>Remaining</TechnicalLabel>
                                 <p className="text-[12px] font-semibold text-amber-600 dark:text-amber-400 mt-0.5">
-                                  {formatCurrency(ds.resteARealiser)}
+                                  {formatCurrency(ds.resteARealiserTtc)} <span className="text-[9px] text-muted-foreground font-normal">TTC</span>
                                 </p>
+                                <p className="text-[10px] text-muted-foreground">{formatCurrency(ds.resteARealiser)} HT</p>
                               </div>
                             </div>
                             <div className="h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800">
@@ -1442,17 +1445,17 @@ export default function ProjectDetail() {
                               </span>
                               {ds.pvTotal > 0 && (
                                 <span className="text-[10px] text-emerald-600 dark:text-emerald-400">
-                                  PV: +{formatCurrency(ds.pvTotal)}
+                                  PV: +{formatCurrency(ds.pvTotal)} HT
                                 </span>
                               )}
                               {ds.mvTotal > 0 && (
                                 <span className="text-[10px] text-red-600 dark:text-red-400">
-                                  MV: -{formatCurrency(ds.mvTotal)}
+                                  MV: -{formatCurrency(ds.mvTotal)} HT
                                 </span>
                               )}
                               {(ds.acompteCertifiedHt ?? 0) > 0 && (
                                 <span className="text-[10px] text-emerald-600 dark:text-emerald-400" data-testid={`text-acompte-certified-${ds.devisId}`}>
-                                  incl. acompte {formatCurrency(ds.acompteCertifiedHt ?? 0)}
+                                  incl. acompte {formatCurrency(ds.acompteCertifiedHt ?? 0)} HT
                                 </span>
                               )}
                             </div>
@@ -1669,7 +1672,10 @@ export default function ProjectDetail() {
                                 Libération RG due
                               </span>
                             )}
-                            <span className="text-[12px] font-semibold text-foreground">{formatCurrency(parseFloat(m.totalHt))} HT</span>
+                            <span className="text-[12px] font-semibold text-foreground">
+                              {formatCurrency(parseFloat(m.totalTtc))} <span className="text-[9px] text-muted-foreground font-normal">TTC</span>
+                              <span className="text-[10px] text-muted-foreground font-normal"> · {formatCurrency(parseFloat(m.totalHt))} HT</span>
+                            </span>
                             <StatusBadge status={m.status} />
                             {/* Task #566 — PV de réception status + record/approve dialog. */}
                             <PvReceptionBadge marche={m} />
@@ -1924,7 +1930,7 @@ export default function ProjectDetail() {
                                 data-testid={`badge-cert-partial-tab-${c.id}`}
                                 title={`Encaissé ${formatCurrency(paidByCert.get(c.id) ?? 0)} sur ${formatCurrency(parseFloat(c.netToPayTtc))}`}
                               >
-                                Partiel {formatCurrency(paidByCert.get(c.id) ?? 0)}
+                                Partiel {formatCurrency(paidByCert.get(c.id) ?? 0)} TTC
                               </span>
                             )}
                             <StatusBadge status={c.status} />

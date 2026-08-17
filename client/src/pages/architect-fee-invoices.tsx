@@ -155,7 +155,7 @@ function ConfirmControls({ row, candidates }: { row: ArchitectFeeInvoice; candid
               data-testid={`option-fee-invoice-works-${row.id}-${w.feeEntryId}`}
             >
               Commission travaux · {w.contractorName ?? "?"}
-              {w.devisNumber ? ` (devis ${w.devisNumber})` : ""} — {formatCurrency(w.feeAmount)}
+              {w.devisNumber ? ` (devis ${w.devisNumber})` : ""} — {formatCurrency(w.feeAmount)} HT
             </SelectItem>
           ))}
         </SelectContent>
@@ -317,7 +317,7 @@ export default function ArchitectFeeInvoices() {
                               <ul className="mt-1 ml-4 list-disc text-xs text-muted-foreground">
                                 {candidates.milestones[String(p.projectId)].map((m) => (
                                   <li key={m.milestoneId}>
-                                    Jalon #{m.sequence} · {m.labelFr} — {formatCurrency(m.amountTtc)} ({m.reasons.join(", ")})
+                                    Jalon #{m.sequence} · {m.labelFr} — {formatCurrency(m.amountTtc)} TTC ({m.reasons.join(", ")})
                                   </li>
                                 ))}
                               </ul>
@@ -327,7 +327,7 @@ export default function ArchitectFeeInvoices() {
                                 {(candidates.worksFees?.[String(p.projectId)] ?? []).map((w) => (
                                   <li key={w.feeEntryId} data-testid={`text-fee-invoice-works-candidate-${row.id}-${w.feeEntryId}`}>
                                     Commission travaux · {w.contractorName ?? "?"}
-                                    {w.devisNumber ? ` (devis ${w.devisNumber})` : ""} — {formatCurrency(w.feeAmount)} ({w.reasons.join(", ")})
+                                    {w.devisNumber ? ` (devis ${w.devisNumber})` : ""} — {formatCurrency(w.feeAmount)} HT ({w.reasons.join(", ")})
                                   </li>
                                 ))}
                               </ul>

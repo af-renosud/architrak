@@ -542,7 +542,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                   <option value="">Select a Devis...</option>
                   {(devisList ?? []).filter(d => d.status !== "void").map(d => (
                     <option key={d.id} value={d.id}>
-                      {d.devisCode} — {contractorMap.get(d.contractorId) ?? `#${d.contractorId}`} — {formatCurrency(parseFloat(d.amountTtc))}
+                      {d.devisCode} — {contractorMap.get(d.contractorId) ?? `#${d.contractorId}`} — {formatCurrency(parseFloat(d.amountTtc))} TTC
                     </option>
                   ))}
                 </select>

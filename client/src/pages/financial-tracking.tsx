@@ -93,19 +93,19 @@ function ProjectFinancialCard({ project }: { project: Project }) {
         <div>
           <TechnicalLabel>Contracted</TechnicalLabel>
           <p className="text-[13px] font-semibold text-foreground mt-0.5" data-testid={`text-contracted-${project.id}`}>
-            {formatCurrency(summary.totalContractedHt)}
+            {formatCurrency(summary.totalContractedHt)} <span className="text-[9px] text-muted-foreground font-normal">HT</span>
           </p>
         </div>
         <div>
           <TechnicalLabel>Certified</TechnicalLabel>
           <p className="text-[13px] font-semibold text-foreground mt-0.5" data-testid={`text-certified-${project.id}`}>
-            {formatCurrency(summary.totalCertifiedHt)}
+            {formatCurrency(summary.totalCertifiedHt)} <span className="text-[9px] text-muted-foreground font-normal">HT</span>
           </p>
         </div>
         <div>
           <TechnicalLabel>Remaining</TechnicalLabel>
           <p className={`text-[13px] font-semibold mt-0.5 ${summary.totalResteARealiser < 0 ? "text-red-500" : "text-foreground"}`} data-testid={`text-remaining-${project.id}`}>
-            {formatCurrency(summary.totalResteARealiser)}
+            {formatCurrency(summary.totalResteARealiser)} <span className="text-[9px] text-muted-foreground font-normal">HT</span>
           </p>
         </div>
       </div>
@@ -142,7 +142,7 @@ function ProjectFinancialCard({ project }: { project: Project }) {
                   </div>
                   <span className="text-[10px] text-muted-foreground min-w-[50px] text-right">{pct.toFixed(0)}%</span>
                   <span className={`text-[10px] font-semibold min-w-[80px] text-right ${isAnomaly ? "text-red-500" : "text-foreground"}`}>
-                    {formatCurrency(d.resteARealiser)}
+                    {formatCurrency(d.resteARealiser)} HT
                   </span>
                 </div>
               );

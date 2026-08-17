@@ -183,7 +183,7 @@ export function CertificatPanel({
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <span className="text-[11px] font-semibold text-foreground whitespace-nowrap">
-                    {formatEur(cert.netToPayTtc)}
+                    {formatEur(cert.netToPayTtc)} <span className="text-[9px] text-muted-foreground font-normal">TTC</span>
                   </span>
                   {cert.status === "ready" && (
                     <Button

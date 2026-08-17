@@ -73,7 +73,7 @@ function DesignFeeActionsStrip() {
                   </div>
                 </div>
                 <span className="text-[11px] font-semibold text-foreground whitespace-nowrap shrink-0">
-                  {new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(parseFloat(a.amountTtc))}
+                  {new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(parseFloat(a.amountTtc))} <span className="text-[9px] text-muted-foreground font-normal">TTC</span>
                 </span>
               </div>
             </LuxuryCard>
@@ -397,7 +397,7 @@ function UnsentCertificatsAlert() {
                     </p>
                   </Link>
                   <p className="text-[10px] text-muted-foreground mt-0.5 truncate">
-                    {cert.contractorName} · {formatCurrency(parseFloat(cert.netToPayTtc))}
+                    {cert.contractorName} · {formatCurrency(parseFloat(cert.netToPayTtc))} TTC
                   </p>
                 </div>
                 <Button
@@ -620,7 +620,7 @@ export default function Dashboard() {
                         </p>
                       </div>
                       <span className="text-[11px] font-semibold text-foreground whitespace-nowrap shrink-0" data-testid={`text-activity-amount-${idx}`}>
-                        {formatCurrency(parseFloat(item.amount))}
+                        {formatCurrency(parseFloat(item.amount))} <span className="text-[9px] text-muted-foreground font-normal">TTC</span>
                       </span>
                     </div>
                   </Link>
@@ -682,7 +682,7 @@ export default function Dashboard() {
                       </div>
                       {parseFloat(item.amount) > 0 && (
                         <span className="text-[12px] font-semibold text-foreground" data-testid={`text-urgent-amount-${idx}`}>
-                          {formatCurrency(parseFloat(item.amount))}
+                          {formatCurrency(parseFloat(item.amount))} <span className="text-[9px] text-muted-foreground font-normal">TTC</span>
                         </span>
                       )}
                     </div>

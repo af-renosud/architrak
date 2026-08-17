@@ -552,7 +552,7 @@ export default function Certificats() {
                           data-testid={`badge-cert-partial-${cert.id}`}
                           title={`Encaissé ${formatCurrency(paidToDate)} sur ${formatCurrency(totalTtc)}`}
                         >
-                          Partiel {formatCurrency(paidToDate)}
+                          Partiel {formatCurrency(paidToDate)} TTC
                         </span>
                       )}
                       <StatusBadge status={cert.status} />
@@ -1017,14 +1017,14 @@ export default function Certificats() {
                 <div className="p-4 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] space-y-2">
                   <TechnicalLabel>Deduction Breakdown (Cumulative)</TechnicalLabel>
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-muted-foreground">Montant Brut Cumulé</span>
+                    <span className="text-[11px] text-muted-foreground">Montant Brut Cumulé HT</span>
                     <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-gross">
                       {formatCurrency(breakdown.grossCumulativeHt)}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[11px] text-muted-foreground">
-                      − Retenue de Garantie{hasBankGuarantee ? " (bypass — caution bancaire)" : ` (${retenuePercent}%)`}
+                      − Retenue de Garantie HT{hasBankGuarantee ? " (bypass — caution bancaire)" : ` (${retenuePercent}%)`}
                     </span>
                     <span className="text-[13px] font-semibold text-red-600 dark:text-red-400" data-testid="text-calc-retenue">
                       −{formatCurrency(breakdown.cumulativeRetenue)}
@@ -1032,14 +1032,14 @@ export default function Certificats() {
                   </div>
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[11px] text-muted-foreground">
-                      − Compte Prorata{isProrataManager ? " (exempt — gestionnaire)" : ` (${prorataPercent}%)`}
+                      − Compte Prorata HT{isProrataManager ? " (exempt — gestionnaire)" : ` (${prorataPercent}%)`}
                     </span>
                     <span className="text-[13px] font-semibold text-red-600 dark:text-red-400" data-testid="text-calc-prorata">
                       −{formatCurrency(breakdown.cumulativeProrata)}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
-                    <span className="text-[11px] text-foreground">Montant Net Cumulé Autorisé</span>
+                    <span className="text-[11px] text-foreground">Montant Net Cumulé Autorisé HT</span>
                     <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-net-cumul">
                       {formatCurrency(breakdown.grossCumulativeHt - breakdown.cumulativeRetenue - breakdown.cumulativeProrata)}
                     </span>
@@ -1047,7 +1047,7 @@ export default function Certificats() {
                   {(breakdown.periodAcompteRecoupment > 0 || breakdown.cumulativeAcompteRecoupment > 0) && (
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[11px] text-muted-foreground">
-                        − Remboursement d'Acompte (période{breakdown.cumulativeAcompteRecoupment > 0 ? ` — cumul ${formatCurrency(breakdown.cumulativeAcompteRecoupment)} / ${formatCurrency(paidAcompteAmount)}` : ""})
+                        − Remboursement d'Acompte HT (période{breakdown.cumulativeAcompteRecoupment > 0 ? ` — cumul ${formatCurrency(breakdown.cumulativeAcompteRecoupment)} / ${formatCurrency(paidAcompteAmount)} HT` : ""})
                       </span>
                       <span className="text-[13px] font-semibold text-red-600 dark:text-red-400" data-testid="text-calc-acompte-recoupment">
                         −{formatCurrency(breakdown.periodAcompteRecoupment)}
@@ -1055,14 +1055,14 @@ export default function Certificats() {
                     </div>
                   )}
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-muted-foreground">− Previous Payments</span>
+                    <span className="text-[11px] text-muted-foreground">− Previous Payments HT</span>
                     <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-previous">
                       −{formatCurrency(parseFloat(watchPrevious || "0") || 0)}
                     </span>
                   </div>
                   {watchIsSolde === true && breakdown.retenueReleaseAmount > 0 && (
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] text-muted-foreground">+ Libération Retenue de Garantie (solde)</span>
+                      <span className="text-[11px] text-muted-foreground">+ Libération Retenue de Garantie HT (solde)</span>
                       <span className="text-[13px] font-semibold text-green-700 dark:text-green-500" data-testid="text-calc-retenue-release">
                         +{formatCurrency(breakdown.retenueReleaseAmount)}
                       </span>
@@ -1070,7 +1070,7 @@ export default function Certificats() {
                   )}
                   {watchIsSolde === true && watchReleaseRetenue !== true && breakdown.cumulativeRetenue > 0 && (
                     <div className="text-[10px] text-muted-foreground italic" data-testid="text-calc-retenue-withheld">
-                      Solde — Retenue de Garantie de {formatCurrency(breakdown.cumulativeRetenue)} conservée
+                      Solde — Retenue de Garantie de {formatCurrency(breakdown.cumulativeRetenue)} HT conservée
                     </div>
                   )}
                   <div className="flex items-center justify-between gap-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">

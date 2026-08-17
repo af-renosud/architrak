@@ -422,7 +422,7 @@ export default function Fees() {
                     <PhaseBadge phase={phaseGroup.phase} />
                   </div>
                   <p className="text-[16px] font-light text-foreground" data-testid={`text-phase-total-${phaseGroup.phase}`}>
-                    {formatCurrency(phaseGroup.totalHt)}
+                    {formatCurrency(phaseGroup.totalHt)} <span className="text-[10px] text-muted-foreground font-normal">HT</span>
                   </p>
                   <div className="h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800 mt-2 mb-1">
                     <div
@@ -433,7 +433,7 @@ export default function Fees() {
                   </div>
                   <div className="flex items-center justify-between gap-2 flex-wrap">
                     <span className="text-[10px] text-muted-foreground">
-                      Invoiced: {formatCurrency(phaseGroup.totalInvoiced)}
+                      Invoiced: {formatCurrency(phaseGroup.totalInvoiced)} HT
                     </span>
                     <span className="text-[10px] font-semibold text-foreground">
                       {progress.toFixed(0)}%
@@ -466,19 +466,19 @@ export default function Fees() {
               <LuxuryCard data-testid="card-total-fee-earned">
                 <TechnicalLabel>Total Honoraires</TechnicalLabel>
                 <p className="text-[20px] font-light text-foreground mt-2" data-testid="text-total-earned">
-                  {formatCurrency(totalFeeEarned)}
+                  {formatCurrency(totalFeeEarned)} <span className="text-[11px] text-muted-foreground font-normal">HT</span>
                 </p>
               </LuxuryCard>
               <LuxuryCard data-testid="card-total-invoiced">
                 <TechnicalLabel>Total Invoiced (Penny Lane)</TechnicalLabel>
                 <p className="text-[20px] font-light text-emerald-600 dark:text-emerald-400 mt-2" data-testid="text-total-invoiced">
-                  {formatCurrency(totalInvoiced)}
+                  {formatCurrency(totalInvoiced)} <span className="text-[11px] text-muted-foreground font-normal">HT</span>
                 </p>
               </LuxuryCard>
               <LuxuryCard data-testid="card-total-remaining">
                 <TechnicalLabel>Remaining to Invoice</TechnicalLabel>
                 <p className="text-[20px] font-light text-amber-600 dark:text-amber-400 mt-2" data-testid="text-total-remaining">
-                  {formatCurrency(totalRemaining)}
+                  {formatCurrency(totalRemaining)} <span className="text-[11px] text-muted-foreground font-normal">HT</span>
                 </p>
               </LuxuryCard>
             </div>
@@ -534,13 +534,13 @@ export default function Fees() {
                         <div>
                           <TechnicalLabel>Invoiced</TechnicalLabel>
                           <p className="text-[13px] font-semibold text-emerald-600 dark:text-emerald-400 mt-0.5" data-testid={`text-fee-invoiced-${fee.id}`}>
-                            {formatCurrency(invoiced)}
+                            {formatCurrency(invoiced)} <span className="text-[9px] text-muted-foreground font-normal">HT</span>
                           </p>
                         </div>
                         <div>
                           <TechnicalLabel>Remaining</TechnicalLabel>
                           <p className="text-[13px] font-semibold text-amber-600 dark:text-amber-400 mt-0.5" data-testid={`text-fee-remaining-${fee.id}`}>
-                            {formatCurrency(remaining)}
+                            {formatCurrency(remaining)} <span className="text-[9px] text-muted-foreground font-normal">HT</span>
                           </p>
                         </div>
                       </div>
@@ -565,7 +565,7 @@ export default function Fees() {
                                 <div className="min-w-0">
                                   <div className="flex items-center gap-2 flex-wrap">
                                     <span className="text-[11px] text-foreground">
-                                      Base: {formatCurrency(parseFloat(entry.baseHt))}
+                                      Base: {formatCurrency(parseFloat(entry.baseHt))} HT
                                     </span>
                                     <span className="text-[10px] text-muted-foreground">
                                       x {entry.feeRate}%
@@ -582,7 +582,7 @@ export default function Fees() {
                                 </div>
                                 <div className="flex items-center gap-2 flex-wrap">
                                   <span className="text-[12px] font-semibold text-foreground" data-testid={`text-entry-amount-${entry.id}`}>
-                                    {formatCurrency(parseFloat(entry.feeAmount))}
+                                    {formatCurrency(parseFloat(entry.feeAmount))} <span className="text-[9px] text-muted-foreground font-normal">HT</span>
                                   </span>
                                   <StatusBadge status={entry.status} />
                                   {fee.feeType === "works_percentage" &&

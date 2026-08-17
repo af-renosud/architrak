@@ -5441,7 +5441,7 @@ function DevisDetailTabs({
                     <th className="text-left py-1 px-2 font-black uppercase tracking-widest text-[8px]">#</th>
                     <th className="text-left py-1 px-2 font-black uppercase tracking-widest text-[8px]">Description</th>
                     <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Qty</th>
-                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Unit Price</th>
+                    <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Unit Price HT</th>
                     <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Total HT</th>
                     <th className="text-right py-1 px-2 font-black uppercase tracking-widest text-[8px]">Progress %</th>
                   </tr>
@@ -5501,7 +5501,7 @@ function DevisDetailTabs({
                 </div>
                 <div className="flex items-center gap-2">
                   <span className={`text-[12px] font-semibold ${a.type === "pv" ? "text-emerald-600" : "text-rose-500"}`}>
-                    {a.type === "pv" ? "+" : "-"}{formatCurrency(parseFloat(a.amountHt))}
+                    {a.type === "pv" ? "+" : "-"}{formatCurrency(parseFloat(a.amountHt))} HT
                   </span>
                   <StatusBadge status={a.status} />
                 </div>
@@ -5543,7 +5543,7 @@ function DevisDetailTabs({
                   <span className="text-[11px]">Invoice #{inv.invoiceNumber}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-[12px] font-semibold text-foreground">{formatCurrency(parseFloat(inv.amountHt))}</span>
+                  <span className="text-[12px] font-semibold text-foreground">{formatCurrency(parseFloat(inv.amountHt))} HT</span>
                   <StatusBadge status={inv.status} />
                 </div>
               </div>
