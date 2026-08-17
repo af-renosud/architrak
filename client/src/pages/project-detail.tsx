@@ -38,6 +38,7 @@ import { Receipt, Inbox } from "lucide-react";
 import { z } from "zod";
 import { apiRequest, queryClient, ApiError, projectScopedKey } from "@/lib/queryClient";
 import { PvReceptionBadge, PvReceptionDialog } from "@/components/marche/PvReceptionDialog";
+import { CertificatDetailDialog } from "@/components/certificats/CertificatDetailDialog";
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(value);
@@ -1993,66 +1994,13 @@ export default function ProjectDetail() {
               )}
             </div>
 
+            {/* Task #573 — shared payment-capable dialog replaces the local read-only one */}
             {viewingCert && (
-              <Dialog open onOpenChange={() => setViewingCert(null)}>
-                <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
-                  <DialogHeader>
-                    <DialogTitle className="text-[16px] font-black uppercase tracking-tight">
-                      Certificat {viewingCert.certificateRef}
-                    </DialogTitle>
-                  </DialogHeader>
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <StatusBadge status={viewingCert.status} />
-                      {viewingCert.dateIssued && <span className="text-[11px] text-muted-foreground">{viewingCert.dateIssued}</span>}
-                    </div>
-                    <div>
-                      <TechnicalLabel>Contractor</TechnicalLabel>
-                      <p className="text-[13px] font-semibold text-foreground mt-1" data-testid="text-cert-view-contractor">
-                        {getContractorName(viewingCert.contractorId)}
-                      </p>
-                    </div>
-                    <div className="space-y-2 p-4 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
-                      <div className="flex items-center justify-between gap-2">
-                        <TechnicalLabel>Total Works HT</TechnicalLabel>
-                        <span className="text-[13px] font-semibold text-foreground">{formatCurrency(parseFloat(viewingCert.totalWorksHt))}</span>
-                      </div>
-                      <div className="flex items-center justify-between gap-2">
-                        <TechnicalLabel>PV/MV</TechnicalLabel>
-                        <span className="text-[13px] font-semibold text-foreground">{formatCurrency(parseFloat(viewingCert.pvMvAdjustment ?? "0"))}</span>
-                      </div>
-                      <div className="flex items-center justify-between gap-2">
-                        <TechnicalLabel>Previous Payments</TechnicalLabel>
-                        <span className="text-[13px] font-semibold text-foreground">{formatCurrency(parseFloat(viewingCert.previousPayments ?? "0"))}</span>
-                      </div>
-                      <div className="flex items-center justify-between gap-2">
-                        <TechnicalLabel>Retenue de Garantie</TechnicalLabel>
-                        <span className="text-[13px] font-semibold text-foreground">{formatCurrency(parseFloat(viewingCert.retenueGarantie ?? "0"))}</span>
-                      </div>
-                      <div className="border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] pt-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <TechnicalLabel>Net HT</TechnicalLabel>
-                          <span className="text-[13px] font-semibold text-foreground">{formatCurrency(parseFloat(viewingCert.netToPayHt))}</span>
-                        </div>
-                        <div className="flex items-center justify-between gap-2 mt-1">
-                          <TechnicalLabel>TVA</TechnicalLabel>
-                          <span className="text-[13px] font-semibold text-foreground">{formatCurrency(parseFloat(viewingCert.tvaAmount))}</span>
-                        </div>
-                        <div className="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
-                          <span className="text-[11px] font-black uppercase tracking-widest text-foreground">Net TTC</span>
-                          <span className="text-[16px] font-bold text-foreground">{formatCurrency(parseFloat(viewingCert.netToPayTtc))}</span>
-                        </div>
-                      </div>
-                    </div>
-                    {viewingCert.notes && (
-                      <div>
-                        <TechnicalLabel>Notes</TechnicalLabel>
-                        <p className="text-[12px] text-muted-foreground mt-1">{viewingCert.notes}</p>
-                      </div>
-                    )}
-                  </div>
-                </DialogContent>
-              </Dialog>
+              <CertificatDetailDialog
+                cert={viewingCert}
+                contractor={contractors?.find((c) => c.id === viewingCert.contractorId)}
+                onClose={() => setViewingCert(null)}
+              />
             )}
 
             <Dialog open={certDialogOpen} onOpenChange={setCertDialogOpen}>
