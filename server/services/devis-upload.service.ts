@@ -336,11 +336,45 @@ export async function processDevisUpload(projectId: number, file: UploadedFile, 
     displayName: `${devisRecord.devisCode || file.originalname.replace(/\.pdf$/i, "")}.pdf`,
   });
 
+  // Task #593 — same-reference guard: if another non-void, non-superseded
+  // devis in this project already carries the same normalized reference,
+  // surface the conflict so the operator can choose to mark the old devis as
+  // replaced (or knowingly keep both). Detection only — never blocks upload.
+  let sameRefConflict: { devisId: number; devisCode: string; devisNumber: string | null; contractorId: number; amountHt: string } | null = null;
+  try {
+    const { normalizeRef } = await import("@shared/intake-dedup");
+    const newRefs = new Set(
+      [devisRecord.devisNumber, devisRecord.devisCode].map(normalizeRef).filter((r) => r.length > 0),
+    );
+    if (newRefs.size > 0) {
+      const siblings = await storage.getDevisByProject(projectId);
+      const hit = siblings.find(
+        (d) =>
+          d.id !== devisRecord.id &&
+          d.status !== "void" &&
+          d.accountingState !== "superseded" &&
+          [normalizeRef(d.devisNumber), normalizeRef(d.devisCode)].some((r) => r.length > 0 && newRefs.has(r)),
+      );
+      if (hit) {
+        sameRefConflict = {
+          devisId: hit.id,
+          devisCode: hit.devisCode,
+          devisNumber: hit.devisNumber,
+          contractorId: hit.contractorId,
+          amountHt: String(hit.amountHt),
+        };
+      }
+    }
+  } catch (confErr) {
+    console.warn(`[Devis Upload] same-ref conflict check failed:`, confErr);
+  }
+
   return {
     success: true,
     status: 201,
     data: {
       devis: devisRecord,
+      sameRefConflict,
       extraction: {
         documentType: parsed.documentType,
         contractorName: parsed.contractorName,

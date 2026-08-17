@@ -21,6 +21,16 @@
  */
 import { roundCurrency } from "./financial-utils";
 
+/** Minimal shape of one line item, from either side of the comparison. */
+export interface DedupLineItem {
+  description?: string | null;
+  quantity?: string | number | null;
+  /** unit price HT — `unitPriceHt` on records, `unitPrice` on extractions */
+  unitPrice?: string | number | null;
+  /** line total HT */
+  total?: string | number | null;
+}
+
 /** Minimal shape of an existing devis row needed for dedup. */
 export interface DedupDevisRecord {
   id: number;
@@ -29,6 +39,12 @@ export interface DedupDevisRecord {
   devisCode: string;
   /** numeric column arrives as a string from drizzle */
   amountHt: string | number;
+  /**
+   * Task #593 — optional line items for line-aware duplicate detection.
+   * `undefined` = not loaded (line comparison skipped); `[]` = loaded and
+   * genuinely empty. The pipeline only loads lines for ref-matching devis.
+   */
+  lineItems?: DedupLineItem[];
 }
 
 /** Minimal shape of an existing invoice row needed for dedup. */
@@ -47,6 +63,8 @@ export interface DedupExtraction {
   reference?: string | null;
   contractorName?: string | null;
   amountHt?: number | null;
+  /** Task #593 — extracted line items, when the parser produced them. */
+  lineItems?: DedupLineItem[] | null;
 }
 
 export type DedupVerdict =
@@ -90,6 +108,50 @@ export function normalizeCompanyName(value: string | null | undefined): string {
     .split(" ")
     .filter((tok) => tok && !LEGAL_FORMS.has(tok))
     .join("");
+}
+
+function toNum(v: string | number | null | undefined): number | null {
+  if (v == null) return null;
+  const n = typeof v === "string" ? parseFloat(v) : v;
+  return isFinite(n) ? n : null;
+}
+
+/**
+ * Task #593 — canonical fingerprint of one line item: normalized description
+ * + rounded total. Quantity/unit-price are deliberately excluded (extraction
+ * noise: "1 × 100" vs "2 × 50" for the same line is common), while the pair
+ * (what, how much) is what a human means by "the same line".
+ */
+function lineFingerprint(li: DedupLineItem): string {
+  const total = toNum(li.total);
+  return `${normalizeRef(li.description)}|${total != null ? roundCurrency(total).toFixed(2) : "?"}`;
+}
+
+/**
+ * Compare two line-item sets as multisets of fingerprints. Returns `null`
+ * when they match (or when either side is unavailable or EMPTY — an absent
+ * line breakdown is extraction noise, not evidence of a revision; never
+ * guess), or a short human-readable description of the difference.
+ */
+export function describeLineItemDifference(
+  incoming: DedupLineItem[] | null | undefined,
+  existing: DedupLineItem[] | undefined,
+): string | null {
+  if (!incoming || incoming.length === 0 || !existing || existing.length === 0) return null;
+  const a = incoming.map(lineFingerprint).sort();
+  const b = existing.map(lineFingerprint).sort();
+  if (a.length === b.length && a.every((v, i) => v === b[i])) return null;
+  if (a.length !== b.length) {
+    return `the incoming document has ${a.length} line item(s) vs ${b.length} on the existing record`;
+  }
+  const bSet = [...b];
+  let changed = 0;
+  for (const v of a) {
+    const idx = bSet.indexOf(v);
+    if (idx >= 0) bSet.splice(idx, 1);
+    else changed++;
+  }
+  return `${changed} of ${a.length} line item(s) differ (description or line total changed)`;
 }
 
 function amountsMatch(a: number | null | undefined, b: string | number | null | undefined): boolean {
@@ -150,10 +212,28 @@ export function evaluateIntakeDedup(
         label: `invoice ${inv.invoiceNumber || `#${inv.id}`} (#${inv.id})`,
       }));
 
+  // Task #593 — line items of ref-matching devis, for line-aware dedup.
+  const devisLinesById = new Map<number, DedupLineItem[] | undefined>();
+  if (isQuotation) for (const d of existingDevis) devisLinesById.set(d.id, d.lineItems);
+
   // Pass 1 — exact business-identity duplicate: number AND amount match.
   for (const c of candidates) {
     const refMatch = refs.length > 0 && c.recordRefs.some((r) => refs.includes(r));
     if (refMatch && amountsMatch(amount, c.amountHt)) {
+      // Task #593 — same ref + same total can still be a REVISION (items
+      // swapped at equal cost). When both sides expose line items, compare
+      // them; any difference parks for review instead of silently dropping.
+      if (isQuotation) {
+        const diff = describeLineItemDifference(parsed.lineItems, devisLinesById.get(c.id));
+        if (diff) {
+          return {
+            verdict: "review",
+            matchKind: kind,
+            matchId: c.id,
+            reason: `Possible revision — review before routing: same devis number and same HT amount (${roundCurrency(amount!)} €) as existing ${c.label}, but ${diff}. Total unchanged, content differs.`,
+          };
+        }
+      }
       return {
         verdict: "duplicate",
         matchKind: kind,

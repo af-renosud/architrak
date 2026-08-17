@@ -1683,12 +1683,16 @@ export type AccountingState = (typeof ACCOUNTING_STATES)[number];
 //                            (auto-applied; safe because the euros reconcile).
 //   human_confirm          — an architect confirmed an overlap → superseded.
 //   human_dismiss          — an architect dismissed an overlap → kept active.
+//   human_replace          — Task #593: an architect explicitly marked this
+//                            devis as replaced by a revised same-reference
+//                            devis (duplicate-reference resolution).
 export const ACCOUNTING_STATE_CHANGE_REASONS = [
   "ingest",
   "reconciliation_promote",
   "proven_supersede",
   "human_confirm",
   "human_dismiss",
+  "human_replace",
 ] as const;
 export type AccountingStateChangeReason = (typeof ACCOUNTING_STATE_CHANGE_REASONS)[number];
 

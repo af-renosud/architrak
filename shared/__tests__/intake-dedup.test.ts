@@ -45,6 +45,80 @@ describe("normalizeCompanyName", () => {
   });
 });
 
+// Task #593 — line-aware dedup: same ref + same total but different lines
+// must park for review (possible revision), never silently drop.
+describe("evaluateIntakeDedup — line-aware quotations", () => {
+  const lines = (items: Array<[string, number]>) =>
+    items.map(([description, total]) => ({ description, total }));
+  const recordWithLines: DedupDevisRecord = {
+    id: 10,
+    contractorId: 1,
+    devisNumber: "DEV-2024-042",
+    devisCode: "D-001",
+    amountHt: "12500.00",
+    lineItems: lines([["Démolition cloison", 5000], ["Pose placo", 7500]]),
+  };
+  const base = { documentType: "quotation", devisNumber: "DEV-2024-042", amountHt: 12500 };
+
+  it("stays duplicate when line items match (order-insensitive)", () => {
+    const v = evaluateIntakeDedup(
+      { ...base, lineItems: lines([["Pose placo", 7500], ["Démolition cloison", 5000]]) },
+      [recordWithLines],
+      [],
+      contractorNames,
+    );
+    expect(v).toMatchObject({ verdict: "duplicate", matchKind: "devis", matchId: 10 });
+  });
+
+  it("parks for review when line count differs at equal total", () => {
+    const v = evaluateIntakeDedup(
+      { ...base, lineItems: lines([["Démolition cloison", 5000], ["Pose placo", 5000], ["Peinture", 2500]]) },
+      [recordWithLines],
+      [],
+      contractorNames,
+    );
+    expect(v).toMatchObject({ verdict: "review", matchKind: "devis", matchId: 10 });
+    if (v.verdict !== "none") expect(v.reason).toContain("3 line item(s) vs 2");
+  });
+
+  it("parks for review when same count but content differs", () => {
+    const v = evaluateIntakeDedup(
+      { ...base, lineItems: lines([["Démolition cloison", 4000], ["Pose placo", 8500]]) },
+      [recordWithLines],
+      [],
+      contractorNames,
+    );
+    expect(v).toMatchObject({ verdict: "review", matchKind: "devis", matchId: 10 });
+    if (v.verdict !== "none") expect(v.reason).toContain("differ");
+  });
+
+  it("stays duplicate when either side has EMPTY line items (extraction noise, never guess)", () => {
+    const emptyRecordLines = { ...recordWithLines, lineItems: [] as { description: string; total: number }[] };
+    const v1 = evaluateIntakeDedup(
+      { ...base, lineItems: lines([["Autre chose", 12500]]) },
+      [emptyRecordLines],
+      [],
+      contractorNames,
+    );
+    expect(v1.verdict).toBe("duplicate");
+    const v2 = evaluateIntakeDedup({ ...base, lineItems: [] }, [recordWithLines], [], contractorNames);
+    expect(v2.verdict).toBe("duplicate");
+  });
+
+  it("stays duplicate when either side lacks line items (never guess)", () => {
+    const noRecordLines = { ...recordWithLines, lineItems: undefined };
+    const v1 = evaluateIntakeDedup(
+      { ...base, lineItems: lines([["Autre chose", 12500]]) },
+      [noRecordLines],
+      [],
+      contractorNames,
+    );
+    expect(v1.verdict).toBe("duplicate");
+    const v2 = evaluateIntakeDedup({ ...base }, [recordWithLines], [], contractorNames);
+    expect(v2.verdict).toBe("duplicate");
+  });
+});
+
 describe("evaluateIntakeDedup — quotations", () => {
   it("flags exact duplicate: same devis number + same HT amount", () => {
     const v = evaluateIntakeDedup(

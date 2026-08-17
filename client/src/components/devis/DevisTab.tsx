@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
@@ -58,6 +58,7 @@ import { countDevisSignOff } from "@/components/devis/devis-counters";
 
 import { Amount } from "@/components/ui/amount";
 import { formatCurrency as fmt } from "@/lib/utils";
+import { normalizeRef } from "@shared/intake-dedup";
 
 export type LotCodeValue = {
   lotCatalogId: number | null;
@@ -666,6 +667,8 @@ interface DevisRowProps {
   onEditRefs: (d: Devis) => void;
   onReviewDraft: (d: Devis) => void;
   onGoToIntake: () => void;
+  /** Task #593 — another non-void, non-superseded devis in the project sharing this devis' normalized reference. */
+  sameRefPeer?: Devis | null;
 }
 
 /**
@@ -1005,12 +1008,13 @@ function ReadinessStrip({ d, r }: { d: Devis; r: DevisReadiness }) {
   );
 }
 
-function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openChecks, readiness, onToggle, onEditRefs, onReviewDraft, onGoToIntake }: DevisRowProps) {
+function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openChecks, readiness, onToggle, onEditRefs, onReviewDraft, onGoToIntake, sameRefPeer }: DevisRowProps) {
   const { toast } = useToast();
   const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [avenantOpen, setAvenantOpen] = useState(false);
   const [pdfPopoutOpen, setPdfPopoutOpen] = useState(false);
   const [reopenConfirmOpen, setReopenConfirmOpen] = useState(false);
+  const [markReplacedOpen, setMarkReplacedOpen] = useState(false);
   const isVoid = d.status === "void";
   const hasPdf = !!d.pdfStorageKey;
 
@@ -1034,8 +1038,63 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
     },
   });
 
+  // Task #593 — mark THIS devis as replaced by its same-reference peer.
+  const markReplacedMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/devis/${d.id}/mark-replaced`, {
+        replacementDevisId: sameRefPeer?.id,
+      });
+      return res.json();
+    },
+    onSuccess: (data: { linked?: { invoices: number; situations: number; marcheDocuments: number } }) => {
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "financial-summary") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "accounting-status") });
+      setMarkReplacedOpen(false);
+      const l = data.linked;
+      const dangling = l ? l.invoices + l.situations + l.marcheDocuments : 0;
+      toast({
+        title: "Devis marked as replaced",
+        description:
+          dangling > 0
+            ? `Warning — documents still linked to the replaced devis: ${[
+                l!.invoices > 0 ? `${l!.invoices} invoice(s)` : null,
+                l!.situations > 0 ? `${l!.situations} situation(s)` : null,
+                l!.marcheDocuments > 0 ? `${l!.marcheDocuments} marché document(s)` : null,
+              ].filter(Boolean).join(", ")}. Review and re-link them manually if needed.`
+            : "It no longer counts toward Contracted totals.",
+      });
+    },
+    onError: (error: Error) => {
+      setMarkReplacedOpen(false);
+      toast({ title: "Cannot mark as replaced", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const isReplaced = d.accountingState === "superseded";
+
   return (
     <div>
+      {sameRefPeer && !isReplaced && !isVoid && !isArchived && (
+        <div
+          className="mb-1.5 flex items-center gap-2 flex-wrap rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-1.5"
+          data-testid={`banner-same-ref-${d.id}`}
+        >
+          <span className="text-[11px] text-amber-800 dark:text-amber-300">
+            Same reference as <span className="font-semibold">{sameRefPeer.devisCode}</span>
+            {sameRefPeer.devisNumber ? ` (N° ${sameRefPeer.devisNumber})` : ""} — possible revision.
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 px-2 text-[10px]"
+            onClick={(e) => { e.stopPropagation(); setMarkReplacedOpen(true); }}
+            data-testid={`button-mark-replaced-${d.id}`}
+          >
+            Mark this devis as replaced
+          </Button>
+        </div>
+      )}
       <LuxuryCard
         data-testid={`card-devis-${d.id}`}
         className={
@@ -1090,6 +1149,11 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
                     that the readiness strip carries the real state; keep the
                     badge for meaningful statuses (draft/void/…). */}
                 {d.status === "pending" && readiness ? null : <StatusBadge status={d.status} />}
+                {isReplaced && (
+                  <span data-testid={`badge-devis-replaced-${d.id}`}>
+                    <StatusBadge status="superseded" />
+                  </span>
+                )}
 
                 <span className="hidden min-[900px]:block h-4 w-px bg-border" aria-hidden />
 
@@ -1286,6 +1350,29 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
         />
       )}
 
+      <AlertDialog open={markReplacedOpen} onOpenChange={setMarkReplacedOpen}>
+        <AlertDialogContent data-testid={`dialog-mark-replaced-${d.id}`}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Mark {d.devisCode} as replaced?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This devis will be marked as replaced{sameRefPeer ? ` by ${sameRefPeer.devisCode}` : ""} and will no
+              longer count toward Contracted totals. Invoices, situations and marché documents already linked to it
+              are NOT re-linked automatically — you will get a warning listing them. This is recorded in the audit
+              trail.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-mark-replaced">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => markReplacedMutation.mutate()}
+              disabled={markReplacedMutation.isPending}
+              data-testid="button-confirm-mark-replaced"
+            >
+              Mark as replaced
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={reopenConfirmOpen} onOpenChange={setReopenConfirmOpen}>
         <AlertDialogContent data-testid={`dialog-reopen-review-${d.id}`}>
           <AlertDialogHeader>
@@ -1477,6 +1564,35 @@ export function DevisTab({
     });
   };
 
+  // Task #593 — per-devis same-reference peer: another non-void,
+  // non-superseded devis in the project sharing the same normalized ref
+  // (devisNumber or devisCode). Drives the duplicate-reference banner.
+  const sameRefPeerById = useMemo(() => {
+    const map = new Map<number, Devis>();
+    const list = (devisList ?? []).filter((d) => d.status !== "void" && d.accountingState !== "superseded");
+    const byRef = new Map<string, Devis[]>();
+    for (const d of list) {
+      const refs = new Set(
+        [d.devisNumber, d.devisCode].map(normalizeRef).filter((r) => r.length > 0),
+      );
+      for (const r of Array.from(refs)) {
+        const arr = byRef.get(r) ?? [];
+        arr.push(d);
+        byRef.set(r, arr);
+      }
+    }
+    for (const group of Array.from(byRef.values())) {
+      if (group.length < 2) continue;
+      for (const d of group) {
+        if (!map.has(d.id)) {
+          const peer = group.find((o) => o.id !== d.id);
+          if (peer) map.set(d.id, peer);
+        }
+      }
+    }
+    return map;
+  }, [devisList]);
+
   const filteredDevisList = visibleBeforeFilters.filter((d) => {
     if (selectedLots.length > 0) {
       const lr = (d.lotRefText ?? "").toUpperCase();
@@ -1528,6 +1644,14 @@ export function DevisTab({
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis") });
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "financial-summary") });
       setUploading(false);
+      // Task #593 — same-reference guard: warn the operator right away; the
+      // per-card duplicate banner offers "mark as replaced".
+      if (data.sameRefConflict) {
+        toast({
+          title: "Référence déjà existante",
+          description: `Un devis avec la même référence existe déjà (${data.sameRefConflict.devisCode}${data.sameRefConflict.devisNumber ? ` — N° ${data.sameRefConflict.devisNumber}` : ""}). Utilisez l'avertissement sur la carte pour marquer l'ancien devis comme remplacé, ou conservez les deux.`,
+        });
+      }
       if (data.devis?.status === "draft" && data.validation) {
         setDraftReviewData({
           devisId: data.devis.id,
@@ -1740,6 +1864,7 @@ export function DevisTab({
               expanded={expandedDevis === d.id}
               openChecks={openChecksByDevis[d.id] ?? 0}
               readiness={readinessByDevis[d.id]}
+              sameRefPeer={sameRefPeerById.get(d.id) ?? null}
               onToggle={() => setExpandedDevis(expandedDevis === d.id ? null : d.id)}
               onEditRefs={setEditRefsFor}
               onGoToIntake={onGoToIntake}
@@ -5812,6 +5937,19 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
 
   return (
     <div className={`ml-4 mt-1 mb-3 border-l-2 border-[rgba(0,0,0,0.08)] pl-4 space-y-4 ${isVoid ? "opacity-50" : ""}`} data-testid={`detail-devis-${devis.id}`}>
+      {devis.accountingState === "superseded" && ((invoices?.length ?? 0) > 0 || (avenants?.length ?? 0) > 0) && (
+        <div
+          className="mt-2 rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-[11px] text-amber-800 dark:text-amber-300"
+          data-testid={`warning-replaced-dangling-${devis.id}`}
+        >
+          This devis has been replaced, but{" "}
+          {[
+            (invoices?.length ?? 0) > 0 ? `${invoices!.length} invoice(s)` : null,
+            (avenants?.length ?? 0) > 0 ? `${avenants!.length} avenant(s)` : null,
+          ].filter(Boolean).join(" and ")}{" "}
+          still reference it. They are not re-linked automatically — review them and re-attach to the replacement devis if needed.
+        </div>
+      )}
       <div className="flex items-center justify-between gap-2 pt-1" data-testid={`header-devis-detail-${devis.id}`}>
         <TechnicalLabel>Devis Document</TechnicalLabel>
         <TooltipProvider delayDuration={200}>

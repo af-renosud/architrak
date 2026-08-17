@@ -336,7 +336,7 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
     // records loaded before the intake system existed. Pure comparison logic
     // lives in shared/intake-dedup.ts; still inside the per-project lock.
     if (parsed.documentType === "quotation" || parsed.documentType === "invoice" || parsed.documentType === "acompte") {
-      const { evaluateIntakeDedup } = await import("@shared/intake-dedup");
+      const { evaluateIntakeDedup, normalizeRef } = await import("@shared/intake-dedup");
       const [projectDevis, projectInvoices, allContractorRows] = await Promise.all([
         storage.getDevisByProject(doc.projectId),
         storage.getInvoicesByProject(doc.projectId),
@@ -344,7 +344,43 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
       ]);
       const contractorNames: Record<number, string> = {};
       for (const c of allContractorRows) contractorNames[c.id] = c.name;
-      const dedup = evaluateIntakeDedup(parsed, projectDevis, projectInvoices, contractorNames);
+      // Task #593 — line-aware dedup: for devis whose reference matches the
+      // incoming extraction, load their line items so a same-ref/same-total
+      // REVISION (items swapped at equal cost) parks for review instead of
+      // being silently dropped as a duplicate. Only ref-matching devis are
+      // hydrated (usually 0-1 rows), keeping the pass cheap.
+      let dedupDevis: ((typeof projectDevis)[number] & {
+        lineItems?: { description: string | null; quantity: string | null; unitPrice: string | null; total: string | null }[];
+      })[] = projectDevis;
+      if (parsed.documentType === "quotation") {
+        const incomingRefs = new Set(
+          [parsed.devisNumber, parsed.reference].map(normalizeRef).filter((r) => r.length > 0),
+        );
+        dedupDevis = await Promise.all(
+          projectDevis.map(async (d) => {
+            const refMatch =
+              incomingRefs.size > 0 &&
+              [normalizeRef(d.devisNumber), normalizeRef(d.devisCode)].some((r) => r.length > 0 && incomingRefs.has(r));
+            if (!refMatch) return d;
+            const lines = await storage.getDevisLineItems(d.id);
+            return {
+              ...d,
+              lineItems: lines.map((li) => ({
+                description: li.description,
+                quantity: li.quantity,
+                unitPrice: li.unitPriceHt,
+                total: li.totalHt,
+              })),
+            };
+          }),
+        );
+      }
+      const dedup = evaluateIntakeDedup(
+        { ...parsed, lineItems: parsed.lineItems ?? null },
+        dedupDevis,
+        projectInvoices,
+        contractorNames,
+      );
       if (dedup.verdict === "duplicate") {
         const refKey = dedup.matchKind === "devis" ? "duplicateOfDevisId" : "duplicateOfInvoiceId";
         await storage.updateProjectIntakeDocument(doc.id, {
