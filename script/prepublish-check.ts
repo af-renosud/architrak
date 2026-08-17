@@ -274,6 +274,7 @@ async function smokeBoot(): Promise<boolean> {
 (async () => {
   const gates: Array<() => boolean | Promise<boolean>> = [
     checkAudit,
+    () => runStreaming("Bare currency check", "bash", ["scripts/check-bare-currency.sh"]),
     () => runStreaming("Type check (tsc)", "npx", ["tsc"]),
     () => runStreaming("Unit / convention tests (vitest)", "npx", ["vitest", "run", "--no-file-parallelism"]),
     () => runStreaming("Production build (npm run build)", "npm", ["run", "build"]),
@@ -286,6 +287,7 @@ async function smokeBoot(): Promise<boolean> {
   // Record skipped gates so the summary is honest about what did not run.
   const names = [
     "Dependency audit",
+    "Bare currency check",
     "Type check (tsc)",
     "Unit / convention tests (vitest)",
     "Production build (npm run build)",
