@@ -117,48 +117,69 @@ router.get("/api/projects/:projectId/fees/by-phase", async (req, res) => {
 
   const feesList = await storage.getFeesByProject(projectId);
 
+  // Architect fees (honoraires) are invoiced at the standard 20% TVA rate.
+  const TVA_RATE = 0.20;
+
   const phases = ["conception", "chantier", "aor", "unassigned"] as const;
   type Phase = typeof phases[number];
-  const grouped: Record<Phase, { phase: Phase; fees: typeof feesList; totalHt: number; totalInvoiced: number; totalRemaining: number }> = {
-    conception: { phase: "conception", fees: [], totalHt: 0, totalInvoiced: 0, totalRemaining: 0 },
-    chantier: { phase: "chantier", fees: [], totalHt: 0, totalInvoiced: 0, totalRemaining: 0 },
-    aor: { phase: "aor", fees: [], totalHt: 0, totalInvoiced: 0, totalRemaining: 0 },
-    unassigned: { phase: "unassigned", fees: [], totalHt: 0, totalInvoiced: 0, totalRemaining: 0 },
+  const grouped: Record<Phase, { phase: Phase; fees: typeof feesList; totalHt: number; totalTtc: number; totalInvoiced: number; totalInvoicedTtc: number; totalRemaining: number; totalRemainingTtc: number }> = {
+    conception: { phase: "conception", fees: [], totalHt: 0, totalTtc: 0, totalInvoiced: 0, totalInvoicedTtc: 0, totalRemaining: 0, totalRemainingTtc: 0 },
+    chantier: { phase: "chantier", fees: [], totalHt: 0, totalTtc: 0, totalInvoiced: 0, totalInvoicedTtc: 0, totalRemaining: 0, totalRemainingTtc: 0 },
+    aor: { phase: "aor", fees: [], totalHt: 0, totalTtc: 0, totalInvoiced: 0, totalInvoicedTtc: 0, totalRemaining: 0, totalRemainingTtc: 0 },
+    unassigned: { phase: "unassigned", fees: [], totalHt: 0, totalTtc: 0, totalInvoiced: 0, totalInvoicedTtc: 0, totalRemaining: 0, totalRemainingTtc: 0 },
   };
 
   let grandTotalHt = 0;
+  let grandTotalTtc = 0;
   let grandTotalInvoiced = 0;
+  let grandTotalInvoicedTtc = 0;
   let grandTotalRemaining = 0;
+  let grandTotalRemainingTtc = 0;
 
   for (const fee of feesList) {
     const phase: Phase = fee.phase && (phases as readonly string[]).includes(fee.phase)
       ? (fee.phase as Phase)
       : "unassigned";
     const ht = parseFloat(fee.feeAmountHt);
+    const ttc = roundCurrency(ht * (1 + TVA_RATE));
     const invoiced = parseFloat(fee.invoicedAmount ?? "0");
+    const invoicedTtc = roundCurrency(invoiced * (1 + TVA_RATE));
     const remaining = roundCurrency(ht - invoiced);
+    const remainingTtc = roundCurrency(ttc - invoicedTtc);
 
     grouped[phase].fees.push(fee);
     grouped[phase].totalHt += ht;
+    grouped[phase].totalTtc += ttc;
     grouped[phase].totalInvoiced += invoiced;
+    grouped[phase].totalInvoicedTtc += invoicedTtc;
     grouped[phase].totalRemaining += remaining;
+    grouped[phase].totalRemainingTtc += remainingTtc;
 
     grandTotalHt += ht;
+    grandTotalTtc += ttc;
     grandTotalInvoiced += invoiced;
+    grandTotalInvoicedTtc += invoicedTtc;
     grandTotalRemaining += remaining;
+    grandTotalRemainingTtc += remainingTtc;
   }
 
   res.json({
     phases: phases.map((p) => ({
       ...grouped[p],
       totalHt: roundCurrency(grouped[p].totalHt),
+      totalTtc: roundCurrency(grouped[p].totalTtc),
       totalInvoiced: roundCurrency(grouped[p].totalInvoiced),
+      totalInvoicedTtc: roundCurrency(grouped[p].totalInvoicedTtc),
       totalRemaining: roundCurrency(grouped[p].totalRemaining),
+      totalRemainingTtc: roundCurrency(grouped[p].totalRemainingTtc),
     })).filter((g) => g.fees.length > 0),
     grandTotals: {
       totalHt: roundCurrency(grandTotalHt),
+      totalTtc: roundCurrency(grandTotalTtc),
       totalInvoiced: roundCurrency(grandTotalInvoiced),
+      totalInvoicedTtc: roundCurrency(grandTotalInvoicedTtc),
       totalRemaining: roundCurrency(grandTotalRemaining),
+      totalRemainingTtc: roundCurrency(grandTotalRemainingTtc),
     },
   });
 });

@@ -52,8 +52,8 @@ function PhaseBadge({ phase }: { phase: string | null }) {
 }
 
 type PhaseByData = {
-  phases: Array<{ phase: string; fees: Fee[]; totalHt: number; totalInvoiced: number; totalRemaining: number }>;
-  grandTotals: { totalHt: number; totalInvoiced: number; totalRemaining: number };
+  phases: Array<{ phase: string; fees: Fee[]; totalHt: number; totalTtc: number; totalInvoiced: number; totalInvoicedTtc: number; totalRemaining: number; totalRemainingTtc: number }>;
+  grandTotals: { totalHt: number; totalTtc: number; totalInvoiced: number; totalInvoicedTtc: number; totalRemaining: number; totalRemainingTtc: number };
 };
 
 const feeFormSchema = insertFeeSchema.extend({
@@ -331,9 +331,14 @@ export default function Fees() {
     }
   };
 
+  // Architect fees (honoraires) are invoiced at the standard 20% TVA rate.
+  const FEE_TVA_RATE = 0.20;
   const totalFeeEarned = (feesList ?? []).reduce((sum, f) => sum + parseFloat(f.feeAmountHt), 0);
+  const totalFeeEarnedTtc = totalFeeEarned * (1 + FEE_TVA_RATE);
   const totalInvoiced = (feesList ?? []).reduce((sum, f) => sum + parseFloat(f.invoicedAmount ?? "0"), 0);
+  const totalInvoicedTtc = totalInvoiced * (1 + FEE_TVA_RATE);
   const totalRemaining = totalFeeEarned - totalInvoiced;
+  const totalRemainingTtc = totalFeeEarnedTtc - totalInvoicedTtc;
 
   const filteredFees = phaseFilter === "all"
     ? (feesList ?? [])
@@ -424,6 +429,9 @@ export default function Fees() {
                   <p className="text-[16px] font-light text-foreground" data-testid={`text-phase-total-${phaseGroup.phase}`}>
                     {formatCurrency(phaseGroup.totalHt)} <span className="text-[10px] text-muted-foreground font-normal">HT</span>
                   </p>
+                  <p className="text-[12px] text-muted-foreground" data-testid={`text-phase-total-ttc-${phaseGroup.phase}`}>
+                    {formatCurrency(phaseGroup.totalTtc)} <span className="text-[9px] font-normal">TTC</span>
+                  </p>
                   <div className="h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800 mt-2 mb-1">
                     <div
                       className="h-full rounded-full bg-[#c1a27b] transition-all"
@@ -432,9 +440,10 @@ export default function Fees() {
                     />
                   </div>
                   <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <span className="text-[10px] text-muted-foreground">
-                      Invoiced: {formatCurrency(phaseGroup.totalInvoiced)} HT
-                    </span>
+                    <div className="text-[10px] text-muted-foreground">
+                      <div>Invoiced: {formatCurrency(phaseGroup.totalInvoiced)} HT</div>
+                      <div>{formatCurrency(phaseGroup.totalInvoicedTtc)} TTC</div>
+                    </div>
                     <span className="text-[10px] font-semibold text-foreground">
                       {progress.toFixed(0)}%
                     </span>
@@ -468,17 +477,26 @@ export default function Fees() {
                 <p className="text-[20px] font-light text-foreground mt-2" data-testid="text-total-earned">
                   {formatCurrency(totalFeeEarned)} <span className="text-[11px] text-muted-foreground font-normal">HT</span>
                 </p>
+                <p className="text-[13px] text-muted-foreground" data-testid="text-total-earned-ttc">
+                  {formatCurrency(totalFeeEarnedTtc)} <span className="text-[10px] font-normal">TTC</span>
+                </p>
               </LuxuryCard>
               <LuxuryCard data-testid="card-total-invoiced">
                 <TechnicalLabel>Total Invoiced (Penny Lane)</TechnicalLabel>
                 <p className="text-[20px] font-light text-emerald-600 dark:text-emerald-400 mt-2" data-testid="text-total-invoiced">
                   {formatCurrency(totalInvoiced)} <span className="text-[11px] text-muted-foreground font-normal">HT</span>
                 </p>
+                <p className="text-[13px] text-muted-foreground" data-testid="text-total-invoiced-ttc">
+                  {formatCurrency(totalInvoicedTtc)} <span className="text-[10px] font-normal">TTC</span>
+                </p>
               </LuxuryCard>
               <LuxuryCard data-testid="card-total-remaining">
                 <TechnicalLabel>Remaining to Invoice</TechnicalLabel>
                 <p className="text-[20px] font-light text-amber-600 dark:text-amber-400 mt-2" data-testid="text-total-remaining">
                   {formatCurrency(totalRemaining)} <span className="text-[11px] text-muted-foreground font-normal">HT</span>
+                </p>
+                <p className="text-[13px] text-muted-foreground" data-testid="text-total-remaining-ttc">
+                  {formatCurrency(totalRemainingTtc)} <span className="text-[10px] font-normal">TTC</span>
                 </p>
               </LuxuryCard>
             </div>

@@ -23,11 +23,15 @@ interface DevisSummary {
   contractorId: number;
   invoicingMode: string;
   originalHt: number;
+  originalTtc: number;
   pvTotal: number;
   mvTotal: number;
   adjustedHt: number;
+  adjustedTtc: number;
   certifiedHt: number;
+  certifiedTtc: number;
   resteARealiser: number;
+  resteARealiserTtc: number;
   invoiceCount: number;
   avenantCount: number;
 }
@@ -38,9 +42,13 @@ interface FinancialSummary {
   projectCode: string;
   devis: DevisSummary[];
   totalContractedHt: number;
+  totalContractedTtc: number;
   totalCertifiedHt: number;
+  totalCertifiedTtc: number;
   totalResteARealiser: number;
+  totalResteARealiserTtc: number;
   totalOriginalHt: number;
+  totalOriginalTtc: number;
   totalPv: number;
   totalMv: number;
 }
@@ -95,17 +103,26 @@ function ProjectFinancialCard({ project }: { project: Project }) {
           <p className="text-[13px] font-semibold text-foreground mt-0.5" data-testid={`text-contracted-${project.id}`}>
             {formatCurrency(summary.totalContractedHt)} <span className="text-[9px] text-muted-foreground font-normal">HT</span>
           </p>
+          <p className="text-[11px] text-muted-foreground" data-testid={`text-contracted-ttc-${project.id}`}>
+            {formatCurrency(summary.totalContractedTtc)} <span className="text-[9px] font-normal">TTC</span>
+          </p>
         </div>
         <div>
           <TechnicalLabel>Certified</TechnicalLabel>
           <p className="text-[13px] font-semibold text-foreground mt-0.5" data-testid={`text-certified-${project.id}`}>
             {formatCurrency(summary.totalCertifiedHt)} <span className="text-[9px] text-muted-foreground font-normal">HT</span>
           </p>
+          <p className="text-[11px] text-muted-foreground" data-testid={`text-certified-ttc-${project.id}`}>
+            {formatCurrency(summary.totalCertifiedTtc)} <span className="text-[9px] font-normal">TTC</span>
+          </p>
         </div>
         <div>
           <TechnicalLabel>Remaining</TechnicalLabel>
           <p className={`text-[13px] font-semibold mt-0.5 ${summary.totalResteARealiser < 0 ? "text-red-500" : "text-foreground"}`} data-testid={`text-remaining-${project.id}`}>
             {formatCurrency(summary.totalResteARealiser)} <span className="text-[9px] text-muted-foreground font-normal">HT</span>
+          </p>
+          <p className={`text-[11px] ${summary.totalResteARealiserTtc < 0 ? "text-red-400" : "text-muted-foreground"}`} data-testid={`text-remaining-ttc-${project.id}`}>
+            {formatCurrency(summary.totalResteARealiserTtc)} <span className="text-[9px] font-normal">TTC</span>
           </p>
         </div>
       </div>
@@ -141,9 +158,14 @@ function ProjectFinancialCard({ project }: { project: Project }) {
                     <Progress value={Math.min(100, pct)} className="h-1" />
                   </div>
                   <span className="text-[10px] text-muted-foreground min-w-[50px] text-right">{pct.toFixed(0)}%</span>
-                  <span className={`text-[10px] font-semibold min-w-[80px] text-right ${isAnomaly ? "text-red-500" : "text-foreground"}`}>
-                    {formatCurrency(d.resteARealiser)} HT
-                  </span>
+                  <div className={`text-right min-w-[80px] ${isAnomaly ? "text-red-500" : "text-foreground"}`}>
+                    <div className="text-[10px] font-semibold">
+                      {formatCurrency(d.resteARealiser)} <span className="text-[8px] font-normal opacity-70">HT</span>
+                    </div>
+                    <div className="text-[9px] opacity-60">
+                      {formatCurrency(d.resteARealiserTtc)} <span className="text-[8px] font-normal">TTC</span>
+                    </div>
+                  </div>
                 </div>
               );
             })}
