@@ -233,12 +233,14 @@ function CreateCertificatDialog({
 function CreateMultiCertificatDialog({
   invoices,
   contractorName,
+  contractorIban,
   projectId,
   onClose,
   onCreated,
 }: {
   invoices: Invoice[];
   contractorName: string;
+  contractorIban: string | null;
   projectId: string;
   onClose: () => void;
   onCreated: () => void;
@@ -355,6 +357,21 @@ function CreateMultiCertificatDialog({
           </div>
         ) : null}
 
+        {!contractorIban && (
+          <div
+            className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2.5"
+            data-testid="banner-no-iban-multi"
+          >
+            <AlertTriangle size={14} className="text-destructive mt-0.5 shrink-0" />
+            <p className="text-[12px] text-destructive leading-snug">
+              Aucun IBAN renseigné pour cette entreprise — l'émission du certificat sera bloquée.{" "}
+              <Link href="/contractors" className="underline font-medium">
+                Mettre à jour
+              </Link>
+            </p>
+          </div>
+        )}
+
         <div className="flex items-center justify-end gap-2 pt-1">
           <Button variant="outline" onClick={onClose} data-testid="button-cancel-create-certificat-multi">
             Annuler
@@ -365,7 +382,13 @@ function CreateMultiCertificatDialog({
             onClick={() => createMutation.mutate()}
             data-testid="button-confirm-create-certificat-multi"
           >
-            {createMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <Award size={14} />}
+            {createMutation.isPending ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : !contractorIban ? (
+              <AlertTriangle size={14} />
+            ) : (
+              <Award size={14} />
+            )}
             Créer le certificat groupé
           </Button>
         </div>
@@ -725,6 +748,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
           <CreateMultiCertificatDialog
             invoices={selectedInvoices}
             contractorName={contractorMap.get(selectedInvoices[0].contractorId) ?? `#${selectedInvoices[0].contractorId}`}
+            contractorIban={contractors.find((c) => c.id === selectedInvoices[0].contractorId)?.iban ?? null}
             projectId={projectId}
             onClose={() => setMultiCertDialogOpen(false)}
             onCreated={() => setSelectedForCert(new Set())}
