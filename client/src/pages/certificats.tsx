@@ -509,8 +509,25 @@ export default function Certificats() {
               // can chase the contractor before the client receives the PDF.
               const certContractor = contractors?.find((c) => c.id === cert.contractorId);
               const missingBic = certContractor && !certContractor.bic && (cert.status === "draft" || cert.status === "ready");
+              // Task #609 — flag missing IBAN (harder blocker: preview and
+              // issuance are entirely refused without an IBAN).
+              const missingIban = certContractor && !certContractor.iban && (cert.status === "draft" || cert.status === "ready");
               return (
                 <LuxuryCard key={cert.id} data-testid={`card-certificat-${cert.id}`}>
+                  {missingIban && (
+                    <div
+                      className="flex items-start gap-2 rounded-md border border-red-300/70 dark:border-red-500/30 bg-red-50/70 dark:bg-red-950/20 px-3 py-2 mb-3"
+                      data-testid={`warning-iban-missing-card-${cert.id}`}
+                    >
+                      <AlertTriangle size={12} className="mt-0.5 shrink-0 text-red-600 dark:text-red-400" />
+                      <p className="text-[11px] text-red-800 dark:text-red-300 leading-snug">
+                        <span className="font-semibold">{certContractor.name}</span> n&apos;a pas d&apos;IBAN enregistré — la prévisualisation et l&apos;émission du certificat seront bloquées.{" "}
+                        <a href="/contractors" className="underline font-semibold hover:opacity-80">
+                          Gérer les coordonnées bancaires
+                        </a>
+                      </p>
+                    </div>
+                  )}
                   {missingBic && (
                     <div
                       className="flex items-start gap-2 rounded-md border border-amber-300/70 dark:border-amber-500/30 bg-amber-50/70 dark:bg-amber-950/20 px-3 py-2 mb-3"

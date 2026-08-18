@@ -1908,6 +1908,24 @@ export default function ProjectDetail() {
                     const nextLabel = getNextCertLabel(c.status);
                     return (
                       <LuxuryCard key={c.id} data-testid={`card-certificat-tab-${c.id}`}>
+                        {(() => {
+                          const certContractor = contractors?.find((ct) => ct.id === c.contractorId);
+                          const missingIban = certContractor && !certContractor.iban && (c.status === "draft" || c.status === "ready");
+                          return missingIban ? (
+                            <div
+                              className="flex items-start gap-2 rounded-md border border-red-300/70 dark:border-red-500/30 bg-red-50/70 dark:bg-red-950/20 px-3 py-2 mb-3"
+                              data-testid={`warning-iban-missing-tab-${c.id}`}
+                            >
+                              <AlertTriangle size={12} className="mt-0.5 shrink-0 text-red-600 dark:text-red-400" />
+                              <p className="text-[11px] text-red-800 dark:text-red-300 leading-snug">
+                                <span className="font-semibold">{certContractor.name}</span> n&apos;a pas d&apos;IBAN enregistré — la prévisualisation et l&apos;émission du certificat seront bloquées.{" "}
+                                <a href="/contractors" className="underline font-semibold hover:opacity-80">
+                                  Gérer les coordonnées bancaires
+                                </a>
+                              </p>
+                            </div>
+                          ) : null;
+                        })()}
                         <div className="flex items-center justify-between gap-3 flex-wrap">
                           <div>
                             <CertificateRefBadge data-testid={`text-cert-ref-tab-${c.id}`}>{c.certificateRef}</CertificateRefBadge>
