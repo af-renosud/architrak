@@ -6,6 +6,7 @@ import { roundCurrency } from "@shared/financial-utils";
 import type { Certificat, Project, Contractor, Devis, Lot, Invoice, Avenant } from "@shared/schema";
 import { formatLotDescription } from "@shared/lot-label";
 import { ibansMatch, normaliseIban } from "@shared/iban";
+import { deriveTransferRef } from "../services/certificat-transfer-ref.service";
 
 interface DevisWithDetails {
   devis: Devis;
@@ -155,6 +156,10 @@ interface CertificatPdfData {
    * no waterfall deductions; labelled distinctly and explained as a deposit
    * recovered in full on the next certificat. */
   isAcompte: boolean;
+  /** Task #627 — bank-transfer reference rendered in the PDF banking block.
+   * Derived from certified invoice numbers / devis codes. Null for the
+   * static design preview (replaced with a sample string there). */
+  transferRef: string | null;
 }
 
 /**
@@ -697,6 +702,8 @@ export async function generateCertificatPdf(
   pdfBuffer: Buffer;
   fileName: string;
   sourceInvoiceIds: number[];
+  /** Task #627 — bank-transfer reference derived from the certified invoices. */
+  transferRef: string;
   /** Present only in issue mode — inputs for the winner-only Drive enqueue. */
   driveSeed?: {
     projectId: number;
@@ -789,6 +796,31 @@ export async function generateCertificatPdf(
     throw new BankingMismatchError(contractor.id, contractor.name, archidocIbanCanonical, mismatches);
   }
 
+  // Task #627 — derive the bank-transfer reference from the certified
+  // documents. Acompte certificats carry no supplier invoice; the devis code
+  // is the only meaningful matching key for the contractor's bank statement.
+  // Legacy certificats (no source rows) fall back to all active devis codes.
+  let acompteDevisCode: string | null = null;
+  if (certificat.acompteDevisId != null) {
+    const acompteDevis = await storage.getDevis(certificat.acompteDevisId);
+    acompteDevisCode = acompteDevis?.devisCode ?? null;
+  }
+  const invoiceNumbers = scoped
+    ? scopedEntries.flatMap((e) => e.invoices.map((inv) => inv.invoiceNumber))
+    : [];
+  const fallbackDevisCodes = acompteDevisCode
+    ? [acompteDevisCode]
+    : !scoped
+      ? scopedEntries.map((e) => e.devis.devisCode).filter(Boolean)
+      : [];
+  const transferRef = deriveTransferRef({
+    projectCode: project.code,
+    projectName: project.name,
+    certificateRef: certificat.certificateRef,
+    invoiceNumbers,
+    devisCodes: fallbackDevisCodes,
+  });
+
   const devisDetails: DevisWithDetails[] = await Promise.all(
     scopedEntries.map(async ({ devis: d, invoices }) => {
       const lot = d.lotId ? (await storage.getLot(d.lotId)) ?? null : null;
@@ -817,7 +849,7 @@ export async function generateCertificatPdf(
       ? parseFloat(marche.retenueGarantiePercent)
       : 5;
 
-  const html = buildCertificatHtml({ certificat, project, contractor, devisDetails, companyLogoBase64, architectsLogoBase64, annexeData, retenuePercent, hasBankGuarantee, isAcompte: certificat.acompteDevisId != null });
+  const html = buildCertificatHtml({ certificat, project, contractor, devisDetails, companyLogoBase64, architectsLogoBase64, annexeData, retenuePercent, hasBankGuarantee, isAcompte: certificat.acompteDevisId != null, transferRef });
 
   const dateStr = new Date().toISOString().split("T")[0].replace(/-/g, "");
   const projectCode = (project.code || "PROJ").replace(/[^a-zA-Z0-9]/g, "");
@@ -829,7 +861,7 @@ export async function generateCertificatPdf(
 
   // Task #451 — previews are ephemeral: return the bytes and persist nothing.
   if (opts.mode !== "issue") {
-    return { storageKey: null, pdfBuffer, fileName, sourceInvoiceIds };
+    return { storageKey: null, pdfBuffer, fileName, sourceInvoiceIds, transferRef };
   }
 
   const storageKey = await uploadDocument(project.id, fileName, pdfBuffer, "application/pdf");
@@ -848,7 +880,7 @@ export async function generateCertificatPdf(
     seedDevisCode: seedDevis?.devisCode ?? `cert-${certificat.certificateRef}`,
   };
 
-  return { storageKey, pdfBuffer, fileName, sourceInvoiceIds, driveSeed };
+  return { storageKey, pdfBuffer, fileName, sourceInvoiceIds, transferRef, driveSeed };
 }
 
 /**
@@ -876,7 +908,7 @@ function escapeCssString(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-function renderBankingBlock(contractor: Contractor, proposeHtml: string = ""): string {
+function renderBankingBlock(contractor: Contractor, proposeHtml: string = "", transferRef: string | null = null): string {
   if (!contractor.iban) return "";
   const holder = contractor.accountHolderName || contractor.name;
   // Task #485 — the payment keys (IBAN + SWIFT/BIC) are what clients
@@ -886,6 +918,14 @@ function renderBankingBlock(contractor: Contractor, proposeHtml: string = ""): s
     ? `<div class="banking-key-value">${escapeHtml(contractor.bic)}</div>`
     : `<div class="banking-key-missing">NON COMMUNIQU\u00C9 PAR L'\u00C9TABLISSEMENT</div>`;
   const holderLine = `${escapeHtml(holder)}${contractor.bankName ? ` \u2014 ${escapeHtml(contractor.bankName)}` : ""}`;
+  // Task #627 — transfer reference box, rendered only when a reference was derived.
+  const transferRefHtml = transferRef
+    ? `
+    <div class="transfer-ref-box">
+      <div class="transfer-ref-label">use this reference for your payment.</div>
+      <div class="transfer-ref-value">${escapeHtml(transferRef)}</div>
+    </div>`
+    : "";
   return `
   <div class="banking-card">
     ${proposeHtml}
@@ -900,12 +940,12 @@ function renderBankingBlock(contractor: Contractor, proposeHtml: string = ""): s
         <div class="banking-key-label">SWIFT / BIC</div>
         ${bicValue}
       </div>
-    </div>
+    </div>${transferRefHtml}
   </div>`;
 }
 
 function buildCertificatHtml(data: CertificatPdfData): string {
-  const { certificat, project, contractor, devisDetails, companyLogoBase64, architectsLogoBase64, annexeData, retenuePercent, hasBankGuarantee, isAcompte } = data;
+  const { certificat, project, contractor, devisDetails, companyLogoBase64, architectsLogoBase64, annexeData, retenuePercent, hasBankGuarantee, isAcompte, transferRef } = data;
 
   const netTtc = parseFloat(certificat.netToPayTtc);
   const netHt = parseFloat(certificat.netToPayHt);
@@ -1205,6 +1245,30 @@ function buildCertificatHtml(data: CertificatPdfData): string {
     font-size: 8pt;
     color: #7E7F83;
     font-style: italic;
+  }
+  /* Task #627 — bank-transfer reference box (Prince-safe: block layout only). */
+  .transfer-ref-box {
+    margin-top: 2.5mm;
+    padding: 2mm 3mm;
+    background: #EDF4FF;
+    border: 1.5pt solid #2563EB;
+    border-left: 3pt solid #1D4ED8;
+  }
+  .transfer-ref-label {
+    font-size: 7pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #1E40AF;
+    margin-bottom: 1mm;
+  }
+  .transfer-ref-value {
+    font-family: "Courier New", monospace;
+    font-size: 11pt;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: #1E3A8A;
+    word-break: break-all;
   }
 
   table.works-table {
@@ -1632,7 +1696,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
   ${renderBankingBlock(contractor, `<div class="payment-propose" style="margin-bottom:1.5mm;">
       In view of the progress of the work, <strong>SAS ARCHITECTS-FRANCE</strong> proposes that the client pay the sum of :
       <strong>${formatCurrencyNoSymbol(netTtc)}</strong>
-    </div>`)}
+    </div>`, transferRef)}
 
   <div class="payment-section">
     <div class="payment-attention">
@@ -1901,6 +1965,7 @@ export async function buildCertificatPreviewHtml(opts?: { isAcompte?: boolean })
     issuanceSnapshot: null,
     version: 1,
     reissuedFromCertificatId: null,
+    paymentTransferRef: null,
     createdAt: now,
   };
 
@@ -1994,6 +2059,10 @@ export async function buildCertificatPreviewHtml(opts?: { isAcompte?: boolean })
     retenuePercent: 5,
     hasBankGuarantee: false,
     isAcompte,
+    // Task #627 — sample reference for the design preview.
+    transferRef: isAcompte
+      ? "VEX-2026 CP-2026-007 / DEV-2026-014"
+      : "VEX-2026 CP-2026-007 / F-2026-138",
   });
 }
 

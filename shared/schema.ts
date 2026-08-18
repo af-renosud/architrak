@@ -890,6 +890,11 @@ export const certificats = pgTable("certificats", {
   // seal never re-resolves their money. At most one live acompte certificat
   // per devis (partial unique below excludes superseded rows).
   acompteDevisId: integer("acompte_devis_id"),
+  // Task #627 — frozen bank-transfer reference, derived at issue time from the
+  // certified contractor invoice numbers (scoped progress) or devis code
+  // (acompte / legacy). Stored once by the seal so every PDF, reissue view,
+  // and payment ledger pre-fill show the exact same string.
+  paymentTransferRef: text("payment_transfer_ref"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   unique("certificats_project_ref_unique").on(table.projectId, table.certificateRef),

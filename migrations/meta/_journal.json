@@ -694,6 +694,13 @@
       "when": 1787320000000,
       "tag": "0098_devis_notes",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1787330000000,
+      "tag": "0099_certificat_transfer_ref",
+      "breakpoints": true
     }
   ]
 }

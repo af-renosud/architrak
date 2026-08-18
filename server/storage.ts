@@ -1232,6 +1232,8 @@ export interface IStorage {
     expectedVersion: number;
     projectId: number;
     contractorId: number;
+    /** Task #627 — frozen bank-transfer reference, written once at seal time. */
+    paymentTransferRef?: string | null;
   }): Promise<Certificat | null>;
 
   // Task #451 — certificat_sources junction (idempotent via ON CONFLICT DO NOTHING).
@@ -2713,6 +2715,8 @@ export class DatabaseStorage implements IStorage {
     expectedVersion: number;
     projectId: number;
     contractorId: number;
+    /** Task #627 — frozen bank-transfer reference, written once at seal time. */
+    paymentTransferRef?: string | null;
   }): Promise<Certificat | null> {
     // Task #451 — version-guard style conditional UPDATE: the WHERE clause is
     // the idempotency + consistency mechanism, never check-then-write.
@@ -2737,6 +2741,8 @@ export class DatabaseStorage implements IStorage {
           issuanceSnapshot: seal.issuanceSnapshot,
           issuedAt: new Date(),
           dateIssued: seal.dateIssued,
+          // Task #627 — freeze the bank-transfer reference at seal time.
+          ...(seal.paymentTransferRef != null ? { paymentTransferRef: seal.paymentTransferRef } : {}),
         })
         .where(and(
           eq(certificats.id, id),

@@ -163,6 +163,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0096_pv_reception_gate", artifact: { kind: "column", table: "marches", column: "pv_reception_status" } },
   { tag: "0097_milestone_payment_suggestions", artifact: { kind: "table", table: "milestone_payment_suggestions" } },
   { tag: "0098_devis_notes", artifact: { kind: "column", table: "devis", column: "notes" } },
+  { tag: "0099_certificat_transfer_ref", artifact: { kind: "column", table: "certificats", column: "payment_transfer_ref" } },
 ];
 
 interface JournalFile {

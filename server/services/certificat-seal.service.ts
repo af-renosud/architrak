@@ -186,6 +186,9 @@ export async function sealCertificat(certificatId: number): Promise<{
       // a facture a grouped certificat already certifies.
       projectId: existing.projectId,
       contractorId: existing.contractorId,
+      // Task #627 — freeze the bank-transfer reference at seal time so every
+      // subsequent PDF view, reissue and payment ledger show the same string.
+      paymentTransferRef: rendered.transferRef,
     });
 
     if (sealed) {

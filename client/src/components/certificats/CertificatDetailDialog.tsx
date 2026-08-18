@@ -201,7 +201,15 @@ export function CertificatPaymentsSection({ cert }: { cert: Certificat }) {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => { resetForm(); setFormOpen(true); setDatePaid(new Date().toISOString().split("T")[0]); }}
+            onClick={() => {
+              resetForm();
+              setFormOpen(true);
+              setDatePaid(new Date().toISOString().split("T")[0]);
+              // Task #627 — pre-fill the reference field with the frozen
+              // bank-transfer reference so the architect doesn't have to
+              // copy it manually from the PDF.
+              if (cert.paymentTransferRef) setReference(cert.paymentTransferRef);
+            }}
             data-testid="button-log-payment"
           >
             <Plus size={11} />
