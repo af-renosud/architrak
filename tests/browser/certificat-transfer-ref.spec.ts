@@ -162,6 +162,218 @@ async function fetchPreviewPdfText(
   }
 }
 
+// ── Acompte path ────────────────────────────────────────────────────────────
+
+const SEED_PREFIX_AC = "e2e-cert-tref-ac-";
+
+interface SeededAcompte {
+  projectId: number;
+  contractorId: number;
+  devisId: number;
+  devisCode: string;
+  projectCode: string;
+}
+
+async function seedAcompte(db: Client, uniq: string): Promise<SeededAcompte> {
+  const projectCode = `TREF-AC-${uniq.slice(0, 6).toUpperCase()}`;
+
+  const projRes = await db.query<{ id: number }>(
+    `INSERT INTO projects (name, code, client_name, client_contact_email, status)
+     VALUES ($1, $2, 'E2E Transfer Ref Acompte Client', $3, 'active') RETURNING id`,
+    [
+      `${SEED_PREFIX_AC}project-${uniq}`,
+      projectCode,
+      `client-tref-ac-${uniq}@example.com`,
+    ],
+  );
+  const projectId = projRes.rows[0].id;
+
+  const ctorRes = await db.query<{ id: number }>(
+    `INSERT INTO contractors (name, iban, bic) VALUES ($1, $2, 'BNPAFRPP') RETURNING id`,
+    [`${SEED_PREFIX_AC}contractor-${uniq}`, FAKE_IBAN],
+  );
+  const contractorId = ctorRes.rows[0].id;
+
+  // A marché is required for the certificat deduction engine.
+  await db.query(
+    `INSERT INTO marches
+       (project_id, contractor_id, total_ht, total_ttc, retenue_garantie_percent, status)
+     VALUES ($1, $2, '15000.00', '18000.00', '5.00', 'active')`,
+    [projectId, contractorId],
+  );
+
+  const lotRes = await db.query<{ id: number }>(
+    `INSERT INTO lots (project_id, lot_number, description_fr, description_uk)
+     VALUES ($1, '01', 'Fondations', 'Foundations') RETURNING id`,
+    [projectId],
+  );
+  const lotId = lotRes.rows[0].id;
+
+  // The devis code will appear as the suffix in the transfer ref.
+  const devisCode = `TREF-AC-D-${uniq.slice(0, 6).toUpperCase()}`;
+  const devisRes = await db.query<{ id: number }>(
+    `INSERT INTO devis
+       (project_id, contractor_id, devis_code, description_fr, description_uk,
+        amount_ht, amount_ttc, status, sign_off_stage, lot_id,
+        acompte_required, acompte_state, acompte_amount_ht)
+     VALUES ($1, $2, $3, 'E2E Acompte Transfer Ref Devis', 'E2E Acompte Transfer Ref Works',
+             '15000.00', '18000.00', 'confirmed', 'client_signed_off', $4,
+             true, 'pending', '3000.00')
+     RETURNING id`,
+    [projectId, contractorId, devisCode, lotId],
+  );
+  const devisId = devisRes.rows[0].id;
+
+  return { projectId, contractorId, devisId, devisCode, projectCode };
+}
+
+async function cleanupAcompte(db: Client, s: SeededAcompte | null): Promise<void> {
+  if (!s) return;
+  const stmts: Array<[string, unknown[]]> = [
+    [`DELETE FROM project_communications WHERE project_id = $1`, [s.projectId]],
+    [
+      `DELETE FROM certificat_sources
+       WHERE certificat_id IN (SELECT id FROM certificats WHERE project_id = $1)`,
+      [s.projectId],
+    ],
+    [`DELETE FROM certificats WHERE project_id = $1`, [s.projectId]],
+    [`DELETE FROM devis WHERE id = $1`, [s.devisId]],
+    [`DELETE FROM lots WHERE project_id = $1`, [s.projectId]],
+    [`DELETE FROM marches WHERE project_id = $1`, [s.projectId]],
+    [`DELETE FROM projects WHERE id = $1`, [s.projectId]],
+    [`DELETE FROM contractors WHERE id = $1`, [s.contractorId]],
+  ];
+  for (const [sql, params] of stmts) {
+    try {
+      await db.query(sql, params);
+    } catch (err) {
+      console.warn("[cert-tref-ac cleanup] swallowed:", (err as Error).message);
+    }
+  }
+}
+
+test.describe("Certificat — bank-transfer reference acompte path (task #631)", () => {
+  test(
+    "acompte certificat: seal persists paymentTransferRef with devis code; payment dialog pre-fills it",
+    async ({ browser }) => {
+      const databaseUrl = process.env.DATABASE_URL;
+      expect(databaseUrl, "DATABASE_URL must be set for this test").toBeTruthy();
+
+      const uniq = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+      const email = `${SEED_PREFIX_AC}${uniq}@local.test`;
+      const db = new Client({ connectionString: databaseUrl! });
+      await db.connect();
+
+      const context = await browser.newContext({
+        viewport: { width: 1600, height: 900 },
+      });
+      let s: SeededAcompte | null = null;
+
+      try {
+        await devLogin(context.request, email);
+        s = await seedAcompte(db, uniq);
+
+        // ── 1. Create the acompte certificat (no supplier invoice) ────────
+        const createRes = await context.request.post(
+          `/api/devis/${s.devisId}/acompte/generate-certificat`,
+          { data: {} },
+        );
+        expect(
+          createRes.ok(),
+          `generate-certificat failed: HTTP ${createRes.status()} – ${await createRes.text()}`,
+        ).toBe(true);
+
+        const certRow = await db.query<{ id: number; certificate_ref: string }>(
+          `SELECT id, certificate_ref FROM certificats
+           WHERE project_id = $1 AND status != 'superseded'
+           ORDER BY id DESC LIMIT 1`,
+          [s.projectId],
+        );
+        expect(certRow.rows.length).toBe(1);
+        const certId = certRow.rows[0].id;
+        const certRef = certRow.rows[0].certificate_ref;
+
+        // ── 2. Preview PDF — must contain the transfer-ref label ──────────
+        const pdfText = await fetchPreviewPdfText(context.request, certId);
+        expect(pdfText.toUpperCase()).toContain("USE THIS REFERENCE FOR YOUR PAYMENT.");
+
+        // The preview transfer ref suffix is the devis code, not an invoice
+        // number.  Check that the devis code substring appears in the PDF.
+        // The devis code is short enough that line-wrapping is not a concern.
+        const devisCodeSuffix = s.devisCode.slice(s.devisCode.lastIndexOf("-") + 1);
+        expect(pdfText).toContain(devisCodeSuffix);
+
+        // ── 3. Issue (seal) the acompte certificat via the send endpoint ──
+        // E2E_FAKE_GMAIL=true prevents a real email from being sent.
+        const sendRes = await context.request.post(
+          `/api/projects/${s.projectId}/certificats/${certId}/send`,
+        );
+        expect(
+          sendRes.ok(),
+          `Send failed: HTTP ${sendRes.status()} – ${await sendRes.text()}`,
+        ).toBe(true);
+
+        // ── 4. Confirm paymentTransferRef is stored with the devis code ───
+        const sealedRow = await db.query<{
+          payment_transfer_ref: string | null;
+          status: string;
+        }>(
+          `SELECT payment_transfer_ref, status FROM certificats WHERE id = $1`,
+          [certId],
+        );
+        expect(sealedRow.rows.length).toBe(1);
+        const stored = sealedRow.rows[0].payment_transfer_ref;
+        expect(
+          stored,
+          "paymentTransferRef must be non-null after sealing an acompte certificat",
+        ).not.toBeNull();
+
+        // Expected format: "{PROJECT CODE} {cert ref} / {devis code}"
+        const expectedRef = `${s.projectCode} ${certRef} / ${s.devisCode}`;
+        expect(stored).toBe(expectedRef);
+
+        // ── 5. Open detail dialog — payment form pre-fills the ref field ───
+        const page = await context.newPage();
+        await page.goto("/certificats");
+
+        // Select the project in the filter dropdown.
+        await page.getByTestId("select-project-filter").click();
+        await page
+          .getByRole("option", { name: new RegExp(s.projectCode) })
+          .click();
+
+        // Open the certificat detail dialog.
+        const viewBtn = page.getByTestId(`button-view-cert-${certId}`);
+        await expect(viewBtn).toBeVisible({ timeout: 10_000 });
+        await viewBtn.click();
+
+        // The payment section should be present (cert is issued/sent).
+        const paymentsSection = page.getByTestId("section-cert-payments");
+        await expect(paymentsSection).toBeVisible({ timeout: 8_000 });
+
+        // Click "Enregistrer un paiement" to open the form.
+        const logBtn = page.getByTestId("button-log-payment");
+        await expect(logBtn).toBeVisible({ timeout: 5_000 });
+        await logBtn.click();
+
+        // The form should appear with the reference pre-filled.
+        const refInput = page.getByTestId("input-payment-reference");
+        await expect(refInput).toBeVisible({ timeout: 5_000 });
+        await expect(refInput).toHaveValue(stored!);
+      } finally {
+        try {
+          await cleanupAcompte(db, s);
+        } finally {
+          await db.end();
+          await context.close();
+        }
+      }
+    },
+  );
+});
+
+// ── Invoice path (task #628) ─────────────────────────────────────────────────
+
 test.describe("Certificat — bank-transfer reference (task #628)", () => {
   test(
     "preview PDF has transfer-ref label; seal persists paymentTransferRef; payment dialog pre-fills it",
