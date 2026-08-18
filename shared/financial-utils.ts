@@ -41,6 +41,47 @@ export function computeEffectiveTvaRatePercent(sumHt: number, sumTtc: number): n
 }
 
 /**
+ * Multi-facture certificats — TVA compatibility of an invoice selection.
+ *
+ * A certificat applies ONE TVA rate to its net. When several factures are
+ * grouped onto one certificat, every facture must be consistent with the
+ * aggregate effective rate to the cent, otherwise the certificat's TVA line
+ * would misstate the tax at least one facture actually carries (e.g. a 10%
+ * rénovation facture grouped with a 20% supplies facture). Mixed selections
+ * are rejected; the operator issues separate certificats instead.
+ *
+ * Tolerance: 2 cents per facture (independent roundings of HT→TTC).
+ */
+export interface InvoiceTvaLike {
+  amountHt: string | number;
+  amountTtc: string | number;
+}
+
+export function checkInvoiceSetTvaCompatibility(invoices: ReadonlyArray<InvoiceTvaLike>):
+  | { ok: true; effectiveRatePercent: number }
+  | { ok: false; effectiveRatePercent: number | null; offendingIndex: number | null } {
+  const parsed = invoices.map((inv) => ({
+    ht: typeof inv.amountHt === "number" ? inv.amountHt : parseFloat(inv.amountHt),
+    ttc: typeof inv.amountTtc === "number" ? inv.amountTtc : parseFloat(inv.amountTtc),
+  }));
+  const sumHt = parsed.reduce((s, p) => s + (Number.isFinite(p.ht) ? p.ht : NaN), 0);
+  const sumTtc = parsed.reduce((s, p) => s + (Number.isFinite(p.ttc) ? p.ttc : NaN), 0);
+  const rate = computeEffectiveTvaRatePercent(sumHt, sumTtc);
+  if (rate == null) return { ok: false, effectiveRatePercent: null, offendingIndex: null };
+  for (let i = 0; i < parsed.length; i++) {
+    const { ht, ttc } = parsed[i];
+    if (!Number.isFinite(ht) || !Number.isFinite(ttc) || ht <= 0) {
+      return { ok: false, effectiveRatePercent: rate, offendingIndex: i };
+    }
+    const expectedTtc = roundCurrency(ht * (1 + rate / 100));
+    if (Math.abs(ttc - expectedTtc) > 0.02) {
+      return { ok: false, effectiveRatePercent: rate, offendingIndex: i };
+    }
+  }
+  return { ok: true, effectiveRatePercent: rate };
+}
+
+/**
  * Task #243 — Authoritative Certificat de Paiement deduction math.
  *
  * A certificat is CUMULATIVE: `totalWorksHt` is the gross approved works to

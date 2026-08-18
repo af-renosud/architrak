@@ -227,6 +227,153 @@ function CreateCertificatDialog({
   );
 }
 
+// Multi-facture certificats — grouped confirmation dialog: one certificat
+// covering a SELECTION of factures from the same contractor. Same read-only
+// server-derived preview as the single dialog, plus the per-facture claims.
+function CreateMultiCertificatDialog({
+  invoices,
+  contractorName,
+  projectId,
+  onClose,
+  onCreated,
+}: {
+  invoices: Invoice[];
+  contractorName: string;
+  projectId: string;
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const { toast } = useToast();
+  const invoiceIds = invoices.map((i) => i.id);
+
+  const { data: preview, isLoading, error } = useQuery<CertificatPreview & {
+    derivation: CertificatPreview["derivation"] & {
+      invoices: Array<{ invoiceId: number; invoiceNumber: string; periodClaimHt: number }>;
+    };
+  }>({
+    queryKey: [`/api/projects/${projectId}/certificats/from-invoices/preview`, invoiceIds.join(",")],
+    queryFn: async () => {
+      const res = await apiRequest("POST", `/api/projects/${projectId}/certificats/from-invoices/preview`, { invoiceIds });
+      return res.json();
+    },
+  });
+
+  const createMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/projects/${projectId}/certificats/from-invoices`, { invoiceIds });
+      return res.json();
+    },
+    onSuccess: (cert: { certificateRef: string }) => {
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "certificats") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "certificat-invoice-links") });
+      toast({
+        title: `Certificat ${cert.certificateRef} créé`,
+        description: `Brouillon créé couvrant ${invoices.length} factures — retrouvez-le sur la page Certificats.`,
+      });
+      onCreated();
+      onClose();
+    },
+    onError: (err: Error) => {
+      toast({ title: "Création impossible", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const row = (label: string, value: ReactNode, opts?: { bold?: boolean; testId?: string }) => (
+    <div className="flex items-center justify-between gap-4 py-1.5 border-b border-border/40 last:border-0">
+      <span className="text-[11px] uppercase tracking-wider text-muted-foreground">{label}</span>
+      <span className={`text-[13px] tabular-nums ${opts?.bold ? "font-bold text-[#0B2545]" : "text-foreground"}`} data-testid={opts?.testId}>
+        {value}
+      </span>
+    </div>
+  );
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-lg" data-testid="dialog-create-certificat-multi">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Award size={18} className="text-[#c1a27b]" />
+            Certificat groupé — {invoices.length} factures
+          </DialogTitle>
+          <DialogDescription>
+            Un seul certificat couvrant les factures sélectionnées de {contractorName}. Montants dérivés automatiquement — vérifiez puis confirmez.
+          </DialogDescription>
+        </DialogHeader>
+
+        {isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-6 w-full" />
+            <Skeleton className="h-6 w-full" />
+            <Skeleton className="h-6 w-2/3" />
+          </div>
+        ) : error ? (
+          <p className="text-[13px] text-destructive" data-testid="text-certificat-multi-preview-error">
+            {(error as Error).message}
+          </p>
+        ) : preview ? (
+          <div className="space-y-3">
+            <div className="rounded-lg bg-muted/40 px-3 py-2">
+              {row("Référence", preview.nextRef, { testId: "text-preview-multi-ref" })}
+              {row("Entreprise", contractorName)}
+              {(preview.derivation.invoices ?? []).map((r) => (
+                <div key={r.invoiceId} className="flex items-center justify-between gap-4 py-1 border-b border-border/40 last:border-0">
+                  <span className="text-[11px] text-muted-foreground">Facture #{r.invoiceNumber}</span>
+                  <span className="text-[12px] tabular-nums" data-testid={`text-preview-multi-claim-${r.invoiceId}`}>
+                    <Amount value={r.periodClaimHt} denomination="HT" />
+                  </span>
+                </div>
+              ))}
+              {row(
+                "Montant réclamé (période)",
+                <Amount value={preview.derivation.periodClaimHt} denomination="HT" />,
+                { bold: true, testId: "text-preview-multi-period" },
+              )}
+            </div>
+            <div className="rounded-lg border border-border/60 px-3 py-2">
+              {row("Travaux cumulés HT", <Amount value={parseFloat(preview.derivation.totalWorksHt)} denomination="HT" />, { testId: "text-preview-multi-total-works" })}
+              {row(
+                preview.derivation.priorCertificateRef
+                  ? `Paiements antérieurs (après ${preview.derivation.priorCertificateRef})`
+                  : "Paiements antérieurs",
+                <Amount value={parseFloat(preview.derivation.previousPayments)} denomination="HT" />,
+                { testId: "text-preview-multi-previous" },
+              )}
+              {row("Retenue de garantie (cumul)", <Amount value={parseFloat(preview.deductions.retenueGarantie)} denomination="HT" />)}
+              {row("Compte prorata (période)", <Amount value={parseFloat(preview.deductions.periodProrataDeduction)} denomination="HT" />)}
+              {parseFloat(preview.deductions.periodAcompteRecoupment) > 0 &&
+                row("Récupération acompte (période)", <>− <Amount value={parseFloat(preview.deductions.periodAcompteRecoupment)} denomination="HT" /></>)}
+              {row("Net à payer HT", <Amount value={parseFloat(preview.deductions.netToPayHt)} denomination="HT" />, { bold: true, testId: "text-preview-multi-net-ht" })}
+              {row(
+                preview.deductions.tvaAutoliquidation ? "TVA (autoliquidation)" : `TVA (${preview.deductions.tvaRatePercent} %)`,
+                <Amount value={parseFloat(preview.deductions.tvaAmount)} denomination="TVA" />,
+              )}
+              {row("Net à payer TTC", <Amount value={parseFloat(preview.deductions.netToPayTtc)} denomination="TTC" />, { bold: true, testId: "text-preview-multi-net-ttc" })}
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              Le certificat est créé en brouillon, lié à chacune de ces factures. Vous pourrez le vérifier et l'émettre depuis la page Certificats.
+            </p>
+          </div>
+        ) : null}
+
+        <div className="flex items-center justify-end gap-2 pt-1">
+          <Button variant="outline" onClick={onClose} data-testid="button-cancel-create-certificat-multi">
+            Annuler
+          </Button>
+          <Button
+            className="bg-[#0B2545] hover:bg-[#0B2545]/90 text-white gap-1.5"
+            disabled={!preview || createMutation.isPending}
+            onClick={() => createMutation.mutate()}
+            data-testid="button-confirm-create-certificat-multi"
+          >
+            {createMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <Award size={14} />}
+            Créer le certificat groupé
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 interface FacturesTabProps {
   projectId: string;
   contractors: Contractor[];
@@ -256,6 +403,18 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
   });
   const certLinkByInvoice = new Map((certLinks ?? []).map((l) => [l.invoiceId, l]));
   const [certDialogInvoice, setCertDialogInvoice] = useState<Invoice | null>(null);
+
+  // Multi-facture certificats — selection of eligible factures (same contractor).
+  const [selectedForCert, setSelectedForCert] = useState<Set<number>>(new Set());
+  const [multiCertDialogOpen, setMultiCertDialogOpen] = useState(false);
+  const toggleCertSelection = (invoiceId: number) => {
+    setSelectedForCert((prev) => {
+      const next = new Set(prev);
+      if (next.has(invoiceId)) next.delete(invoiceId);
+      else next.add(invoiceId);
+      return next;
+    });
+  };
 
   const contractorMap = new Map(contractors.map(c => [c.id, c.name]));
   const devisMap = new Map((devisList ?? []).map(d => [d.id, d]));
@@ -357,10 +516,50 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
         </Button>
       </div>
 
+      {selectedForCert.size > 0 && (() => {
+        const selectedInvoices = (invoices ?? []).filter((i) => selectedForCert.has(i.id));
+        const selTotalHt = selectedInvoices.reduce((s, i) => s + parseFloat(i.amountHt), 0);
+        const selContractor = selectedInvoices[0] ? contractorMap.get(selectedInvoices[0].contractorId) : "";
+        return (
+          <div
+            className="flex items-center justify-between gap-3 flex-wrap rounded-2xl border border-[#0B2545]/20 bg-[#0B2545]/5 px-4 py-3"
+            data-testid="bar-certificat-selection"
+          >
+            <div className="text-[12px] text-[#0B2545]">
+              <span className="font-bold" data-testid="text-certificat-selection-count">{selectedInvoices.length}</span>{" "}
+              facture{selectedInvoices.length > 1 ? "s" : ""} sélectionnée{selectedInvoices.length > 1 ? "s" : ""}
+              {selContractor ? ` — ${selContractor}` : ""} · <Amount value={selTotalHt} denomination="HT" />
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setSelectedForCert(new Set())} data-testid="button-clear-certificat-selection">
+                <span className="text-[9px] font-bold uppercase tracking-widest">Effacer</span>
+              </Button>
+              <Button
+                size="sm"
+                className="bg-[#0B2545] hover:bg-[#0B2545]/90 text-white gap-1.5"
+                disabled={selectedInvoices.length < 2 || isArchived}
+                onClick={() => setMultiCertDialogOpen(true)}
+                data-testid="button-create-certificat-multi"
+                title={selectedInvoices.length < 2 ? "Sélectionnez au moins 2 factures" : undefined}
+              >
+                <Award size={13} />
+                <span className="text-[10px] font-bold uppercase tracking-widest">Certificat groupé ({selectedInvoices.length})</span>
+              </Button>
+            </div>
+          </div>
+        );
+      })()}
+
       {invoices && invoices.length > 0 ? (
         <div className="space-y-3">
           {invoices.map((inv) => {
             const dv = devisMap.get(inv.devisId);
+            const isEligibleForCert =
+              !certLinkByInvoice.get(inv.id) && dv?.acompteInvoiceId !== inv.id && inv.status !== "void" && !isArchived;
+            const selectionContractorId = selectedForCert.size > 0
+              ? (invoices ?? []).find((i) => selectedForCert.has(i.id))?.contractorId ?? null
+              : null;
+            const wrongContractor = selectionContractorId != null && inv.contractorId !== selectionContractorId;
             return (
               <div key={inv.id}>
                 <LuxuryCard data-testid={`card-facture-${inv.id}`}>
@@ -370,6 +569,18 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                     data-testid={`row-facture-toggle-${inv.id}`}
                   >
                     <div className="flex items-center gap-3 flex-wrap min-w-0 flex-1">
+                      {isEligibleForCert && (
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 accent-[#0B2545] cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+                          checked={selectedForCert.has(inv.id)}
+                          disabled={wrongContractor}
+                          title={wrongContractor ? "Un certificat groupé couvre les factures d'une seule entreprise" : "Sélectionner pour un certificat groupé"}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={() => toggleCertSelection(inv.id)}
+                          data-testid={`checkbox-select-facture-${inv.id}`}
+                        />
+                      )}
                       {expandedInvoice === inv.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
@@ -506,6 +717,20 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
           </p>
         </LuxuryCard>
       )}
+
+      {multiCertDialogOpen && (() => {
+        const selectedInvoices = (invoices ?? []).filter((i) => selectedForCert.has(i.id));
+        if (selectedInvoices.length < 2) return null;
+        return (
+          <CreateMultiCertificatDialog
+            invoices={selectedInvoices}
+            contractorName={contractorMap.get(selectedInvoices[0].contractorId) ?? `#${selectedInvoices[0].contractorId}`}
+            projectId={projectId}
+            onClose={() => setMultiCertDialogOpen(false)}
+            onCreated={() => setSelectedForCert(new Set())}
+          />
+        );
+      })()}
 
       {certDialogInvoice && (
         <CreateCertificatDialog

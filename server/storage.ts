@@ -2255,6 +2255,27 @@ export class DatabaseStorage implements IStorage {
         .returning();
       if (!superseded) throw new Error(`Certificat ${originalId} disappeared during reissue`);
       const [created] = await tx.insert(certificats).values(draft).returning();
+      // Multi-facture certificats — the reissue REPLACES the original, so it
+      // must certify the same source documents: copy the junction rows or the
+      // replacement loses its invoice provenance (the generator would fall
+      // back to whole-contractor scope and the factures would look
+      // uncertified again).
+      const originalSources = await tx
+        .select()
+        .from(certificatSources)
+        .where(eq(certificatSources.certificatId, originalId));
+      if (originalSources.length > 0) {
+        await tx
+          .insert(certificatSources)
+          .values(
+            originalSources.map((s) => ({
+              certificatId: created.id,
+              invoiceId: s.invoiceId,
+              situationId: s.situationId,
+            })),
+          )
+          .onConflictDoNothing();
+      }
       return created;
     });
   }

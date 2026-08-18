@@ -9,7 +9,69 @@ import {
   formatCurrencyNoSymbol,
   computeCertificatDeductions,
   computeEffectiveTvaRatePercent,
+  checkInvoiceSetTvaCompatibility,
 } from "../financial-utils";
+
+describe("checkInvoiceSetTvaCompatibility", () => {
+  it("accepts a uniform 20% selection", () => {
+    const res = checkInvoiceSetTvaCompatibility([
+      { amountHt: "1000.00", amountTtc: "1200.00" },
+      { amountHt: "500.00", amountTtc: "600.00" },
+    ]);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.effectiveRatePercent).toBe(20);
+  });
+
+  it("accepts a uniform 10% selection with cent-level rounding", () => {
+    const res = checkInvoiceSetTvaCompatibility([
+      { amountHt: "333.33", amountTtc: "366.66" },
+      { amountHt: "666.67", amountTtc: "733.34" },
+    ]);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.effectiveRatePercent).toBeCloseTo(10, 1);
+  });
+
+  it("rejects a mixed 10%/20% selection and points at an offender", () => {
+    const res = checkInvoiceSetTvaCompatibility([
+      { amountHt: "1000.00", amountTtc: "1200.00" }, // 20%
+      { amountHt: "1000.00", amountTtc: "1100.00" }, // 10%
+    ]);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.offendingIndex).not.toBeNull();
+  });
+
+  it("accepts a single invoice (rate derived from itself)", () => {
+    const res = checkInvoiceSetTvaCompatibility([{ amountHt: "250.00", amountTtc: "275.00" }]);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.effectiveRatePercent).toBe(10);
+  });
+
+  it("rejects when the aggregate rate is unusable (TTC below HT)", () => {
+    const res = checkInvoiceSetTvaCompatibility([
+      { amountHt: "1000.00", amountTtc: "900.00" },
+      { amountHt: "100.00", amountTtc: "120.00" },
+    ]);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.effectiveRatePercent).toBeNull();
+  });
+
+  it("rejects a zero-HT invoice inside an otherwise valid selection", () => {
+    const res = checkInvoiceSetTvaCompatibility([
+      { amountHt: "1000.00", amountTtc: "1200.00" },
+      { amountHt: "0.00", amountTtc: "0.00" },
+    ]);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.offendingIndex).toBe(1);
+  });
+
+  it("tolerates up to 2 cents of independent rounding per invoice", () => {
+    const res = checkInvoiceSetTvaCompatibility([
+      { amountHt: "100.00", amountTtc: "120.02" },
+      { amountHt: "100.00", amountTtc: "120.00" },
+    ]);
+    expect(res.ok).toBe(true);
+  });
+});
 
 describe("roundCurrency", () => {
   it("rounds 1.005 up to 1.01", () => {

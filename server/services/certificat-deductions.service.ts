@@ -50,6 +50,14 @@ export interface ResolveCertificatDeductionsInput {
    * refused unless the marché's PV is approved with a reception date.
    */
   pvOverride?: boolean;
+  /**
+   * Multi-facture certificats — explicit documentary TVA basis. When the
+   * certificat certifies a SELECTED set of factures, its documentary rate
+   * must be derived from those documents only, never from every invoice of
+   * the contractor (which could carry other periods/rates). When omitted,
+   * the resolver keeps the historical whole-contractor scan.
+   */
+  documentaryBasisInvoices?: ReadonlyArray<{ amountHt: string; amountTtc: string }>;
 }
 
 /** Task #464 — a non-superseded solde certificat already exists for the pair. */
@@ -220,13 +228,21 @@ export async function resolveCertificatDeductions(
   if (!tvaAutoliquidation) {
     let sumHt = 0;
     let sumTtc = 0;
-    for (const d of devisList) {
-      if (d.contractorId !== input.contractorId) continue;
-      if (d.status === "void" || d.signOffStage === "void") continue;
-      const invoices = await storage.getInvoicesByDevis(d.id);
-      for (const inv of invoices) {
+    if (input.documentaryBasisInvoices) {
+      // Selection-scoped basis: rate derived from the certified documents only.
+      for (const inv of input.documentaryBasisInvoices) {
         sumHt += parseFloat(inv.amountHt) || 0;
         sumTtc += parseFloat(inv.amountTtc) || 0;
+      }
+    } else {
+      for (const d of devisList) {
+        if (d.contractorId !== input.contractorId) continue;
+        if (d.status === "void" || d.signOffStage === "void") continue;
+        const invoices = await storage.getInvoicesByDevis(d.id);
+        for (const inv of invoices) {
+          sumHt += parseFloat(inv.amountHt) || 0;
+          sumTtc += parseFloat(inv.amountTtc) || 0;
+        }
       }
     }
     documentaryTvaRatePercent = computeEffectiveTvaRatePercent(sumHt, sumTtc);

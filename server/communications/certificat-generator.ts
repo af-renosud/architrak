@@ -714,9 +714,30 @@ export async function generateCertificatPdf(
   }
 
   const allDevis = await storage.getDevisByProjectAndContractor(certificat.projectId, certificat.contractorId);
-  const activeDevis = allDevis.filter(d => d.status !== "void");
+  const allActiveDevis = allDevis.filter(d => d.status !== "void");
 
-  // Task #225 — Mismatch gate. Walk every active devis + its invoices,
+  // Multi-facture certificats — explicit `certificat_sources` invoice rows
+  // scope the document: the PDF must present ONLY the selected factures and
+  // their parent devis, or a grouped certificat would visually claim every
+  // invoice of the contractor. No invoice sources (manual, acompte, legacy)
+  // ⇒ historical whole-contractor behavior.
+  const sourceRows = await storage.getCertificatSources(certificatId);
+  const selectedInvoiceIds = new Set(
+    sourceRows.map((s) => s.invoiceId).filter((id): id is number => id != null),
+  );
+  const scoped = selectedInvoiceIds.size > 0;
+
+  const devisWithInvoices = await Promise.all(
+    allActiveDevis.map(async (d) => {
+      const invoicesAll = await storage.getInvoicesByDevis(d.id);
+      const invoices = scoped ? invoicesAll.filter((inv) => selectedInvoiceIds.has(inv.id)) : invoicesAll;
+      return { devis: d, invoices };
+    }),
+  );
+  const scopedEntries = scoped ? devisWithInvoices.filter((e) => e.invoices.length > 0) : devisWithInvoices;
+  const activeDevis = scopedEntries.map((e) => e.devis);
+
+  // Task #225 — Mismatch gate. Walk every in-scope devis + its in-scope invoices,
   // collect rows whose extracted_iban disagrees with the ArchiDoc value,
   // and demand an architect override for each unique disagreeing IBAN.
   // Null/empty extracted_iban is treated as "AI couldn't see one" and is
@@ -724,7 +745,7 @@ export async function generateCertificatPdf(
   // gate. Comparison is whitespace/case insensitive via ibansMatch.
   const archidocIbanCanonical = normaliseIban(contractor.iban);
   const mismatches: BankingMismatchDocRef[] = [];
-  for (const d of activeDevis) {
+  for (const { devis: d, invoices: invoicesForDevis } of scopedEntries) {
     if (d.extractedIban && !ibansMatch(d.extractedIban, contractor.iban)) {
       const override = await storage.findBankingMismatchOverride({
         docKind: "devis",
@@ -738,7 +759,6 @@ export async function generateCertificatPdf(
         });
       }
     }
-    const invoicesForDevis = await storage.getInvoicesByDevis(d.id);
     for (const inv of invoicesForDevis) {
       if (inv.extractedIban && !ibansMatch(inv.extractedIban, contractor.iban)) {
         const override = await storage.findBankingMismatchOverride({
@@ -760,9 +780,8 @@ export async function generateCertificatPdf(
   }
 
   const devisDetails: DevisWithDetails[] = await Promise.all(
-    activeDevis.map(async (d) => {
+    scopedEntries.map(async ({ devis: d, invoices }) => {
       const lot = d.lotId ? (await storage.getLot(d.lotId)) ?? null : null;
-      const invoices = await storage.getInvoicesByDevis(d.id);
       const invoicedTtc = invoices.reduce((sum, inv) => sum + parseFloat(inv.amountTtc), 0);
       return { devis: d, lot, invoices, invoicedTtc };
     })

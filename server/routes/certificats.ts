@@ -14,8 +14,14 @@ import { PvReceptionRequiredError, isPvReceptionApproved } from "../services/pv-
 import { getDocumentBuffer } from "../storage/object-storage";
 import { reconcilePayments } from "../services/certificat-payments.service";
 import { db } from "../db";
-import { certificats as certificatsTable, certificatSources, invoices as invoicesTable, devis as devisTable } from "@shared/schema";
-import { eq, sql } from "drizzle-orm";
+import { certificats as certificatsTable, certificatSources } from "@shared/schema";
+import { eq } from "drizzle-orm";
+import {
+  deriveCertificatFromInvoices,
+  createCertificatFromInvoices,
+  InvoiceStateChangedError,
+  DerivationRefusedError,
+} from "../services/certificat-from-invoices.service";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
@@ -711,136 +717,66 @@ router.get(
 // recorded in `certificat_sources` at creation (the seal's own linking pass
 // uses onConflictDoNothing, so no duplicate rows).
 
-interface InvoiceCertDerivation {
-  contractorId: number;
-  projectId: number;
-  devisId: number;
-  mode: "situation" | "invoice";
-  periodClaimHt: number;
-  totalWorksHt: string;
-  previousPayments: string;
-  priorCertificateRef: string | null;
-}
+// Derivation + creation now live in the shared multi-facture service
+// (server/services/certificat-from-invoices.service.ts); the single-invoice
+// endpoints below are thin wrappers over the N-invoice versions.
 
-type InvoiceCertRefusal =
-  | { status: 404; body: { code: string; message: string } }
-  | { status: 409; body: { code: string; message: string; certificateRef?: string; certificatId?: number } };
-
-/** Latest non-superseded, non-acompte certificat — same ordering as the resolver. */
-async function latestPriorProgressCert(projectId: number, contractorId: number) {
-  const priors = (await storage.getCertificatsByProjectAndContractor(projectId, contractorId)).filter(
-    (c) => c.status !== "superseded" && c.acompteDevisId == null,
-  );
-  return (
-    priors
-      .slice()
-      .sort((a, b) => {
-        const da = a.dateIssued ?? "";
-        const db = b.dateIssued ?? "";
-        if (da !== db) return da < db ? -1 : 1;
-        return a.id - b.id;
-      })
-      .at(-1) ?? null
-  );
-}
-
-/** Live (non-superseded) certificat already certifying this invoice, if any. */
-async function liveCertForInvoice(invoiceId: number) {
-  const sources = await storage.getCertificatSourcesForDocuments({ invoiceIds: [invoiceId], situationIds: [] });
-  for (const src of sources) {
-    const cert = await storage.getCertificat(src.certificatId);
-    if (cert && cert.status !== "superseded") return cert;
+async function buildPreviewPayload(invoiceIds: number[], res: import("express").Response) {
+  const result = await deriveCertificatFromInvoices(invoiceIds);
+  if (!result.ok) return res.status(result.refusal.status).json(result.refusal.body);
+  const d = result.derivation;
+  let deductions;
+  try {
+    deductions = await resolveCertificatDeductions({
+      projectId: d.projectId,
+      contractorId: d.contractorId,
+      totalWorksHt: d.totalWorksHt,
+      pvMvAdjustment: "0.00",
+      previousPayments: d.previousPayments,
+      documentaryBasisInvoices: d.invoices.map((r) => ({ amountHt: r.amountHt, amountTtc: r.amountTtc })),
+    });
+  } catch (err) {
+    const mapped = mapSoldeError(err);
+    if (mapped) return res.status(mapped.status).json(mapped.body);
+    throw err;
   }
-  return null;
-}
-
-async function deriveCertificatFromInvoice(
-  invoiceId: number,
-): Promise<{ ok: true; derivation: InvoiceCertDerivation } | { ok: false; refusal: InvoiceCertRefusal }> {
-  const invoice = await storage.getInvoice(invoiceId);
-  if (!invoice) {
-    return { ok: false, refusal: { status: 404, body: { code: "INVOICE_NOT_FOUND", message: "Facture introuvable." } } };
-  }
-  if (invoice.status === "void") {
-    return {
-      ok: false,
-      refusal: { status: 409, body: { code: "INVOICE_VOID", message: "Cette facture est annulée — aucun certificat ne peut être créé." } },
-    };
-  }
-  const devis = await storage.getDevis(invoice.devisId);
-  if (!devis) {
-    return { ok: false, refusal: { status: 404, body: { code: "DEVIS_NOT_FOUND", message: "Devis parent introuvable." } } };
-  }
-  if (devis.status === "void" || devis.signOffStage === "void") {
-    return {
-      ok: false,
-      refusal: { status: 409, body: { code: "DEVIS_VOID", message: "Le devis parent est annulé — aucun certificat ne peut être créé depuis cette facture." } },
-    };
-  }
-  // The facture d'acompte is paid through the acompte lifecycle (or the
-  // no-invoice acompte certificat) — never through a progress certificat.
-  if (devis.acompteInvoiceId === invoice.id) {
-    return {
-      ok: false,
-      refusal: {
-        status: 409,
-        body: { code: "INVOICE_IS_ACOMPTE", message: "Cette facture est la facture d'acompte — l'acompte se règle via le cycle acompte du devis, pas par un certificat d'avancement." },
-      },
-    };
-  }
-  const existingCert = await liveCertForInvoice(invoice.id);
-  if (existingCert) {
-    return {
-      ok: false,
-      refusal: {
-        status: 409,
-        body: {
-          code: "INVOICE_ALREADY_CERTIFIED",
-          message: `Cette facture est déjà certifiée par ${existingCert.certificateRef}.`,
-          certificateRef: existingCert.certificateRef,
-          certificatId: existingCert.id,
-        },
-      },
-    };
-  }
-
-  // Period claim: Mode B invoices carry a situation whose cumulative/previous
-  // figures encode the claim for THAT devis; Mode A invoices claim their own
-  // HT. Cumulative works for the certificat = prior certified cumulative
-  // (contractor scope) + this period's claim.
-  const situations = await storage.getSituationsByDevis(invoice.devisId);
-  const situation = situations.find((s) => s.invoiceId === invoice.id) ?? null;
-  const periodClaimHt = situation
-    ? Math.round((parseFloat(situation.cumulativeHt) - parseFloat(situation.previousHt ?? "0")) * 100) / 100
-    : Math.round(parseFloat(invoice.amountHt) * 100) / 100;
-  if (!Number.isFinite(periodClaimHt) || periodClaimHt <= 0) {
-    return {
-      ok: false,
-      refusal: { status: 409, body: { code: "INVOICE_NO_CLAIM", message: "Le montant réclamé par cette facture est nul ou invalide." } },
-    };
-  }
-
-  const prior = await latestPriorProgressCert(invoice.projectId, invoice.contractorId);
-  const totalWorksHt = (prior ? parseFloat(prior.totalWorksHt) : 0) + periodClaimHt;
-  // Cumulative prior net = the prior certificat's own previousPayments + its
-  // period net (previousPayments is cumulative net certified BEFORE it).
-  const previousPayments = prior
-    ? parseFloat(prior.previousPayments ?? "0") + parseFloat(prior.netToPayHt ?? "0")
-    : 0;
-
-  return {
-    ok: true,
+  const nextRef = await storage.getNextCertificateRef(d.projectId);
+  // Backwards-compatible single-invoice fields alongside the multi shape.
+  const firstRow = d.invoices[0];
+  return res.json({
     derivation: {
-      contractorId: invoice.contractorId,
-      projectId: invoice.projectId,
-      devisId: invoice.devisId,
-      mode: situation ? "situation" : "invoice",
-      periodClaimHt,
-      totalWorksHt: totalWorksHt.toFixed(2),
-      previousPayments: previousPayments.toFixed(2),
-      priorCertificateRef: prior?.certificateRef ?? null,
+      ...d,
+      devisId: firstRow.devisId,
+      mode: firstRow.mode,
     },
-  };
+    deductions,
+    nextRef,
+  });
+}
+
+async function handleCreateFromInvoices(
+  invoiceIds: number[],
+  identity: { projectId: number; contractorId: number },
+  res: import("express").Response,
+) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const cert = await createCertificatFromInvoices(invoiceIds, identity);
+      return res.status(201).json(cert);
+    } catch (err) {
+      if (err instanceof InvoiceStateChangedError) {
+        return res.status(409).json({ code: "INVOICE_STATE_CHANGED", message: "Une facture a changé pendant la création — actualisez et réessayez." });
+      }
+      if (err instanceof DerivationRefusedError) {
+        return res.status(err.refusal.status).json(err.refusal.body);
+      }
+      const mapped = mapSoldeError(err);
+      if (mapped) return res.status(mapped.status).json(mapped.body);
+      const { code } = pgErrorInfo(err);
+      if (code === "23505" && attempt < 2) continue; // ref collision (e.g. manual dialog racing) — full retry
+      throw err;
+    }
+  }
 }
 
 // Read-only derivation preview powering the confirmation dialog.
@@ -848,25 +784,7 @@ router.get(
   "/api/invoices/:id/certificat-preview",
   validateRequest({ params: idParams }),
   async (req, res) => {
-    const result = await deriveCertificatFromInvoice(Number(req.params.id));
-    if (!result.ok) return res.status(result.refusal.status).json(result.refusal.body);
-    const d = result.derivation;
-    let deductions;
-    try {
-      deductions = await resolveCertificatDeductions({
-        projectId: d.projectId,
-        contractorId: d.contractorId,
-        totalWorksHt: d.totalWorksHt,
-        pvMvAdjustment: "0.00",
-        previousPayments: d.previousPayments,
-      });
-    } catch (err) {
-      const mapped = mapSoldeError(err);
-      if (mapped) return res.status(mapped.status).json(mapped.body);
-      throw err;
-    }
-    const nextRef = await storage.getNextCertificateRef(d.projectId);
-    res.json({ derivation: d, deductions, nextRef });
+    await buildPreviewPayload([Number(req.params.id)], res);
   },
 );
 
@@ -878,92 +796,53 @@ router.post(
   async (req, res) => {
     const invoiceId = Number(req.params.id);
     // Identity read only — everything financial is (re-)derived under the
-    // chain lock inside the transaction below.
+    // chain lock inside the service transaction.
     const invoiceRef = await storage.getInvoice(invoiceId);
     if (!invoiceRef) return res.status(404).json({ code: "INVOICE_NOT_FOUND", message: "Facture introuvable." });
+    await handleCreateFromInvoices([invoiceId], { projectId: invoiceRef.projectId, contractorId: invoiceRef.contractorId }, res);
+  },
+);
 
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        // ONE transaction holding the per-(project, contractor) progress-chain
-        // advisory lock: two concurrent creations for the SAME contractor
-        // (same or different invoices) serialise here, so the second one
-        // re-derives its cumulative/previousPayments AFTER the first has
-        // committed — a stale prior chain can never be persisted. The invoice
-        // row lock additionally pins the invoice's state, and the source-link
-        // re-check inside the transaction makes double-certification of one
-        // facture impossible.
-        const cert = await db.transaction(async (tx) => {
-          await tx.execute(sql`select pg_advisory_xact_lock(${invoiceRef.projectId}, ${invoiceRef.contractorId})`);
-          const [lockedInvoice] = await tx.select().from(invoicesTable).where(eq(invoicesTable.id, invoiceId)).for("update");
-          if (!lockedInvoice || lockedInvoice.status === "void") {
-            const e = new Error("invoice_state_changed");
-            (e as Error & { invoiceStateChanged?: boolean }).invoiceStateChanged = true;
-            throw e;
-          }
-          // The advisory lock was taken for the pre-lock identity — a
-          // concurrent reassignment would let the derivation run outside
-          // the lock's protection.
-          if (lockedInvoice.projectId !== invoiceRef.projectId || lockedInvoice.contractorId !== invoiceRef.contractorId) {
-            const e = new Error("invoice_state_changed");
-            (e as Error & { invoiceStateChanged?: boolean }).invoiceStateChanged = true;
-            throw e;
-          }
-          // Pin the parent devis too: a concurrent void / acompte-link commit
-          // now blocks until we finish (or is already visible to the
-          // re-derivation below).
-          await tx.select({ id: devisTable.id }).from(devisTable).where(eq(devisTable.id, lockedInvoice.devisId)).for("update");
+// ─── Multi-facture certificats — grouped creation from a selection ─────────
+const fromInvoicesBody = z.object({
+  invoiceIds: z.array(z.number().int().positive()).min(1).max(50),
+});
 
-          // Full re-derivation UNDER the lock (guards + situation + prior
-          // chain read committed state; concurrent progress-cert creators
-          // hold the same advisory lock, so what we read is final).
-          const result = await deriveCertificatFromInvoice(invoiceId);
-          if (!result.ok) {
-            const e = new Error("derivation_refused");
-            (e as Error & { refusal?: InvoiceCertRefusal }).refusal = result.refusal;
-            throw e;
-          }
-          const d = result.derivation;
-          const deductions = await resolveCertificatDeductions({
-            projectId: d.projectId,
-            contractorId: d.contractorId,
-            totalWorksHt: d.totalWorksHt,
-            pvMvAdjustment: "0.00",
-            previousPayments: d.previousPayments,
-          });
-
-          const nextRef = await storage.getNextCertificateRef(d.projectId);
-          const [created] = await tx
-            .insert(certificatsTable)
-            .values({
-              projectId: d.projectId,
-              contractorId: d.contractorId,
-              certificateRef: nextRef,
-              dateIssued: new Date().toISOString().split("T")[0],
-              totalWorksHt: d.totalWorksHt,
-              pvMvAdjustment: "0.00",
-              previousPayments: d.previousPayments,
-              status: "draft",
-              notes: `Créé depuis la facture #${lockedInvoice.invoiceNumber}.`,
-              ...deductions,
-            })
-            .returning();
-          await tx.insert(certificatSources).values({ certificatId: created.id, invoiceId, situationId: null }).onConflictDoNothing();
-          return created;
-        });
-        return res.status(201).json(cert);
-      } catch (err) {
-        if ((err as { invoiceStateChanged?: boolean }).invoiceStateChanged) {
-          return res.status(409).json({ code: "INVOICE_STATE_CHANGED", message: "La facture a changé pendant la création — actualisez et réessayez." });
-        }
-        const refusal = (err as { refusal?: InvoiceCertRefusal }).refusal;
-        if (refusal) return res.status(refusal.status).json(refusal.body);
-        const mapped = mapSoldeError(err);
-        if (mapped) return res.status(mapped.status).json(mapped.body);
-        const { code } = pgErrorInfo(err);
-        if (code === "23505" && attempt < 2) continue; // ref collision (e.g. manual dialog racing) — full retry
-        throw err;
-      }
+/** Load the selection, enforce URL-project ownership, return shared identity. */
+async function checkSelectionProject(invoiceIds: number[], projectId: number, res: import("express").Response) {
+  const uniqueIds = Array.from(new Set(invoiceIds));
+  for (const id of uniqueIds) {
+    const inv = await storage.getInvoice(id);
+    if (!inv) {
+      res.status(404).json({ code: "INVOICE_NOT_FOUND", message: "Facture introuvable." });
+      return null;
     }
+    if (inv.projectId !== projectId) {
+      res.status(409).json({ code: "INVOICE_WRONG_PROJECT", message: "Une des factures sélectionnées n'appartient pas à ce projet." });
+      return null;
+    }
+  }
+  const first = await storage.getInvoice(uniqueIds[0]);
+  return { uniqueIds, identity: { projectId, contractorId: first!.contractorId } };
+}
+
+router.post(
+  "/api/projects/:projectId/certificats/from-invoices/preview",
+  validateRequest({ params: projectIdParams, body: fromInvoicesBody }),
+  async (req, res) => {
+    const checked = await checkSelectionProject(req.body.invoiceIds, Number(req.params.projectId), res);
+    if (!checked) return;
+    await buildPreviewPayload(checked.uniqueIds, res);
+  },
+);
+
+router.post(
+  "/api/projects/:projectId/certificats/from-invoices",
+  validateRequest({ params: projectIdParams, body: fromInvoicesBody }),
+  async (req, res) => {
+    const checked = await checkSelectionProject(req.body.invoiceIds, Number(req.params.projectId), res);
+    if (!checked) return;
+    await handleCreateFromInvoices(checked.uniqueIds, checked.identity, res);
   },
 );
 
