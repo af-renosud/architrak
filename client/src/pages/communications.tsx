@@ -408,9 +408,8 @@ const typeIcons: Record<string, typeof Send> = {
   certificat_sent: FileCheck,
   certificat_contractor_notice: FileCheck,
   payment_chase: Clock,
-  contractor_query: MessageSquare,
-  client_update: Send,
   devis_signature_context: PenLine,
+  devis_check_bundle: MessageSquare,
   general: MessageSquare,
 };
 
@@ -418,9 +417,8 @@ const typeLabels: Record<string, string> = {
   certificat_sent: "Certificat Sent",
   certificat_contractor_notice: "Contractor Payment Notice",
   payment_chase: "Payment Chase",
-  contractor_query: "Contractor Query",
-  client_update: "Client Update",
-  devis_signature_context: "Devis Signature Context",
+  devis_signature_context: "Devis Sent (Signature)",
+  devis_check_bundle: "Devis Questions Bundle",
   general: "General",
 };
 
@@ -637,10 +635,10 @@ export default function Communications() {
             <SelectContent>
               <SelectItem value="all">All Types</SelectItem>
               <SelectItem value="certificat_sent">Certificat Sent</SelectItem>
+              <SelectItem value="certificat_contractor_notice">Contractor Payment Notice</SelectItem>
               <SelectItem value="payment_chase">Payment Chase</SelectItem>
-              <SelectItem value="contractor_query">Contractor Query</SelectItem>
-              <SelectItem value="client_update">Client Update</SelectItem>
-              <SelectItem value="devis_signature_context">Devis Signature Context</SelectItem>
+              <SelectItem value="devis_signature_context">Devis Sent (Signature)</SelectItem>
+              <SelectItem value="devis_check_bundle">Devis Questions Bundle</SelectItem>
               <SelectItem value="general">General</SelectItem>
             </SelectContent>
           </Select>
