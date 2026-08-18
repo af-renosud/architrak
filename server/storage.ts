@@ -147,6 +147,24 @@ export class AccountingStateConflictError extends Error {
   }
 }
 
+// Task #605 — thrown by sealCertificat when a source (invoice/situation) in
+// the rendered annexe is already claimed by ANOTHER non-superseded
+// certificat. The seal transaction rolls back entirely — the certificat
+// stays unsealed, never issuing a document that authorizes an
+// already-certified payment. Message is operator-facing (French).
+export class CertificatSourceConflictError extends Error {
+  constructor(
+    public certificatId: number,
+    public conflictingInvoiceIds: number[],
+    public claimingCertificateRefs: string[],
+  ) {
+    super(
+      `Émission refusée : ${conflictingInvoiceIds.length > 1 ? "des factures de ce certificat sont déjà certifiées" : "une facture de ce certificat est déjà certifiée"} par ${claimingCertificateRefs.join(", ")} — deux certificats actifs ne peuvent pas autoriser le paiement de la même facture.`,
+    );
+    this.name = "CertificatSourceConflictError";
+  }
+}
+
 /** Task #430 — pending works-commission fee entry + correlation data for ranking. */
 export interface WorksFeeCandidateRow {
   feeEntryId: number;
@@ -1212,6 +1230,8 @@ export interface IStorage {
     dateIssued: string;
     sourceRows: InsertCertificatSource[];
     expectedVersion: number;
+    projectId: number;
+    contractorId: number;
   }): Promise<Certificat | null>;
 
   // Task #451 — certificat_sources junction (idempotent via ON CONFLICT DO NOTHING).
@@ -2691,6 +2711,8 @@ export class DatabaseStorage implements IStorage {
     dateIssued: string;
     sourceRows: InsertCertificatSource[];
     expectedVersion: number;
+    projectId: number;
+    contractorId: number;
   }): Promise<Certificat | null> {
     // Task #451 — version-guard style conditional UPDATE: the WHERE clause is
     // the idempotency + consistency mechanism, never check-then-write.
@@ -2701,6 +2723,12 @@ export class DatabaseStorage implements IStorage {
     // columns and the certificat_sources junction commit atomically — a
     // sealed certificat without its source links must be impossible.
     return db.transaction(async (tx) => {
+      // Task #605 — same per-(project, contractor) advisory lock as
+      // createCertificatFromInvoices: a manual seal's source-linking pass
+      // serialises against grouped/single "from facture" creation, so both
+      // sides see each other's committed certificat_sources rows and one
+      // facture can never be certified by two live certificats.
+      await tx.execute(sql`select pg_advisory_xact_lock(${seal.projectId}, ${seal.contractorId})`);
       const [cert] = await tx
         .update(certificats)
         .set({
@@ -2718,6 +2746,43 @@ export class DatabaseStorage implements IStorage {
         .returning();
       if (!cert) return null;
       if (seal.sourceRows.length > 0) {
+        // Task #605 — a MANUAL certificat's seal links every invoice in the
+        // rendered annexe. Under the advisory lock, REFUSE the whole seal if
+        // any invoice or situation is already sourced by ANOTHER
+        // non-superseded certificat (e.g. a grouped "from facture"
+        // certificat): the rendered PDF and issuance snapshot include that
+        // facture's money, so silently dropping just the link would still
+        // issue a document authorizing an already-certified payment. The
+        // throw rolls back the seal columns too — the certificat stays
+        // unsealed and the operator gets a clear refusal. Superseded
+        // certificats keep their rows for audit but do not block.
+        const invoiceIds = seal.sourceRows.map((r) => r.invoiceId).filter((v): v is number => v != null);
+        const situationIds = seal.sourceRows.map((r) => r.situationId).filter((v): v is number => v != null);
+        const claimConditions: SQL[] = [];
+        if (invoiceIds.length > 0) claimConditions.push(inArray(certificatSources.invoiceId, invoiceIds));
+        if (situationIds.length > 0) claimConditions.push(inArray(certificatSources.situationId, situationIds));
+        const claimed = claimConditions.length > 0
+          ? await tx
+              .select({
+                invoiceId: certificatSources.invoiceId,
+                situationId: certificatSources.situationId,
+                certificateRef: certificats.certificateRef,
+              })
+              .from(certificatSources)
+              .innerJoin(certificats, eq(certificatSources.certificatId, certificats.id))
+              .where(and(
+                ne(certificatSources.certificatId, id),
+                ne(certificats.status, "superseded"),
+                or(...claimConditions),
+              ))
+          : [];
+        if (claimed.length > 0) {
+          throw new CertificatSourceConflictError(
+            id,
+            claimed.map((r) => r.invoiceId).filter((v): v is number => v != null),
+            Array.from(new Set(claimed.map((r) => r.certificateRef))),
+          );
+        }
         await tx.insert(certificatSources).values(seal.sourceRows).onConflictDoNothing();
       }
       return cert;

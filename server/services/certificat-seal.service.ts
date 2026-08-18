@@ -177,6 +177,15 @@ export async function sealCertificat(certificatId: number): Promise<{
       dateIssued,
       sourceRows,
       expectedVersion,
+      // Task #605 — the seal's source-linking pass runs under the same
+      // per-(project, contractor) advisory lock as grouped certificat
+      // creation, and REFUSES the whole seal (CertificatSourceConflictError,
+      // full rollback — the freshly rendered PDF is an orphan) if any
+      // rendered source is already certified by another live certificat: a
+      // manual certificat can never issue a document authorizing payment of
+      // a facture a grouped certificat already certifies.
+      projectId: existing.projectId,
+      contractorId: existing.contractorId,
     });
 
     if (sealed) {

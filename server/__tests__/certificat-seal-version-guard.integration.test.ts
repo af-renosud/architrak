@@ -65,6 +65,8 @@ const sealArgs = (key: string, expectedVersion: number, sourceRows: { certificat
   dateIssued: "2026-08-12",
   sourceRows,
   expectedVersion,
+  projectId,
+  contractorId,
 });
 
 describe("sealCertificat version guard (integration)", () => {

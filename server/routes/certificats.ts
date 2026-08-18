@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { storage } from "../storage";
+import { storage, CertificatSourceConflictError } from "../storage";
 import { insertCertificatSchema, type InsertCertificat } from "@shared/schema";
 import { generateCertificatPdf, BankingDetailsMissingError, BankingMismatchError } from "../communications/certificat-generator";
 import { sendCertificat, sendCommunication, CommunicationSendInProgressError } from "../communications/email-sender";
@@ -981,6 +981,16 @@ router.post(
           contractorName: err.contractorName,
           archidocIban: err.archidocIban,
           mismatches: err.mismatches,
+        });
+      }
+      // Task #605 — a source in the rendered annexe is already certified by
+      // another live certificat: the seal refused (nothing was issued).
+      if (err instanceof CertificatSourceConflictError) {
+        return res.status(409).json({
+          code: "CERTIFICAT_SOURCE_CONFLICT",
+          message: err.message,
+          conflictingInvoiceIds: err.conflictingInvoiceIds,
+          claimingCertificateRefs: err.claimingCertificateRefs,
         });
       }
       const message = err instanceof Error ? err.message : String(err);
