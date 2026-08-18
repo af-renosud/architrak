@@ -58,7 +58,9 @@ beforeAll(async () => {
     .values({ code: `T496-${Date.now()}`, name: "Cert from invoice test", clientName: "Test Client", status: "active" })
     .returning();
   projectId = p.id;
-  const [c] = await db.insert(contractors).values({ name: `T496 Contractor ${Date.now()}` }).returning();
+  // Task #612 — the creation endpoint now requires an IBAN; seed one so the
+  // existing test scenarios (create, double-click, concurrent) can proceed.
+  const [c] = await db.insert(contractors).values({ name: `T496 Contractor ${Date.now()}`, iban: "FR7630006000011234567890189" }).returning();
   contractorId = c.id;
   await db.insert(marches).values({
     projectId,

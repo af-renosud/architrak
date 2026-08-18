@@ -13,7 +13,7 @@ import { ChevronDown, ChevronRight, FileText, Upload, FileUp, Loader2, Save, Cal
 import { Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient, projectScopedKey } from "@/lib/queryClient";
+import { apiRequest, queryClient, projectScopedKey, ApiError } from "@/lib/queryClient";
 import type { Invoice, Contractor, Devis } from "@shared/schema";
 import { getInvoiceUploadErrorTitle } from "@shared/invoice-upload-errors";
 import { AdvisoriesList, AdvisoryBadge } from "@/components/advisories/AdvisoriesList";
@@ -276,7 +276,14 @@ function CreateMultiCertificatDialog({
       onClose();
     },
     onError: (err: Error) => {
-      toast({ title: "Création impossible", description: err.message, variant: "destructive" });
+      // Task #612 — the grouped-cert endpoint now blocks when the contractor
+      // has no IBAN on file, returning 422 BANKING_DETAILS_MISSING before any
+      // DB write. Surface the same human-readable message as the preview gate.
+      const code = err instanceof ApiError ? err.code : undefined;
+      const description = code === "BANKING_DETAILS_MISSING"
+        ? "Coordonnées bancaires manquantes — à compléter dans Archi Doc"
+        : err.message;
+      toast({ title: "Création impossible", description, variant: "destructive" });
     },
   });
 

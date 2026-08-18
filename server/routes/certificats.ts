@@ -759,6 +759,18 @@ async function handleCreateFromInvoices(
   identity: { projectId: number; contractorId: number },
   res: import("express").Response,
 ) {
+  // Task #612 — mirror the same IBAN gate the preview handler relies on via
+  // generateCertificatPdf. A cert created without an IBAN can never be
+  // previewed or issued; block here with the same 422 code so the FE can
+  // show the banking-missing message immediately, before any DB writes.
+  const contractor = await storage.getContractor(identity.contractorId);
+  if (!contractor?.iban) {
+    return res.status(422).json({
+      code: "BANKING_DETAILS_MISSING",
+      message: `Coordonnées bancaires manquantes — à compléter dans Archi Doc`,
+    });
+  }
+
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const cert = await createCertificatFromInvoices(invoiceIds, identity);
