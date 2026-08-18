@@ -40,6 +40,7 @@ import {
   type ExtractedDesignContract,
 } from "../services/design-contract-parser";
 import { getMilestonesWithPennylane } from "../services/design-contract-read.service";
+import { markMilestonePaidManually, transitionMilestoneStatus } from "../services/milestone-payment-suggestions.service";
 import { roundCurrency } from "../../shared/financial-utils";
 import { DESIGN_CONTRACT_ERROR_CODES } from "../../shared/design-contract-errors";
 import {
@@ -467,13 +468,43 @@ router.patch(
         return res.status(403).json({ message: "Not the contract owner" });
       }
       const body = req.body as z.infer<typeof milestonePatchSchema>;
-      const patch: Partial<InsertDesignContractMilestone> = {};
-      if (body.status) {
-        patch.status = body.status;
-        if (body.status === "reached") patch.reachedAt = new Date();
-        if (body.status === "invoiced") patch.invoicedAt = new Date();
-        if (body.status === "paid") patch.paidAt = new Date();
+      // Task #617 — `paid` is a money-state transition. It goes through the
+      // same locked, status-guarded transaction as suggestion confirms
+      // (milestone row lock + conditional update + in-tx dismissal of open
+      // suggestions), so a manual flip racing a suggestion confirm can never
+      // overwrite an email-derived paidAt or leave open suggestions behind.
+      if (body.status === "paid") {
+        if (body.notes !== undefined || body.triggerEvent) {
+          return res.status(400).json({
+            message: "Le passage à « payé » ne peut pas être combiné avec d'autres modifications.",
+            code: "PAID_TRANSITION_EXCLUSIVE",
+          });
+        }
+        const actorUser = await storage.getUser(userId);
+        const result = await markMilestonePaidManually({ milestoneId: id, actor: actorUser?.email ?? null });
+        if (!result.ok) return res.status(result.status).json({ message: result.message, code: result.code });
+        return res.json(result.milestone);
       }
+      if (existing.status === "paid" && body.status) {
+        return res.status(409).json({
+          message: "Un jalon payé ne peut pas revenir en arrière.",
+          code: "MILESTONE_ALREADY_PAID",
+        });
+      }
+      if (body.status) {
+        // Compare-and-set on the status we just read, so a PATCH racing a
+        // paid flip cannot regress the terminal paid state (TOCTOU-safe).
+        const result = await transitionMilestoneStatus({
+          milestoneId: id,
+          expectedStatus: existing.status,
+          toStatus: body.status,
+          notes: body.notes,
+          triggerEvent: body.triggerEvent,
+        });
+        if (!result.ok) return res.status(result.status).json({ message: result.message, code: result.code });
+        return res.json(result.milestone);
+      }
+      const patch: Partial<InsertDesignContractMilestone> = {};
       if (body.notes !== undefined) patch.notes = body.notes;
       if (body.triggerEvent) patch.triggerEvent = body.triggerEvent;
       const updated = await storage.updateDesignContractMilestone(id, patch);

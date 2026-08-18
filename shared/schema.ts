@@ -1027,6 +1027,58 @@ export const certificatPaymentSuggestions = pgTable("certificat_payment_suggesti
 ]);
 
 /**
+ * Task #617 — milestone_payment_suggestions: draft "client paid" suggestions
+ * for DESIGN-CONTRACT MILESTONES, detected from client replies on the Gmail
+ * thread of the firm's own invoiced honoraires facture (the confirmed
+ * architect_fee_invoices evidence carries the thread via its email document).
+ * Mirrors certificat_payment_suggestions: deterministic phrase detection,
+ * nothing auto-recorded — the architect confirms (milestone → paid, paidAt
+ * from the suggestion date) or dismisses. `emailMessageId` is UNIQUE, and at
+ * most one open pending suggestion per milestone (partial unique index).
+ */
+export const MILESTONE_PAYMENT_SUGGESTION_STATUSES = ["pending_review", "ambiguous", "confirmed", "dismissed"] as const;
+export type MilestonePaymentSuggestionStatus = (typeof MILESTONE_PAYMENT_SUGGESTION_STATUSES)[number];
+
+export const milestonePaymentSuggestions = pgTable("milestone_payment_suggestions", {
+  id: serial("id").primaryKey(),
+  milestoneId: integer("milestone_id").notNull().references(() => designContractMilestones.id, { onDelete: "cascade" }),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  architectFeeInvoiceId: integer("architect_fee_invoice_id"),
+  emailMessageId: text("email_message_id").notNull(),
+  emailThreadId: text("email_thread_id").notNull(),
+  senderEmail: text("sender_email").notNull(),
+  emailDate: timestamp("email_date").notNull(),
+  matchedExcerpt: text("matched_excerpt"),
+  suggestedAmount: numeric("suggested_amount", { precision: 12, scale: 2 }).notNull(),
+  suggestedDate: date("suggested_date").notNull(),
+  status: text("status").notNull().default("pending_review"),
+  reviewedBy: text("reviewed_by"),
+  reviewedAt: timestamp("reviewed_at"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  unique("milestone_payment_suggestions_message_unique").on(table.emailMessageId),
+  uniqueIndex("milestone_payment_suggestions_pending_unique")
+    .on(table.milestoneId)
+    .where(sql`${table.status} = 'pending_review'`),
+  index("milestone_payment_suggestions_milestone_id_idx").on(table.milestoneId),
+  index("milestone_payment_suggestions_project_id_idx").on(table.projectId),
+  index("milestone_payment_suggestions_status_idx").on(table.status),
+  check(
+    "milestone_payment_suggestions_status_check",
+    sql`${table.status} IN ('pending_review', 'ambiguous', 'confirmed', 'dismissed')`,
+  ),
+]);
+
+export const insertMilestonePaymentSuggestionSchema = createInsertSchema(milestonePaymentSuggestions).omit({
+  id: true,
+  createdAt: true,
+  reviewedBy: true,
+  reviewedAt: true,
+});
+export type MilestonePaymentSuggestion = typeof milestonePaymentSuggestions.$inferSelect;
+export type InsertMilestonePaymentSuggestion = z.infer<typeof insertMilestonePaymentSuggestionSchema>;
+
+/**
  * Task #451 — certificat_sources: FK-grounded record of exactly which
  * documents a sealed certificat certifies. Replaces the loose free-text
  * `invoices.certificate_number` (dropped in migration 0071). Each row links
@@ -3517,7 +3569,7 @@ export const architectFeeInvoiceEvents = pgTable("architect_fee_invoice_events",
   index("architect_fee_invoice_events_invoice_idx").on(table.architectFeeInvoiceId),
   check(
     "architect_fee_invoice_events_action_chk",
-    sql`${table.action} IN ('confirmed','dismissed','conflict_parked','replayed')`,
+    sql`${table.action} IN ('confirmed','dismissed','conflict_parked','replayed','milestone_paid')`,
   ),
 ]);
 

@@ -5,9 +5,10 @@ import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Badge } from "@/components/ui/badge";
-import { Coins, Plus, Pencil, Copy, Check, ReceiptEuro } from "lucide-react";
+import { Coins, Plus, Pencil, Copy, Check, ReceiptEuro, AlertTriangle } from "lucide-react";
 import { Link } from "wouter";
 import { OutstandingFeesPanel } from "@/components/fees/OutstandingFeesPanel";
+import { DetectedFeeInvoiceCard, usePendingFeeInvoices } from "@/components/fees/DetectedFeeInvoiceCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -129,6 +130,7 @@ export default function Fees() {
     queryKey: ["/api/projects"],
   });
 
+  const { data: pendingDetected } = usePendingFeeInvoices();
   const { data: feesList, isLoading: loadingFees } = useQuery<Fee[]>({
     queryKey: ["/api/projects", String(selectedProjectId), "fees"],
     enabled: !!selectedProjectId,
@@ -366,10 +368,33 @@ export default function Fees() {
               <Button variant="outline" size="sm" data-testid="button-fee-invoice-review-queue">
                 <ReceiptEuro className="w-4 h-4 mr-1" />
                 Factures détectées
+                {(pendingDetected?.length ?? 0) > 0 && (
+                  <Badge className="ml-2" data-testid="badge-pending-fee-invoices-count">
+                    {pendingDetected!.length}
+                  </Badge>
+                )}
               </Button>
             </Link>
           }
         />
+
+        {(pendingDetected?.length ?? 0) > 0 && (
+          <div className="space-y-2" data-testid="banner-pending-fee-invoices">
+            <div className="flex items-center gap-2 rounded border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-3 py-2">
+              <AlertTriangle size={14} className="text-amber-600 shrink-0" />
+              <p className="text-xs text-amber-900 dark:text-amber-200">
+                {pendingDetected!.length === 1
+                  ? "1 facture d'honoraires détectée dans Gmail attend votre vérification."
+                  : `${pendingDetected!.length} factures d'honoraires détectées dans Gmail attendent votre vérification.`}
+              </p>
+            </div>
+            <div className="space-y-3">
+              {pendingDetected!.map((row) => (
+                <DetectedFeeInvoiceCard key={row.id} row={row} compact />
+              ))}
+            </div>
+          </div>
+        )}
 
         <OutstandingFeesPanel
           scope={selectedProjectId ? "project" : "global"}

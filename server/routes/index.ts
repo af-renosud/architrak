@@ -21,6 +21,7 @@ import marcheDocumentsRouter from "./marche-documents";
 import certificatsRouter from "./certificats";
 import certificatPaymentsRouter from "./certificat-payments";
 import certificatPaymentSuggestionsRouter from "./certificat-payment-suggestions";
+import milestonePaymentSuggestionsRouter from "./milestone-payment-suggestions";
 import feesRouter from "./fees";
 import financialRouter from "./financial";
 import dashboardRouter from "./dashboard";
@@ -113,6 +114,7 @@ export async function registerRoutes(
   app.use(documentChainRouter);
   app.use(feesRouter);
   app.use(architectFeeInvoicesRouter);
+  app.use(milestonePaymentSuggestionsRouter);
   app.use(financialRouter);
   app.use(dashboardRouter);
   app.use(archidocRouter);

@@ -13,8 +13,9 @@
  * upload one.
  */
 import { useState } from "react";
+import { Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { FileText, Download, CheckCircle2, Circle, Loader2, AlertCircle, Receipt, Wallet } from "lucide-react";
+import { FileText, Download, CheckCircle2, Circle, Loader2, AlertCircle, Receipt, Wallet, Mail } from "lucide-react";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Button } from "@/components/ui/button";
@@ -22,7 +23,13 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { DesignContractUpload, type ConfirmedDesignContract } from "./DesignContractUpload";
-import type { DesignContract, DesignContractMilestone, DesignContractTriggerEvent } from "@shared/schema";
+import type { ArchitectFeeInvoice, DesignContract, DesignContractMilestone, DesignContractTriggerEvent, MilestonePaymentSuggestion } from "@shared/schema";
+
+type MilestoneSuggestionWithContext = MilestonePaymentSuggestion & {
+  milestoneLabel: string;
+  milestoneSequence: number;
+  milestoneStatus: string;
+};
 
 type MilestoneWithPennylane = DesignContractMilestone & {
   pennylaneInvoiceNumber?: string | null;
@@ -113,6 +120,59 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
     },
   });
 
+  // Task #617 — manual paid flip for invoiced/reached milestones.
+  const markPaidMutation = useMutation({
+    mutationFn: async (milestoneId: number) => {
+      const res = await apiRequest("PATCH", `/api/design-contracts/milestones/${milestoneId}`, {
+        status: "paid",
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "design-contract"] });
+      toast({ title: "Milestone marked paid" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not update milestone", description: err.message, variant: "destructive" });
+    },
+  });
+
+  // Task #617 — open "client paid" email suggestions for this project's milestones.
+  const { data: paymentSuggestions } = useQuery<MilestoneSuggestionWithContext[]>({
+    queryKey: ["/api/projects", String(projectId), "milestone-payment-suggestions"],
+    queryFn: async () => {
+      const res = await fetch(`/api/projects/${projectId}/milestone-payment-suggestions`, { credentials: "include" });
+      if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
+      return res.json();
+    },
+  });
+
+  const suggestionMutation = useMutation({
+    mutationFn: async ({ id, action }: { id: number; action: "confirm" | "dismiss" }) => {
+      const res = await apiRequest("POST", `/api/milestone-payment-suggestions/${id}/${action}`);
+      return res.json();
+    },
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "milestone-payment-suggestions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "design-contract"] });
+      toast({ title: vars.action === "confirm" ? "Payment confirmed — milestone marked paid" : "Suggestion dismissed" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not process suggestion", description: err.message, variant: "destructive" });
+    },
+  });
+
+  // Task #617 — Gmail-detected pending fee invoices that plausibly belong to
+  // this project (ranked candidate or exact milestone-amount match).
+  const { data: pendingInvoices } = useQuery<ArchitectFeeInvoice[]>({
+    queryKey: ["/api/architect-fee-invoices", { status: "pending_review" }],
+    queryFn: async () => {
+      const res = await fetch(`/api/architect-fee-invoices?status=pending_review`, { credentials: "include" });
+      if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
+      return res.json();
+    },
+  });
+
   if (isLoading) {
     return (
       <LuxuryCard data-testid="card-design-contract-loading">
@@ -157,6 +217,25 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
 
   const { contract, milestones } = data;
   const reachedCount = milestones.filter((m) => m.status !== "pending").length;
+
+  // A pending detected invoice "plausibly matches" this project when the
+  // ranker listed the project as a candidate, or its TTC equals an
+  // uninvoiced milestone amount.
+  const uninvoicedAmounts = new Set(
+    milestones
+      .filter((m) => m.status === "pending" || m.status === "reached")
+      .map((m) => Number(m.amountTtc).toFixed(2)),
+  );
+  const matchingPendingInvoices = (pendingInvoices ?? []).filter((inv) => {
+    const cand = inv.candidates as { projects?: { projectId: number }[] } | null;
+    if (cand?.projects?.some((p) => p.projectId === projectId)) return true;
+    if (inv.amountTtc != null && uninvoicedAmounts.has(Number(inv.amountTtc).toFixed(2))) return true;
+    return false;
+  });
+  const suggestionByMilestone = new Map<number, MilestoneSuggestionWithContext>();
+  for (const s of paymentSuggestions ?? []) {
+    if (!suggestionByMilestone.has(s.milestoneId)) suggestionByMilestone.set(s.milestoneId, s);
+  }
   const STATUS_STYLE: Record<string, { bg: string; badge: string; label: string }> = {
     pending: { bg: "bg-card border-border", badge: "bg-muted text-muted-foreground", label: "Pending" },
     reached: { bg: "bg-amber-50 border-amber-200", badge: "bg-amber-100 text-amber-900", label: "Reached" },
@@ -225,6 +304,22 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
         </div>
       )}
 
+      {matchingPendingInvoices.length > 0 && (
+        <Link href="/honoraires/factures-detectees">
+          <div
+            className="flex items-center gap-2 rounded border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-3 py-2 mb-4 cursor-pointer hover-elevate"
+            data-testid="alert-contract-pending-invoice"
+          >
+            <Receipt size={14} className="text-amber-600 shrink-0" />
+            <p className="text-xs text-amber-900 dark:text-amber-200">
+              {matchingPendingInvoices.length === 1
+                ? `Facture détectée ${matchingPendingInvoices[0].invoiceNumber ?? ""} (${fmtEur(matchingPendingInvoices[0].amountTtc)}) semble correspondre à ce contrat — à vérifier.`
+                : `${matchingPendingInvoices.length} factures détectées semblent correspondre à ce contrat — à vérifier.`}
+            </p>
+          </div>
+        </Link>
+      )}
+
       <div className="space-y-2 mb-4">
         <div className="flex items-center justify-between">
           <TechnicalLabel>Payment milestones ({reachedCount}/{milestones.length} reached)</TechnicalLabel>
@@ -238,8 +333,8 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
               m.status === "reached" ? CheckCircle2 :
               Circle;
             return (
+            <div key={m.id} className="space-y-1">
             <div
-              key={m.id}
               className={`flex items-center gap-3 p-2 rounded border ${style.bg}`}
               data-testid={`row-milestone-detail-${m.id}`}
             >
@@ -280,6 +375,56 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
                   Mark reached
                 </Button>
               )}
+              {(m.status === "invoiced" || m.status === "reached") && !suggestionByMilestone.has(m.id) && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-[10px]"
+                  disabled={markPaidMutation.isPending}
+                  onClick={() => markPaidMutation.mutate(m.id)}
+                  data-testid={`button-mark-paid-${m.id}`}
+                >
+                  Mark paid
+                </Button>
+              )}
+            </div>
+            {(() => {
+              const s = suggestionByMilestone.get(m.id);
+              if (!s || m.status === "paid") return null;
+              return (
+                <div
+                  className="flex items-center gap-2 flex-wrap rounded border border-emerald-300 bg-emerald-50 dark:bg-emerald-950/30 dark:border-emerald-800 px-3 py-2 ml-6"
+                  data-testid={`suggestion-milestone-paid-${m.id}`}
+                >
+                  <Mail size={12} className="text-emerald-600 shrink-0" />
+                  <p className="text-[11px] text-emerald-900 dark:text-emerald-200 flex-1 min-w-0">
+                    {s.status === "ambiguous"
+                      ? `Réponse client de ${s.senderEmail} à vérifier (paiement possible).`
+                      : `Le client (${s.senderEmail}) indique avoir payé ${fmtEur(s.suggestedAmount)} le ${s.suggestedDate}.`}
+                    {s.matchedExcerpt ? ` « ${s.matchedExcerpt} »` : ""}
+                  </p>
+                  <Button
+                    size="sm"
+                    className="h-7 text-[10px]"
+                    disabled={suggestionMutation.isPending}
+                    onClick={() => suggestionMutation.mutate({ id: s.id, action: "confirm" })}
+                    data-testid={`button-suggestion-confirm-${s.id}`}
+                  >
+                    Confirmer payé
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-[10px]"
+                    disabled={suggestionMutation.isPending}
+                    onClick={() => suggestionMutation.mutate({ id: s.id, action: "dismiss" })}
+                    data-testid={`button-suggestion-dismiss-${s.id}`}
+                  >
+                    Écarter
+                  </Button>
+                </div>
+              );
+            })()}
             </div>
             );
           })}

@@ -7,6 +7,7 @@ vi.mock("../../storage", async () => {
   return {
     storage: createStorageMock([
       "getReachedUninvoicedMilestones",
+      "getUser",
       "getDesignContractMilestone",
       "getDesignContract",
       "getDesignContractByProjectId",
@@ -15,6 +16,11 @@ vi.mock("../../storage", async () => {
     ]),
   };
 });
+
+vi.mock("../../services/milestone-payment-suggestions.service", () => ({
+  transitionMilestoneStatus: vi.fn(),
+  markMilestonePaidManually: vi.fn(),
+}));
 
 vi.mock("../../middleware/auth", () => ({
   requireAuth: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
@@ -27,6 +33,13 @@ vi.mock("../../middleware/auth", () => ({
 }));
 
 import { storage } from "../../storage";
+import {
+  transitionMilestoneStatus,
+  markMilestonePaidManually,
+} from "../../services/milestone-payment-suggestions.service";
+
+const transitionMock = transitionMilestoneStatus as unknown as ReturnType<typeof vi.fn>;
+const markPaidMock = markMilestonePaidManually as unknown as ReturnType<typeof vi.fn>;
 
 const getReached = storage.getReachedUninvoicedMilestones as unknown as ReturnType<typeof vi.fn>;
 const getMilestone = storage.getDesignContractMilestone as unknown as ReturnType<typeof vi.fn>;
@@ -68,6 +81,8 @@ beforeEach(() => {
   getMilestone.mockReset();
   getContract.mockReset();
   updateMilestone.mockReset();
+  transitionMock.mockReset();
+  markPaidMock.mockReset();
 });
 
 describe("GET /api/design-contracts/dashboard-actions", () => {
@@ -100,19 +115,62 @@ describe("PATCH /api/design-contracts/milestones/:id — ownership check", () =>
     });
     expect(res.status).toBe(403);
     expect(updateMilestone).not.toHaveBeenCalled();
+    expect(transitionMock).not.toHaveBeenCalled();
   });
 
-  it("allows the contract uploader to mutate the milestone", async () => {
+  it("allows the contract uploader to mutate the milestone (CAS transition)", async () => {
     getMilestone.mockResolvedValue({ id: 7, contractId: 3, status: "pending" });
     getContract.mockResolvedValue({ id: 3, uploadedByUserId: 42 });
-    updateMilestone.mockResolvedValue({ id: 7, status: "reached" });
+    transitionMock.mockResolvedValue({ ok: true, milestone: { id: 7, status: "reached" } });
     const res = await fetch(`${baseUrl}/api/design-contracts/milestones/7`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
       body: JSON.stringify({ status: "reached" }),
     });
     expect(res.status).toBe(200);
-    expect(updateMilestone).toHaveBeenCalledWith(7, expect.objectContaining({ status: "reached" }));
+    // Status changes go through the compare-and-set service, conditional on
+    // the status the route read (paid can never be regressed).
+    expect(transitionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ milestoneId: 7, expectedStatus: "pending", toStatus: "reached" }),
+    );
+    expect(updateMilestone).not.toHaveBeenCalled();
+  });
+
+  it("routes status=paid through the locked manual-paid transaction", async () => {
+    getMilestone.mockResolvedValue({ id: 7, contractId: 3, status: "invoiced" });
+    getContract.mockResolvedValue({ id: 3, uploadedByUserId: 42 });
+    (storage.getUser as unknown as ReturnType<typeof vi.fn>)?.mockResolvedValue?.({
+      id: 42,
+      email: "owner@test.fr",
+    });
+    markPaidMock.mockResolvedValue({ ok: true, milestone: { id: 7, status: "paid" } });
+    const res = await fetch(`${baseUrl}/api/design-contracts/milestones/7`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({ status: "paid" }),
+    });
+    expect(res.status).toBe(200);
+    expect(markPaidMock).toHaveBeenCalledWith(expect.objectContaining({ milestoneId: 7 }));
+    expect(transitionMock).not.toHaveBeenCalled();
+    expect(updateMilestone).not.toHaveBeenCalled();
+  });
+
+  it("rejects a CAS miss with 409 so paid can never be regressed", async () => {
+    getMilestone.mockResolvedValue({ id: 7, contractId: 3, status: "invoiced" });
+    getContract.mockResolvedValue({ id: 3, uploadedByUserId: 42 });
+    transitionMock.mockResolvedValue({
+      ok: false,
+      status: 409,
+      code: "MILESTONE_STATUS_CHANGED",
+      message: "changed",
+    });
+    const res = await fetch(`${baseUrl}/api/design-contracts/milestones/7`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({ status: "reached" }),
+    });
+    expect(res.status).toBe(409);
+    expect(updateMilestone).not.toHaveBeenCalled();
   });
 });
 

@@ -35,7 +35,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "wouter";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import BurnUpChart from "@/components/dashboard/BurnUpChart";
-import { Briefcase } from "lucide-react";
+import { Briefcase, ReceiptEuro } from "lucide-react";
 import { OutstandingFeesPanel } from "@/components/fees/OutstandingFeesPanel";
 import { OutstandingFeesBanner } from "@/components/fees/OutstandingFeesBanner";
 
@@ -49,6 +49,34 @@ interface DesignContractDashboardAction {
   amountTtc: string;
   reachedAt: string | null;
   triggerEvent: string;
+}
+
+/** Task #617 — dashboard alert: Gmail-detected fee invoices awaiting review. */
+function DetectedFeeInvoicesAlert() {
+  const { data } = useQuery<{ id: number }[]>({
+    queryKey: ["/api/architect-fee-invoices", { status: "pending_review" }],
+    queryFn: async () => {
+      const res = await fetch(`/api/architect-fee-invoices?status=pending_review`, { credentials: "include" });
+      if (!res.ok) throw new Error(`${res.status}`);
+      return res.json();
+    },
+  });
+  if (!data || data.length === 0) return null;
+  return (
+    <Link href="/honoraires/factures-detectees">
+      <div
+        className="flex items-center gap-2 rounded border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-3 py-2 cursor-pointer hover-elevate"
+        data-testid="alert-pending-fee-invoices"
+      >
+        <ReceiptEuro size={14} className="text-amber-600 shrink-0" />
+        <p className="text-xs text-amber-900 dark:text-amber-200">
+          {data.length === 1
+            ? "1 facture d'honoraires détectée attend votre vérification."
+            : `${data.length} factures d'honoraires détectées attendent votre vérification.`}
+        </p>
+      </div>
+    </Link>
+  );
 }
 
 function DesignFeeActionsStrip() {
@@ -637,6 +665,8 @@ export default function Dashboard() {
             <OutstandingFeesPanel scope="global" />
           </div>
         </div>
+
+        <DetectedFeeInvoicesAlert />
 
         <DesignFeeActionsStrip />
 

@@ -22,6 +22,7 @@ import {
   type PrefilterContext,
 } from "./email-prefilter";
 import { scanCertificatReplies } from "../services/certificat-payment-suggestions.service";
+import { scanMilestoneInvoiceReplies } from "../services/milestone-payment-suggestions.service";
 import { storage } from "../storage";
 import type { gmail_v1 } from "googleapis";
 import type { InsertEmailDocument, User } from "@shared/schema";
@@ -122,6 +123,12 @@ export async function pollInbox(): Promise<{ processed: number; errors: number }
         return { scannedThreads: 0, suggestionsCreated: 0, ambiguousCreated: 0, errors: 1 };
       });
       errors += scan.errors;
+      // Task #617 — milestone honoraires threads too (same fake-path reason).
+      const msScan = await scanMilestoneInvoiceReplies(fake).catch((err) => {
+        console.error("[Gmail Monitor] Milestone payment-reply scan failed (fake mode):", err);
+        return { scannedThreads: 0, suggestionsCreated: 0, ambiguousCreated: 0, errors: 1 };
+      });
+      errors += msScan.errors;
       lastPollStatus = "completed";
       lastLinkedUserCount = 0;
       return { processed, errors };
@@ -171,6 +178,20 @@ export async function pollInbox(): Promise<{ processed: number; errors: number }
           }
           scanErrors = scan.errors;
           if (scan.errors > 0) scanErrorMsg = `Payment-reply scan: ${scan.errors} thread(s) failed (see server logs)`;
+          // Task #617 — scan invoiced-milestone honoraires threads for client
+          // "paid" replies with the same read-scoped user client.
+          const msScan = await scanMilestoneInvoiceReplies(gmail);
+          if (msScan.suggestionsCreated || msScan.ambiguousCreated || msScan.errors) {
+            console.log(
+              `[Gmail Monitor] Milestone payment-reply scan (user ${user.id}): ${msScan.scannedThreads} threads, ${msScan.suggestionsCreated} suggestions, ${msScan.ambiguousCreated} ambiguous, ${msScan.errors} errors`,
+            );
+          }
+          scanErrors += msScan.errors;
+          if (msScan.errors > 0) {
+            scanErrorMsg = scanErrorMsg
+              ? `${scanErrorMsg}; milestone scan: ${msScan.errors} thread(s) failed`
+              : `Milestone payment-reply scan: ${msScan.errors} thread(s) failed (see server logs)`;
+          }
         } catch (scanErr: any) {
           scanErrors = 1;
           scanErrorMsg = `Payment-reply scan failed: ${(scanErr?.message || "unknown error").slice(0, 300)}`;
