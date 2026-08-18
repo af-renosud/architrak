@@ -38,6 +38,21 @@ router.get("/api/milestone-payment-suggestions", async (req, res, next) => {
   }
 });
 
+// Project-scoped alias used by the design-contract card.
+router.get(
+  "/api/projects/:projectId/milestone-payment-suggestions",
+  validateRequest({ params: z.object({ projectId: z.coerce.number().int().positive() }) }),
+  async (req, res, next) => {
+    try {
+      const actor = await sessionActor(req);
+      if (!actor) return res.status(401).json({ message: "Authenticated session required" });
+      res.json(await listOpenMilestonePaymentSuggestions(actor.userId, Number(req.params.projectId)));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 router.post(
   "/api/milestone-payment-suggestions/:id/confirm",
   validateRequest({ params: idParams }),

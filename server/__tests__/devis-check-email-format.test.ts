@@ -28,7 +28,10 @@ vi.mock("./certificat-generator", () => ({ generateCertificatPdf: vi.fn(), build
 beforeEach(() => { vi.clearAllMocks(); });
 
 describe("formatCheckHead — French head line for bundled devis-check email (Task #110)", () => {
-  it("renders Ligne {n} — {description} ({amount} € HT) for line-scoped checks", async () => {
+  // The first import of ../communications/email-sender transforms its whole
+  // dependency graph, which can exceed the 5s default on a loaded machine —
+  // give the first test a generous timeout (subsequent imports are cached).
+  it("renders Ligne {n} — {description} ({amount} € HT) for line-scoped checks", { timeout: 30_000 }, async () => {
     const { formatCheckHead } = await import("../communications/email-sender");
     const result = formatCheckHead({
       lineDescription: "Fourniture et pose chaudière à condensation",

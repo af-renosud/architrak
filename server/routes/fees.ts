@@ -21,6 +21,7 @@ import {
 } from "../services/outstanding-fees.service";
 import { roundCurrency } from "@shared/financial-utils";
 import { validateRequest } from "../middleware/validate";
+import { getMilestonesWithPennylane } from "../services/design-contract-read.service";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
@@ -163,7 +164,113 @@ router.get("/api/projects/:projectId/fees/by-phase", async (req, res) => {
     grandTotalRemainingTtc += remainingTtc;
   }
 
+  // Milestone-aware enrichment (Task #618): when the project carries a
+  // design contract, ship its milestone breakdown alongside the legacy
+  // phase groups so the Honoraires page can tell the same story as the
+  // design-contract card. Legacy conception/planning fee rows are mirrors
+  // of the contract totals — flag them so the UI can present them as
+  // "covered by design contract" instead of Unassigned/PENDING.
+  let designContract: null | {
+    contractId: number;
+    totalTtc: number;
+    totalHt: number | null;
+    tvaRate: number | null;
+    invoicedTtc: number;
+    invoicedHt: number | null;
+    remainingTtc: number;
+    remainingHt: number | null;
+    coveredFeeIds: number[];
+    milestones: Array<{
+      id: number;
+      sequence: number;
+      labelFr: string;
+      labelEn: string | null;
+      percentage: string;
+      amountTtc: string;
+      status: string;
+      triggerEvent: string;
+      reachedAt: Date | null;
+      invoicedAt: Date | null;
+      paidAt: Date | null;
+      pennylaneInvoiceNumber: string | null;
+    }>;
+  } = null;
+
+  const contract = await storage.getDesignContractByProject(projectId);
+  if (contract) {
+    const milestones = await getMilestonesWithPennylane(contract.id);
+    const totalTtc = parseFloat(contract.totalTtc);
+    const totalHt = contract.totalHt != null ? parseFloat(contract.totalHt) : null;
+    // HT conversion factor: prefer the contract's own HT/TTC ratio, fall
+    // back to the stated TVA rate. If neither exists, HT figures are null
+    // (never guess a rate the contract doesn't carry).
+    const htFactor =
+      totalHt != null && totalTtc > 0
+        ? totalHt / totalTtc
+        : contract.tvaRate != null
+          ? 1 / (1 + parseFloat(contract.tvaRate) / 100)
+          : null;
+    const invoicedTtc = roundCurrency(
+      milestones
+        .filter((m) => m.status === "invoiced" || m.status === "paid")
+        .reduce((sum, m) => sum + parseFloat(m.amountTtc), 0),
+    );
+    const remainingTtc = roundCurrency(totalTtc - invoicedTtc);
+    designContract = {
+      contractId: contract.id,
+      totalTtc: roundCurrency(totalTtc),
+      // Prefer the documentary HT; else derive from the stated TVA rate;
+      // else null — never guess a rate the contract doesn't carry.
+      totalHt:
+        totalHt != null
+          ? roundCurrency(totalHt)
+          : htFactor != null
+            ? roundCurrency(totalTtc * htFactor)
+            : null,
+      tvaRate: contract.tvaRate != null ? parseFloat(contract.tvaRate) : null,
+      invoicedTtc,
+      invoicedHt: htFactor != null ? roundCurrency(invoicedTtc * htFactor) : null,
+      remainingTtc,
+      remainingHt: htFactor != null ? roundCurrency(remainingTtc * htFactor) : null,
+      // Mirror identity: the contract-confirm path reconciles ONE fee row
+      // per component type (conception/planning), writing the contract's
+      // component HT amount into it. A fee row is therefore only "covered
+      // by the contract" when (a) the contract actually carries that
+      // component amount and (b) the row's feeAmountHt equals it — and at
+      // most one row per type qualifies (lowest id, matching the
+      // first-row-wins reconciliation). Manually-added conception/planning
+      // fees with different amounts, extra rows of the same type, and all
+      // fees on contracts without extracted component splits keep their
+      // normal badges and stay in the summary totals.
+      coveredFeeIds: (["conception", "planning"] as const).flatMap((feeType) => {
+        const componentHt =
+          feeType === "conception" ? contract.conceptionAmountHt : contract.planningAmountHt;
+        if (componentHt == null) return [];
+        const target = roundCurrency(parseFloat(componentHt));
+        const mirror = feesList
+          .filter((f) => f.feeType === feeType && roundCurrency(parseFloat(f.feeAmountHt)) === target)
+          .sort((a, b) => a.id - b.id)[0];
+        return mirror ? [mirror.id] : [];
+      }),
+      milestones: milestones.map((m) => ({
+        id: m.id,
+        sequence: m.sequence,
+        labelFr: m.labelFr,
+        labelEn: m.labelEn,
+        percentage: m.percentage,
+        amountTtc: m.amountTtc,
+        status: m.status,
+        triggerEvent: m.triggerEvent,
+        reachedAt: m.reachedAt,
+        invoicedAt: m.invoicedAt,
+        paidAt: m.paidAt,
+        pennylaneInvoiceNumber: m.pennylaneInvoiceNumber,
+      })),
+    };
+  }
+
   res.json({
+    designContract,
     phases: phases.map((p) => ({
       ...grouped[p],
       totalHt: roundCurrency(grouped[p].totalHt),

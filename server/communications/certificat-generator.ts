@@ -1769,6 +1769,7 @@ export async function buildCertificatPreviewHtml(opts?: { isAcompte?: boolean })
     contractorId: -1,
     lotId: -1,
     marcheId: null,
+    notes: null,
     archisignPinnedPdfStorageKey: null,
     signedOffVia: null,
     manualSignoffAt: null,

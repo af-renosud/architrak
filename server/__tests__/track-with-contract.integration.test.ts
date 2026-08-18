@@ -158,7 +158,9 @@ afterAll(async () => {
 describe.skipIf(skipModule)(
   "track-with-contract — real signed contract survives project creation (integration)",
   () => {
-    it("persists the contract row, its milestones and the project fee mirror, and moves the staged PDF", async () => {
+    // Real HTTP + object-storage round-trips: allow well over the 5s
+    // default so a loaded machine doesn't flake this suite.
+    it("persists the contract row, its milestones and the project fee mirror, and moves the staged PDF", { timeout: 60_000 }, async () => {
       const archidocId = `${SUFFIX}-happy`;
       await seedArchidocProject(archidocId, `E2E With-Contract ${SUFFIX}`);
       const stagingKey = await seedStagingBlob();

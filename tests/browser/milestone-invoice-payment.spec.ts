@@ -281,4 +281,4 @@ test.describe("Milestone invoice/payment chain (task #617)", () => {
       }
     }
   });
-}); theirs — interstitial `file_footer` (S+F, confidence: low)
+});

@@ -7,6 +7,10 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
+    // The 5s default flakes under full-suite load (slow first-imports of
+    // large module graphs + poppler/gs shell-outs routinely land right at
+    // the ceiling on a busy machine). Individual tests can still override.
+    testTimeout: 30_000,
     include: [
       "shared/__tests__/**/*.test.ts",
       "server/__tests__/**/*.test.ts",

@@ -50,11 +50,32 @@ function PhaseBadge({ phase }: { phase: string | null }) {
   );
 }
 
+type DesignContractMilestoneRow = {
+  id: number;
+  sequence: number;
+  labelFr: string;
+  labelEn: string | null;
+  percentage: string;
+  amountTtc: string;
+  status: string;
+  triggerEvent: string;
+  reachedAt: string | null;
+  invoicedAt: string | null;
+  paidAt: string | null;
+  pennylaneInvoiceNumber: string | null;
+};
 type PhaseByData = {
+  designContract?: DesignContractSummary | null;
   phases: Array<{ phase: string; fees: Fee[]; totalHt: number; totalTtc: number; totalInvoiced: number; totalInvoicedTtc: number; totalRemaining: number; totalRemainingTtc: number }>;
   grandTotals: { totalHt: number; totalTtc: number; totalInvoiced: number; totalInvoicedTtc: number; totalRemaining: number; totalRemainingTtc: number };
 };
 
+const MILESTONE_STATUS_STYLE: Record<string, { bg: string; badge: string; label: string }> = {
+  pending: { bg: "bg-card border-border", badge: "bg-muted text-muted-foreground", label: "Pending" },
+  reached: { bg: "bg-amber-50 border-amber-200", badge: "bg-amber-100 text-amber-900", label: "Reached" },
+  invoiced: { bg: "bg-sky-50 border-sky-200", badge: "bg-sky-100 text-sky-900", label: "Invoiced" },
+  paid: { bg: "bg-emerald-50 border-emerald-200", badge: "bg-emerald-100 text-emerald-900", label: "Paid" },
+};
 const feeFormSchema = insertFeeSchema.extend({
   phase: z.enum(["conception", "chantier", "aor"], { required_error: "Phase is required" }),
   feeAmountHt: z.string().min(1, "HT amount is required"),
@@ -333,12 +354,28 @@ export default function Fees() {
 
   // Architect fees (honoraires) are invoiced at the standard 20% TVA rate.
   const FEE_TVA_RATE = 0.20;
-  const totalFeeEarned = (feesList ?? []).reduce((sum, f) => sum + parseFloat(f.feeAmountHt), 0);
-  const totalFeeEarnedTtc = totalFeeEarned * (1 + FEE_TVA_RATE);
-  const totalInvoiced = (feesList ?? []).reduce((sum, f) => sum + parseFloat(f.invoicedAmount ?? "0"), 0);
-  const totalInvoicedTtc = totalInvoiced * (1 + FEE_TVA_RATE);
-  const totalRemaining = totalFeeEarned - totalInvoiced;
+  const designContract = phaseData?.designContract ?? null;
+  const coveredFeeIds = new Set(designContract?.coveredFeeIds ?? []);
+
+  // Legacy conception/planning fee rows merely mirror the design-contract
+  // totals — when a contract exists, the contract figures replace them in
+  // the summary tiles (never both, or the total would double-count).
+  const uncoveredFees = (feesList ?? []).filter((f) => !coveredFeeIds.has(f.id));
+  const uncoveredEarned = uncoveredFees.reduce((sum, f) => sum + parseFloat(f.feeAmountHt), 0);
+  const uncoveredInvoiced = uncoveredFees.reduce((sum, f) => sum + parseFloat(f.invoicedAmount ?? "0"), 0);
+
+  // HT figures come only from contract-supplied data (documentary HT or
+  // stated TVA rate, resolved server-side). If the contract carries
+  // neither, HT is unknown — never guessed with a hard-coded rate.
+  const contractHtKnown = !designContract || designContract.totalHt != null;
+
+  const totalFeeEarnedTtc = uncoveredEarned * (1 + FEE_TVA_RATE) + (designContract?.totalTtc ?? 0);
+  const totalInvoicedTtc = uncoveredInvoiced * (1 + FEE_TVA_RATE) + (designContract?.invoicedTtc ?? 0);
   const totalRemainingTtc = totalFeeEarnedTtc - totalInvoicedTtc;
+
+  const totalFeeEarned = contractHtKnown ? uncoveredEarned + (designContract?.totalHt ?? 0) : null;
+  const totalInvoiced = contractHtKnown ? uncoveredInvoiced + (designContract?.invoicedHt ?? 0) : null;
+  const totalRemaining = totalFeeEarned != null && totalInvoiced != null ? totalFeeEarned - totalInvoiced : null;
 
   const filteredFees = phaseFilter === "all"
     ? (feesList ?? [])
@@ -477,6 +514,93 @@ export default function Fees() {
           </div>
         )}
 
+        {selectedProjectId && !isLoading && designContract && (
+          <LuxuryCard data-testid="card-design-contract-milestones">
+            <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+              <TechnicalLabel>
+                Design contract — payment milestones (
+                {designContract.milestones.filter((m) => m.status !== "pending").length}/
+                {designContract.milestones.length} reached)
+              </TechnicalLabel>
+              <Badge variant="outline" className="text-[10px]" data-testid="badge-milestone-billed">
+                Milestone-billed
+              </Badge>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+              <div>
+                <TechnicalLabel>Contract total</TechnicalLabel>
+                <p className="text-[16px] font-light text-foreground" data-testid="text-contract-total-ttc">
+                  <Amount value={designContract.totalTtc} denomination="TTC" />
+                </p>
+                {designContract.totalHt != null && (
+                  <p className="text-[12px] text-muted-foreground" data-testid="text-contract-total-ht">
+                    <Amount value={designContract.totalHt} denomination="HT" />
+                  </p>
+                )}
+              </div>
+              <div>
+                <TechnicalLabel>Invoiced (milestones)</TechnicalLabel>
+                <p className="text-[16px] font-light text-emerald-600 dark:text-emerald-400" data-testid="text-contract-invoiced-ttc">
+                  <Amount value={designContract.invoicedTtc} denomination="TTC" />
+                </p>
+                {designContract.invoicedHt != null && (
+                  <p className="text-[12px] text-muted-foreground" data-testid="text-contract-invoiced-ht">
+                    <Amount value={designContract.invoicedHt} denomination="HT" />
+                  </p>
+                )}
+              </div>
+              <div>
+                <TechnicalLabel>Remaining</TechnicalLabel>
+                <p className="text-[16px] font-light text-amber-600 dark:text-amber-400" data-testid="text-contract-remaining-ttc">
+                  <Amount value={designContract.remainingTtc} denomination="TTC" />
+                </p>
+                {designContract.remainingHt != null && (
+                  <p className="text-[12px] text-muted-foreground" data-testid="text-contract-remaining-ht">
+                    <Amount value={designContract.remainingHt} denomination="HT" />
+                  </p>
+                )}
+              </div>
+            </div>
+            <div className="space-y-1">
+              {designContract.milestones.map((m) => {
+                const style = MILESTONE_STATUS_STYLE[m.status] ?? MILESTONE_STATUS_STYLE.pending;
+                return (
+                  <div
+                    key={m.id}
+                    className={`flex items-center gap-3 p-2 rounded border ${style.bg}`}
+                    data-testid={`row-fee-milestone-${m.id}`}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium truncate flex items-center gap-2">
+                        #{m.sequence} · {m.labelFr}
+                        <span
+                          className={`text-[9px] uppercase px-1.5 py-0.5 rounded ${style.badge}`}
+                          data-testid={`badge-fee-milestone-status-${m.id}`}
+                        >
+                          {style.label}
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {m.invoicedAt ? `Invoiced ${new Date(m.invoicedAt).toLocaleDateString()}` : ""}
+                        {(m.status === "invoiced" || m.status === "paid") && m.pennylaneInvoiceNumber
+                          ? ` · Pennylane ${m.pennylaneInvoiceNumber}`
+                          : ""}
+                        {m.paidAt ? ` · paid ${new Date(m.paidAt).toLocaleDateString()}` : ""}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-xs font-medium" data-testid={`text-fee-milestone-amount-${m.id}`}>
+                        <Amount value={parseFloat(m.amountTtc)} denomination="TTC" />
+                      </div>
+                      <div className="text-[10px] text-muted-foreground">{Number(m.percentage).toFixed(2)}%</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </LuxuryCard>
+        )}
+
         {!selectedProjectId ? (
           <LuxuryCard data-testid="card-no-project-selected">
             <p className="text-[12px] text-muted-foreground text-center py-8">
@@ -498,28 +622,40 @@ export default function Fees() {
               <LuxuryCard data-testid="card-total-fee-earned">
                 <TechnicalLabel>Total Honoraires</TechnicalLabel>
                 <p className="text-[20px] font-light text-foreground mt-2" data-testid="text-total-earned">
-                  <Amount value={totalFeeEarned} denomination="HT" />
+                  {totalFeeEarned != null
+                    ? <Amount value={totalFeeEarned} denomination="HT" />
+                    : <Amount value={totalFeeEarnedTtc} denomination="TTC" />}
                 </p>
                 <p className="text-[13px] text-muted-foreground" data-testid="text-total-earned-ttc">
-                  <Amount value={totalFeeEarnedTtc} denomination="TTC" />
+                  {totalFeeEarned != null
+                    ? <Amount value={totalFeeEarnedTtc} denomination="TTC" />
+                    : <span data-testid="text-total-earned-ht-unknown">HT unavailable (contract has no TVA data)</span>}
                 </p>
               </LuxuryCard>
               <LuxuryCard data-testid="card-total-invoiced">
                 <TechnicalLabel>Total Invoiced (Penny Lane)</TechnicalLabel>
                 <p className="text-[20px] font-light text-emerald-600 dark:text-emerald-400 mt-2" data-testid="text-total-invoiced">
-                  <Amount value={totalInvoiced} denomination="HT" />
+                  {totalInvoiced != null
+                    ? <Amount value={totalInvoiced} denomination="HT" />
+                    : <Amount value={totalInvoicedTtc} denomination="TTC" />}
                 </p>
                 <p className="text-[13px] text-muted-foreground" data-testid="text-total-invoiced-ttc">
-                  <Amount value={totalInvoicedTtc} denomination="TTC" />
+                  {totalInvoiced != null
+                    ? <Amount value={totalInvoicedTtc} denomination="TTC" />
+                    : <span data-testid="text-total-invoiced-ht-unknown">HT unavailable (contract has no TVA data)</span>}
                 </p>
               </LuxuryCard>
               <LuxuryCard data-testid="card-total-remaining">
                 <TechnicalLabel>Remaining to Invoice</TechnicalLabel>
                 <p className="text-[20px] font-light text-amber-600 dark:text-amber-400 mt-2" data-testid="text-total-remaining">
-                  <Amount value={totalRemaining} denomination="HT" />
+                  {totalRemaining != null
+                    ? <Amount value={totalRemaining} denomination="HT" />
+                    : <Amount value={totalRemainingTtc} denomination="TTC" />}
                 </p>
                 <p className="text-[13px] text-muted-foreground" data-testid="text-total-remaining-ttc">
-                  <Amount value={totalRemainingTtc} denomination="TTC" />
+                  {totalRemaining != null
+                    ? <Amount value={totalRemainingTtc} denomination="TTC" />
+                    : <span data-testid="text-total-remaining-ht-unknown">HT unavailable (contract has no TVA data)</span>}
                 </p>
               </LuxuryCard>
             </div>
@@ -544,8 +680,20 @@ export default function Fees() {
                             <h3 className="text-[14px] font-black uppercase tracking-tight text-foreground">
                               <FeeTypeLabel type={fee.feeType} />
                             </h3>
-                            <PhaseBadge phase={fee.phase} />
-                            <StatusBadge status={fee.status} />
+                            {coveredFeeIds.has(fee.id) ? (
+                              <Badge
+                                variant="outline"
+                                className="bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/20 text-[10px]"
+                                data-testid={`badge-covered-by-contract-${fee.id}`}
+                              >
+                                Covered by design contract
+                              </Badge>
+                            ) : (
+                              <>
+                                <PhaseBadge phase={fee.phase} />
+                                <StatusBadge status={fee.status} />
+                              </>
+                            )}
                           </div>
                           {fee.feeRate && (
                             <p className="text-[11px] text-muted-foreground mt-0.5">
@@ -980,3 +1128,16 @@ export default function Fees() {
     </AppLayout>
   );
 }
+
+type DesignContractSummary = {
+  contractId: number;
+  totalTtc: number;
+  totalHt: number | null;
+  tvaRate: number | null;
+  invoicedTtc: number;
+  invoicedHt: number | null;
+  remainingTtc: number;
+  remainingHt: number | null;
+  coveredFeeIds: number[];
+  milestones: DesignContractMilestoneRow[];
+};
