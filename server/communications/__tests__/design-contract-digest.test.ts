@@ -3,7 +3,9 @@ import {
   partitionDigestRows,
   groupRowsByArchitect,
   buildDigestBody,
+  buildPendingInvoicesMap,
 } from "../payment-scheduler";
+import type { ArchitectFeeInvoice } from "@shared/schema";
 
 type Row = ReturnType<typeof groupRowsByArchitect> extends Map<number, infer V>
   ? V[number]
@@ -151,5 +153,120 @@ describe("design-contract digest — email body composition", () => {
     );
     expect(body).not.toContain("OVERDUE");
     expect(body).toContain("UPCOMING");
+  });
+
+  it("annotates a milestone line when a matching invoice is pending confirmation", () => {
+    const overdue = [
+      makeRow({
+        id: 7,
+        reachedAt: day(10),
+        uploadedByUserId: 1,
+        projectCode: "VERFEUIL",
+        projectName: "TRÜTKEN (VERFEUIL) 1358",
+        labelFr: "OUVERTURE ADMINISTRATIVE DE DOSSIER",
+        amountTtc: "1800.00",
+      }),
+    ];
+    const pending = new Map([[7, "F-2026-138"]]);
+    const { body } = buildDigestBody(overdue, [], pending);
+    expect(body).toContain("OUVERTURE ADMINISTRATIVE DE DOSSIER");
+    expect(body).toContain("matching invoice F-2026-138 is awaiting your confirmation");
+  });
+
+  it("does not annotate a milestone line when no pending invoice is matched", () => {
+    const overdue = [
+      makeRow({ id: 3, reachedAt: day(8), uploadedByUserId: 1, labelFr: "Permis" }),
+    ];
+    const { body } = buildDigestBody(overdue, [], new Map());
+    expect(body).toContain("Permis");
+    expect(body).not.toContain("awaiting your confirmation");
+  });
+});
+
+// --- helper to make a minimal ArchitectFeeInvoice stub ---
+// pending_review invoices have projectId=null (set only on confirmation).
+// The candidates JSONB uses the project ID as a string key in "milestones".
+function makeAFI(overrides: {
+  id: number;
+  invoiceNumber: string;
+  /** project.id of the due row(s) this invoice should match via candidates */
+  candidateProjectId: number;
+  milestoneIds: number[];
+}): ArchitectFeeInvoice {
+  const milestones: Record<string, Array<{ milestoneId: number }>> = {};
+  milestones[String(overrides.candidateProjectId)] = overrides.milestoneIds.map((mid) => ({
+    milestoneId: mid,
+  }));
+  return {
+    id: overrides.id,
+    emailDocumentId: null,
+    intakeDocumentId: null,
+    // Realistic: projectId is NULL on pending_review rows
+    projectId: null,
+    milestoneId: null,
+    feeEntryId: null,
+    invoiceNumber: overrides.invoiceNumber,
+    invoiceNumberNormalized: overrides.invoiceNumber.toLowerCase().replace(/[^a-z0-9]/g, ""),
+    issueDate: null,
+    amountHt: null,
+    tvaAmount: null,
+    amountTtc: null,
+    clientName: null,
+    devisNumber: null,
+    devisNumberNormalized: null,
+    fileName: null,
+    storageKey: null,
+    source: "gmail",
+    status: "pending_review",
+    identityReason: null,
+    candidates: { milestones },
+    extractionSnapshot: null,
+    reviewedBy: null,
+    reviewedAt: null,
+    notes: null,
+    createdAt: new Date(),
+  } as ArchitectFeeInvoice;
+}
+
+// makeRow sets project.id = 1; use candidateProjectId: 1 to match those rows.
+describe("buildPendingInvoicesMap", () => {
+  it("maps milestone id to invoice number when candidates match by project+milestone", () => {
+    const rows = [makeRow({ id: 5, reachedAt: day(10), uploadedByUserId: 1 })];
+    const afis = [makeAFI({ id: 1, invoiceNumber: "F-2026-138", candidateProjectId: 1, milestoneIds: [5] })];
+    const map = buildPendingInvoicesMap(rows, afis);
+    expect(map.get(5)).toBe("F-2026-138");
+  });
+
+  it("returns an empty map when candidates mention a different project's milestone id", () => {
+    // milestone id 5 exists in project 99's candidates, but due row is project 1
+    const rows = [makeRow({ id: 5, reachedAt: day(10), uploadedByUserId: 1 })];
+    const afis = [makeAFI({ id: 1, invoiceNumber: "F-2026-999", candidateProjectId: 99, milestoneIds: [5] })];
+    const map = buildPendingInvoicesMap(rows, afis);
+    expect(map.size).toBe(0);
+  });
+
+  it("returns an empty map when no AFI candidates match any due milestone id", () => {
+    const rows = [makeRow({ id: 5, reachedAt: day(10), uploadedByUserId: 1 })];
+    const afis = [makeAFI({ id: 1, invoiceNumber: "F-2026-999", candidateProjectId: 1, milestoneIds: [99] })];
+    const map = buildPendingInvoicesMap(rows, afis);
+    expect(map.size).toBe(0);
+  });
+
+  it("skips AFIs with no invoice number", () => {
+    const rows = [makeRow({ id: 5, reachedAt: day(10), uploadedByUserId: 1 })];
+    const base = makeAFI({ id: 1, invoiceNumber: "F-X", candidateProjectId: 1, milestoneIds: [5] });
+    const map = buildPendingInvoicesMap(rows, [{ ...base, invoiceNumber: null } as unknown as ArchitectFeeInvoice]);
+    expect(map.size).toBe(0);
+  });
+
+  it("only stores the first matching invoice per milestone when multiple AFIs match", () => {
+    const rows = [makeRow({ id: 5, reachedAt: day(10), uploadedByUserId: 1 })];
+    const afis = [
+      makeAFI({ id: 1, invoiceNumber: "F-2026-001", candidateProjectId: 1, milestoneIds: [5] }),
+      makeAFI({ id: 2, invoiceNumber: "F-2026-002", candidateProjectId: 1, milestoneIds: [5] }),
+    ];
+    const map = buildPendingInvoicesMap(rows, afis);
+    expect(map.get(5)).toBe("F-2026-001");
+    expect(map.size).toBe(1);
   });
 });

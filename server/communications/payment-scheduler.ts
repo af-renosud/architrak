@@ -1,7 +1,7 @@
 import { storage } from "../storage";
 import { sendPaymentChase } from "./email-sender";
 import { getUncachableGmailClient, isGmailConfigured } from "../gmail/client";
-import type { InsertPaymentReminder } from "@shared/schema";
+import type { ArchitectFeeInvoice, InsertPaymentReminder } from "@shared/schema";
 
 const REMINDER_SCHEDULE = [
   { type: "first", daysAfter: 7 },
@@ -59,6 +59,52 @@ const OVERDUE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
 const IMMINENT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 const REMINDER_QUIET_MS = 24 * 60 * 60 * 1000;
 
+/** Shape of the candidates JSONB column on architect_fee_invoices. */
+interface AfICandidates {
+  milestones?: Record<string, Array<{ milestoneId: number; [key: string]: unknown }>>;
+}
+
+/**
+ * Build a map from milestone ID → invoice number for any pending_review
+ * architect-fee invoice whose candidates JSONB mentions that milestone
+ * under the correct project key.
+ *
+ * Matching requires BOTH the project ID (candidates.milestones key) AND the
+ * milestone ID to appear in the due rows — this prevents false annotations
+ * if two projects coincidentally share the same milestone sequence number.
+ * Only the first matching invoice number per milestone is stored.
+ */
+export function buildPendingInvoicesMap(
+  dueRows: readonly DigestRow[],
+  pendingAFIs: readonly ArchitectFeeInvoice[],
+): Map<number, string> {
+  // Index due milestones by project ID for O(1) lookups.
+  const dueByProject = new Map<number, Set<number>>();
+  for (const r of dueRows) {
+    const set = dueByProject.get(r.project.id) ?? new Set<number>();
+    set.add(r.milestone.id);
+    dueByProject.set(r.project.id, set);
+  }
+
+  const map = new Map<number, string>();
+  for (const afi of pendingAFIs) {
+    if (!afi.invoiceNumber) continue;
+    const cands = afi.candidates as AfICandidates | null;
+    if (!cands?.milestones) continue;
+    for (const [projectKey, milestoneArr] of Object.entries(cands.milestones)) {
+      const projectId = Number(projectKey);
+      const dueMilestones = dueByProject.get(projectId);
+      if (!dueMilestones) continue;
+      for (const m of milestoneArr) {
+        if (dueMilestones.has(m.milestoneId) && !map.has(m.milestoneId)) {
+          map.set(m.milestoneId, afi.invoiceNumber);
+        }
+      }
+    }
+  }
+  return map;
+}
+
 // Splits rows into overdue (>7d) and imminent (≤14d). Exported for tests.
 export function partitionDigestRows(
   rows: readonly DigestRow[],
@@ -99,6 +145,14 @@ async function processDesignContractDigest(): Promise<void> {
     });
     if (allDue.length === 0) return;
 
+    // Fetch pending (unconfirmed) architect-fee invoices for all affected
+    // projects in one round-trip, then build a milestone→invoiceNumber map
+    // so the email can say "matching invoice F-XXXX awaiting your confirmation"
+    // instead of falsely implying no invoice has been submitted yet.
+    const projectIds = Array.from(new Set(allDue.map((r) => r.project.id)));
+    const pendingAFIs = await storage.getPendingFeeInvoicesForProjects(projectIds);
+    const pendingInvoicesByMilestone = buildPendingInvoicesMap(allDue, pendingAFIs);
+
     const byArchitect = groupRowsByArchitect(allDue);
     const gmailReady = isGmailConfigured();
 
@@ -111,12 +165,13 @@ async function processDesignContractDigest(): Promise<void> {
 
       console.log(
         `[design-digest] user=${architectUserId} email=${recipient ?? "(unknown)"} ` +
-          `overdue=${overdue.length} imminent=${imminent.length}`,
+          `overdue=${overdue.length} imminent=${imminent.length} ` +
+          `pendingMatches=${pendingInvoicesByMilestone.size}`,
       );
 
       if (gmailReady && recipient) {
         try {
-          await sendDesignDigestEmail(recipient, overdue, imminent);
+          await sendDesignDigestEmail(recipient, overdue, imminent, pendingInvoicesByMilestone);
         } catch (err) {
           console.error(
             `[design-digest] gmail send failed for user=${architectUserId}:`,
@@ -144,12 +199,20 @@ async function processDesignContractDigest(): Promise<void> {
 export function buildDigestBody(
   overdue: readonly DigestRow[],
   imminent: readonly DigestRow[],
+  pendingInvoicesByMilestone: ReadonlyMap<number, string> = new Map(),
 ): { subject: string; body: string } {
-  const fmt = (r: DigestRow) =>
-    `  - [${r.project.code}] ${r.project.name} — "${r.milestone.labelFr}" · ${r.milestone.amountTtc} € TTC` +
-    (r.milestone.reachedAt
-      ? ` · reached ${new Date(r.milestone.reachedAt).toISOString().slice(0, 10)}`
-      : "");
+  const fmt = (r: DigestRow) => {
+    let line =
+      `  - [${r.project.code}] ${r.project.name} — "${r.milestone.labelFr}" · ${r.milestone.amountTtc} € TTC` +
+      (r.milestone.reachedAt
+        ? ` · reached ${new Date(r.milestone.reachedAt).toISOString().slice(0, 10)}`
+        : "");
+    const pending = pendingInvoicesByMilestone.get(r.milestone.id);
+    if (pending) {
+      line += `\n    → matching invoice ${pending} is awaiting your confirmation`;
+    }
+    return line;
+  };
   const total = overdue.length + imminent.length;
   const sections: string[] = [
     `You have ${total} design-contract milestone(s) awaiting invoicing.`,
@@ -176,9 +239,10 @@ async function sendDesignDigestEmail(
   recipient: string,
   overdue: readonly DigestRow[],
   imminent: readonly DigestRow[],
+  pendingInvoicesByMilestone: ReadonlyMap<number, string>,
 ): Promise<void> {
   const gmail = await getUncachableGmailClient();
-  const { subject, body } = buildDigestBody(overdue, imminent);
+  const { subject, body } = buildDigestBody(overdue, imminent, pendingInvoicesByMilestone);
   const raw = [
     `From: me`,
     `To: ${recipient}`,

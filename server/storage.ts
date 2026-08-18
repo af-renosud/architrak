@@ -1148,7 +1148,8 @@ export interface IStorage {
    * is `reached` and were reached at least `staleAfterMs` ago and have not
    * been reminded since `reminderQuietMs` ago. Returned shape includes
    * project + contract context so the digest mailer can compose without
-   * extra round-trips.
+   * extra round-trips. Milestones whose invoicedAt or paidAt is already set
+   * are excluded even if their status column drifted back to "reached".
    */
 
   getReachedUninvoicedMilestones(opts: {
@@ -1162,6 +1163,13 @@ export interface IStorage {
     project: Project;
 
   }>>;
+
+  /**
+   * Returns pending_review architect-fee invoices for the given project IDs.
+   * Used by the digest to annotate milestone lines where a matching invoice is
+   * already in the review queue but hasn't been confirmed yet.
+   */
+  getPendingFeeInvoicesForProjects(projectIds: number[]): Promise<ArchitectFeeInvoice[]>;
 
   markDesignContractMilestoneReminderSent(id: number): Promise<void>;
 
@@ -3027,6 +3035,10 @@ export class DatabaseStorage implements IStorage {
     const reminderCutoff = new Date(Date.now() - reminderQuietMs);
     const conditions = [
       eq(designContractMilestones.status, "reached"),
+      // Belt-and-braces: exclude milestones whose invoicedAt / paidAt is set
+      // even if the status column somehow drifted back to "reached".
+      isNull(designContractMilestones.invoicedAt),
+      isNull(designContractMilestones.paidAt),
       isNull(projects.archivedAt),
       lte(designContractMilestones.reachedAt, reachedCutoff),
       or(
@@ -3049,6 +3061,23 @@ export class DatabaseStorage implements IStorage {
       .where(and(...conditions))
       .orderBy(asc(designContractMilestones.reachedAt));
     return rows;
+  }
+
+  async getPendingFeeInvoicesForProjects(projectIds: number[]): Promise<ArchitectFeeInvoice[]> {
+    if (projectIds.length === 0) return [];
+    // pending_review rows have projectId=NULL (the column is only set on
+    // confirmation). We therefore cannot filter by projectId in SQL.
+    // The operator review queue is always small, so we fetch all pending rows
+    // and filter against the candidates JSONB in memory.
+    const allPending = await db.select()
+      .from(architectFeeInvoices)
+      .where(eq(architectFeeInvoices.status, "pending_review"));
+    const projectKeySet = new Set(projectIds.map(String));
+    return allPending.filter((afi) => {
+      const cands = afi.candidates as { milestones?: Record<string, unknown> } | null;
+      if (!cands?.milestones) return false;
+      return Object.keys(cands.milestones).some((k) => projectKeySet.has(k));
+    });
   }
 
   async markDesignContractMilestoneReminderSent(id: number): Promise<void> {
