@@ -21,7 +21,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { insertFeeSchema, insertFeeEntrySchema } from "@shared/schema";
-import type { Project, Fee, FeeEntry } from "@shared/schema";
+import type { Project, Fee, FeeEntry, ArchitectFeeInvoice } from "@shared/schema";
 import { z } from "zod";
 
 import { Amount } from "@/components/ui/amount";
@@ -383,6 +383,22 @@ export default function Fees() {
 
   const isLoading = loadingProjects || loadingFees;
 
+  // Task #639 — pending detected invoices that plausibly belong to the
+  // currently-selected project (same matching logic as DesignContractCard).
+  const uninvoicedMilestoneAmounts = new Set(
+    (designContract?.milestones ?? [])
+      .filter((m) => m.status === "pending" || m.status === "reached")
+      .map((m) => Number(m.amountTtc).toFixed(2)),
+  );
+  const matchingPendingForProject: ArchitectFeeInvoice[] = selectedProjectId
+    ? (pendingDetected ?? []).filter((inv) => {
+        const cand = inv.candidates as { projects?: { projectId: number }[] } | null;
+        if (cand?.projects?.some((p) => p.projectId === parseInt(selectedProjectId))) return true;
+        if (inv.amountTtc != null && uninvoicedMilestoneAmounts.has(Number(inv.amountTtc).toFixed(2))) return true;
+        return false;
+      })
+    : [];
+
   return (
     <AppLayout>
       <div className="space-y-8">
@@ -561,6 +577,21 @@ export default function Fees() {
                 )}
               </div>
             </div>
+            {matchingPendingForProject.length > 0 && (
+              <Link href="/honoraires/factures-detectees">
+                <div
+                  className="flex items-center gap-2 rounded border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-3 py-2 mb-3 cursor-pointer hover-elevate"
+                  data-testid="alert-design-contract-pending-invoice"
+                >
+                  <ReceiptEuro size={14} className="text-amber-600 shrink-0" />
+                  <p className="text-xs text-amber-900 dark:text-amber-200">
+                    {matchingPendingForProject.length === 1
+                      ? `Facture détectée ${matchingPendingForProject[0].invoiceNumber ?? ""} (${matchingPendingForProject[0].amountTtc ? `${Number(matchingPendingForProject[0].amountTtc).toLocaleString("fr-FR", { style: "currency", currency: "EUR" })}` : ""}) semble correspondre à ce contrat — à vérifier.`
+                      : `${matchingPendingForProject.length} factures d'honoraires détectées semblent correspondre à ce contrat — à vérifier.`}
+                  </p>
+                </div>
+              </Link>
+            )}
             <div className="space-y-1">
               {designContract.milestones.map((m) => {
                 const style = MILESTONE_STATUS_STYLE[m.status] ?? MILESTONE_STATUS_STYLE.pending;
