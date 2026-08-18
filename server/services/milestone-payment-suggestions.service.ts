@@ -165,6 +165,11 @@ export type MilestoneSuggestionConfirmOutcome =
  * SUGGESTED date (the client's email, never "now"), appends a note line,
  * dismisses other open suggestions for the milestone, and audits on the
  * bound evidence row when present.
+ *
+ * Lock ORDER: milestone first, then suggestion. Locking the suggestion first
+ * deadlocks when two confirms race on sibling suggestions of the same milestone
+ * (each holds its suggestion lock while the winner waits to dismiss the loser's
+ * row).
  */
 export async function confirmMilestonePaymentSuggestion(args: {
   suggestionId: number;
@@ -172,10 +177,7 @@ export async function confirmMilestonePaymentSuggestion(args: {
   actor: string | null;
 }): Promise<MilestoneSuggestionConfirmOutcome> {
   return db.transaction(async (tx): Promise<MilestoneSuggestionConfirmOutcome> => {
-    // Lock ORDER matters: milestone first, then suggestion. Locking the
-    // suggestion first deadlocks when two confirms race on sibling
-    // suggestions of the same milestone (each holds its suggestion lock
-    // while the winner waits to dismiss the loser's row).
+    // Peek the milestone id without locking so we can lock milestone first.
     const [peek] = await tx
       .select({ milestoneId: milestonePaymentSuggestions.milestoneId })
       .from(milestonePaymentSuggestions)

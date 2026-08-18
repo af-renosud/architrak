@@ -31,25 +31,12 @@ router.get("/api/milestone-payment-suggestions", async (req, res, next) => {
   try {
     const actor = await sessionActor(req);
     if (!actor) return res.status(401).json({ message: "Authenticated session required" });
-    res.json(await listOpenMilestonePaymentSuggestions(actor.userId));
+    const projectId = req.query.projectId != null ? Number(req.query.projectId) : undefined;
+    res.json(await listOpenMilestonePaymentSuggestions(actor.userId, projectId));
   } catch (err) {
     next(err);
   }
 });
-
-router.get(
-  "/api/projects/:id/milestone-payment-suggestions",
-  validateRequest({ params: idParams }),
-  async (req, res, next) => {
-    try {
-      const actor = await sessionActor(req);
-      if (!actor) return res.status(401).json({ message: "Authenticated session required" });
-      res.json(await listOpenMilestonePaymentSuggestions(actor.userId, Number(req.params.id)));
-    } catch (err) {
-      next(err);
-    }
-  },
-);
 
 router.post(
   "/api/milestone-payment-suggestions/:id/confirm",

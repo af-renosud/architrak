@@ -687,6 +687,13 @@
       "when": 1787310000000,
       "tag": "0097_milestone_payment_suggestions",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1787320000000,
+      "tag": "0098_devis_notes",
+      "breakpoints": true
     }
   ]
 }

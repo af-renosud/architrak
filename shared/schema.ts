@@ -564,6 +564,10 @@ export const devis = pgTable("devis", {
   // blocks issuance until an architect records a banking_mismatch_overrides row.
   extractedIban: varchar("extracted_iban", { length: 34 }),
   extractedBic: varchar("extracted_bic", { length: 11 }),
+  // Task #619 — free-text notes field on the devis header. Optional; set
+  // and cleared by the architect via the "Edit References" dialog. Does not
+  // affect amounts, states, seals, or PDF output.
+  notes: text("notes"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [

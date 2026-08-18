@@ -1133,6 +1133,16 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
                   <AcompteBadge devis={d} />
                 )}
                 <FeeOverrideBadge devis={d} />
+                {d.notes && (
+                  <span
+                    className="inline-flex items-center gap-0.5 rounded bg-amber-100 dark:bg-amber-900/40 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-widest text-amber-700 dark:text-amber-400"
+                    title={d.notes}
+                    data-testid={`badge-devis-notes-${d.id}`}
+                  >
+                    <MessageSquare size={9} />
+                    Note
+                  </span>
+                )}
               </div>
               <p className="text-[12px] text-foreground mt-0.5 truncate">{d.descriptionFr}</p>
               <span className="text-[10px] text-muted-foreground">
@@ -2116,6 +2126,7 @@ function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDev
   const [forcedNextLotSequence, setForcedNextLotSequence] = useState<number | null>(null);
   const [devisNumber, setDevisNumber] = useState(devis.devisNumber ?? "");
   const [ref2, setRef2] = useState(devis.ref2 ?? "");
+  const [notes, setNotes] = useState(devis.notes ?? "");
   // Architect-commission override. "" = inherit project rate (NULL),
   // any other string = explicit per-devis rate (including "0" for
   // professional-services devis that don't carry a commission).
@@ -2198,6 +2209,8 @@ function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDev
     }
     if (trimmedNumber !== (devis.devisNumber ?? "")) payload.devisNumber = trimmedNumber === "" ? null : trimmedNumber;
     if (trimmedRef2 !== (devis.ref2 ?? "")) payload.ref2 = trimmedRef2 === "" ? null : trimmedRef2;
+    const trimmedNotes = notes.trim();
+    if (trimmedNotes !== (devis.notes ?? "")) payload.notes = trimmedNotes === "" ? null : trimmedNotes;
     const trimmedFee = feeOverride.trim();
     const currentFee = devis.feePercentageOverride ?? "";
     if (trimmedFee !== currentFee) {
@@ -2309,6 +2322,16 @@ function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDev
               className="text-[12px]"
               placeholder="Optional"
               data-testid="input-edit-devis-ref2"
+            />
+          </div>
+          <div className="space-y-1">
+            <TechnicalLabel>Notes</TechnicalLabel>
+            <Textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              className="text-[12px] min-h-[72px] resize-y"
+              placeholder="General remarks, reminders, or special conditions…"
+              data-testid="input-edit-devis-notes"
             />
           </div>
           <div className="space-y-1">
@@ -6038,6 +6061,15 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
           </div>
         </TooltipProvider>
       </div>
+      {devis.notes && (
+        <div
+          className="rounded border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-[12px] text-amber-900 dark:text-amber-200 whitespace-pre-wrap"
+          data-testid={`text-devis-notes-${devis.id}`}
+        >
+          <span className="mr-1.5 text-[10px] font-semibold uppercase tracking-widest text-amber-600 dark:text-amber-400">Notes</span>
+          {devis.notes}
+        </div>
+      )}
       <AlertDialog
         open={rescrapeConfirmOpen}
         onOpenChange={(open) => {

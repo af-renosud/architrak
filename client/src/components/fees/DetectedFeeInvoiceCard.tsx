@@ -101,7 +101,7 @@ export function ConfirmControls({ row, candidates }: { row: ArchitectFeeInvoice;
     },
     onSuccess: (data: { reconciliation: string; feeEntryId: number; milestoneId: number | null }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/architect-fee-invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "design-contract"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "design-contract"] }); // project-key-string-ok
       const how =
         data.reconciliation === "created"
           ? "Jalon marqué facturé — nouvelle écriture d'honoraires créée"

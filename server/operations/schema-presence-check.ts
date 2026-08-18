@@ -162,6 +162,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0095_refire_certificat_sent_backfill", artifact: { kind: "data_only", reason: "re-fire of the 0094 backfill, which was tracker-stamped in prod without executing; identical idempotent UPDATE", rerunnable: true } },
   { tag: "0096_pv_reception_gate", artifact: { kind: "column", table: "marches", column: "pv_reception_status" } },
   { tag: "0097_milestone_payment_suggestions", artifact: { kind: "table", table: "milestone_payment_suggestions" } },
+  { tag: "0098_devis_notes", artifact: { kind: "column", table: "devis", column: "notes" } },
 ];
 
 interface JournalFile {
