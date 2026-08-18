@@ -385,6 +385,16 @@ async function buildAnnexeData(
   // Task #485 — whole-project section: every live devis across ALL
   // contractors, from the same service that powers the in-app dashboard
   // and the project overview PDF. Never recomputed locally.
+  //
+  // INTENTIONAL DESIGN: this section is deliberately NOT scoped to the
+  // selected invoice set (activeDevis). The financial-summary annexe is
+  // labelled "position of the whole project" and is meant to give the
+  // recipient a full project view regardless of which factures are grouped
+  // in this certificat. The contractor-specific devis table above (devisRows)
+  // IS scoped to activeDevis — only selected devis codes appear there.
+  // The project summary table will therefore show devis codes that are absent
+  // from the works table; this is the correct behaviour.
+  //
   // Task #546 — the issuance render runs while this certificat is still
   // `draft` (the seal flips status after the PDF commits), so an acompte
   // certificat must be treated as issued here or its own whole-project

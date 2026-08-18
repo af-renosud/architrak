@@ -270,15 +270,30 @@ test.describe("Certificat PDF source-set scoping", () => {
         const invBSuffix = s.invBNumber.slice(s.invBNumber.indexOf("INV-B"));
         const invCSuffix = s.invCNumber.slice(s.invCNumber.indexOf("INV-C"));
 
+        // Devis code suffixes used to probe the project-summary section.
+        const devisASuffix = s.devisACode.slice(s.devisACode.indexOf("DA-"));
+        const devisBSuffix = s.devisBCode.slice(s.devisBCode.indexOf("DB-"));
+
         // Selected invoices MUST appear in the works table.
         expect(groupedText).toContain(invASuffix);
         expect(groupedText).toContain(invBSuffix);
 
         // The unselected invoice MUST NOT appear anywhere in the PDF.
-        // Note: the financial-summary annexe (page 3) renders all devis codes
-        // for project context even for grouped certs, so we scope the exclusion
-        // check to invoice numbers (which only appear in the scoped works table).
+        // Invoice numbers only appear in the scoped works table, not in the
+        // project-wide financial summary annexe.
         expect(groupedText).not.toContain(invCSuffix);
+
+        // Devis codes for selected devis appear in both the works table and the
+        // project-wide financial summary annexe.
+        expect(groupedText).toContain(devisASuffix);
+
+        // INTENTIONAL: devisBCode (the excluded devis) IS present in the grouped
+        // cert PDF. The financial-summary annexe (page 3) renders every active
+        // devis across the whole project so the recipient can see the full project
+        // position. Only invoice numbers and the contractor-specific devis table
+        // are scoped to the selected sources. See buildAnnexeData in
+        // certificat-generator.ts for the authoritative comment.
+        expect(groupedText).toContain(devisBSuffix);
 
         // ── 3. Insert a manual certificat (no source rows) ────────────────────
         // This simulates the legacy / whole-contractor path where
