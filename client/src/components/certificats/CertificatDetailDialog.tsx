@@ -13,7 +13,7 @@ import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ExternalLink, AlertTriangle, Plus } from "lucide-react";
+import { ExternalLink, AlertTriangle, Plus, Copy } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, invalidateCertificatPaymentData } from "@/lib/queryClient";
@@ -331,6 +331,7 @@ export function CertificatPaymentsSection({ cert }: { cert: Certificat }) {
 }
 
 export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Certificat; contractor?: Contractor; onClose: () => void }) {
+  const { toast } = useToast();
   return (
     <Dialog open onOpenChange={onClose}>
       <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
@@ -489,6 +490,36 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
               </div>
             </div>
           </div>
+
+          {cert.paymentTransferRef && (
+            <div
+              className="flex items-center justify-between gap-2 p-3 rounded-lg border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]"
+              data-testid="section-transfer-ref"
+            >
+              <div className="min-w-0">
+                <TechnicalLabel>Référence de virement</TechnicalLabel>
+                <p
+                  className="text-[13px] font-mono font-semibold text-foreground mt-0.5 truncate"
+                  data-testid="text-transfer-ref"
+                >
+                  {cert.paymentTransferRef}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="shrink-0 inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors"
+                onClick={() => {
+                  navigator.clipboard.writeText(cert.paymentTransferRef!);
+                  toast({ title: "Référence copiée" });
+                }}
+                data-testid="button-copy-transfer-ref"
+                title="Copier la référence"
+              >
+                <Copy size={12} />
+                Copier
+              </button>
+            </div>
+          )}
 
           {cert.status !== "draft" && <CertificatPaymentsSection cert={cert} />}
 
