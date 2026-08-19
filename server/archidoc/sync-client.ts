@@ -171,6 +171,75 @@ export async function fetchProposalFees(projectId?: string): Promise<{ proposalF
   return archidocFetch<ProposalFeesResponse>("/api/sync/proposal-fees", params);
 }
 
+// --- Cached, non-blocking connectivity status ---------------------------
+//
+// The status endpoint used to call checkConnection() synchronously, which
+// performs a real upstream fetch with a 30s timeout — so a slow/unreachable
+// ArchiDoc backend froze the Projects page and the New Project dialog for up
+// to 30 seconds. We now cache the last connectivity verdict and refresh it in
+// the background; callers wait at most CONNECTION_PROBE_WAIT_MS for a fresh
+// answer before falling back to the cached (or "pending") verdict.
+const CONNECTION_CACHE_TTL_MS = 60_000;
+const CONNECTION_PROBE_WAIT_MS = 2_500;
+
+interface ConnectionVerdict {
+  connected: boolean;
+  error?: string;
+  checkedAt: string;
+}
+
+let cachedConnection: ConnectionVerdict | null = null;
+let connectionProbeInFlight: Promise<ConnectionVerdict> | null = null;
+
+function probeConnection(): Promise<ConnectionVerdict> {
+  if (!connectionProbeInFlight) {
+    connectionProbeInFlight = checkConnection()
+      .then((result) => {
+        const verdict: ConnectionVerdict = { ...result, checkedAt: new Date().toISOString() };
+        cachedConnection = verdict;
+        return verdict;
+      })
+      .finally(() => {
+        connectionProbeInFlight = null;
+      });
+  }
+  return connectionProbeInFlight;
+}
+
+/**
+ * Non-blocking connectivity status. Returns quickly (bounded by
+ * CONNECTION_PROBE_WAIT_MS), preferring a fresh cached verdict; when the
+ * cache is stale it kicks off a background probe and returns the stale
+ * verdict (flagged `stale: true`) or a "check in progress" placeholder.
+ */
+export async function getConnectionStatus(): Promise<ConnectionVerdict & { stale?: boolean; pending?: boolean }> {
+  if (!isArchidocConfigured()) {
+    return {
+      connected: false,
+      error: "ArchiDoc not configured (missing ARCHIDOC_BASE_URL or ARCHIDOC_SYNC_API_KEY)",
+      checkedAt: new Date().toISOString(),
+    };
+  }
+
+  const fresh =
+    cachedConnection &&
+    Date.now() - new Date(cachedConnection.checkedAt).getTime() < CONNECTION_CACHE_TTL_MS;
+  if (fresh && cachedConnection) return cachedConnection;
+
+  const probe = probeConnection();
+  const timer = new Promise<null>((resolve) => setTimeout(() => resolve(null), CONNECTION_PROBE_WAIT_MS));
+  const result = await Promise.race([probe, timer]);
+  if (result) return result;
+
+  if (cachedConnection) return { ...cachedConnection, stale: true };
+  return {
+    connected: false,
+    error: "Connectivity check in progress",
+    checkedAt: new Date().toISOString(),
+    pending: true,
+  };
+}
+
 export async function checkConnection(): Promise<{ connected: boolean; error?: string }> {
   if (!isArchidocConfigured()) {
     return { connected: false, error: "ArchiDoc not configured (missing ARCHIDOC_BASE_URL or ARCHIDOC_SYNC_API_KEY)" };

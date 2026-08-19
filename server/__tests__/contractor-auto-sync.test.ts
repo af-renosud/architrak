@@ -167,6 +167,9 @@ const { state, dbSpy, syncContractorsMock, isArchidocConfiguredMock } = vi.hoist
 vi.mock("../db", () => ({ db: dbSpy, pool: {} }));
 vi.mock("../archidoc/sync-service", () => ({
   syncContractors: syncContractorsMock,
+  // The real helper takes a shared pg advisory lock; in unit tests we always
+  // grant it so the locked body runs against the fake db.
+  withMirrorSyncLock: async <T,>(fn: () => Promise<T>) => ({ acquired: true, result: await fn() }),
 }));
 vi.mock("../archidoc/sync-client", () => ({
   isArchidocConfigured: isArchidocConfiguredMock,
@@ -381,6 +384,45 @@ describe("runContractorAutoSync", () => {
     expect(result.error).toBeUndefined();
     expect(result.created).toBe(1);
     expect(state.contractors[0].siret).toBeNull();
+  });
+
+  it("skips local processing and orphan detection when the wipe guard fired", async () => {
+    // Upstream response was empty/truncated: the mirror wipe guard refused
+    // reconciliation and syncContractors returned only a warning. The mirror
+    // is also stale (nothing refreshed this run), which previously drove the
+    // orphan fallback that flagged EVERY ArchiDoc-linked contractor.
+    syncContractorsMock.mockResolvedValueOnce({
+      updated: 0,
+      error: undefined,
+      warning: "Refused to soft-delete 29 of 29 active mirrored contractors",
+    } as never);
+    state.archidocContractors = [];
+    state.contractors = [
+      {
+        id: 42,
+        name: "ACME BTP",
+        archidocId: "ad-1",
+        archidocOrphanedAt: null,
+        notes: null,
+      } as unknown as Contractor,
+    ];
+
+    const result = await runContractorAutoSync({ incremental: false });
+
+    expect(result.error).toBeUndefined();
+    expect(result.warning).toMatch(/Refused/);
+    expect(result.orphaned).toBe(0);
+    expect(result.created).toBe(0);
+    expect(result.updated).toBe(0);
+
+    // No contractor was orphaned or otherwise touched.
+    expect(state.contractors[0].archidocOrphanedAt ?? null).toBeNull();
+    expect(state.updateContractorPayloads).toEqual([]);
+
+    // The run is recorded with the warning, not silently "completed" clean.
+    expect(state.syncLog).toHaveLength(1);
+    expect(state.syncLog[0]).toMatchObject({ status: "completed", recordsUpdated: 0 });
+    expect(state.syncLog[0].errorMessage).toMatch(/^WARNING: Refused/);
   });
 
   it("returns early without writing a sync log when ArchiDoc is not configured", async () => {

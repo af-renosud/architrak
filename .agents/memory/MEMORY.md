@@ -36,4 +36,5 @@
 - [Dedupe send requeue](dedupe-send-requeue.md) — dedupe-keyed re-sends return the old row; a prior FAILED comm must be flipped back to queued or "Send" silently no-ops; archived projects blocked at endpoint too.
 - [Email-doc purge guards](email-doc-purge-guards.md) — hard deletes must guard every inbound FK on the row AND rows deleted alongside it; SET NULL FKs sever evidence silently, restrictive FKs starve batch sweeps without per-row try/catch.
 - [Design-contract fee mirrors](design-contract-fee-mirror.md) — mirror = exact component-amount match, one per type; never by fee type alone; contract HT never guessed at 20%, show TTC + "HT unavailable".
+- [ArchiDoc mirror sync safety](archidoc-mirror-sync.md) — advisory-lock serialization (recovery only when lock free), completed-only watermark, ≥90% wipe guard, 200-with-embedded-errors sync API, cached connectivity probe.
 - [Restore via cp, not git checkout](restore-via-cp-not-git-checkout.md) — `git checkout --` reverts to the last platform commit and silently wipes uncommitted session edits; snapshot with cp before temporary file mutations.

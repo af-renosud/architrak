@@ -2,7 +2,7 @@ import { db } from "../db";
 import { eq, desc, and, isNotNull, isNull, notInArray } from "drizzle-orm";
 import { archidocSyncLog, archidocContractors, contractors } from "@shared/schema";
 import type { ArchidocContractor, InsertContractor } from "@shared/schema";
-import { syncContractors } from "./sync-service";
+import { syncContractors, withMirrorSyncLock } from "./sync-service";
 import { isArchidocConfigured } from "./sync-client";
 import { normalizeSiret } from "../gmail/document-parser";
 
@@ -74,6 +74,11 @@ export interface ContractorAutoSyncResult {
   orphaned: number;
   unorphaned: number;
   error?: string;
+  // Set when the mirror wipe guard refused reconciliation; local contractor
+  // processing and orphan detection were skipped for this run.
+  warning?: string;
+  // True when another mirror sync held the shared lock; nothing ran.
+  alreadyRunning?: boolean;
 }
 
 export async function runContractorAutoSync(options: { incremental?: boolean } = {}): Promise<ContractorAutoSyncResult> {
@@ -81,6 +86,23 @@ export async function runContractorAutoSync(options: { incremental?: boolean } =
     return { mirrorUpdated: 0, created: 0, updated: 0, skipped: 0, orphaned: 0, unorphaned: 0, error: "ArchiDoc not configured" };
   }
 
+  // The auto-sync's mirror phase calls syncContractors(full) which runs the
+  // same reconciliation as fullSync — it MUST hold the shared mirror-sync
+  // lock or it can race a concurrent full sync (and, unlocked, a >10min run
+  // could be falsely failed by stale-run recovery).
+  const outcome = await withMirrorSyncLock(() => runContractorAutoSyncLocked(options));
+  if (!outcome.acquired) {
+    console.log("[ArchiDoc Contractor AutoSync] Skipped — another mirror sync is already running");
+    return {
+      mirrorUpdated: 0, created: 0, updated: 0, skipped: 0, orphaned: 0, unorphaned: 0,
+      alreadyRunning: true,
+      error: "Another ArchiDoc sync is already in progress",
+    };
+  }
+  return outcome.result;
+}
+
+async function runContractorAutoSyncLocked(options: { incremental?: boolean } = {}): Promise<ContractorAutoSyncResult> {
   const [logEntry] = await db
     .insert(archidocSyncLog)
     .values({ syncType: CONTRACTOR_AUTO_SYNC_TYPE, status: "running" })
@@ -92,6 +114,34 @@ export async function runContractorAutoSync(options: { incremental?: boolean } =
     const mirrorResult = await syncContractors(incremental);
     if (mirrorResult.error) {
       throw new Error(mirrorResult.error);
+    }
+
+    // If the mirror wipe guard fired, the upstream response looked
+    // empty/truncated and reconciliation was refused. This run's snapshot is
+    // NOT trustworthy: processing local rows — and especially orphan
+    // detection, which marks every contractor missing from this snapshot —
+    // would mass-orphan contractors on exactly the failure mode the guard
+    // protects against. Record the warning and stop here.
+    if (mirrorResult.warning) {
+      console.warn(`[ArchiDoc Contractor AutoSync] Skipping local processing — ${mirrorResult.warning}`);
+      await db
+        .update(archidocSyncLog)
+        .set({
+          status: "completed",
+          completedAt: new Date(),
+          recordsUpdated: 0,
+          errorMessage: `WARNING: ${mirrorResult.warning}`,
+        })
+        .where(eq(archidocSyncLog.id, logEntry.id));
+      return {
+        mirrorUpdated: mirrorResult.updated,
+        created: 0,
+        updated: 0,
+        skipped: 0,
+        orphaned: 0,
+        unorphaned: 0,
+        warning: mirrorResult.warning,
+      };
     }
 
     // Exclude soft-deleted mirror rows so the auto-sync doesn't

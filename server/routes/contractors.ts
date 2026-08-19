@@ -43,6 +43,9 @@ router.get("/api/contractors/sync-status", async (_req, res) => {
 router.post("/api/contractors/sync", async (_req, res) => {
   try {
     const result = await runContractorAutoSync({ incremental: false });
+    if (result.alreadyRunning) {
+      return res.status(409).json({ message: "Another ArchiDoc sync is already in progress", ...result });
+    }
     if (result.error) {
       return res.status(502).json({ message: result.error, ...result });
     }

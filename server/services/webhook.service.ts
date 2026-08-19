@@ -168,7 +168,9 @@ export async function processWebhookEvent(payload: WebhookEvent): Promise<Proces
       return {
         processed: true,
         event,
-        details: `Full sync completed — projects: ${result.projects.updated}, contractors: ${result.contractors.updated}, trades: ${result.trades.updated}, fees: ${result.proposalFees.updated}`,
+        details: result.alreadyRunning
+          ? "Full sync skipped — another sync was already running"
+          : `Full sync completed — projects: ${result.projects.updated}, contractors: ${result.contractors.updated}, trades: ${result.trades.updated}, fees: ${result.proposalFees.updated}`,
       };
     }
 

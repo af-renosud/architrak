@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { storage } from "../storage";
-import { isArchidocConfigured, checkConnection } from "../archidoc/sync-client";
+import { isArchidocConfigured, getConnectionStatus } from "../archidoc/sync-client";
 import { fullSync, incrementalSync, getLastSyncStatus, getCurrentSourceBaseUrl } from "../archidoc/sync-service";
 import { trackProject, refreshProject } from "../archidoc/import-service";
 import { env as envCfg, detectMisconfiguredArchidocBaseUrl } from "../env";
@@ -34,13 +34,20 @@ router.get("/api/archidoc/status", async (_req, res) => {
     const trackedIds = await storage.getTrackedArchidocProjectIds();
     const siretIssues = await storage.getArchidocSiretIssues();
 
+    // Non-blocking connectivity: returns a cached verdict (refreshing in the
+    // background) instead of holding this endpoint hostage to a 30s upstream
+    // timeout on every page load.
     let connected = false;
     let connectionError: string | undefined;
+    let connectionCheckedAt: string | undefined;
+    let connectionPending = false;
 
     if (isArchidocConfigured()) {
-      const connResult = await checkConnection();
+      const connResult = await getConnectionStatus();
       connected = connResult.connected;
       connectionError = connResult.error;
+      connectionCheckedAt = connResult.checkedAt;
+      connectionPending = connResult.pending === true;
     }
 
     // Derive a short host identifier from ARCHIDOC_BASE_URL so the UI
@@ -61,9 +68,12 @@ router.get("/api/archidoc/status", async (_req, res) => {
       configured: syncStatus.configured,
       connected,
       connectionError,
+      connectionCheckedAt,
+      connectionPending,
       lastSync: syncStatus.lastSync,
       lastSyncType: syncStatus.lastSyncType,
       lastSyncStatus: syncStatus.lastSyncStatus,
+      lastSyncError: syncStatus.lastSyncError,
       mirroredProjects: mirroredProjects.length,
       mirroredContractors: mirroredContractors.length,
       trackedProjects: trackedIds.length,
@@ -119,7 +129,39 @@ router.get("/api/archidoc/projects", async (_req, res) => {
 router.post("/api/archidoc/sync", validateRequest({ body: z.object({}).strict().optional() }), async (_req, res) => {
   try {
     const result = await fullSync();
-    res.json({ message: "Sync completed", ...result });
+    if (result.alreadyRunning) {
+      res.json({
+        ok: false,
+        alreadyRunning: true,
+        message: "A sync is already in progress",
+        failures: [],
+        warnings: [],
+        ...result,
+      });
+      return;
+    }
+    // Honest reporting: fullSync catches per-part errors and returns them
+    // embedded, so a 200 here does NOT mean everything succeeded. Summarise
+    // failures/warnings so the client can toast the truth.
+    const parts = {
+      projects: result.projects,
+      contractors: result.contractors,
+      trades: result.trades,
+      proposalFees: result.proposalFees,
+    };
+    const failures = Object.entries(parts)
+      .filter(([, r]) => r.error)
+      .map(([name, r]) => `${name}: ${r.error}`);
+    const warnings = Object.entries(parts)
+      .filter(([, r]) => "warning" in r && (r as { warning?: string }).warning)
+      .map(([name, r]) => `${name}: ${(r as { warning?: string }).warning}`);
+    res.json({
+      ok: failures.length === 0,
+      message: failures.length === 0 ? "Sync completed" : "Sync completed with errors",
+      failures,
+      warnings,
+      ...result,
+    });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ message: `Sync failed: ${message}` });

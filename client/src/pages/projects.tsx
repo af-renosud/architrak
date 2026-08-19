@@ -45,6 +45,10 @@ interface ArchidocStatus {
   connected: boolean;
   connectionError?: string;
   lastSync: string | null;
+  lastSyncStatus?: string | null;
+  lastSyncError?: string | null;
+  connectionCheckedAt?: string;
+  connectionPending?: boolean;
   mirroredProjects: number;
   mirroredContractors: number;
   trackedProjects: number;
@@ -118,20 +122,47 @@ export default function Projects() {
     enabled: siretIssuesOpen,
   });
 
-  const { data: archidocProjects, isLoading: loadingArchidoc } = useQuery<ArchidocProjectEnriched[]>({
+  const {
+    data: archidocProjects,
+    isLoading: loadingArchidoc,
+    isError: archidocListError,
+    error: archidocListErrorDetail,
+    refetch: refetchArchidocProjects,
+  } = useQuery<ArchidocProjectEnriched[]>({
     queryKey: ["/api/archidoc/projects"],
     enabled: dialogOpen,
+    retry: 1,
   });
 
   const syncMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/archidoc/sync");
-      return res.json();
+      return res.json() as Promise<{ ok?: boolean; alreadyRunning?: boolean; failures?: string[]; warnings?: string[] }>;
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/archidoc/projects"] });
       queryClient.invalidateQueries({ queryKey: ["/api/archidoc/status"] });
-      toast({ title: "Sync complete", description: "ArchiDoc data has been refreshed." });
+      // The server returns 200 even when parts of the sync failed — report
+      // the truth instead of an unconditional "Sync complete".
+      if (data?.alreadyRunning) {
+        toast({
+          title: "Sync already in progress",
+          description: "Another sync is running; the list will refresh when it finishes.",
+        });
+      } else if (data?.failures && data.failures.length > 0) {
+        toast({
+          title: "Sync finished with errors",
+          description: data.failures.join(" — "),
+          variant: "destructive",
+        });
+      } else if (data?.warnings && data.warnings.length > 0) {
+        toast({
+          title: "Sync complete, with a warning",
+          description: data.warnings.join(" — "),
+        });
+      } else {
+        toast({ title: "Sync complete", description: "ArchiDoc data has been refreshed." });
+      }
     },
     onError: (error: Error) => {
       toast({ title: "Sync failed", description: error.message, variant: "destructive" });
@@ -308,6 +339,11 @@ export default function Projects() {
                     {archidocStatus?.lastSync && (
                       <p className="text-[10px] text-muted-foreground" data-testid="text-archidoc-last-synced">
                         Last synced: {new Date(archidocStatus.lastSync).toLocaleString()}
+                        {archidocStatus.lastSyncStatus === "failed" && (
+                          <span className="text-destructive font-bold uppercase tracking-wider ml-1" data-testid="text-archidoc-last-sync-failed">
+                            — last sync failed
+                          </span>
+                        )}
                       </p>
                     )}
                     {archidocStatus?.sourceHost && (
@@ -316,7 +352,26 @@ export default function Projects() {
                       </p>
                     )}
 
-                    {loadingArchidoc ? (
+                    {archidocListError ? (
+                      <div className="text-center py-8 space-y-3" data-testid="archidoc-list-error">
+                        <AlertCircle className="w-8 h-8 text-destructive mx-auto" />
+                        <p className="text-[12px] text-muted-foreground">
+                          Couldn't load ArchiDoc projects
+                          {archidocListErrorDetail instanceof Error
+                            ? `: ${archidocListErrorDetail.message}`
+                            : "."}
+                        </p>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => refetchArchidocProjects()}
+                          data-testid="button-retry-archidoc-list"
+                        >
+                          <RefreshCw size={12} />
+                          <span className="text-[9px] font-bold uppercase tracking-widest">Retry</span>
+                        </Button>
+                      </div>
+                    ) : loadingArchidoc ? (
                       <div className="space-y-2">
                         {Array.from({ length: 3 }).map((_, i) => (
                           <div key={i} className="p-3 rounded-xl border border-border">
