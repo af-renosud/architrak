@@ -8,3 +8,5 @@ Rule: migrations here are hand-authored SQL (drizzle-kit generate is broken by a
 **Why:** the boot invariant walks the journal and hard-fails on any migration tag missing an artifact entry, and CI replay suites fail the same way — an SQL file alone will take down boot.
 
 **How to apply:** treat "add migration" as a three-part change (SQL file, journal entry, artifact entry) landed together.
+
+Constraint drift: prod's schema can drift from a stamped migration (seen with a CHECK constraint reverting to a pre-migration definition while the tracker said applied). Fix by shipping a NEW idempotent re-assert migration (guarded DROP IF EXISTS + re-ADD). `rerunnable: true` on a data_only artifact entry now covers guarded idempotent DDL too (not just DML), so the tracker self-heal executes it instead of stamp-only — never flag unguarded DDL.

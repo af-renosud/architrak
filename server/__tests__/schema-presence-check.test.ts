@@ -342,6 +342,59 @@ describe.skipIf(skipModule !== null)("schema-presence check (Task #136)", () => 
     await ctx.replayPool.query(`DELETE FROM contractors WHERE id = $1`, [contractor.rows[0].id]);
   }, 60_000);
 
+  it("self-heal executes 0100's guarded DDL — the CHECK regains 'milestone_paid', never stamp-only", async (t) => {
+    if (ctx.skipReason || !ctx.replayPool) {
+      t.skip();
+      return;
+    }
+    // Reproduces the prod incident: the action CHECK drifted back to the
+    // pre-0097 definition while the tracker fell behind on a schema
+    // migration. Self-heal must EXECUTE 0100 (guarded, idempotent DDL),
+    // not merely stamp it, or the confirm audit insert keeps failing.
+    const journalPath = path.join(migrationsFolder, "meta", "_journal.json");
+    const journal = JSON.parse(fs.readFileSync(journalPath, "utf-8")) as {
+      entries: Array<{ tag: string; when: number }>;
+    };
+    const schemaEntry = journal.entries.find((e) => e.tag === "0020_per_line_pdf_bbox")!;
+    const ddlEntry = journal.entries.find((e) => e.tag === "0100_reassert_fee_event_action_chk")!;
+
+    for (const e of [schemaEntry, ddlEntry]) {
+      const del = await ctx.replayPool.query(
+        `DELETE FROM drizzle.__drizzle_migrations WHERE created_at = $1`,
+        [e.when],
+      );
+      expect(del.rowCount).toBe(1);
+    }
+
+    // Regress the constraint to the drifted pre-0097 definition.
+    await ctx.replayPool.query(
+      `ALTER TABLE architect_fee_invoice_events DROP CONSTRAINT IF EXISTS architect_fee_invoice_events_action_chk`,
+    );
+    await ctx.replayPool.query(
+      `ALTER TABLE architect_fee_invoice_events ADD CONSTRAINT architect_fee_invoice_events_action_chk CHECK (action IN ('confirmed','dismissed','conflict_parked','replayed'))`,
+    );
+
+    await expect(
+      assertSchemaMatchesTracker({
+        pool: ctx.replayPool,
+        migrationsFolder,
+      }),
+    ).resolves.toBeUndefined();
+
+    // The DDL must actually have run: the CHECK accepts 'milestone_paid' again.
+    const def = await ctx.replayPool.query<{ def: string }>(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+       WHERE conrelid = 'architect_fee_invoice_events'::regclass
+         AND conname = 'architect_fee_invoice_events_action_chk'`,
+    );
+    expect(def.rows[0].def).toContain("milestone_paid");
+
+    const total = await ctx.replayPool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations`,
+    );
+    expect(total.rows[0].n).toBe(journal.entries.length);
+  }, 60_000);
+
   it("self-heal does NOT execute non-rerunnable data-only migrations — stamp-only (Task #561)", async (t) => {
     if (ctx.skipReason || !ctx.replayPool) {
       t.skip();

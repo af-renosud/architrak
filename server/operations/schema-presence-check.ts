@@ -55,9 +55,11 @@ export interface MigrationArtifact {
  * not cover.
  *
  * `rerunnable: true` on a data_only entry is an audited promise that the
- * migration's SQL is pure, idempotent DML (guarded UPDATE/INSERT — no
- * DDL, no unguarded constraint/index/drop) that is SAFE to execute again
- * even if it already ran. Only rerunnable data-only migrations are
+ * migration's SQL is idempotent and SAFE to execute again even if it
+ * already ran: either pure guarded DML (UPDATE/INSERT), or fully guarded
+ * DDL (e.g. DROP CONSTRAINT IF EXISTS + re-ADD). Unguarded DDL (a bare
+ * ADD CONSTRAINT / CREATE INDEX without IF EXISTS handling) must NOT
+ * carry the flag — re-execution would FATAL the recovery. Only rerunnable data-only migrations are
  * executed by the tracker self-heal (Task #561); a data_only entry
  * WITHOUT the flag is stamped-only during self-heal, so if its effect
  * matters in production it must be re-shipped as a new rerunnable
@@ -164,6 +166,7 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0097_milestone_payment_suggestions", artifact: { kind: "table", table: "milestone_payment_suggestions" } },
   { tag: "0098_devis_notes", artifact: { kind: "column", table: "devis", column: "notes" } },
   { tag: "0099_certificat_transfer_ref", artifact: { kind: "column", table: "certificats", column: "payment_transfer_ref" } },
+  { tag: "0100_reassert_fee_event_action_chk", artifact: { kind: "data_only", reason: "re-asserts the architect_fee_invoice_events action CHECK (incl. 'milestone_paid') after production constraint drift; guarded DROP IF EXISTS + re-ADD is idempotent, so safe for self-heal execution", rerunnable: true } },
 ];
 
 interface JournalFile {
