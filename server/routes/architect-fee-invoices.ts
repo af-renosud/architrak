@@ -96,6 +96,8 @@ router.post(
   async (req, res) => {
     const id = z.coerce.number().int().positive().safeParse(req.params.id);
     if (!id.success) return res.status(400).json({ message: "Invalid id" });
+    const userId = (req.session as { userId?: number } | undefined)?.userId;
+    if (!userId) return res.status(401).json({ message: "Authenticated session required" });
     const user = (req as { user?: { email?: string | null } }).user;
     if (req.body.feeEntryId != null) {
       const result = await confirmArchitectFeeInvoiceWorks({
@@ -119,6 +121,7 @@ router.post(
       evidenceId: id.data,
       projectId: req.body.projectId,
       milestoneId: req.body.milestoneId,
+      userId,
       actor: user?.email ?? null,
     });
     if (!result.ok) {

@@ -63,6 +63,10 @@ type DesignContractMilestoneRow = {
   invoicedAt: string | null;
   paidAt: string | null;
   pennylaneInvoiceNumber: string | null;
+  invoiceNumber: string | null;
+  invoiceDate: string | null;
+  paymentDate: string | null;
+  notes: string | null;
 };
 type PhaseByData = {
   designContract?: DesignContractSummary | null;
@@ -612,11 +616,37 @@ export default function Fees() {
                         </span>
                       </div>
                       <div className="text-[10px] text-muted-foreground">
-                        {m.invoicedAt ? `Invoiced ${new Date(m.invoicedAt).toLocaleDateString()}` : ""}
-                        {(m.status === "invoiced" || m.status === "paid") && m.pennylaneInvoiceNumber
-                          ? ` · Pennylane ${m.pennylaneInvoiceNumber}`
-                          : ""}
-                        {m.paidAt ? ` · paid ${new Date(m.paidAt).toLocaleDateString()}` : ""}
+                        {m.invoiceNumber ? (
+                          <span data-testid={`text-fee-milestone-invoice-number-${m.id}`}>
+                            Invoice {m.invoiceNumber}
+                          </span>
+                        ) : null}
+                        {m.invoiceDate ? (
+                          <span data-testid={`text-fee-milestone-invoice-date-${m.id}`}>
+                            {m.invoiceNumber ? " dated " : "Invoiced "}{new Date(m.invoiceDate).toLocaleDateString()}
+                          </span>
+                        ) : m.invoicedAt && !m.invoiceDate ? (
+                          `Invoiced ${new Date(m.invoicedAt).toLocaleDateString()}`
+                        ) : null}
+                        {(m.status === "invoiced" || m.status === "paid") &&
+                        m.pennylaneInvoiceNumber &&
+                        m.pennylaneInvoiceNumber !== m.invoiceNumber ? (
+                          <span data-testid={`text-fee-milestone-pennylane-number-${m.id}`}>
+                            {" · Pennylane "}{m.pennylaneInvoiceNumber}
+                          </span>
+                        ) : null}
+                        {m.paymentDate ? (
+                          <span data-testid={`text-fee-milestone-payment-date-${m.id}`}>
+                            {" · paid "}{new Date(m.paymentDate).toLocaleDateString()}
+                          </span>
+                        ) : m.paidAt && !m.paymentDate ? (
+                          ` · paid ${new Date(m.paidAt).toLocaleDateString()}`
+                        ) : null}
+                        {m.notes ? (
+                          <span data-testid={`text-fee-milestone-notes-${m.id}`}>
+                            {" · "}{m.notes}
+                          </span>
+                        ) : null}
                       </div>
                     </div>
                     <div className="text-right shrink-0">

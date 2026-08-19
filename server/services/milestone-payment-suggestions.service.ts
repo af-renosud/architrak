@@ -160,8 +160,8 @@ export type MilestoneSuggestionConfirmOutcome =
 
 /**
  * Atomic human confirmation: ONE transaction locks the suggestion and the
- * milestone, requires an open suggestion and a not-yet-paid milestone in
- * `invoiced` (or `reached`) state, stamps `paid` with paidAt taken from the
+ * milestone, requires an open suggestion and an `invoiced` milestone,
+ * stamps `paid` with paidAt taken from the
  * SUGGESTED date (the client's email, never "now"), appends a note line,
  * dismisses other open suggestions for the milestone, and audits on the
  * bound evidence row when present.
@@ -210,12 +210,12 @@ export async function confirmMilestonePaymentSuggestion(args: {
     if (milestone.status === "paid") {
       return { ok: false, status: 409, code: "already_paid", message: `Le jalon « ${milestone.labelFr} » est déjà payé.` };
     }
-    if (milestone.status !== "invoiced" && milestone.status !== "reached") {
+    if (milestone.status !== "invoiced") {
       return {
         ok: false,
         status: 409,
         code: "milestone_not_payable",
-        message: `Le jalon « ${milestone.labelFr} » n'est ni facturé ni atteint (état : ${milestone.status}).`,
+        message: `Le jalon « ${milestone.labelFr} » doit être facturé avant d'être marqué payé (état : ${milestone.status}).`,
       };
     }
 
@@ -306,9 +306,17 @@ export async function transitionMilestoneStatus(args: {
   | { ok: true; milestone: typeof designContractMilestones.$inferSelect }
   | { ok: false; status: number; code: string; message: string }
 > {
+  if (args.expectedStatus !== "pending" || args.toStatus !== "reached") {
+    return {
+      ok: false,
+      status: 409,
+      code: "MILESTONE_STAGE_SKIP",
+      message:
+        "Les jalons avancent dans l'ordre : En attente → Atteint → Facturé → Payé. Utilisez l'action dédiée à l'étape suivante.",
+    };
+  }
   const set: Record<string, unknown> = { status: args.toStatus };
-  if (args.toStatus === "reached") set.reachedAt = new Date();
-  if (args.toStatus === "invoiced") set.invoicedAt = new Date();
+  set.reachedAt = new Date();
   if (args.notes !== undefined) set.notes = args.notes;
   if (args.triggerEvent) set.triggerEvent = args.triggerEvent;
   const [updated] = await db
@@ -347,7 +355,10 @@ export type ManualPaidOutcome =
  */
 export async function markMilestonePaidManually(args: {
   milestoneId: number;
+  userId: number;
   actor: string | null;
+  paymentDate: string;
+  notes?: string | null;
 }): Promise<ManualPaidOutcome> {
   return db.transaction(async (tx): Promise<ManualPaidOutcome> => {
     const [milestone] = await tx
@@ -356,20 +367,39 @@ export async function markMilestonePaidManually(args: {
       .where(eq(designContractMilestones.id, args.milestoneId))
       .for("update");
     if (!milestone) return { ok: false, status: 404, code: "not_found", message: "Jalon introuvable." };
+    const [owningContract] = await tx
+      .select({ uploadedByUserId: designContracts.uploadedByUserId })
+      .from(designContracts)
+      .where(eq(designContracts.id, milestone.contractId));
+    if (!owningContract || owningContract.uploadedByUserId !== args.userId) {
+      return {
+        ok: false,
+        status: 403,
+        code: "not_owner",
+        message: "Vous n'êtes pas le propriétaire de ce contrat.",
+      };
+    }
     if (milestone.status === "paid") {
       return { ok: false, status: 409, code: "already_paid", message: `Le jalon « ${milestone.labelFr} » est déjà payé.` };
     }
-    if (milestone.status !== "invoiced" && milestone.status !== "reached") {
+    if (milestone.status !== "invoiced") {
       return {
         ok: false,
         status: 409,
         code: "milestone_not_payable",
-        message: `Le jalon ne peut pas être marqué payé depuis l'état « ${milestone.status} ».`,
+        message: `Le jalon doit être facturé avant d'être marqué payé (état actuel : « ${milestone.status} »).`,
       };
     }
+    const paymentNote = args.notes?.trim();
     const updated = await tx
       .update(designContractMilestones)
-      .set({ status: "paid", paidAt: new Date() })
+      .set({
+        status: "paid",
+        paidAt: new Date(`${args.paymentDate}T00:00:00Z`),
+        ...(paymentNote
+          ? { notes: milestone.notes ? `${milestone.notes}\n${paymentNote}` : paymentNote }
+          : {}),
+      })
       .where(and(eq(designContractMilestones.id, milestone.id), eq(designContractMilestones.status, milestone.status)))
       .returning();
     if (updated.length !== 1) throw new Error(`milestone ${milestone.id} manual paid flip affected ${updated.length} rows`);
@@ -384,6 +414,29 @@ export async function markMilestonePaidManually(args: {
           inArray(milestonePaymentSuggestions.status, ["pending_review", "ambiguous"]),
         ),
       );
+    const [evidence] = await tx
+      .select({ id: architectFeeInvoices.id })
+      .from(architectFeeInvoices)
+      .where(
+        and(
+          eq(architectFeeInvoices.milestoneId, milestone.id),
+          eq(architectFeeInvoices.status, "confirmed"),
+        ),
+      );
+    if (evidence) {
+      await tx.insert(architectFeeInvoiceEvents).values({
+        architectFeeInvoiceId: evidence.id,
+        action: "milestone_paid",
+        actor: args.actor,
+        note: `Paiement enregistré manuellement le ${args.paymentDate}.`,
+        details: {
+          milestoneId: milestone.id,
+          paymentDate: args.paymentDate,
+          notes: paymentNote ?? null,
+          source: "manual",
+        },
+      });
+    }
     return { ok: true, milestone: updated[0] };
   });
 }

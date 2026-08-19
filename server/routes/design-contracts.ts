@@ -41,6 +41,10 @@ import {
 } from "../services/design-contract-parser";
 import { getMilestonesWithPennylane } from "../services/design-contract-read.service";
 import { markMilestonePaidManually, transitionMilestoneStatus } from "../services/milestone-payment-suggestions.service";
+import {
+  completePaidMilestoneDetails,
+  recordManualMilestoneInvoice,
+} from "../services/manual-milestone-invoice.service";
 import { roundCurrency } from "../../shared/financial-utils";
 import { DESIGN_CONTRACT_ERROR_CODES } from "../../shared/design-contract-errors";
 import {
@@ -92,6 +96,39 @@ const milestonePatchSchema = z.object({
 }).refine((v) => v.status !== undefined || v.notes !== undefined || v.triggerEvent !== undefined, {
   message: "At least one of status / notes / triggerEvent is required",
 });
+
+const isoDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "La date doit être au format AAAA-MM-JJ.")
+  .refine((value) => {
+    const parsed = new Date(`${value}T00:00:00Z`);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  }, "La date est invalide.");
+
+const invoiceNumberSchema = z
+  .string()
+  .trim()
+  .min(1, "Le numéro de facture est obligatoire.")
+  .max(120, "Le numéro de facture est trop long.")
+  .regex(/[A-Za-z0-9]/, "Le numéro de facture doit contenir une lettre ou un chiffre.");
+
+const milestoneInvoiceSchema = z.object({
+  invoiceNumber: invoiceNumberSchema,
+  invoiceDate: isoDateSchema,
+  notes: z.string().trim().max(2000).nullable().optional(),
+}).strict();
+
+const milestonePaymentSchema = z.object({
+  paymentDate: isoDateSchema,
+  notes: z.string().trim().max(2000).nullable().optional(),
+}).strict();
+
+const historicalMilestoneDetailsSchema = z.object({
+  invoiceNumber: invoiceNumberSchema,
+  invoiceDate: isoDateSchema,
+  paymentDate: isoDateSchema,
+  notes: z.string().trim().max(2000).nullable().optional(),
+}).strict();
 
 // NOTE: do NOT add `router.use(requireAuth)` here. This router is mounted
 // at the application root (`app.use(designContractsRouter)` in routes/index.ts),
@@ -448,6 +485,74 @@ router.get(
   },
 );
 
+router.post(
+  "/api/design-contracts/milestones/:id/invoice",
+  validateRequest({ params: milestoneIdParams, body: milestoneInvoiceSchema }),
+  async (req, res, next) => {
+    try {
+      const userId = (req.session as { userId?: number } | undefined)?.userId;
+      if (!userId) return res.status(401).json({ message: "Authenticated session required" });
+      const actorUser = await storage.getUser(userId);
+      const result = await recordManualMilestoneInvoice({
+        milestoneId: Number(req.params.id),
+        userId,
+        actor: actorUser?.email ?? null,
+        ...(req.body as z.infer<typeof milestoneInvoiceSchema>),
+      });
+      if (!result.ok) return res.status(result.status).json({ message: result.message, code: result.code });
+      return res.status(201).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.post(
+  "/api/design-contracts/milestones/:id/payment",
+  validateRequest({ params: milestoneIdParams, body: milestonePaymentSchema }),
+  async (req, res, next) => {
+    try {
+      const userId = (req.session as { userId?: number } | undefined)?.userId;
+      if (!userId) return res.status(401).json({ message: "Authenticated session required" });
+      const actorUser = await storage.getUser(userId);
+      const body = req.body as z.infer<typeof milestonePaymentSchema>;
+      const result = await markMilestonePaidManually({
+        milestoneId: Number(req.params.id),
+        userId,
+        actor: actorUser?.email ?? null,
+        paymentDate: body.paymentDate,
+        notes: body.notes,
+      });
+      if (!result.ok) return res.status(result.status).json({ message: result.message, code: result.code });
+      return res.json(result.milestone);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.post(
+  "/api/design-contracts/milestones/:id/details",
+  validateRequest({ params: milestoneIdParams, body: historicalMilestoneDetailsSchema }),
+  async (req, res, next) => {
+    try {
+      const userId = (req.session as { userId?: number } | undefined)?.userId;
+      if (!userId) return res.status(401).json({ message: "Authenticated session required" });
+      const actorUser = await storage.getUser(userId);
+      const result = await completePaidMilestoneDetails({
+        milestoneId: Number(req.params.id),
+        userId,
+        actor: actorUser?.email ?? null,
+        ...(req.body as z.infer<typeof historicalMilestoneDetailsSchema>),
+      });
+      if (!result.ok) return res.status(result.status).json({ message: result.message, code: result.code });
+      return res.json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 router.patch(
   "/api/design-contracts/milestones/:id",
   validateRequest({ params: milestoneIdParams, body: milestonePatchSchema }),
@@ -468,26 +573,15 @@ router.patch(
         return res.status(403).json({ message: "Not the contract owner" });
       }
       const body = req.body as z.infer<typeof milestonePatchSchema>;
-      // Task #617 — `paid` is a money-state transition. It goes through the
-      // same locked, status-guarded transaction as suggestion confirms
-      // (milestone row lock + conditional update + in-tx dismissal of open
-      // suggestions), so a manual flip racing a suggestion confirm can never
-      // overwrite an email-derived paidAt or leave open suggestions behind.
       if (body.status === "paid") {
-        if (body.notes !== undefined || body.triggerEvent) {
-          return res.status(400).json({
-            message: "Le passage à « payé » ne peut pas être combiné avec d'autres modifications.",
-            code: "PAID_TRANSITION_EXCLUSIVE",
-          });
-        }
-        const actorUser = await storage.getUser(userId);
-        const result = await markMilestonePaidManually({ milestoneId: id, actor: actorUser?.email ?? null });
-        if (!result.ok) return res.status(result.status).json({ message: result.message, code: result.code });
-        return res.json(result.milestone);
-      }
-      if (existing.status === "paid" && body.status) {
         return res.status(409).json({
-          message: "Un jalon payé ne peut pas revenir en arrière.",
+          message: "Enregistrez d'abord la facture, puis utilisez l'action « Marquer payé » avec une date de paiement.",
+          code: "MILESTONE_PAYMENT_DETAILS_REQUIRED",
+        });
+      }
+      if (existing.status === "paid") {
+        return res.status(409).json({
+          message: "Un jalon payé est définitif. Utilisez « Ajouter les détails » pour compléter son historique.",
           code: "MILESTONE_ALREADY_PAID",
         });
       }

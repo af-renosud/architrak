@@ -179,6 +179,11 @@ export interface WorksFeeCandidateRow {
   contractorInvoiceNumber: string | null;
 }
 
+export interface MilestoneInvoiceDetails {
+  invoiceNumber: string | null;
+  invoiceDate: string | null;
+}
+
 // Task #465 — discriminated result of an atomic payment-ledger mutation.
 // Non-"ok" outcomes are precondition refusals the routes map to friendly
 // HTTP responses; "ok" carries the post-mutation reconciliation state.
@@ -1122,6 +1127,8 @@ export interface IStorage {
 
   /** Map milestoneId → human-visible Pennylane invoice number (or legacy manual ref) via confirmed architect-fee-invoice evidence. */
   getMilestonePennylaneNumbers(milestoneIds: number[]): Promise<Map<number, string>>;
+  /** Generic invoice metadata for each milestone, regardless of Gmail, Pennylane, or manual source. */
+  getMilestoneInvoiceDetails(milestoneIds: number[]): Promise<Map<number, MilestoneInvoiceDetails>>;
 
   createDesignContractMilestones(rows: InsertDesignContractMilestone[]): Promise<DesignContractMilestone[]>;
 
@@ -2925,6 +2932,39 @@ export class DatabaseStorage implements IStorage {
     for (const row of rows) {
       const num = row.pennylaneInvoiceNumber ?? row.pennylaneInvoiceRef;
       if (row.milestoneId != null && num) out.set(row.milestoneId, num);
+    }
+    return out;
+  }
+
+  async getMilestoneInvoiceDetails(
+    milestoneIds: number[],
+  ): Promise<Map<number, MilestoneInvoiceDetails>> {
+    const out = new Map<number, MilestoneInvoiceDetails>();
+    if (milestoneIds.length === 0) return out;
+    const rows = await db
+      .select({
+        milestoneId: architectFeeInvoices.milestoneId,
+        evidenceInvoiceNumber: architectFeeInvoices.invoiceNumber,
+        issueDate: architectFeeInvoices.issueDate,
+        entryInvoiceNumber: feeEntries.pennylaneInvoiceNumber,
+        entryInvoiceRef: feeEntries.pennylaneInvoiceRef,
+        entryInvoiceDate: feeEntries.dateInvoiced,
+      })
+      .from(architectFeeInvoices)
+      .leftJoin(feeEntries, eq(architectFeeInvoices.feeEntryId, feeEntries.id))
+      .where(
+        and(
+          inArray(architectFeeInvoices.milestoneId, milestoneIds),
+          eq(architectFeeInvoices.status, "confirmed"),
+        ),
+      );
+    for (const row of rows) {
+      if (row.milestoneId == null || out.has(row.milestoneId)) continue;
+      out.set(row.milestoneId, {
+        invoiceNumber:
+          row.evidenceInvoiceNumber ?? row.entryInvoiceNumber ?? row.entryInvoiceRef ?? null,
+        invoiceDate: row.issueDate ?? row.entryInvoiceDate ?? null,
+      });
     }
     return out;
   }

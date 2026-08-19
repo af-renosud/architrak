@@ -13,15 +13,23 @@ import type { DesignContractMilestone } from "@shared/schema";
 
 export type MilestoneWithPennylane = DesignContractMilestone & {
   pennylaneInvoiceNumber: string | null;
+  invoiceNumber: string | null;
+  invoiceDate: string | null;
+  paymentDate: string | null;
 };
 
 export async function getMilestonesWithPennylane(
   contractId: number,
 ): Promise<MilestoneWithPennylane[]> {
   const milestones = await storage.getDesignContractMilestones(contractId);
-  const numbers = await storage.getMilestonePennylaneNumbers(milestones.map((m) => m.id));
+  const details = await storage.getMilestoneInvoiceDetails(milestones.map((m) => m.id));
   return milestones.map((m) => ({
     ...m,
-    pennylaneInvoiceNumber: numbers.get(m.id) ?? null,
+    pennylaneInvoiceNumber: details.get(m.id)?.invoiceNumber ?? null,
+    invoiceNumber: details.get(m.id)?.invoiceNumber ?? null,
+    invoiceDate:
+      details.get(m.id)?.invoiceDate ??
+      (m.invoicedAt ? m.invoicedAt.toISOString().slice(0, 10) : null),
+    paymentDate: m.paidAt ? m.paidAt.toISOString().slice(0, 10) : null,
   }));
 }

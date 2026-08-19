@@ -22,6 +22,11 @@ vi.mock("../../services/milestone-payment-suggestions.service", () => ({
   markMilestonePaidManually: vi.fn(),
 }));
 
+vi.mock("../../services/manual-milestone-invoice.service", () => ({
+  recordManualMilestoneInvoice: vi.fn(),
+  completePaidMilestoneDetails: vi.fn(),
+}));
+
 vi.mock("../../middleware/auth", () => ({
   requireAuth: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
     const sess = (req as unknown as { session?: { userId?: number } }).session;
@@ -33,13 +38,20 @@ vi.mock("../../middleware/auth", () => ({
 }));
 
 import { storage } from "../../storage";
+import { errorHandler } from "../../middleware/error-handler";
 import {
   transitionMilestoneStatus,
   markMilestonePaidManually,
 } from "../../services/milestone-payment-suggestions.service";
+import {
+  completePaidMilestoneDetails,
+  recordManualMilestoneInvoice,
+} from "../../services/manual-milestone-invoice.service";
 
 const transitionMock = transitionMilestoneStatus as unknown as ReturnType<typeof vi.fn>;
 const markPaidMock = markMilestonePaidManually as unknown as ReturnType<typeof vi.fn>;
+const recordInvoiceMock = recordManualMilestoneInvoice as unknown as ReturnType<typeof vi.fn>;
+const completeDetailsMock = completePaidMilestoneDetails as unknown as ReturnType<typeof vi.fn>;
 
 const getReached = storage.getReachedUninvoicedMilestones as unknown as ReturnType<typeof vi.fn>;
 const getMilestone = storage.getDesignContractMilestone as unknown as ReturnType<typeof vi.fn>;
@@ -63,6 +75,7 @@ beforeAll(async () => {
     next();
   });
   app.use(router);
+  app.use(errorHandler);
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => resolve());
   });
@@ -83,6 +96,8 @@ beforeEach(() => {
   updateMilestone.mockReset();
   transitionMock.mockReset();
   markPaidMock.mockReset();
+  recordInvoiceMock.mockReset();
+  completeDetailsMock.mockReset();
 });
 
 describe("GET /api/design-contracts/dashboard-actions", () => {
@@ -136,23 +151,39 @@ describe("PATCH /api/design-contracts/milestones/:id — ownership check", () =>
     expect(updateMilestone).not.toHaveBeenCalled();
   });
 
-  it("routes status=paid through the locked manual-paid transaction", async () => {
+  it("rejects legacy status=paid PATCHes because payment details are required", async () => {
     getMilestone.mockResolvedValue({ id: 7, contractId: 3, status: "invoiced" });
     getContract.mockResolvedValue({ id: 3, uploadedByUserId: 42 });
-    (storage.getUser as unknown as ReturnType<typeof vi.fn>)?.mockResolvedValue?.({
-      id: 42,
-      email: "owner@test.fr",
-    });
-    markPaidMock.mockResolvedValue({ ok: true, milestone: { id: 7, status: "paid" } });
     const res = await fetch(`${baseUrl}/api/design-contracts/milestones/7`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
       body: JSON.stringify({ status: "paid" }),
     });
-    expect(res.status).toBe(200);
-    expect(markPaidMock).toHaveBeenCalledWith(expect.objectContaining({ milestoneId: 7 }));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: "MILESTONE_PAYMENT_DETAILS_REQUIRED" });
+    expect(markPaidMock).not.toHaveBeenCalled();
     expect(transitionMock).not.toHaveBeenCalled();
     expect(updateMilestone).not.toHaveBeenCalled();
+  });
+
+  it("rejects stage-skipping Reached → Invoiced through the generic PATCH", async () => {
+    getMilestone.mockResolvedValue({ id: 7, contractId: 3, status: "reached" });
+    getContract.mockResolvedValue({ id: 3, uploadedByUserId: 42 });
+    transitionMock.mockResolvedValue({
+      ok: false,
+      status: 409,
+      code: "MILESTONE_STAGE_SKIP",
+      message: "ordered stages",
+    });
+    const res = await fetch(`${baseUrl}/api/design-contracts/milestones/7`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({ status: "invoiced" }),
+    });
+    expect(res.status).toBe(409);
+    expect(transitionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedStatus: "reached", toStatus: "invoiced" }),
+    );
   });
 
   it("rejects a CAS miss with 409 so paid can never be regressed", async () => {
@@ -171,6 +202,108 @@ describe("PATCH /api/design-contracts/milestones/:id — ownership check", () =>
     });
     expect(res.status).toBe(409);
     expect(updateMilestone).not.toHaveBeenCalled();
+  });
+});
+
+describe("stage-specific milestone detail endpoints", () => {
+  beforeEach(() => {
+    (storage.getUser as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 42,
+      email: "owner@test.fr",
+    });
+  });
+
+  it("requires invoice number and invoice date", async () => {
+    const res = await fetch(`${baseUrl}/api/design-contracts/milestones/7/invoice`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({ invoiceNumber: "" }),
+    });
+    expect(res.status).toBe(400);
+    expect(recordInvoiceMock).not.toHaveBeenCalled();
+  });
+
+  it("records a manual invoice through the atomic service", async () => {
+    recordInvoiceMock.mockResolvedValue({
+      ok: true,
+      milestone: { id: 7, status: "invoiced" },
+      evidence: { id: 10 },
+      feeEntryId: 11,
+      reconciliation: "created",
+    });
+    const res = await fetch(`${baseUrl}/api/design-contracts/milestones/7/invoice`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({
+        invoiceNumber: "FA-2026-100",
+        invoiceDate: "2026-08-18",
+        notes: "Sent to client",
+      }),
+    });
+    expect(res.status).toBe(201);
+    expect(recordInvoiceMock).toHaveBeenCalledWith({
+      milestoneId: 7,
+      userId: 42,
+      actor: "owner@test.fr",
+      invoiceNumber: "FA-2026-100",
+      invoiceDate: "2026-08-18",
+      notes: "Sent to client",
+    });
+  });
+
+  it("requires a payment date and passes it to the locked payment service", async () => {
+    const missing = await fetch(`${baseUrl}/api/design-contracts/milestones/7/payment`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({}),
+    });
+    expect(missing.status).toBe(400);
+
+    markPaidMock.mockResolvedValue({ ok: true, milestone: { id: 7, status: "paid" } });
+    const res = await fetch(`${baseUrl}/api/design-contracts/milestones/7/payment`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({ paymentDate: "2026-08-19", notes: "Bank transfer" }),
+    });
+    expect(res.status).toBe(200);
+    expect(markPaidMock).toHaveBeenCalledWith({
+      milestoneId: 7,
+      userId: 42,
+      actor: "owner@test.fr",
+      paymentDate: "2026-08-19",
+      notes: "Bank transfer",
+    });
+  });
+
+  it("completes a paid legacy milestone without a status PATCH", async () => {
+    completeDetailsMock.mockResolvedValue({
+      ok: true,
+      milestone: { id: 7, status: "paid" },
+      evidence: { id: 10 },
+      feeEntryId: 11,
+      reconciliation: "created",
+    });
+    const res = await fetch(`${baseUrl}/api/design-contracts/milestones/7/details`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({
+        invoiceNumber: "LEG-2025-9",
+        invoiceDate: "2025-11-01",
+        paymentDate: "2025-11-15",
+        notes: "Historical record",
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(completeDetailsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        milestoneId: 7,
+        userId: 42,
+        invoiceNumber: "LEG-2025-9",
+        invoiceDate: "2025-11-01",
+        paymentDate: "2025-11-15",
+      }),
+    );
+    expect(transitionMock).not.toHaveBeenCalled();
   });
 });
 

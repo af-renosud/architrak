@@ -68,6 +68,7 @@ export async function confirmArchitectFeeInvoice(args: {
   evidenceId: number;
   projectId: number;
   milestoneId: number;
+  userId: number;
   actor: string | null;
 }): Promise<ConfirmOutcome> {
   return await db.transaction(async (tx): Promise<ConfirmOutcome> => {
@@ -79,6 +80,23 @@ export async function confirmArchitectFeeInvoice(args: {
         .for("update");
       if (!evidence) {
         return ({ ok: false, status: 404, code: "not_found", message: "Facture introuvable." });
+      }
+
+      const [project] = await tx.select().from(projects).where(eq(projects.id, args.projectId));
+      if (!project) {
+        return ({ ok: false, status: 404, code: "project_not_found", message: "Projet introuvable." });
+      }
+      const [contract] = await tx.select().from(designContracts).where(eq(designContracts.projectId, args.projectId));
+      if (!contract) {
+        return ({ ok: false, status: 409, code: "no_contract", message: "Ce projet n'a pas de contrat de conception." });
+      }
+      if (contract.uploadedByUserId !== args.userId) {
+        return ({
+          ok: false,
+          status: 403,
+          code: "forbidden",
+          message: "Vous n'êtes pas autorisé à modifier les jalons de ce contrat.",
+        });
       }
 
       // Idempotent replay: same binding already confirmed → success, audited.
@@ -126,14 +144,6 @@ export async function confirmArchitectFeeInvoice(args: {
       }
       const dateInvoiced = evidence.issueDate;
 
-      const [project] = await tx.select().from(projects).where(eq(projects.id, args.projectId));
-      if (!project) {
-        return ({ ok: false, status: 404, code: "project_not_found", message: "Projet introuvable." });
-      }
-      const [contract] = await tx.select().from(designContracts).where(eq(designContracts.projectId, args.projectId));
-      if (!contract) {
-        return ({ ok: false, status: 409, code: "no_contract", message: "Ce projet n'a pas de contrat de conception." });
-      }
       // ── Lock the milestone row too. ──
       const [milestone] = await tx
         .select()
@@ -149,6 +159,14 @@ export async function confirmArchitectFeeInvoice(args: {
           status: 409,
           code: "milestone_already_" + milestone.status,
           message: `Le jalon « ${milestone.labelFr} » est déjà ${milestone.status === "paid" ? "payé" : "facturé"}.`,
+        });
+      }
+      if (milestone.status !== "reached") {
+        return ({
+          ok: false,
+          status: 409,
+          code: "MILESTONE_STAGE_SKIP",
+          message: `Le jalon « ${milestone.labelFr} » doit d'abord être marqué atteint avant d'enregistrer sa facture.`,
         });
       }
 

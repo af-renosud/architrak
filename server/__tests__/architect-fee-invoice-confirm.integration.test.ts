@@ -25,6 +25,7 @@ const STAMP = Date.now();
 const REF1 = `TEST-426-${STAMP}-A`;
 const REF2 = `TEST-426-${STAMP}-B`;
 const REF3 = `TEST-426-${STAMP}-C`;
+const OWNER_USER_ID = 810_000_000 + (STAMP % 100_000_000);
 
 let projectId: number;
 let contractId: number;
@@ -73,18 +74,24 @@ beforeAll(async () => {
 
   const [contract] = await db
     .insert(designContracts)
-    .values({ projectId, totalTtc: "12000.00", originalFilename: "contract.pdf", storageKey: `test/contract-${STAMP}.pdf` })
+    .values({
+      projectId,
+      totalTtc: "12000.00",
+      originalFilename: "contract.pdf",
+      storageKey: `test/contract-${STAMP}.pdf`,
+      uploadedByUserId: OWNER_USER_ID,
+    })
     .returning();
   contractId = contract.id;
 
   const ms = await db
     .insert(designContractMilestones)
     .values([
-      { contractId, sequence: 1, labelFr: "OUVERTURE ADMINISTRATIVE", percentage: "10.00", amountTtc: "1200.00", status: "pending" },
-      { contractId, sequence: 2, labelFr: "AVANT-PROJET", percentage: "30.00", amountTtc: "3600.00", status: "pending" },
-      { contractId, sequence: 3, labelFr: "PERMIS", percentage: "30.00", amountTtc: "3600.00", status: "pending" },
-      { contractId, sequence: 4, labelFr: "CONSULTATION", percentage: "15.00", amountTtc: "1800.00", status: "pending" },
-      { contractId, sequence: 5, labelFr: "CHANTIER", percentage: "15.00", amountTtc: "1800.00", status: "pending" },
+      { contractId, sequence: 1, labelFr: "OUVERTURE ADMINISTRATIVE", percentage: "10.00", amountTtc: "1200.00", status: "reached", reachedAt: new Date() },
+      { contractId, sequence: 2, labelFr: "AVANT-PROJET", percentage: "30.00", amountTtc: "3600.00", status: "reached", reachedAt: new Date() },
+      { contractId, sequence: 3, labelFr: "PERMIS", percentage: "30.00", amountTtc: "3600.00", status: "reached", reachedAt: new Date() },
+      { contractId, sequence: 4, labelFr: "CONSULTATION", percentage: "15.00", amountTtc: "1800.00", status: "reached", reachedAt: new Date() },
+      { contractId, sequence: 5, labelFr: "CHANTIER", percentage: "15.00", amountTtc: "1800.00", status: "reached", reachedAt: new Date() },
     ])
     .returning();
   milestone1 = ms[0].id;
@@ -107,10 +114,44 @@ afterAll(async () => {
 });
 
 describe("confirmArchitectFeeInvoice (Task #426)", () => {
+  it("refuses a non-owner before changing evidence, milestone, or fee entries", async () => {
+    const evidenceId = await insertEvidence({
+      ref: `TEST-426-${STAMP}-FORBIDDEN`,
+      amountHt: "1000.00",
+      issueDate: "2026-08-10",
+    });
+    const projectFeeIds = (await db.select().from(fees).where(eq(fees.projectId, projectId))).map(
+      (fee) => fee.id,
+    );
+    const beforeEntries = projectFeeIds.length
+      ? await db.select().from(feeEntries).where(inArray(feeEntries.feeId, projectFeeIds))
+      : [];
+
+    const result = await confirmArchitectFeeInvoice({
+      evidenceId,
+      projectId,
+      milestoneId: milestone1,
+      userId: OWNER_USER_ID + 1,
+      actor: "intruder@example.test",
+    });
+    expect(result).toMatchObject({ ok: false, status: 403, code: "forbidden" });
+
+    const evidence = await storage.getArchitectFeeInvoice(evidenceId);
+    expect(evidence?.status).toBe("pending_review");
+    expect(evidence?.projectId).toBeNull();
+    const milestone = await storage.getDesignContractMilestone(milestone1);
+    expect(milestone?.status).toBe("reached");
+    const afterEntries = projectFeeIds.length
+      ? await db.select().from(feeEntries).where(inArray(feeEntries.feeId, projectFeeIds))
+      : [];
+    expect(afterEntries).toHaveLength(beforeEntries.length);
+    expect(await storage.listArchitectFeeInvoiceEvents(evidenceId)).toHaveLength(0);
+  });
+
   it("happy path: creates the fee entry with EXTRACTED ref/date, invoices the milestone, audits", async () => {
     const evidenceId = await insertEvidence({ ref: REF1, amountHt: "1000.00", issueDate: "2026-08-10" });
 
-    const result = await confirmArchitectFeeInvoice({ evidenceId, projectId, milestoneId: milestone1, actor: "tester@renosud.com" });
+    const result = await confirmArchitectFeeInvoice({ evidenceId, projectId, milestoneId: milestone1, userId: OWNER_USER_ID, actor: "tester@renosud.com" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.reconciliation).toBe("created");
@@ -144,12 +185,19 @@ describe("confirmArchitectFeeInvoice (Task #426)", () => {
 
   it("double-confirm is an idempotent replay: no second entry, audited as replayed", async () => {
     const evidence = (await storage.listArchitectFeeInvoices("confirmed")).find((e) => e.invoiceNumber === REF1)!;
-    const before = await db.select().from(feeEntries);
+    const projectFeeIds = (await db.select().from(fees).where(eq(fees.projectId, projectId))).map(
+      (fee) => fee.id,
+    );
+    const before = await db
+      .select()
+      .from(feeEntries)
+      .where(inArray(feeEntries.feeId, projectFeeIds));
 
     const result = await confirmArchitectFeeInvoice({
       evidenceId: evidence.id,
       projectId,
       milestoneId: milestone1,
+      userId: OWNER_USER_ID,
       actor: "tester@renosud.com",
     });
     expect(result.ok).toBe(true);
@@ -157,7 +205,10 @@ describe("confirmArchitectFeeInvoice (Task #426)", () => {
     expect(result.replayed).toBe(true);
     expect(result.feeEntryId).toBe(evidence.feeEntryId);
 
-    const after = await db.select().from(feeEntries);
+    const after = await db
+      .select()
+      .from(feeEntries)
+      .where(inArray(feeEntries.feeId, projectFeeIds));
     expect(after.length).toBe(before.length);
     const events = await storage.listArchitectFeeInvoiceEvents(evidence.id);
     expect(events.map((e) => e.action)).toContain("replayed");
@@ -182,7 +233,7 @@ describe("confirmArchitectFeeInvoice (Task #426)", () => {
       .returning();
 
     const evidenceId = await insertEvidence({ ref: REF2, amountHt: "3000.00", issueDate: "2026-08-01" });
-    const result = await confirmArchitectFeeInvoice({ evidenceId, projectId, milestoneId: milestone2, actor: "tester@renosud.com" });
+    const result = await confirmArchitectFeeInvoice({ evidenceId, projectId, milestoneId: milestone2, userId: OWNER_USER_ID, actor: "tester@renosud.com" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.reconciliation).toBe("attached_by_ref");
@@ -214,7 +265,7 @@ describe("confirmArchitectFeeInvoice (Task #426)", () => {
     });
 
     const evidenceId = await insertEvidence({ ref: REF3, amountHt: "500.00", issueDate: "2026-08-08" });
-    const result = await confirmArchitectFeeInvoice({ evidenceId, projectId, milestoneId: milestone3, actor: "tester@renosud.com" });
+    const result = await confirmArchitectFeeInvoice({ evidenceId, projectId, milestoneId: milestone3, userId: OWNER_USER_ID, actor: "tester@renosud.com" });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.status).toBe(409);
@@ -227,12 +278,12 @@ describe("confirmArchitectFeeInvoice (Task #426)", () => {
     expect(events.map((e) => e.action)).toContain("conflict_parked");
 
     const milestone = await storage.getDesignContractMilestone(milestone3);
-    expect(milestone?.status).toBe("pending"); // untouched
+    expect(milestone?.status).toBe("reached"); // untouched
   });
 
   it("refuses to confirm onto an already-invoiced milestone", async () => {
     const evidenceId = evidenceIds[evidenceIds.length - 1]; // still pending (parked)
-    const result = await confirmArchitectFeeInvoice({ evidenceId, projectId, milestoneId: milestone1, actor: "tester@renosud.com" });
+    const result = await confirmArchitectFeeInvoice({ evidenceId, projectId, milestoneId: milestone1, userId: OWNER_USER_ID, actor: "tester@renosud.com" });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.status).toBe(409);
@@ -254,7 +305,7 @@ describe("confirmArchitectFeeInvoice (Task #426)", () => {
       .returning();
     evidenceIds.push(row.id);
 
-    const result = await confirmArchitectFeeInvoice({ evidenceId: row.id, projectId, milestoneId: milestone4, actor: "tester@renosud.com" });
+    const result = await confirmArchitectFeeInvoice({ evidenceId: row.id, projectId, milestoneId: milestone4, userId: OWNER_USER_ID, actor: "tester@renosud.com" });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.code).toBe("missing_issue_date");
@@ -271,7 +322,7 @@ describe("confirmArchitectFeeInvoice (Task #426)", () => {
       .returning();
 
     const evidenceId = await insertEvidence({ ref: `TEST-426-${STAMP}-D`, amountHt: "800.00", issueDate: "2026-08-09" });
-    const result = await confirmArchitectFeeInvoice({ evidenceId, projectId, milestoneId: milestone5, actor: "tester@renosud.com" });
+    const result = await confirmArchitectFeeInvoice({ evidenceId, projectId, milestoneId: milestone5, userId: OWNER_USER_ID, actor: "tester@renosud.com" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.reconciliation).toBe("created");

@@ -5,7 +5,7 @@
  *   - Header with totals + reference + a download button for the PDF.
  *   - Milestone list with status pill (reached / pending), trigger label,
  *     percentage, € TTC, "Mark reached" button (manual override) and
- *     "Mark invoiced" linkage stub (handled server-side once invoices land).
+ *     stage-specific "Record invoice" / "Mark paid" dialogs.
  *   - Replace-PDF dropzone driven by <DesignContractUpload mode="replace" />.
  *
  * If the project has no design contract yet (legacy or partial creation
@@ -15,13 +15,17 @@
 import { useState } from "react";
 import { Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { FileText, Download, CheckCircle2, Circle, Loader2, AlertCircle, Receipt, Wallet, Mail } from "lucide-react";
+import { FileText, Download, CheckCircle2, Circle, Loader2, AlertCircle, Receipt, Wallet, Mail, Plus } from "lucide-react";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import { DesignContractUpload, type ConfirmedDesignContract } from "./DesignContractUpload";
 import type { ArchitectFeeInvoice, DesignContract, DesignContractMilestone, DesignContractTriggerEvent, MilestonePaymentSuggestion } from "@shared/schema";
 
@@ -31,13 +35,16 @@ type MilestoneSuggestionWithContext = MilestonePaymentSuggestion & {
   milestoneStatus: string;
 };
 
-type MilestoneWithPennylane = DesignContractMilestone & {
+type MilestoneWithExtras = DesignContractMilestone & {
   pennylaneInvoiceNumber?: string | null;
+  invoiceNumber?: string | null;
+  invoiceDate?: string | null;
+  paymentDate?: string | null;
 };
 
 interface DesignContractResponse {
   contract: DesignContract;
-  milestones: MilestoneWithPennylane[];
+  milestones: MilestoneWithExtras[];
 }
 
 const TRIGGER_LABELS: Record<DesignContractTriggerEvent, string> = {
@@ -55,6 +62,348 @@ function fmtEur(n: number | string | null | undefined): string {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(v);
 }
 
+function fmtDate(s: string | null | undefined): string {
+  if (!s) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [year, month, day] = s.split("-").map(Number);
+    return new Date(year, month - 1, day).toLocaleDateString();
+  }
+  return new Date(s).toLocaleDateString();
+}
+
+// ---------------------------------------------------------------------------
+// Record Invoice dialog (reached → invoiced)
+// ---------------------------------------------------------------------------
+interface RecordInvoiceDialogProps {
+  milestoneId: number;
+  projectId: number;
+  open: boolean;
+  onClose: () => void;
+}
+
+function RecordInvoiceDialog({ milestoneId, projectId, open, onClose }: RecordInvoiceDialogProps) {
+  const { toast } = useToast();
+  const [invoiceNumber, setInvoiceNumber] = useState("");
+  const [invoiceDate, setInvoiceDate] = useState("");
+  const [notes, setNotes] = useState("");
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/design-contracts/milestones/${milestoneId}/invoice`, {
+        invoiceNumber,
+        invoiceDate,
+        ...(notes ? { notes } : {}),
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "design-contract"] });
+      toast({ title: "Invoice recorded", description: `Invoice ${invoiceNumber} saved for this milestone.` });
+      onClose();
+      setInvoiceNumber("");
+      setInvoiceDate("");
+      setNotes("");
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not record invoice", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-sm" data-testid="dialog-record-invoice">
+        <DialogHeader>
+          <DialogTitle className="text-[15px] font-black uppercase tracking-tight">
+            Record Invoice
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div>
+            <Label htmlFor="inv-number">
+              <TechnicalLabel>Invoice Number</TechnicalLabel>
+            </Label>
+            <Input
+              id="inv-number"
+              value={invoiceNumber}
+              onChange={(e) => setInvoiceNumber(e.target.value)}
+              placeholder="e.g. FA-2024-042"
+              data-testid="input-invoice-number"
+              className="mt-1"
+            />
+          </div>
+          <div>
+            <Label htmlFor="inv-date">
+              <TechnicalLabel>Invoice Date</TechnicalLabel>
+            </Label>
+            <Input
+              id="inv-date"
+              type="date"
+              value={invoiceDate}
+              onChange={(e) => setInvoiceDate(e.target.value)}
+              data-testid="input-invoice-date"
+              className="mt-1"
+            />
+          </div>
+          <div>
+            <Label htmlFor="inv-notes">
+              <TechnicalLabel>Notes (optional)</TechnicalLabel>
+            </Label>
+            <Textarea
+              id="inv-notes"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Optional notes"
+              data-testid="input-invoice-notes"
+              className="mt-1 text-xs"
+              rows={2}
+            />
+          </div>
+          <Button
+            className="w-full"
+            disabled={mutation.isPending || !invoiceNumber || !invoiceDate}
+            onClick={() => mutation.mutate()}
+            data-testid="button-submit-record-invoice"
+          >
+            {mutation.isPending ? (
+              <><Loader2 size={12} className="animate-spin mr-2" />Saving…</>
+            ) : (
+              <span className="text-[9px] font-bold uppercase tracking-widest">Save Invoice</span>
+            )}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Mark Paid dialog (invoiced → paid)
+// ---------------------------------------------------------------------------
+interface MarkPaidDialogProps {
+  milestoneId: number;
+  projectId: number;
+  open: boolean;
+  onClose: () => void;
+  invoiceNumber: string | null;
+  invoiceDate: string | null;
+}
+
+function MarkPaidDialog({
+  milestoneId,
+  projectId,
+  open,
+  onClose,
+  invoiceNumber,
+  invoiceDate,
+}: MarkPaidDialogProps) {
+  const { toast } = useToast();
+  const [paymentDate, setPaymentDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [notes, setNotes] = useState("");
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/design-contracts/milestones/${milestoneId}/payment`, {
+        paymentDate,
+        ...(notes ? { notes } : {}),
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "design-contract"] });
+      toast({ title: "Milestone marked paid", description: `Payment recorded on ${paymentDate}.` });
+      onClose();
+      setPaymentDate(new Date().toISOString().slice(0, 10));
+      setNotes("");
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not mark paid", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-sm" data-testid="dialog-mark-paid">
+        <DialogHeader>
+          <DialogTitle className="text-[15px] font-black uppercase tracking-tight">
+            Mark Milestone Paid
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="rounded border border-border bg-muted/30 px-3 py-2 text-xs">
+            <TechnicalLabel>Invoice</TechnicalLabel>
+            <p className="mt-1" data-testid="text-payment-dialog-invoice-number">
+              {invoiceNumber ?? "Invoice number unavailable"}
+            </p>
+            <p className="text-muted-foreground" data-testid="text-payment-dialog-invoice-date">
+              {invoiceDate ? fmtDate(invoiceDate) : "Invoice date unavailable"}
+            </p>
+          </div>
+          <div>
+            <Label htmlFor="pay-date">
+              <TechnicalLabel>Payment Date</TechnicalLabel>
+            </Label>
+            <Input
+              id="pay-date"
+              type="date"
+              value={paymentDate}
+              onChange={(e) => setPaymentDate(e.target.value)}
+              data-testid="input-payment-date"
+              className="mt-1"
+            />
+          </div>
+          <div>
+            <Label htmlFor="pay-notes">
+              <TechnicalLabel>Notes (optional)</TechnicalLabel>
+            </Label>
+            <Textarea
+              id="pay-notes"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Optional notes"
+              data-testid="input-payment-notes"
+              className="mt-1 text-xs"
+              rows={2}
+            />
+          </div>
+          <Button
+            className="w-full"
+            disabled={mutation.isPending || !paymentDate}
+            onClick={() => mutation.mutate()}
+            data-testid="button-submit-mark-paid"
+          >
+            {mutation.isPending ? (
+              <><Loader2 size={12} className="animate-spin mr-2" />Saving…</>
+            ) : (
+              <span className="text-[9px] font-bold uppercase tracking-widest">Confirm Paid</span>
+            )}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Add Details dialog (paid legacy milestone missing invoice/payment details)
+// ---------------------------------------------------------------------------
+interface AddDetailsDialogProps {
+  milestoneId: number;
+  projectId: number;
+  open: boolean;
+  onClose: () => void;
+  existing: { invoiceNumber?: string | null; invoiceDate?: string | null; paymentDate?: string | null; notes?: string | null };
+}
+
+function AddDetailsDialog({ milestoneId, projectId, open, onClose, existing }: AddDetailsDialogProps) {
+  const { toast } = useToast();
+  const [invoiceNumber, setInvoiceNumber] = useState(existing.invoiceNumber ?? "");
+  const [invoiceDate, setInvoiceDate] = useState(existing.invoiceDate ?? "");
+  const [paymentDate, setPaymentDate] = useState(existing.paymentDate ?? "");
+  const [notes, setNotes] = useState(existing.notes ?? "");
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/design-contracts/milestones/${milestoneId}/details`, {
+        invoiceNumber,
+        invoiceDate,
+        paymentDate,
+        ...(notes ? { notes } : {}),
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "design-contract"] });
+      toast({ title: "Details saved", description: "Invoice and payment details updated." });
+      onClose();
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not save details", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-sm" data-testid="dialog-add-details">
+        <DialogHeader>
+          <DialogTitle className="text-[15px] font-black uppercase tracking-tight">
+            Add Invoice &amp; Payment Details
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div>
+            <Label htmlFor="det-inv-number">
+              <TechnicalLabel>Invoice Number</TechnicalLabel>
+            </Label>
+            <Input
+              id="det-inv-number"
+              value={invoiceNumber}
+              onChange={(e) => setInvoiceNumber(e.target.value)}
+              placeholder="e.g. FA-2024-042"
+              data-testid="input-details-invoice-number"
+              className="mt-1"
+            />
+          </div>
+          <div>
+            <Label htmlFor="det-inv-date">
+              <TechnicalLabel>Invoice Date</TechnicalLabel>
+            </Label>
+            <Input
+              id="det-inv-date"
+              type="date"
+              value={invoiceDate}
+              onChange={(e) => setInvoiceDate(e.target.value)}
+              data-testid="input-details-invoice-date"
+              className="mt-1"
+            />
+          </div>
+          <div>
+            <Label htmlFor="det-pay-date">
+              <TechnicalLabel>Payment Date</TechnicalLabel>
+            </Label>
+            <Input
+              id="det-pay-date"
+              type="date"
+              value={paymentDate}
+              onChange={(e) => setPaymentDate(e.target.value)}
+              data-testid="input-details-payment-date"
+              className="mt-1"
+            />
+          </div>
+          <div>
+            <Label htmlFor="det-notes">
+              <TechnicalLabel>Notes (optional)</TechnicalLabel>
+            </Label>
+            <Textarea
+              id="det-notes"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Optional notes"
+              data-testid="input-details-notes"
+              className="mt-1 text-xs"
+              rows={2}
+            />
+          </div>
+          <Button
+            className="w-full"
+            disabled={mutation.isPending || !invoiceNumber || !invoiceDate || !paymentDate}
+            onClick={() => mutation.mutate()}
+            data-testid="button-submit-add-details"
+          >
+            {mutation.isPending ? (
+              <><Loader2 size={12} className="animate-spin mr-2" />Saving…</>
+            ) : (
+              <span className="text-[9px] font-bold uppercase tracking-widest">Save Details</span>
+            )}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main card
+// ---------------------------------------------------------------------------
 interface DesignContractCardProps {
   projectId: number;
 }
@@ -62,6 +411,11 @@ interface DesignContractCardProps {
 export function DesignContractCard({ projectId }: DesignContractCardProps) {
   const { toast } = useToast();
   const [pendingReplace, setPendingReplace] = useState<ConfirmedDesignContract | null>(null);
+
+  // Per-milestone dialog state
+  const [invoiceDialogId, setInvoiceDialogId] = useState<number | null>(null);
+  const [paidDialogId, setPaidDialogId] = useState<number | null>(null);
+  const [detailsDialogId, setDetailsDialogId] = useState<number | null>(null);
 
   const { data, isLoading, error } = useQuery<DesignContractResponse | null>({
     queryKey: ["/api/projects", String(projectId), "design-contract"],
@@ -114,23 +468,6 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "design-contract"] });
       toast({ title: "Milestone marked reached" });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Could not update milestone", description: err.message, variant: "destructive" });
-    },
-  });
-
-  // Task #617 — manual paid flip for invoiced/reached milestones.
-  const markPaidMutation = useMutation({
-    mutationFn: async (milestoneId: number) => {
-      const res = await apiRequest("PATCH", `/api/design-contracts/milestones/${milestoneId}`, {
-        status: "paid",
-      });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "design-contract"] });
-      toast({ title: "Milestone marked paid" });
     },
     onError: (err: Error) => {
       toast({ title: "Could not update milestone", description: err.message, variant: "destructive" });
@@ -243,6 +580,11 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
     paid: { bg: "bg-emerald-50 border-emerald-200", badge: "bg-emerald-100 text-emerald-900", label: "Paid" },
   };
 
+  // Find the milestone for the currently-open dialogs
+  const invoiceDialogMilestone = invoiceDialogId != null ? milestones.find((m) => m.id === invoiceDialogId) : null;
+  const paidDialogMilestone = paidDialogId != null ? milestones.find((m) => m.id === paidDialogId) : null;
+  const detailsDialogMilestone = detailsDialogId != null ? milestones.find((m) => m.id === detailsDialogId) : null;
+
   return (
     <LuxuryCard data-testid="card-design-contract">
       <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
@@ -332,6 +674,12 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
               m.status === "invoiced" ? Receipt :
               m.status === "reached" ? CheckCircle2 :
               Circle;
+
+            // Is this a "legacy paid" milestone missing invoice/payment details?
+            const isPaidLegacy =
+              m.status === "paid" &&
+              (!m.invoiceNumber || !m.invoiceDate || !m.paymentDate);
+
             return (
             <div key={m.id} className="space-y-1">
             <div
@@ -349,14 +697,37 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
                 </div>
                 <div className="text-[10px] text-muted-foreground">
                   Trigger: {TRIGGER_LABELS[m.triggerEvent as DesignContractTriggerEvent]}
-                  {m.reachedAt ? ` · reached ${new Date(m.reachedAt).toLocaleDateString()}` : ""}
-                  {m.invoicedAt ? ` · invoiced ${new Date(m.invoicedAt).toLocaleDateString()}` : ""}
-                  {(m.status === "invoiced" || m.status === "paid") && m.pennylaneInvoiceNumber ? (
+                  {m.reachedAt ? ` · reached ${fmtDate(m.reachedAt as unknown as string)}` : ""}
+                  {m.invoiceNumber ? (
+                    <span data-testid={`text-milestone-invoice-number-${m.id}`}>
+                      {" · Invoice "}{m.invoiceNumber}
+                    </span>
+                  ) : null}
+                  {m.invoiceDate ? (
+                    <span data-testid={`text-milestone-invoice-date-${m.id}`}>
+                      {" dated "}{fmtDate(m.invoiceDate)}
+                    </span>
+                  ) : null}
+                  {m.invoicedAt && !m.invoiceDate ? ` · invoiced ${fmtDate(m.invoicedAt as unknown as string)}` : ""}
+                  {(m.status === "invoiced" || m.status === "paid") &&
+                  m.pennylaneInvoiceNumber &&
+                  m.pennylaneInvoiceNumber !== m.invoiceNumber ? (
                     <span data-testid={`text-milestone-pennylane-number-${m.id}`}>
                       {" · Pennylane "}{m.pennylaneInvoiceNumber}
                     </span>
                   ) : null}
-                  {m.paidAt ? ` · paid ${new Date(m.paidAt).toLocaleDateString()}` : ""}
+                  {m.paymentDate ? (
+                    <span data-testid={`text-milestone-payment-date-${m.id}`}>
+                      {" · paid "}{fmtDate(m.paymentDate)}
+                    </span>
+                  ) : m.paidAt ? (
+                    ` · paid ${fmtDate(m.paidAt as unknown as string)}`
+                  ) : null}
+                  {m.notes ? (
+                    <span data-testid={`text-milestone-notes-${m.id}`}>
+                      {" · "}{m.notes}
+                    </span>
+                  ) : null}
                 </div>
               </div>
               <div className="text-right shrink-0">
@@ -375,22 +746,43 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
                   Mark reached
                 </Button>
               )}
-              {(m.status === "invoiced" || m.status === "reached") && !suggestionByMilestone.has(m.id) && (
+              {m.status === "reached" && (
                 <Button
                   size="sm"
                   variant="outline"
                   className="h-7 text-[10px]"
-                  disabled={markPaidMutation.isPending}
-                  onClick={() => markPaidMutation.mutate(m.id)}
+                  onClick={() => setInvoiceDialogId(m.id)}
+                  data-testid={`button-record-invoice-${m.id}`}
+                >
+                  Record invoice
+                </Button>
+              )}
+              {m.status === "invoiced" && !suggestionByMilestone.has(m.id) && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-[10px]"
+                  onClick={() => setPaidDialogId(m.id)}
                   data-testid={`button-mark-paid-${m.id}`}
                 >
                   Mark paid
                 </Button>
               )}
+              {isPaidLegacy && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-[10px] flex items-center gap-1"
+                  onClick={() => setDetailsDialogId(m.id)}
+                  data-testid={`button-add-details-${m.id}`}
+                >
+                  <Plus size={10} /> Add details
+                </Button>
+              )}
             </div>
             {(() => {
               const s = suggestionByMilestone.get(m.id);
-              if (!s || m.status === "paid") return null;
+              if (!s || m.status !== "invoiced") return null;
               return (
                 <div
                   className="flex items-center gap-2 flex-wrap rounded border border-emerald-300 bg-emerald-50 dark:bg-emerald-950/30 dark:border-emerald-800 px-3 py-2 ml-6"
@@ -444,6 +836,40 @@ export function DesignContractCard({ projectId }: DesignContractCardProps) {
           />
         </div>
       </details>
+
+      {/* Stage-specific dialogs */}
+      {invoiceDialogMilestone && (
+        <RecordInvoiceDialog
+          milestoneId={invoiceDialogMilestone.id}
+          projectId={projectId}
+          open={invoiceDialogId !== null}
+          onClose={() => setInvoiceDialogId(null)}
+        />
+      )}
+      {paidDialogMilestone && (
+        <MarkPaidDialog
+          milestoneId={paidDialogMilestone.id}
+          projectId={projectId}
+          open={paidDialogId !== null}
+          onClose={() => setPaidDialogId(null)}
+          invoiceNumber={paidDialogMilestone.invoiceNumber ?? null}
+          invoiceDate={paidDialogMilestone.invoiceDate ?? null}
+        />
+      )}
+      {detailsDialogMilestone && (
+        <AddDetailsDialog
+          milestoneId={detailsDialogMilestone.id}
+          projectId={projectId}
+          open={detailsDialogId !== null}
+          onClose={() => setDetailsDialogId(null)}
+          existing={{
+            invoiceNumber: detailsDialogMilestone.invoiceNumber,
+            invoiceDate: detailsDialogMilestone.invoiceDate,
+            paymentDate: detailsDialogMilestone.paymentDate,
+            notes: detailsDialogMilestone.notes,
+          }}
+        />
+      )}
     </LuxuryCard>
   );
 }

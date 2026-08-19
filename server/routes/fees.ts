@@ -193,6 +193,10 @@ router.get("/api/projects/:projectId/fees/by-phase", async (req, res) => {
       invoicedAt: Date | null;
       paidAt: Date | null;
       pennylaneInvoiceNumber: string | null;
+      invoiceNumber: string | null;
+      invoiceDate: string | null;
+      paymentDate: string | null;
+      notes: string | null;
     }>;
   } = null;
 
@@ -265,6 +269,10 @@ router.get("/api/projects/:projectId/fees/by-phase", async (req, res) => {
         invoicedAt: m.invoicedAt,
         paidAt: m.paidAt,
         pennylaneInvoiceNumber: m.pennylaneInvoiceNumber,
+        invoiceNumber: m.invoiceNumber,
+        invoiceDate: m.invoiceDate,
+        paymentDate: m.paymentDate,
+        notes: m.notes,
       })),
     };
   }
