@@ -103,6 +103,30 @@ export async function withMirrorSyncLock<T>(
   }
 }
 
+// Probe whether a mirror sync is currently running by testing the advisory
+// lock: if we can acquire it, nobody is syncing (release immediately); if we
+// can't, a sync genuinely holds it. Server truth for the UI's "sync in
+// progress" badge — unlike the sync-log table, it can't be wedged by a
+// crashed run leaving a stale "running" row.
+export async function isMirrorSyncInProgress(): Promise<boolean> {
+  const client = await pool.connect();
+  try {
+    const res = await client.query<{ locked: boolean }>(
+      "SELECT pg_try_advisory_lock(hashtext($1)) AS locked",
+      [SYNC_LOCK_KEY],
+    );
+    if (res.rows[0]?.locked) {
+      await client
+        .query("SELECT pg_advisory_unlock(hashtext($1))", [SYNC_LOCK_KEY])
+        .catch((err) => console.error("[ArchiDoc Sync] advisory unlock failed:", err));
+      return false;
+    }
+    return true;
+  } finally {
+    client.release();
+  }
+}
+
 export async function recoverStaleRunningSyncLogs(): Promise<number> {
   // Only recover when no sync currently holds the lock — a held lock means a
   // genuinely live run, which must never be marked failed regardless of age.

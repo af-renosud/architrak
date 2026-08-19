@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { storage } from "../storage";
 import { isArchidocConfigured, getConnectionStatus } from "../archidoc/sync-client";
-import { fullSync, incrementalSync, getLastSyncStatus, getCurrentSourceBaseUrl } from "../archidoc/sync-service";
+import { fullSync, incrementalSync, getLastSyncStatus, getCurrentSourceBaseUrl, isMirrorSyncInProgress } from "../archidoc/sync-service";
 import { trackProject, refreshProject } from "../archidoc/import-service";
 import { env as envCfg, detectMisconfiguredArchidocBaseUrl } from "../env";
 import { validateRequest } from "../middleware/validate";
@@ -29,6 +29,7 @@ const trackBodySchema = z.record(z.string(), z.unknown()).optional().default({})
 router.get("/api/archidoc/status", async (_req, res) => {
   try {
     const syncStatus = await getLastSyncStatus();
+    const syncInProgress = await isMirrorSyncInProgress();
     const mirroredProjects = await storage.getArchidocProjects();
     const mirroredContractors = await storage.getArchidocContractors();
     const trackedIds = await storage.getTrackedArchidocProjectIds();
@@ -70,6 +71,7 @@ router.get("/api/archidoc/status", async (_req, res) => {
       connectionError,
       connectionCheckedAt,
       connectionPending,
+      syncInProgress,
       lastSync: syncStatus.lastSync,
       lastSyncType: syncStatus.lastSyncType,
       lastSyncStatus: syncStatus.lastSyncStatus,

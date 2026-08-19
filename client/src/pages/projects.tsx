@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Amount } from "@/components/ui/amount";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionHeader } from "@/components/ui/section-header";
@@ -43,6 +43,7 @@ interface ArchidocProjectEnriched extends ArchidocProject {
 interface ArchidocStatus {
   configured: boolean;
   connected: boolean;
+  syncInProgress?: boolean;
   connectionError?: string;
   lastSync: string | null;
   lastSyncStatus?: string | null;
@@ -94,7 +95,27 @@ export default function Projects() {
 
   const { data: archidocStatus } = useQuery<ArchidocStatus>({
     queryKey: ["/api/archidoc/status"],
+    // Poll for server truth (advisory-lock probe). While the New Project
+    // dialog is open we poll even when the last answer was "not syncing" —
+    // otherwise a sync started by another tab, a webhook, or the scheduler
+    // after the initial fetch would never be discovered and the badge (and
+    // the completion-driven list refresh) would never fire. Outside the
+    // dialog we only keep polling while a sync is known to be running.
+    refetchInterval: (query) =>
+      dialogOpen || query.state.data?.syncInProgress ? 3000 : false,
   });
+
+  // When the server-side sync flips from running to finished, refresh the
+  // ArchiDoc project list so the dialog shows the freshly-mirrored projects.
+  const prevSyncInProgress = useRef(false);
+  useEffect(() => {
+    const now = archidocStatus?.syncInProgress === true;
+    if (prevSyncInProgress.current && !now) {
+      queryClient.invalidateQueries({ queryKey: ["/api/archidoc/projects"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/archidoc/status"] });
+    }
+    prevSyncInProgress.current = now;
+  }, [archidocStatus?.syncInProgress]);
 
   // One batched fetch for the accounting-status badges instead of N per-card
   // requests. Keyed on the sorted project ids so it refetches when the list
@@ -135,6 +156,11 @@ export default function Projects() {
   });
 
   const syncMutation = useMutation({
+    // The POST only resolves once the sync completes, so refetch status as
+    // soon as the sync starts — that's when the server-side flag flips true.
+    onMutate: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/archidoc/status"] });
+    },
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/archidoc/sync");
       return res.json() as Promise<{ ok?: boolean; alreadyRunning?: boolean; failures?: string[]; warnings?: string[] }>;
@@ -295,7 +321,19 @@ export default function Projects() {
                 </span>
               </button>
             )}
-            <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetForm(); }}>
+            <Dialog
+              open={dialogOpen}
+              onOpenChange={(open) => {
+                setDialogOpen(open);
+                if (open) {
+                  // Fresh server truth immediately on open (polling then
+                  // keeps it live while the dialog stays open).
+                  queryClient.invalidateQueries({ queryKey: ["/api/archidoc/status"] });
+                } else {
+                  resetForm();
+                }
+              }}
+            >
               <DialogTrigger asChild>
                 <Button data-testid="button-new-project">
                   <Plus size={14} />
@@ -336,6 +374,16 @@ export default function Projects() {
                       </Button>
                     </div>
 
+                    {archidocStatus?.syncInProgress && (
+                      <p
+                        className="flex items-center gap-1.5 text-[10px] text-muted-foreground"
+                        data-testid="text-archidoc-sync-in-progress"
+                      >
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        <span className="font-bold uppercase tracking-wider">Sync in progress</span>
+                        <span>— the list will refresh when it finishes</span>
+                      </p>
+                    )}
                     {archidocStatus?.lastSync && (
                       <p className="text-[10px] text-muted-foreground" data-testid="text-archidoc-last-synced">
                         Last synced: {new Date(archidocStatus.lastSync).toLocaleString()}
