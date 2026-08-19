@@ -112,6 +112,7 @@ export function SigningPanel({
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId] });
       queryClient.invalidateQueries({ queryKey: ["/api/devis"] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard/summary"] });
     },
     onError: (error: Error) => {
       toast({
@@ -185,6 +186,7 @@ export function SigningPanel({
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId] });
       queryClient.invalidateQueries({ queryKey: ["/api/devis"] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard/summary"] });
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "context-email-status"] });
     },
     onError: (error: Error) => {

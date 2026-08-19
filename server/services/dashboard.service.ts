@@ -1,6 +1,7 @@
 import { storage } from "../storage";
 import { getGmailMonitorStatus } from "../gmail/monitor";
 import { roundCurrency } from "../../shared/financial-utils";
+import { countDevisSignOff } from "../../shared/devis-counters";
 
 export async function getDashboardSummary() {
   const allProjects = await storage.getProjects();
@@ -21,10 +22,13 @@ export async function getDashboardSummary() {
       const projectEmailDocs = allEmailDocs.filter(d => d.projectId === project.id);
 
       const activeDevis = projectDevis.filter(d => d.status !== "void");
-      const approvedStatuses = ["approved", "sent", "signed"];
-      const devisApprovedCount = activeDevis.filter(d => approvedStatuses.includes(d.status)).length;
-      const devisUnapprovedCount = activeDevis.length - devisApprovedCount;
-      const allDevisSigned = activeDevis.length > 0 && activeDevis.every(d => d.signOffStage === "signed");
+      // Same semantics as the project Devis tab (shared/devis-counters):
+      // signed = signOffStage client_signed_off, pending = non-terminal stage.
+      const { pendingDevisCount, signedDevisCount } = countDevisSignOff(activeDevis);
+      const devisApprovedCount = signedDevisCount;
+      const devisUnapprovedCount = pendingDevisCount;
+      const allDevisSigned =
+        activeDevis.length > 0 && activeDevis.every(d => d.signOffStage === "client_signed_off");
 
       const invoiceApprovedCount = projectInvoices.filter(inv => inv.status === "approved").length;
       const invoiceUnapprovedCount = projectInvoices.filter(inv => inv.status === "pending").length;
