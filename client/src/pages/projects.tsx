@@ -95,15 +95,40 @@ export default function Projects() {
 
   const { data: archidocStatus } = useQuery<ArchidocStatus>({
     queryKey: ["/api/archidoc/status"],
-    // Poll for server truth (advisory-lock probe). While the New Project
-    // dialog is open we poll even when the last answer was "not syncing" —
-    // otherwise a sync started by another tab, a webhook, or the scheduler
-    // after the initial fetch would never be discovered and the badge (and
-    // the completion-driven list refresh) would never fire. Outside the
-    // dialog we only keep polling while a sync is known to be running.
+    // Poll for server truth while a sync is active OR a bounded ArchiDoc
+    // connectivity probe is still pending. The latter prevents the temporary
+    // "checking" verdict from becoming a permanently stale UI state, while
+    // retaining the server's non-blocking 2.5-second response bound.
     refetchInterval: (query) =>
-      dialogOpen || query.state.data?.syncInProgress ? 3000 : false,
+      dialogOpen ||
+      query.state.data?.syncInProgress ||
+      query.state.data?.connectionPending
+        ? 3000
+        : false,
   });
+  const archidocConnectionPending = archidocStatus?.connectionPending === true;
+  const archidocConnectionLabel = !archidocStatus
+    ? null
+    : !archidocStatus.configured
+      ? "ArchiDoc Not Configured"
+      : archidocConnectionPending
+        ? "ArchiDoc Checking"
+        : archidocStatus.connected
+          ? "ArchiDoc Connected"
+          : "ArchiDoc Offline";
+  const archidocConnectionError =
+    archidocStatus?.configured &&
+    !archidocConnectionPending &&
+    !archidocStatus.connected
+      ? archidocStatus.connectionError
+      : null;
+  const archidocConnectionDotClass = archidocConnectionPending
+    ? "bg-slate-400 animate-pulse"
+    : archidocStatus?.connected
+      ? "bg-emerald-500"
+      : archidocStatus?.configured
+        ? "bg-amber-500"
+        : "bg-slate-300";
 
   // When the server-side sync flips from running to finished, refresh the
   // ArchiDoc project list so the dialog shows the freshly-mirrored projects.
@@ -301,11 +326,30 @@ export default function Projects() {
           </h1>
           <div className="flex items-center gap-3">
             {archidocStatus && (
-              <div className="flex items-center gap-1.5" data-testid="archidoc-status">
-                <div className={`w-2 h-2 rounded-full ${archidocStatus.connected ? "bg-emerald-500" : archidocStatus.configured ? "bg-amber-500" : "bg-slate-300"}`} />
-                <span className="text-[9px] font-medium uppercase tracking-wider text-muted-foreground">
-                  {archidocStatus.connected ? "ArchiDoc Connected" : archidocStatus.configured ? "ArchiDoc Offline" : "ArchiDoc Not Configured"}
+              <div
+                className="flex items-center gap-1.5 max-w-[360px]"
+                data-testid="archidoc-status"
+                title={archidocConnectionError ?? undefined}
+              >
+                <div
+                  className={`w-2 h-2 shrink-0 rounded-full ${archidocConnectionDotClass}`}
+                  aria-hidden="true"
+                />
+                <span
+                  className="shrink-0 text-[9px] font-medium uppercase tracking-wider text-muted-foreground"
+                  data-testid="text-archidoc-connection-status"
+                >
+                  {archidocConnectionLabel}
                 </span>
+                {archidocConnectionError && (
+                  <span
+                    className="min-w-0 truncate text-[9px] text-amber-700"
+                    data-testid="text-archidoc-connection-error"
+                    title={archidocConnectionError}
+                  >
+                    — {archidocConnectionError}
+                  </span>
+                )}
               </div>
             )}
             {archidocStatus && (archidocStatus.siretIssueCount ?? 0) > 0 && (

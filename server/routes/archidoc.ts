@@ -48,7 +48,10 @@ router.get("/api/archidoc/status", async (_req, res) => {
       connected = connResult.connected;
       connectionError = connResult.error;
       connectionCheckedAt = connResult.checkedAt;
-      connectionPending = connResult.pending === true;
+      // A stale cached verdict is returned only while a replacement probe is
+      // in flight. Treat it as pending for the UI so an old failed check
+      // cannot briefly be presented as a fresh "Offline" result.
+      connectionPending = connResult.pending === true || connResult.stale === true;
     }
 
     // Derive a short host identifier from ARCHIDOC_BASE_URL so the UI
