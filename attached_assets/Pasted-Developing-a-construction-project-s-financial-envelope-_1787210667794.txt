@@ -1,0 +1,29 @@
+Developing a construction project's financial envelope requires issuing schedules of work, gathering multi-trade quotations, and refining costs through iterative feedback before signing final contracts. Because this pre-construction phase currently occurs outside Architrak, architects lack centralized visibility into evolving project budgets.
+
+To bring this process directly into the Architrak workflow, we recommend establishing two distinct operational tracks: Budget Planning and Live.
+
+Reused Infrastructure: The Budget Planning track will utilize standard Live features—including interactive contractor messaging, RFQ distribution, and schedule management—while maintaining quotes in a distinct "Budget Planning" status.
+
+One-Click Transition: Once negotiations, alterations, and cost envelopes reach sufficient precision, a quotation can be converted directly into a "Live" status.
+
+Enhanced Client Reporting: Retaining early-stage sequence data enables analytical tools to generate concise, data-driven financial summaries for client review before formal commitments are made.
+
+Strategic Approach & Phasing
+
+To streamline development and gather feedback early, the feature set should be built in three progressive phases:
+
+Phase 1: Feature Audit & Gap Analysis: Map existing Live features against Budget Planning requirements to determine exact functional overlaps and eliminate redundant code.
+
+Phase 2: Ingestion & Status Architecture: Implement the dual-status state machine, quote ingestion process, and simple UI toggles to flip quotes from Planning to Live.
+
+Phase 3: Client Reporting & Analytics Tools: Layer on data extraction, comparative estimation models, and interactive client communication dashboards.
+
+Architect Consultation Considerations
+
+When consulting the lead architect, address these operational specifics:
+
+Audit Trail: Should historical budget iterations remain visible for client transparency after a quote flips to "Live"?
+
+Contractor Permissions: Do contractors see a simplified interface during "Budget Planning" compared to formal bidding in "Live"?
+
+Data Ingestion: How structured does the initial cost data need to be when imported into the planning stage?
