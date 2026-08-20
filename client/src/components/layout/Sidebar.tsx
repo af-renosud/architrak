@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useLocation, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import type { OutstandingFeeSummary } from "@shared/fee-description";
@@ -15,6 +16,7 @@ import {
   MessageSquare,
   Database,
   LogOut,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -43,8 +45,24 @@ const toolButtons = [
   { icon: HelpCircle, label: "Help", bg: "bg-emerald-50 dark:bg-emerald-950/30" },
 ];
 
-export function Sidebar() {
+interface SidebarProps {
+  mobileMode?: boolean;
+  mobileOpen?: boolean;
+  onMobileClose?: () => void;
+}
+
+const FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "[tabindex]:not([tabindex='-1'])",
+].join(",");
+
+export function Sidebar({ mobileMode = false, mobileOpen = false, onMobileClose }: SidebarProps) {
   const [location] = useLocation();
+  const sidebarRef = useRef<HTMLElement>(null);
   const { user, logout } = useAuth();
   const { data: outstanding } = useQuery<OutstandingFeeSummary>({
     queryKey: ["/api/fees/outstanding"],
@@ -57,12 +75,90 @@ export function Sidebar() {
     return location.startsWith(path);
   };
 
+  useEffect(() => {
+    const sidebar = sidebarRef.current;
+    if (!sidebar) return;
+    sidebar.inert = mobileMode && !mobileOpen;
+    return () => {
+      sidebar.inert = false;
+    };
+  }, [mobileMode, mobileOpen]);
+
+  useEffect(() => {
+    if (!mobileMode || !mobileOpen) return;
+    const sidebar = sidebarRef.current;
+    if (!sidebar) return;
+
+    const focusableElements = () =>
+      Array.from(sidebar.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+        .filter((element) => !element.hasAttribute("disabled") && element.getAttribute("aria-hidden") !== "true");
+
+    window.requestAnimationFrame(() => {
+      const closeButton = sidebar.querySelector<HTMLElement>("[data-testid='button-mobile-nav-close']");
+      (closeButton ?? focusableElements()[0])?.focus();
+    });
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onMobileClose?.();
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const elements = focusableElements();
+      if (elements.length === 0) {
+        event.preventDefault();
+        sidebar.focus();
+        return;
+      }
+      const first = elements[0];
+      const last = elements[elements.length - 1];
+      const active = document.activeElement;
+      if (!sidebar.contains(active)) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && active === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [mobileMode, mobileOpen, onMobileClose]);
+
   return (
     <aside
-      className="fixed left-0 top-0 h-screen w-64 flex flex-col z-50"
+      ref={sidebarRef}
+      id="app-sidebar"
+      className={cn(
+        "fixed left-0 top-0 z-50 flex h-screen w-64 flex-col transition-transform duration-200 ease-out lg:translate-x-0",
+        mobileOpen ? "translate-x-0" : "-translate-x-full",
+      )}
       style={{ backgroundColor: "#DFE1E2" }}
       data-testid="sidebar"
+      role={mobileMode ? "dialog" : undefined}
+      aria-modal={mobileMode && mobileOpen ? true : undefined}
+      aria-label="Main navigation"
+      aria-hidden={mobileMode && !mobileOpen ? true : undefined}
+      tabIndex={mobileMode ? -1 : undefined}
+      onClick={(event) => {
+        if ((event.target as HTMLElement).closest("a")) onMobileClose?.();
+      }}
     >
+      <button
+        type="button"
+        aria-label="Close navigation"
+        className="absolute right-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-lg text-[#34312D] hover:bg-black/5 lg:hidden"
+        onClick={onMobileClose}
+        data-testid="button-mobile-nav-close"
+      >
+        <X size={18} />
+      </button>
       <div className="px-6 pt-6 pb-4">
         <Link href="/" data-testid="link-logo-home">
           <div className="cursor-pointer">

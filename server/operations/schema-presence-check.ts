@@ -170,6 +170,13 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0101_allow_grouped_milestone_invoice_refs", artifact: { kind: "data_only", reason: "replaces global invoice-reference uniqueness with captured-only uniqueness so manual milestone payments may share one grouped invoice number; guarded index swap is idempotent", rerunnable: true } },
   { tag: "0102_devis_pv_closure", artifact: { kind: "column", table: "devis", column: "closure_state" } },
   { tag: "0103_devis_closure_pv_snapshot", artifact: { kind: "column", table: "devis", column: "closure_marche_id" } },
+  { tag: "0104_planning_envelope_mvp", artifact: { kind: "table", table: "planning_envelopes" } },
+  { tag: "0105_planning_envelope_constraints", artifact: { kind: "column", table: "planning_revision_sources", column: "mime_type" } },
+  { tag: "0106_planning_envelope_immutability", artifact: { kind: "data_only", reason: "guarded trigger/function DDL enforcing immutable approved planning facts and append-only events", rerunnable: true } },
+  { tag: "0107_planning_revision_cascade_cleanup", artifact: { kind: "data_only", reason: "replaces the approved-revision guard so project aggregate cascades can clear circular promotion FKs", rerunnable: true } },
+  { tag: "0108_planning_promotion_stamp_guard", artifact: { kind: "data_only", reason: "replaces the approved-revision guard to validate initial promotion targets and freeze supersession audit", rerunnable: true } },
+  { tag: "0109_devis_planning_provenance_guard", artifact: { kind: "data_only", reason: "guarded trigger/function DDL enforcing immutable validated devis-to-planning provenance", rerunnable: true } },
+  { tag: "0110_planning_provenance_deferred_link", artifact: { kind: "data_only", reason: "replaces the devis provenance guard with complete-line validation and adds a deferred reciprocal-link constraint trigger", rerunnable: true } },
 ];
 
 interface JournalFile {

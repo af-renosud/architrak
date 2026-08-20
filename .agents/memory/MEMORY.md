@@ -39,3 +39,4 @@
 - [ArchiDoc mirror sync safety](archidoc-mirror-sync.md) — advisory-lock serialization (recovery only when lock free), completed-only watermark, ≥90% wipe guard, 200-with-embedded-errors sync API, cached connectivity probe.
 - [Restore via cp, not git checkout](restore-via-cp-not-git-checkout.md) — `git checkout --` reverts to the last platform commit and silently wipes uncommitted session edits; snapshot with cp before temporary file mutations.
 - [Legal closure provenance](legal-closure-provenance.md) — legal close transitions lock the exact prerequisite record and persist an immutable relationship snapshot; live links may change later.
+- [Cross-domain promotion provenance](cross-domain-promotion-provenance.md) — attach origins after frozen children; validate immediately and require reciprocal links at deferred commit.

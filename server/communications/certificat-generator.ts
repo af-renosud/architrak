@@ -1901,6 +1901,7 @@ export async function buildCertificatPreviewHtml(opts?: { isAcompte?: boolean })
     driveUploadedAt: null,
     extractedIban: null,
     extractedBic: null,
+    sourcePlanningRevisionId: null,
     createdAt: now,
     updatedAt: now,
   };

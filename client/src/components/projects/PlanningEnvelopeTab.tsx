@@ -1,0 +1,251 @@
+import { useEffect, useRef, useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { AlertTriangle, Check, Download, FileCheck2, FilePlus2, FileText, Info, Loader2, LockKeyhole, Pencil, Plus, RefreshCw, ShieldCheck, Upload, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { LuxuryCard } from "@/components/ui/luxury-card";
+import { TechnicalLabel } from "@/components/ui/technical-label";
+import { Amount } from "@/components/ui/amount";
+import { apiRequest, projectScopedKey, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+
+type Line = { id?: number; lineNumber: number; description: string; quantity: string; unit: string; unitPriceHt: string; totalHt: string; pdfPageHint?: number | null };
+type Revision = { revision: { id: number; status: "draft" | "reviewed" | "approved" | "superseded"; reference: string; descriptionFr: string; documentDate?: string | null; amountHt: string; amountTtc: string; tvaRatePercent?: string | null; tvaAutoliquidation?: boolean; version: number; contractorId?: number | null; lotId?: number | null; supersedesRevisionId?: number | null; promotedDevisId?: number | null; promotedAt?: string | null; updatedAt: string }; lines: Line[]; source: { sourceKind: "manual" | "pdf_upload"; fileName?: string | null; confidence?: number | null; warnings?: { message?: string; severity?: string }[]; requiresVerification?: boolean; verifiedAt?: string | null; verificationNote?: string | null } | null; contractorName: string | null; lotNumber: string | null };
+type EnvelopeResponse = { envelope: { currency: string } | null; revisions: Revision[]; totals: { amountHt: string; amountTtc: string; byLot: { lotId: number | null; lotNumber: string | null; description: string; amountHt: string; amountTtc: string; count: number }[] } };
+type Choice = { id: number; name?: string; companyName?: string; lotNumber?: string; descriptionFr?: string };
+
+const euro = (value: string | number) => Number(value || 0);
+const dateLabel = (value?: string | null) => value ? new Date(value).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" }) : "—";
+const stateLabels: Record<string, string> = { draft: "Draft", reviewed: "Reviewed", approved: "Approved", superseded: "Superseded" };
+const stateClasses: Record<string, string> = { draft: "bg-slate-100 text-slate-700", reviewed: "bg-amber-100 text-amber-800", approved: "bg-emerald-100 text-emerald-800", superseded: "bg-stone-100 text-stone-500" };
+
+interface Props { projectId: string; contractors: Choice[]; lots: Choice[]; isArchived: boolean; }
+
+export function PlanningEnvelopeTab({ projectId, contractors, lots, isArchived }: Props) {
+  const { toast } = useToast();
+  const [dialog, setDialog] = useState<"new" | "edit" | "review" | null>(null);
+  const [editing, setEditing] = useState<Revision | null>(null);
+  const [promote, setPromote] = useState<Revision | null>(null);
+  const [verificationNote, setVerificationNote] = useState("");
+  const [importing, setImporting] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const key = projectScopedKey(projectId, "planning-envelope");
+  const { data, isLoading, error, refetch } = useQuery<EnvelopeResponse>({ queryKey: key });
+  const invalidate = () => { queryClient.invalidateQueries({ queryKey: key }); queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis") }); };
+  const action = useMutation({
+    mutationFn: async ({ url, body }: { url: string; body?: unknown }) => { const response = await apiRequest("POST", url, body); return response.json(); },
+    onSuccess: () => { invalidate(); setDialog(null); setEditing(null); setPromote(null); setVerificationNote(""); toast({ title: "Planning envelope updated" }); },
+    onError: (e: Error) => toast({ title: "Action could not be completed", description: e.message, variant: "destructive" }),
+  });
+  const patch = useMutation({
+    mutationFn: async ({ id, body }: { id: number; body: unknown }) => { const response = await apiRequest("PATCH", `/api/planning-revisions/${id}`, body); return response.json(); },
+    onSuccess: () => { invalidate(); setDialog(null); setEditing(null); toast({ title: "Revision saved" }); },
+    onError: (e: Error) => toast({ title: "Revision could not be saved", description: e.message, variant: "destructive" }),
+  });
+  const importPdf = async (file: File) => {
+    setImporting(true);
+    try {
+      const form = new FormData(); form.append("file", file);
+      const response = await fetch(`/api/projects/${projectId}/planning-envelope/import`, { method: "POST", body: form, credentials: "include" });
+      if (!response.ok) throw new Error(`${response.status}: ${await response.text()}`);
+      const extracted = await response.json(); invalidate();
+      const revision = extracted?.revision ? { revision: extracted.revision, lines: extracted.lines ?? [], source: extracted.source ?? null, contractorName: extracted.contractorName ?? null, lotNumber: extracted.lotNumber ?? null } : (extracted?.id ? { revision: extracted, lines: extracted.lines ?? [], source: extracted.source ?? null, contractorName: extracted.contractorName ?? null, lotNumber: extracted.lotNumber ?? null } : null);
+      if (revision) { setEditing(revision); setDialog("edit"); }
+      toast({ title: "PDF imported", description: "The extracted draft is ready for review." });
+    } catch (e) { toast({ title: "PDF import failed", description: (e as Error).message, variant: "destructive" }); }
+    finally { setImporting(false); if (fileRef.current) fileRef.current.value = ""; }
+  };
+  const totals = data?.totals;
+
+  if (isLoading) return <div data-testid="panel-planning-envelope" className="space-y-3"><LuxuryCard><div className="animate-pulse space-y-3"><div className="h-4 w-44 rounded bg-muted" /><div className="h-12 w-full rounded bg-muted" /><div className="h-20 w-full rounded bg-muted" /></div></LuxuryCard></div>;
+  if (error) return <LuxuryCard data-testid="planning-envelope-error"><div className="flex items-center gap-3 text-destructive"><AlertTriangle size={16} /><div><p className="text-sm font-semibold">Planning envelope unavailable</p><p className="text-xs text-muted-foreground mt-1">Could not load the planning record.</p></div><Button variant="outline" size="sm" className="ml-auto" onClick={() => refetch()} data-testid="planning-envelope-retry">Retry</Button></div></LuxuryCard>;
+
+  return (
+    <div className="space-y-4" data-testid="panel-planning-envelope">
+      {isArchived && <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid="planning-envelope-archived-banner"><LockKeyhole size={14} className="mt-0.5 shrink-0" /><span><strong>Archived project — read-only.</strong> Planning records remain available for audit; imports and workflow changes are disabled.</span></div>}
+      <div className="flex items-start justify-between gap-3 flex-wrap border-l-2 border-[#b9784c] pl-4">
+        <div><TechnicalLabel>Planning Envelope · internal working record</TechnicalLabel><h2 className="mt-1 text-xl font-light tracking-tight">Budget before commitment</h2><p className="text-xs text-muted-foreground mt-1 max-w-2xl">Candidate amounts stay separate from contractual Live Delivery until explicitly promoted.</p></div>
+        <div className="flex gap-2 flex-wrap">
+          <input ref={fileRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={(e) => e.target.files?.[0] && importPdf(e.target.files[0])} />
+          <Button variant="outline" size="sm" disabled={isArchived || importing} onClick={() => fileRef.current?.click()} data-testid="planning-envelope-import">
+            {importing ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {importing ? "Processing PDF…" : "Import PDF"}
+          </Button>
+          <Button size="sm" disabled={isArchived} onClick={() => { setEditing(null); setDialog("new"); }} data-testid="planning-envelope-new"><Plus size={13} /> New revision</Button>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2" data-testid="planning-envelope-totals">
+        <LuxuryCard className="p-4 border-[#d5b8a4] bg-[#fbf7f3]"><TechnicalLabel>Planned HT</TechnicalLabel><p className="mt-2 text-lg font-light"><Amount value={euro(totals?.amountHt ?? "0")} denomination="HT" /></p></LuxuryCard>
+        <LuxuryCard className="p-4 border-[#d5b8a4] bg-[#fbf7f3]"><TechnicalLabel>Planned TTC</TechnicalLabel><p className="mt-2 text-lg font-light"><Amount value={euro(totals?.amountTtc ?? "0")} denomination="TTC" /></p></LuxuryCard>
+        <LuxuryCard className="col-span-2 p-4"><TechnicalLabel>Envelope status</TechnicalLabel><p className="mt-2 text-sm">{data?.envelope ? <><span className="font-semibold text-emerald-700">Active</span><span className="text-muted-foreground"> · {data.revisions.length} revision{data.revisions.length === 1 ? "" : "s"}</span></> : <span className="text-muted-foreground">No planning envelope yet</span>}</p></LuxuryCard>
+      </div>
+      {totals?.byLot?.length ? <LuxuryCard className="p-4"><div className="flex items-center justify-between mb-3"><TechnicalLabel>Planned amounts by lot</TechnicalLabel><span className="text-[10px] text-muted-foreground">HT / TTC</span></div><div className="grid gap-2 sm:grid-cols-2">{totals.byLot.map((lot) => <div key={`${lot.lotId}-${lot.description}`} className="flex justify-between gap-3 rounded-lg border border-border/70 px-3 py-2 text-xs"><div className="min-w-0"><p className="font-semibold truncate">{lot.lotNumber ? `${lot.lotNumber} · ` : ""}{lot.description}</p><p className="text-[10px] text-muted-foreground">{lot.count} candidate{lot.count === 1 ? "" : "s"}</p></div><div className="text-right whitespace-nowrap"><p><Amount value={euro(lot.amountHt)} denomination="HT" /></p><p className="text-muted-foreground"><Amount value={euro(lot.amountTtc)} denomination="TTC" /></p></div></div>)}</div></LuxuryCard> : null}
+      {!data?.revisions?.length ? <LuxuryCard className="py-12 text-center" data-testid="planning-envelope-empty"><FilePlus2 size={23} className="mx-auto text-[#b9784c]" /><p className="mt-3 text-sm font-semibold">No planning candidates yet</p><p className="mt-1 text-xs text-muted-foreground">Create a revision manually or import a contractor PDF to establish the first working envelope.</p></LuxuryCard> :
+        <div className="space-y-3">{data.revisions.map((item) => <RevisionCard key={item.revision.id} item={item} revisions={data.revisions} projectId={projectId} isArchived={isArchived} onEdit={() => { setEditing(item); setDialog("edit"); }} onReview={() => { setEditing(item); setDialog("review"); }} onAction={(url, body) => action.mutate({ url, body })} onPromote={() => setPromote(item)} />)}</div>}
+      <RevisionDialog open={dialog === "new" || dialog === "edit"} item={dialog === "edit" ? editing : null} contractors={contractors} lots={lots} pending={patch.isPending || action.isPending} onClose={() => { setDialog(null); setEditing(null); }} onSubmit={(body) => dialog === "edit" && editing ? patch.mutate({ id: editing.revision.id, body: { ...(body as Record<string, unknown>), expectedVersion: editing.revision.version } }) : action.mutate({ url: `/api/projects/${projectId}/planning-envelope/revisions`, body })} />
+      <Dialog open={dialog === "review"} onOpenChange={(v) => !v && setDialog(null)}><DialogContent className="max-w-md" data-testid="planning-envelope-review-dialog"><DialogHeader><DialogTitle>Review planning revision</DialogTitle><DialogDescription>Confirm that the extracted amounts and line items have been checked against the source.</DialogDescription></DialogHeader>{editing?.source?.requiresVerification ? <p className="text-xs text-amber-800 rounded border border-amber-200 bg-amber-50 p-2">A verification note of at least 10 characters is required for this extracted source.</p> : <p className="text-xs text-muted-foreground">A verification note is optional for manual or high-confidence entries.</p>}<Textarea value={verificationNote} onChange={(e) => setVerificationNote(e.target.value)} placeholder={editing?.source?.requiresVerification ? "Describe what you verified (minimum 10 characters)" : "Verification note (optional)"} data-testid="planning-envelope-verification-note" /><Button disabled={action.isPending || (!!editing?.source?.requiresVerification && verificationNote.trim().length < 10)} onClick={() => editing && action.mutate({ url: `/api/planning-revisions/${editing.revision.id}/review`, body: { expectedVersion: editing.revision.version, ...(verificationNote ? { verificationNote } : {}) } })} data-testid="planning-envelope-review-confirm"><ShieldCheck size={13} /> Confirm review</Button></DialogContent></Dialog>
+      <AlertDialog open={!!promote} onOpenChange={(v) => !v && setPromote(null)}><AlertDialogContent data-testid="planning-envelope-promote-dialog"><AlertDialogHeader><AlertDialogTitle>Promote this revision to Live Delivery?</AlertDialogTitle><AlertDialogDescription>This creates a new provisional Live devis from the approved planning revision. The planning record remains unchanged and can still be audited.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Keep in planning</AlertDialogCancel><AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" disabled={action.isPending} onClick={() => promote && action.mutate({ url: `/api/planning-revisions/${promote.revision.id}/promote`, body: { expectedVersion: promote.revision.version } })} data-testid="planning-envelope-promote-confirm">Create provisional devis</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+    </div>
+  );
+}
+
+function RevisionCard({ item, revisions, projectId, isArchived, onEdit, onReview, onAction, onPromote }: { item: Revision; revisions: Revision[]; projectId: string; isArchived: boolean; onEdit: () => void; onReview: () => void; onAction: (url: string, body?: unknown) => void; onPromote: () => void }) {
+  const r = item.revision;
+  const immutable = r.status === "approved" || r.status === "superseded";
+  const canRevise = r.status === "approved";
+  const canApprove = r.status === "reviewed";
+  const sourceWarnings = item.source?.warnings ?? [];
+  const prior = r.supersedesRevisionId ? revisions.find((candidate) => candidate.revision.id === r.supersedesRevisionId) : undefined;
+  const variance = prior ? Number(r.amountHt) - Number(prior.revision.amountHt) : null;
+  const variancePct = prior && Number(prior.revision.amountHt) !== 0 ? (variance! / Number(prior.revision.amountHt)) * 100 : null;
+  return <LuxuryCard className={`p-4 ${immutable ? "bg-muted/20" : ""}`} data-testid={`planning-envelope-revision-${r.id}`}>
+    <div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="flex items-center gap-2 flex-wrap"><FileText size={15} className="text-[#9a5c36]" /><span className="font-semibold text-sm">{r.reference || "Unreferenced revision"}</span><Badge className={`text-[10px] ${stateClasses[r.status]}`}>{stateLabels[r.status]}</Badge>{immutable && <LockKeyhole size={12} className="text-muted-foreground" />}</div><p className="text-xs text-muted-foreground mt-1 truncate">{r.descriptionFr || "No scope description"} · {item.contractorName ?? "Contractor not assigned"} · {item.lotNumber ? `Lot ${item.lotNumber}` : "Lot not assigned"}</p></div><div className="text-right whitespace-nowrap"><p className="font-semibold text-sm"><Amount value={euro(r.amountHt)} denomination="HT" /></p><p className="text-[10px] text-muted-foreground"><Amount value={euro(r.amountTtc)} denomination="TTC" /></p></div></div>
+    <div className="mt-3 flex items-center gap-3 flex-wrap text-[10px] text-muted-foreground"><span>v{r.version}</span><span>{r.documentDate ? `Document ${dateLabel(r.documentDate)}` : `Updated ${dateLabel(r.updatedAt)}`}</span><span>{item.source?.sourceKind === "pdf_upload" ? `PDF · ${item.source.fileName ?? "source file"}` : "Manual entry"}</span>{item.source?.confidence != null && <span>Confidence {item.source.confidence}%</span>}{item.source?.requiresVerification && <span className="text-amber-700 flex items-center gap-1"><AlertTriangle size={11} /> Verification required</span>}</div>
+    {sourceWarnings.length > 0 && <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900"><div className="flex gap-2"><Info size={13} className="mt-0.5 shrink-0" /><div>{sourceWarnings.slice(0, 2).map((warning, i) => <div key={i}>{warning.message ?? "Source warning"}</div>)}</div></div></div>}
+    <div className="mt-3 flex items-center justify-between gap-2 flex-wrap"><div className="flex gap-2 flex-wrap">{item.source?.sourceKind === "pdf_upload" && <a className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-primary hover:underline" href={`/api/planning-revisions/${r.id}/pdf`} target="_blank" rel="noreferrer" data-testid={`planning-envelope-pdf-${r.id}`}><Download size={12} /> Source PDF</a>}{r.promotedDevisId && <a href={`/projets/${projectId}?tab=devis&devis=${r.promotedDevisId}`} className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 hover:underline" data-testid={`planning-envelope-live-link-${r.id}`}>Live devis #{r.promotedDevisId}</a>}</div><div className="flex gap-2 flex-wrap">{!immutable && !isArchived && <Button variant="outline" size="sm" onClick={onEdit} data-testid={`planning-envelope-edit-${r.id}`}><Pencil size={12} /> Edit</Button>}{r.status === "draft" && !isArchived && <Button variant="outline" size="sm" onClick={onReview} data-testid={`planning-envelope-review-${r.id}`}><Check size={12} /> Review</Button>}{canApprove && !isArchived && <Button variant="outline" size="sm" onClick={() => onAction(`/api/planning-revisions/${r.id}/approve`, { expectedVersion: r.version })} data-testid={`planning-envelope-approve-${r.id}`}><ShieldCheck size={12} /> Approve</Button>}{canRevise && !isArchived && <Button variant="outline" size="sm" onClick={() => onAction(`/api/planning-revisions/${r.id}/revise`, {})} data-testid={`planning-envelope-revise-${r.id}`}><RefreshCw size={12} /> Revise</Button>}{r.status === "approved" && !r.promotedDevisId && !isArchived && <Button size="sm" onClick={onPromote} data-testid={`planning-envelope-promote-${r.id}`}><FileCheck2 size={12} /> Promote to Live</Button>}</div></div>
+  </LuxuryCard>;
+}
+
+function RevisionDialog({ open, item, contractors, lots, pending, onClose, onSubmit }: { open: boolean; item: Revision | null; contractors: Choice[]; lots: Choice[]; pending: boolean; onClose: () => void; onSubmit: (body: unknown) => void }) {
+  const r = item?.revision;
+  const [reference, setReference] = useState("");
+  const [description, setDescription] = useState("");
+  const [date, setDate] = useState("");
+  const [ht, setHt] = useState("");
+  const [ttc, setTtc] = useState("");
+  const [tva, setTva] = useState("20");
+  const [contractorId, setContractorId] = useState("");
+  const [lotId, setLotId] = useState("");
+  const [auto, setAuto] = useState(false);
+  const [lines, setLines] = useState<Line[]>([]);
+
+  useEffect(() => {
+    if (!open) return;
+    setReference(r?.reference ?? "");
+    setDescription(r?.descriptionFr ?? "");
+    setDate(r?.documentDate ?? "");
+    setHt(r?.amountHt ?? "");
+    setTtc(r?.amountTtc ?? "");
+    setTva(r?.tvaRatePercent ?? "20");
+    setContractorId(r?.contractorId == null ? "" : String(r.contractorId));
+    setLotId(r?.lotId == null ? "" : String(r.lotId));
+    setAuto(!!r?.tvaAutoliquidation);
+    setLines(item?.lines?.length
+      ? item.lines.map((line) => ({
+          ...line,
+          description: line.description ?? "",
+          quantity: line.quantity ?? "",
+          unit: line.unit ?? "",
+          unitPriceHt: line.unitPriceHt ?? "",
+          totalHt: line.totalHt ?? "",
+        }))
+      : [{ lineNumber: 1, description: "", quantity: "", unit: "", unitPriceHt: "", totalHt: "" }]);
+  }, [open, item, r]);
+
+  const updateLine = (index: number, field: keyof Line, value: string) => {
+    setLines((old) => old.map((line, i) => {
+      if (i !== index) return line;
+      const next = { ...line, [field]: value };
+      if (field === "quantity" || field === "unitPriceHt") {
+        const nextQuantity = field === "quantity" ? value : line.quantity;
+        const nextUnitPrice = field === "unitPriceHt" ? value : line.unitPriceHt;
+        if (nextQuantity !== "" && nextUnitPrice !== "") {
+          next.totalHt = (Number(nextQuantity) * Number(nextUnitPrice)).toFixed(2);
+        }
+      }
+      return next;
+    }));
+  };
+
+  const submit = () => {
+    const populatedLines = lines
+      .filter((line) => line.description.trim() !== "" || line.totalHt !== "")
+      .map((line, index) => ({
+        lineNumber: index + 1,
+        description: line.description,
+        quantity: line.quantity || null,
+        unit: line.unit || null,
+        unitPriceHt: line.unitPriceHt || null,
+        totalHt: line.totalHt,
+        pdfPageHint: line.pdfPageHint ?? null,
+      }));
+    onSubmit({
+      contractorId: contractorId ? Number(contractorId) : null,
+      lotId: lotId ? Number(lotId) : null,
+      reference,
+      descriptionFr: description,
+      documentDate: date || null,
+      amountHt: ht,
+      amountTtc: ttc,
+      tvaRatePercent: tva || null,
+      tvaAutoliquidation: auto,
+      lines: populatedLines,
+    });
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-3xl max-h-[92dvh] overflow-y-auto" data-testid="planning-envelope-form">
+        <DialogHeader>
+          <DialogTitle>{item ? "Edit planning revision" : "New planning revision"}</DialogTitle>
+          <DialogDescription>Amounts are stored as a planning candidate until review and approval.</DialogDescription>
+        </DialogHeader>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div><Label htmlFor="pe-reference">Reference</Label><Input id="pe-reference" value={reference} onChange={(e) => setReference(e.target.value)} data-testid="planning-envelope-form-reference" /></div>
+          <div><Label htmlFor="pe-date">Document date</Label><Input id="pe-date" type="date" value={date} onChange={(e) => setDate(e.target.value)} data-testid="planning-envelope-form-date" /></div>
+          <div>
+            <Label>Contractor</Label>
+            <Select value={contractorId || "__none__"} onValueChange={(value) => setContractorId(value === "__none__" ? "" : value)}>
+              <SelectTrigger data-testid="planning-envelope-form-contractor"><SelectValue placeholder="Select contractor" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">Not assigned</SelectItem>
+                {contractors.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name ?? c.companyName ?? `Contractor ${c.id}`}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Lot</Label>
+            <Select value={lotId || "__none__"} onValueChange={(value) => setLotId(value === "__none__" ? "" : value)}>
+              <SelectTrigger data-testid="planning-envelope-form-lot"><SelectValue placeholder="Select lot" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">Not assigned</SelectItem>
+                {lots.map((l) => <SelectItem key={l.id} value={String(l.id)}>{l.lotNumber ?? l.descriptionFr ?? `Lot ${l.id}`}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="sm:col-span-2"><Label htmlFor="pe-description">Scope</Label><Textarea id="pe-description" value={description} onChange={(e) => setDescription(e.target.value)} data-testid="planning-envelope-form-scope" /></div>
+          <div><Label htmlFor="pe-ht">Amount HT</Label><Input id="pe-ht" type="number" min="0" step="0.01" value={ht} onChange={(e) => setHt(e.target.value)} data-testid="planning-envelope-form-ht" /></div>
+          <div><Label htmlFor="pe-ttc">Amount TTC</Label><Input id="pe-ttc" type="number" min="0" step="0.01" value={ttc} onChange={(e) => setTtc(e.target.value)} data-testid="planning-envelope-form-ttc" /></div>
+          <div><Label htmlFor="pe-tva">TVA rate %</Label><Input id="pe-tva" type="number" min="0" step="0.01" value={tva} onChange={(e) => setTva(e.target.value)} data-testid="planning-envelope-form-tva" /></div>
+          <label className="flex items-center gap-2 text-xs pt-6"><input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} data-testid="planning-envelope-form-autoliquidation" /> TVA autoliquidation</label>
+        </div>
+        <div className="border-t pt-3">
+          <div className="flex justify-between items-center mb-2">
+            <TechnicalLabel>Line items</TechnicalLabel>
+            <Button type="button" variant="outline" size="sm" onClick={() => setLines([...lines, { lineNumber: lines.length + 1, description: "", quantity: "1", unit: "u", unitPriceHt: "", totalHt: "" }])} data-testid="planning-envelope-form-add-line"><Plus size={12} /> Add line</Button>
+          </div>
+          <div className="space-y-2">
+            {lines.map((line, index) => (
+              <div key={index} className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end rounded-md border border-border/60 p-2 sm:border-0 sm:p-0">
+                <div className="sm:col-span-4"><Label className="text-[10px] sm:sr-only">Description</Label><Input aria-label={`Line ${index + 1} description`} placeholder="Description" value={line.description} onChange={(e) => updateLine(index, "description", e.target.value)} data-testid={`planning-envelope-line-description-${index}`} /></div>
+                <div className="sm:col-span-2"><Label className="text-[10px] sm:sr-only">Quantity</Label><Input aria-label="Quantity" type="number" min="0" step="0.001" placeholder="Qty" value={line.quantity} onChange={(e) => updateLine(index, "quantity", e.target.value)} /></div>
+                <div className="sm:col-span-1"><Label className="text-[10px] sm:sr-only">Unit</Label><Input aria-label="Unit" placeholder="Unit" value={line.unit} onChange={(e) => updateLine(index, "unit", e.target.value)} /></div>
+                <div className="sm:col-span-2"><Label className="text-[10px] sm:sr-only">Unit price HT</Label><Input aria-label="Unit price HT" type="number" min="0" step="0.01" placeholder="Unit price" value={line.unitPriceHt} onChange={(e) => updateLine(index, "unitPriceHt", e.target.value)} /></div>
+                <div className="sm:col-span-2"><Label className="text-[10px] sm:sr-only">Total HT</Label><Input aria-label="Total HT" type="number" min="0" step="0.01" placeholder="Total HT" value={line.totalHt} onChange={(e) => updateLine(index, "totalHt", e.target.value)} data-testid={`planning-envelope-line-total-${index}`} /></div>
+                <div className="sm:col-span-1 flex justify-end"><Button type="button" variant="ghost" size="icon" aria-label="Remove line" onClick={() => setLines(lines.filter((_, i) => i !== index))} disabled={lines.length === 1}><X size={13} /></Button></div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <Button disabled={pending || !reference.trim() || !description.trim() || !ht || !ttc} onClick={submit} data-testid="planning-envelope-form-submit">
+          {pending ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />} Save revision
+        </Button>
+      </DialogContent>
+    </Dialog>
+  );
+}

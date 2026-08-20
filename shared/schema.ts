@@ -585,6 +585,13 @@ export const devis = pgTable("devis", {
   // and cleared by the architect via the "Edit References" dialog. Does not
   // affect amounts, states, seals, or PDF output.
   notes: text("notes"),
+  // Task #650 — Planning Envelope provenance. Nullable; set immutably when
+  // this devis was promoted from an approved planning revision. The FK to
+  // planning_revisions is declared SQL-only in migrations/0104 to avoid
+  // Drizzle circular inference (planning_revisions already references devis
+  // through promoted_devis_id). A partial UNIQUE index in the migration
+  // enforces one devis per promoted revision.
+  sourcePlanningRevisionId: integer("source_planning_revision_id"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
@@ -3625,3 +3632,162 @@ export type InsertArchitectFeeInvoiceEvent = z.infer<typeof insertArchitectFeeIn
 export type InsertCertificatSource = z.infer<typeof insertCertificatSourceSchema>;
 
 export type CertificatSource = typeof certificatSources.$inferSelect;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task #650 — Planning Envelope MVP
+// Five tables: planning_envelopes, planning_revisions, planning_revision_lines,
+// planning_revision_sources, planning_revision_events.
+// The circular FKs (supersedes_revision_id → planning_revisions,
+// promoted_devis_id → devis, devis.source_planning_revision_id → planning_revisions)
+// are declared SQL-only in the migration to avoid Drizzle inference collapse.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const planningEnvelopes = pgTable("planning_envelopes", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  currency: text("currency").notNull().default("EUR"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  unique("planning_envelopes_project_id_unique").on(table.projectId),
+  index("planning_envelopes_project_id_idx").on(table.projectId),
+]);
+
+export const planningRevisions = pgTable("planning_revisions", {
+  id: serial("id").primaryKey(),
+  envelopeId: integer("envelope_id").notNull().references(() => planningEnvelopes.id, { onDelete: "cascade" }),
+  version: integer("version").notNull().default(1),
+  status: text("status").notNull().default("draft"),
+  // nullable provenance
+  contractorId: integer("contractor_id").references(() => contractors.id, { onDelete: "set null" }),
+  lotId: integer("lot_id").references(() => lots.id, { onDelete: "set null" }),
+  // header fields
+  reference: text("reference"),
+  descriptionFr: text("description_fr"),
+  documentDate: date("document_date"),
+  amountHt: numeric("amount_ht", { precision: 12, scale: 2 }),
+  amountTtc: numeric("amount_ttc", { precision: 12, scale: 2 }),
+  tvaRatePercent: numeric("tva_rate_percent", { precision: 5, scale: 2 }),
+  tvaAutoliquidation: boolean("tva_autoliquidation").notNull().default(false),
+  // lifecycle link — FK declared SQL-only (circular self-reference would collapse Drizzle TS inference)
+  supersedesRevisionId: integer("supersedes_revision_id"),
+  // review
+  reviewedBy: text("reviewed_by"),
+  reviewedAt: timestamp("reviewed_at"),
+  // approval
+  approvedBy: text("approved_by"),
+  approvedAt: timestamp("approved_at"),
+  approvedSnapshot: jsonb("approved_snapshot"),
+  approvedSnapshotSha256: text("approved_snapshot_sha256"),
+  // supersede actor
+  supersededBy: text("superseded_by"),
+  supersededAt: timestamp("superseded_at"),
+  // promotion — FK to devis declared SQL-only (avoids Drizzle circular inference)
+  promotedDevisId: integer("promoted_devis_id"),
+  promotedBy: text("promoted_by"),
+  promotedAt: timestamp("promoted_at"),
+  // creator
+  createdBy: text("created_by"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("planning_revisions_envelope_id_idx").on(table.envelopeId),
+  index("planning_revisions_status_idx").on(table.status),
+  uniqueIndex("planning_revisions_promoted_devis_id_unique")
+    .on(table.promotedDevisId)
+    .where(sql`${table.promotedDevisId} IS NOT NULL`),
+  check("planning_revisions_status_chk", sql`${table.status} IN ('draft', 'reviewed', 'approved', 'superseded')`),
+  check("planning_revisions_version_positive_chk", sql`${table.version} > 0`),
+  check(
+    "planning_revisions_amounts_positive_chk",
+    sql`${table.amountHt} IS NULL OR ${table.amountHt} >= 0`,
+  ),
+  check(
+    "planning_revisions_amounts_ttc_ht_chk",
+    sql`${table.amountTtc} IS NULL OR ${table.amountHt} IS NULL OR ${table.amountTtc} >= ${table.amountHt}`,
+  ),
+  check(
+    "planning_revisions_reviewed_audit_chk",
+    sql`${table.status} != 'reviewed' OR (${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL)`,
+  ),
+  check(
+    "planning_revisions_approved_audit_chk",
+    sql`${table.status} NOT IN ('approved', 'superseded') OR (${table.approvedBy} IS NOT NULL AND ${table.approvedAt} IS NOT NULL AND ${table.approvedSnapshot} IS NOT NULL AND ${table.approvedSnapshotSha256} IS NOT NULL)`,
+  ),
+  check(
+    "planning_revisions_superseded_audit_chk",
+    sql`${table.status} != 'superseded' OR (${table.supersededBy} IS NOT NULL AND ${table.supersededAt} IS NOT NULL)`,
+  ),
+]);
+
+export const planningRevisionLines = pgTable("planning_revision_lines", {
+  id: serial("id").primaryKey(),
+  revisionId: integer("revision_id").notNull().references(() => planningRevisions.id, { onDelete: "cascade" }),
+  lineNumber: integer("line_number").notNull(),
+  description: text("description").notNull(),
+  quantity: numeric("quantity", { precision: 12, scale: 3 }),
+  unit: text("unit"),
+  unitPriceHt: numeric("unit_price_ht", { precision: 12, scale: 2 }),
+  totalHt: numeric("total_ht", { precision: 12, scale: 2 }).notNull(),
+  pdfPageHint: integer("pdf_page_hint"),
+  pdfBbox: jsonb("pdf_bbox").$type<{ x: number; y: number; w: number; h: number } | null>(),
+}, (table) => [
+  unique("planning_revision_lines_revision_line_unique").on(table.revisionId, table.lineNumber),
+  index("planning_revision_lines_revision_id_idx").on(table.revisionId),
+  check("planning_revision_lines_line_number_positive_chk", sql`${table.lineNumber} > 0`),
+  check("planning_revision_lines_total_ht_nonneg_chk", sql`${table.totalHt} >= 0`),
+  check("planning_revision_lines_unit_price_nonneg_chk", sql`${table.unitPriceHt} IS NULL OR ${table.unitPriceHt} >= 0`),
+  check("planning_revision_lines_quantity_nonneg_chk", sql`${table.quantity} IS NULL OR ${table.quantity} >= 0`),
+]);
+
+export const planningRevisionSources = pgTable("planning_revision_sources", {
+  id: serial("id").primaryKey(),
+  revisionId: integer("revision_id").notNull().references(() => planningRevisions.id, { onDelete: "cascade" }),
+  sourceKind: text("source_kind").notNull().default("manual"),
+  // object storage provenance (null for manual sources)
+  storageKey: text("storage_key"),
+  fileName: text("file_name"),
+  fileSha256: text("file_sha256"),
+  mimeType: text("mime_type"),
+  fileSizeBytes: integer("file_size_bytes"),
+  // extraction provenance
+  parserVersion: text("parser_version"),
+  provider: text("provider"),
+  modelId: text("model_id"),
+  rawExtraction: jsonb("raw_extraction"),
+  confidence: integer("confidence"),
+  warnings: jsonb("warnings"),
+  // verification gate
+  requiresVerification: boolean("requires_verification").notNull().default(false),
+  verifiedAt: timestamp("verified_at"),
+  verifiedBy: text("verified_by"),
+  verificationNote: text("verification_note"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  unique("planning_revision_sources_revision_id_unique").on(table.revisionId),
+  index("planning_revision_sources_revision_id_idx").on(table.revisionId),
+  check("planning_revision_sources_source_kind_chk", sql`${table.sourceKind} IN ('manual', 'pdf_upload')`),
+  check("planning_revision_sources_confidence_range_chk", sql`${table.confidence} IS NULL OR (${table.confidence} >= 0 AND ${table.confidence} <= 100)`),
+  check(
+    "planning_revision_sources_pdf_provenance_chk",
+    sql`${table.sourceKind} != 'pdf_upload' OR (${table.storageKey} IS NOT NULL AND ${table.fileName} IS NOT NULL AND ${table.fileSha256} IS NOT NULL AND ${table.mimeType} IS NOT NULL AND ${table.fileSizeBytes} IS NOT NULL)`,
+  ),
+]);
+
+export const planningRevisionEvents = pgTable("planning_revision_events", {
+  id: serial("id").primaryKey(),
+  revisionId: integer("revision_id").notNull().references(() => planningRevisions.id, { onDelete: "cascade" }),
+  action: text("action").notNull(),
+  actor: text("actor"),
+  payload: jsonb("payload"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("planning_revision_events_revision_id_idx").on(table.revisionId),
+]);
+
+// Types
+export type PlanningEnvelope = typeof planningEnvelopes.$inferSelect;
+export type PlanningRevision = typeof planningRevisions.$inferSelect;
+export type PlanningRevisionLine = typeof planningRevisionLines.$inferSelect;
+export type PlanningRevisionSource = typeof planningRevisionSources.$inferSelect;
+export type PlanningRevisionEvent = typeof planningRevisionEvents.$inferSelect;

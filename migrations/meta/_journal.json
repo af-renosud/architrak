@@ -729,6 +729,55 @@
       "when": 1787361000000,
       "tag": "0103_devis_closure_pv_snapshot",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1787362000000,
+      "tag": "0104_planning_envelope_mvp",
+      "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1787363000000,
+      "tag": "0105_planning_envelope_constraints",
+      "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1787364000000,
+      "tag": "0106_planning_envelope_immutability",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1787365000000,
+      "tag": "0107_planning_revision_cascade_cleanup",
+      "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1787366000000,
+      "tag": "0108_planning_promotion_stamp_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1787367000000,
+      "tag": "0109_devis_planning_provenance_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 110,
+      "version": "7",
+      "when": 1787368000000,
+      "tag": "0110_planning_provenance_deferred_link",
+      "breakpoints": true
     }
   ]
 }

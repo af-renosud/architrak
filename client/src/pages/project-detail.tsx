@@ -39,6 +39,7 @@ import { z } from "zod";
 import { apiRequest, queryClient, ApiError, projectScopedKey } from "@/lib/queryClient";
 import { PvReceptionBadge, PvReceptionDialog } from "@/components/marche/PvReceptionDialog";
 import { CertificatDetailDialog } from "@/components/certificats/CertificatDetailDialog";
+import { PlanningEnvelopeTab } from "@/components/projects/PlanningEnvelopeTab";
 
 import { Amount } from "@/components/ui/amount";
 import { formatCurrency as fmt } from "@/lib/utils";
@@ -1102,7 +1103,7 @@ export default function ProjectDetail() {
               <h1 className="text-[22px] font-light uppercase tracking-tight text-foreground" data-testid="text-project-name">
                 {project.name}
               </h1>
-              <StatusBadge status={project.status} />
+              <StatusBadge status={isArchived ? "archived" : project.status} />
               {accountingStatus && accountingStatus.status === "needs_review" && (
                 <button
                   type="button"
@@ -1299,6 +1300,10 @@ export default function ProjectDetail() {
               <Inbox size={12} className="mr-1" />
               Intake
             </TabsTrigger>
+            <TabsTrigger value="planning-envelope" data-testid="tab-planning-envelope">
+              <FileCheck size={12} className="mr-1" />
+              Planning Envelope
+            </TabsTrigger>
             <TabsTrigger value="devis" data-testid="tab-devis">
               <FileText size={12} className="mr-1" />
               Devis
@@ -1485,6 +1490,15 @@ export default function ProjectDetail() {
 
           <TabsContent value="intake">
             <IntakeTab projectId={projectId!} isArchived={isArchived} />
+          </TabsContent>
+
+          <TabsContent value="planning-envelope">
+            <PlanningEnvelopeTab
+              projectId={projectId!}
+              contractors={contractors ?? []}
+              lots={lotsList ?? []}
+              isArchived={isArchived}
+            />
           </TabsContent>
 
           <TabsContent value="devis">

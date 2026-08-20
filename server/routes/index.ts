@@ -75,6 +75,7 @@ import reconciliationRouter from "./reconciliation";
 // hit AI extraction which is expensive, and the general API limiter is a
 // belt-and-braces guard against runaway clients.
 import documentChainRouter from "./document-chain";
+import planningEnvelopeRouter from "./planning-envelope";
 const webhookLimiter = rateLimit({ name: "webhook", windowMs: 60_000, max: 60, message: "Webhook rate limit exceeded" });
 const uploadLimiter = rateLimit({ name: "upload", windowMs: 60_000, max: 20, message: "Upload rate limit exceeded" });
 const apiLimiter = rateLimit({ name: "api", windowMs: 60_000, max: 600, message: "API rate limit exceeded" });
@@ -90,7 +91,7 @@ export async function registerRoutes(
   app.use(healthzRouter);
 
   app.use("/api/webhooks", webhookLimiter);
-  app.use(["/api/devis/:devisId/invoices/upload", "/api/projects/:projectId/devis/upload", "/api/projects/:projectId/intake/upload", "/api/design-contracts/preview", "/api/devis/:id/record-signed-copy"], uploadLimiter);
+  app.use(["/api/devis/:devisId/invoices/upload", "/api/projects/:projectId/devis/upload", "/api/projects/:projectId/intake/upload", "/api/design-contracts/preview", "/api/devis/:id/record-signed-copy", "/api/projects/:projectId/planning-envelope/import"], uploadLimiter);
   app.use("/api", apiLimiter);
 
   app.use(projectsRouter);
@@ -145,6 +146,7 @@ export async function registerRoutes(
   app.use(adminArchisignRenderingRouter);
   app.use(designContractsRouter);
   app.use(reconciliationRouter);
+  app.use(planningEnvelopeRouter);
 
   return httpServer;
 }
