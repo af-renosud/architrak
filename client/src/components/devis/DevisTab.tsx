@@ -54,6 +54,7 @@ import {
 } from "@/components/devis/draft-warnings";
 import { SigningPanel, OPEN_SIGNING_SEND_EVENT } from "@/components/devis/SigningPanel";
 import { CertificatPanel } from "@/components/devis/CertificatPanel";
+import { DevisClosurePanel } from "@/components/devis/DevisClosurePanel";
 import { countDevisSignOff } from "@/components/devis/devis-counters";
 
 import { Amount } from "@/components/ui/amount";
@@ -6382,6 +6383,8 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
           </Button>
         )}
       </div>
+
+      <DevisClosurePanel devis={devis} projectId={projectId} isArchived={isArchived} />
 
       <div className="grid grid-cols-4 gap-3">
         <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">

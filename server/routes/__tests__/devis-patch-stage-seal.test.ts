@@ -201,4 +201,36 @@ describe("PATCH /api/devis/:id — Task #257 stage seal", () => {
     expect(res.status).toBe(200);
     expect(updateDevis).toHaveBeenCalledTimes(1);
   });
+
+  it("strips closure state and audit fields from the generic PATCH", async () => {
+    const before = makeDevis({ closureState: "open", closedAt: null, closedByUserId: null });
+    getDevis.mockResolvedValue(before);
+    updateDevis.mockResolvedValue(before);
+
+    const res = await fetch(`${baseUrl}/api/devis/100`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        notes: "ordinary note remains editable",
+        closureState: "closed",
+        closedAt: "2026-08-20T08:00:00.000Z",
+        closedByUserId: 999,
+        closureMarcheId: 55,
+        closureProjectId: 1,
+        closureContractorId: 2,
+        closureReceptionDate: "2026-08-19",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const patch = updateDevis.mock.calls[0][1];
+    expect(patch.notes).toBe("ordinary note remains editable");
+    expect(patch).not.toHaveProperty("closureState");
+    expect(patch).not.toHaveProperty("closedAt");
+    expect(patch).not.toHaveProperty("closedByUserId");
+    expect(patch).not.toHaveProperty("closureMarcheId");
+    expect(patch).not.toHaveProperty("closureProjectId");
+    expect(patch).not.toHaveProperty("closureContractorId");
+    expect(patch).not.toHaveProperty("closureReceptionDate");
+  });
 });

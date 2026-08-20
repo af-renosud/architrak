@@ -284,7 +284,7 @@ export interface IStorage {
       | "pvAttestationNote"
     >,
   ): Promise<Marche | undefined>;
-  approveMarchePv(id: number, approvedByUserId: number | null): Promise<Marche | undefined>;
+  approveMarchePv(id: number, approvedByUserId: number): Promise<Marche | undefined>;
   updateMarcheWithPvDateGuard(id: number, data: Partial<InsertMarche>): Promise<Marche | undefined>;
 
   getDevisByProject(projectId: number): Promise<Devis[]>;
@@ -1696,7 +1696,7 @@ export class DatabaseStorage implements IStorage {
 
   // Task #566 — approval only transitions draft→approved and requires the
   // reception date to be present, all inside the UPDATE predicate.
-  async approveMarchePv(id: number, approvedByUserId: number | null): Promise<Marche | undefined> {
+  async approveMarchePv(id: number, approvedByUserId: number): Promise<Marche | undefined> {
     const [marche] = await db
       .update(marches)
       .set({

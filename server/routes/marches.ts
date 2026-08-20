@@ -3,6 +3,7 @@ import { z } from "zod";
 import { storage } from "../storage";
 import { insertMarcheSchema, type InsertMarche } from "@shared/schema";
 import { validateRequest } from "../middleware/validate";
+import { requireAuth } from "../auth/middleware";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
@@ -48,6 +49,7 @@ router.get("/api/projects/:projectId/marches", async (req, res) => {
 
 router.post(
   "/api/projects/:projectId/marches",
+  requireAuth,
   validateRequest({ params: projectIdParams, body: createMarcheBodySchema }),
   async (req, res) => {
     const marche = await storage.createMarche({ ...req.body, projectId: Number(req.params.projectId) });
@@ -63,6 +65,7 @@ router.get("/api/marches/:id", async (req, res) => {
 
 router.patch(
   "/api/marches/:id",
+  requireAuth,
   validateRequest({ params: idParams, body: updateMarcheSchema }),
   async (req, res) => {
     const id = Number(req.params.id);
@@ -94,6 +97,7 @@ router.patch(
 // GPA/RG timing and the PV can never disagree. Refused once approved.
 router.post(
   "/api/marches/:id/pv",
+  requireAuth,
   validateRequest({ params: idParams, body: pvBodySchema }),
   async (req, res) => {
     const id = Number(req.params.id);
@@ -123,13 +127,16 @@ router.post(
 // together. Approval is what unlocks the final-payment (solde) gate.
 router.post(
   "/api/marches/:id/pv/approve",
+  requireAuth,
   validateRequest({ params: idParams }),
   async (req, res) => {
     const id = Number(req.params.id);
+    const user = await storage.getUser(Number(req.session.userId));
+    if (!user) return res.status(401).json({ message: "Authentication required" });
     // Race-safe: the draft→approved transition (and the reception-date
     // requirement) live inside the UPDATE predicate. A zero-row update is
     // then disambiguated with a fresh read.
-    const marche = await storage.approveMarchePv(id, req.session.userId ?? null);
+    const marche = await storage.approveMarchePv(id, user.id);
     if (marche) return res.json(marche);
     const existing = await storage.getMarche(id);
     if (!existing) return res.status(404).json({ message: "Marche not found" });

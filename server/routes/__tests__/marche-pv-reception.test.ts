@@ -24,6 +24,7 @@ vi.mock("../../storage", async () => {
   return {
     storage: createStorageMock([
       "getMarche",
+      "getUser",
       "getMarchesByProject",
       "createMarche",
       "updateMarche",
@@ -90,7 +91,9 @@ beforeAll(async () => {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as unknown as { session: { userId: number } }).session = { userId: 42 };
+    if (req.headers["x-test-unauthenticated"] !== "true") {
+      (req as unknown as { session: { userId: number } }).session = { userId: 42 };
+    }
     next();
   });
   app.use(marchesRouter);
@@ -114,6 +117,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocked.getUser.mockResolvedValue({ id: 42, email: "architect@renosud.com" });
 });
 
 const json = (method: string, path: string, body?: unknown) =>
@@ -154,6 +158,22 @@ describe("marché generic routes — PV fields are server-managed", () => {
 });
 
 describe("POST /api/marches/:id/pv — draft PV", () => {
+  it("requires authentication", async () => {
+    const res = await fetch(`${baseUrl}/api/marches/5/pv`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-test-unauthenticated": "true",
+      },
+      body: JSON.stringify({
+        receptionDate: "2026-02-10",
+        attestationNote: "PV papier signé",
+      }),
+    });
+    expect(res.status).toBe(401);
+    expect(mocked.recordMarchePvDraft).not.toHaveBeenCalled();
+  });
+
   it("records a draft with an attestation note and writes receptionDate in the same update", async () => {
     mocked.getMarche.mockResolvedValue({ ...baseMarche });
     mocked.recordMarchePvDraft.mockImplementation(async (_id, patch) => ({
@@ -191,6 +211,15 @@ describe("POST /api/marches/:id/pv — draft PV", () => {
 });
 
 describe("POST /api/marches/:id/pv/approve", () => {
+  it("requires authentication", async () => {
+    const res = await fetch(`${baseUrl}/api/marches/5/pv/approve`, {
+      method: "POST",
+      headers: { "x-test-unauthenticated": "true" },
+    });
+    expect(res.status).toBe(401);
+    expect(mocked.approveMarchePv).not.toHaveBeenCalled();
+  });
+
   it("409s when no PV was recorded", async () => {
     mocked.approveMarchePv.mockResolvedValue(undefined);
     mocked.getMarche.mockResolvedValue({ ...baseMarche });

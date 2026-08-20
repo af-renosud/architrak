@@ -49,6 +49,7 @@ import adminIntakeJobsRouter from "./admin-intake-jobs";
 import adminPennylaneRouter from "./admin-pennylane";
 import adminSignedPdfRecoveryRouter from "./admin-signed-pdf-recovery";
 import devisManualSignoffRouter from "./devis-manual-signoff";
+import devisClosureRouter from "./devis-closure";
 import adminArchisignRenderingRouter from "./admin-archisign-rendering";
 import healthzRouter from "./healthz";
 import designContractsRouter from "./design-contracts";
@@ -100,6 +101,7 @@ export async function registerRoutes(
   app.use(wishListRouter);
   app.use(devisRouter);
   app.use(devisManualSignoffRouter);
+  app.use(devisClosureRouter);
   app.use(acompteRouter);
   app.use(devisChecksRouter);
   app.use(clientChecksRouter);

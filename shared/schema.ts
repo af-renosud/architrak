@@ -56,6 +56,9 @@ export const SIGN_OFF_STAGES = [
 ] as const;
 export type SignOffStage = (typeof SIGN_OFF_STAGES)[number];
 
+export const DEVIS_CLOSURE_STATES = ["open", "closed"] as const;
+export type DevisClosureState = (typeof DEVIS_CLOSURE_STATES)[number];
+
 /**
  * Task #257 — mandatory client-context message bounds for the devis
  * send-to-signer flow. The architect MUST write a contextual message to
@@ -500,6 +503,20 @@ export const devis = pgTable("devis", {
   manualSignoffBy: text("manual_signoff_by"),
   manualSignoffNote: text("manual_signoff_note"),
   manualSignoffExternalRef: text("manual_signoff_external_ref"),
+  // Task #649 — works-completion closure is deliberately separate from
+  // client signature. A devis may only move open → closed through the
+  // dedicated PV-gated endpoint, which stamps both audit fields atomically.
+  // These columns are server-owned and omitted from insertDevisSchema.
+  closureState: text("closure_state").notNull().default("open"),
+  closedAt: timestamp("closed_at", { withTimezone: true }),
+  closedByUserId: integer("closed_by_user_id").references(() => users.id),
+  // Immutable snapshot of the exact marché/PV relationship validated at
+  // closure time. The live devis or marché may be corrected later, but the
+  // legal closure record must retain what was approved at that transition.
+  closureMarcheId: integer("closure_marche_id").references(() => marches.id),
+  closureProjectId: integer("closure_project_id").references(() => projects.id),
+  closureContractorId: integer("closure_contractor_id").references(() => contractors.id),
+  closureReceptionDate: date("closure_reception_date"),
   // Structured devis-code (Task #176). The architect supplies three parts:
   //   1. lotRef    — picked from `lot_catalog` (then `lotCatalogId` is set
   //                   and `lotRefText` mirrors the catalog code) OR typed
@@ -574,6 +591,11 @@ export const devis = pgTable("devis", {
   index("devis_project_id_idx").on(table.projectId),
   index("devis_contractor_id_idx").on(table.contractorId),
   index("devis_archisign_envelope_id_idx").on(table.archisignEnvelopeId),
+  check("devis_closure_state_chk", sql`${table.closureState} IN ('open', 'closed')`),
+  check(
+    "devis_closure_audit_chk",
+    sql`(${table.closureState} = 'open' AND ${table.closedAt} IS NULL AND ${table.closedByUserId} IS NULL AND ${table.closureMarcheId} IS NULL AND ${table.closureProjectId} IS NULL AND ${table.closureContractorId} IS NULL AND ${table.closureReceptionDate} IS NULL) OR (${table.closureState} = 'closed' AND ${table.closedAt} IS NOT NULL AND ${table.closedByUserId} IS NOT NULL AND ${table.closureMarcheId} IS NOT NULL AND ${table.closureProjectId} IS NOT NULL AND ${table.closureContractorId} IS NOT NULL AND ${table.closureReceptionDate} IS NOT NULL)`,
+  ),
   // Partial unique index `devis_project_lot_ref_seq_unique` is intentionally
   // declared ONLY in migrations/0029_devis_structured_lot_code.sql, not here.
   // Drizzle-kit (as of 0.31) misaligns opclasses for indexes that mix plain
@@ -2218,6 +2240,13 @@ export const insertDevisSchema = createInsertSchema(devis).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+  closureState: true,
+  closedAt: true,
+  closedByUserId: true,
+  closureMarcheId: true,
+  closureProjectId: true,
+  closureContractorId: true,
+  closureReceptionDate: true,
 });
 
 export const insertDevisLineItemSchema = createInsertSchema(devisLineItems, {

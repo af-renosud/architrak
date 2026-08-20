@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { useToast } from "@/hooks/use-toast";
 import { useUpload } from "@/hooks/use-upload";
@@ -54,13 +54,15 @@ export function PvReceptionDialog({
   marche,
   projectId,
   disabled,
+  initialOpen = false,
 }: {
   marche: Marche;
   projectId: string;
   disabled?: boolean;
+  initialOpen?: boolean;
 }) {
   const { toast } = useToast();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initialOpen);
   const [receptionDate, setReceptionDate] = useState(marche.receptionDate ?? "");
   const [attestationNote, setAttestationNote] = useState(marche.pvAttestationNote ?? "");
   const [uploaded, setUploaded] = useState<{ storageKey: string; fileName: string } | null>(
@@ -117,6 +119,10 @@ export function PvReceptionDialog({
   const canSaveDraft =
     !approved && receptionDate.length === 10 && (uploaded != null || attestationNote.trim().length > 0);
 
+  useEffect(() => {
+    if (initialOpen) setOpen(true);
+  }, [initialOpen]);
+
   return (
     <>
       <Button
@@ -144,6 +150,9 @@ export function PvReceptionDialog({
             <DialogTitle className="text-[16px] font-black uppercase tracking-tight">
               PV de réception
             </DialogTitle>
+            <DialogDescription>
+              Enregistrez puis approuvez le procès-verbal qui formalise la réception des travaux.
+            </DialogDescription>
           </DialogHeader>
           {approved ? (
             <div className="space-y-2" data-testid="pv-approved-summary">

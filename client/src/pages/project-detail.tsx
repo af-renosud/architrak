@@ -391,6 +391,11 @@ export default function ProjectDetail() {
     return Number.isFinite(n) && n > 0 ? n : null;
   })();
   const deepLinkTab = searchParams.get("tab");
+  const deepLinkPvMarcheId = (() => {
+    const raw = searchParams.get("pvMarche");
+    const n = raw ? Number(raw) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : null;
+  })();
   // `?invoice=<id>` deep-links (from the intake list's "View invoice") land on
   // the Factures tab even without an explicit `?tab=` param.
   const deepLinkInvoiceId = (() => {
@@ -1645,6 +1650,7 @@ export default function ProjectDetail() {
                       {marchesList.map((m) => (
                         <div
                           key={m.id}
+                          id={`marche-${m.id}`}
                           className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] flex items-center justify-between gap-3 flex-wrap"
                           data-testid={`row-marche-${m.id}`}
                         >
@@ -1678,7 +1684,12 @@ export default function ProjectDetail() {
                             <StatusBadge status={m.status} />
                             {/* Task #566 — PV de réception status + record/approve dialog. */}
                             <PvReceptionBadge marche={m} />
-                            <PvReceptionDialog marche={m} projectId={projectId!} disabled={isArchived} />
+                            <PvReceptionDialog
+                              marche={m}
+                              projectId={projectId!}
+                              disabled={isArchived}
+                              initialOpen={deepLinkPvMarcheId === m.id}
+                            />
                           </div>
                         </div>
                     ))}

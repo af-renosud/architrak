@@ -1061,6 +1061,16 @@ router.patch(
     delete patchBody.manualSignoffBy;
     delete patchBody.manualSignoffNote;
     delete patchBody.manualSignoffExternalRef;
+    // Task #649 — closure is a one-way, PV-gated, audited transition owned
+    // exclusively by POST /api/devis/:id/close. Keep all closure columns out
+    // of the generic PATCH even if request validation is relaxed later.
+    delete patchBody.closureState;
+    delete patchBody.closedAt;
+    delete patchBody.closedByUserId;
+    delete patchBody.closureMarcheId;
+    delete patchBody.closureProjectId;
+    delete patchBody.closureContractorId;
+    delete patchBody.closureReceptionDate;
     // When the architect flips `acompteRequired` from false → true on
     // a row whose state was 'none', auto-arm the gate by transitioning
     // to 'pending'. Without this, the gate would silently stay

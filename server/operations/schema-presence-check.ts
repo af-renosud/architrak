@@ -168,6 +168,8 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0099_certificat_transfer_ref", artifact: { kind: "column", table: "certificats", column: "payment_transfer_ref" } },
   { tag: "0100_reassert_fee_event_action_chk", artifact: { kind: "data_only", reason: "re-asserts the architect_fee_invoice_events action CHECK (incl. 'milestone_paid') after production constraint drift; guarded DROP IF EXISTS + re-ADD is idempotent, so safe for self-heal execution", rerunnable: true } },
   { tag: "0101_allow_grouped_milestone_invoice_refs", artifact: { kind: "data_only", reason: "replaces global invoice-reference uniqueness with captured-only uniqueness so manual milestone payments may share one grouped invoice number; guarded index swap is idempotent", rerunnable: true } },
+  { tag: "0102_devis_pv_closure", artifact: { kind: "column", table: "devis", column: "closure_state" } },
+  { tag: "0103_devis_closure_pv_snapshot", artifact: { kind: "column", table: "devis", column: "closure_marche_id" } },
 ];
 
 interface JournalFile {

@@ -715,6 +715,20 @@
       "when": 1787350000000,
       "tag": "0101_allow_grouped_milestone_invoice_refs",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1787360000000,
+      "tag": "0102_devis_pv_closure",
+      "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1787361000000,
+      "tag": "0103_devis_closure_pv_snapshot",
+      "breakpoints": true
     }
   ]
 }
