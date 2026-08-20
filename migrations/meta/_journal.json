@@ -785,6 +785,13 @@
       "when": 1787370000000,
       "tag": "0111_planning_import_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 112,
+      "version": "7",
+      "when": 1787371000000,
+      "tag": "0112_archidoc_supplier_partners",
+      "breakpoints": true
     }
   ]
 }

@@ -19,7 +19,15 @@ type Line = { id?: number; lineNumber: number; description: string; quantity: st
 type Revision = { revision: { id: number; status: "draft" | "reviewed" | "approved" | "superseded"; reference: string; descriptionFr: string; documentDate?: string | null; amountHt: string; amountTtc: string; tvaRatePercent?: string | null; tvaAutoliquidation?: boolean; version: number; contractorId?: number | null; lotId?: number | null; supersedesRevisionId?: number | null; promotedDevisId?: number | null; promotedAt?: string | null; updatedAt: string }; lines: Line[]; source: { sourceKind: "manual" | "pdf_upload"; fileName?: string | null; confidence?: number | null; warnings?: { message?: string; severity?: string }[]; requiresVerification?: boolean; verifiedAt?: string | null; verificationNote?: string | null } | null; contractorName: string | null; lotNumber: string | null };
 type PlanningImport = { id: number; fileName: string; status: "processing" | "succeeded" | "failed" | "stale"; stage: "accepted" | "extracting" | "validating" | "storing" | "saving" | "complete"; revisionId: number | null; errorCode: string | null; errorMessage: string | null; startedAt: string; updatedAt: string; completedAt: string | null };
 type EnvelopeResponse = { envelope: { currency: string } | null; revisions: Revision[]; imports?: PlanningImport[]; totals: { amountHt: string; amountTtc: string; byLot: { lotId: number | null; lotNumber: string | null; description: string; amountHt: string; amountTtc: string; count: number }[] } };
-type Choice = { id: number; name?: string; companyName?: string; lotNumber?: string; descriptionFr?: string };
+type Choice = {
+  id: number;
+  name?: string;
+  companyName?: string;
+  lotNumber?: string;
+  descriptionFr?: string;
+  archidocPartnerType?: string | null;
+  archidocOrphanedAt?: string | Date | null;
+};
 
 const euro = (value: string | number) => Number(value || 0);
 const dateLabel = (value?: string | null) => value ? new Date(value).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" }) : "—";
@@ -265,6 +273,9 @@ function RevisionDialog({ open, item, contractors, lots, pending, onClose, onSub
       lines: populatedLines,
     });
   };
+  const contractorChoices = contractors.filter(
+    (contractor) => contractor.archidocOrphanedAt == null || String(contractor.id) === contractorId,
+  );
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
@@ -282,7 +293,13 @@ function RevisionDialog({ open, item, contractors, lots, pending, onClose, onSub
               <SelectTrigger data-testid="planning-envelope-form-contractor"><SelectValue placeholder="Select contractor" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="__none__">Not assigned</SelectItem>
-                {contractors.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name ?? c.companyName ?? `Contractor ${c.id}`}</SelectItem>)}
+                {contractorChoices.map((c) => (
+                  <SelectItem key={c.id} value={String(c.id)}>
+                    {c.name ?? c.companyName ?? `Contractor ${c.id}`}
+                    {c.archidocPartnerType === "supplier" ? " — Supplier" : ""}
+                    {c.archidocOrphanedAt != null ? " — No longer active" : ""}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>

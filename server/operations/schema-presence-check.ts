@@ -193,6 +193,18 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
       ],
     },
   },
+  {
+    tag: "0112_archidoc_supplier_partners",
+    artifact: {
+      kind: "all",
+      artifacts: [
+        { kind: "column", table: "archidoc_contractors", column: "partner_type" },
+        { kind: "constraint", table: "archidoc_contractors", constraint: "archidoc_contractors_partner_type_chk" },
+        { kind: "column", table: "contractors", column: "archidoc_partner_type" },
+        { kind: "constraint", table: "contractors", constraint: "contractors_archidoc_partner_type_chk" },
+      ],
+    },
+  },
 ];
 
 interface JournalFile {
@@ -388,6 +400,7 @@ export async function assertSchemaMatchesTracker(
   // hard-abort (any "tracker forward, schema behind" entries).
   const trackerBehindEntries: Array<{ tag: string; artifact: ArtifactKind }> = [];
   const trackerForwardEntries: Array<{ tag: string; artifact: ArtifactKind; when: number }> = [];
+  const pendingSchemaEntries: Array<{ tag: string; artifact: ArtifactKind }> = [];
 
   for (const entry of journal.entries) {
     const artifact = MIGRATION_ARTIFACTS.find((m) => m.tag === entry.tag)!.artifact;
@@ -400,6 +413,8 @@ export async function assertSchemaMatchesTracker(
       trackerForwardEntries.push({ tag: entry.tag, artifact, when: entry.when });
     } else if (!trackerSaysApplied && present) {
       trackerBehindEntries.push({ tag: entry.tag, artifact });
+    } else if (!trackerSaysApplied && !present) {
+      pendingSchemaEntries.push({ tag: entry.tag, artifact });
     }
   }
 
@@ -432,6 +447,13 @@ export async function assertSchemaMatchesTracker(
   // direction of drift remains, abort.
   if (trackerBehindEntries.length > 0) {
     const tags = trackerBehindEntries.map((e) => e.tag).join(", ");
+    if (pendingSchemaEntries.length > 0) {
+      const pendingTags = pendingSchemaEntries.map((e) => e.tag).join(", ");
+      console.warn(
+        `[migrate] tracker-behind artifacts detected (${tags}), but unapplied schema migration(s) remain (${pendingTags}); deferring tracker repair to ordered migration replay.`,
+      );
+      return;
+    }
     console.warn(
       `[migrate] tracker-behind drift detected for ${trackerBehindEntries.length} migration(s) (${tags}); attempting self-heal via reconcileTracker.`,
     );

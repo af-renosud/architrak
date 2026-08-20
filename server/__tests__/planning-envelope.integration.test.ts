@@ -57,6 +57,7 @@ let archivedProjectId: number;
 let archiveAfterApprovalProjectId: number;
 let archiveAfterPromotionProjectId: number;
 let contractorId: number;
+let supplierContractorId: number;
 let lotId: number;
 let otherLotId: number;
 let userId: number;
@@ -74,6 +75,16 @@ beforeAll(async () => {
     .values({ name: `Planning Contractor ${stamp}` })
     .returning();
   contractorId = ctr.id;
+
+  const [supplier] = await db
+    .insert(contractors)
+    .values({
+      name: `Planning Supplier ${stamp}`,
+      archidocId: `planning-supplier-${stamp}`,
+      archidocPartnerType: "supplier",
+    })
+    .returning();
+  supplierContractorId = supplier.id;
 
   const projs = await db
     .insert(projects)
@@ -113,7 +124,7 @@ afterAll(async () => {
     archiveAfterApprovalProjectId,
     archiveAfterPromotionProjectId,
   ]));
-  await db.delete(contractors).where(eq(contractors.id, contractorId));
+  await db.delete(contractors).where(inArray(contractors.id, [contractorId, supplierContractorId]));
   await db.delete(users).where(eq(users.id, userId));
 });
 
@@ -1498,6 +1509,49 @@ describe("review validation", () => {
       expectedVersion: detail.revision.version,
     });
     expect(reviewed.revision.status).toBe("reviewed");
+  });
+});
+
+describe("ArchiDoc supplier assignment", () => {
+  it("allows an active supplier to be selected and reviewed", async () => {
+    const detail = await createReviewableRevision({
+      contractorId: supplierContractorId,
+      reference: `SUPPLIER-${stamp}`,
+      descriptionFr: "Planning materials allowance",
+    });
+
+    const reviewed = await reviewRevision({
+      revisionId: detail.revision.id,
+      projectId,
+      actor,
+      expectedVersion: detail.revision.version,
+    });
+
+    expect(reviewed.revision.status).toBe("reviewed");
+    expect(reviewed.revision.contractorId).toBe(supplierContractorId);
+  });
+
+  it("rejects an orphaned ArchiDoc partner for a new assignment", async () => {
+    const [orphaned] = await db
+      .insert(contractors)
+      .values({
+        name: `Orphaned Supplier ${stamp}`,
+        archidocId: `orphaned-supplier-${stamp}`,
+        archidocPartnerType: "supplier",
+        archidocOrphanedAt: new Date(),
+      })
+      .returning();
+
+    try {
+      await expect(
+        createReviewableRevision({
+          contractorId: orphaned.id,
+          reference: `ORPHANED-${stamp}`,
+        }),
+      ).rejects.toMatchObject({ code: "CONTRACTOR_ARCHIDOC_ORPHANED" });
+    } finally {
+      await db.delete(contractors).where(eq(contractors.id, orphaned.id));
+    }
   });
 });
 

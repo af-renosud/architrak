@@ -237,6 +237,7 @@ export const contractors = pgTable("contractors", {
   bankingVerifiedAt: timestamp("banking_verified_at"),
   bankingVerifiedBy: text("banking_verified_by"),
   bankingAiExtractedData: jsonb("banking_ai_extracted_data"),
+  archidocPartnerType: varchar("archidoc_partner_type", { length: 32 }),
   archidocOrphanedAt: timestamp("archidoc_orphaned_at"),
   // Task #463 — contractor-level default TVA regime, used when the marché
   // carries no contract-specific rate. NULL rate = standard 20%. NOT part
@@ -247,6 +248,7 @@ export const contractors = pgTable("contractors", {
 }, (table) => [
   unique("contractors_archidoc_id_unique").on(table.archidocId),
   check("contractors_siret_format", sql`${table.siret} IS NULL OR ${table.siret} ~ '^[0-9]{14}$'`),
+  check("contractors_archidoc_partner_type_chk", sql`${table.archidocPartnerType} IS NULL OR ${table.archidocPartnerType} IN ('contractor', 'supplier')`),
 ]);
 
 export const lotCatalog = pgTable("lot_catalog", {
@@ -1319,6 +1321,7 @@ export const archidocProjects = pgTable("archidoc_projects", {
 
 export const archidocContractors = pgTable("archidoc_contractors", {
   archidocId: varchar("archidoc_id", { length: 255 }).primaryKey(),
+  partnerType: varchar("partner_type", { length: 32 }).notNull().default("contractor"),
   name: text("name").notNull(),
   siret: text("siret"),
   address1: text("address1"),
@@ -1354,6 +1357,7 @@ export const archidocContractors = pgTable("archidoc_contractors", {
   syncedAt: timestamp("synced_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   check("archidoc_contractors_siret_format", sql`${table.siret} IS NULL OR ${table.siret} ~ '^[0-9]{14}$'`),
+  check("archidoc_contractors_partner_type_chk", sql`${table.partnerType} IN ('contractor', 'supplier')`),
   index("archidoc_contractors_is_deleted_idx").on(table.isDeleted),
 ]);
 
@@ -2146,6 +2150,7 @@ export const insertProjectSchema = createInsertSchema(projects).omit({
 export const insertContractorSchema = createInsertSchema(contractors).omit({
   id: true,
   createdAt: true,
+  archidocPartnerType: true,
   archidocOrphanedAt: true,
 }).extend({
   siret: z

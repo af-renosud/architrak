@@ -12,10 +12,12 @@ import {
   isArchidocConfigured,
   fetchProjects,
   fetchContractors,
+  fetchSuppliers,
   fetchTrades,
   fetchProposalFees,
   type ArchidocProjectData,
   type ArchidocContractorData,
+  type ArchidocSupplierData,
   type ArchidocTradeData,
 } from "./sync-client";
 import { normalizeSiret } from "../gmail/document-parser";
@@ -269,6 +271,7 @@ export async function upsertContractor(
       : null;
   const values = {
     archidocId: c.id,
+    partnerType: c.partnerType ?? "contractor",
     name: c.name,
     siret: normalisedSiret,
     address1: c.address1 || null,
@@ -330,6 +333,43 @@ export async function upsertContractor(
   }
 
   return { siretIssue };
+}
+
+export function mapSupplierToContractorData(
+  supplier: ArchidocSupplierData,
+): ArchidocContractorData {
+  const contactName = supplier.contactName ?? supplier.contact;
+  const email = supplier.email ?? supplier.contactEmail;
+  const phone = supplier.phone ?? supplier.contactPhone;
+  const hasContact =
+    Boolean(contactName?.trim())
+    || Boolean(email?.trim())
+    || Boolean(phone?.trim());
+
+  return {
+    id: supplier.id,
+    name: supplier.name,
+    partnerType: "supplier",
+    officePhone: phone,
+    website: supplier.website,
+    specialConditions: supplier.description ?? supplier.notes,
+    contacts: hasContact
+      ? [{
+          name: contactName?.trim() || supplier.name,
+          email,
+          mobile: phone,
+          isPrimary: true,
+        }]
+      : [],
+    updatedAt: supplier.updatedAt,
+  };
+}
+
+export function isEligibleSupplier(supplier: ArchidocSupplierData): boolean {
+  // The current authenticated feed contains active supplier partners only and
+  // omits this flag. Older ArchiDoc supplier contracts expose isActive, so an
+  // explicit false must still be treated as removed from the live mirror.
+  return supplier.isActive !== false;
 }
 
 export async function upsertTrade(t: ArchidocTradeData) {
@@ -656,12 +696,35 @@ export async function syncContractors(incremental = true): Promise<{ updated: nu
       if (last) since = last.toISOString();
     }
 
-    const response = await fetchContractors(since);
+    const [response, suppliers] = await Promise.all([
+      fetchContractors(since),
+      // ArchiDoc classifies supplier partners structurally by exposing them
+      // from a dedicated authenticated feed. The feed is intentionally read
+      // in full even during incremental syncs because it has no `since`
+      // contract and is currently small.
+      fetchSuppliers(),
+    ]);
+    const partnersById = new Map<string, ArchidocContractorData>();
+    for (const contractor of response.contractors) {
+      partnersById.set(contractor.id, { ...contractor, partnerType: "contractor" });
+    }
+    for (const supplier of suppliers.filter(isEligibleSupplier)) {
+      const mapped = mapSupplierToContractorData(supplier);
+      const existing = partnersById.get(supplier.id);
+      // If ArchiDoc ever exposes the same stable partner through both feeds,
+      // keep the richer contractor fields but preserve the authoritative
+      // supplier classification.
+      partnersById.set(
+        supplier.id,
+        existing ? { ...mapped, ...existing, partnerType: "supplier" } : mapped,
+      );
+    }
+
     let count = 0;
     const issues: MirrorSiretIssue[] = [];
     const cleared: string[] = [];
     const seenIds: string[] = [];
-    for (const contractor of response.contractors) {
+    for (const contractor of Array.from(partnersById.values())) {
       const { siretIssue } = await upsertContractor(contractor);
       if (siretIssue) {
         issues.push(siretIssue);

@@ -378,7 +378,8 @@ router.post(
       const lotWarnings = await checkLotReferencesAgainstCatalog(parsed);
       const corrected = { ...parsed, ...validation.correctedValues };
       const allProjects = await storage.getProjects({ includeArchived: true });
-      const allContractors = await storage.getContractors();
+      const allContractors = (await storage.getContractors())
+        .filter((contractor) => contractor.archidocOrphanedAt == null);
       const match = await matchToProject(parsed, allProjects, allContractors);
       const allWarnings = [...validation.warnings, ...lotWarnings, ...match.warnings];
 

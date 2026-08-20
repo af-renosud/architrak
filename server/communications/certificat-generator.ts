@@ -1788,6 +1788,7 @@ export async function buildCertificatPreviewHtml(opts?: { isAcompte?: boolean })
     phone: "04 67 00 00 00",
     notes: null,
     archidocId: null,
+    archidocPartnerType: null,
     contactName: "Jean DUPONT",
     contactJobTitle: "Gérant",
     contactMobile: "06 12 34 56 78",

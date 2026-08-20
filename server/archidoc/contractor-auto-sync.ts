@@ -28,7 +28,9 @@ function pickContactFields(mirror: ArchidocContractor) {
   };
 }
 
-function buildSyncedFields(mirror: ArchidocContractor): Omit<InsertContractor, "notes"> {
+function buildSyncedFields(
+  mirror: ArchidocContractor,
+): Omit<InsertContractor, "notes"> & { archidocPartnerType: string } {
   const contact = pickContactFields(mirror);
   return {
     name: mirror.name,
@@ -37,6 +39,7 @@ function buildSyncedFields(mirror: ArchidocContractor): Omit<InsertContractor, "
     email: contact.email,
     phone: contact.phone,
     archidocId: mirror.archidocId,
+    archidocPartnerType: mirror.partnerType,
     contactName: contact.contactName,
     contactJobTitle: contact.contactJobTitle,
     contactMobile: contact.contactMobile,

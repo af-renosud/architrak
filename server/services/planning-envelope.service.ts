@@ -60,6 +60,7 @@ export type PlanningEnvelopeErrorCode =
   | "PROJECT_NOT_FOUND"
   | "PROJECT_ARCHIVED"
   | "CONTRACTOR_NOT_FOUND"
+  | "CONTRACTOR_ARCHIDOC_ORPHANED"
   | "LOT_NOT_FOUND"
   | "STORAGE_KEY_MISSING"
   | "IMPORT_JOB_NOT_FOUND"
@@ -673,11 +674,25 @@ async function validateContractorForProject(
   contractorId: number | null | undefined,
   _projectId: number,
   tx: TxClient,
+  options: { allowOrphaned?: boolean } = {},
 ): Promise<void> {
   if (!contractorId) return;
-  const [row] = await tx.select({ id: contractors.id }).from(contractors).where(eq(contractors.id, contractorId));
+  const [row] = await tx
+    .select({
+      id: contractors.id,
+      archidocOrphanedAt: contractors.archidocOrphanedAt,
+    })
+    .from(contractors)
+    .where(eq(contractors.id, contractorId));
   if (!row) {
     throw new PlanningEnvelopeError(404, "CONTRACTOR_NOT_FOUND", `Contractor ${contractorId} not found`);
+  }
+  if (row.archidocOrphanedAt && !options.allowOrphaned) {
+    throw new PlanningEnvelopeError(
+      422,
+      "CONTRACTOR_ARCHIDOC_ORPHANED",
+      `Contractor ${contractorId} is no longer active in ArchiDoc`,
+    );
   }
 }
 
@@ -1100,7 +1115,9 @@ export async function patchRevision(input: PatchRevisionInput): Promise<Revision
 
     // Validate cross-project lot
     await validateLotForProject(input.lotId, input.projectId, tx);
-    await validateContractorForProject(input.contractorId, input.projectId, tx);
+    await validateContractorForProject(input.contractorId, input.projectId, tx, {
+      allowOrphaned: input.contractorId === current.contractorId,
+    });
 
     // ANY patch of a reviewed revision is material and regresses to draft
     // (reference, description, date, lines — all can affect the approved snapshot)
@@ -1229,7 +1246,9 @@ export async function reviewRevision(input: ReviewRevisionInput): Promise<Revisi
     validatePositiveAmounts({ amountHt: current.amountHt, amountTtc: current.amountTtc });
 
     // Validate cross-project lot (belt-and-suspenders)
-    await validateContractorForProject(current.contractorId, input.projectId, tx);
+    await validateContractorForProject(current.contractorId, input.projectId, tx, {
+      allowOrphaned: true,
+    });
     await validateLotForProject(current.lotId, input.projectId, tx);
 
     // Check source requirements (verification gate for PDF with low confidence / blocking warnings)

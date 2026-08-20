@@ -57,6 +57,7 @@ export interface ArchidocProjectData {
 export interface ArchidocContractorData {
   id: string;
   name: string;
+  partnerType?: "contractor" | "supplier";
   siret?: string;
   address1?: string;
   address2?: string;
@@ -104,6 +105,25 @@ export interface ArchidocContractorData {
     bankingVerifiedBy?: string;
     bankingAiExtractedData?: unknown;
   };
+  updatedAt?: string;
+}
+
+export interface ArchidocSupplierData {
+  id: string;
+  name: string;
+  isActive?: boolean;
+  contactName?: string;
+  contact?: string;
+  email?: string;
+  contactEmail?: string;
+  phone?: string;
+  contactPhone?: string;
+  website?: string;
+  description?: string;
+  notes?: string;
+  specialty?: string;
+  catalogUrl?: string;
+  tags?: string[];
   updatedAt?: string;
 }
 
@@ -159,6 +179,10 @@ export async function fetchContractors(since?: string): Promise<{ contractors: A
   const params: Record<string, string> = {};
   if (since) params.since = since;
   return archidocFetch<ContractorsResponse>("/api/sync/contractors", params);
+}
+
+export async function fetchSuppliers(): Promise<ArchidocSupplierData[]> {
+  return archidocFetch<ArchidocSupplierData[]>("/api/suppliers");
 }
 
 export async function fetchTrades(): Promise<{ trades: ArchidocTradeData[]; syncTimestamp: string }> {

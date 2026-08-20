@@ -231,7 +231,10 @@ describe.skipIf(skipModule !== null)("schema-presence check (Task #136)", () => 
     if (!entry) throw new Error("0111 missing from journal");
 
     await ctx.replayPool.query(
-      `DELETE FROM drizzle.__drizzle_migrations WHERE created_at = $1`,
+      // Drizzle migration history is an ordered prefix. Remove 0111 and every
+      // later tracker row so replay can restore the missing 0111 artifact and
+      // then safely re-apply any newer idempotent migrations.
+      `DELETE FROM drizzle.__drizzle_migrations WHERE created_at >= $1`,
       [entry.when],
     );
     await ctx.replayPool.query(
@@ -277,6 +280,10 @@ describe.skipIf(skipModule !== null)("schema-presence check (Task #136)", () => 
         [entry.when],
       );
       expect(afterReplay.rows[0].n).toBe(1);
+      const totalAfterReplay = await ctx.replayPool.query(
+        `SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations`,
+      );
+      expect(totalAfterReplay.rows[0].n).toBe(journal.entries.length);
     } finally {
       const trigger = await ctx.replayPool.query(
         `SELECT count(*)::int AS n

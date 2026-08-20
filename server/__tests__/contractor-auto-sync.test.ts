@@ -180,6 +180,7 @@ import { runContractorAutoSync, CONTRACTOR_AUTO_SYNC_TYPE } from "../archidoc/co
 function makeMirror(overrides: Partial<ArchidocContractor> = {}): ArchidocContractor {
   return {
     archidocId: "ad-1",
+    partnerType: "contractor",
     name: "ACME BTP",
     siret: "12345678900012",
     address1: "1 rue de Paris",
@@ -253,6 +254,31 @@ describe("runContractorAutoSync", () => {
       recordsUpdated: 1,
     });
     expect(state.syncLog[0].errorMessage ?? null).toBeNull();
+  });
+
+  it("promotes suppliers with their classification and stays idempotent", async () => {
+    state.archidocContractors = [
+      makeMirror({
+        archidocId: "supplier-1",
+        partnerType: "supplier",
+        name: "Planning Materials",
+        siret: null,
+        contacts: [{ name: "Planning Materials", email: "supplier@example.test", isPrimary: true }],
+      }),
+    ];
+
+    const first = await runContractorAutoSync({ incremental: false });
+    const second = await runContractorAutoSync({ incremental: false });
+
+    expect(first).toMatchObject({ created: 1, updated: 0, skipped: 0 });
+    expect(second).toMatchObject({ created: 0, updated: 1, skipped: 0 });
+    expect(state.contractors).toHaveLength(1);
+    expect(state.contractors[0]).toMatchObject({
+      archidocId: "supplier-1",
+      archidocPartnerType: "supplier",
+      name: "Planning Materials",
+      email: "supplier@example.test",
+    });
   });
 
   it("preserves local notes when updating an existing linked contractor", async () => {
