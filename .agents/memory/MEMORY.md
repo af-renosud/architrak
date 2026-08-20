@@ -40,3 +40,4 @@
 - [Restore via cp, not git checkout](restore-via-cp-not-git-checkout.md) — `git checkout --` reverts to the last platform commit and silently wipes uncommitted session edits; snapshot with cp before temporary file mutations.
 - [Legal closure provenance](legal-closure-provenance.md) — legal close transitions lock the exact prerequisite record and persist an immutable relationship snapshot; live links may change later.
 - [Cross-domain promotion provenance](cross-domain-promotion-provenance.md) — attach origins after frozen children; validate immediately and require reciprocal links at deferred commit.
+- [Planning quantity precision](planning-quantity-precision.md) — quantity is numeric(12,3), not money; validate its scale separately so PDF/database-formatted values such as 1.000 round-trip.

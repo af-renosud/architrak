@@ -725,6 +725,44 @@ describe("POST /api/planning-revisions/:id/promote", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("line schema validation", () => {
+  it("accepts a three-decimal quantity when creating a revision", async () => {
+    mockGetProject.mockResolvedValue(FAKE_PROJECT);
+    mockCreateManual.mockResolvedValue(FAKE_DETAIL);
+    const res = await fetch(`${baseUrl}/api/projects/1/planning-envelope/revisions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({
+        amountHt: "1000.00",
+        amountTtc: "1200.00",
+        lines: [{ lineNumber: 1, description: "Imported line", totalHt: "1000.00", quantity: "1.000" }],
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(mockCreateManual).toHaveBeenCalledWith(expect.objectContaining({
+      lines: [expect.objectContaining({ quantity: "1.000" })],
+    }));
+  });
+
+  it("accepts a database-formatted three-decimal quantity when editing a revision", async () => {
+    mockGetRevisionById.mockResolvedValue(FAKE_DETAIL);
+    mockGetEnvelopeById.mockResolvedValue(FAKE_ENVELOPE);
+    mockPatch.mockResolvedValue(FAKE_DETAIL);
+    const res = await fetch(`${baseUrl}/api/planning-revisions/5`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({
+        expectedVersion: 1,
+        lines: [{ lineNumber: 1, description: "Imported line", totalHt: "1000.00", quantity: "2.000" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockPatch).toHaveBeenCalledWith(expect.objectContaining({
+      lines: [expect.objectContaining({ quantity: "2.000" })],
+    }));
+  });
+
   it("rejects negative totalHt in a line", async () => {
     mockGetProject.mockResolvedValue(FAKE_PROJECT);
     const res = await fetch(`${baseUrl}/api/projects/1/planning-envelope/revisions`, {
@@ -762,6 +800,34 @@ describe("line schema validation", () => {
         amountHt: "1000.00",
         amountTtc: "1200.00",
         lines: [{ lineNumber: 1, description: "Line", totalHt: "100.00", quantity: "-5.00" }],
+      }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it.each(["1.0000", "1e3", ".500"])("rejects malformed or over-precision quantity %s", async (quantity) => {
+    mockGetProject.mockResolvedValue(FAKE_PROJECT);
+    const res = await fetch(`${baseUrl}/api/projects/1/planning-envelope/revisions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({
+        amountHt: "1000.00",
+        amountTtc: "1200.00",
+        lines: [{ lineNumber: 1, description: "Line", totalHt: "100.00", quantity }],
+      }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("keeps monetary values limited to two decimal places", async () => {
+    mockGetProject.mockResolvedValue(FAKE_PROJECT);
+    const res = await fetch(`${baseUrl}/api/projects/1/planning-envelope/revisions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({
+        amountHt: "1000.00",
+        amountTtc: "1200.00",
+        lines: [{ lineNumber: 1, description: "Line", totalHt: "100.001", quantity: "1.000" }],
       }),
     });
     expect(res.status).toBe(400);

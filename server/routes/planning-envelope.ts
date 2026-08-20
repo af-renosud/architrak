@@ -72,13 +72,19 @@ const revisionIdParams = z.object({ id: z.coerce.number().int().positive() });
 
 // Strict decimal string: non-negative, up to 2 decimal places
 const decimalNonNeg = z.string().regex(/^\d+(\.\d{1,2})?$/, "must be a non-negative decimal string");
+// Quantities are stored as numeric(12,3), so preserve database-formatted values
+// such as "1.000" without relaxing the two-decimal rule for money.
+const quantityNonNeg = z.string().regex(
+  /^\d+(\.\d{1,3})?$/,
+  "must be a non-negative decimal string with up to 3 decimal places",
+);
 // Strict decimal string: strict positive
 const decimalPos = z.string().regex(/^(?!0+(\.0+)?$)\d+(\.\d{1,2})?$/, "must be a positive decimal string");
 
 const lineSchema = z.object({
   lineNumber: z.number().int().positive(),
   description: z.string().min(1).max(2000),
-  quantity: decimalNonNeg.nullable().optional(),
+  quantity: quantityNonNeg.nullable().optional(),
   unit: z.string().max(50).nullable().optional(),
   unitPriceHt: decimalNonNeg.nullable().optional(),
   totalHt: decimalNonNeg,
