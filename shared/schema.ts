@@ -3477,8 +3477,9 @@ export type ArchidocLinkLookupMiss = typeof archidocLinkLookupMisses.$inferSelec
  * Guardrails:
  *  - unique source pointers (emailDocumentId / intakeDocumentId) — the same
  *    caught document can never spawn two evidence rows;
- *  - unique normalized invoice ref among non-dismissed rows (partial index
- *    in migration 0068) — business-ref dedup across re-catches;
+ *  - unique normalized invoice ref among non-manual, non-dismissed rows —
+ *    business-ref dedup across re-catches while manual milestone payments
+ *    may intentionally share one grouped invoice number;
  *  - projectId/milestoneId/feeEntryId stay NULL until human confirmation;
  *    `candidates` only carries ranked SUGGESTIONS;
  *  - `extractionSnapshot` is the immutable parsed payload for audit.
@@ -3524,7 +3525,10 @@ export const architectFeeInvoices = pgTable("architect_fee_invoices", {
 }, (table) => [
   uniqueIndex("architect_fee_invoices_email_doc_unique").on(table.emailDocumentId).where(sql`${table.emailDocumentId} IS NOT NULL`),
   uniqueIndex("architect_fee_invoices_intake_doc_unique").on(table.intakeDocumentId).where(sql`${table.intakeDocumentId} IS NOT NULL`),
-  uniqueIndex("architect_fee_invoices_ref_unique")
+  uniqueIndex("architect_fee_invoices_captured_ref_unique")
+    .on(table.invoiceNumberNormalized)
+    .where(sql`${table.invoiceNumberNormalized} IS NOT NULL AND ${table.status} <> 'dismissed' AND ${table.source} <> 'manual'`),
+  index("architect_fee_invoices_ref_idx")
     .on(table.invoiceNumberNormalized)
     .where(sql`${table.invoiceNumberNormalized} IS NOT NULL AND ${table.status} <> 'dismissed'`),
   index("architect_fee_invoices_status_idx").on(table.status),

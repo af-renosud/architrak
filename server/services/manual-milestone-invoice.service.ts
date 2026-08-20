@@ -1,4 +1,4 @@
-import { and, eq, inArray, ne, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   architectFeeInvoiceEvents,
@@ -73,26 +73,12 @@ async function persistManualMilestoneInvoice(args: {
     };
   }
 
-  try {
-    return await db.transaction(async (tx): Promise<ManualMilestoneInvoiceOutcome> => {
-      // Serialise two manual recordings of the same normalized reference even
-      // when neither transaction can see a row yet. The partial UNIQUE index on
-      // architect_fee_invoices remains the final database-level guard.
+  return db.transaction(async (tx): Promise<ManualMilestoneInvoiceOutcome> => {
+      // Grouped invoices may intentionally reuse this normalized reference,
+      // but their writes still need to run one-at-a-time. In particular, two
+      // first invoice recordings for the same project must not both observe
+      // that the shared conception-fee parent is absent and create duplicates.
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"milestone-invoice:" + refNorm}))`);
-
-      // Match the caught-invoice confirmation lock order: evidence/ref first,
-      // milestone second, fee entries last. This prevents a manual record from
-      // deadlocking with a Gmail confirmation for the same invoice.
-      const matchingEvidence = await tx
-        .select()
-        .from(architectFeeInvoices)
-        .where(
-          and(
-            eq(architectFeeInvoices.invoiceNumberNormalized, refNorm),
-            ne(architectFeeInvoices.status, "dismissed"),
-          ),
-        )
-        .for("update");
 
       const [milestone] = await tx
         .select()
@@ -156,15 +142,6 @@ async function persistManualMilestoneInvoice(args: {
       }
       const existingEvidence = milestoneEvidence[0];
 
-      const conflictingEvidence = matchingEvidence.find((row) => row.id !== existingEvidence?.id);
-      if (conflictingEvidence) {
-        return {
-          ok: false,
-          status: 409,
-          code: "DUPLICATE_INVOICE_NUMBER",
-          message: `La facture ${invoiceNumber} est déjà enregistrée sur un autre jalon ou projet.`,
-        };
-      }
       if (
         existingEvidence?.invoiceNumberNormalized &&
         existingEvidence.invoiceNumberNormalized !== refNorm
@@ -191,7 +168,6 @@ async function persistManualMilestoneInvoice(args: {
             .for("update")
         : [];
 
-      const bearingEntries = await lockEntriesBearingRef(tx, refNorm);
       let target = existingEvidence?.feeEntryId != null
         ? projectEntries.find((entry) => entry.id === existingEvidence.feeEntryId)
         : undefined;
@@ -207,32 +183,41 @@ async function persistManualMilestoneInvoice(args: {
         };
       }
 
-      const foreignBearing = bearingEntries.find(
-        (entry) => !projectEntries.some((projectEntry) => projectEntry.id === entry.id),
-      );
-      if (foreignBearing) {
-        return {
-          ok: false,
-          status: 409,
-          code: "DUPLICATE_INVOICE_NUMBER",
-          message: `La facture ${invoiceNumber} est déjà portée par une écriture d'un autre projet.`,
-        };
-      }
-
       if (!target) {
-        const localMatches = bearingEntries.filter((entry) =>
-          projectEntries.some((projectEntry) => projectEntry.id === entry.id),
+        const localMatches = projectEntries.filter((entry) => {
+          const entryNorm =
+            normalizeInvoiceRef(entry.pennylaneInvoiceNumber) ??
+            normalizeInvoiceRef(entry.pennylaneInvoiceRef);
+          return entryNorm === refNorm;
+        });
+        const boundMatches = localMatches.length
+          ? await tx
+              .select({ feeEntryId: architectFeeInvoices.feeEntryId })
+              .from(architectFeeInvoices)
+              .where(
+                and(
+                  inArray(architectFeeInvoices.feeEntryId, localMatches.map((entry) => entry.id)),
+                  eq(architectFeeInvoices.status, "confirmed"),
+                ),
+              )
+              .for("update")
+          : [];
+        const boundEntryIds = new Set(
+          boundMatches
+            .map((row) => row.feeEntryId)
+            .filter((id): id is number => id != null),
         );
-        if (localMatches.length > 1) {
+        const availableMatches = localMatches.filter((entry) => !boundEntryIds.has(entry.id));
+        if (availableMatches.length > 1) {
           return {
             ok: false,
             status: 409,
             code: "INVOICE_ENTRY_AMBIGUOUS",
-            message: `Plusieurs écritures portent déjà la référence ${invoiceNumber}.`,
+            message: `Plusieurs écritures disponibles portent déjà la référence ${invoiceNumber}.`,
           };
         }
-        if (localMatches.length === 1) {
-          target = localMatches[0];
+        if (availableMatches.length === 1) {
+          target = availableMatches[0];
           reconciliation = "attached_by_ref";
         }
       }
@@ -433,18 +418,7 @@ async function persistManualMilestoneInvoice(args: {
       }
 
       return { ok: true, milestone: updated[0], evidence, feeEntryId: target.id, reconciliation };
-    });
-  } catch (error) {
-    if (isNormalizedRefUniqueViolation(error)) {
-      return {
-        ok: false,
-        status: 409,
-        code: "DUPLICATE_INVOICE_NUMBER",
-        message: `La facture ${invoiceNumber} est déjà enregistrée sur un autre jalon ou projet.`,
-      };
-    }
-    throw error;
-  }
+  });
 }
 
 function resolveHtFactor(contract: typeof designContracts.$inferSelect): number | null {
@@ -472,18 +446,6 @@ function mergeNotes(existing: string | null, incoming?: string | null): string |
   return `${existing}\n${next}`;
 }
 
-function lockEntriesBearingRef(tx: Tx, refNorm: string): Promise<FeeEntry[]> {
-  const norm = (col: unknown): SQL =>
-    sql`lower(regexp_replace(coalesce(${col}, ''), '[^a-zA-Z0-9]', '', 'g'))`;
-  return tx
-    .select()
-    .from(feeEntries)
-    .where(
-      sql`(${norm(feeEntries.pennylaneInvoiceNumber)} = ${refNorm} OR ${norm(feeEntries.pennylaneInvoiceRef)} = ${refNorm})`,
-    )
-    .for("update");
-}
-
 async function dismissOpenSuggestions(tx: Tx, milestoneId: number, actor: string | null): Promise<void> {
   await tx
     .update(milestonePaymentSuggestions)
@@ -498,20 +460,4 @@ async function dismissOpenSuggestions(tx: Tx, milestoneId: number, actor: string
         inArray(milestonePaymentSuggestions.status, ["pending_review", "ambiguous"]),
       ),
     );
-}
-
-function isNormalizedRefUniqueViolation(error: unknown): boolean {
-  let current: unknown = error;
-  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth++) {
-    const record = current as { code?: unknown; constraint?: unknown; cause?: unknown };
-    if (
-      record.code === "23505" &&
-      (record.constraint === "architect_fee_invoices_ref_unique" ||
-        record.constraint === "fee_entries_pennylane_invoice_unique")
-    ) {
-      return true;
-    }
-    current = record.cause;
-  }
-  return false;
 }

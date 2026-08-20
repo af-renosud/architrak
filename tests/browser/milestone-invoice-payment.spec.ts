@@ -77,7 +77,7 @@ test.describe("staged design milestone payments", () => {
          VALUES
            ($1, 1, 'Dossier ouvert', 25.00, '2700.00', 'manual', 'pending', NULL, NULL),
            ($1, 2, 'Jalon historique', 25.00, '2700.00', 'manual', 'paid', NOW(), '2025-12-22'),
-           ($1, 3, 'Garde de doublon', 25.00, '2700.00', 'manual', 'reached', NOW(), NULL),
+            ($1, 3, 'Facture groupée', 25.00, '2700.00', 'manual', 'reached', NOW(), NULL),
            ($1, 4, 'Paiement concurrent', 25.00, '2700.00', 'manual', 'reached', NOW(), NULL)
          RETURNING id, sequence`,
         [contractId],
@@ -166,23 +166,33 @@ test.describe("staged design milestone payments", () => {
         historicalInvoiceNumber,
       );
 
-      // Normalized references are global, so formatting differences cannot
-      // attach the same invoice to another milestone.
-      const duplicateResponse = await api.post(
-        `/api/design-contracts/milestones/${duplicateId}/invoice`,
-        {
-          data: {
-            invoiceNumber: invoiceNumber.toLowerCase().replaceAll("-", " "),
-            invoiceDate: "2026-08-19",
-          },
-        },
+      // One grouped invoice may cover several milestone payments. Recording
+      // the same normalized number creates a distinct fee entry for this
+      // milestone instead of rejecting or reusing the first payment's entry.
+      const groupedInvoiceNumber = invoiceNumber.toLowerCase().replaceAll("-", " ");
+      await page.getByTestId(`button-record-invoice-${duplicateId}`).click();
+      await expect(page.getByTestId("dialog-record-invoice")).toBeVisible();
+      await page.getByTestId("input-invoice-number").fill(groupedInvoiceNumber);
+      await page.getByTestId("input-invoice-date").fill("2026-08-19");
+      await page.getByTestId("button-submit-record-invoice").click();
+      await expect(page.getByTestId("dialog-record-invoice")).toHaveCount(0);
+      await expect(page.getByTestId(`badge-milestone-status-${duplicateId}`)).toHaveText(
+        "Invoiced",
       );
-      expect(duplicateResponse.status()).toBe(409);
-      const { rows: duplicateRows } = await db.query(
-        "SELECT status FROM design_contract_milestones WHERE id = $1",
-        [duplicateId],
+      await expect(
+        page.getByTestId(`text-milestone-invoice-number-${duplicateId}`),
+      ).toContainText(groupedInvoiceNumber);
+
+      const { rows: groupedRows } = await db.query(
+        `SELECT milestone_id, fee_entry_id, invoice_number_normalized
+           FROM architect_fee_invoices
+          WHERE milestone_id IN ($1, $2)
+          ORDER BY milestone_id`,
+        [primaryId, duplicateId],
       );
-      expect(duplicateRows[0].status).toBe("reached");
+      expect(groupedRows).toHaveLength(2);
+      expect(new Set(groupedRows.map((row) => row.fee_entry_id)).size).toBe(2);
+      expect(new Set(groupedRows.map((row) => row.invoice_number_normalized)).size).toBe(1);
 
       // Two payment confirmations cannot both win, and the winner atomically
       // clears an open email suggestion.

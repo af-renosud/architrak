@@ -708,6 +708,13 @@
       "when": 1787340000000,
       "tag": "0100_reassert_fee_event_action_chk",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1787350000000,
+      "tag": "0101_allow_grouped_milestone_invoice_refs",
+      "breakpoints": true
     }
   ]
 }

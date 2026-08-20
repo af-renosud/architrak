@@ -196,7 +196,7 @@ describe("manual design-milestone invoice and payment workflow", () => {
     expect(events.some((event) => event.action === "confirmed")).toBe(true);
   });
 
-  it("rejects duplicate normalized invoice numbers without advancing the other milestone", async () => {
+  it("allows grouped milestone payments to share a normalized invoice number", async () => {
     const result = await recordManualMilestoneInvoice({
       milestoneId: duplicateMilestoneId,
       userId: ownerUserId,
@@ -204,12 +204,119 @@ describe("manual design-milestone invoice and payment workflow", () => {
       invoiceNumber: ` fa ${stamp} `,
       invoiceDate: "2026-08-19",
     });
-    expect(result).toMatchObject({ ok: false, status: 409, code: "DUPLICATE_INVOICE_NUMBER" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.reconciliation).toBe("created");
+
     const [milestone] = await db
       .select()
       .from(designContractMilestones)
       .where(eq(designContractMilestones.id, duplicateMilestoneId));
-    expect(milestone.status).toBe("reached");
+    expect(milestone.status).toBe("invoiced");
+
+    const [primaryEvidence] = await db
+      .select()
+      .from(architectFeeInvoices)
+      .where(eq(architectFeeInvoices.milestoneId, reachedMilestoneId));
+    const [groupedEvidence] = await db
+      .select()
+      .from(architectFeeInvoices)
+      .where(eq(architectFeeInvoices.milestoneId, duplicateMilestoneId));
+    expect(groupedEvidence.invoiceNumberNormalized).toBe(primaryEvidence.invoiceNumberNormalized);
+    expect(groupedEvidence.feeEntryId).not.toBe(primaryEvidence.feeEntryId);
+  });
+
+  it("serializes concurrent grouped recordings under one conception fee", async () => {
+    const [concurrentProject] = await db
+      .insert(projects)
+      .values({
+        name: `Concurrent grouped invoice ${stamp}`,
+        code: `CGI-${stamp}`,
+        clientName: "Concurrent Grouped Client",
+      })
+      .returning();
+
+    try {
+      const [concurrentContract] = await db
+        .insert(designContracts)
+        .values({
+          projectId: concurrentProject.id,
+          storageKey: `tests/concurrent-grouped-${stamp}.pdf`,
+          originalFilename: "concurrent-grouped.pdf",
+          totalHt: "4000.00",
+          totalTva: "800.00",
+          totalTtc: "4800.00",
+          tvaRate: "20.00",
+          uploadedByUserId: ownerUserId,
+        })
+        .returning();
+      const concurrentMilestones = await db
+        .insert(designContractMilestones)
+        .values([
+          {
+            contractId: concurrentContract.id,
+            sequence: 1,
+            labelFr: "Grouped concurrent A",
+            percentage: "50.00",
+            amountTtc: "2400.00",
+            triggerEvent: "manual",
+            status: "reached",
+            reachedAt: new Date(),
+          },
+          {
+            contractId: concurrentContract.id,
+            sequence: 2,
+            labelFr: "Grouped concurrent B",
+            percentage: "50.00",
+            amountTtc: "2400.00",
+            triggerEvent: "manual",
+            status: "reached",
+            reachedAt: new Date(),
+          },
+        ])
+        .returning();
+
+      const results = await Promise.all([
+        recordManualMilestoneInvoice({
+          milestoneId: concurrentMilestones[0].id,
+          userId: ownerUserId,
+          actor: "owner@example.test",
+          invoiceNumber: `GROUP-${stamp}`,
+          invoiceDate: "2026-08-20",
+        }),
+        recordManualMilestoneInvoice({
+          milestoneId: concurrentMilestones[1].id,
+          userId: ownerUserId,
+          actor: "owner@example.test",
+          invoiceNumber: ` group ${stamp} `,
+          invoiceDate: "2026-08-20",
+        }),
+      ]);
+      expect(results.every((result) => result.ok)).toBe(true);
+      expect(new Set(results.map((result) => (result.ok ? result.feeEntryId : null))).size).toBe(2);
+
+      const conceptionFees = await db
+        .select()
+        .from(fees)
+        .where(
+          and(
+            eq(fees.projectId, concurrentProject.id),
+            eq(fees.feeType, "conception"),
+          ),
+        );
+      expect(conceptionFees).toHaveLength(1);
+
+      const entries = await db
+        .select()
+        .from(feeEntries)
+        .where(eq(feeEntries.feeId, conceptionFees[0].id));
+      expect(entries).toHaveLength(2);
+    } finally {
+      await db
+        .delete(architectFeeInvoices)
+        .where(eq(architectFeeInvoices.projectId, concurrentProject.id));
+      await db.delete(projects).where(eq(projects.id, concurrentProject.id));
+    }
   });
 
   it("completes a legacy Paid milestone by reusing its linked entry and retaining Paid status", async () => {
@@ -252,7 +359,7 @@ describe("manual design-milestone invoice and payment workflow", () => {
 
   it("requires Invoiced for manual payment and serializes concurrent confirmations", async () => {
     const reachedRefusal = await markMilestonePaidManually({
-      milestoneId: duplicateMilestoneId,
+      milestoneId: raceMilestoneId,
       userId: ownerUserId,
       actor: "owner@example.test",
       paymentDate: "2026-08-19",

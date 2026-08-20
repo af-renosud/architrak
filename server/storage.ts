@@ -994,8 +994,8 @@ export interface IStorage {
   getArchitectFeeInvoice(id: number): Promise<ArchitectFeeInvoice | undefined>;
   getArchitectFeeInvoiceByEmailDocumentId(emailDocumentId: number): Promise<ArchitectFeeInvoice | undefined>;
   getArchitectFeeInvoiceByIntakeDocumentId(intakeDocumentId: number): Promise<ArchitectFeeInvoice | undefined>;
-  /** Non-dismissed row with the same normalized invoice ref, if any. */
-  getArchitectFeeInvoiceByNormalizedRef(refNorm: string): Promise<ArchitectFeeInvoice | undefined>;
+  /** Non-manual, non-dismissed row with the same normalized invoice ref, if any. */
+  getCapturedArchitectFeeInvoiceByNormalizedRef(refNorm: string): Promise<ArchitectFeeInvoice | undefined>;
   listArchitectFeeInvoices(status?: ArchitectFeeInvoiceStatus): Promise<ArchitectFeeInvoice[]>;
   updateArchitectFeeInvoice(id: number, data: Partial<InsertArchitectFeeInvoice>): Promise<ArchitectFeeInvoice | undefined>;
   /** Review outcome writes — server-authoritative columns (dismiss only in #425). */
@@ -5580,10 +5580,9 @@ export class DatabaseStorage implements IStorage {
 
   // --- Architect fee invoices (Task #425) --------------------------------
   async createArchitectFeeInvoice(data: InsertArchitectFeeInvoice): Promise<ArchitectFeeInvoice | undefined> {
-    // ON CONFLICT DO NOTHING against ALL partial uniques (source pointers +
-    // normalized ref among non-dismissed rows) so two concurrent captures
-    // can never both insert; the loser gets `undefined` and the service
-    // resolves the surviving row instead of surfacing a unique violation.
+    // ON CONFLICT DO NOTHING against the source-pointer uniques and the
+    // captured-invoice normalized-ref unique. Manual milestone rows may share
+    // a grouped invoice number and are intentionally outside the latter.
     const [row] = await db.insert(architectFeeInvoices).values(data).onConflictDoNothing().returning();
     return row;
   }
@@ -5609,7 +5608,7 @@ export class DatabaseStorage implements IStorage {
     return row;
   }
 
-  async getArchitectFeeInvoiceByNormalizedRef(refNorm: string): Promise<ArchitectFeeInvoice | undefined> {
+  async getCapturedArchitectFeeInvoiceByNormalizedRef(refNorm: string): Promise<ArchitectFeeInvoice | undefined> {
     const [row] = await db
       .select()
       .from(architectFeeInvoices)
@@ -5617,6 +5616,7 @@ export class DatabaseStorage implements IStorage {
         and(
           eq(architectFeeInvoices.invoiceNumberNormalized, refNorm),
           ne(architectFeeInvoices.status, "dismissed"),
+          ne(architectFeeInvoices.source, "manual"),
         ),
       );
     return row;

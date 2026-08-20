@@ -97,8 +97,13 @@ const { state, storageSpy, objectStorageSpy, driveSpy } = vi.hoisted(() => {
     getArchitectFeeInvoiceByIntakeDocumentId: vi.fn(async (id: number) =>
       state.feeInvoices.find((r) => r.intakeDocumentId === id),
     ),
-    getArchitectFeeInvoiceByNormalizedRef: vi.fn(async (ref: string) =>
-      state.feeInvoices.find((r) => r.invoiceNumberNormalized === ref && r.status !== "dismissed"),
+    getCapturedArchitectFeeInvoiceByNormalizedRef: vi.fn(async (ref: string) =>
+      state.feeInvoices.find(
+        (r) =>
+          r.invoiceNumberNormalized === ref &&
+          r.status !== "dismissed" &&
+          r.source !== "manual",
+      ),
     ),
     createArchitectFeeInvoice: vi.fn(async (data: Record<string, unknown>) => {
       const conflict = state.feeInvoices.some(
@@ -106,6 +111,8 @@ const { state, storageSpy, objectStorageSpy, driveSpy } = vi.hoisted(() => {
           (data.emailDocumentId != null && r.emailDocumentId === data.emailDocumentId) ||
           (data.intakeDocumentId != null && r.intakeDocumentId === data.intakeDocumentId) ||
           (data.invoiceNumberNormalized != null &&
+            data.source !== "manual" &&
+            r.source !== "manual" &&
             r.invoiceNumberNormalized === data.invoiceNumberNormalized &&
             r.status !== "dismissed"),
       );
@@ -238,5 +245,29 @@ describe("processEmailDocument — architect fee invoices (Task #425)", () => {
 
     expect(state.feeInvoices).toHaveLength(1);
     expect(storageSpy.createProjectDocument).not.toHaveBeenCalled();
+  }, 120_000);
+
+  it("keeps captured evidence separate from manual milestone rows sharing its reference", async () => {
+    state.feeInvoices.push({
+      id: state.nextFeeInvoiceId++,
+      source: "manual",
+      status: "confirmed",
+      invoiceNumber: "F-2026-138",
+      invoiceNumberNormalized: "f2026138",
+      emailDocumentId: null,
+      intakeDocumentId: null,
+    });
+    seedEmailDoc();
+
+    await processEmailDocument(1);
+
+    expect(state.feeInvoices).toHaveLength(2);
+    const manual = state.feeInvoices.find((row) => row.source === "manual")!;
+    const captured = state.feeInvoices.find((row) => row.source === "gmail")!;
+    expect(manual.emailDocumentId).toBeNull();
+    expect(manual.intakeDocumentId).toBeNull();
+    expect(captured.emailDocumentId).toBe(1);
+    expect(captured.invoiceNumberNormalized).toBe(manual.invoiceNumberNormalized);
+    expect(captured.id).not.toBe(manual.id);
   }, 120_000);
 });

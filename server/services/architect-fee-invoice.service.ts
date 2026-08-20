@@ -118,10 +118,12 @@ export async function captureArchitectFeeInvoice(args: CaptureArgs): Promise<Cap
     if (existing) return { outcome: "duplicate_source", id: existing.id };
   }
 
-  // Business-ref dedup (pre-check; the DB partial unique is the backstop).
+  // Business-ref dedup for caught documents (pre-check; the DB partial unique
+  // covers non-manual evidence, while grouped manual milestone rows may share
+  // this reference).
   const refNorm = normalizeInvoiceRef(parsed.invoiceNumber ?? parsed.reference);
   if (refNorm) {
-    const existing = await storage.getArchitectFeeInvoiceByNormalizedRef(refNorm);
+    const existing = await storage.getCapturedArchitectFeeInvoiceByNormalizedRef(refNorm);
     if (existing) return { outcome: "duplicate_ref", id: await backfillSourcePointer(existing, args) };
   }
 
@@ -206,7 +208,7 @@ export async function captureArchitectFeeInvoice(args: CaptureArgs): Promise<Cap
     const existing =
       (args.emailDocumentId != null ? await storage.getArchitectFeeInvoiceByEmailDocumentId(args.emailDocumentId) : undefined) ??
       (args.intakeDocumentId != null ? await storage.getArchitectFeeInvoiceByIntakeDocumentId(args.intakeDocumentId) : undefined) ??
-      (refNorm ? await storage.getArchitectFeeInvoiceByNormalizedRef(refNorm) : undefined);
+      (refNorm ? await storage.getCapturedArchitectFeeInvoiceByNormalizedRef(refNorm) : undefined);
     if (!existing) {
       throw new Error("architect fee-invoice insert conflicted but no surviving row was found");
     }
