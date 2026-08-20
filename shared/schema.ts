@@ -3774,6 +3774,48 @@ export const planningRevisionSources = pgTable("planning_revision_sources", {
   ),
 ]);
 
+export const PLANNING_IMPORT_STATUSES = ["processing", "succeeded", "failed", "stale"] as const;
+export type PlanningImportStatus = (typeof PLANNING_IMPORT_STATUSES)[number];
+
+export const PLANNING_IMPORT_STAGES = [
+  "accepted",
+  "extracting",
+  "validating",
+  "storing",
+  "saving",
+  "complete",
+] as const;
+export type PlanningImportStage = (typeof PLANNING_IMPORT_STAGES)[number];
+
+export const planningImportJobs = pgTable("planning_import_jobs", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  fileName: text("file_name").notNull(),
+  fileSha256: text("file_sha256").notNull(),
+  mimeType: text("mime_type").notNull(),
+  fileSizeBytes: integer("file_size_bytes").notNull(),
+  status: text("status").notNull().default("processing"),
+  stage: text("stage").notNull().default("accepted"),
+  revisionId: integer("revision_id").references(() => planningRevisions.id, { onDelete: "set null" }),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  createdBy: text("created_by").notNull(),
+  startedAt: timestamp("started_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  completedAt: timestamp("completed_at"),
+}, (table) => [
+  index("planning_import_jobs_project_started_idx").on(table.projectId, table.startedAt),
+  index("planning_import_jobs_active_idx").on(table.projectId, table.updatedAt)
+    .where(sql`${table.status} = 'processing'`),
+  uniqueIndex("planning_import_jobs_revision_unique")
+    .on(table.revisionId)
+    .where(sql`${table.revisionId} IS NOT NULL`),
+  check("planning_import_jobs_sha256_chk", sql`${table.fileSha256} ~ '^[0-9a-f]{64}$'`),
+  check("planning_import_jobs_file_size_chk", sql`${table.fileSizeBytes} > 0 AND ${table.fileSizeBytes} <= 26214400`),
+  check("planning_import_jobs_status_chk", sql`${table.status} IN ('processing', 'succeeded', 'failed', 'stale')`),
+  check("planning_import_jobs_stage_chk", sql`${table.stage} IN ('accepted', 'extracting', 'validating', 'storing', 'saving', 'complete')`),
+]);
+
 export const planningRevisionEvents = pgTable("planning_revision_events", {
   id: serial("id").primaryKey(),
   revisionId: integer("revision_id").notNull().references(() => planningRevisions.id, { onDelete: "cascade" }),
@@ -3790,4 +3832,5 @@ export type PlanningEnvelope = typeof planningEnvelopes.$inferSelect;
 export type PlanningRevision = typeof planningRevisions.$inferSelect;
 export type PlanningRevisionLine = typeof planningRevisionLines.$inferSelect;
 export type PlanningRevisionSource = typeof planningRevisionSources.$inferSelect;
+export type PlanningImportJob = typeof planningImportJobs.$inferSelect;
 export type PlanningRevisionEvent = typeof planningRevisionEvents.$inferSelect;

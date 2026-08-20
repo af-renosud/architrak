@@ -24,6 +24,7 @@ import {
   devisLineItems,
   lots,
   planningEnvelopes,
+  planningImportJobs,
   planningRevisionEvents,
   planningRevisionLines,
   planningRevisionSources,
@@ -36,6 +37,11 @@ import {
   approveRevision,
   createManualRevision,
   createPdfRevision,
+  createPlanningImportJob,
+  advancePlanningImportStage,
+  failPlanningImportJob,
+  getRecentPlanningImports,
+  touchPlanningImportJob,
   ensureEnvelope,
   getEnvelopeSummary,
   promoteRevision,
@@ -150,6 +156,186 @@ describe("ensureEnvelope", () => {
     ]);
     const ids = results.map((e) => e.id);
     expect(new Set(ids).size).toBe(1); // all the same
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Durable PDF import progress
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("durable PDF import progress", () => {
+  it("persists stages before revision creation and atomically links success to the draft", async () => {
+    const fileName = `planning-progress-${stamp}.pdf`;
+    const fileSha256 = "a".repeat(64);
+    const job = await createPlanningImportJob({
+      projectId,
+      actor,
+      fileName,
+      fileSha256,
+      mimeType: "application/pdf",
+      fileSizeBytes: 2048,
+    });
+    expect(job).toMatchObject({
+      fileName,
+      status: "processing",
+      stage: "accepted",
+      revisionId: null,
+    });
+
+    await advancePlanningImportStage(job.id, "extracting");
+    await touchPlanningImportJob(job.id);
+    await advancePlanningImportStage(job.id, "validating");
+    await advancePlanningImportStage(job.id, "storing");
+    await advancePlanningImportStage(job.id, "saving");
+
+    const beforeRevision = await getRecentPlanningImports(projectId);
+    expect(beforeRevision.find((item) => item.id === job.id)).toMatchObject({
+      status: "processing",
+      stage: "saving",
+      revisionId: null,
+    });
+
+    const detail = await createPdfRevision({
+      projectId,
+      actor,
+      importJobId: job.id,
+      contractorId,
+      storageKey: `/bucket/planning/${fileName}`,
+      fileName,
+      fileSha256,
+      mimeType: "application/pdf",
+      fileSizeBytes: 2048,
+      parserVersion: "1.0",
+      provider: "gemini",
+      modelId: "gemini-2.5-pro",
+      rawExtraction: { documentType: "quotation" },
+      confidence: 95,
+      warnings: [],
+      reference: `IMPORT-${stamp}`,
+      descriptionFr: "Imported planning quotation",
+      amountHt: "2500.00",
+      amountTtc: "3000.00",
+      lines: [{ lineNumber: 1, description: "Imported work", totalHt: "2500.00" }],
+    });
+
+    const completed = await getRecentPlanningImports(projectId);
+    expect(completed.find((item) => item.id === job.id)).toMatchObject({
+      status: "succeeded",
+      stage: "complete",
+      revisionId: detail.revision.id,
+      errorCode: null,
+      errorMessage: null,
+    });
+  });
+
+  it("keeps failures durable and prevents terminal rows from being reopened", async () => {
+    const job = await createPlanningImportJob({
+      projectId,
+      actor,
+      fileName: `planning-failure-${stamp}.pdf`,
+      fileSha256: "b".repeat(64),
+      mimeType: "application/pdf",
+      fileSizeBytes: 1024,
+    });
+    await advancePlanningImportStage(job.id, "extracting");
+    const failed = await failPlanningImportJob({
+      importJobId: job.id,
+      errorCode: "AI_TRANSIENT",
+      errorMessage: "AI extraction temporarily unavailable. Please try again.",
+    });
+    expect(failed).toMatchObject({
+      status: "failed",
+      stage: "extracting",
+      errorCode: "AI_TRANSIENT",
+    });
+    expect(await advancePlanningImportStage(job.id, "validating")).toBeNull();
+    await expect(
+      db
+        .update(planningImportJobs)
+        .set({ status: "processing", completedAt: null, errorCode: null, errorMessage: null })
+        .where(eq(planningImportJobs.id, job.id)),
+    ).rejects.toBeDefined();
+  });
+
+  it("marks abandoned heartbeats stale but permits a genuinely late atomic success", async () => {
+    const fileName = `planning-stale-${stamp}.pdf`;
+    const fileSha256 = "c".repeat(64);
+    const job = await createPlanningImportJob({
+      projectId,
+      actor,
+      fileName,
+      fileSha256,
+      mimeType: "application/pdf",
+      fileSizeBytes: 4096,
+    });
+    await advancePlanningImportStage(job.id, "extracting");
+
+    const staleRows = await getRecentPlanningImports(
+      projectId,
+      20,
+      new Date(Date.now() + 10 * 60 * 1000),
+    );
+    expect(staleRows.find((item) => item.id === job.id)).toMatchObject({
+      status: "stale",
+      errorCode: "IMPORT_STALE",
+      revisionId: null,
+    });
+
+    const detail = await createPdfRevision({
+      projectId,
+      actor,
+      importJobId: job.id,
+      contractorId,
+      storageKey: `/bucket/planning/${fileName}`,
+      fileName,
+      fileSha256,
+      mimeType: "application/pdf",
+      fileSizeBytes: 4096,
+      parserVersion: "1.0",
+      provider: "gemini",
+      modelId: "gemini-2.5-pro",
+      rawExtraction: { documentType: "quotation" },
+      confidence: 90,
+      warnings: [],
+      reference: `LATE-${stamp}`,
+      descriptionFr: "Late completion",
+      amountHt: "100.00",
+      amountTtc: "120.00",
+    });
+    const recovered = await getRecentPlanningImports(projectId, 20);
+    expect(recovered.find((item) => item.id === job.id)).toMatchObject({
+      status: "succeeded",
+      stage: "complete",
+      revisionId: detail.revision.id,
+      errorCode: null,
+    });
+  });
+
+  it("keeps repeated files as distinct attempts and scopes status to the project", async () => {
+    const duplicateInput = {
+      projectId,
+      actor,
+      fileName: `planning-repeat-${stamp}.pdf`,
+      fileSha256: "d".repeat(64),
+      mimeType: "application/pdf",
+      fileSizeBytes: 512,
+    };
+    const first = await createPlanningImportJob(duplicateInput);
+    const second = await createPlanningImportJob(duplicateInput);
+    const otherProjectJob = await createPlanningImportJob({
+      ...duplicateInput,
+      projectId: otherProjectId,
+      fileName: `other-project-${stamp}.pdf`,
+      fileSha256: "e".repeat(64),
+    });
+
+    const projectImports = await getRecentPlanningImports(projectId, 20);
+    expect(projectImports.map((item) => item.id)).toEqual(expect.arrayContaining([first.id, second.id]));
+    expect(projectImports.map((item) => item.id)).not.toContain(otherProjectJob.id);
+
+    await failPlanningImportJob({ importJobId: first.id, errorCode: "TEST_END", errorMessage: "Test cleanup" });
+    await failPlanningImportJob({ importJobId: second.id, errorCode: "TEST_END", errorMessage: "Test cleanup" });
+    await failPlanningImportJob({ importJobId: otherProjectJob.id, errorCode: "TEST_END", errorMessage: "Test cleanup" });
   });
 });
 

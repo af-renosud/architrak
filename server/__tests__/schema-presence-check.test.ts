@@ -218,6 +218,88 @@ describe.skipIf(skipModule !== null)("schema-presence check (Task #136)", () => 
     expect(total.rows[0].n).toBe(journal.entries.length);
   }, 60_000);
 
+  it("does not stamp a partial 0111 table when its lifecycle trigger is missing", async (t) => {
+    if (ctx.skipReason || !ctx.replayPool) {
+      t.skip();
+      return;
+    }
+    const journalPath = path.join(migrationsFolder, "meta", "_journal.json");
+    const journal = JSON.parse(fs.readFileSync(journalPath, "utf-8")) as {
+      entries: Array<{ tag: string; when: number }>;
+    };
+    const entry = journal.entries.find((e) => e.tag === "0111_planning_import_jobs");
+    if (!entry) throw new Error("0111 missing from journal");
+
+    await ctx.replayPool.query(
+      `DELETE FROM drizzle.__drizzle_migrations WHERE created_at = $1`,
+      [entry.when],
+    );
+    await ctx.replayPool.query(
+      `DROP TRIGGER planning_import_job_lifecycle_trg ON planning_import_jobs`,
+    );
+
+    try {
+      // Table existence alone is not enough to declare this migration present.
+      // The pre-migrate check must leave the tracker absent so Drizzle replays
+      // 0111 and restores the lifecycle trigger.
+      await expect(
+        assertSchemaMatchesTracker({
+          pool: ctx.replayPool,
+          migrationsFolder,
+        }),
+      ).resolves.toBeUndefined();
+      const beforeReplay = await ctx.replayPool.query(
+        `SELECT count(*)::int AS n
+           FROM drizzle.__drizzle_migrations
+          WHERE created_at = $1`,
+        [entry.when],
+      );
+      expect(beforeReplay.rows[0].n).toBe(0);
+
+      await runMigrationsWith({
+        pool: ctx.replayPool,
+        migrationsFolder,
+      });
+
+      const trigger = await ctx.replayPool.query(
+        `SELECT count(*)::int AS n
+           FROM pg_trigger tr
+           JOIN pg_class t ON t.oid = tr.tgrelid
+          WHERE t.relname = 'planning_import_jobs'
+            AND tr.tgname = 'planning_import_job_lifecycle_trg'
+            AND NOT tr.tgisinternal`,
+      );
+      expect(trigger.rows[0].n).toBe(1);
+      const afterReplay = await ctx.replayPool.query(
+        `SELECT count(*)::int AS n
+           FROM drizzle.__drizzle_migrations
+          WHERE created_at = $1`,
+        [entry.when],
+      );
+      expect(afterReplay.rows[0].n).toBe(1);
+    } finally {
+      const trigger = await ctx.replayPool.query(
+        `SELECT count(*)::int AS n
+           FROM pg_trigger tr
+           JOIN pg_class t ON t.oid = tr.tgrelid
+          WHERE t.relname = 'planning_import_jobs'
+            AND tr.tgname = 'planning_import_job_lifecycle_trg'
+            AND NOT tr.tgisinternal`,
+      );
+      if (trigger.rows[0].n === 0) {
+        await ctx.replayPool.query(
+          `CREATE TRIGGER planning_import_job_lifecycle_trg
+             BEFORE INSERT OR UPDATE ON planning_import_jobs
+             FOR EACH ROW EXECUTE FUNCTION guard_planning_import_job_lifecycle()`,
+        );
+      }
+      await runMigrationsWith({
+        pool: ctx.replayPool,
+        migrationsFolder,
+      });
+    }
+  }, 60_000);
+
   it("runMigrationsWith self-heals a tracker-behind drift BEFORE drizzle migrate(), avoiding `column already exists`", async (t) => {
     if (ctx.skipReason || !ctx.replayPool) {
       t.skip();

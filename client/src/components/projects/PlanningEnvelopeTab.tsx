@@ -17,13 +17,16 @@ import { useToast } from "@/hooks/use-toast";
 
 type Line = { id?: number; lineNumber: number; description: string; quantity: string; unit: string; unitPriceHt: string; totalHt: string; pdfPageHint?: number | null };
 type Revision = { revision: { id: number; status: "draft" | "reviewed" | "approved" | "superseded"; reference: string; descriptionFr: string; documentDate?: string | null; amountHt: string; amountTtc: string; tvaRatePercent?: string | null; tvaAutoliquidation?: boolean; version: number; contractorId?: number | null; lotId?: number | null; supersedesRevisionId?: number | null; promotedDevisId?: number | null; promotedAt?: string | null; updatedAt: string }; lines: Line[]; source: { sourceKind: "manual" | "pdf_upload"; fileName?: string | null; confidence?: number | null; warnings?: { message?: string; severity?: string }[]; requiresVerification?: boolean; verifiedAt?: string | null; verificationNote?: string | null } | null; contractorName: string | null; lotNumber: string | null };
-type EnvelopeResponse = { envelope: { currency: string } | null; revisions: Revision[]; totals: { amountHt: string; amountTtc: string; byLot: { lotId: number | null; lotNumber: string | null; description: string; amountHt: string; amountTtc: string; count: number }[] } };
+type PlanningImport = { id: number; fileName: string; status: "processing" | "succeeded" | "failed" | "stale"; stage: "accepted" | "extracting" | "validating" | "storing" | "saving" | "complete"; revisionId: number | null; errorCode: string | null; errorMessage: string | null; startedAt: string; updatedAt: string; completedAt: string | null };
+type EnvelopeResponse = { envelope: { currency: string } | null; revisions: Revision[]; imports?: PlanningImport[]; totals: { amountHt: string; amountTtc: string; byLot: { lotId: number | null; lotNumber: string | null; description: string; amountHt: string; amountTtc: string; count: number }[] } };
 type Choice = { id: number; name?: string; companyName?: string; lotNumber?: string; descriptionFr?: string };
 
 const euro = (value: string | number) => Number(value || 0);
 const dateLabel = (value?: string | null) => value ? new Date(value).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" }) : "—";
+const dateTimeLabel = (value?: string | number | null) => value ? new Date(value).toLocaleString("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
 const stateLabels: Record<string, string> = { draft: "Draft", reviewed: "Reviewed", approved: "Approved", superseded: "Superseded" };
 const stateClasses: Record<string, string> = { draft: "bg-slate-100 text-slate-700", reviewed: "bg-amber-100 text-amber-800", approved: "bg-emerald-100 text-emerald-800", superseded: "bg-stone-100 text-stone-500" };
+const importStageLabels: Record<PlanningImport["stage"], string> = { accepted: "Upload accepted", extracting: "Reading and extracting the PDF", validating: "Checking the extracted data", storing: "Saving the source PDF", saving: "Creating the planning draft", complete: "Ready for review" };
 
 interface Props { projectId: string; contractors: Choice[]; lots: Choice[]; isArchived: boolean; }
 
@@ -33,10 +36,17 @@ export function PlanningEnvelopeTab({ projectId, contractors, lots, isArchived }
   const [editing, setEditing] = useState<Revision | null>(null);
   const [promote, setPromote] = useState<Revision | null>(null);
   const [verificationNote, setVerificationNote] = useState("");
-  const [importing, setImporting] = useState(false);
+  const [localImport, setLocalImport] = useState<{ fileName: string; startedAt: string } | null>(null);
+  const importing = localImport != null;
   const fileRef = useRef<HTMLInputElement>(null);
   const key = projectScopedKey(projectId, "planning-envelope");
-  const { data, isLoading, error, refetch } = useQuery<EnvelopeResponse>({ queryKey: key });
+  const { data, isLoading, error, refetch, isFetching, dataUpdatedAt } = useQuery<EnvelopeResponse>({
+    queryKey: key,
+    refetchInterval: (query) => {
+      const serverHasActiveImport = query.state.data?.imports?.some((item) => item.status === "processing") === true;
+      return importing || serverHasActiveImport ? 3000 : false;
+    },
+  });
   const invalidate = () => { queryClient.invalidateQueries({ queryKey: key }); queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis") }); };
   const action = useMutation({
     mutationFn: async ({ url, body }: { url: string; body?: unknown }) => { const response = await apiRequest("POST", url, body); return response.json(); },
@@ -49,19 +59,35 @@ export function PlanningEnvelopeTab({ projectId, contractors, lots, isArchived }
     onError: (e: Error) => toast({ title: "Revision could not be saved", description: e.message, variant: "destructive" }),
   });
   const importPdf = async (file: File) => {
-    setImporting(true);
+    setLocalImport({ fileName: file.name, startedAt: new Date().toISOString() });
     try {
       const form = new FormData(); form.append("file", file);
       const response = await fetch(`/api/projects/${projectId}/planning-envelope/import`, { method: "POST", body: form, credentials: "include" });
-      if (!response.ok) throw new Error(`${response.status}: ${await response.text()}`);
+      if (!response.ok) {
+        const body = await response.json().catch(() => null) as { message?: string } | null;
+        throw new Error(body?.message ?? `PDF import failed (${response.status})`);
+      }
       const extracted = await response.json(); invalidate();
       const revision = extracted?.revision ? { revision: extracted.revision, lines: extracted.lines ?? [], source: extracted.source ?? null, contractorName: extracted.contractorName ?? null, lotNumber: extracted.lotNumber ?? null } : (extracted?.id ? { revision: extracted, lines: extracted.lines ?? [], source: extracted.source ?? null, contractorName: extracted.contractorName ?? null, lotNumber: extracted.lotNumber ?? null } : null);
       if (revision) { setEditing(revision); setDialog("edit"); }
       toast({ title: "PDF imported", description: "The extracted draft is ready for review." });
     } catch (e) { toast({ title: "PDF import failed", description: (e as Error).message, variant: "destructive" }); }
-    finally { setImporting(false); if (fileRef.current) fileRef.current.value = ""; }
+    finally {
+      await queryClient.invalidateQueries({ queryKey: key });
+      setLocalImport(null);
+      if (fileRef.current) fileRef.current.value = "";
+    }
   };
   const totals = data?.totals;
+  const openImportedRevision = (revisionId: number) => {
+    const revision = data?.revisions.find((item) => item.revision.id === revisionId);
+    if (revision) {
+      setEditing(revision);
+      setDialog("edit");
+    } else {
+      void refetch();
+    }
+  };
 
   if (isLoading) return <div data-testid="panel-planning-envelope" className="space-y-3"><LuxuryCard><div className="animate-pulse space-y-3"><div className="h-4 w-44 rounded bg-muted" /><div className="h-12 w-full rounded bg-muted" /><div className="h-20 w-full rounded bg-muted" /></div></LuxuryCard></div>;
   if (error) return <LuxuryCard data-testid="planning-envelope-error"><div className="flex items-center gap-3 text-destructive"><AlertTriangle size={16} /><div><p className="text-sm font-semibold">Planning envelope unavailable</p><p className="text-xs text-muted-foreground mt-1">Could not load the planning record.</p></div><Button variant="outline" size="sm" className="ml-auto" onClick={() => refetch()} data-testid="planning-envelope-retry">Retry</Button></div></LuxuryCard>;
@@ -73,12 +99,27 @@ export function PlanningEnvelopeTab({ projectId, contractors, lots, isArchived }
         <div><TechnicalLabel>Planning Envelope · internal working record</TechnicalLabel><h2 className="mt-1 text-xl font-light tracking-tight">Budget before commitment</h2><p className="text-xs text-muted-foreground mt-1 max-w-2xl">Candidate amounts stay separate from contractual Live Delivery until explicitly promoted.</p></div>
         <div className="flex gap-2 flex-wrap">
           <input ref={fileRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={(e) => e.target.files?.[0] && importPdf(e.target.files[0])} />
+          <Button variant="ghost" size="sm" disabled={isFetching} onClick={() => void refetch()} data-testid="planning-envelope-refresh-status">
+            <RefreshCw size={13} className={isFetching ? "animate-spin" : ""} /> Refresh status
+          </Button>
           <Button variant="outline" size="sm" disabled={isArchived || importing} onClick={() => fileRef.current?.click()} data-testid="planning-envelope-import">
             {importing ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {importing ? "Processing PDF…" : "Import PDF"}
           </Button>
           <Button size="sm" disabled={isArchived} onClick={() => { setEditing(null); setDialog("new"); }} data-testid="planning-envelope-new"><Plus size={13} /> New revision</Button>
         </div>
       </div>
+      <div className="flex items-center justify-between gap-3 text-[10px] text-muted-foreground" data-testid="planning-envelope-last-refreshed">
+        <span>{dataUpdatedAt ? `Status checked ${dateTimeLabel(dataUpdatedAt)}` : "Status not checked yet"}</span>
+        {(importing || data?.imports?.some((item) => item.status === "processing")) && <span className="inline-flex items-center gap-1 text-[#9a5c36]"><Loader2 size={11} className="animate-spin" /> Refreshing automatically</span>}
+      </div>
+      <PlanningImportStatus
+        imports={data?.imports ?? []}
+        localImport={localImport}
+        revisions={data?.revisions ?? []}
+        isArchived={isArchived}
+        onOpenRevision={openImportedRevision}
+        onChooseFile={() => fileRef.current?.click()}
+      />
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-2" data-testid="planning-envelope-totals">
         <LuxuryCard className="p-4 border-[#d5b8a4] bg-[#fbf7f3]"><TechnicalLabel>Planned HT</TechnicalLabel><p className="mt-2 text-lg font-light"><Amount value={euro(totals?.amountHt ?? "0")} denomination="HT" /></p></LuxuryCard>
         <LuxuryCard className="p-4 border-[#d5b8a4] bg-[#fbf7f3]"><TechnicalLabel>Planned TTC</TechnicalLabel><p className="mt-2 text-lg font-light"><Amount value={euro(totals?.amountTtc ?? "0")} denomination="TTC" /></p></LuxuryCard>
@@ -92,6 +133,43 @@ export function PlanningEnvelopeTab({ projectId, contractors, lots, isArchived }
       <AlertDialog open={!!promote} onOpenChange={(v) => !v && setPromote(null)}><AlertDialogContent data-testid="planning-envelope-promote-dialog"><AlertDialogHeader><AlertDialogTitle>Promote this revision to Live Delivery?</AlertDialogTitle><AlertDialogDescription>This creates a new provisional Live devis from the approved planning revision. The planning record remains unchanged and can still be audited.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Keep in planning</AlertDialogCancel><AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" disabled={action.isPending} onClick={() => promote && action.mutate({ url: `/api/planning-revisions/${promote.revision.id}/promote`, body: { expectedVersion: promote.revision.version } })} data-testid="planning-envelope-promote-confirm">Create provisional devis</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
     </div>
   );
+}
+
+function PlanningImportStatus({ imports, localImport, revisions, isArchived, onOpenRevision, onChooseFile }: { imports: PlanningImport[]; localImport: { fileName: string; startedAt: string } | null; revisions: Revision[]; isArchived: boolean; onOpenRevision: (revisionId: number) => void; onChooseFile: () => void }) {
+  const hasMatchingServerImport = !!localImport && imports.some((item) => item.status === "processing" && item.fileName === localImport.fileName);
+  const visibleImports = imports.slice(0, 6);
+  const showLocal = !!localImport && !hasMatchingServerImport;
+  if (!showLocal && visibleImports.length === 0) return null;
+
+  return <LuxuryCard className="p-4" data-testid="planning-import-status">
+    <div className="flex items-start justify-between gap-3 mb-3">
+      <div><TechnicalLabel>Recent PDF imports</TechnicalLabel><p className="text-[11px] text-muted-foreground mt-1">Processing continues if you leave this tab. Completed drafts remain linked here.</p></div>
+      {(showLocal || visibleImports.some((item) => item.status === "processing")) && <Badge className="bg-amber-100 text-amber-800 text-[10px]">In progress</Badge>}
+    </div>
+    <div className="space-y-2" aria-live="polite">
+      {showLocal && <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2" data-testid="planning-import-local">
+        <Loader2 size={15} className="mt-0.5 shrink-0 animate-spin text-amber-700" />
+        <div className="min-w-0"><p className="text-xs font-semibold truncate" title={localImport.fileName}>{localImport.fileName}</p><p className="text-[11px] text-amber-800 mt-0.5">Sending PDF to the server</p><p className="text-[10px] text-muted-foreground mt-1">Started {dateTimeLabel(localImport.startedAt)}</p></div>
+      </div>}
+      {visibleImports.map((item) => {
+        const isActive = item.status === "processing";
+        const isSuccess = item.status === "succeeded";
+        const revisionAvailable = item.revisionId != null && revisions.some((revision) => revision.revision.id === item.revisionId);
+        return <div key={item.id} className={`flex flex-col sm:flex-row sm:items-center gap-3 rounded-lg border px-3 py-2 ${isActive ? "border-amber-200 bg-amber-50/70" : isSuccess ? "border-emerald-200 bg-emerald-50/60" : "border-rose-200 bg-rose-50/60"}`} data-testid={`planning-import-${item.id}`}>
+          <div className="flex items-start gap-3 min-w-0 flex-1">
+            {isActive ? <Loader2 size={15} className="mt-0.5 shrink-0 animate-spin text-amber-700" /> : isSuccess ? <Check size={15} className="mt-0.5 shrink-0 text-emerald-700" /> : <AlertTriangle size={15} className="mt-0.5 shrink-0 text-rose-700" />}
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap"><p className="text-xs font-semibold truncate max-w-[36rem]" title={item.fileName}>{item.fileName}</p><Badge className={`text-[9px] ${isActive ? "bg-amber-100 text-amber-800" : isSuccess ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"}`}>{isActive ? "Processing" : isSuccess ? "Ready for review" : item.status === "stale" ? "Stopped" : "Failed"}</Badge></div>
+              <p className={`text-[11px] mt-0.5 ${isActive ? "text-amber-800" : isSuccess ? "text-emerald-800" : "text-rose-800"}`}>{isActive || isSuccess ? importStageLabels[item.stage] : item.errorMessage ?? "PDF import did not complete."}</p>
+              <p className="text-[10px] text-muted-foreground mt-1">Started {dateTimeLabel(item.startedAt)} · Updated {dateTimeLabel(item.updatedAt)}</p>
+            </div>
+          </div>
+          {isSuccess && item.revisionId != null && <Button variant="outline" size="sm" disabled={!revisionAvailable} onClick={() => onOpenRevision(item.revisionId!)} data-testid={`planning-import-open-${item.id}`}><Pencil size={12} /> Review draft</Button>}
+          {!isActive && !isSuccess && <Button variant="outline" size="sm" disabled={isArchived} onClick={onChooseFile} data-testid={`planning-import-retry-${item.id}`}><Upload size={12} /> Choose PDF again</Button>}
+        </div>;
+      })}
+    </div>
+  </LuxuryCard>;
 }
 
 function RevisionCard({ item, revisions, projectId, isArchived, onEdit, onReview, onAction, onPromote }: { item: Revision; revisions: Revision[]; projectId: string; isArchived: boolean; onEdit: () => void; onReview: () => void; onAction: (url: string, body?: unknown) => void; onPromote: () => void }) {

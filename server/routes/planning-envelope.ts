@@ -20,6 +20,11 @@ import {
   getEnvelopeById,
   createManualRevision,
   createPdfRevision,
+  createPlanningImportJob,
+  advancePlanningImportStage,
+  touchPlanningImportJob,
+  failPlanningImportJob,
+  getRecentPlanningImports,
   patchRevision,
   reviewRevision,
   approveRevision,
@@ -33,6 +38,26 @@ import { DEVIS_UPLOAD_ERROR_CODES } from "../../shared/devis-upload-errors";
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024, files: 1 } });
+type ActivePlanningImportStage = "extracting" | "validating" | "storing" | "saving";
+
+function logPlanningImport(
+  event: "started" | "stage" | "succeeded" | "failed",
+  details: Record<string, unknown>,
+): void {
+  console.info("[PlanningImport]", JSON.stringify({ event, ...details }));
+}
+
+function safePlanningImportFailureMessage(error: unknown): string {
+  if (error instanceof PlanningEnvelopeError) {
+    if (error.code === "PROJECT_ARCHIVED") {
+      return "This project is archived, so the imported draft could not be saved.";
+    }
+    if (error.code.startsWith("IMPORT_JOB_")) {
+      return "The import status changed before the draft could be saved. Refresh the status and try again.";
+    }
+  }
+  return "PDF import failed. Choose the file again to retry.";
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Param schemas
@@ -156,16 +181,20 @@ router.get(
       const project = await storage.getProject(projectId);
       if (!project) return res.status(404).json({ message: "Project not found" });
 
-      const summary = await getEnvelopeSummary(projectId);
+      const [summary, imports] = await Promise.all([
+        getEnvelopeSummary(projectId),
+        getRecentPlanningImports(projectId),
+      ]);
       if (!summary) {
         // No envelope yet — return empty shape
         return res.json({
           envelope: null,
           revisions: [],
           totals: { amountHt: "0.00", amountTtc: "0.00", byLot: [] },
+          imports,
         });
       }
-      res.json(summary);
+      res.json({ ...summary, imports });
     } catch (err) {
       handlePlanningError(err, res);
     }
@@ -216,6 +245,10 @@ router.post(
   upload.single("file"),
   validateRequest({ params: projectIdParams }),
   async (req, res) => {
+    let importJobId: number | null = null;
+    let importFileName: string | null = null;
+    let heartbeat: NodeJS.Timeout | null = null;
+    const requestStartedAt = Date.now();
     try {
       const projectId = Number(req.params.projectId);
       const file = req.file;
@@ -243,13 +276,60 @@ router.post(
       const fileSha256 = crypto.createHash("sha256").update(file.buffer).digest("hex");
       const fileSizeBytes = file.buffer.length;
       const mimeType = file.mimetype || "application/pdf";
+      const safeFileName = path.basename(file.originalname)
+        .replace(/[\u0000-\u001f\u007f]/g, "")
+        .slice(0, 500) || "planning.pdf";
+      importFileName = safeFileName;
+
+      const importJob = await createPlanningImportJob({
+        projectId,
+        actor,
+        fileName: safeFileName,
+        fileSha256,
+        mimeType,
+        fileSizeBytes,
+      });
+      importJobId = importJob.id;
+      logPlanningImport("started", {
+        projectId,
+        importJobId,
+        fileName: safeFileName,
+        fileSizeBytes,
+      });
+
+      // A short heartbeat distinguishes a genuinely slow AI request from a
+      // process that disappeared mid-import. The status read marks jobs stale
+      // only after heartbeats stop for five minutes.
+      heartbeat = setInterval(() => {
+        void touchPlanningImportJob(importJob.id).catch((heartbeatError) => {
+          console.error("[PlanningImport] heartbeat failed", {
+            projectId,
+            importJobId: importJob.id,
+            error: heartbeatError instanceof Error ? heartbeatError.message : String(heartbeatError),
+          });
+        });
+      }, 30_000);
+      heartbeat.unref();
+
+      const advanceStage = async (stage: ActivePlanningImportStage): Promise<void> => {
+        const updated = await advancePlanningImportStage(importJob.id, stage);
+        if (updated) {
+          logPlanningImport("stage", {
+            projectId,
+            importJobId: importJob.id,
+            fileName: safeFileName,
+            stage,
+            durationMs: Date.now() - requestStartedAt,
+          });
+        }
+      };
 
       // Parse the PDF using the document parser
+      await advanceStage("extracting");
       const {
         parseDocument,
         matchToProject,
         isTransientParseFailure,
-        getParseFailureMessage,
       } = await import("../gmail/document-parser");
       const {
         validateExtraction,
@@ -261,17 +341,32 @@ router.post(
         checkLotReferencesAgainstCatalog,
       } = await import("../services/lot-reference-validator");
 
-      const parsed = await parseDocument(file.buffer, file.originalname);
+      const parsed = await parseDocument(file.buffer, safeFileName);
+      await advanceStage("validating");
 
       // Reject only meaningless/transient parse failures (not blocking completeness warnings)
       if (parsed.documentType === "unknown" && !parsed.amountHt && !parsed.contractorName && !parsed.lineItems?.length) {
         const transient = isTransientParseFailure(parsed);
-        const reason = getParseFailureMessage(parsed);
+        const message = transient
+          ? "AI extraction is temporarily unavailable. Choose the PDF again to retry."
+          : "Could not extract usable planning data from this PDF. Check the file and try again.";
+        const code = transient ? DEVIS_UPLOAD_ERROR_CODES.AI_TRANSIENT : DEVIS_UPLOAD_ERROR_CODES.DEVIS_PARSE_FAILED;
+        await failPlanningImportJob({
+          importJobId: importJob.id,
+          errorCode: code,
+          errorMessage: message,
+        });
+        logPlanningImport("failed", {
+          projectId,
+          importJobId: importJob.id,
+          fileName: safeFileName,
+          stage: "validating",
+          code,
+          durationMs: Date.now() - requestStartedAt,
+        });
         return res.status(transient ? 503 : 422).json({
-          message: transient
-            ? `AI extraction temporarily unavailable${reason ? ` (${reason})` : ""}. Please try again.`
-            : reason ? `AI extraction failed: ${reason}` : "Could not extract meaningful data from this PDF.",
-          code: transient ? DEVIS_UPLOAD_ERROR_CODES.AI_TRANSIENT : DEVIS_UPLOAD_ERROR_CODES.DEVIS_PARSE_FAILED,
+          message,
+          code,
         });
       }
 
@@ -340,6 +435,7 @@ router.post(
 
       // Upload AFTER parse/validation succeeds (avoid orphaning rejected files)
       // Use deterministic key based on SHA256 so re-uploads of the same file are idempotent
+      await advanceStage("storing");
       const objectName = buildPlanningSourceObjectName(projectId, fileSha256);
       const storageKey = await uploadDocumentAtKey(objectName, file.buffer, mimeType);
 
@@ -348,11 +444,13 @@ router.post(
         ? Math.min(validation.confidenceScore, 79) // force requiresVerification=true
         : validation.confidenceScore;
 
+      await advanceStage("saving");
       const detail = await createPdfRevision({
         projectId,
         actor,
+        importJobId: importJob.id,
         storageKey,
-        fileName: file.originalname,
+        fileName: safeFileName,
         fileSha256,
         mimeType,
         fileSizeBytes,
@@ -374,9 +472,45 @@ router.post(
         lines,
       });
 
+      logPlanningImport("succeeded", {
+        projectId,
+        importJobId: importJob.id,
+        fileName: safeFileName,
+        revisionId: detail.revision.id,
+        lineCount: detail.lines.length,
+        durationMs: Date.now() - requestStartedAt,
+      });
       res.status(201).json(detail);
     } catch (err) {
+      if (importJobId != null) {
+        const code = err instanceof PlanningEnvelopeError ? err.code : "IMPORT_FAILED";
+        const message = safePlanningImportFailureMessage(err);
+        try {
+          const failed = await failPlanningImportJob({
+            importJobId,
+            errorCode: code,
+            errorMessage: message,
+          });
+          if (failed) {
+            logPlanningImport("failed", {
+              projectId: Number(req.params.projectId),
+              importJobId,
+              fileName: importFileName,
+              stage: failed.stage,
+              code,
+              durationMs: Date.now() - requestStartedAt,
+            });
+          }
+        } catch (statusError) {
+          console.error("[PlanningImport] failed to persist terminal status", {
+            importJobId,
+            error: statusError instanceof Error ? statusError.message : String(statusError),
+          });
+        }
+      }
       handlePlanningError(err, res);
+    } finally {
+      if (heartbeat) clearInterval(heartbeat);
     }
   },
 );

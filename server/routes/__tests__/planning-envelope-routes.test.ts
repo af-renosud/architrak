@@ -14,6 +14,11 @@ vi.mock("../../services/planning-envelope.service", () => ({
   getEnvelopeById: vi.fn(),
   createManualRevision: vi.fn(),
   createPdfRevision: vi.fn(),
+  createPlanningImportJob: vi.fn(),
+  advancePlanningImportStage: vi.fn(),
+  touchPlanningImportJob: vi.fn(),
+  failPlanningImportJob: vi.fn(),
+  getRecentPlanningImports: vi.fn(),
   patchRevision: vi.fn(),
   reviewRevision: vi.fn(),
   approveRevision: vi.fn(),
@@ -30,6 +35,13 @@ vi.mock("../../services/planning-envelope.service", () => ({
       this.name = "PlanningEnvelopeError";
     }
   },
+}));
+
+vi.mock("../../gmail/document-parser", () => ({
+  parseDocument: vi.fn(),
+  matchToProject: vi.fn(),
+  isTransientParseFailure: vi.fn(),
+  getParseFailureMessage: vi.fn(),
 }));
 
 vi.mock("../../storage", async () => {
@@ -53,6 +65,11 @@ import {
   getRevisionById,
   getEnvelopeById,
   createManualRevision,
+  createPlanningImportJob,
+  advancePlanningImportStage,
+  touchPlanningImportJob,
+  failPlanningImportJob,
+  getRecentPlanningImports,
   patchRevision,
   reviewRevision,
   approveRevision,
@@ -60,16 +77,27 @@ import {
   promoteRevision,
   PlanningEnvelopeError,
 } from "../../services/planning-envelope.service";
+import {
+  parseDocument,
+  isTransientParseFailure,
+} from "../../gmail/document-parser";
 
 const mockGetSummary = getEnvelopeSummary as unknown as ReturnType<typeof vi.fn>;
 const mockGetRevisionById = getRevisionById as unknown as ReturnType<typeof vi.fn>;
 const mockGetEnvelopeById = getEnvelopeById as unknown as ReturnType<typeof vi.fn>;
 const mockCreateManual = createManualRevision as unknown as ReturnType<typeof vi.fn>;
+const mockCreateImportJob = createPlanningImportJob as unknown as ReturnType<typeof vi.fn>;
+const mockAdvanceImportStage = advancePlanningImportStage as unknown as ReturnType<typeof vi.fn>;
+const mockTouchImportJob = touchPlanningImportJob as unknown as ReturnType<typeof vi.fn>;
+const mockFailImportJob = failPlanningImportJob as unknown as ReturnType<typeof vi.fn>;
+const mockGetRecentImports = getRecentPlanningImports as unknown as ReturnType<typeof vi.fn>;
 const mockPatch = patchRevision as unknown as ReturnType<typeof vi.fn>;
 const mockReview = reviewRevision as unknown as ReturnType<typeof vi.fn>;
 const mockApprove = approveRevision as unknown as ReturnType<typeof vi.fn>;
 const mockRevise = reviseRevision as unknown as ReturnType<typeof vi.fn>;
 const mockPromote = promoteRevision as unknown as ReturnType<typeof vi.fn>;
+const mockParseDocument = parseDocument as unknown as ReturnType<typeof vi.fn>;
+const mockIsTransientParseFailure = isTransientParseFailure as unknown as ReturnType<typeof vi.fn>;
 
 const mockGetProject = storage.getProject as unknown as ReturnType<typeof vi.fn>;
 const mockGetUser = storage.getUser as unknown as ReturnType<typeof vi.fn>;
@@ -122,14 +150,24 @@ beforeEach(() => {
   mockGetRevisionById.mockReset();
   mockGetEnvelopeById.mockReset();
   mockCreateManual.mockReset();
+  mockCreateImportJob.mockReset();
+  mockAdvanceImportStage.mockReset();
+  mockTouchImportJob.mockReset();
+  mockFailImportJob.mockReset();
+  mockGetRecentImports.mockReset();
   mockPatch.mockReset();
   mockReview.mockReset();
   mockApprove.mockReset();
   mockRevise.mockReset();
   mockPromote.mockReset();
+  mockParseDocument.mockReset();
+  mockIsTransientParseFailure.mockReset();
   mockGetProject.mockReset();
   mockGetUser.mockReset();
   mockGetUser.mockResolvedValue(FAKE_USER);
+  mockGetRecentImports.mockResolvedValue([]);
+  mockTouchImportJob.mockResolvedValue(undefined);
+  mockAdvanceImportStage.mockResolvedValue(null);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -174,6 +212,7 @@ describe("GET /api/projects/:projectId/planning-envelope", () => {
     const body = await res.json();
     expect(body.envelope).toBeNull();
     expect(body.revisions).toEqual([]);
+    expect(body.imports).toEqual([]);
     expect(body.totals.amountHt).toBe("0.00");
     expect(body.totals.byLot).toEqual([]);
   });
@@ -208,6 +247,100 @@ describe("GET /api/projects/:projectId/planning-envelope", () => {
     expect(body.totals.byLot[0].description).toBe("Gros œuvre");
     expect(body.totals.byLot[0].count).toBe(1);
     expect(body.totals.byLot[0].amountTtc).toBe("1200.00");
+    expect(body.imports).toEqual([]);
+  });
+
+  it("returns durable import progress even before an envelope exists", async () => {
+    mockGetProject.mockResolvedValue(FAKE_PROJECT);
+    mockGetSummary.mockResolvedValue(null);
+    mockGetRecentImports.mockResolvedValue([{
+      id: 77,
+      fileName: "slow-quotation.pdf",
+      status: "processing",
+      stage: "extracting",
+      revisionId: null,
+      errorCode: null,
+      errorMessage: null,
+      startedAt: new Date("2026-08-20T12:00:00Z"),
+      updatedAt: new Date("2026-08-20T12:01:00Z"),
+      completedAt: null,
+    }]);
+    const res = await fetch(`${baseUrl}/api/projects/1/planning-envelope`, {
+      headers: { "x-test-user-id": "42" },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.envelope).toBeNull();
+    expect(body.imports).toEqual([
+      expect.objectContaining({
+        id: 77,
+        fileName: "slow-quotation.pdf",
+        status: "processing",
+        stage: "extracting",
+      }),
+    ]);
+    expect(mockGetRecentImports).toHaveBeenCalledWith(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/projects/:projectId/planning-envelope/import
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("POST /api/projects/:projectId/planning-envelope/import", () => {
+  it("never persists or returns raw parser diagnostics", async () => {
+    mockGetProject.mockResolvedValue(FAKE_PROJECT);
+    mockCreateImportJob.mockResolvedValue({
+      id: 88,
+      projectId: 1,
+      fileName: "unsafe-provider-error.pdf",
+      fileSha256: "a".repeat(64),
+      mimeType: "application/pdf",
+      fileSizeBytes: 16,
+      status: "processing",
+      stage: "accepted",
+      revisionId: null,
+      errorCode: null,
+      errorMessage: null,
+      createdBy: FAKE_USER.email,
+      startedAt: new Date(),
+      updatedAt: new Date(),
+      completedAt: null,
+    });
+    mockParseDocument.mockResolvedValue({
+      documentType: "unknown",
+      rawText: "Parse failed: upstream-secret-diagnostic",
+    });
+    mockIsTransientParseFailure.mockReturnValue(false);
+    mockFailImportJob.mockResolvedValue({
+      id: 88,
+      status: "failed",
+      stage: "validating",
+    });
+
+    const form = new FormData();
+    form.append(
+      "file",
+      new Blob(["%PDF-1.4\n%%EOF\n"], { type: "application/pdf" }),
+      "unsafe-provider-error.pdf",
+    );
+    const response = await fetch(`${baseUrl}/api/projects/1/planning-envelope/import`, {
+      method: "POST",
+      headers: { "x-test-user-id": "42" },
+      body: form,
+    });
+    expect(response.status).toBe(422);
+    const body = await response.json();
+    expect(body).toEqual({
+      message: "Could not extract usable planning data from this PDF. Check the file and try again.",
+      code: "DEVIS_PARSE_FAILED",
+    });
+    expect(JSON.stringify(body)).not.toContain("upstream-secret-diagnostic");
+    expect(mockFailImportJob).toHaveBeenCalledWith({
+      importJobId: 88,
+      errorCode: "DEVIS_PARSE_FAILED",
+      errorMessage: "Could not extract usable planning data from this PDF. Check the file and try again.",
+    });
   });
 });
 

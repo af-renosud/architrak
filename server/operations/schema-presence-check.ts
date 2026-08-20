@@ -37,6 +37,10 @@ import { resolveMigrationsFolder } from "../migrate";
 export type ArtifactKind =
   | { kind: "table"; table: string }
   | { kind: "column"; table: string; column: string }
+  | { kind: "constraint"; table: string; constraint: string }
+  | { kind: "index"; index: string }
+  | { kind: "trigger"; table: string; trigger: string }
+  | { kind: "all"; artifacts: ArtifactKind[] }
   | { kind: "data_only"; reason: string; rerunnable?: boolean };
 
 export interface MigrationArtifact {
@@ -177,6 +181,18 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0108_planning_promotion_stamp_guard", artifact: { kind: "data_only", reason: "replaces the approved-revision guard to validate initial promotion targets and freeze supersession audit", rerunnable: true } },
   { tag: "0109_devis_planning_provenance_guard", artifact: { kind: "data_only", reason: "guarded trigger/function DDL enforcing immutable validated devis-to-planning provenance", rerunnable: true } },
   { tag: "0110_planning_provenance_deferred_link", artifact: { kind: "data_only", reason: "replaces the devis provenance guard with complete-line validation and adds a deferred reciprocal-link constraint trigger", rerunnable: true } },
+  {
+    tag: "0111_planning_import_jobs",
+    artifact: {
+      kind: "all",
+      artifacts: [
+        { kind: "table", table: "planning_import_jobs" },
+        { kind: "constraint", table: "planning_import_jobs", constraint: "planning_import_jobs_terminal_shape_chk" },
+        { kind: "index", index: "planning_import_jobs_revision_unique" },
+        { kind: "trigger", table: "planning_import_jobs", trigger: "planning_import_job_lifecycle_trg" },
+      ],
+    },
+  },
 ];
 
 interface JournalFile {
@@ -216,12 +232,69 @@ async function columnExists(
   return r.rows[0]?.exists === true;
 }
 
+async function constraintExists(
+  pool: pg.Pool,
+  table: string,
+  constraint: string,
+): Promise<boolean> {
+  const r = await pool.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1
+         FROM pg_constraint c
+         JOIN pg_class t ON t.oid = c.conrelid
+         JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE n.nspname = 'public'
+          AND t.relname = $1
+          AND c.conname = $2
+     ) AS exists`,
+    [table, constraint],
+  );
+  return r.rows[0]?.exists === true;
+}
+
+async function indexExists(pool: pg.Pool, index: string): Promise<boolean> {
+  const r = await pool.query<{ exists: boolean }>(
+    `SELECT to_regclass($1) IS NOT NULL AS exists`,
+    [`public.${index}`],
+  );
+  return r.rows[0]?.exists === true;
+}
+
+async function triggerExists(
+  pool: pg.Pool,
+  table: string,
+  trigger: string,
+): Promise<boolean> {
+  const r = await pool.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1
+         FROM pg_trigger tr
+         JOIN pg_class t ON t.oid = tr.tgrelid
+         JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE n.nspname = 'public'
+          AND t.relname = $1
+          AND tr.tgname = $2
+          AND NOT tr.tgisinternal
+     ) AS exists`,
+    [table, trigger],
+  );
+  return r.rows[0]?.exists === true;
+}
+
 function describe(a: ArtifactKind): string {
   switch (a.kind) {
     case "table":
       return `table public.${a.table}`;
     case "column":
       return `column public.${a.table}.${a.column}`;
+    case "constraint":
+      return `constraint public.${a.table}.${a.constraint}`;
+    case "index":
+      return `index public.${a.index}`;
+    case "trigger":
+      return `trigger public.${a.table}.${a.trigger}`;
+    case "all":
+      return a.artifacts.map(describe).join(" + ");
     case "data_only":
       return `<data-only: ${a.reason}>`;
   }
@@ -233,6 +306,17 @@ async function probe(pool: pg.Pool, a: ArtifactKind): Promise<boolean> {
       return tableExists(pool, a.table);
     case "column":
       return columnExists(pool, a.table, a.column);
+    case "constraint":
+      return constraintExists(pool, a.table, a.constraint);
+    case "index":
+      return indexExists(pool, a.index);
+    case "trigger":
+      return triggerExists(pool, a.table, a.trigger);
+    case "all":
+      for (const artifact of a.artifacts) {
+        if (!(await probe(pool, artifact))) return false;
+      }
+      return true;
     case "data_only":
       // No artifact to probe; treat as "true" so absence/presence
       // checks always agree with whatever the tracker says.

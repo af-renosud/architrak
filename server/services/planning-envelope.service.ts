@@ -6,7 +6,7 @@
  * All functions are individually importable for unit testing.
  */
 import crypto from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   planningEnvelopes,
@@ -14,6 +14,7 @@ import {
   planningRevisionLines,
   planningRevisionSources,
   planningRevisionEvents,
+  planningImportJobs,
   devis,
   devisLineItems,
   contractors,
@@ -23,6 +24,9 @@ import {
   type PlanningRevision,
   type PlanningRevisionLine,
   type PlanningRevisionSource,
+  type PlanningImportJob,
+  type PlanningImportStage,
+  type PlanningImportStatus,
 } from "@shared/schema";
 import { roundCurrency } from "../../shared/financial-utils";
 
@@ -31,6 +35,7 @@ import { roundCurrency } from "../../shared/financial-utils";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const LOW_CONFIDENCE_THRESHOLD = 80;
+const PLANNING_IMPORT_STALE_AFTER_MS = 5 * 60 * 1000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Error class
@@ -56,7 +61,9 @@ export type PlanningEnvelopeErrorCode =
   | "PROJECT_ARCHIVED"
   | "CONTRACTOR_NOT_FOUND"
   | "LOT_NOT_FOUND"
-  | "STORAGE_KEY_MISSING";
+  | "STORAGE_KEY_MISSING"
+  | "IMPORT_JOB_NOT_FOUND"
+  | "IMPORT_JOB_STATUS_CONFLICT";
 
 export class PlanningEnvelopeError extends Error {
   constructor(
@@ -101,6 +108,19 @@ export interface EnvelopeSummary {
       count: number;
     }>;
   };
+}
+
+export interface PlanningImportSummary {
+  id: number;
+  fileName: string;
+  status: PlanningImportStatus;
+  stage: PlanningImportStage;
+  revisionId: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  startedAt: Date;
+  updatedAt: Date;
+  completedAt: Date | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -291,6 +311,144 @@ async function assertProjectMutable(projectId: number, tx: TxClient): Promise<vo
       { projectId },
     );
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Durable PDF import progress
+// ─────────────────────────────────────────────────────────────────────────────
+
+function toPlanningImportSummary(row: PlanningImportJob): PlanningImportSummary {
+  return {
+    id: row.id,
+    fileName: row.fileName,
+    status: row.status as PlanningImportStatus,
+    stage: row.stage as PlanningImportStage,
+    revisionId: row.revisionId,
+    errorCode: row.errorCode,
+    errorMessage: row.errorMessage,
+    startedAt: row.startedAt,
+    updatedAt: row.updatedAt,
+    completedAt: row.completedAt,
+  };
+}
+
+export interface CreatePlanningImportJobInput {
+  projectId: number;
+  actor: string;
+  fileName: string;
+  fileSha256: string;
+  mimeType: string;
+  fileSizeBytes: number;
+}
+
+export async function createPlanningImportJob(
+  input: CreatePlanningImportJobInput,
+): Promise<PlanningImportSummary> {
+  return db.transaction(async (tx) => {
+    await assertProjectMutable(input.projectId, tx);
+    const [row] = await tx
+      .insert(planningImportJobs)
+      .values({
+        projectId: input.projectId,
+        fileName: input.fileName,
+        fileSha256: input.fileSha256,
+        mimeType: input.mimeType,
+        fileSizeBytes: input.fileSizeBytes,
+        createdBy: input.actor,
+        status: "processing",
+        stage: "accepted",
+      })
+      .returning();
+    return toPlanningImportSummary(row);
+  });
+}
+
+export async function advancePlanningImportStage(
+  importJobId: number,
+  stage: Exclude<PlanningImportStage, "complete">,
+): Promise<PlanningImportSummary | null> {
+  const [row] = await db
+    .update(planningImportJobs)
+    .set({ stage, updatedAt: new Date() })
+    .where(and(
+      eq(planningImportJobs.id, importJobId),
+      eq(planningImportJobs.status, "processing"),
+    ))
+    .returning();
+  return row ? toPlanningImportSummary(row) : null;
+}
+
+export async function touchPlanningImportJob(importJobId: number): Promise<void> {
+  await db
+    .update(planningImportJobs)
+    .set({ updatedAt: new Date() })
+    .where(and(
+      eq(planningImportJobs.id, importJobId),
+      eq(planningImportJobs.status, "processing"),
+    ));
+}
+
+export interface FailPlanningImportJobInput {
+  importJobId: number;
+  errorCode: string;
+  errorMessage: string;
+}
+
+export async function failPlanningImportJob(
+  input: FailPlanningImportJobInput,
+): Promise<PlanningImportSummary | null> {
+  const errorCode = input.errorCode.trim().slice(0, 100) || "IMPORT_FAILED";
+  const errorMessage = input.errorMessage.trim().slice(0, 500) || "PDF import failed. Choose the file again to retry.";
+  const now = new Date();
+  const [row] = await db
+    .update(planningImportJobs)
+    .set({
+      status: "failed",
+      errorCode,
+      errorMessage,
+      completedAt: now,
+      updatedAt: now,
+    })
+    .where(and(
+      eq(planningImportJobs.id, input.importJobId),
+      eq(planningImportJobs.status, "processing"),
+    ))
+    .returning();
+  return row ? toPlanningImportSummary(row) : null;
+}
+
+async function markAbandonedPlanningImportsStale(projectId: number, now: Date): Promise<void> {
+  const cutoff = new Date(now.getTime() - PLANNING_IMPORT_STALE_AFTER_MS);
+  await db
+    .update(planningImportJobs)
+    .set({
+      status: "stale",
+      errorCode: "IMPORT_STALE",
+      errorMessage: "Processing stopped before completion. Choose the PDF again to retry.",
+      completedAt: now,
+      updatedAt: now,
+    })
+    .where(and(
+      eq(planningImportJobs.projectId, projectId),
+      eq(planningImportJobs.status, "processing"),
+      lt(planningImportJobs.updatedAt, cutoff),
+    ));
+}
+
+export async function getRecentPlanningImports(
+  projectId: number,
+  requestedLimit = 10,
+  now = new Date(),
+): Promise<PlanningImportSummary[]> {
+  await markAbandonedPlanningImportsStale(projectId, now);
+  const limit = Math.max(1, Math.min(20, Math.trunc(requestedLimit)));
+  const rows = await db
+    .select()
+    .from(planningImportJobs)
+    .where(eq(planningImportJobs.projectId, projectId))
+    .orderBy(desc(planningImportJobs.startedAt), desc(planningImportJobs.id))
+    .limit(limit);
+  return rows.map(toPlanningImportSummary);
 }
 
 /**
@@ -686,6 +844,7 @@ export async function createManualRevision(input: CreateManualRevisionInput): Pr
 export interface CreatePdfRevisionInput {
   projectId: number;
   actor: string;
+  importJobId?: number;
   storageKey: string;
   fileName: string;
   fileSha256: string;
@@ -732,6 +891,29 @@ export async function createPdfRevision(input: CreatePdfRevisionInput): Promise<
 
   return db.transaction(async (tx) => {
     await assertProjectMutable(input.projectId, tx);
+
+    if (input.importJobId != null) {
+      const [job] = await tx
+        .select()
+        .from(planningImportJobs)
+        .where(eq(planningImportJobs.id, input.importJobId))
+        .for("update");
+      if (!job || job.projectId !== input.projectId) {
+        throw new PlanningEnvelopeError(404, "IMPORT_JOB_NOT_FOUND", "Planning import job not found");
+      }
+      if (
+        !["processing", "stale"].includes(job.status)
+        || job.fileSha256 !== input.fileSha256
+        || job.fileName !== input.fileName
+      ) {
+        throw new PlanningEnvelopeError(
+          409,
+          "IMPORT_JOB_STATUS_CONFLICT",
+          "Planning import job cannot be completed from this source",
+        );
+      }
+    }
+
     const envelope = await ensureEnvelope(input.projectId, tx);
 
     // Validate contractor if detected
@@ -801,6 +983,33 @@ export async function createPdfRevision(input: CreatePdfRevisionInput): Promise<
       .select()
       .from(planningRevisionSources)
       .where(eq(planningRevisionSources.revisionId, revision.id));
+
+    if (input.importJobId != null) {
+      const now = new Date();
+      const [completedJob] = await tx
+        .update(planningImportJobs)
+        .set({
+          status: "succeeded",
+          stage: "complete",
+          revisionId: revision.id,
+          errorCode: null,
+          errorMessage: null,
+          completedAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(planningImportJobs.id, input.importJobId),
+          inArray(planningImportJobs.status, ["processing", "stale"]),
+        ))
+        .returning({ id: planningImportJobs.id });
+      if (!completedJob) {
+        throw new PlanningEnvelopeError(
+          409,
+          "IMPORT_JOB_STATUS_CONFLICT",
+          "Planning import job changed before completion",
+        );
+      }
+    }
 
     return { revision, lines, source: source ?? null };
   });
