@@ -1,0 +1,238 @@
+ArchiDoc “Lots Techniques” investigation
+Conclusion
+No suitable read-only ArchiTrak integration endpoint currently exists.
+
+ArchiDoc does have GET /api/app-settings, but it:
+
+requires an authenticated ArchiDoc browser session;
+returns every application setting, not just technical lots;
+is not protected by the ArchiDoc–ArchiTrak integration credential;
+exposes no stable per-lot identifiers, status, ordering metadata, or tombstones.
+No code or API changes were made during this investigation.
+
+1. Current source of truth
+The list displayed under Settings → Lots Techniques is held in application state as:
+
+type CategoryMap = Record<string, string>;
+
+Each property is:
+
+technicalLotCode -> frenchDisplayLabel
+
+The persisted value is a row in the app_settings table:
+
+Column	Meaning
+id	Identifier of the entire settings row, not an individual lot
+setting_key	categories
+setting_value	JSONB object containing the code-to-label map
+updated_at	Timestamp for the entire categories setting
+The effective list displayed by ArchiDoc is assembled by:
+
+starting with the built-in CATEGORY_MAP;
+overlaying the persisted app_settings.categories object.
+It does not come from project-specific customLots.
+
+2. Current built-in codes and labels
+These are the code-defined baseline entries. Persisted settings may add entries or override labels at runtime.
+
+Code	French label
+LOT0	PRESCRIPTIONS COMMUNES
+TS	TERRASSEMENT
+VRD	VOIRIES ET RÉSEAUX DIVERS
+DM	DÉMOLITION
+SO	SOUS OEUVRE
+GO	GROS OEUVRE MAÇONNERIE
+CH	CHARPENTE ET OSSATURE BOIS
+CZ	COUVERTURE - ZINGUERIE
+ET	ETANCHEITE
+EL	ÉLECTRICITÉ
+PB	PLOMBERIE
+PL	PLÂTRERIE
+RM	CARRELAGE ET REVETEMENT MURAL
+RS	REVETEMENT DE SOL (SAUF CARRELAGE)
+MN	MENUISERIE
+VT	VENTILATION
+CL	CLIMATISATION
+RP	RAVALEMENT PEINTURE
+RE	REVÊTEMENTS EXTÉRIEURS
+FN	FERRONNERIE/METALLERIE
+AE	AMÉNAGEMENTS EXTÉRIEURS - ESPACES VERTS
+PS	PISCINE
+The Settings interface renders them with:
+
+Object.entries(categories)
+
+3. Stable identifiers
+There is currently no immutable per-lot identifier.
+
+The object key is both the lot’s identifier and its displayed code.
+Changing a code is effectively deletion of one entry and creation of another.
+The app_settings.id value identifies the complete categories settings row; it cannot identify an individual technical lot.
+There is no UUID or database row per lot.
+Therefore, the current model cannot guarantee an identity that survives a code rename.
+
+4. Label model
+The current technical-lot model has one label:
+
+type TechnicalLot = {
+  code: string;
+  label: string;
+}
+
+That label is the French designation shown in Settings.
+
+There is no English label field for individual technical lots. Some separate lot-group definitions contain English group labels, but those are not translations of the master technical-lot entries and must not be used as such.
+
+Current nullability in practice:
+
+Code: expected to be a non-empty string, but the persisted JSON is not server-validated.
+Label: expected to be a string, but the generic settings endpoint does not validate the stored JSON.
+English label: unavailable, not null—the field does not exist.
+5. Ordering semantics
+There is no configured displayOrder field and no reorder control.
+
+Current behavior:
+
+Built-in entries initially follow the insertion order of CATEGORY_MAP.
+Saved values are overlaid on that object.
+Existing built-in keys retain their original JavaScript property positions when their labels are overridden.
+New custom keys are appended during the current browser session.
+The value is persisted as PostgreSQL jsonb, whose object-key ordering is not a supported display-order contract.
+Consequently, ArchiDoc does not currently provide a reliable configured ordering for custom entries. A deterministic cross-application ordering guarantee would require an explicit order field or an ordered array representation.
+
+6. Inactive, archived, and deleted entries
+The current model has no lifecycle metadata:
+
+active: // absent
+archived: // absent
+deletedAt: // absent
+
+Deletion behavior:
+
+Removing a custom entry deletes its property from the categories object.
+No tombstone is retained.
+It is impossible to distinguish “deleted” from “never existed.”
+There is no historical lookup for a removed code.
+No per-entry modification or deletion timestamp exists.
+The only timestamp is app_settings.updated_at, covering the entire map.
+There is also an important built-in-default behavior: ArchiDoc seeds the list from CATEGORY_MAP on every load before applying persisted settings. A missing built-in key can therefore be reintroduced on reload. The current representation cannot persist a tombstone for a removed built-in entry.
+
+This means the requested last-known-good and historical-reference requirements cannot be met by merely exposing the current map.
+
+7. Existing HTTP endpoint
+Generic application-settings endpoint
+GET /api/app-settings
+
+Authentication
+ArchiDoc browser-session authentication is required.
+
+It expects the ArchiDoc session cookie; it does not accept the ArchiTrak sync Bearer credential.
+
+Success
+200 OK
+Content-Type: application/json
+
+Current TypeScript representation:
+
+type AppSettingsResponse = Record<string, unknown> & {
+  categories?: Record<string, string>;
+};
+
+categories can be absent if there is no corresponding database row.
+
+Sanitized response excerpt
+The actual response contains other application settings as sibling properties:
+
+{
+  "categories": {
+    "LOT0": "PRESCRIPTIONS COMMUNES",
+    "TS": "TERRASSEMENT",
+    "VRD": "VOIRIES ET RÉSEAUX DIVERS",
+    "GO": "GROS OEUVRE MAÇONNERIE"
+  }
+}
+
+Errors
+Missing ArchiDoc session:
+
+401 Unauthorized
+
+{
+  "error": "Unauthorized",
+  "redirect": "/login"
+}
+
+Database/read failure:
+
+500 Internal Server Error
+
+{
+  "error": "Failed to fetch app settings"
+}
+
+Other contract characteristics
+Pagination: none.
+API version: none.
+Response schema validation: none.
+Ordering guarantee: none.
+ETag/change token: none.
+Per-entry timestamps: none.
+Tombstones: none.
+This endpoint should not be used as the ArchiTrak integration endpoint because it is broad and session-oriented.
+
+8. Existing ArchiTrak integration authentication
+ArchiDoc already has a server-to-server convention suitable for a future read endpoint:
+
+Authorization: Bearer <integration credential>
+
+The expected credential is configured server-side using ARCHIDOC_SYNC_API_KEY.
+
+Authentication failure:
+
+401 Unauthorized
+
+{
+  "error": "Unauthorized"
+}
+
+If ArchiDoc itself has no sync credential configured:
+
+503 Service Unavailable
+
+{
+  "error": "Sync API not configured"
+}
+
+The comparison is performed with a constant-time secret comparison.
+
+The current ArchiTrak integration module exposes only:
+
+POST /api/integrations/architrak/contractors/:contractorId/insurance-verdict
+POST /api/integrations/architrak/work-authorisations
+There is no technical-lot GET route.
+
+9. Missing contract capabilities
+A new endpoint alone cannot honestly provide all fields requested by ArchiTrak. The underlying ArchiDoc model first needs to represent them.
+
+Requested capability	Available now?
+Global Settings list	Yes
+Exact code	Yes
+French label	Yes
+English label	No
+Immutable identifier surviving code rename	No
+Explicit display order	No
+Active/inactive state	No
+Deleted-item tombstones	No
+Per-entry updated timestamp	No
+Whole-list updated timestamp	Available in the database, but omitted by the current endpoint
+Read-only integration authentication	Existing convention available
+Dedicated read endpoint	No
+10. Tests and deployment status
+Tests run: none; this was a read-only code investigation.
+Endpoint added: no.
+Deployment required immediately: none, because nothing changed.
+ArchiTrak cannot yet consume a supported master-lot integration contract.
+ArchiTrak must wait for a future ArchiDoc deployment that adds the dedicated endpoint.
+If immutable identity, ordering, inactive entries, and tombstones remain mandatory, that deployment must also introduce a richer ArchiDoc technical-lot data model rather than serializing the current Record<string, string> unchanged.
+Main unresolved blocker
+The present ArchiDoc structure is sufficient for rendering today’s dropdown, but it is not sufficient for a durable last-known-good mirror that preserves renamed or removed lots on historical revisions. That requirement needs an ArchiDoc data-model decision before an endpoint contract can be finalized.
