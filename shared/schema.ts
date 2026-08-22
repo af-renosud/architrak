@@ -1370,6 +1370,37 @@ export const archidocTrades = pgTable("archidoc_trades", {
   syncedAt: timestamp("synced_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
+export const archidocTechnicalLots = pgTable("archidoc_technical_lots", {
+  archidocId: varchar("archidoc_id", { length: 255 }).primaryKey(),
+  code: text("code").notNull(),
+  labelFr: text("label_fr").notNull(),
+  displayOrder: integer("display_order").notNull(),
+  isActive: boolean("is_active").notNull(),
+  deletedAt: timestamp("deleted_at"),
+  archidocCreatedAt: timestamp("archidoc_created_at").notNull(),
+  archidocUpdatedAt: timestamp("archidoc_updated_at").notNull(),
+  sourceBaseUrl: text("source_base_url"),
+  syncedAt: timestamp("synced_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("archidoc_technical_lots_selection_idx").on(table.isActive, table.deletedAt, table.displayOrder),
+  check("archidoc_technical_lots_display_order_chk", sql`${table.displayOrder} >= 0`),
+  check(
+    "archidoc_technical_lots_lifecycle_chk",
+    sql`(${table.isActive} = true AND ${table.deletedAt} IS NULL) OR ${table.isActive} = false`,
+  ),
+]);
+
+export const archidocTechnicalLotCatalogue = pgTable("archidoc_technical_lot_catalogue", {
+  singletonKey: integer("singleton_key").primaryKey().default(1),
+  revision: bigint("revision", { mode: "number" }).notNull(),
+  changedAt: timestamp("changed_at").notNull(),
+  sourceBaseUrl: text("source_base_url"),
+  syncedAt: timestamp("synced_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  check("archidoc_technical_lot_catalogue_singleton_chk", sql`${table.singletonKey} = 1`),
+  check("archidoc_technical_lot_catalogue_revision_chk", sql`${table.revision} >= 0`),
+]);
+
 export const archidocProposalFees = pgTable("archidoc_proposal_fees", {
   id: serial("id").primaryKey(),
   archidocProjectId: varchar("archidoc_project_id", { length: 255 }).notNull(),
@@ -2528,6 +2559,8 @@ export type InsertDevisCheckToken = z.infer<typeof insertDevisCheckTokenSchema>;
 export type ArchidocProject = typeof archidocProjects.$inferSelect;
 export type ArchidocContractor = typeof archidocContractors.$inferSelect;
 export type ArchidocTrade = typeof archidocTrades.$inferSelect;
+export type ArchidocTechnicalLot = typeof archidocTechnicalLots.$inferSelect;
+export type ArchidocTechnicalLotCatalogue = typeof archidocTechnicalLotCatalogue.$inferSelect;
 export type ArchidocProposalFee = typeof archidocProposalFees.$inferSelect;
 export type ArchidocSyncLogEntry = typeof archidocSyncLog.$inferSelect;
 export type ArchidocSiretIssue = typeof archidocSiretIssues.$inferSelect;
@@ -3666,6 +3699,8 @@ export const planningRevisions = pgTable("planning_revisions", {
   // nullable provenance
   contractorId: integer("contractor_id").references(() => contractors.id, { onDelete: "set null" }),
   lotId: integer("lot_id").references(() => lots.id, { onDelete: "set null" }),
+  archidocTechnicalLotId: varchar("archidoc_technical_lot_id", { length: 255 })
+    .references(() => archidocTechnicalLots.archidocId, { onDelete: "restrict", onUpdate: "restrict" }),
   // header fields
   reference: text("reference"),
   descriptionFr: text("description_fr"),
@@ -3698,6 +3733,7 @@ export const planningRevisions = pgTable("planning_revisions", {
 }, (table) => [
   index("planning_revisions_envelope_id_idx").on(table.envelopeId),
   index("planning_revisions_status_idx").on(table.status),
+  index("planning_revisions_archidoc_technical_lot_id_idx").on(table.archidocTechnicalLotId),
   uniqueIndex("planning_revisions_promoted_devis_id_unique")
     .on(table.promotedDevisId)
     .where(sql`${table.promotedDevisId} IS NOT NULL`),

@@ -17,8 +17,13 @@ import {
   DESIGN_CONTRACT_TRIGGER_EVENTS,
   type InsertDesignContract,
   type InsertDesignContractMilestone,
+  archidocTechnicalLots,
+  archidocTechnicalLotCatalogue,
+  archidocSyncLog,
 } from "@shared/schema";
 import { DESIGN_CONTRACT_ERROR_CODES } from "../../shared/design-contract-errors";
+import { db } from "../db";
+import { desc, eq, asc } from "drizzle-orm";
 
 const router = Router();
 
@@ -153,6 +158,7 @@ router.post("/api/archidoc/sync", validateRequest({ body: z.object({}).strict().
       contractors: result.contractors,
       trades: result.trades,
       proposalFees: result.proposalFees,
+      technicalLots: result.technicalLots,
     };
     const failures = Object.entries(parts)
       .filter(([, r]) => r.error)
@@ -402,6 +408,78 @@ router.get("/api/archidoc/proposal-fees/:archidocProjectId", async (req, res) =>
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ message });
+  }
+});
+
+/**
+ * GET /api/archidoc/technical-lots
+ *
+ * Returns the locally-mirrored technical-lot catalogue ordered by
+ * displayOrder → code → archidocId, plus the catalogue singleton metadata
+ * and the latest technical_lots sync log status. No upstream fetch is
+ * performed here; the mirror is authoritative and always reflects the LKG.
+ */
+router.get("/api/archidoc/technical-lots", async (_req, res) => {
+  try {
+    // All mirrored lots ordered by displayOrder, then code, then id.
+    const lots = await db
+      .select()
+      .from(archidocTechnicalLots)
+      .orderBy(
+        asc(archidocTechnicalLots.displayOrder),
+        asc(archidocTechnicalLots.code),
+        asc(archidocTechnicalLots.archidocId),
+      );
+
+    // Singleton catalogue metadata (may be absent on first boot).
+    const catalogueRows = await db
+      .select()
+      .from(archidocTechnicalLotCatalogue)
+      .where(eq(archidocTechnicalLotCatalogue.singletonKey, 1))
+      .limit(1);
+    const catalogue = catalogueRows[0] ?? null;
+
+    // Latest technical_lots sync log entry.
+    const syncLogRows = await db
+      .select()
+      .from(archidocSyncLog)
+      .where(eq(archidocSyncLog.syncType, "technical_lots"))
+      .orderBy(desc(archidocSyncLog.id))
+      .limit(1);
+    const syncLog = syncLogRows[0] ?? null;
+
+    res.json({
+      lots: lots.map((lot) => ({
+        id: lot.archidocId,
+        code: lot.code,
+        labelFr: lot.labelFr,
+        displayOrder: lot.displayOrder,
+        isActive: lot.isActive,
+        deletedAt: lot.deletedAt,
+        createdAt: lot.archidocCreatedAt,
+        updatedAt: lot.archidocUpdatedAt,
+        syncedAt: lot.syncedAt,
+      })),
+      catalogue: catalogue
+        ? {
+            revision: catalogue.revision,
+            changedAt: catalogue.changedAt,
+            syncedAt: catalogue.syncedAt,
+          }
+        : null,
+      sync: syncLog
+        ? {
+            status: syncLog.status,
+            startedAt: syncLog.startedAt,
+            completedAt: syncLog.completedAt,
+            recordsUpdated: syncLog.recordsUpdated,
+            errorMessage: syncLog.errorMessage ?? null,
+          }
+        : null,
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ message: `Failed to get technical lots: ${message}` });
   }
 });
 

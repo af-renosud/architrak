@@ -1,11 +1,12 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { db, pool } from "../../db";
-import { archidocSyncLog } from "@shared/schema";
+import { archidocSyncLog, archidocTechnicalLots } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import {
   fullSync,
   incrementalSync,
   recoverStaleRunningSyncLogs,
+  clearPreviousBackendMirrorRows,
   withMirrorSyncLock,
 } from "../sync-service";
 import { runContractorAutoSync } from "../contractor-auto-sync";
@@ -84,5 +85,34 @@ describe("mirror sync lock contract", () => {
     });
     expect(outcome.acquired).toBe(true);
     if (outcome.acquired) expect(outcome.result).toBe(false);
+  });
+
+  it("boot reconciliation leaves technical lots untouched while the lock is held", async () => {
+    const id = `lock-tech-${Date.now()}`;
+    await db.insert(archidocTechnicalLots).values({
+      archidocId: id,
+      code: `LOCK-${Date.now()}`,
+      labelFr: "Previous-source fixture",
+      displayOrder: 1,
+      isActive: true,
+      deletedAt: null,
+      sourceBaseUrl: "https://previous-archidoc.example.com",
+      archidocCreatedAt: new Date(),
+      archidocUpdatedAt: new Date(),
+      syncedAt: new Date(),
+    });
+    try {
+      const whileHeld = await holdLock(() => clearPreviousBackendMirrorRows());
+      expect(whileHeld).toEqual({ projects: 0, contractors: 0, technicalLots: 0 });
+      const [stillActive] = await db
+        .select()
+        .from(archidocTechnicalLots)
+        .where(eq(archidocTechnicalLots.archidocId, id));
+      expect(stillActive.isActive).toBe(true);
+    } finally {
+      await db
+        .delete(archidocTechnicalLots)
+        .where(eq(archidocTechnicalLots.archidocId, id));
+    }
   });
 });

@@ -1,5 +1,5 @@
 import { db, pool } from "../db";
-import { eq, desc, inArray, and, or, isNull, ne, notInArray, lt, count } from "drizzle-orm";
+import { eq, desc, inArray, and, or, isNull, ne, notInArray, lt, count, sql } from "drizzle-orm";
 import {
   archidocProjects,
   archidocContractors,
@@ -7,6 +7,9 @@ import {
   archidocProposalFees,
   archidocSyncLog,
   archidocSiretIssues,
+  archidocTechnicalLots,
+  archidocTechnicalLotCatalogue,
+  planningRevisions,
 } from "@shared/schema";
 import {
   isArchidocConfigured,
@@ -15,6 +18,7 @@ import {
   fetchSuppliers,
   fetchTrades,
   fetchProposalFees,
+  fetchTechnicalLots,
   type ArchidocProjectData,
   type ArchidocContractorData,
   type ArchidocSupplierData,
@@ -471,11 +475,60 @@ export function wipeGuardVerdict(
 export async function clearPreviousBackendMirrorRows(): Promise<{
   projects: number;
   contractors: number;
+  technicalLots: number;
 }> {
   const currentSource = getCurrentSourceBaseUrl();
   if (!currentSource) {
-    return { projects: 0, contractors: 0 };
+    return { projects: 0, contractors: 0, technicalLots: 0 };
   }
+  const outcome = await withMirrorSyncLock(
+    () => clearPreviousBackendMirrorRowsUnsafe(currentSource),
+  );
+  if (!outcome.acquired) {
+    console.log(
+      "[ArchiDoc Sync] Boot reconciliation skipped — another mirror sync holds the shared lock",
+    );
+    return { projects: 0, contractors: 0, technicalLots: 0 };
+  }
+  return outcome.result;
+}
+
+export async function ensurePreviousBackendMirrorRowsReconciled(): Promise<void> {
+  const currentSource = getCurrentSourceBaseUrl();
+  if (!currentSource) return;
+  const outcome = await withMirrorSyncLock(
+    () => clearPreviousBackendMirrorRowsUnsafe(currentSource),
+  );
+  if (outcome.acquired) return;
+
+  console.log(
+    "[ArchiDoc Sync] Boot reconciliation deferred — retrying after the active mirror sync",
+  );
+  const timer = setTimeout(() => {
+    void ensurePreviousBackendMirrorRowsReconciled().catch((err) => {
+      console.error("[ArchiDoc Sync] Deferred boot reconciliation failed:", err);
+    });
+  }, 1_000);
+  timer.unref();
+}
+
+export async function reconcilePreviousBackendMirrorRowsWithinHeldLock(): Promise<{
+  projects: number;
+  contractors: number;
+  technicalLots: number;
+}> {
+  const currentSource = getCurrentSourceBaseUrl();
+  if (!currentSource) {
+    return { projects: 0, contractors: 0, technicalLots: 0 };
+  }
+  return clearPreviousBackendMirrorRowsUnsafe(currentSource);
+}
+
+async function clearPreviousBackendMirrorRowsUnsafe(currentSource: string): Promise<{
+  projects: number;
+  contractors: number;
+  technicalLots: number;
+}> {
   const now = new Date();
 
   const projectOrphans = await db
@@ -506,13 +559,38 @@ export async function clearPreviousBackendMirrorRows(): Promise<{
     )
     .returning({ archidocId: archidocContractors.archidocId });
 
-  if (projectOrphans.length > 0 || contractorOrphans.length > 0) {
+  // Technical lots: soft-delete rows from a previous backend source.
+  // These rows have no isDeleted flag — we clear them by updating
+  // sourceBaseUrl to a sentinel so they are excluded from the active mirror.
+  // We use the existing isActive field as the soft-delete marker: set to false
+  // and stamp deletedAt. Since the table has a deletedAt column we use that.
+  let technicalLotOrphans = 0;
+  try {
+    const orphans = await db
+      .update(archidocTechnicalLots)
+      .set({ isActive: false, deletedAt: now, syncedAt: now })
+      .where(
+        and(
+          eq(archidocTechnicalLots.isActive, true),
+          or(
+            isNull(archidocTechnicalLots.sourceBaseUrl),
+            ne(archidocTechnicalLots.sourceBaseUrl, currentSource),
+          ),
+        ),
+      )
+      .returning({ archidocId: archidocTechnicalLots.archidocId });
+    technicalLotOrphans = orphans.length;
+  } catch {
+    // Table may not exist yet (migrations pending) — no-op
+  }
+
+  if (projectOrphans.length > 0 || contractorOrphans.length > 0 || technicalLotOrphans > 0) {
     console.log(
-      `[ArchiDoc Sync] Boot reconciliation cleared previous-backend mirror rows: ${projectOrphans.length} projects, ${contractorOrphans.length} contractors (current source: ${currentSource})`,
+      `[ArchiDoc Sync] Boot reconciliation cleared previous-backend mirror rows: ${projectOrphans.length} projects, ${contractorOrphans.length} contractors, ${technicalLotOrphans} technical lots (current source: ${currentSource})`,
     );
   }
 
-  return { projects: projectOrphans.length, contractors: contractorOrphans.length };
+  return { projects: projectOrphans.length, contractors: contractorOrphans.length, technicalLots: technicalLotOrphans };
 }
 
 export async function reconcileProjectMirror(
@@ -864,11 +942,194 @@ export async function syncAllProposalFees(): Promise<{ updated: number; error?: 
   }
 }
 
+type MirrorSyncTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+export async function backfillMutablePlanningTechnicalLots(
+  tx: MirrorSyncTx,
+  sourceBaseUrl: string | null,
+): Promise<number> {
+  const backfilled = await tx.execute(sql`
+    UPDATE planning_revisions AS pr
+       SET archidoc_technical_lot_id = atl.archidoc_id,
+           updated_at = CURRENT_TIMESTAMP
+      FROM lots AS project_lot,
+           archidoc_technical_lots AS atl
+     WHERE pr.lot_id = project_lot.id
+       AND pr.archidoc_technical_lot_id IS NULL
+       AND pr.status IN ('draft', 'reviewed')
+       AND atl.code = project_lot.lot_number
+       AND atl.is_active = true
+       AND atl.deleted_at IS NULL
+       AND atl.source_base_url IS NOT DISTINCT FROM ${sourceBaseUrl}
+    RETURNING pr.id
+  `);
+  return backfilled.rows.length;
+}
+
+// --- Technical-lot catalogue sync ----------------------------------------
+//
+// The endpoint returns ALL rows including tombstones, so we enforce that any
+// previously-mirrored ID from the same source must appear in the response
+// (unless the mirror is empty — first catalogue). Absence of a known ID is
+// treated as a protocol violation (truncated / wrong endpoint), not a
+// deletion signal. The service layer must never infer deletion from absence.
+
+export async function syncTechnicalLots(): Promise<{ updated: number; error?: string; warning?: string }> {
+  if (!isArchidocConfigured()) {
+    console.log("[ArchiDoc Sync] Not configured, skipping technical-lots sync");
+    return { updated: 0, error: "Not configured" };
+  }
+
+  const log = await createSyncLog("technical_lots");
+  try {
+    const sourceBaseUrl = getCurrentSourceBaseUrl();
+    const response = await fetchTechnicalLots();
+
+    // Omission guard: if the mirror is non-empty, every previously-mirrored
+    // ID from this source must be present in the response (the endpoint always
+    // returns all tombstones too). A missing ID means the response is
+    // truncated or wrong — preserve LKG and reject.
+    if (sourceBaseUrl) {
+      const mirroredRows = await db
+        .select({ archidocId: archidocTechnicalLots.archidocId })
+        .from(archidocTechnicalLots)
+        .where(eq(archidocTechnicalLots.sourceBaseUrl, sourceBaseUrl));
+
+      if (mirroredRows.length > 0) {
+        const responseIds = new Set(response.lots.map((l) => l.id));
+        const missing = mirroredRows
+          .map((r) => r.archidocId)
+          .filter((id) => !responseIds.has(id));
+        if (missing.length > 0) {
+          const msg =
+            `Technical-lots response omitted ${missing.length} previously-mirrored ID(s) ` +
+            `(e.g. ${missing.slice(0, 3).join(", ")}). ` +
+            `Endpoint must return all rows including tombstones; rejecting to preserve LKG.`;
+          console.error(`[ArchiDoc Sync] ${msg}`);
+          await completeSyncLog(log.id, "failed", 0, msg);
+          return { updated: 0, error: msg };
+        }
+      }
+    }
+
+    // Atomic upsert of all rows + catalogue singleton in a single transaction.
+    const now = new Date();
+    let backfilledRevisionCount = 0;
+    await db.transaction(async (tx) => {
+      const responseIds = response.lots.map((lot) => lot.id);
+      if (sourceBaseUrl && responseIds.length > 0) {
+        const sourceCollisions = await tx
+          .select({ archidocId: archidocTechnicalLots.archidocId })
+          .from(archidocTechnicalLots)
+          .where(
+            and(
+              inArray(archidocTechnicalLots.archidocId, responseIds),
+              or(
+                isNull(archidocTechnicalLots.sourceBaseUrl),
+                ne(archidocTechnicalLots.sourceBaseUrl, sourceBaseUrl),
+              ),
+            ),
+          )
+          .for("update");
+        if (sourceCollisions.length > 0) {
+          const collisionIds = sourceCollisions.map((row) => row.archidocId);
+          const referenced = await tx
+            .select({
+              revisionId: planningRevisions.id,
+              archidocTechnicalLotId: planningRevisions.archidocTechnicalLotId,
+            })
+            .from(planningRevisions)
+            .where(inArray(planningRevisions.archidocTechnicalLotId, collisionIds))
+            .limit(10);
+          if (referenced.length > 0) {
+            throw new Error(
+              `Technical-lot source switch would reuse ${referenced.length} Planning-referenced ID(s) ` +
+              `(e.g. ${referenced.map((row) => row.archidocTechnicalLotId).slice(0, 3).join(", ")}); ` +
+              "rejecting the whole catalogue to preserve historical identity.",
+            );
+          }
+        }
+      }
+
+      for (const lot of response.lots) {
+        await tx
+          .insert(archidocTechnicalLots)
+          .values({
+            archidocId: lot.id,
+            code: lot.code,
+            labelFr: lot.labelFr,
+            displayOrder: lot.displayOrder,
+            isActive: lot.isActive,
+            deletedAt: lot.deletedAt ? new Date(lot.deletedAt) : null,
+            archidocCreatedAt: new Date(lot.createdAt),
+            archidocUpdatedAt: new Date(lot.updatedAt),
+            sourceBaseUrl,
+            syncedAt: now,
+          })
+          .onConflictDoUpdate({
+            target: archidocTechnicalLots.archidocId,
+            set: {
+              code: lot.code,
+              labelFr: lot.labelFr,
+              displayOrder: lot.displayOrder,
+              isActive: lot.isActive,
+              deletedAt: lot.deletedAt ? new Date(lot.deletedAt) : null,
+              archidocCreatedAt: new Date(lot.createdAt),
+              archidocUpdatedAt: new Date(lot.updatedAt),
+              sourceBaseUrl,
+              syncedAt: now,
+            },
+          });
+      }
+
+      // Upsert the singleton catalogue metadata row (singletonKey = 1, enforced by DB check).
+      await tx
+        .insert(archidocTechnicalLotCatalogue)
+        .values({
+          singletonKey: 1,
+          revision: response.catalogue.revision,
+          changedAt: new Date(response.catalogue.changedAt),
+          sourceBaseUrl,
+          syncedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: archidocTechnicalLotCatalogue.singletonKey,
+          set: {
+            revision: response.catalogue.revision,
+            changedAt: new Date(response.catalogue.changedAt),
+            sourceBaseUrl,
+            syncedAt: now,
+          },
+        });
+
+      // Migrate only mutable Planning history. Existing project-lot IDs remain
+      // intact for audit/promotion compatibility; the dedicated ArchiDoc
+      // reference is attached only when the codes match exactly and the
+      // upstream lot is currently selectable. Approved/superseded snapshots
+      // are deliberately never changed.
+      backfilledRevisionCount = await backfillMutablePlanningTechnicalLots(tx, sourceBaseUrl);
+    });
+
+    await completeSyncLog(log.id, "completed", response.lots.length);
+    console.log(
+      `[ArchiDoc Sync] Technical lots synced: ${response.lots.length} records; ` +
+      `${backfilledRevisionCount} mutable Planning revision(s) exact-code backfilled`,
+    );
+    return { updated: response.lots.length };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    await completeSyncLog(log.id, "failed", 0, message);
+    console.error(`[ArchiDoc Sync] Technical lots sync failed: ${message}`);
+    return { updated: 0, error: message };
+  }
+}
+
 export interface MirrorSyncResult {
   projects: { updated: number; error?: string; warning?: string };
   contractors: { updated: number; error?: string; warning?: string };
   trades: { updated: number; error?: string };
   proposalFees: { updated: number; error?: string };
+  technicalLots: { updated: number; error?: string; warning?: string };
   // True when another sync already held the mirror-sync lock; nothing ran.
   alreadyRunning?: boolean;
 }
@@ -878,6 +1139,7 @@ const ALREADY_RUNNING_RESULT: MirrorSyncResult = {
   contractors: { updated: 0 },
   trades: { updated: 0 },
   proposalFees: { updated: 0 },
+  technicalLots: { updated: 0 },
   alreadyRunning: true,
 };
 
@@ -885,12 +1147,14 @@ export async function fullSync(): Promise<MirrorSyncResult> {
   const outcome = await withMirrorSyncLock(async () => {
     console.log("[ArchiDoc Sync] Starting full sync...");
     await recoverStaleRunningSyncLogsUnsafe();
+    await reconcilePreviousBackendMirrorRowsWithinHeldLock();
 
-    const [projectsResult, contractorsResult, tradesResult, feesResult] = await Promise.all([
+    const [projectsResult, contractorsResult, tradesResult, feesResult, technicalLotsResult] = await Promise.all([
       syncProjects(false),
       syncContractors(false),
       syncTrades(),
       syncAllProposalFees(),
+      syncTechnicalLots(),
     ]);
 
     console.log("[ArchiDoc Sync] Full sync complete", {
@@ -898,6 +1162,7 @@ export async function fullSync(): Promise<MirrorSyncResult> {
       contractors: contractorsResult.updated,
       trades: tradesResult.updated,
       proposalFees: feesResult.updated,
+      technicalLots: technicalLotsResult.updated,
     });
 
     return {
@@ -905,6 +1170,7 @@ export async function fullSync(): Promise<MirrorSyncResult> {
       contractors: contractorsResult,
       trades: tradesResult,
       proposalFees: feesResult,
+      technicalLots: technicalLotsResult,
     };
   });
 
@@ -919,12 +1185,14 @@ export async function incrementalSync(): Promise<MirrorSyncResult> {
   const outcome = await withMirrorSyncLock(async () => {
     console.log("[ArchiDoc Sync] Starting incremental sync...");
     await recoverStaleRunningSyncLogsUnsafe();
+    await reconcilePreviousBackendMirrorRowsWithinHeldLock();
 
-    const [projectsResult, contractorsResult, tradesResult, feesResult] = await Promise.all([
+    const [projectsResult, contractorsResult, tradesResult, feesResult, technicalLotsResult] = await Promise.all([
       syncProjects(true),
       syncContractors(true),
       syncTrades(),
       syncAllProposalFees(),
+      syncTechnicalLots(),
     ]);
 
     return {
@@ -932,6 +1200,7 @@ export async function incrementalSync(): Promise<MirrorSyncResult> {
       contractors: contractorsResult,
       trades: tradesResult,
       proposalFees: feesResult,
+      technicalLots: technicalLotsResult,
     };
   });
 
@@ -948,6 +1217,12 @@ export async function getLastSyncStatus(): Promise<{
   lastSyncType: string | null;
   lastSyncStatus: string | null;
   lastSyncError: string | null;
+  technicalLots: {
+    lastSync: Date | null;
+    lastSyncStatus: string | null;
+    lastSyncError: string | null;
+    count: number | null;
+  };
 }> {
   const configured = isArchidocConfigured();
 
@@ -960,8 +1235,34 @@ export async function getLastSyncStatus(): Promise<{
     .orderBy(desc(archidocSyncLog.id))
     .limit(1);
 
+  // Latest technical_lots sync log entry.
+  const lastTechLog = await db.select()
+    .from(archidocSyncLog)
+    .where(eq(archidocSyncLog.syncType, "technical_lots"))
+    .orderBy(desc(archidocSyncLog.id))
+    .limit(1);
+
+  // Current mirrored count (all rows regardless of active/deleted).
+  let technicalLotsCount: number | null = null;
+  try {
+    const [{ value: cnt }] = await db
+      .select({ value: count() })
+      .from(archidocTechnicalLots);
+    technicalLotsCount = cnt;
+  } catch {
+    // table may not exist yet (migrations pending) — silently return null
+  }
+
+  const techEntry = lastTechLog[0];
+  const technicalLots = {
+    lastSync: techEntry ? (techEntry.completedAt || techEntry.startedAt) : null,
+    lastSyncStatus: techEntry?.status ?? null,
+    lastSyncError: techEntry?.errorMessage ?? null,
+    count: technicalLotsCount,
+  };
+
   if (lastLog.length === 0) {
-    return { configured, lastSync: null, lastSyncType: null, lastSyncStatus: null, lastSyncError: null };
+    return { configured, lastSync: null, lastSyncType: null, lastSyncStatus: null, lastSyncError: null, technicalLots };
   }
 
   const entry = lastLog[0];
@@ -971,5 +1272,6 @@ export async function getLastSyncStatus(): Promise<{
     lastSyncType: entry.syncType,
     lastSyncStatus: entry.status,
     lastSyncError: entry.errorMessage ?? null,
+    technicalLots,
   };
 }

@@ -16,9 +16,11 @@ import { apiRequest, projectScopedKey, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 type Line = { id?: number; lineNumber: number; description: string; quantity: string; unit: string; unitPriceHt: string; totalHt: string; pdfPageHint?: number | null };
-type Revision = { revision: { id: number; status: "draft" | "reviewed" | "approved" | "superseded"; reference: string; descriptionFr: string; documentDate?: string | null; amountHt: string; amountTtc: string; tvaRatePercent?: string | null; tvaAutoliquidation?: boolean; version: number; contractorId?: number | null; lotId?: number | null; supersedesRevisionId?: number | null; promotedDevisId?: number | null; promotedAt?: string | null; updatedAt: string }; lines: Line[]; source: { sourceKind: "manual" | "pdf_upload"; fileName?: string | null; confidence?: number | null; warnings?: { message?: string; severity?: string }[]; requiresVerification?: boolean; verifiedAt?: string | null; verificationNote?: string | null } | null; contractorName: string | null; lotNumber: string | null };
+type TechnicalLot = { id: string; code: string; labelFr: string; displayOrder: number; isActive: boolean; deletedAt: string | null };
+type Revision = { revision: { id: number; status: "draft" | "reviewed" | "approved" | "superseded"; reference: string; descriptionFr: string; documentDate?: string | null; amountHt: string; amountTtc: string; tvaRatePercent?: string | null; tvaAutoliquidation?: boolean; version: number; contractorId?: number | null; lotId?: number | null; archidocTechnicalLotId?: string | null; supersedesRevisionId?: number | null; promotedDevisId?: number | null; promotedAt?: string | null; updatedAt: string }; lines: Line[]; source: { sourceKind: "manual" | "pdf_upload"; fileName?: string | null; confidence?: number | null; warnings?: { message?: string; severity?: string }[]; requiresVerification?: boolean; verifiedAt?: string | null; verificationNote?: string | null } | null; contractorName: string | null; lotNumber: string | null; technicalLot: TechnicalLot | null; legacyLotNeedsReview?: boolean };
 type PlanningImport = { id: number; fileName: string; status: "processing" | "succeeded" | "failed" | "stale"; stage: "accepted" | "extracting" | "validating" | "storing" | "saving" | "complete"; revisionId: number | null; errorCode: string | null; errorMessage: string | null; startedAt: string; updatedAt: string; completedAt: string | null };
-type EnvelopeResponse = { envelope: { currency: string } | null; revisions: Revision[]; imports?: PlanningImport[]; totals: { amountHt: string; amountTtc: string; byLot: { lotId: number | null; lotNumber: string | null; description: string; amountHt: string; amountTtc: string; count: number }[] } };
+type EnvelopeResponse = { envelope: { currency: string } | null; revisions: Revision[]; imports?: PlanningImport[]; totals: { amountHt: string; amountTtc: string; byLot: { lotId: number | null; archidocTechnicalLotId?: string | null; lotNumber: string | null; description: string; amountHt: string; amountTtc: string; count: number }[] } };
+type TechnicalLotsResponse = { lots: TechnicalLot[]; catalogue: { revision: number; changedAt: string; syncedAt?: string } | null; sync: { status: string; errorMessage?: string | null } | null };
 type Choice = {
   id: number;
   name?: string;
@@ -36,15 +38,18 @@ const stateLabels: Record<string, string> = { draft: "Draft", reviewed: "Reviewe
 const stateClasses: Record<string, string> = { draft: "bg-slate-100 text-slate-700", reviewed: "bg-amber-100 text-amber-800", approved: "bg-emerald-100 text-emerald-800", superseded: "bg-stone-100 text-stone-500" };
 const importStageLabels: Record<PlanningImport["stage"], string> = { accepted: "Upload accepted", extracting: "Reading and extracting the PDF", validating: "Checking the extracted data", storing: "Saving the source PDF", saving: "Creating the planning draft", complete: "Ready for review" };
 
-interface Props { projectId: string; contractors: Choice[]; lots: Choice[]; isArchived: boolean; }
+const TECHNICAL_LOTS_KEY = ["/api/archidoc/technical-lots"];
 
-export function PlanningEnvelopeTab({ projectId, contractors, lots, isArchived }: Props) {
+interface Props { projectId: string; contractors: Choice[]; isArchived: boolean; }
+
+export function PlanningEnvelopeTab({ projectId, contractors, isArchived }: Props) {
   const { toast } = useToast();
   const [dialog, setDialog] = useState<"new" | "edit" | "review" | null>(null);
   const [editing, setEditing] = useState<Revision | null>(null);
   const [promote, setPromote] = useState<Revision | null>(null);
   const [verificationNote, setVerificationNote] = useState("");
   const [localImport, setLocalImport] = useState<{ fileName: string; startedAt: string } | null>(null);
+  const [technicalLotsRetrying, setTechnicalLotsRetrying] = useState(false);
   const importing = localImport != null;
   const fileRef = useRef<HTMLInputElement>(null);
   const key = projectScopedKey(projectId, "planning-envelope");
@@ -55,6 +60,38 @@ export function PlanningEnvelopeTab({ projectId, contractors, lots, isArchived }
       return importing || serverHasActiveImport ? 3000 : false;
     },
   });
+
+  // Query technical lots catalogue from Archidoc mirror
+  const {
+    data: technicalLotsData,
+    error: technicalLotsError,
+    isFetching: technicalLotsFetching,
+    refetch: technicalLotsRefetch,
+    isStale: technicalLotsIsStale,
+  } = useQuery<TechnicalLotsResponse>({
+    queryKey: TECHNICAL_LOTS_KEY,
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+  });
+  const retryTechnicalLots = async () => {
+    setTechnicalLotsRetrying(true);
+    try {
+      const response = await apiRequest("POST", "/api/archidoc/sync", {});
+      const result = await response.json() as { technicalLots?: { error?: string } };
+      if (result.technicalLots?.error) throw new Error(result.technicalLots.error);
+      await technicalLotsRefetch();
+    } catch (retryError) {
+      toast({
+        title: "Lot catalogue could not be refreshed",
+        description: retryError instanceof Error ? retryError.message : "Try again later.",
+        variant: "destructive",
+      });
+      await technicalLotsRefetch();
+    } finally {
+      setTechnicalLotsRetrying(false);
+    }
+  };
+
   const invalidate = () => { queryClient.invalidateQueries({ queryKey: key }); queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis") }); };
   const action = useMutation({
     mutationFn: async ({ url, body }: { url: string; body?: unknown }) => { const response = await apiRequest("POST", url, body); return response.json(); },
@@ -76,7 +113,7 @@ export function PlanningEnvelopeTab({ projectId, contractors, lots, isArchived }
         throw new Error(body?.message ?? `PDF import failed (${response.status})`);
       }
       const extracted = await response.json(); invalidate();
-      const revision = extracted?.revision ? { revision: extracted.revision, lines: extracted.lines ?? [], source: extracted.source ?? null, contractorName: extracted.contractorName ?? null, lotNumber: extracted.lotNumber ?? null } : (extracted?.id ? { revision: extracted, lines: extracted.lines ?? [], source: extracted.source ?? null, contractorName: extracted.contractorName ?? null, lotNumber: extracted.lotNumber ?? null } : null);
+      const revision = extracted?.revision ? { revision: extracted.revision, lines: extracted.lines ?? [], source: extracted.source ?? null, contractorName: extracted.contractorName ?? null, lotNumber: extracted.lotNumber ?? null, technicalLot: extracted.technicalLot ?? null } : (extracted?.id ? { revision: extracted, lines: extracted.lines ?? [], source: extracted.source ?? null, contractorName: extracted.contractorName ?? null, lotNumber: extracted.lotNumber ?? null, technicalLot: extracted.technicalLot ?? null } : null);
       if (revision) { setEditing(revision); setDialog("edit"); }
       toast({ title: "PDF imported", description: "The extracted draft is ready for review." });
     } catch (e) { toast({ title: "PDF import failed", description: (e as Error).message, variant: "destructive" }); }
@@ -133,10 +170,13 @@ export function PlanningEnvelopeTab({ projectId, contractors, lots, isArchived }
         <LuxuryCard className="p-4 border-[#d5b8a4] bg-[#fbf7f3]"><TechnicalLabel>Planned TTC</TechnicalLabel><p className="mt-2 text-lg font-light"><Amount value={euro(totals?.amountTtc ?? "0")} denomination="TTC" /></p></LuxuryCard>
         <LuxuryCard className="col-span-2 p-4"><TechnicalLabel>Envelope status</TechnicalLabel><p className="mt-2 text-sm">{data?.envelope ? <><span className="font-semibold text-emerald-700">Active</span><span className="text-muted-foreground"> · {data.revisions.length} revision{data.revisions.length === 1 ? "" : "s"}</span></> : <span className="text-muted-foreground">No planning envelope yet</span>}</p></LuxuryCard>
       </div>
-      {totals?.byLot?.length ? <LuxuryCard className="p-4"><div className="flex items-center justify-between mb-3"><TechnicalLabel>Planned amounts by lot</TechnicalLabel><span className="text-[10px] text-muted-foreground">HT / TTC</span></div><div className="grid gap-2 sm:grid-cols-2">{totals.byLot.map((lot) => <div key={`${lot.lotId}-${lot.description}`} className="flex justify-between gap-3 rounded-lg border border-border/70 px-3 py-2 text-xs"><div className="min-w-0"><p className="font-semibold truncate">{lot.lotNumber ? `${lot.lotNumber} · ` : ""}{lot.description}</p><p className="text-[10px] text-muted-foreground">{lot.count} candidate{lot.count === 1 ? "" : "s"}</p></div><div className="text-right whitespace-nowrap"><p><Amount value={euro(lot.amountHt)} denomination="HT" /></p><p className="text-muted-foreground"><Amount value={euro(lot.amountTtc)} denomination="TTC" /></p></div></div>)}</div></LuxuryCard> : null}
+      {totals?.byLot?.length ? <LuxuryCard className="p-4"><div className="flex items-center justify-between mb-3"><TechnicalLabel>Planned amounts by lot</TechnicalLabel><span className="text-[10px] text-muted-foreground">HT / TTC</span></div><div className="grid gap-2 sm:grid-cols-2">{totals.byLot.map((lot) => {
+        const lotLabel = lot.lotNumber ? `${lot.lotNumber} · ` : "";
+        return <div key={`${lot.archidocTechnicalLotId ?? lot.lotId}-${lot.description}`} className="flex justify-between gap-3 rounded-lg border border-border/70 px-3 py-2 text-xs"><div className="min-w-0"><p className="font-semibold truncate">{lotLabel}{lot.description}</p><p className="text-[10px] text-muted-foreground">{lot.count} candidate{lot.count === 1 ? "" : "s"}</p></div><div className="text-right whitespace-nowrap"><p><Amount value={euro(lot.amountHt)} denomination="HT" /></p><p className="text-muted-foreground"><Amount value={euro(lot.amountTtc)} denomination="TTC" /></p></div></div>;
+      })}</div></LuxuryCard> : null}
       {!data?.revisions?.length ? <LuxuryCard className="py-12 text-center" data-testid="planning-envelope-empty"><FilePlus2 size={23} className="mx-auto text-[#b9784c]" /><p className="mt-3 text-sm font-semibold">No planning candidates yet</p><p className="mt-1 text-xs text-muted-foreground">Create a revision manually or import a contractor PDF to establish the first working envelope.</p></LuxuryCard> :
         <div className="space-y-3">{data.revisions.map((item) => <RevisionCard key={item.revision.id} item={item} revisions={data.revisions} projectId={projectId} isArchived={isArchived} onEdit={() => { setEditing(item); setDialog("edit"); }} onReview={() => { setEditing(item); setDialog("review"); }} onAction={(url, body) => action.mutate({ url, body })} onPromote={() => setPromote(item)} />)}</div>}
-      <RevisionDialog open={dialog === "new" || dialog === "edit"} item={dialog === "edit" ? editing : null} contractors={contractors} lots={lots} pending={patch.isPending || action.isPending} onClose={() => { setDialog(null); setEditing(null); }} onSubmit={(body) => dialog === "edit" && editing ? patch.mutate({ id: editing.revision.id, body: { ...(body as Record<string, unknown>), expectedVersion: editing.revision.version } }) : action.mutate({ url: `/api/projects/${projectId}/planning-envelope/revisions`, body })} />
+      <RevisionDialog open={dialog === "new" || dialog === "edit"} item={dialog === "edit" ? editing : null} contractors={contractors} technicalLotsData={technicalLotsData} technicalLotsError={technicalLotsError} technicalLotsFetching={technicalLotsFetching || technicalLotsRetrying} technicalLotsIsStale={technicalLotsIsStale} onTechnicalLotsRetry={() => void retryTechnicalLots()} pending={patch.isPending || action.isPending} onClose={() => { setDialog(null); setEditing(null); }} onSubmit={(body) => dialog === "edit" && editing ? patch.mutate({ id: editing.revision.id, body: { ...(body as Record<string, unknown>), expectedVersion: editing.revision.version } }) : action.mutate({ url: `/api/projects/${projectId}/planning-envelope/revisions`, body })} />
       <Dialog open={dialog === "review"} onOpenChange={(v) => !v && setDialog(null)}><DialogContent className="max-w-md" data-testid="planning-envelope-review-dialog"><DialogHeader><DialogTitle>Review planning revision</DialogTitle><DialogDescription>Confirm that the extracted amounts and line items have been checked against the source.</DialogDescription></DialogHeader>{editing?.source?.requiresVerification ? <p className="text-xs text-amber-800 rounded border border-amber-200 bg-amber-50 p-2">A verification note of at least 10 characters is required for this extracted source.</p> : <p className="text-xs text-muted-foreground">A verification note is optional for manual or high-confidence entries.</p>}<Textarea value={verificationNote} onChange={(e) => setVerificationNote(e.target.value)} placeholder={editing?.source?.requiresVerification ? "Describe what you verified (minimum 10 characters)" : "Verification note (optional)"} data-testid="planning-envelope-verification-note" /><Button disabled={action.isPending || (!!editing?.source?.requiresVerification && verificationNote.trim().length < 10)} onClick={() => editing && action.mutate({ url: `/api/planning-revisions/${editing.revision.id}/review`, body: { expectedVersion: editing.revision.version, ...(verificationNote ? { verificationNote } : {}) } })} data-testid="planning-envelope-review-confirm"><ShieldCheck size={13} /> Confirm review</Button></DialogContent></Dialog>
       <AlertDialog open={!!promote} onOpenChange={(v) => !v && setPromote(null)}><AlertDialogContent data-testid="planning-envelope-promote-dialog"><AlertDialogHeader><AlertDialogTitle>Promote this revision to Live Delivery?</AlertDialogTitle><AlertDialogDescription>This creates a new provisional Live devis from the approved planning revision. The planning record remains unchanged and can still be audited.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Keep in planning</AlertDialogCancel><AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" disabled={action.isPending} onClick={() => promote && action.mutate({ url: `/api/planning-revisions/${promote.revision.id}/promote`, body: { expectedVersion: promote.revision.version } })} data-testid="planning-envelope-promote-confirm">Create provisional devis</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
     </div>
@@ -189,15 +229,37 @@ function RevisionCard({ item, revisions, projectId, isArchived, onEdit, onReview
   const prior = r.supersedesRevisionId ? revisions.find((candidate) => candidate.revision.id === r.supersedesRevisionId) : undefined;
   const variance = prior ? Number(r.amountHt) - Number(prior.revision.amountHt) : null;
   const variancePct = prior && Number(prior.revision.amountHt) !== 0 ? (variance! / Number(prior.revision.amountHt)) * 100 : null;
+
+  // Lot display: prefer technicalLot data, fall back to legacy lotNumber
+  const lotDisplay = item.technicalLot
+    ? `${item.technicalLot.code} — ${item.technicalLot.labelFr}`
+    : item.lotNumber
+      ? `Lot ${item.lotNumber}`
+      : "Lot not assigned";
+
   return <LuxuryCard className={`p-4 ${immutable ? "bg-muted/20" : ""}`} data-testid={`planning-envelope-revision-${r.id}`}>
-    <div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="flex items-center gap-2 flex-wrap"><FileText size={15} className="text-[#9a5c36]" /><span className="font-semibold text-sm">{r.reference || "Unreferenced revision"}</span><Badge className={`text-[10px] ${stateClasses[r.status]}`}>{stateLabels[r.status]}</Badge>{immutable && <LockKeyhole size={12} className="text-muted-foreground" />}</div><p className="text-xs text-muted-foreground mt-1 truncate">{r.descriptionFr || "No scope description"} · {item.contractorName ?? "Contractor not assigned"} · {item.lotNumber ? `Lot ${item.lotNumber}` : "Lot not assigned"}</p></div><div className="text-right whitespace-nowrap"><p className="font-semibold text-sm"><Amount value={euro(r.amountHt)} denomination="HT" /></p><p className="text-[10px] text-muted-foreground"><Amount value={euro(r.amountTtc)} denomination="TTC" /></p></div></div>
-    <div className="mt-3 flex items-center gap-3 flex-wrap text-[10px] text-muted-foreground"><span>v{r.version}</span><span>{r.documentDate ? `Document ${dateLabel(r.documentDate)}` : `Updated ${dateLabel(r.updatedAt)}`}</span><span>{item.source?.sourceKind === "pdf_upload" ? `PDF · ${item.source.fileName ?? "source file"}` : "Manual entry"}</span>{item.source?.confidence != null && <span>Confidence {item.source.confidence}%</span>}{item.source?.requiresVerification && <span className="text-amber-700 flex items-center gap-1"><AlertTriangle size={11} /> Verification required</span>}</div>
+    <div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="flex items-center gap-2 flex-wrap"><FileText size={15} className="text-[#9a5c36]" /><span className="font-semibold text-sm">{r.reference || "Unreferenced revision"}</span><Badge className={`text-[10px] ${stateClasses[r.status]}`}>{stateLabels[r.status]}</Badge>{immutable && <LockKeyhole size={12} className="text-muted-foreground" />}</div><p className="text-xs text-muted-foreground mt-1 truncate">{r.descriptionFr || "No scope description"} · {item.contractorName ?? "Contractor not assigned"} · {lotDisplay}</p></div><div className="text-right whitespace-nowrap"><p className="font-semibold text-sm"><Amount value={euro(r.amountHt)} denomination="HT" /></p><p className="text-[10px] text-muted-foreground"><Amount value={euro(r.amountTtc)} denomination="TTC" /></p></div></div>
+    <div className="mt-3 flex items-center gap-3 flex-wrap text-[10px] text-muted-foreground"><span>v{r.version}</span><span>{r.documentDate ? `Document ${dateLabel(r.documentDate)}` : `Updated ${dateLabel(r.updatedAt)}`}</span><span>{item.source?.sourceKind === "pdf_upload" ? `PDF · ${item.source.fileName ?? "source file"}` : "Manual entry"}</span>{item.source?.confidence != null && <span>Confidence {item.source.confidence}%</span>}{item.source?.requiresVerification && <span className="text-amber-700 flex items-center gap-1"><AlertTriangle size={11} /> Verification required</span>}{item.legacyLotNeedsReview && <span className="text-amber-700 flex items-center gap-1" data-testid={`planning-envelope-legacy-lot-review-${r.id}`}><AlertTriangle size={11} /> Legacy lot needs review</span>}</div>
     {sourceWarnings.length > 0 && <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900"><div className="flex gap-2"><Info size={13} className="mt-0.5 shrink-0" /><div>{sourceWarnings.slice(0, 2).map((warning, i) => <div key={i}>{warning.message ?? "Source warning"}</div>)}</div></div></div>}
     <div className="mt-3 flex items-center justify-between gap-2 flex-wrap"><div className="flex gap-2 flex-wrap">{item.source?.sourceKind === "pdf_upload" && <a className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-primary hover:underline" href={`/api/planning-revisions/${r.id}/pdf`} target="_blank" rel="noreferrer" data-testid={`planning-envelope-pdf-${r.id}`}><Download size={12} /> Source PDF</a>}{r.promotedDevisId && <a href={`/projets/${projectId}?tab=devis&devis=${r.promotedDevisId}`} className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 hover:underline" data-testid={`planning-envelope-live-link-${r.id}`}>Live devis #{r.promotedDevisId}</a>}</div><div className="flex gap-2 flex-wrap">{!immutable && !isArchived && <Button variant="outline" size="sm" onClick={onEdit} data-testid={`planning-envelope-edit-${r.id}`}><Pencil size={12} /> Edit</Button>}{r.status === "draft" && !isArchived && <Button variant="outline" size="sm" onClick={onReview} data-testid={`planning-envelope-review-${r.id}`}><Check size={12} /> Review</Button>}{canApprove && !isArchived && <Button variant="outline" size="sm" onClick={() => onAction(`/api/planning-revisions/${r.id}/approve`, { expectedVersion: r.version })} data-testid={`planning-envelope-approve-${r.id}`}><ShieldCheck size={12} /> Approve</Button>}{canRevise && !isArchived && <Button variant="outline" size="sm" onClick={() => onAction(`/api/planning-revisions/${r.id}/revise`, {})} data-testid={`planning-envelope-revise-${r.id}`}><RefreshCw size={12} /> Revise</Button>}{r.status === "approved" && !r.promotedDevisId && !isArchived && <Button size="sm" onClick={onPromote} data-testid={`planning-envelope-promote-${r.id}`}><FileCheck2 size={12} /> Promote to Live</Button>}</div></div>
   </LuxuryCard>;
 }
 
-function RevisionDialog({ open, item, contractors, lots, pending, onClose, onSubmit }: { open: boolean; item: Revision | null; contractors: Choice[]; lots: Choice[]; pending: boolean; onClose: () => void; onSubmit: (body: unknown) => void }) {
+interface RevisionDialogProps {
+  open: boolean;
+  item: Revision | null;
+  contractors: Choice[];
+  technicalLotsData: TechnicalLotsResponse | undefined;
+  technicalLotsError: Error | null;
+  technicalLotsFetching: boolean;
+  technicalLotsIsStale: boolean;
+  onTechnicalLotsRetry: () => void;
+  pending: boolean;
+  onClose: () => void;
+  onSubmit: (body: unknown) => void;
+}
+
+function RevisionDialog({ open, item, contractors, technicalLotsData, technicalLotsError, technicalLotsFetching, technicalLotsIsStale, onTechnicalLotsRetry, pending, onClose, onSubmit }: RevisionDialogProps) {
   const r = item?.revision;
   const [reference, setReference] = useState("");
   const [description, setDescription] = useState("");
@@ -206,9 +268,37 @@ function RevisionDialog({ open, item, contractors, lots, pending, onClose, onSub
   const [ttc, setTtc] = useState("");
   const [tva, setTva] = useState("20");
   const [contractorId, setContractorId] = useState("");
-  const [lotId, setLotId] = useState("");
+  const [archidocTechnicalLotId, setArchidocTechnicalLotId] = useState<string>("");
   const [auto, setAuto] = useState(false);
   const [lines, setLines] = useState<Line[]>([]);
+
+  // Determine currently saved technical lot (may be inactive/tombstoned)
+  const savedTechnicalLot = item?.technicalLot ?? null;
+
+  // Active lots available for new selection
+  const activeLots = (technicalLotsData?.lots ?? []).filter(
+    (lot) => lot.isActive && lot.deletedAt == null,
+  );
+
+  // If the saved lot is inactive/tombstoned, it must still appear as an option
+  // on this revision so it remains readable. But it should not be selectable
+  // for new revisions.
+  const savedLotIsInactive =
+    savedTechnicalLot != null &&
+    (!savedTechnicalLot.isActive || savedTechnicalLot.deletedAt != null);
+  const savedLotNeedsFallbackOption =
+    savedTechnicalLot != null &&
+    !activeLots.some((lot) => lot.id === savedTechnicalLot.id);
+
+  // Whether the catalogue is unavailable (cold failure — no cached data at all)
+  const catalogueColdFailure =
+    (!!technicalLotsError && !technicalLotsData) ||
+    (!!technicalLotsData && technicalLotsData.catalogue == null);
+
+  // Whether we have stale data with a retriable error
+  const catalogueStale =
+    (!!technicalLotsError && !!technicalLotsData?.catalogue) ||
+    (!!technicalLotsData?.catalogue && technicalLotsData.sync?.status === "failed");
 
   useEffect(() => {
     if (!open) return;
@@ -219,7 +309,7 @@ function RevisionDialog({ open, item, contractors, lots, pending, onClose, onSub
     setTtc(r?.amountTtc ?? "");
     setTva(r?.tvaRatePercent ?? "20");
     setContractorId(r?.contractorId == null ? "" : String(r.contractorId));
-    setLotId(r?.lotId == null ? "" : String(r.lotId));
+    setArchidocTechnicalLotId(r?.archidocTechnicalLotId ?? "");
     setAuto(!!r?.tvaAutoliquidation);
     setLines(item?.lines?.length
       ? item.lines.map((line) => ({
@@ -262,7 +352,7 @@ function RevisionDialog({ open, item, contractors, lots, pending, onClose, onSub
       }));
     onSubmit({
       contractorId: contractorId ? Number(contractorId) : null,
-      lotId: lotId ? Number(lotId) : null,
+      archidocTechnicalLotId: archidocTechnicalLotId || null,
       reference,
       descriptionFr: description,
       documentDate: date || null,
@@ -284,6 +374,32 @@ function RevisionDialog({ open, item, contractors, lots, pending, onClose, onSub
           <DialogTitle>{item ? "Edit planning revision" : "New planning revision"}</DialogTitle>
           <DialogDescription>Amounts are stored as a planning candidate until review and approval.</DialogDescription>
         </DialogHeader>
+
+        {/* Technical lots catalogue stale/error banner */}
+        {catalogueStale && (
+          <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid="planning-lots-stale-banner">
+            <AlertTriangle size={13} className="shrink-0" />
+            <span className="flex-1">Lot catalogue may be outdated. Displayed choices are from a prior load.</span>
+            <Button variant="outline" size="sm" className="h-6 px-2 text-[10px]" onClick={onTechnicalLotsRetry} disabled={technicalLotsFetching} data-testid="planning-lots-retry">
+              {technicalLotsFetching ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />} Retry
+            </Button>
+          </div>
+        )}
+
+        {catalogueColdFailure && (
+          <div className="flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-900" data-testid="planning-lots-unavailable-banner">
+            <AlertTriangle size={13} className="shrink-0" />
+            <span>Lot catalogue unavailable. Lot selection is disabled until the catalogue can be loaded.</span>
+          </div>
+        )}
+
+        {item?.legacyLotNeedsReview && (
+          <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid="planning-legacy-lot-review-banner">
+            <AlertTriangle size={13} className="shrink-0" />
+            <span>The saved project lot did not match an ArchiDoc technical lot exactly. Review and choose the correct technical lot.</span>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div><Label htmlFor="pe-reference">Reference</Label><Input id="pe-reference" value={reference} onChange={(e) => setReference(e.target.value)} data-testid="planning-envelope-form-reference" /></div>
           <div><Label htmlFor="pe-date">Document date</Label><Input id="pe-date" type="date" value={date} onChange={(e) => setDate(e.target.value)} data-testid="planning-envelope-form-date" /></div>
@@ -305,11 +421,33 @@ function RevisionDialog({ open, item, contractors, lots, pending, onClose, onSub
           </div>
           <div>
             <Label>Lot</Label>
-            <Select value={lotId || "__none__"} onValueChange={(value) => setLotId(value === "__none__" ? "" : value)}>
-              <SelectTrigger data-testid="planning-envelope-form-lot"><SelectValue placeholder="Select lot" /></SelectTrigger>
+            <Select
+              value={archidocTechnicalLotId || "__none__"}
+              onValueChange={(value) => setArchidocTechnicalLotId(value === "__none__" ? "" : value)}
+              disabled={catalogueColdFailure}
+            >
+              <SelectTrigger data-testid="planning-envelope-form-lot">
+                <SelectValue placeholder={catalogueColdFailure ? "Catalogue unavailable" : "Select lot"} />
+              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="__none__">Not assigned</SelectItem>
-                {lots.map((l) => <SelectItem key={l.id} value={String(l.id)}>{l.lotNumber ?? l.descriptionFr ?? `Lot ${l.id}`}</SelectItem>)}
+                {/* Render active lots in response order */}
+                {activeLots.map((lot) => (
+                  <SelectItem key={lot.id} value={lot.id} data-testid={`planning-lot-option-${lot.id}`}>
+                    {lot.code} — {lot.labelFr}
+                  </SelectItem>
+                ))}
+                {/* If the currently saved lot is inactive/tombstoned, show it as a read-only historic entry */}
+                {savedLotNeedsFallbackOption && (
+                  <SelectItem
+                    key={savedTechnicalLot!.id}
+                    value={savedTechnicalLot!.id}
+                    data-testid={`planning-lot-option-inactive-${savedTechnicalLot!.id}`}
+                  >
+                    {savedTechnicalLot!.code} — {savedTechnicalLot!.labelFr}
+                    {savedLotIsInactive ? " — No longer active" : " — Saved selection"}
+                  </SelectItem>
+                )}
               </SelectContent>
             </Select>
           </div>

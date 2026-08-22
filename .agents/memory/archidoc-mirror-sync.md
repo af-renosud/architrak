@@ -10,5 +10,9 @@ description: Durable rules for any ArchiDoc mirror sync or reconciliation work.
 - **Reconciliation needs the wipe guard**: refuse missing-from-response soft-deletes that would remove all (or ≥90% of ≥5) active rows — that's a truncated upstream response, not a mass deletion.
 - **Sync APIs return 200 with embedded per-part errors** — clients must read ok/failures/warnings/alreadyRunning, never assume 200 = success.
 - **Never probe upstream connectivity inline in status endpoints**; use the cached bounded probe or page loads freeze on a slow upstream.
+- **A backend switch needs eventual in-lock reconciliation, not merely a best-effort boot pass.** If boot loses the mirror lock, retry after contention; every lock-owning sync path must reconcile before publication.
+  **Why:** otherwise prior-backend active master rows can remain selectable indefinitely when polling is disabled or a different process held the boot lock.
+- **Never overwrite a cross-source technical-lot ID that any Planning revision references.** Reject the whole catalogue publication and retain the last-known-good row/catalogue instead.
+  **Why:** Planning persists only the immutable upstream ID; a different backend reusing that ID would silently relabel approved history.
 
 **How to apply:** new sync triggers go through fullSync/incrementalSync/runContractorAutoSync (which own the lock); new sync UIs must handle failures/warnings/alreadyRunning.

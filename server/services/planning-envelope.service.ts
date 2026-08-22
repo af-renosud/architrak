@@ -19,6 +19,7 @@ import {
   devisLineItems,
   contractors,
   lots,
+  archidocTechnicalLots,
   projects,
   type PlanningEnvelope,
   type PlanningRevision,
@@ -62,6 +63,8 @@ export type PlanningEnvelopeErrorCode =
   | "CONTRACTOR_NOT_FOUND"
   | "CONTRACTOR_ARCHIDOC_ORPHANED"
   | "LOT_NOT_FOUND"
+  | "ARCHIDOC_TECHNICAL_LOT_NOT_FOUND"
+  | "ARCHIDOC_TECHNICAL_LOT_INACTIVE"
   | "STORAGE_KEY_MISSING"
   | "IMPORT_JOB_NOT_FOUND"
   | "IMPORT_JOB_STATUS_CONFLICT";
@@ -92,6 +95,15 @@ export interface RevisionDetail {
 export interface RevisionSummaryEntry extends RevisionDetail {
   contractorName: string | null;
   lotNumber: string | null;
+  technicalLot: {
+    id: string;
+    code: string;
+    labelFr: string;
+    displayOrder: number;
+    isActive: boolean;
+    deletedAt: Date | null;
+  } | null;
+  legacyLotNeedsReview: boolean;
 }
 
 export interface EnvelopeSummary {
@@ -102,6 +114,7 @@ export interface EnvelopeSummary {
     amountTtc: string;
     byLot: Array<{
       lotId: number | null;
+      archidocTechnicalLotId: string | null;
       lotNumber: string | null;
       description: string | null;
       amountHt: string;
@@ -164,6 +177,7 @@ export interface ApprovedSnapshot {
   version: number;
   contractorId: number | null;
   lotId: number | null;
+  archidocTechnicalLotId: string | null;
   reference: string | null;
   descriptionFr: string | null;
   documentDate: string | null;
@@ -265,6 +279,7 @@ function buildApprovedSnapshot(
     version: revision.version,
     contractorId: revision.contractorId,
     lotId: revision.lotId,
+    archidocTechnicalLotId: revision.archidocTechnicalLotId,
     reference: revision.reference,
     descriptionFr: revision.descriptionFr,
     documentDate: revision.documentDate,
@@ -544,12 +559,15 @@ export async function getEnvelopeSummary(projectId: number): Promise<EnvelopeSum
   // Collect unique contractor/lot IDs for batch lookup
   const contractorIdSet = new Set<number>();
   const lotIdSet = new Set<number>();
+  const technicalLotIdSet = new Set<string>();
   for (const r of revisionRows) {
     if (r.contractorId != null) contractorIdSet.add(r.contractorId);
     if (r.lotId != null) lotIdSet.add(r.lotId);
+    if (r.archidocTechnicalLotId != null) technicalLotIdSet.add(r.archidocTechnicalLotId);
   }
   const contractorIds = Array.from(contractorIdSet);
   const lotIds = Array.from(lotIdSet);
+  const technicalLotIds = Array.from(technicalLotIdSet);
 
   // Batch-fetch contractor names and lot info
   const contractorMap = new Map<number, string>();
@@ -572,6 +590,30 @@ export async function getEnvelopeSummary(projectId: number): Promise<EnvelopeSum
     for (const r of rows) lotMap.set(r.id, { lotNumber: r.lotNumber, descriptionFr: r.descriptionFr ?? null });
   }
 
+  type TechnicalLotSummary = {
+    id: string;
+    code: string;
+    labelFr: string;
+    displayOrder: number;
+    isActive: boolean;
+    deletedAt: Date | null;
+  };
+  const technicalLotMap = new Map<string, TechnicalLotSummary>();
+  if (technicalLotIds.length > 0) {
+    const rows = await db
+      .select({
+        id: archidocTechnicalLots.archidocId,
+        code: archidocTechnicalLots.code,
+        labelFr: archidocTechnicalLots.labelFr,
+        displayOrder: archidocTechnicalLots.displayOrder,
+        isActive: archidocTechnicalLots.isActive,
+        deletedAt: archidocTechnicalLots.deletedAt,
+      })
+      .from(archidocTechnicalLots)
+      .where(inArray(archidocTechnicalLots.archidocId, technicalLotIds));
+    for (const row of rows) technicalLotMap.set(row.id, row);
+  }
+
   const revisions: RevisionSummaryEntry[] = await Promise.all(
     revisionRows.map(async (rev) => {
       const lines = await db
@@ -588,7 +630,15 @@ export async function getEnvelopeSummary(projectId: number): Promise<EnvelopeSum
         lines,
         source: source ?? null,
         contractorName: rev.contractorId ? (contractorMap.get(rev.contractorId) ?? null) : null,
-        lotNumber: rev.lotId ? (lotMap.get(rev.lotId)?.lotNumber ?? null) : null,
+        lotNumber: rev.archidocTechnicalLotId
+          ? (technicalLotMap.get(rev.archidocTechnicalLotId)?.code ?? null)
+          : rev.lotId
+            ? (lotMap.get(rev.lotId)?.lotNumber ?? null)
+            : null,
+        technicalLot: rev.archidocTechnicalLotId
+          ? (technicalLotMap.get(rev.archidocTechnicalLotId) ?? null)
+          : null,
+        legacyLotNeedsReview: rev.lotId != null && rev.archidocTechnicalLotId == null,
       };
     }),
   );
@@ -598,10 +648,18 @@ export async function getEnvelopeSummary(projectId: number): Promise<EnvelopeSum
   let totalHtNum = 0;
   let totalTtcNum = 0;
 
-  // byLot: lotId → { amountHt, amountTtc, count, lotNumber, description }
+  // byLot: ArchiDoc technical lot when present, otherwise legacy project lot.
   const byLotMap = new Map<
-    number | null,
-    { amountHt: number; amountTtc: number; count: number; lotNumber: string | null; description: string | null }
+    string,
+    {
+      lotId: number | null;
+      archidocTechnicalLotId: string | null;
+      amountHt: number;
+      amountTtc: number;
+      count: number;
+      lotNumber: string | null;
+      description: string | null;
+    }
   >();
 
   for (const { revision } of approved) {
@@ -609,8 +667,15 @@ export async function getEnvelopeSummary(projectId: number): Promise<EnvelopeSum
     const ttc = Number(revision.amountTtc ?? "0");
     totalHtNum += ht;
     totalTtcNum += ttc;
-    const key = revision.lotId ?? null;
-    const lotInfo = key != null ? lotMap.get(key) : undefined;
+    const technicalLot = revision.archidocTechnicalLotId
+      ? technicalLotMap.get(revision.archidocTechnicalLotId)
+      : undefined;
+    const legacyLot = revision.lotId != null ? lotMap.get(revision.lotId) : undefined;
+    const key = revision.archidocTechnicalLotId
+      ? `archidoc:${revision.archidocTechnicalLotId}`
+      : revision.lotId != null
+        ? `legacy:${revision.lotId}`
+        : "unassigned";
     const existing = byLotMap.get(key);
     if (existing) {
       existing.amountHt += ht;
@@ -618,17 +683,20 @@ export async function getEnvelopeSummary(projectId: number): Promise<EnvelopeSum
       existing.count += 1;
     } else {
       byLotMap.set(key, {
+        lotId: revision.lotId,
+        archidocTechnicalLotId: revision.archidocTechnicalLotId,
         amountHt: ht,
         amountTtc: ttc,
         count: 1,
-        lotNumber: lotInfo?.lotNumber ?? null,
-        description: lotInfo?.descriptionFr ?? null,
+        lotNumber: technicalLot?.code ?? legacyLot?.lotNumber ?? null,
+        description: technicalLot?.labelFr ?? legacyLot?.descriptionFr ?? null,
       });
     }
   }
 
-  const byLot = Array.from(byLotMap.entries()).map(([lotId, val]) => ({
-    lotId,
+  const byLot = Array.from(byLotMap.values()).map((val) => ({
+    lotId: val.lotId,
+    archidocTechnicalLotId: val.archidocTechnicalLotId,
     lotNumber: val.lotNumber,
     description: val.description,
     amountHt: roundStr(val.amountHt),
@@ -716,6 +784,42 @@ async function validateLotForProject(
   }
 }
 
+async function validateTechnicalLotForSelection(
+  archidocTechnicalLotId: string | null | undefined,
+  tx: TxClient,
+  options: { allowInactiveId?: string | null } = {},
+): Promise<void> {
+  if (!archidocTechnicalLotId) return;
+  const [row] = await tx
+    .select({
+      id: archidocTechnicalLots.archidocId,
+      isActive: archidocTechnicalLots.isActive,
+      deletedAt: archidocTechnicalLots.deletedAt,
+    })
+    .from(archidocTechnicalLots)
+    .where(eq(archidocTechnicalLots.archidocId, archidocTechnicalLotId))
+    .for("share");
+  if (!row) {
+    throw new PlanningEnvelopeError(
+      404,
+      "ARCHIDOC_TECHNICAL_LOT_NOT_FOUND",
+      "The selected ArchiDoc technical lot is no longer available",
+      { archidocTechnicalLotId },
+    );
+  }
+  if (
+    (!row.isActive || row.deletedAt != null)
+    && options.allowInactiveId !== archidocTechnicalLotId
+  ) {
+    throw new PlanningEnvelopeError(
+      422,
+      "ARCHIDOC_TECHNICAL_LOT_INACTIVE",
+      "The selected ArchiDoc technical lot is no longer active",
+      { archidocTechnicalLotId },
+    );
+  }
+}
+
 function validatePositiveAmounts(revision: {
   amountHt: string | null;
   amountTtc: string | null;
@@ -742,6 +846,7 @@ export interface CreateManualRevisionInput {
   actor: string;
   contractorId?: number | null;
   lotId?: number | null;
+  archidocTechnicalLotId?: string | null;
   reference?: string | null;
   descriptionFr?: string | null;
   documentDate?: string | null;
@@ -769,6 +874,7 @@ export async function createManualRevision(input: CreateManualRevisionInput): Pr
 
     // Validate cross-project lot
     await validateLotForProject(input.lotId, input.projectId, tx);
+    await validateTechnicalLotForSelection(input.archidocTechnicalLotId, tx);
 
     // Validate contractor exists
     await validateContractorForProject(input.contractorId, input.projectId, tx);
@@ -804,6 +910,7 @@ export async function createManualRevision(input: CreateManualRevisionInput): Pr
         status: "draft",
         contractorId: input.contractorId ?? null,
         lotId: input.lotId ?? null,
+        archidocTechnicalLotId: input.archidocTechnicalLotId ?? null,
         reference: input.reference ?? null,
         descriptionFr: input.descriptionFr ?? null,
         documentDate: input.documentDate ?? null,
@@ -1041,6 +1148,7 @@ export interface PatchRevisionInput {
   expectedVersion: number;
   contractorId?: number | null;
   lotId?: number | null;
+  archidocTechnicalLotId?: string | null;
   reference?: string | null;
   descriptionFr?: string | null;
   documentDate?: string | null;
@@ -1062,7 +1170,7 @@ export interface PatchRevisionInput {
 
 // All header + lines fields that constitute a material edit (any change = regress reviewed → draft)
 const PATCH_HEADER_FIELDS = [
-  "contractorId", "lotId", "reference", "descriptionFr", "documentDate",
+  "contractorId", "lotId", "archidocTechnicalLotId", "reference", "descriptionFr", "documentDate",
   "amountHt", "amountTtc", "tvaRatePercent", "tvaAutoliquidation",
 ] as const;
 
@@ -1115,6 +1223,9 @@ export async function patchRevision(input: PatchRevisionInput): Promise<Revision
 
     // Validate cross-project lot
     await validateLotForProject(input.lotId, input.projectId, tx);
+    await validateTechnicalLotForSelection(input.archidocTechnicalLotId, tx, {
+      allowInactiveId: current.archidocTechnicalLotId,
+    });
     await validateContractorForProject(input.contractorId, input.projectId, tx, {
       allowOrphaned: input.contractorId === current.contractorId,
     });
@@ -1133,6 +1244,9 @@ export async function patchRevision(input: PatchRevisionInput): Promise<Revision
 
     if ("contractorId" in input) updates.contractorId = input.contractorId ?? null;
     if ("lotId" in input) updates.lotId = input.lotId ?? null;
+    if ("archidocTechnicalLotId" in input) {
+      updates.archidocTechnicalLotId = input.archidocTechnicalLotId ?? null;
+    }
     if ("reference" in input) updates.reference = input.reference ?? null;
     if ("descriptionFr" in input) updates.descriptionFr = input.descriptionFr ?? null;
     if ("documentDate" in input) updates.documentDate = input.documentDate ?? null;
@@ -1250,6 +1364,9 @@ export async function reviewRevision(input: ReviewRevisionInput): Promise<Revisi
       allowOrphaned: true,
     });
     await validateLotForProject(current.lotId, input.projectId, tx);
+    await validateTechnicalLotForSelection(current.archidocTechnicalLotId, tx, {
+      allowInactiveId: current.archidocTechnicalLotId,
+    });
 
     // Check source requirements (verification gate for PDF with low confidence / blocking warnings)
     const [source] = await tx
@@ -1516,6 +1633,7 @@ export async function reviseRevision(input: ReviseRevisionInput): Promise<Revisi
         status: "draft",
         contractorId: current.contractorId,
         lotId: current.lotId,
+        archidocTechnicalLotId: current.archidocTechnicalLotId,
         reference: current.reference,
         descriptionFr: current.descriptionFr,
         documentDate: current.documentDate,

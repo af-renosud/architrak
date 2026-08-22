@@ -29,6 +29,7 @@ import {
   planningRevisionLines,
   planningRevisionSources,
   planningRevisions,
+  archidocTechnicalLots,
   projects,
   users,
 } from "@shared/schema";
@@ -49,6 +50,7 @@ import {
   patchRevision,
   reviseRevision,
 } from "../services/planning-envelope.service";
+import { backfillMutablePlanningTechnicalLots } from "../archidoc/sync-service";
 
 const stamp = Date.now();
 let projectId: number;
@@ -60,8 +62,13 @@ let contractorId: number;
 let supplierContractorId: number;
 let lotId: number;
 let otherLotId: number;
+let backfillProjectLotId: number;
 let userId: number;
 const actor = `planner-${stamp}@renosud.com`;
+const activeTechnicalLotId = `planning-tech-active-${stamp}`;
+const inactiveTechnicalLotId = `planning-tech-inactive-${stamp}`;
+const backfillTechnicalLotId = `planning-tech-backfill-${stamp}`;
+const extraTechnicalLotIds: string[] = [];
 
 beforeAll(async () => {
   const [user] = await db
@@ -113,6 +120,53 @@ beforeAll(async () => {
     .values({ projectId: otherProjectId, lotNumber: "01", descriptionFr: "Autre lot" })
     .returning();
   otherLotId = otherLot.id;
+
+  const [backfillProjectLot] = await db
+    .insert(lots)
+    .values({
+      projectId,
+      lotNumber: `EXACT-${stamp}`,
+      descriptionFr: "Unique technical-lot backfill fixture",
+    })
+    .returning();
+  backfillProjectLotId = backfillProjectLot.id;
+
+  const now = new Date();
+  await db.insert(archidocTechnicalLots).values([
+    {
+      archidocId: activeTechnicalLotId,
+      code: `TECH-${stamp}`,
+      labelFr: "Lot technique actif",
+      displayOrder: 10,
+      isActive: true,
+      deletedAt: null,
+      archidocCreatedAt: now,
+      archidocUpdatedAt: now,
+      sourceBaseUrl: `https://planning-${stamp}.example`,
+    },
+    {
+      archidocId: inactiveTechnicalLotId,
+      code: `TECH-OLD-${stamp}`,
+      labelFr: "Lot technique historique",
+      displayOrder: 20,
+      isActive: false,
+      deletedAt: now,
+      archidocCreatedAt: now,
+      archidocUpdatedAt: now,
+      sourceBaseUrl: `https://planning-${stamp}.example`,
+    },
+    {
+      archidocId: backfillTechnicalLotId,
+      code: `EXACT-${stamp}`,
+      labelFr: "Exact project-lot match",
+      displayOrder: 30,
+      isActive: true,
+      deletedAt: null,
+      archidocCreatedAt: now,
+      archidocUpdatedAt: now,
+      sourceBaseUrl: `https://planning-${stamp}.example`,
+    },
+  ]);
 });
 
 afterAll(async () => {
@@ -126,6 +180,21 @@ afterAll(async () => {
   ]));
   await db.delete(contractors).where(inArray(contractors.id, [contractorId, supplierContractorId]));
   await db.delete(users).where(eq(users.id, userId));
+  await db
+    .update(planningRevisions)
+    .set({ archidocTechnicalLotId: null })
+    .where(inArray(planningRevisions.archidocTechnicalLotId, [
+      activeTechnicalLotId,
+      inactiveTechnicalLotId,
+      backfillTechnicalLotId,
+      ...extraTechnicalLotIds,
+    ]));
+  await db.delete(archidocTechnicalLots).where(inArray(archidocTechnicalLots.archidocId, [
+    activeTechnicalLotId,
+    inactiveTechnicalLotId,
+    backfillTechnicalLotId,
+    ...extraTechnicalLotIds,
+  ]));
 });
 
 // Helper: create a fully reviewable revision (has contractorId, reference, descriptionFr, positive amounts)
@@ -1552,6 +1621,189 @@ describe("ArchiDoc supplier assignment", () => {
     } finally {
       await db.delete(contractors).where(eq(contractors.id, orphaned.id));
     }
+  });
+});
+
+describe("ArchiDoc technical-lot assignment", () => {
+  it("persists and enriches an active technical lot independently from project lots", async () => {
+    const detail = await createReviewableRevision({
+      lotId: null,
+      archidocTechnicalLotId: activeTechnicalLotId,
+      reference: `TECH-ACTIVE-${stamp}`,
+    });
+    expect(detail.revision.lotId).toBeNull();
+    expect(detail.revision.archidocTechnicalLotId).toBe(activeTechnicalLotId);
+
+    const summary = await getEnvelopeSummary(projectId);
+    const entry = summary?.revisions.find((candidate) => candidate.revision.id === detail.revision.id);
+    expect(entry?.technicalLot).toMatchObject({
+      id: activeTechnicalLotId,
+      code: `TECH-${stamp}`,
+      labelFr: "Lot technique actif",
+    });
+    expect(entry?.legacyLotNeedsReview).toBe(false);
+  });
+
+  it("refuses a new inactive/tombstoned technical-lot selection", async () => {
+    await expect(
+      createReviewableRevision({
+        lotId: null,
+        archidocTechnicalLotId: inactiveTechnicalLotId,
+        reference: `TECH-INACTIVE-${stamp}`,
+      }),
+    ).rejects.toMatchObject({ code: "ARCHIDOC_TECHNICAL_LOT_INACTIVE" });
+  });
+
+  it("keeps a saved lot readable and reviewable after it becomes inactive", async () => {
+    const id = `planning-tech-later-inactive-${stamp}`;
+    extraTechnicalLotIds.push(id);
+    const now = new Date();
+    await db.insert(archidocTechnicalLots).values({
+      archidocId: id,
+      code: `TECH-LATER-${stamp}`,
+      labelFr: "Lot later inactive",
+      displayOrder: 40,
+      isActive: true,
+      deletedAt: null,
+      archidocCreatedAt: now,
+      archidocUpdatedAt: now,
+    });
+    try {
+      const draft = await createReviewableRevision({
+        lotId: null,
+        archidocTechnicalLotId: id,
+        reference: `TECH-LATER-${stamp}`,
+      });
+      await db
+        .update(archidocTechnicalLots)
+        .set({ isActive: false, deletedAt: new Date() })
+        .where(eq(archidocTechnicalLots.archidocId, id));
+
+      const reviewed = await reviewRevision({
+        revisionId: draft.revision.id,
+        projectId,
+        actor,
+        expectedVersion: draft.revision.version,
+      });
+      expect(reviewed.revision.status).toBe("reviewed");
+      expect(reviewed.revision.archidocTechnicalLotId).toBe(id);
+    } finally {
+      // The revision intentionally retains the inactive FK for historical
+      // display. Project cascade cleanup runs before mirror-row cleanup.
+    }
+  });
+
+  it("freezes the technical-lot ID in the approval snapshot and promotes without inventing a project lot", async () => {
+    const draft = await createReviewableRevision({
+      lotId: null,
+      archidocTechnicalLotId: activeTechnicalLotId,
+      reference: `TECH-PROMOTE-${stamp}`,
+    });
+    const reviewed = await reviewRevision({
+      revisionId: draft.revision.id,
+      projectId,
+      actor,
+      expectedVersion: draft.revision.version,
+    });
+    const approved = await approveRevision({
+      revisionId: draft.revision.id,
+      projectId,
+      actor,
+      expectedVersion: reviewed.revision.version,
+    });
+    expect(
+      (approved.revision.approvedSnapshot as Record<string, unknown>).archidocTechnicalLotId,
+    ).toBe(activeTechnicalLotId);
+
+    await expect(
+      db
+        .update(planningRevisions)
+        .set({ archidocTechnicalLotId: null })
+        .where(eq(planningRevisions.id, draft.revision.id)),
+    ).rejects.toBeDefined();
+
+    const promoted = await promoteRevision({
+      revisionId: draft.revision.id,
+      projectId,
+      actor,
+      expectedVersion: approved.revision.version,
+    });
+    const [createdDevis] = await db
+      .select({ lotId: devis.lotId })
+      .from(devis)
+      .where(eq(devis.id, promoted.devisId));
+    expect(createdDevis.lotId).toBeNull();
+  });
+
+  it("exact-code backfills only mutable legacy revisions and flags unmatched legacy rows", async () => {
+    const draft = await createReviewableRevision({
+      lotId: backfillProjectLotId,
+      reference: `BACKFILL-DRAFT-${stamp}`,
+    });
+    const reviewedDraft = await createReviewableRevision({
+      lotId: backfillProjectLotId,
+      reference: `BACKFILL-REVIEWED-${stamp}`,
+    });
+    const reviewed = await reviewRevision({
+      revisionId: reviewedDraft.revision.id,
+      projectId,
+      actor,
+      expectedVersion: reviewedDraft.revision.version,
+    });
+    const approvedDraft = await createReviewableRevision({
+      lotId: backfillProjectLotId,
+      reference: `BACKFILL-APPROVED-${stamp}`,
+    });
+    const approvedReview = await reviewRevision({
+      revisionId: approvedDraft.revision.id,
+      projectId,
+      actor,
+      expectedVersion: approvedDraft.revision.version,
+    });
+    await approveRevision({
+      revisionId: approvedDraft.revision.id,
+      projectId,
+      actor,
+      expectedVersion: approvedReview.revision.version,
+    });
+
+    const count = await db.transaction((tx) =>
+      backfillMutablePlanningTechnicalLots(tx, `https://planning-${stamp}.example`),
+    );
+    expect(count).toBeGreaterThanOrEqual(2);
+
+    const rows = await db
+      .select({
+        id: planningRevisions.id,
+        technicalLotId: planningRevisions.archidocTechnicalLotId,
+      })
+      .from(planningRevisions)
+      .where(inArray(planningRevisions.id, [
+        draft.revision.id,
+        reviewed.revision.id,
+        approvedDraft.revision.id,
+      ]));
+    const byId = new Map(rows.map((row) => [row.id, row.technicalLotId]));
+    expect(byId.get(draft.revision.id)).toBe(backfillTechnicalLotId);
+    expect(byId.get(reviewed.revision.id)).toBe(backfillTechnicalLotId);
+    expect(byId.get(approvedDraft.revision.id)).toBeNull();
+
+    const unmatchedLot = await db
+      .insert(lots)
+      .values({
+        projectId,
+        lotNumber: `NO-EXACT-MATCH-${stamp}`,
+        descriptionFr: "Needs manual review",
+      })
+      .returning();
+    const unmatched = await createReviewableRevision({
+      lotId: unmatchedLot[0].id,
+      reference: `BACKFILL-UNMATCHED-${stamp}`,
+    });
+    const summary = await getEnvelopeSummary(projectId);
+    const entry = summary?.revisions.find((candidate) => candidate.revision.id === unmatched.revision.id);
+    expect(entry?.legacyLotNeedsReview).toBe(true);
+    expect(entry?.technicalLot).toBeNull();
   });
 });
 

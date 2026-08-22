@@ -97,6 +97,7 @@ const lineSchema = z.object({
 const createManualRevisionBody = z.object({
   contractorId: z.number().int().positive().nullable().optional(),
   lotId: z.number().int().positive().nullable().optional(),
+  archidocTechnicalLotId: z.string().trim().min(1).max(255).nullable().optional(),
   reference: z.string().min(1).max(500).nullable().optional(),
   descriptionFr: z.string().min(1).max(2000).nullable().optional(),
   documentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
@@ -112,6 +113,7 @@ const patchRevisionBody = z.object({
   expectedVersion: z.number().int().positive(),
   contractorId: z.number().int().positive().nullable().optional(),
   lotId: z.number().int().positive().nullable().optional(),
+  archidocTechnicalLotId: z.string().trim().min(1).max(255).nullable().optional(),
   reference: z.string().min(1).max(500).nullable().optional(),
   descriptionFr: z.string().min(1).max(2000).nullable().optional(),
   documentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),

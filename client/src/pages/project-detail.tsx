@@ -1496,7 +1496,6 @@ export default function ProjectDetail() {
             <PlanningEnvelopeTab
               projectId={projectId!}
               contractors={contractors ?? []}
-              lots={lotsList ?? []}
               isArchived={isArchived}
             />
           </TabsContent>

@@ -39,6 +39,7 @@ vi.mock("../env", async () => {
 });
 
 const fetchProjectsMock = vi.fn();
+const fetchTechnicalLotsMock = vi.fn();
 vi.mock("../archidoc/sync-client", async () => {
   const actual =
     await vi.importActual<typeof import("../archidoc/sync-client")>(
@@ -48,6 +49,7 @@ vi.mock("../archidoc/sync-client", async () => {
     ...actual,
     isArchidocConfigured: () => true,
     fetchProjects: fetchProjectsMock,
+    fetchTechnicalLots: fetchTechnicalLotsMock,
   };
 });
 
@@ -252,7 +254,7 @@ describe.skipIf(skipModule)(
         envState.ARCHIDOC_BASE_URL = "";
         try {
           const result = await clearPreviousBackendMirrorRows();
-          expect(result).toEqual({ projects: 0, contractors: 0 });
+          expect(result).toEqual({ projects: 0, contractors: 0, technicalLots: 0 });
         } finally {
           envState.ARCHIDOC_BASE_URL = previous;
         }
@@ -279,3 +281,273 @@ describe("getCurrentSourceBaseUrl()", () => {
     envState.ARCHIDOC_BASE_URL = "https://archidoc-prod.example.com";
   });
 });
+
+describe.skipIf(skipModule).sequential(
+  "ArchiDoc technical-lot mirror publication (integration)",
+  () => {
+    const prefix = `tech-sync-${Date.now()}-`;
+    const existingId = `${prefix}existing`;
+    let previousCatalogue: Record<string, unknown> | null = null;
+
+    async function deleteFixtures(): Promise<void> {
+      const { db } = await import("../db");
+      await db.execute(
+        sql`DELETE FROM archidoc_technical_lots WHERE archidoc_id LIKE ${`${prefix}%`}`,
+      );
+    }
+
+    beforeAll(async () => {
+      const { db } = await import("../db");
+      const result = await db.execute(
+        sql`SELECT singleton_key, revision, changed_at, source_base_url, synced_at
+              FROM archidoc_technical_lot_catalogue
+             WHERE singleton_key = 1`,
+      );
+      previousCatalogue = (result.rows[0] as Record<string, unknown> | undefined) ?? null;
+      await deleteFixtures();
+      await db.execute(sql`
+        INSERT INTO archidoc_technical_lots
+          (archidoc_id, code, label_fr, display_order, is_active, deleted_at,
+           source_base_url, archidoc_created_at, archidoc_updated_at, synced_at)
+        VALUES
+          (${existingId}, ${`${prefix}CODE`}, 'Existing LKG', 1, true, NULL,
+           'https://archidoc-prod.example.com', now(), now(), now())
+      `);
+      await db.execute(sql`
+        INSERT INTO archidoc_technical_lot_catalogue
+          (singleton_key, revision, changed_at, source_base_url, synced_at)
+        VALUES
+          (1, 700, '2024-01-01T00:00:00.000Z', 'https://archidoc-prod.example.com', now())
+        ON CONFLICT (singleton_key) DO UPDATE SET
+          revision = EXCLUDED.revision,
+          changed_at = EXCLUDED.changed_at,
+          source_base_url = EXCLUDED.source_base_url,
+          synced_at = EXCLUDED.synced_at
+      `);
+    });
+
+    afterAll(async () => {
+      const { db } = await import("../db");
+      await deleteFixtures();
+      if (previousCatalogue) {
+        await db.execute(sql`
+          INSERT INTO archidoc_technical_lot_catalogue
+            (singleton_key, revision, changed_at, source_base_url, synced_at)
+          VALUES
+            (${previousCatalogue.singleton_key}, ${previousCatalogue.revision},
+             ${previousCatalogue.changed_at}, ${previousCatalogue.source_base_url},
+             ${previousCatalogue.synced_at})
+          ON CONFLICT (singleton_key) DO UPDATE SET
+            revision = EXCLUDED.revision,
+            changed_at = EXCLUDED.changed_at,
+            source_base_url = EXCLUDED.source_base_url,
+            synced_at = EXCLUDED.synced_at
+        `);
+      } else {
+        await db.execute(
+          sql`DELETE FROM archidoc_technical_lot_catalogue WHERE singleton_key = 1`,
+        );
+      }
+    });
+
+    it("preserves all last-known-good rows and catalogue metadata when upstream omits an ID", async () => {
+      const { syncTechnicalLots } = await import("../archidoc/sync-service");
+      const { db } = await import("../db");
+      fetchTechnicalLotsMock.mockResolvedValueOnce({
+        lots: [],
+        catalogue: { revision: 701, changedAt: "2024-02-01T00:00:00.000Z" },
+      });
+
+      const result = await syncTechnicalLots();
+      expect(result.error).toMatch(/omitted 1 previously-mirrored ID/);
+      const lots = await db.execute(
+        sql`SELECT label_fr, is_active FROM archidoc_technical_lots WHERE archidoc_id = ${existingId}`,
+      );
+      expect(lots.rows[0]).toMatchObject({ label_fr: "Existing LKG", is_active: true });
+      const catalogue = await db.execute(
+        sql`SELECT revision FROM archidoc_technical_lot_catalogue WHERE singleton_key = 1`,
+      );
+      expect(catalogue.rows[0]?.revision).toBe("700");
+    });
+
+    it("rolls back prior lot writes and catalogue publication when a later DB write fails", async () => {
+      const { syncTechnicalLots } = await import("../archidoc/sync-service");
+      const { db } = await import("../db");
+      const firstNewId = `${prefix}first-new`;
+      fetchTechnicalLotsMock.mockResolvedValueOnce({
+        lots: [
+          {
+            id: existingId,
+            code: `${prefix}CODE`,
+            labelFr: "Existing LKG",
+            displayOrder: 1,
+            isActive: true,
+            deletedAt: null,
+            createdAt: "2024-01-01T00:00:00.000Z",
+            updatedAt: "2024-01-01T00:00:00.000Z",
+          },
+          {
+            id: firstNewId,
+            code: `${prefix}NEW`,
+            labelFr: "Must roll back",
+            displayOrder: 2,
+            isActive: true,
+            deletedAt: null,
+            createdAt: "2024-01-01T00:00:00.000Z",
+            updatedAt: "2024-01-01T00:00:00.000Z",
+          },
+          {
+            id: `${prefix}invalid`,
+            code: `${prefix}INVALID`,
+            labelFr: "Constraint failure",
+            displayOrder: -1,
+            isActive: true,
+            deletedAt: null,
+            createdAt: "2024-01-01T00:00:00.000Z",
+            updatedAt: "2024-01-01T00:00:00.000Z",
+          },
+        ],
+        catalogue: { revision: 702, changedAt: "2024-03-01T00:00:00.000Z" },
+      });
+
+      const result = await syncTechnicalLots();
+      expect(result.error).toBeTruthy();
+      const rolledBack = await db.execute(
+        sql`SELECT count(*) AS count FROM archidoc_technical_lots WHERE archidoc_id = ${firstNewId}`,
+      );
+      expect(rolledBack.rows[0]?.count).toBe("0");
+      const catalogue = await db.execute(
+        sql`SELECT revision FROM archidoc_technical_lot_catalogue WHERE singleton_key = 1`,
+      );
+      expect(catalogue.rows[0]?.revision).toBe("700");
+    });
+
+    it("rejects a backend ID collision that would overwrite immutable Planning history", async () => {
+      const { syncTechnicalLots } = await import("../archidoc/sync-service");
+      const { db } = await import("../db");
+      const collisionId = `${prefix}referenced-collision`;
+      const projectResult = await db.execute(sql`
+        INSERT INTO projects (name, code, client_name)
+        VALUES (${`${prefix}collision project`}, ${`${prefix}PROJECT`}, 'Integration client')
+        RETURNING id
+      `);
+      const projectId = Number(projectResult.rows[0]?.id);
+      try {
+        await db.execute(sql`
+          INSERT INTO archidoc_technical_lots
+            (archidoc_id, code, label_fr, display_order, is_active, deleted_at,
+             source_base_url, archidoc_created_at, archidoc_updated_at, synced_at)
+          VALUES
+            (${collisionId}, ${`${prefix}OLD`}, 'Historical identity', 2, false, now(),
+             'https://previous-archidoc.example.com', now(), now(), now())
+        `);
+        const envelopeResult = await db.execute(sql`
+          INSERT INTO planning_envelopes (project_id)
+          VALUES (${projectId})
+          RETURNING id
+        `);
+        const envelopeId = Number(envelopeResult.rows[0]?.id);
+        await db.execute(sql`
+          INSERT INTO planning_revisions
+            (envelope_id, status, archidoc_technical_lot_id, reference,
+             approved_by, approved_at, approved_snapshot, approved_snapshot_sha256)
+          VALUES
+            (${envelopeId}, 'approved', ${collisionId}, 'IMMUTABLE-COLLISION',
+             'integration-test', now(), '{}'::jsonb, 'fixture-hash')
+        `);
+
+        fetchTechnicalLotsMock.mockResolvedValueOnce({
+          lots: [
+            {
+              id: existingId,
+              code: `${prefix}CODE`,
+              labelFr: "Existing LKG",
+              displayOrder: 1,
+              isActive: true,
+              deletedAt: null,
+              createdAt: "2024-01-01T00:00:00.000Z",
+              updatedAt: "2024-01-01T00:00:00.000Z",
+            },
+            {
+              id: collisionId,
+              code: `${prefix}NEW`,
+              labelFr: "Different identity from new backend",
+              displayOrder: 2,
+              isActive: true,
+              deletedAt: null,
+              createdAt: "2024-01-01T00:00:00.000Z",
+              updatedAt: "2024-05-01T00:00:00.000Z",
+            },
+          ],
+          catalogue: { revision: 704, changedAt: "2024-05-01T00:00:00.000Z" },
+        });
+
+        const result = await syncTechnicalLots();
+        expect(result.error).toMatch(/Planning-referenced ID/);
+        const preserved = await db.execute(sql`
+          SELECT code, label_fr, source_base_url, is_active
+            FROM archidoc_technical_lots
+           WHERE archidoc_id = ${collisionId}
+        `);
+        expect(preserved.rows[0]).toMatchObject({
+          code: `${prefix}OLD`,
+          label_fr: "Historical identity",
+          source_base_url: "https://previous-archidoc.example.com",
+          is_active: false,
+        });
+        const catalogue = await db.execute(
+          sql`SELECT revision FROM archidoc_technical_lot_catalogue WHERE singleton_key = 1`,
+        );
+        expect(catalogue.rows[0]?.revision).toBe("700");
+      } finally {
+        await db.execute(sql`DELETE FROM projects WHERE id = ${projectId}`);
+        await db.execute(
+          sql`DELETE FROM archidoc_technical_lots WHERE archidoc_id = ${collisionId}`,
+        );
+      }
+    });
+
+    it("publishes a complete response and catalogue together", async () => {
+      const { syncTechnicalLots } = await import("../archidoc/sync-service");
+      const { db } = await import("../db");
+      const newId = `${prefix}published`;
+      fetchTechnicalLotsMock.mockResolvedValueOnce({
+        lots: [
+          {
+            id: existingId,
+            code: `${prefix}CODE`,
+            labelFr: "Existing refreshed",
+            displayOrder: 1,
+            isActive: true,
+            deletedAt: null,
+            createdAt: "2024-01-01T00:00:00.000Z",
+            updatedAt: "2024-04-01T00:00:00.000Z",
+          },
+          {
+            id: newId,
+            code: `${prefix}PUBLISHED`,
+            labelFr: "Published atomically",
+            displayOrder: 2,
+            isActive: true,
+            deletedAt: null,
+            createdAt: "2024-01-01T00:00:00.000Z",
+            updatedAt: "2024-04-01T00:00:00.000Z",
+          },
+        ],
+        catalogue: { revision: 703, changedAt: "2024-04-01T00:00:00.000Z" },
+      });
+
+      const result = await syncTechnicalLots();
+      expect(result.error).toBeUndefined();
+      expect(result.updated).toBe(2);
+      const published = await db.execute(
+        sql`SELECT label_fr FROM archidoc_technical_lots WHERE archidoc_id = ${newId}`,
+      );
+      expect(published.rows[0]?.label_fr).toBe("Published atomically");
+      const catalogue = await db.execute(
+        sql`SELECT revision FROM archidoc_technical_lot_catalogue WHERE singleton_key = 1`,
+      );
+      expect(catalogue.rows[0]?.revision).toBe("703");
+    });
+  },
+);

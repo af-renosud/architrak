@@ -12,7 +12,7 @@ import { startSignedPdfRetrySweeper } from "./services/devis-signed-pdf.service"
 import { startOutstandingFeesDigestScheduler } from "./communications/outstanding-fees-digest";
 import { startDevisCheckTokenCleanup } from "./services/devis-check-token-cleanup";
 import { startContractorAutoSyncScheduler } from "./archidoc/contractor-auto-sync";
-import { clearPreviousBackendMirrorRows } from "./archidoc/sync-service";
+import { ensurePreviousBackendMirrorRowsReconciled } from "./archidoc/sync-service";
 import { seedBenchmarkTags } from "./services/benchmark-ingest.service";
 import { SEED_BENCHMARK_TAGS } from "./services/benchmark-tags";
 import { registerAuthRoutes } from "./auth/routes";
@@ -224,7 +224,7 @@ app.use((req, res, next) => {
   // before the next hourly full sync re-stamps source_base_url.
   // Soft-skipped when ARCHIDOC_BASE_URL is unset (dev / CI).
   try {
-    await clearPreviousBackendMirrorRows();
+    await ensurePreviousBackendMirrorRowsReconciled();
   } catch (err) {
     console.error("[ArchiDoc] Boot reconciliation failed (continuing):", err);
   }

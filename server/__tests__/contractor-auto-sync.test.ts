@@ -167,6 +167,11 @@ const { state, dbSpy, syncContractorsMock, isArchidocConfiguredMock } = vi.hoist
 vi.mock("../db", () => ({ db: dbSpy, pool: {} }));
 vi.mock("../archidoc/sync-service", () => ({
   syncContractors: syncContractorsMock,
+  reconcilePreviousBackendMirrorRowsWithinHeldLock: vi.fn().mockResolvedValue({
+    projects: 0,
+    contractors: 0,
+    technicalLots: 0,
+  }),
   // The real helper takes a shared pg advisory lock; in unit tests we always
   // grant it so the locked body runs against the fake db.
   withMirrorSyncLock: async <T,>(fn: () => Promise<T>) => ({ acquired: true, result: await fn() }),

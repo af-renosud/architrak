@@ -2,7 +2,11 @@ import { db } from "../db";
 import { eq, desc, and, isNotNull, isNull, notInArray } from "drizzle-orm";
 import { archidocSyncLog, archidocContractors, contractors } from "@shared/schema";
 import type { ArchidocContractor, InsertContractor } from "@shared/schema";
-import { syncContractors, withMirrorSyncLock } from "./sync-service";
+import {
+  reconcilePreviousBackendMirrorRowsWithinHeldLock,
+  syncContractors,
+  withMirrorSyncLock,
+} from "./sync-service";
 import { isArchidocConfigured } from "./sync-client";
 import { normalizeSiret } from "../gmail/document-parser";
 
@@ -106,6 +110,8 @@ export async function runContractorAutoSync(options: { incremental?: boolean } =
 }
 
 async function runContractorAutoSyncLocked(options: { incremental?: boolean } = {}): Promise<ContractorAutoSyncResult> {
+  await reconcilePreviousBackendMirrorRowsWithinHeldLock();
+
   const [logEntry] = await db
     .insert(archidocSyncLog)
     .values({ syncType: CONTRACTOR_AUTO_SYNC_TYPE, status: "running" })

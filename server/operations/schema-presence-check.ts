@@ -205,6 +205,22 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
       ],
     },
   },
+  {
+    tag: "0113_archidoc_technical_lots",
+    artifact: {
+      kind: "all",
+      artifacts: [
+        { kind: "table", table: "archidoc_technical_lots" },
+        { kind: "constraint", table: "archidoc_technical_lots", constraint: "archidoc_technical_lots_lifecycle_chk" },
+        { kind: "table", table: "archidoc_technical_lot_catalogue" },
+        { kind: "constraint", table: "archidoc_technical_lot_catalogue", constraint: "archidoc_technical_lot_catalogue_singleton_chk" },
+        { kind: "column", table: "planning_revisions", column: "archidoc_technical_lot_id" },
+        { kind: "constraint", table: "planning_revisions", constraint: "planning_revisions_archidoc_technical_lot_id_fk" },
+        { kind: "index", index: "planning_revisions_archidoc_technical_lot_id_idx" },
+        { kind: "trigger", table: "planning_revisions", trigger: "planning_revision_immutable_trg" },
+      ],
+    },
+  },
 ];
 
 interface JournalFile {

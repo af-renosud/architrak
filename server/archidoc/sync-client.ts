@@ -195,6 +195,231 @@ export async function fetchProposalFees(projectId?: string): Promise<{ proposalF
   return archidocFetch<ProposalFeesResponse>("/api/sync/proposal-fees", params);
 }
 
+// --- Technical-lot catalogue -------------------------------------------
+//
+// GET /api/integrations/architrak/technical-lots returns the FULL catalogue
+// on every call (no delta / `since` parameter). The response carries all
+// tombstoned rows too, so absence from the response is NOT a deletion signal
+// — the service layer enforces this guarantee separately.
+
+export interface ArchidocTechnicalLotItem {
+  id: string;
+  code: string;
+  labelFr: string;
+  displayOrder: number;
+  isActive: boolean;
+  deletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ArchidocTechnicalLotCatalogue {
+  revision: number;
+  changedAt: string;
+}
+
+export interface ArchidocTechnicalLotsResponse {
+  lots: ArchidocTechnicalLotItem[];
+  catalogue: ArchidocTechnicalLotCatalogue;
+}
+
+// --- Runtime validation for the technical-lots endpoint ------------------
+//
+// Every field is validated strictly so malformed upstream data is caught
+// before it reaches the DB. Any violation throws with a descriptive message.
+
+function isIsoDate(s: string): boolean {
+  // Require a complete ISO-8601 timestamp with an explicit timezone. Date.parse
+  // alone accepts locale-like and normalized-invalid values, which is too
+  // permissive for a mirror publication gate.
+  if (typeof s !== "string" || s.trim() === "") return false;
+  const match = s.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|([+-])(\d{2}):(\d{2}))$/,
+  );
+  if (!match) {
+    return false;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const offsetHour = match[8] == null ? 0 : Number(match[8]);
+  const offsetMinute = match[9] == null ? 0 : Number(match[9]);
+  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return false;
+  if (offsetHour > 14 || offsetMinute > 59 || (offsetHour === 14 && offsetMinute !== 0)) return false;
+  const maxDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  if (day < 1 || day > maxDay) return false;
+  const d = new Date(s);
+  return isFinite(d.getTime());
+}
+
+function assertExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+  path: string,
+): void {
+  const expectedSet = new Set(expected);
+  const missing = expected.filter((key) => !Object.prototype.hasOwnProperty.call(value, key));
+  const unknown = Object.keys(value).filter((key) => !expectedSet.has(key));
+  if (missing.length > 0 || unknown.length > 0) {
+    throw new TechnicalLotsValidationError(
+      `${path} has an unexpected shape` +
+      (missing.length > 0 ? `; missing: ${missing.join(", ")}` : "") +
+      (unknown.length > 0 ? `; unknown: ${unknown.join(", ")}` : ""),
+    );
+  }
+}
+
+export class TechnicalLotsValidationError extends Error {
+  constructor(message: string) {
+    super(`TechnicalLotsValidationError: ${message}`);
+    this.name = "TechnicalLotsValidationError";
+  }
+}
+
+export function validateTechnicalLotsResponse(raw: unknown): ArchidocTechnicalLotsResponse {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new TechnicalLotsValidationError("Response root must be an object");
+  }
+  const obj = raw as Record<string, unknown>;
+  assertExactKeys(obj, ["lots", "catalogue"], "response");
+
+  // ---- catalogue ---------------------------------------------------------
+  if (obj.catalogue === null || typeof obj.catalogue !== "object" || Array.isArray(obj.catalogue)) {
+    throw new TechnicalLotsValidationError("catalogue must be an object");
+  }
+  const cat = obj.catalogue as Record<string, unknown>;
+  assertExactKeys(cat, ["revision", "changedAt"], "catalogue");
+
+  if (typeof cat.revision !== "number" || !Number.isInteger(cat.revision) || cat.revision < 0) {
+    throw new TechnicalLotsValidationError(
+      `catalogue.revision must be a non-negative integer, got ${JSON.stringify(cat.revision)}`,
+    );
+  }
+  if (!isIsoDate(cat.changedAt as string)) {
+    throw new TechnicalLotsValidationError(
+      `catalogue.changedAt must be a valid ISO-8601 date string, got ${JSON.stringify(cat.changedAt)}`,
+    );
+  }
+
+  // ---- lots --------------------------------------------------------------
+  if (!Array.isArray(obj.lots)) {
+    throw new TechnicalLotsValidationError("lots must be an array");
+  }
+
+  const seenIds = new Set<string>();
+  const seenCodes = new Set<string>();
+
+  const lots: ArchidocTechnicalLotItem[] = [];
+  for (let i = 0; i < obj.lots.length; i++) {
+    const raw = obj.lots[i];
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new TechnicalLotsValidationError(`lots[${i}] must be an object`);
+    }
+    const lot = raw as Record<string, unknown>;
+    assertExactKeys(
+      lot,
+      ["id", "code", "labelFr", "displayOrder", "isActive", "deletedAt", "createdAt", "updatedAt"],
+      `lots[${i}]`,
+    );
+
+    // id
+    if (typeof lot.id !== "string" || lot.id.trim() === "" || lot.id.length > 255) {
+      throw new TechnicalLotsValidationError(`lots[${i}].id must be a non-blank string of at most 255 characters, got ${JSON.stringify(lot.id)}`);
+    }
+    if (seenIds.has(lot.id)) {
+      throw new TechnicalLotsValidationError(`lots[${i}].id "${lot.id}" is a duplicate`);
+    }
+    seenIds.add(lot.id);
+
+    // code
+    if (typeof lot.code !== "string" || lot.code.trim() === "") {
+      throw new TechnicalLotsValidationError(`lots[${i}].code must be a non-blank string, got ${JSON.stringify(lot.code)}`);
+    }
+    if (seenCodes.has(lot.code)) {
+      throw new TechnicalLotsValidationError(`lots[${i}].code "${lot.code}" is a duplicate`);
+    }
+    seenCodes.add(lot.code);
+
+    // labelFr
+    if (typeof lot.labelFr !== "string" || lot.labelFr.trim() === "") {
+      throw new TechnicalLotsValidationError(`lots[${i}].labelFr must be a non-blank string, got ${JSON.stringify(lot.labelFr)}`);
+    }
+
+    // displayOrder
+    if (typeof lot.displayOrder !== "number" || !Number.isInteger(lot.displayOrder) || lot.displayOrder < 0) {
+      throw new TechnicalLotsValidationError(
+        `lots[${i}].displayOrder must be a non-negative integer, got ${JSON.stringify(lot.displayOrder)}`,
+      );
+    }
+
+    // isActive
+    if (typeof lot.isActive !== "boolean") {
+      throw new TechnicalLotsValidationError(`lots[${i}].isActive must be a boolean, got ${JSON.stringify(lot.isActive)}`);
+    }
+
+    // deletedAt — null or valid ISO date
+    if (lot.deletedAt !== null) {
+      if (typeof lot.deletedAt !== "string") {
+        throw new TechnicalLotsValidationError(
+          `lots[${i}].deletedAt must be null or a valid ISO-8601 date string, got ${JSON.stringify(lot.deletedAt)}`,
+        );
+      }
+      if (!isIsoDate(lot.deletedAt as string)) {
+        throw new TechnicalLotsValidationError(
+          `lots[${i}].deletedAt must be null or a valid ISO-8601 date string, got ${JSON.stringify(lot.deletedAt)}`,
+        );
+      }
+      // Contradiction: a lot that is isActive=true must not have a deletedAt
+      if (lot.isActive === true) {
+        throw new TechnicalLotsValidationError(
+          `lots[${i}] id="${lot.id}": isActive=true but deletedAt is set (${JSON.stringify(lot.deletedAt)}); contradiction`,
+        );
+      }
+    }
+
+    // createdAt
+    if (!isIsoDate(lot.createdAt as string)) {
+      throw new TechnicalLotsValidationError(
+        `lots[${i}].createdAt must be a valid ISO-8601 date string, got ${JSON.stringify(lot.createdAt)}`,
+      );
+    }
+
+    // updatedAt
+    if (!isIsoDate(lot.updatedAt as string)) {
+      throw new TechnicalLotsValidationError(
+        `lots[${i}].updatedAt must be a valid ISO-8601 date string, got ${JSON.stringify(lot.updatedAt)}`,
+      );
+    }
+
+    lots.push({
+      id: lot.id,
+      code: lot.code,
+      labelFr: lot.labelFr,
+      displayOrder: lot.displayOrder,
+      isActive: lot.isActive,
+      deletedAt: lot.deletedAt as string | null,
+      createdAt: lot.createdAt as string,
+      updatedAt: lot.updatedAt as string,
+    });
+  }
+
+  return {
+    lots,
+    catalogue: {
+      revision: cat.revision as number,
+      changedAt: cat.changedAt as string,
+    },
+  };
+}
+
+export async function fetchTechnicalLots(): Promise<ArchidocTechnicalLotsResponse> {
+  const raw = await archidocFetch<unknown>("/api/integrations/architrak/technical-lots");
+  return validateTechnicalLotsResponse(raw);
+}
+
 // --- Cached, non-blocking connectivity status ---------------------------
 //
 // The status endpoint used to call checkConnection() synchronously, which

@@ -381,6 +381,41 @@ describe("POST /api/projects/:projectId/planning-envelope/revisions", () => {
     );
   });
 
+  it("forwards a bounded ArchiDoc technical-lot ID without coercing it", async () => {
+    mockGetProject.mockResolvedValue(FAKE_PROJECT);
+    mockCreateManual.mockResolvedValue(FAKE_DETAIL);
+    const res = await fetch(`${baseUrl}/api/projects/1/planning-envelope/revisions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({
+        reference: "TECH-LOT",
+        descriptionFr: "Technical lot route test",
+        amountHt: "5000.00",
+        amountTtc: "6000.00",
+        archidocTechnicalLotId: "tech-lot-stable-id",
+      }),
+    });
+    expect(res.status).toBe(201);
+    expect(mockCreateManual).toHaveBeenCalledWith(
+      expect.objectContaining({
+        archidocTechnicalLotId: "tech-lot-stable-id",
+      }),
+    );
+  });
+
+  it("rejects an overlong ArchiDoc technical-lot ID", async () => {
+    mockGetProject.mockResolvedValue(FAKE_PROJECT);
+    const res = await fetch(`${baseUrl}/api/projects/1/planning-envelope/revisions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({
+        archidocTechnicalLotId: "x".repeat(256),
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockCreateManual).not.toHaveBeenCalled();
+  });
+
   it("rejects invalid amount format", async () => {
     mockGetProject.mockResolvedValue(FAKE_PROJECT);
     const res = await fetch(`${baseUrl}/api/projects/1/planning-envelope/revisions`, {

@@ -792,6 +792,13 @@
       "when": 1787371000000,
       "tag": "0112_archidoc_supplier_partners",
       "breakpoints": true
+    },
+    {
+      "idx": 113,
+      "version": "7",
+      "when": 1787389000000,
+      "tag": "0113_archidoc_technical_lots",
+      "breakpoints": true
     }
   ]
 }
