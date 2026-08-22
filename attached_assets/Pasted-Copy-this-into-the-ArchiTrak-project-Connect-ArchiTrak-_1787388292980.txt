@@ -1,0 +1,110 @@
+Copy this into the ArchiTrak project:
+
+# Connect ArchiTrak Planning Revisions to ArchiDoc Technical Lots
+## Goal
+Wire ArchiTrak’s Planning Revision **Lot** selector to ArchiDoc’s published technical-lot catalogue. ArchiDoc is now the authoritative source of truth.
+Do not modify ArchiDoc in this task.
+## Authoritative ArchiDoc endpoint
+GET https://archiouvro.com/api/integrations/architrak/technical-lots
+Authentication:
+Authorization: Bearer <ARCHIDOC_SYNC_API_KEY>
+Use the existing shared server-to-server credential through ArchiTrak’s secret/environment-variable mechanism. Never expose it in browser code, API responses, logs, source control, or client-side storage.
+This is a server-to-server integration. Do not call the endpoint directly from the browser.
+## Response contract
+```ts
+interface TechnicalLotRecord {
+  id: string;           // Immutable identifier: use this as the canonical key
+  code: string;         // Editable unique code, e.g. "GO", "PB"
+  labelFr: string;      // French label
+  displayOrder: number;
+  isActive: boolean;
+  deletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+interface TechnicalLotsListResponse {
+  lots: TechnicalLotRecord[];
+  catalogue: {
+    revision: number;
+    changedAt: string; // ISO-8601
+  };
+}
+
+The endpoint returns all records: active, inactive, and tombstoned.
+
+Ordering is guaranteed by:
+
+displayOrder ascending
+code ascending
+id ascending
+Expected error handling:
+
+401: missing or incorrect bearer credential
+503: ArchiDoc sync credential is not configured
+5xx / network failure: treat as temporary integration failure
+Required behavior
+Create a server-side ArchiTrak service/client for this endpoint.
+Validate the full response shape before accepting it.
+Use immutable id as the stored Planning Revision lot reference.
+Do not use editable code as the database identity.
+Update the Planning Revision Lot dropdown:
+New selections show only isActive === true and deletedAt === null.
+Display entries in ArchiDoc’s supplied order.
+Show French label, with code available where helpful, for example GO — GROS OEUVRE MAÇONNERIE.
+Preserve historical selections:
+If a lot becomes inactive or tombstoned in ArchiDoc, previously saved Planning Revisions must still display their saved lot.
+Historical records must not silently become blank or be reassigned.
+Support code and label renames:
+Because ArchiDoc IDs are immutable, changes to code or labelFr should update the display without breaking existing revisions.
+Mirror/cache the catalogue safely:
+Store the latest successful catalogue and its revision / changedAt.
+Only replace the local mirror after a complete, valid successful response.
+Preserve a last-known-good mirror if ArchiDoc is temporarily unavailable.
+Do not fall back to a hardcoded static lot list, as that could resurrect deleted lots.
+Make refresh behavior clear:
+Refresh before rendering/editing new Planning Revision lot choices, or through the project’s established sync/cache strategy.
+Avoid repeated requests during normal UI rendering.
+Surface useful operational errors:
+Administrators should see a clear message when the catalogue cannot be refreshed.
+Users editing a revision should not lose an already-saved historical lot because of a temporary sync failure.
+Data migration
+Inspect the existing ArchiTrak Planning Revision schema and current Lot representation.
+
+Create a safe migration/backfill strategy that:
+
+preserves existing lot selections;
+maps existing values to ArchiDoc records where a confident match exists;
+records unresolved legacy values without destructive guessing;
+never replaces a historical saved value with a different lot merely because codes or labels are similar;
+uses the immutable ArchiDoc id for all new and migrated references.
+If some legacy values cannot be matched safely, retain the legacy display value and flag it for review rather than discarding it.
+
+Tests
+Add focused automated coverage for:
+
+successful authenticated catalogue retrieval;
+missing/invalid credential failures;
+response-shape validation;
+deterministic ordering;
+active lots appearing in new-selection dropdowns;
+inactive and tombstoned lots remaining visible on historical revisions but unavailable for new selection;
+stable identity when ArchiDoc changes a code or French label;
+temporary ArchiDoc failure preserving the last-known-good catalogue;
+no hardcoded/default lot fallback when the authoritative catalogue is empty;
+safe handling of unmatched legacy Planning Revision lots.
+Use mocked HTTP responses for unit/integration tests. Add one controlled end-to-end or smoke test using the real endpoint only if the project’s secure test environment already supports the server-side credential.
+
+Acceptance criteria
+The Planning Revision Lot dropdown is populated from ArchiDoc’s catalogue.
+New Planning Revisions can select only active, non-deleted lots.
+Existing revisions retain historical lots after ArchiDoc deactivation, deletion, code changes, or label changes.
+ArchiTrak stores ArchiDoc’s immutable lot ID.
+The shared credential is server-side only.
+The UI remains usable during a temporary ArchiDoc outage by using a validated last-known-good mirror.
+Tests pass and the implemented contract is documented in ArchiTrak.
+Report the migration result, test results, and any legacy values needing manual review.
+Out of scope
+Changes to ArchiDoc’s endpoint, database, Settings UI, or authentication.
+Creating, editing, deleting, reordering, or restoring lots from ArchiTrak.
+Replacing ArchiDoc as the source of truth.
+The ArchiDoc side is already live and verified, so this prompt is sufficient to start the ArchiTrak consumer implementation.
