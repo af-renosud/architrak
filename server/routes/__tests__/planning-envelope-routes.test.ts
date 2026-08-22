@@ -5,6 +5,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
 import express from "express";
 import type { AddressInfo } from "net";
+import { Readable } from "node:stream";
 
 // ── Mock service layer ──────────────────────────────────────────────────────
 
@@ -51,6 +52,11 @@ vi.mock("../../storage", async () => {
   };
 });
 
+vi.mock("../../storage/object-storage", () => ({
+  uploadDocumentAtKey: vi.fn(),
+  getDocumentStream: vi.fn(),
+}));
+
 vi.mock("../../auth/middleware", () => ({
   requireAuth: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
     const sess = (req as unknown as { session?: { userId?: number } }).session;
@@ -81,6 +87,7 @@ import {
   parseDocument,
   isTransientParseFailure,
 } from "../../gmail/document-parser";
+import { getDocumentStream } from "../../storage/object-storage";
 
 const mockGetSummary = getEnvelopeSummary as unknown as ReturnType<typeof vi.fn>;
 const mockGetRevisionById = getRevisionById as unknown as ReturnType<typeof vi.fn>;
@@ -98,6 +105,7 @@ const mockRevise = reviseRevision as unknown as ReturnType<typeof vi.fn>;
 const mockPromote = promoteRevision as unknown as ReturnType<typeof vi.fn>;
 const mockParseDocument = parseDocument as unknown as ReturnType<typeof vi.fn>;
 const mockIsTransientParseFailure = isTransientParseFailure as unknown as ReturnType<typeof vi.fn>;
+const mockGetDocumentStream = getDocumentStream as unknown as ReturnType<typeof vi.fn>;
 
 const mockGetProject = storage.getProject as unknown as ReturnType<typeof vi.fn>;
 const mockGetUser = storage.getUser as unknown as ReturnType<typeof vi.fn>;
@@ -162,6 +170,7 @@ beforeEach(() => {
   mockPromote.mockReset();
   mockParseDocument.mockReset();
   mockIsTransientParseFailure.mockReset();
+  mockGetDocumentStream.mockReset();
   mockGetProject.mockReset();
   mockGetUser.mockReset();
   mockGetUser.mockResolvedValue(FAKE_USER);
@@ -180,6 +189,7 @@ describe("auth guard", () => {
       ["GET", "/api/projects/1/planning-envelope"],
       ["POST", "/api/projects/1/planning-envelope/revisions"],
       ["GET", "/api/planning-revisions/5"],
+      ["GET", "/api/planning-revisions/5/pdf"],
       ["PATCH", "/api/planning-revisions/5"],
     ];
     for (const [method, path] of routes) {
@@ -493,6 +503,49 @@ describe("GET /api/planning-revisions/:id", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.revision.id).toBe(5);
+  });
+});
+
+describe("GET /api/planning-revisions/:id/pdf", () => {
+  const pdfDetail = {
+    ...FAKE_DETAIL,
+    source: {
+      storageKey: "planning/test/source.pdf",
+      fileName: "source devis.pdf",
+    },
+  };
+
+  it("serves the PDF inline for viewing", async () => {
+    mockGetRevisionById.mockResolvedValue(pdfDetail);
+    mockGetDocumentStream.mockResolvedValue({
+      stream: Readable.from(Buffer.from("%PDF-1.4\n%%EOF\n")),
+      contentType: "application/pdf",
+      size: 15,
+    });
+
+    const res = await fetch(`${baseUrl}/api/planning-revisions/5/pdf`, {
+      headers: { "x-test-user-id": "42" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/pdf");
+    expect(res.headers.get("content-disposition")).toContain("inline;");
+  });
+
+  it("serves the same PDF as an attachment for downloading", async () => {
+    mockGetRevisionById.mockResolvedValue(pdfDetail);
+    mockGetDocumentStream.mockResolvedValue({
+      stream: Readable.from(Buffer.from("%PDF-1.4\n%%EOF\n")),
+      contentType: "application/pdf",
+      size: 15,
+    });
+
+    const res = await fetch(`${baseUrl}/api/planning-revisions/5/pdf?download=1`, {
+      headers: { "x-test-user-id": "42" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-disposition")).toContain("attachment;");
   });
 });
 

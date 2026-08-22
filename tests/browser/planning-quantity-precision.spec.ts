@@ -99,6 +99,17 @@ test.describe("Planning quantity precision", () => {
       const page = await context.newPage();
       await page.goto(`/projets/${projectId}?tab=planning-envelope`);
       await expect(page.getByTestId(`planning-envelope-revision-${revisionId}`)).toBeVisible();
+      await expect(page.getByTestId(`planning-envelope-pdf-${revisionId}`)).toHaveAttribute(
+        "href",
+        `/api/planning-revisions/${revisionId}/pdf?download=1`,
+      );
+      await expect(page.getByTestId(`planning-envelope-pdf-${revisionId}`)).toHaveAttribute("download", "");
+      await expect(page.getByTestId(`planning-envelope-view-pdf-${revisionId}`)).toHaveAttribute(
+        "href",
+        `/api/planning-revisions/${revisionId}/pdf`,
+      );
+      await expect(page.getByTestId(`planning-envelope-view-pdf-${revisionId}`)).toHaveAttribute("target", "_blank");
+      await expect(page.getByTestId(`planning-envelope-view-pdf-${revisionId}`)).toHaveAttribute("rel", "noopener noreferrer");
 
       await page.getByTestId(`planning-envelope-edit-${revisionId}`).click();
       await expect(page.getByTestId("planning-envelope-form")).toBeVisible();

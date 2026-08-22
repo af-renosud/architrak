@@ -568,7 +568,8 @@ router.get(
       const rawName = detail.source.fileName ?? "revision.pdf";
       const safeName = path.basename(rawName).replace(/[^\w\s\-_.]/g, "_").slice(0, 200);
       const encodedName = encodeURIComponent(safeName);
-      res.setHeader("Content-Disposition", `inline; filename="${safeName}"; filename*=UTF-8''${encodedName}`);
+      const disposition = req.query.download === "1" ? "attachment" : "inline";
+      res.setHeader("Content-Disposition", `${disposition}; filename="${safeName}"; filename*=UTF-8''${encodedName}`);
       stream.pipe(res);
     } catch (err) {
       handlePlanningError(err, res);
