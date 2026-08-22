@@ -349,7 +349,7 @@ router.post(
         checkLotReferencesAgainstCatalog,
       } = await import("../services/lot-reference-validator");
 
-      const parsed = await parseDocument(file.buffer, safeFileName);
+      let parsed = await parseDocument(file.buffer, safeFileName);
       await advanceStage("validating");
 
       // Reject only meaningless/transient parse failures (not blocking completeness warnings)
@@ -378,7 +378,16 @@ router.post(
         });
       }
 
-      const validation = validateExtraction(parsed);
+      let validation = validateExtraction(parsed);
+      const {
+        recoverPlanningTotalsBoxLines,
+      } = await import("../services/planning-totals-recovery.service");
+      ({ parsed, validation } = await recoverPlanningTotalsBoxLines({
+        pdfBuffer: file.buffer,
+        fileName: safeFileName,
+        parsed,
+        validation,
+      }));
 
       // Blocking completeness warnings are PERSISTED (not rejected) — they set requiresVerification=true
       const blockingCompleteness = findBlockingCompletenessWarnings(validation.warnings);

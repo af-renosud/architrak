@@ -45,6 +45,10 @@ vi.mock("../../gmail/document-parser", () => ({
   getParseFailureMessage: vi.fn(),
 }));
 
+vi.mock("../../services/planning-totals-recovery.service", () => ({
+  recoverPlanningTotalsBoxLines: vi.fn(),
+}));
+
 vi.mock("../../storage", async () => {
   const { createStorageMock } = await import("./helpers/mock-storage");
   return {
@@ -71,6 +75,7 @@ import {
   getRevisionById,
   getEnvelopeById,
   createManualRevision,
+  createPdfRevision,
   createPlanningImportJob,
   advancePlanningImportStage,
   touchPlanningImportJob,
@@ -85,14 +90,20 @@ import {
 } from "../../services/planning-envelope.service";
 import {
   parseDocument,
+  matchToProject,
   isTransientParseFailure,
 } from "../../gmail/document-parser";
-import { getDocumentStream } from "../../storage/object-storage";
+import { recoverPlanningTotalsBoxLines } from "../../services/planning-totals-recovery.service";
+import {
+  getDocumentStream,
+  uploadDocumentAtKey,
+} from "../../storage/object-storage";
 
 const mockGetSummary = getEnvelopeSummary as unknown as ReturnType<typeof vi.fn>;
 const mockGetRevisionById = getRevisionById as unknown as ReturnType<typeof vi.fn>;
 const mockGetEnvelopeById = getEnvelopeById as unknown as ReturnType<typeof vi.fn>;
 const mockCreateManual = createManualRevision as unknown as ReturnType<typeof vi.fn>;
+const mockCreatePdfRevision = createPdfRevision as unknown as ReturnType<typeof vi.fn>;
 const mockCreateImportJob = createPlanningImportJob as unknown as ReturnType<typeof vi.fn>;
 const mockAdvanceImportStage = advancePlanningImportStage as unknown as ReturnType<typeof vi.fn>;
 const mockTouchImportJob = touchPlanningImportJob as unknown as ReturnType<typeof vi.fn>;
@@ -104,11 +115,16 @@ const mockApprove = approveRevision as unknown as ReturnType<typeof vi.fn>;
 const mockRevise = reviseRevision as unknown as ReturnType<typeof vi.fn>;
 const mockPromote = promoteRevision as unknown as ReturnType<typeof vi.fn>;
 const mockParseDocument = parseDocument as unknown as ReturnType<typeof vi.fn>;
+const mockMatchToProject = matchToProject as unknown as ReturnType<typeof vi.fn>;
 const mockIsTransientParseFailure = isTransientParseFailure as unknown as ReturnType<typeof vi.fn>;
+const mockRecoverPlanningTotals = recoverPlanningTotalsBoxLines as unknown as ReturnType<typeof vi.fn>;
 const mockGetDocumentStream = getDocumentStream as unknown as ReturnType<typeof vi.fn>;
+const mockUploadDocumentAtKey = uploadDocumentAtKey as unknown as ReturnType<typeof vi.fn>;
 
 const mockGetProject = storage.getProject as unknown as ReturnType<typeof vi.fn>;
 const mockGetUser = storage.getUser as unknown as ReturnType<typeof vi.fn>;
+const mockGetProjects = storage.getProjects as unknown as ReturnType<typeof vi.fn>;
+const mockGetContractors = storage.getContractors as unknown as ReturnType<typeof vi.fn>;
 
 const FAKE_PROJECT = { id: 1, name: "Test project" };
 const FAKE_USER = { id: 42, email: "architect@renosud.com" };
@@ -158,6 +174,7 @@ beforeEach(() => {
   mockGetRevisionById.mockReset();
   mockGetEnvelopeById.mockReset();
   mockCreateManual.mockReset();
+  mockCreatePdfRevision.mockReset();
   mockCreateImportJob.mockReset();
   mockAdvanceImportStage.mockReset();
   mockTouchImportJob.mockReset();
@@ -169,11 +186,18 @@ beforeEach(() => {
   mockRevise.mockReset();
   mockPromote.mockReset();
   mockParseDocument.mockReset();
+  mockMatchToProject.mockReset();
   mockIsTransientParseFailure.mockReset();
+  mockRecoverPlanningTotals.mockReset();
   mockGetDocumentStream.mockReset();
+  mockUploadDocumentAtKey.mockReset();
   mockGetProject.mockReset();
   mockGetUser.mockReset();
+  mockGetProjects.mockReset();
+  mockGetContractors.mockReset();
   mockGetUser.mockResolvedValue(FAKE_USER);
+  mockGetProjects.mockResolvedValue([]);
+  mockGetContractors.mockResolvedValue([]);
   mockGetRecentImports.mockResolvedValue([]);
   mockTouchImportJob.mockResolvedValue(undefined);
   mockAdvanceImportStage.mockResolvedValue(null);
@@ -351,6 +375,116 @@ describe("POST /api/projects/:projectId/planning-envelope/import", () => {
       errorCode: "DEVIS_PARSE_FAILED",
       errorMessage: "Could not extract usable planning data from this PDF. Check the file and try again.",
     });
+  });
+
+  it("persists totals-box options recovered before the Planning draft is created", async () => {
+    mockGetProject.mockResolvedValue(FAKE_PROJECT);
+    mockCreateImportJob.mockResolvedValue({
+      id: 89,
+      projectId: 1,
+      fileName: "richardson.pdf",
+      fileSha256: "b".repeat(64),
+      mimeType: "application/pdf",
+      fileSizeBytes: 16,
+      status: "processing",
+      stage: "accepted",
+      revisionId: null,
+      errorCode: null,
+      errorMessage: null,
+      createdBy: FAKE_USER.email,
+      startedAt: new Date(),
+      updatedAt: new Date(),
+      completedAt: null,
+    });
+    const initiallyParsed = {
+      documentType: "quotation" as const,
+      contractorName: "RICHARDSON",
+      reference: "R-100",
+      amountHt: 150,
+      amountTtc: 180,
+      tvaAmount: 30,
+      lineItems: [{ description: "Main table row", total: 100 }],
+    };
+    const recoveredParsed = {
+      ...initiallyParsed,
+      lineItems: [
+        ...initiallyParsed.lineItems,
+        { description: "OPTION RETENUE DANS LE TOTAL", total: 50, pageHint: 1 },
+      ],
+      planningSummaryRecovery: {
+        attempted: true,
+        status: "reconciled" as const,
+        expectedHt: 150,
+        initialLineItemsTotal: 100,
+        difference: 50,
+        candidateCount: 1,
+        recoveredCount: 1,
+        ambiguousCandidateCount: 0,
+        recoveredTotal: 50,
+        finalLineItemsTotal: 150,
+        recoveredEvidence: [{
+          description: "OPTION RETENUE DANS LE TOTAL",
+          totalHt: 50,
+          evidenceText: "OPTIONS RETENUES DANS LE TOTAL",
+          pageHint: 1,
+        }],
+        note: "Recovered one printed option.",
+      },
+    };
+    const recoveredValidation = {
+      isValid: true,
+      warnings: [],
+      correctedValues: {},
+      confidenceScore: 100,
+    };
+    mockParseDocument.mockResolvedValue(initiallyParsed);
+    mockIsTransientParseFailure.mockReturnValue(false);
+    mockRecoverPlanningTotals.mockResolvedValue({
+      parsed: recoveredParsed,
+      validation: recoveredValidation,
+    });
+    mockMatchToProject.mockResolvedValue({
+      projectId: null,
+      contractorId: null,
+      confidence: 0,
+      warnings: [],
+    });
+    mockUploadDocumentAtKey.mockResolvedValue("/bucket/planning/richardson.pdf");
+    mockCreatePdfRevision.mockImplementation(async (input) => ({
+      revision: { ...FAKE_REVISION, amountHt: "150", amountTtc: "180" },
+      lines: input.lines,
+      source: { rawExtraction: input.rawExtraction },
+    }));
+
+    const form = new FormData();
+    form.append(
+      "file",
+      new Blob(["%PDF-1.4\n%%EOF\n"], { type: "application/pdf" }),
+      "richardson.pdf",
+    );
+    const response = await fetch(`${baseUrl}/api/projects/1/planning-envelope/import`, {
+      method: "POST",
+      headers: { "x-test-user-id": "42" },
+      body: form,
+    });
+
+    expect(response.status).toBe(201);
+    expect(mockRecoverPlanningTotals).toHaveBeenCalledWith(expect.objectContaining({
+      fileName: "richardson.pdf",
+      parsed: initiallyParsed,
+    }));
+    expect(mockCreatePdfRevision).toHaveBeenCalledWith(expect.objectContaining({
+      rawExtraction: recoveredParsed,
+      warnings: [],
+      lines: [
+        expect.objectContaining({ description: "Main table row", totalHt: "100" }),
+        expect.objectContaining({
+          description: "OPTION RETENUE DANS LE TOTAL",
+          totalHt: "50",
+          pdfPageHint: 1,
+        }),
+      ],
+    }));
   });
 });
 

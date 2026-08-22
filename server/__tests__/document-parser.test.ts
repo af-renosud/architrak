@@ -5,6 +5,8 @@ import {
   isTransientParseFailure,
   getParseFailureMessage,
   parseDocument,
+  buildPlanningSummaryRecoveryPrompt,
+  recoverPlanningSummaryLineItemsFromPdf,
   type ParsedDocument,
 } from "../gmail/document-parser";
 
@@ -247,5 +249,104 @@ describe("parseDocument retry & fallback", () => {
     expect(parseWithOpenAI).not.toHaveBeenCalled();
     expect(result.rawText).toBe("Parse failed (transient): [503 Service Unavailable] Gemini");
     expect(isTransientParseFailure(result)).toBe(true);
+  });
+});
+
+describe("Planning summary/totals-box recovery parser", () => {
+  it("builds an evidence-only prompt and treats arithmetic as a search signal", () => {
+    const prompt = buildPlanningSummaryRecoveryPrompt(
+      {
+        expectedHt: 17_463.87,
+        lineItemsTotal: 10_908,
+        difference: 6_555.87,
+      },
+      6,
+      7,
+    );
+
+    expect(prompt).toContain("pages 6-7");
+    expect(prompt).toContain("17463.87");
+    expect(prompt).toContain("6555.87");
+    expect(prompt).toContain("never evidence");
+    expect(prompt).toContain("do not");
+    expect(prompt).toContain('{"lines":[]}');
+  });
+
+  it("checks every page in bounded chunks and rebases recovered page hints", async () => {
+    const images = Array.from({ length: 6 }, (_, index) => Buffer.from(`page-${index + 1}`));
+    const recoverWithGemini = vi
+      .fn()
+      .mockResolvedValueOnce({ lines: [] })
+      .mockRejectedValueOnce(new Error("[503 Service Unavailable] Gemini recovery overloaded"));
+    const recoverWithOpenAI = vi.fn().mockResolvedValue({
+        lines: [{
+          description: "OPTION EN TOTAL",
+          totalHt: 50,
+          evidenceText: "OPTIONS RETENUES DANS LE TOTAL",
+          includedInTotal: true,
+          amountBasis: "HT",
+          pageHint: 1,
+        }],
+      });
+
+    const result = await recoverPlanningSummaryLineItemsFromPdf(
+      Buffer.from("pdf"),
+      "six-pages.pdf",
+      { expectedHt: 150, lineItemsTotal: 100, difference: 50 },
+      {
+        pdfToImagesWithCoverage: vi.fn(async () => ({
+          images,
+          pdfPageCount: 6,
+        })),
+        getActiveModel: vi.fn(async () => ({
+          provider: "gemini",
+          modelId: "gemini-2.5-flash",
+        })),
+        recoverWithGemini,
+        recoverWithOpenAI,
+        getOpenAIFallbackModelId: vi.fn(async () => "gpt-4o"),
+        hasOpenAIKey: vi.fn(() => true),
+      },
+    );
+
+    expect(recoverWithGemini).toHaveBeenCalledTimes(2);
+    expect(recoverWithGemini.mock.calls[0][0]).toEqual(images.slice(0, 5));
+    expect(recoverWithGemini.mock.calls[1][0]).toEqual(images.slice(5));
+    expect(recoverWithGemini.mock.calls[1][2]).toContain("pages 6-6");
+    expect(recoverWithOpenAI).toHaveBeenCalledWith(
+      images.slice(5),
+      "gpt-4o",
+      expect.stringContaining("pages 6-6"),
+    );
+    expect(result).toEqual([
+      expect.objectContaining({
+        description: "OPTION EN TOTAL",
+        pageHint: 6,
+      }),
+    ]);
+  });
+
+  it("discards malformed recovery rows without dereferencing unsafe output", async () => {
+    const result = await recoverPlanningSummaryLineItemsFromPdf(
+      Buffer.from("pdf"),
+      "malformed-openai.pdf",
+      { expectedHt: 150, lineItemsTotal: 100, difference: 50 },
+      {
+        pdfToImages: vi.fn(async () => [Buffer.from("page-1")]),
+        getActiveModel: vi.fn(async () => ({
+          provider: "openai",
+          modelId: "gpt-4o",
+        })),
+        recoverWithOpenAI: vi.fn(async () => ({
+          lines: [
+            null,
+            "not-an-object",
+            { description: "Missing required evidence", totalHt: 50 },
+          ],
+        })),
+      },
+    );
+
+    expect(result).toEqual([]);
   });
 });

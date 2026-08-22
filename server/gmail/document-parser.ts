@@ -76,6 +76,28 @@ export interface ParsedDocument {
     matchedAgainst: "ttc" | "ht_plus_tva" | "ht_times_rate";
     note: string;
   };
+  /** Deterministic audit metadata for the Planning-only totals-box recovery
+   *  pass. The AI never sets this block; the Planning extraction service does. */
+  planningSummaryRecovery?: {
+    attempted: boolean;
+    status: "reconciled" | "partial" | "none" | "failed";
+    expectedHt: number;
+    initialLineItemsTotal: number;
+    difference: number;
+    candidateCount: number;
+    recoveredCount: number;
+    ambiguousCandidateCount: number;
+    recoveredTotal: number;
+    finalLineItemsTotal: number;
+    recoveredEvidence: Array<{
+      description: string;
+      totalHt: number;
+      evidenceText: string;
+      pageHint?: number;
+      bbox?: { x: number; y: number; w: number; h: number };
+    }>;
+    note: string;
+  };
   date?: string;
   amountHt?: number;
   amountTtc?: number;
@@ -224,6 +246,7 @@ Extraction Rules:
 - For each line item, also populate "pageHint": the 1-indexed page number of the PDF on which that line appears. Pages are provided to you as separate images in order — the first image is page 1, the second is page 2, and so on. If you cannot determine the page with confidence, omit pageHint for that line.
 - For each line item, also populate "bbox": the rectangle on the page image that visually contains that line's row in the table. Coordinates MUST be normalized to the [0, 1] range of the page image (x and w as a fraction of the image width; y and h as a fraction of the image height; origin at the top-left of the image). Make the box tight to the line row, including the description and the amount, but not neighbouring rows. If you cannot determine the box with confidence, omit bbox for that line — do not guess.
 - A single numbered item's description often spans MULTIPLE paragraphs or wrapped lines. All descriptive text between one priced row and the next belongs to the SAME line item — append it to that item's description. NEVER emit a separate line item for a continuation paragraph: a row that has no printed unit price and no printed total of its own is not a new line item.
+- For quotation/devis documents, inspect summary and totals boxes as well as the main item table. A separately priced option printed only in a summary/totals box is still a line item when nearby wording explicitly says it is retained/included in the Montant H.T. (for example "OPTIONS RETENUES DANS LE TOTAL"). Extract its printed description and HT amount even when quantity, unit, and unit price are absent. Do not extract rejected/excluded options, subtotals, tax, delivery charges, or TTC as line items, and never invent a balancing line from a totals difference.
 - If a field is not visible on the document, omit it (do not guess).
 - Architect fee invoices (honoraires): when the ISSUER of the invoice (letterhead entity) is the architecture firm itself — e.g. "ARCHITECTS-FRANCE" / "SAS ARCHITECTS-FRANCE" — invoicing its own client for fees/honoraires (mission d'architecte, ouverture de dossier, phases de conception, etc.), use documentType="architect_fee_invoice". In that case contractorName is the ARCHITECTURE FIRM (the issuer) and clientName is the maitre d'ouvrage being billed. Never classify such a document as a contractor "invoice".
 - Payment confirmations (confirmation de paiement): a document that confirms a payment has been made or received — e.g. bank transfer receipts ("avis de virement", "relevé de virement"), payment receipts ("reçu de paiement", "accusé de réception de paiement"), or bank confirmation slips. Use documentType="payment_confirmation". Do NOT confuse with a facture d'acompte (which is a request for payment, not a confirmation) or with a situation de travaux.`;
@@ -255,7 +278,7 @@ const USER_PROMPT = `Analyze this French construction document and extract the f
 - paymentTerms: payment conditions text if visible (e.g., "30 jours fin de mois")
 - lotReferences: array of lot codes/references visible on the document (e.g., ["Lot 1", "Lot 7 - Electricite"])
 - description: brief description of the work/service
-- lineItems: array of line items, each with {description, quantity, unit, unitPrice, total, percentComplete, pageHint, bbox}. For SITUATION documents (situation de travaux), set percentComplete to the CUMULATIVE claimed completion percentage printed for the line (columns like "% avancement", "% réalisé", "Avancement cumulé"); omit percentComplete for all other document types. IMPORTANT: unitPrice and total must be the pre-tax (HT / hors taxes) amounts for each line — French quotations list line amounts HT in the body and only add TVA at the bottom, where the final total is TTC (tax-inclusive). Never copy TTC/tax-inclusive figures into line items. Multi-paragraph descriptions belong to ONE item: only create a new array entry when the document shows a new priced row — a paragraph without its own price is part of the previous item's description, never a new entry.
+- lineItems: array of line items, each with {description, quantity, unit, unitPrice, total, percentComplete, pageHint, bbox}. For SITUATION documents (situation de travaux), set percentComplete to the CUMULATIVE claimed completion percentage printed for the line (columns like "% avancement", "% réalisé", "Avancement cumulé"); omit percentComplete for all other document types. IMPORTANT: unitPrice and total must be the pre-tax (HT / hors taxes) amounts for each line — French quotations list line amounts HT in the body and only add TVA at the bottom, where the final total is TTC (tax-inclusive). Never copy TTC/tax-inclusive figures into line items. Multi-paragraph descriptions belong to ONE item: only create a new array entry when the document shows a new priced row — a paragraph without its own price is part of the previous item's description, never a new entry. On quotations/devis, also include separately priced options printed only in a summary/totals box when the document explicitly labels them as retained/included in the Montant H.T.; omit quantity/unit/unitPrice when they are not printed, and do not include rejected options, subtotals, TVA, delivery charges, or TTC.
 - iban: contractor IBAN printed on the document if visible (typically in a "Coordonnées bancaires" / RIB block). Copy verbatim — preserve all characters including spaces; downstream code normalises and validates.
 - bic: contractor BIC / SWIFT code printed on the document if visible. Copy verbatim.
 
@@ -1192,6 +1215,318 @@ async function parseWithOpenAI(images: Buffer[], modelId: string): Promise<Parse
   const content = response.choices[0]?.message?.content || "{}";
   const cleaned = content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
   return JSON.parse(cleaned);
+}
+
+export interface PlanningSummaryRecoveryContext {
+  expectedHt: number;
+  lineItemsTotal: number;
+  difference: number;
+}
+
+export interface PlanningSummaryLineCandidate {
+  description: string;
+  totalHt: number;
+  evidenceText: string;
+  includedInTotal: boolean;
+  amountBasis: string;
+  pageHint?: number;
+  bbox?: { x: number; y: number; w: number; h: number };
+}
+
+const PLANNING_SUMMARY_RECOVERY_SCHEMA: ResponseSchema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    lines: {
+      type: SchemaType.ARRAY,
+      description: "Printed quotation option rows found outside the main item table",
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          description: {
+            type: SchemaType.STRING,
+            description: "Verbatim printed option description",
+          },
+          totalHt: {
+            type: SchemaType.NUMBER,
+            description: "Printed pre-tax HT amount for this option",
+          },
+          evidenceText: {
+            type: SchemaType.STRING,
+            description: "Verbatim nearby wording proving the option is included in the Montant H.T.",
+          },
+          includedInTotal: {
+            type: SchemaType.BOOLEAN,
+            description: "True only when the document explicitly includes the option in the total",
+          },
+          amountBasis: {
+            type: SchemaType.STRING,
+            description: 'Use exactly "HT" only when the printed amount is demonstrably pre-tax',
+          },
+          pageHint: {
+            type: SchemaType.NUMBER,
+            description: "1-indexed page within the supplied image chunk",
+            nullable: true,
+          },
+          bbox: {
+            type: SchemaType.OBJECT,
+            description: "Normalized bounding box around the printed option row",
+            nullable: true,
+            properties: {
+              x: { type: SchemaType.NUMBER },
+              y: { type: SchemaType.NUMBER },
+              w: { type: SchemaType.NUMBER },
+              h: { type: SchemaType.NUMBER },
+            },
+            required: ["x", "y", "w", "h"],
+          },
+        },
+        required: [
+          "description",
+          "totalHt",
+          "evidenceText",
+          "includedInTotal",
+          "amountBasis",
+        ],
+      },
+    },
+  },
+  required: ["lines"],
+};
+
+export function buildPlanningSummaryRecoveryPrompt(
+  context: PlanningSummaryRecoveryContext,
+  pageStart: number,
+  pageEnd: number,
+): string {
+  return `Re-examine quotation/devis pages ${pageStart}-${pageEnd} only for priced option rows that were omitted from the main extraction because they appear in a summary or totals box outside the main item table.
+
+Deterministic reconciliation signal:
+- Printed Montant H.T.: ${context.expectedHt.toFixed(2)}
+- Already extracted HT line total: ${context.lineItemsTotal.toFixed(2)}
+- Unexplained positive difference: ${context.difference.toFixed(2)}
+
+Return a candidate only when ALL of the following are visibly supported on the supplied page images:
+1. It has its own printed description and monetary amount.
+2. Nearby wording explicitly says the option is retained/included in the total or Montant H.T. (for example "OPTIONS RETENUES DANS LE TOTAL").
+3. The amount is demonstrably HT, either explicitly marked HT or visibly feeding the Montant H.T. total.
+
+Copy the description, amount, and nearby inclusion wording verbatim. Set includedInTotal=true and amountBasis="HT" only when those facts are visible. Omit quantity, unit, and unit price because this recovery concerns summary rows that often do not print them. pageHint is 1-indexed within the supplied image chunk.
+
+Do NOT return:
+- rows already belonging to the main item table;
+- rejected, excluded, or merely proposed options;
+- sous-totaux, Montant H.T., TVA, TTC, freight/delivery charges, discounts, or payment terms;
+- any synthetic row calculated from the difference above.
+
+The arithmetic difference is only a signal to search; it is never evidence. If no qualifying printed row is visible, return {"lines":[]}. Return only valid JSON.`;
+}
+
+async function recoverPlanningSummaryWithGemini(
+  images: Buffer[],
+  modelId: string,
+  prompt: string,
+): Promise<unknown> {
+  const genAI = getGeminiClient();
+  const model = genAI.getGenerativeModel({
+    model: modelId,
+    systemInstruction: SYSTEM_PROMPT,
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema: PLANNING_SUMMARY_RECOVERY_SCHEMA,
+      temperature: 0,
+    },
+  });
+  const imageParts = images.map((buf) => ({
+    inlineData: {
+      mimeType: "image/png" as const,
+      data: buf.toString("base64"),
+    },
+  }));
+  return retry(
+    async () => {
+      const result = await model.generateContent([prompt, ...imageParts]);
+      return JSON.parse(result.response.text()) as unknown;
+    },
+    {
+      retries: 2,
+      baseMs: 500,
+      maxMs: 6000,
+      factor: 3,
+      jitter: true,
+      shouldRetry: isTransientGeminiError,
+    },
+  );
+}
+
+async function recoverPlanningSummaryWithOpenAI(
+  images: Buffer[],
+  modelId: string,
+  prompt: string,
+): Promise<unknown> {
+  const openai = getOpenAIClient();
+  const imageContent = images.map((buf) => ({
+    type: "image_url" as const,
+    image_url: { url: `data:image/png;base64,${buf.toString("base64")}` },
+  }));
+  const response = await openai.chat.completions.create({
+    model: modelId || "gpt-4o",
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: prompt },
+          ...imageContent,
+        ],
+      },
+    ],
+    max_tokens: 2000,
+    temperature: 0,
+  });
+  const content = response.choices[0]?.message?.content || '{"lines":[]}';
+  const cleaned = content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+  return JSON.parse(cleaned) as unknown;
+}
+
+function normalizePlanningSummaryRecoveryPayload(
+  payload: unknown,
+): PlanningSummaryLineCandidate[] {
+  if (
+    typeof payload !== "object"
+    || payload === null
+    || !Array.isArray((payload as { lines?: unknown }).lines)
+  ) {
+    throw new Error("Planning summary recovery returned an invalid response shape");
+  }
+
+  const normalized: PlanningSummaryLineCandidate[] = [];
+  for (const raw of (payload as { lines: unknown[] }).lines) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
+    const value = raw as Record<string, unknown>;
+    if (
+      typeof value.description !== "string"
+      || typeof value.totalHt !== "number"
+      || !Number.isFinite(value.totalHt)
+      || typeof value.evidenceText !== "string"
+      || typeof value.includedInTotal !== "boolean"
+      || typeof value.amountBasis !== "string"
+    ) {
+      continue;
+    }
+
+    const candidate: PlanningSummaryLineCandidate = {
+      description: value.description,
+      totalHt: value.totalHt,
+      evidenceText: value.evidenceText,
+      includedInTotal: value.includedInTotal,
+      amountBasis: value.amountBasis,
+    };
+    if (typeof value.pageHint === "number" && Number.isFinite(value.pageHint)) {
+      candidate.pageHint = value.pageHint;
+    }
+    if (typeof value.bbox === "object" && value.bbox !== null && !Array.isArray(value.bbox)) {
+      const bbox = value.bbox as Record<string, unknown>;
+      if (
+        typeof bbox.x === "number"
+        && typeof bbox.y === "number"
+        && typeof bbox.w === "number"
+        && typeof bbox.h === "number"
+      ) {
+        candidate.bbox = { x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h };
+      }
+    }
+    normalized.push(candidate);
+  }
+  return normalized;
+}
+
+export interface PlanningSummaryRecoveryDeps {
+  pdfToImages?: (pdfBuffer: Buffer) => Promise<Buffer[]>;
+  pdfToImagesWithCoverage?: (pdfBuffer: Buffer) => Promise<{ images: Buffer[]; pdfPageCount: number | null }>;
+  getActiveModel?: () => Promise<{ provider: string; modelId: string }>;
+  recoverWithGemini?: (
+    images: Buffer[],
+    modelId: string,
+    prompt: string,
+  ) => Promise<unknown>;
+  recoverWithOpenAI?: (
+    images: Buffer[],
+    modelId: string,
+    prompt: string,
+  ) => Promise<unknown>;
+  getOpenAIFallbackModelId?: () => Promise<string>;
+  hasOpenAIKey?: () => boolean;
+}
+
+export async function recoverPlanningSummaryLineItemsFromPdf(
+  pdfBuffer: Buffer,
+  fileName: string,
+  context: PlanningSummaryRecoveryContext,
+  deps: PlanningSummaryRecoveryDeps = {},
+): Promise<PlanningSummaryLineCandidate[]> {
+  const renderWithCoverage: (buf: Buffer) => Promise<{ images: Buffer[]; pdfPageCount: number | null }> =
+    deps.pdfToImagesWithCoverage
+      ?? (deps.pdfToImages
+        ? async (buf: Buffer) => {
+            const images = await deps.pdfToImages!(buf);
+            return { images, pdfPageCount: images.length };
+          }
+        : (buf: Buffer) => pdfToImagesWithCoverage(buf));
+  const activeModel = deps.getActiveModel ?? getActiveModel;
+  const recoverWithGemini = deps.recoverWithGemini ?? recoverPlanningSummaryWithGemini;
+  const recoverWithOpenAI = deps.recoverWithOpenAI ?? recoverPlanningSummaryWithOpenAI;
+  const fallbackModel = deps.getOpenAIFallbackModelId ?? getOpenAIFallbackModelId;
+  const openAIAvailable = deps.hasOpenAIKey ?? hasOpenAIKey;
+
+  const { images, pdfPageCount } = await renderWithCoverage(pdfBuffer);
+  if (images.length === 0) {
+    throw new Error("Planning summary recovery could not render any PDF pages");
+  }
+  console.log(
+    `[DocumentParser] Re-examining ${images.length} page(s) of "${fileName}" for totals-box options (pdfinfo reports ${pdfPageCount ?? "unknown"})`,
+  );
+
+  const { provider, modelId } = await activeModel();
+  const candidates: PlanningSummaryLineCandidate[] = [];
+  const chunkCount = Math.ceil(images.length / EXTRACTION_CHUNK_PAGES);
+
+  for (let index = 0; index < chunkCount; index++) {
+    const pageOffset = index * EXTRACTION_CHUNK_PAGES;
+    const chunkImages = images.slice(pageOffset, pageOffset + EXTRACTION_CHUNK_PAGES);
+    const prompt = buildPlanningSummaryRecoveryPrompt(
+      context,
+      pageOffset + 1,
+      pageOffset + chunkImages.length,
+    );
+    let payload: unknown;
+
+    if (provider === "gemini") {
+      try {
+        payload = await recoverWithGemini(chunkImages, modelId, prompt);
+      } catch (error) {
+        if (!isTransientGeminiError(error) || !openAIAvailable()) throw error;
+        const openAIModelId = await fallbackModel();
+        payload = await recoverWithOpenAI(chunkImages, openAIModelId, prompt);
+      }
+    } else {
+      payload = await recoverWithOpenAI(chunkImages, modelId, prompt);
+    }
+
+    for (const candidate of normalizePlanningSummaryRecoveryPayload(payload)) {
+      const rebased = { ...candidate };
+      if (typeof candidate.pageHint === "number" && Number.isFinite(candidate.pageHint)) {
+        if (candidate.pageHint >= 1 && candidate.pageHint <= chunkImages.length) {
+          rebased.pageHint = candidate.pageHint + pageOffset;
+        } else {
+          delete rebased.pageHint;
+          delete rebased.bbox;
+        }
+      }
+      candidates.push(rebased);
+    }
+  }
+
+  return candidates;
 }
 
 function hasOpenAIKey(): boolean {
