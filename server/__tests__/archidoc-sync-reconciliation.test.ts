@@ -40,6 +40,7 @@ vi.mock("../env", async () => {
 
 const fetchProjectsMock = vi.fn();
 const fetchTechnicalLotsMock = vi.fn();
+const archidocConfiguredState = { value: true };
 vi.mock("../archidoc/sync-client", async () => {
   const actual =
     await vi.importActual<typeof import("../archidoc/sync-client")>(
@@ -47,7 +48,7 @@ vi.mock("../archidoc/sync-client", async () => {
     );
   return {
     ...actual,
-    isArchidocConfigured: () => true,
+    isArchidocConfigured: () => archidocConfiguredState.value,
     fetchProjects: fetchProjectsMock,
     fetchTechnicalLots: fetchTechnicalLotsMock,
   };
@@ -359,7 +360,9 @@ describe.skipIf(skipModule).sequential(
       });
 
       const result = await syncTechnicalLots();
-      expect(result.error).toMatch(/omitted 1 previously-mirrored ID/);
+      expect(result.error).toBe(
+        "catalogue_incomplete: Technical-lot response omitted 1 previously mirrored record(s); the local catalogue was left unchanged.",
+      );
       const lots = await db.execute(
         sql`SELECT label_fr, is_active FROM archidoc_technical_lots WHERE archidoc_id = ${existingId}`,
       );
@@ -370,10 +373,38 @@ describe.skipIf(skipModule).sequential(
       expect(catalogue.rows[0]?.revision).toBe("700");
     });
 
+    it("routes a missing configuration failure through the typed technical-lot fetch path", async () => {
+      const { ArchidocFetchError } = await import("../archidoc/sync-client");
+      const { syncTechnicalLots } = await import("../archidoc/sync-service");
+      fetchTechnicalLotsMock.mockClear();
+      archidocConfiguredState.value = false;
+      fetchTechnicalLotsMock.mockRejectedValueOnce(
+        new ArchidocFetchError({
+          endpoint: "/api/integrations/architrak/technical-lots",
+          outcome: "error",
+          status: null,
+          durationMs: 0,
+          checkedAt: new Date().toISOString(),
+          code: "not_configured",
+          reason: "ArchiDoc sync is not configured.",
+        }),
+      );
+
+      try {
+        const result = await syncTechnicalLots();
+        expect(fetchTechnicalLotsMock).toHaveBeenCalledOnce();
+        expect(result.error).toMatch(/^not_configured: ArchiDoc sync is not configured/);
+      } finally {
+        archidocConfiguredState.value = true;
+      }
+    });
+
     it("rolls back prior lot writes and catalogue publication when a later DB write fails", async () => {
       const { syncTechnicalLots } = await import("../archidoc/sync-service");
       const { db } = await import("../db");
       const firstNewId = `${prefix}first-new`;
+      const privateUpstreamValue = "UPSTREAM_PRIVATE_LABEL";
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
       fetchTechnicalLotsMock.mockResolvedValueOnce({
         lots: [
           {
@@ -399,7 +430,7 @@ describe.skipIf(skipModule).sequential(
           {
             id: `${prefix}invalid`,
             code: `${prefix}INVALID`,
-            labelFr: "Constraint failure",
+            labelFr: privateUpstreamValue,
             displayOrder: -1,
             isActive: true,
             deletedAt: null,
@@ -411,7 +442,20 @@ describe.skipIf(skipModule).sequential(
       });
 
       const result = await syncTechnicalLots();
-      expect(result.error).toBeTruthy();
+      expect(result.error).toBe(
+        "catalogue_persistence_failed: Technical-lot catalogue publication failed; the local catalogue was left unchanged.",
+      );
+      expect(result.error).not.toContain(privateUpstreamValue);
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateUpstreamValue);
+      const latestLog = await db.execute(sql`
+        SELECT error_message
+          FROM archidoc_sync_log
+         WHERE sync_type = 'technical_lots'
+         ORDER BY id DESC
+         LIMIT 1
+      `);
+      expect(latestLog.rows[0]?.error_message).toBe(result.error);
+      expect(String(latestLog.rows[0]?.error_message)).not.toContain(privateUpstreamValue);
       const rolledBack = await db.execute(
         sql`SELECT count(*) AS count FROM archidoc_technical_lots WHERE archidoc_id = ${firstNewId}`,
       );
@@ -483,7 +527,9 @@ describe.skipIf(skipModule).sequential(
         });
 
         const result = await syncTechnicalLots();
-        expect(result.error).toMatch(/Planning-referenced ID/);
+        expect(result.error).toBe(
+          "catalogue_identity_conflict: Technical-lot source data conflicts with immutable Planning history; the local catalogue was left unchanged.",
+        );
         const preserved = await db.execute(sql`
           SELECT code, label_fr, source_base_url, is_active
             FROM archidoc_technical_lots

@@ -1,6 +1,10 @@
-import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
 import express from "express";
 import type { AddressInfo } from "net";
+
+const { getTechnicalLotsCatalogueSnapshotMock } = vi.hoisted(() => ({
+  getTechnicalLotsCatalogueSnapshotMock: vi.fn(),
+}));
 
 // ---------------------------------------------------------------------------
 // Mocks — must be declared before any imports that transitively load the
@@ -37,8 +41,22 @@ vi.mock("../../archidoc/sync-service", () => ({
     lastSyncType: null,
     lastSyncStatus: null,
     lastSyncError: null,
-    technicalLots: { lastSync: null, lastSyncStatus: null, lastSyncError: null, count: null },
+    technicalLots: {
+      lastSync: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+      count: null,
+      activeCount: null,
+      catalogueState: "empty",
+      selectable: false,
+      catalogueRevision: null,
+      catalogueChangedAt: null,
+      catalogueSyncedAt: null,
+      diagnosticReason: "The ArchiDoc technical-lot sync credential is not configured.",
+      lastFetch: null,
+    },
   }),
+  getTechnicalLotsCatalogueSnapshot: getTechnicalLotsCatalogueSnapshotMock,
   getCurrentSourceBaseUrl: vi.fn().mockReturnValue(null),
   isMirrorSyncInProgress: vi.fn().mockResolvedValue(false),
 }));
@@ -116,6 +134,10 @@ afterAll(() => {
   server?.close();
 });
 
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -154,14 +176,29 @@ const SAMPLE_SYNC_LOG = {
 
 describe("GET /api/archidoc/technical-lots", () => {
   it("returns lots, catalogue, and sync status when mirror is populated", async () => {
-    // Wire up the select chain so successive calls return the right data.
-    // The route issues 3 selects: lots, catalogue, syncLog.
-    let callCount = 0;
-    mockSelect.mockImplementation(() => {
-      callCount++;
-      if (callCount === 1) return makeQueryChain([SAMPLE_LOT]);
-      if (callCount === 2) return makeQueryChain([SAMPLE_CATALOGUE]);
-      return makeQueryChain([SAMPLE_SYNC_LOG]);
+    getTechnicalLotsCatalogueSnapshotMock.mockResolvedValueOnce({
+      lots: [SAMPLE_LOT],
+      catalogue: SAMPLE_CATALOGUE,
+      syncLog: SAMPLE_SYNC_LOG,
+      availability: {
+        state: "ready",
+        selectable: true,
+        reason: null,
+        lotCount: 1,
+        activeLotCount: 1,
+        revision: 3,
+        changedAt: SAMPLE_CATALOGUE.changedAt,
+        syncedAt: SAMPLE_CATALOGUE.syncedAt,
+        lastFetch: {
+          endpoint: "/api/integrations/architrak/technical-lots",
+          outcome: "success",
+          status: 200,
+          durationMs: 125,
+          checkedAt: "2024-06-01T10:00:05.000Z",
+          code: null,
+          reason: "Validated 1 technical-lot records.",
+        },
+      },
     });
 
     const res = await fetch(`${baseUrl}/api/archidoc/technical-lots`);
@@ -170,6 +207,7 @@ describe("GET /api/archidoc/technical-lots", () => {
       lots: typeof SAMPLE_LOT[];
       catalogue: typeof SAMPLE_CATALOGUE | null;
       sync: { status: string; recordsUpdated: number } | null;
+      availability: { state: string; selectable: boolean; lastFetch: { status: number } };
     };
     expect(body.lots).toHaveLength(1);
     expect((body.lots[0] as unknown as { id: string }).id).toBe("lot-1");
@@ -177,32 +215,99 @@ describe("GET /api/archidoc/technical-lots", () => {
     expect(body.catalogue?.revision).toBe(3);
     expect(body.sync?.status).toBe("completed");
     expect(body.sync?.recordsUpdated).toBe(1);
+    expect(body.availability).toMatchObject({
+      state: "ready",
+      selectable: true,
+      lastFetch: { status: 200 },
+    });
   });
 
-  it("returns empty lots and null catalogue/sync on first boot", async () => {
-    let callCount = 0;
-    mockSelect.mockImplementation(() => {
-      callCount++;
-      // lots, catalogue, syncLog — all empty
-      return makeQueryChain([]);
+  it("returns an explicit empty-cache diagnostic on first boot", async () => {
+    getTechnicalLotsCatalogueSnapshotMock.mockResolvedValueOnce({
+      lots: [],
+      catalogue: null,
+      syncLog: null,
+      availability: {
+        state: "empty",
+        selectable: false,
+        reason: "The ArchiDoc technical-lot sync credential is not configured.",
+        lotCount: 0,
+        activeLotCount: 0,
+        revision: null,
+        changedAt: null,
+        syncedAt: null,
+        lastFetch: null,
+      },
     });
 
     const res = await fetch(`${baseUrl}/api/archidoc/technical-lots`);
     expect(res.status).toBe(200);
-    const body = await res.json() as { lots: unknown[]; catalogue: null; sync: null };
+    const body = await res.json() as {
+      lots: unknown[];
+      catalogue: null;
+      sync: null;
+      availability: { state: string; selectable: boolean; reason: string };
+    };
     expect(body.lots).toHaveLength(0);
     expect(body.catalogue).toBeNull();
     expect(body.sync).toBeNull();
+    expect(body.availability).toMatchObject({
+      state: "empty",
+      selectable: false,
+      reason: "The ArchiDoc technical-lot sync credential is not configured.",
+    });
   });
 
-  it("returns 500 when the db throws", async () => {
-    mockSelect.mockImplementation(() => {
-      throw new Error("DB connection lost");
+  it("keeps last-known-good catalogue selectable after a failed refresh", async () => {
+    getTechnicalLotsCatalogueSnapshotMock.mockResolvedValueOnce({
+      lots: [SAMPLE_LOT],
+      catalogue: SAMPLE_CATALOGUE,
+      syncLog: { ...SAMPLE_SYNC_LOG, status: "failed", recordsUpdated: 0 },
+      availability: {
+        state: "last_known_good",
+        selectable: true,
+        reason: "ArchiDoc is temporarily unavailable.",
+        lotCount: 1,
+        activeLotCount: 1,
+        revision: 3,
+        changedAt: SAMPLE_CATALOGUE.changedAt,
+        syncedAt: SAMPLE_CATALOGUE.syncedAt,
+        lastFetch: {
+          endpoint: "/api/integrations/architrak/technical-lots",
+          outcome: "error",
+          status: 503,
+          durationMs: 80,
+          checkedAt: "2024-06-01T11:00:00.000Z",
+          code: "unavailable",
+          reason: "ArchiDoc is temporarily unavailable.",
+        },
+      },
     });
+
+    const res = await fetch(`${baseUrl}/api/archidoc/technical-lots`);
+    const body = await res.json() as {
+      sync: { errorMessage: string };
+      availability: { state: string; selectable: boolean; lastFetch: { code: string } };
+    };
+    expect(res.status).toBe(200);
+    expect(body.availability).toMatchObject({
+      state: "last_known_good",
+      selectable: true,
+      lastFetch: { code: "unavailable" },
+    });
+    expect(body.sync.errorMessage).toBe("ArchiDoc is temporarily unavailable.");
+  });
+
+  it("returns 500 when the catalogue snapshot fails", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    getTechnicalLotsCatalogueSnapshotMock.mockRejectedValueOnce(
+      new Error("DB connection lost with unit-test-bearer-secret"),
+    );
 
     const res = await fetch(`${baseUrl}/api/archidoc/technical-lots`);
     expect(res.status).toBe(500);
     const body = await res.json() as { message: string };
-    expect(body.message).toMatch(/DB connection lost/);
+    expect(body.message).toBe("Failed to get technical lots.");
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("unit-test-bearer-secret");
   });
 });

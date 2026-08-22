@@ -2,42 +2,198 @@ import { env } from "../env";
 
 const getBaseUrl = () => env.ARCHIDOC_BASE_URL;
 const getApiKey = () => env.ARCHIDOC_SYNC_API_KEY;
+const TECHNICAL_LOTS_ENDPOINT = "/api/integrations/architrak/technical-lots";
 
 export function isArchidocConfigured(): boolean {
   return !!(getBaseUrl() && getApiKey());
 }
 
-async function archidocFetch<T>(endpoint: string, params?: Record<string, string>): Promise<T> {
+export type ArchidocFetchErrorCode =
+  | "not_configured"
+  | "invalid_configuration"
+  | "unauthorized"
+  | "not_found"
+  | "unavailable"
+  | "http_error"
+  | "timeout"
+  | "network_error"
+  | "invalid_response";
+
+export interface ArchidocFetchDiagnostic {
+  endpoint: string;
+  outcome: "success" | "error";
+  status: number | null;
+  durationMs: number;
+  checkedAt: string;
+  code: ArchidocFetchErrorCode | null;
+  reason: string;
+}
+
+export class ArchidocFetchError extends Error {
+  constructor(public readonly diagnostic: ArchidocFetchDiagnostic) {
+    const status = diagnostic.status == null ? "no HTTP response" : `HTTP ${diagnostic.status}`;
+    super(`${diagnostic.code}: ${diagnostic.reason} (${status}, ${diagnostic.durationMs}ms)`);
+    this.name = "ArchidocFetchError";
+  }
+}
+
+interface ArchidocFetchOptions<T> {
+  params?: Record<string, string>;
+  validate?: (raw: unknown) => T;
+  successReason?: (value: T) => string;
+  onDiagnostic?: (diagnostic: ArchidocFetchDiagnostic) => void;
+}
+
+function safeHttpFailure(status: number): Pick<ArchidocFetchDiagnostic, "code" | "reason"> {
+  if (status === 401) {
+    return {
+      code: "unauthorized",
+      reason: "ArchiDoc rejected the configured sync credential.",
+    };
+  }
+  if (status === 404) {
+    return {
+      code: "not_found",
+      reason: "The configured ArchiDoc host does not expose the requested endpoint.",
+    };
+  }
+  if (status === 503) {
+    return {
+      code: "unavailable",
+      reason: "ArchiDoc is temporarily unavailable.",
+    };
+  }
+  return {
+    code: "http_error",
+    reason: `ArchiDoc returned HTTP ${status}.`,
+  };
+}
+
+function makeFetchDiagnostic(
+  endpoint: string,
+  startedAt: number,
+  values: Pick<ArchidocFetchDiagnostic, "outcome" | "status" | "code" | "reason">,
+): ArchidocFetchDiagnostic {
+  return {
+    endpoint,
+    durationMs: Math.max(0, Date.now() - startedAt),
+    checkedAt: new Date().toISOString(),
+    ...values,
+  };
+}
+
+async function archidocFetch<T>(
+  endpoint: string,
+  options: ArchidocFetchOptions<T> = {},
+): Promise<T> {
+  const startedAt = Date.now();
   const baseUrl = getBaseUrl();
   const apiKey = getApiKey();
 
   if (!baseUrl || !apiKey) {
-    throw new Error("ArchiDoc is not configured. Set ARCHIDOC_BASE_URL and ARCHIDOC_SYNC_API_KEY.");
+    const diagnostic = makeFetchDiagnostic(endpoint, startedAt, {
+      outcome: "error",
+      status: null,
+      code: "not_configured",
+      reason: "ArchiDoc sync is not configured.",
+    });
+    options.onDiagnostic?.(diagnostic);
+    throw new ArchidocFetchError(diagnostic);
   }
 
-  const url = new URL(endpoint, baseUrl);
-  if (params) {
-    for (const [key, value] of Object.entries(params)) {
+  let url: URL;
+  try {
+    url = new URL(endpoint, baseUrl);
+  } catch {
+    const diagnostic = makeFetchDiagnostic(endpoint, startedAt, {
+      outcome: "error",
+      status: null,
+      code: "invalid_configuration",
+      reason: "The configured ArchiDoc base URL is invalid.",
+    });
+    options.onDiagnostic?.(diagnostic);
+    throw new ArchidocFetchError(diagnostic);
+  }
+  if (options.params) {
+    for (const [key, value] of Object.entries(options.params)) {
       url.searchParams.set(key, value);
     }
   }
 
-  const response = await fetch(url.toString(), {
-    method: "GET",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "Accept": "application/json",
-    },
-    signal: AbortSignal.timeout(30000),
-  });
+  try {
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+      signal: AbortSignal.timeout(30000),
+    });
 
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`ArchiDoc API error ${response.status}: ${response.statusText}. ${body}`);
+    if (!response.ok) {
+      const failure = safeHttpFailure(response.status);
+      const diagnostic = makeFetchDiagnostic(endpoint, startedAt, {
+        outcome: "error",
+        status: response.status,
+        ...failure,
+      });
+      options.onDiagnostic?.(diagnostic);
+      throw new ArchidocFetchError(diagnostic);
+    }
+
+    let raw: unknown;
+    try {
+      raw = await response.json();
+    } catch {
+      const diagnostic = makeFetchDiagnostic(endpoint, startedAt, {
+        outcome: "error",
+        status: response.status,
+        code: "invalid_response",
+        reason: "ArchiDoc returned a response that was not valid JSON.",
+      });
+      options.onDiagnostic?.(diagnostic);
+      throw new ArchidocFetchError(diagnostic);
+    }
+
+    let value: T;
+    try {
+      value = options.validate ? options.validate(raw) : raw as T;
+    } catch (error) {
+      if (error instanceof ArchidocFetchError) throw error;
+      const diagnostic = makeFetchDiagnostic(endpoint, startedAt, {
+        outcome: "error",
+        status: response.status,
+        code: "invalid_response",
+        reason: "The ArchiDoc technical-lot response failed contract validation.",
+      });
+      options.onDiagnostic?.(diagnostic);
+      throw new ArchidocFetchError(diagnostic);
+    }
+
+    const diagnostic = makeFetchDiagnostic(endpoint, startedAt, {
+      outcome: "success",
+      status: response.status,
+      code: null,
+      reason: options.successReason?.(value) ?? "ArchiDoc response validated.",
+    });
+    options.onDiagnostic?.(diagnostic);
+    return value;
+  } catch (error) {
+    if (error instanceof ArchidocFetchError) throw error;
+    const timedOut =
+      error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError");
+    const diagnostic = makeFetchDiagnostic(endpoint, startedAt, {
+      outcome: "error",
+      status: null,
+      code: timedOut ? "timeout" : "network_error",
+      reason: timedOut
+        ? "The ArchiDoc request timed out after 30 seconds."
+        : "The ArchiDoc request failed before an HTTP response was received.",
+    });
+    options.onDiagnostic?.(diagnostic);
+    throw new ArchidocFetchError(diagnostic);
   }
-
-  return response.json() as Promise<T>;
 }
 
 export interface ArchidocProjectData {
@@ -172,13 +328,13 @@ interface ProposalFeesResponse {
 export async function fetchProjects(since?: string): Promise<{ projects: ArchidocProjectData[]; syncTimestamp: string }> {
   const params: Record<string, string> = {};
   if (since) params.since = since;
-  return archidocFetch<ProjectsResponse>("/api/sync/projects", params);
+  return archidocFetch<ProjectsResponse>("/api/sync/projects", { params });
 }
 
 export async function fetchContractors(since?: string): Promise<{ contractors: ArchidocContractorData[]; syncTimestamp: string }> {
   const params: Record<string, string> = {};
   if (since) params.since = since;
-  return archidocFetch<ContractorsResponse>("/api/sync/contractors", params);
+  return archidocFetch<ContractorsResponse>("/api/sync/contractors", { params });
 }
 
 export async function fetchSuppliers(): Promise<ArchidocSupplierData[]> {
@@ -192,7 +348,7 @@ export async function fetchTrades(): Promise<{ trades: ArchidocTradeData[]; sync
 export async function fetchProposalFees(projectId?: string): Promise<{ proposalFees: ArchidocProposalFeeData[]; syncTimestamp: string }> {
   const params: Record<string, string> = {};
   if (projectId) params.projectId = projectId;
-  return archidocFetch<ProposalFeesResponse>("/api/sync/proposal-fees", params);
+  return archidocFetch<ProposalFeesResponse>("/api/sync/proposal-fees", { params });
 }
 
 // --- Technical-lot catalogue -------------------------------------------
@@ -415,9 +571,35 @@ export function validateTechnicalLotsResponse(raw: unknown): ArchidocTechnicalLo
   };
 }
 
+let lastTechnicalLotsFetchDiagnostic: ArchidocFetchDiagnostic | null = null;
+
+function recordTechnicalLotsFetchDiagnostic(diagnostic: ArchidocFetchDiagnostic): void {
+  lastTechnicalLotsFetchDiagnostic = diagnostic;
+  const safeRecord = {
+    endpoint: diagnostic.endpoint,
+    outcome: diagnostic.outcome,
+    status: diagnostic.status,
+    durationMs: diagnostic.durationMs,
+    code: diagnostic.code,
+    reason: diagnostic.reason,
+  };
+  if (diagnostic.outcome === "success") {
+    console.info("[ArchiDoc Technical Lots] Fetch completed", safeRecord);
+  } else {
+    console.warn("[ArchiDoc Technical Lots] Fetch failed", safeRecord);
+  }
+}
+
+export function getLastTechnicalLotsFetchDiagnostic(): ArchidocFetchDiagnostic | null {
+  return lastTechnicalLotsFetchDiagnostic ? { ...lastTechnicalLotsFetchDiagnostic } : null;
+}
+
 export async function fetchTechnicalLots(): Promise<ArchidocTechnicalLotsResponse> {
-  const raw = await archidocFetch<unknown>("/api/integrations/architrak/technical-lots");
-  return validateTechnicalLotsResponse(raw);
+  return archidocFetch<ArchidocTechnicalLotsResponse>(TECHNICAL_LOTS_ENDPOINT, {
+    validate: validateTechnicalLotsResponse,
+    successReason: (response) => `Validated ${response.lots.length} technical-lot records.`,
+    onDiagnostic: recordTechnicalLotsFetchDiagnostic,
+  });
 }
 
 // --- Cached, non-blocking connectivity status ---------------------------

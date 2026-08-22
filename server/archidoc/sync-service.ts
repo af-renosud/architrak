@@ -1,5 +1,5 @@
 import { db, pool } from "../db";
-import { eq, desc, inArray, and, or, isNull, ne, notInArray, lt, count, sql } from "drizzle-orm";
+import { eq, desc, asc, inArray, and, or, isNull, ne, notInArray, lt, count, sql } from "drizzle-orm";
 import {
   archidocProjects,
   archidocContractors,
@@ -19,10 +19,14 @@ import {
   fetchTrades,
   fetchProposalFees,
   fetchTechnicalLots,
+  getLastTechnicalLotsFetchDiagnostic,
+  ArchidocFetchError,
   type ArchidocProjectData,
   type ArchidocContractorData,
   type ArchidocSupplierData,
   type ArchidocTradeData,
+  type ArchidocFetchDiagnostic,
+  type ArchidocFetchErrorCode,
 } from "./sync-client";
 import { normalizeSiret } from "../gmail/document-parser";
 import { env } from "../env";
@@ -974,12 +978,17 @@ export async function backfillMutablePlanningTechnicalLots(
 // treated as a protocol violation (truncated / wrong endpoint), not a
 // deletion signal. The service layer must never infer deletion from absence.
 
-export async function syncTechnicalLots(): Promise<{ updated: number; error?: string; warning?: string }> {
-  if (!isArchidocConfigured()) {
-    console.log("[ArchiDoc Sync] Not configured, skipping technical-lots sync");
-    return { updated: 0, error: "Not configured" };
+class TechnicalLotSyncError extends Error {
+  constructor(
+    public readonly code: "catalogue_identity_conflict",
+    public readonly safeReason: string,
+  ) {
+    super(safeReason);
+    this.name = "TechnicalLotSyncError";
   }
+}
 
+export async function syncTechnicalLots(): Promise<{ updated: number; error?: string; warning?: string }> {
   const log = await createSyncLog("technical_lots");
   try {
     const sourceBaseUrl = getCurrentSourceBaseUrl();
@@ -1002,10 +1011,12 @@ export async function syncTechnicalLots(): Promise<{ updated: number; error?: st
           .filter((id) => !responseIds.has(id));
         if (missing.length > 0) {
           const msg =
-            `Technical-lots response omitted ${missing.length} previously-mirrored ID(s) ` +
-            `(e.g. ${missing.slice(0, 3).join(", ")}). ` +
-            `Endpoint must return all rows including tombstones; rejecting to preserve LKG.`;
-          console.error(`[ArchiDoc Sync] ${msg}`);
+            `catalogue_incomplete: Technical-lot response omitted ${missing.length} ` +
+            "previously mirrored record(s); the local catalogue was left unchanged.";
+          console.error("[ArchiDoc Sync] Technical-lot omission guard rejected the response", {
+            code: "catalogue_incomplete",
+            missingCount: missing.length,
+          });
           await completeSyncLog(log.id, "failed", 0, msg);
           return { updated: 0, error: msg };
         }
@@ -1042,10 +1053,9 @@ export async function syncTechnicalLots(): Promise<{ updated: number; error?: st
             .where(inArray(planningRevisions.archidocTechnicalLotId, collisionIds))
             .limit(10);
           if (referenced.length > 0) {
-            throw new Error(
-              `Technical-lot source switch would reuse ${referenced.length} Planning-referenced ID(s) ` +
-              `(e.g. ${referenced.map((row) => row.archidocTechnicalLotId).slice(0, 3).join(", ")}); ` +
-              "rejecting the whole catalogue to preserve historical identity.",
+            throw new TechnicalLotSyncError(
+              "catalogue_identity_conflict",
+              "Technical-lot source data conflicts with immutable Planning history; the local catalogue was left unchanged.",
             );
           }
         }
@@ -1117,9 +1127,21 @@ export async function syncTechnicalLots(): Promise<{ updated: number; error?: st
     );
     return { updated: response.lots.length };
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message =
+      err instanceof ArchidocFetchError
+        ? err.message
+        : err instanceof TechnicalLotSyncError
+          ? `${err.code}: ${err.safeReason}`
+          : "catalogue_persistence_failed: Technical-lot catalogue publication failed; the local catalogue was left unchanged.";
     await completeSyncLog(log.id, "failed", 0, message);
-    console.error(`[ArchiDoc Sync] Technical lots sync failed: ${message}`);
+    console.error("[ArchiDoc Sync] Technical-lot sync failed", {
+      code:
+        err instanceof ArchidocFetchError
+          ? err.diagnostic.code
+          : err instanceof TechnicalLotSyncError
+            ? err.code
+            : "catalogue_persistence_failed",
+    });
     return { updated: 0, error: message };
   }
 }
@@ -1211,6 +1233,94 @@ export async function incrementalSync(): Promise<MirrorSyncResult> {
   return outcome.result;
 }
 
+export type TechnicalLotCatalogueState = "ready" | "last_known_good" | "empty";
+
+export interface TechnicalLotCatalogueAvailability {
+  state: TechnicalLotCatalogueState;
+  selectable: boolean;
+  reason: string | null;
+  lotCount: number;
+  activeLotCount: number;
+  revision: number | null;
+  changedAt: Date | null;
+  syncedAt: Date | null;
+  diagnosticCode: ArchidocFetchErrorCode | "empty_cache" | null;
+  lastFetch: ArchidocFetchDiagnostic | null;
+}
+
+export async function getTechnicalLotsCatalogueSnapshot() {
+  const lots = await db
+    .select()
+    .from(archidocTechnicalLots)
+    .orderBy(
+      asc(archidocTechnicalLots.displayOrder),
+      asc(archidocTechnicalLots.code),
+      asc(archidocTechnicalLots.archidocId),
+    );
+
+  const catalogueRows = await db
+    .select()
+    .from(archidocTechnicalLotCatalogue)
+    .where(eq(archidocTechnicalLotCatalogue.singletonKey, 1))
+    .limit(1);
+  const catalogue = catalogueRows[0] ?? null;
+
+  const syncLogRows = await db
+    .select()
+    .from(archidocSyncLog)
+    .where(eq(archidocSyncLog.syncType, "technical_lots"))
+    .orderBy(desc(archidocSyncLog.id))
+    .limit(1);
+  const syncLog = syncLogRows[0] ?? null;
+  const lastFetch = getLastTechnicalLotsFetchDiagnostic();
+  const configured = isArchidocConfigured();
+
+  let state: TechnicalLotCatalogueState;
+  let reason: string | null = null;
+  let diagnosticCode: ArchidocFetchErrorCode | "empty_cache" | null =
+    lastFetch?.outcome === "error" ? lastFetch.code : null;
+  if (!catalogue) {
+    state = "empty";
+    if (!configured) {
+      reason = "The ArchiDoc technical-lot sync credential is not configured.";
+      diagnosticCode = "not_configured";
+    } else {
+      reason = lastFetch?.reason ?? "No validated technical-lot catalogue has been loaded yet.";
+      diagnosticCode ??= "empty_cache";
+    }
+  } else if (!configured || syncLog?.status === "failed") {
+    state = "last_known_good";
+    if (!configured) {
+      reason = "Refresh is unavailable because the ArchiDoc technical-lot sync credential is not configured.";
+      diagnosticCode = "not_configured";
+    } else if (lastFetch?.outcome === "error") {
+      reason = lastFetch.reason;
+    } else {
+      reason = "The latest technical-lot refresh failed; the last-known-good catalogue remains available.";
+    }
+  } else {
+    state = "ready";
+  }
+
+  return {
+    lots,
+    catalogue,
+    syncLog,
+    availability: {
+      state,
+      selectable: catalogue != null,
+      reason,
+      lotCount: lots.length,
+      activeLotCount: lots.filter((lot) => lot.isActive && lot.deletedAt == null).length,
+      revision: catalogue?.revision ?? null,
+      changedAt: catalogue?.changedAt ?? null,
+      syncedAt: catalogue?.syncedAt ?? null,
+      diagnosticCode,
+      lastFetch,
+    } satisfies TechnicalLotCatalogueAvailability,
+  };
+}
+
 export async function getLastSyncStatus(): Promise<{
   configured: boolean;
   lastSync: Date | null;
@@ -1222,6 +1332,15 @@ export async function getLastSyncStatus(): Promise<{
     lastSyncStatus: string | null;
     lastSyncError: string | null;
     count: number | null;
+    activeCount: number | null;
+    catalogueState: TechnicalLotCatalogueState | null;
+    selectable: boolean;
+    catalogueRevision: number | null;
+    catalogueChangedAt: Date | null;
+    catalogueSyncedAt: Date | null;
+    diagnosticReason: string | null;
+    diagnosticCode: ArchidocFetchErrorCode | "empty_cache" | null;
+    lastFetch: ArchidocFetchDiagnostic | null;
   };
 }> {
   const configured = isArchidocConfigured();
@@ -1235,31 +1354,61 @@ export async function getLastSyncStatus(): Promise<{
     .orderBy(desc(archidocSyncLog.id))
     .limit(1);
 
-  // Latest technical_lots sync log entry.
-  const lastTechLog = await db.select()
-    .from(archidocSyncLog)
-    .where(eq(archidocSyncLog.syncType, "technical_lots"))
-    .orderBy(desc(archidocSyncLog.id))
-    .limit(1);
-
-  // Current mirrored count (all rows regardless of active/deleted).
-  let technicalLotsCount: number | null = null;
-  try {
-    const [{ value: cnt }] = await db
-      .select({ value: count() })
-      .from(archidocTechnicalLots);
-    technicalLotsCount = cnt;
-  } catch {
-    // table may not exist yet (migrations pending) — silently return null
-  }
-
-  const techEntry = lastTechLog[0];
-  const technicalLots = {
-    lastSync: techEntry ? (techEntry.completedAt || techEntry.startedAt) : null,
-    lastSyncStatus: techEntry?.status ?? null,
-    lastSyncError: techEntry?.errorMessage ?? null,
-    count: technicalLotsCount,
+  let technicalLots: {
+    lastSync: Date | null;
+    lastSyncStatus: string | null;
+    lastSyncError: string | null;
+    count: number | null;
+    activeCount: number | null;
+    catalogueState: TechnicalLotCatalogueState | null;
+    selectable: boolean;
+    catalogueRevision: number | null;
+    catalogueChangedAt: Date | null;
+    catalogueSyncedAt: Date | null;
+    diagnosticReason: string | null;
+    diagnosticCode: ArchidocFetchErrorCode | "empty_cache" | null;
+    lastFetch: ArchidocFetchDiagnostic | null;
   };
+  try {
+    const snapshot = await getTechnicalLotsCatalogueSnapshot();
+    const techEntry = snapshot.syncLog;
+    technicalLots = {
+      lastSync: techEntry ? (techEntry.completedAt || techEntry.startedAt) : null,
+      lastSyncStatus: techEntry?.status ?? null,
+      lastSyncError:
+        techEntry?.status === "failed"
+          ? snapshot.availability.reason ?? "The latest technical-lot sync failed."
+          : null,
+      count: snapshot.availability.lotCount,
+      activeCount: snapshot.availability.activeLotCount,
+      catalogueState: snapshot.availability.state,
+      selectable: snapshot.availability.selectable,
+      catalogueRevision: snapshot.availability.revision,
+      catalogueChangedAt: snapshot.availability.changedAt,
+      catalogueSyncedAt: snapshot.availability.syncedAt,
+      diagnosticReason: snapshot.availability.reason,
+      diagnosticCode: snapshot.availability.diagnosticCode,
+      lastFetch: snapshot.availability.lastFetch,
+    };
+  } catch {
+    // Tables may not exist yet (migrations pending). Keep the general status
+    // endpoint available and report the catalogue as unavailable.
+    technicalLots = {
+      lastSync: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+      count: null,
+      activeCount: null,
+      catalogueState: null,
+      selectable: false,
+      catalogueRevision: null,
+      catalogueChangedAt: null,
+      catalogueSyncedAt: null,
+      diagnosticReason: "Technical-lot catalogue status is unavailable.",
+      diagnosticCode: null,
+      lastFetch: getLastTechnicalLotsFetchDiagnostic(),
+    };
+  }
 
   if (lastLog.length === 0) {
     return { configured, lastSync: null, lastSyncType: null, lastSyncStatus: null, lastSyncError: null, technicalLots };

@@ -14,13 +14,16 @@ import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Amount } from "@/components/ui/amount";
 import { apiRequest, projectScopedKey, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import {
+  deriveTechnicalLotsUiState,
+  type TechnicalLot,
+  type TechnicalLotsResponse,
+} from "./planning-technical-lots";
 
 type Line = { id?: number; lineNumber: number; description: string; quantity: string; unit: string; unitPriceHt: string; totalHt: string; pdfPageHint?: number | null };
-type TechnicalLot = { id: string; code: string; labelFr: string; displayOrder: number; isActive: boolean; deletedAt: string | null };
 type Revision = { revision: { id: number; status: "draft" | "reviewed" | "approved" | "superseded"; reference: string; descriptionFr: string; documentDate?: string | null; amountHt: string; amountTtc: string; tvaRatePercent?: string | null; tvaAutoliquidation?: boolean; version: number; contractorId?: number | null; lotId?: number | null; archidocTechnicalLotId?: string | null; supersedesRevisionId?: number | null; promotedDevisId?: number | null; promotedAt?: string | null; updatedAt: string }; lines: Line[]; source: { sourceKind: "manual" | "pdf_upload"; fileName?: string | null; confidence?: number | null; warnings?: { message?: string; severity?: string }[]; requiresVerification?: boolean; verifiedAt?: string | null; verificationNote?: string | null } | null; contractorName: string | null; lotNumber: string | null; technicalLot: TechnicalLot | null; legacyLotNeedsReview?: boolean };
 type PlanningImport = { id: number; fileName: string; status: "processing" | "succeeded" | "failed" | "stale"; stage: "accepted" | "extracting" | "validating" | "storing" | "saving" | "complete"; revisionId: number | null; errorCode: string | null; errorMessage: string | null; startedAt: string; updatedAt: string; completedAt: string | null };
 type EnvelopeResponse = { envelope: { currency: string } | null; revisions: Revision[]; imports?: PlanningImport[]; totals: { amountHt: string; amountTtc: string; byLot: { lotId: number | null; archidocTechnicalLotId?: string | null; lotNumber: string | null; description: string; amountHt: string; amountTtc: string; count: number }[] } };
-type TechnicalLotsResponse = { lots: TechnicalLot[]; catalogue: { revision: number; changedAt: string; syncedAt?: string } | null; sync: { status: string; errorMessage?: string | null } | null };
 type Choice = {
   id: number;
   name?: string;
@@ -290,15 +293,12 @@ function RevisionDialog({ open, item, contractors, technicalLotsData, technicalL
     savedTechnicalLot != null &&
     !activeLots.some((lot) => lot.id === savedTechnicalLot.id);
 
-  // Whether the catalogue is unavailable (cold failure — no cached data at all)
-  const catalogueColdFailure =
-    (!!technicalLotsError && !technicalLotsData) ||
-    (!!technicalLotsData && technicalLotsData.catalogue == null);
-
-  // Whether we have stale data with a retriable error
-  const catalogueStale =
-    (!!technicalLotsError && !!technicalLotsData?.catalogue) ||
-    (!!technicalLotsData?.catalogue && technicalLotsData.sync?.status === "failed");
+  const {
+    catalogueSelectable,
+    catalogueColdFailure,
+    catalogueStale,
+    diagnosticReason,
+  } = deriveTechnicalLotsUiState(technicalLotsData, technicalLotsError);
 
   useEffect(() => {
     if (!open) return;
@@ -389,7 +389,13 @@ function RevisionDialog({ open, item, contractors, technicalLotsData, technicalL
         {catalogueColdFailure && (
           <div className="flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-900" data-testid="planning-lots-unavailable-banner">
             <AlertTriangle size={13} className="shrink-0" />
-            <span>Lot catalogue unavailable. Lot selection is disabled until the catalogue can be loaded.</span>
+            <span className="flex-1">
+              Lot catalogue unavailable. {diagnosticReason ? `${diagnosticReason} ` : ""}
+              Lot selection is disabled until the catalogue can be loaded.
+            </span>
+            <Button variant="outline" size="sm" className="h-6 px-2 text-[10px]" onClick={onTechnicalLotsRetry} disabled={technicalLotsFetching} data-testid="planning-lots-cold-retry">
+              {technicalLotsFetching ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />} Retry
+            </Button>
           </div>
         )}
 
@@ -424,10 +430,10 @@ function RevisionDialog({ open, item, contractors, technicalLotsData, technicalL
             <Select
               value={archidocTechnicalLotId || "__none__"}
               onValueChange={(value) => setArchidocTechnicalLotId(value === "__none__" ? "" : value)}
-              disabled={catalogueColdFailure}
+              disabled={!catalogueSelectable}
             >
               <SelectTrigger data-testid="planning-envelope-form-lot">
-                <SelectValue placeholder={catalogueColdFailure ? "Catalogue unavailable" : "Select lot"} />
+                <SelectValue placeholder={!technicalLotsData && technicalLotsFetching ? "Loading catalogue" : catalogueColdFailure ? "Catalogue unavailable" : "Select lot"} />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="__none__">Not assigned</SelectItem>

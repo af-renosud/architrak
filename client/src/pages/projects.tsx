@@ -58,6 +58,29 @@ interface ArchidocStatus {
   sourceHost?: string | null;
   hostMisconfigured?: boolean;
   nodeEnv?: "development" | "production" | "test";
+  technicalLots?: {
+    lastSync: string | null;
+    lastSyncStatus: string | null;
+    lastSyncError: string | null;
+    count: number | null;
+    activeCount: number | null;
+    catalogueState: "ready" | "last_known_good" | "empty" | null;
+    selectable: boolean;
+    catalogueRevision: number | null;
+    catalogueChangedAt: string | null;
+    catalogueSyncedAt: string | null;
+    diagnosticReason: string | null;
+    diagnosticCode: string | null;
+    lastFetch: {
+      endpoint: string;
+      outcome: "success" | "error";
+      status: number | null;
+      durationMs: number;
+      checkedAt: string;
+      code: string | null;
+      reason: string;
+    } | null;
+  };
 }
 
 interface ProjectAccountingStatusSummary {
@@ -442,6 +465,55 @@ export default function Projects() {
                       <p className="text-[10px] text-muted-foreground" data-testid="text-archidoc-source-host">
                         Source: <span className="font-mono">{archidocStatus.sourceHost}</span>
                       </p>
+                    )}
+                    {archidocStatus?.technicalLots && (
+                      <div
+                        className="rounded-md border bg-muted/30 px-2.5 py-2 text-[10px] text-muted-foreground space-y-1"
+                        data-testid="archidoc-technical-lots-status"
+                      >
+                        <p>
+                          Lot catalogue:{" "}
+                          <span className="font-semibold text-foreground">
+                            {archidocStatus.technicalLots.catalogueState === "ready"
+                              ? "Ready"
+                              : archidocStatus.technicalLots.catalogueState === "last_known_good"
+                                ? "Last known good"
+                                : archidocStatus.technicalLots.catalogueState === "empty"
+                                  ? "Unavailable"
+                                  : "Status unavailable"}
+                          </span>
+                          {" · "}
+                          {archidocStatus.technicalLots.activeCount ?? 0} active /{" "}
+                          {archidocStatus.technicalLots.count ?? 0} total
+                          {archidocStatus.technicalLots.catalogueRevision != null
+                            ? ` · revision ${archidocStatus.technicalLots.catalogueRevision}`
+                            : ""}
+                        </p>
+                        {archidocStatus.technicalLots.lastFetch && (
+                          <p className="font-mono" data-testid="archidoc-technical-lots-last-fetch">
+                            Last fetch:{" "}
+                            {archidocStatus.technicalLots.lastFetch.status == null
+                              ? "no HTTP response"
+                              : `HTTP ${archidocStatus.technicalLots.lastFetch.status}`}
+                            {" · "}
+                            {archidocStatus.technicalLots.lastFetch.durationMs}ms
+                            {archidocStatus.technicalLots.lastFetch.code
+                              ? ` · ${archidocStatus.technicalLots.lastFetch.code}`
+                              : ""}
+                          </p>
+                        )}
+                        {archidocStatus.technicalLots.diagnosticReason && (
+                          <p
+                            className={archidocStatus.technicalLots.selectable ? "text-amber-700" : "text-destructive"}
+                            data-testid="archidoc-technical-lots-diagnostic"
+                          >
+                            {archidocStatus.technicalLots.diagnosticCode
+                              ? `[${archidocStatus.technicalLots.diagnosticCode}] `
+                              : ""}
+                            {archidocStatus.technicalLots.diagnosticReason}
+                          </p>
+                        )}
+                      </div>
                     )}
 
                     {archidocListError ? (

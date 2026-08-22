@@ -2,7 +2,14 @@ import { Router } from "express";
 import { z } from "zod";
 import { storage } from "../storage";
 import { isArchidocConfigured, getConnectionStatus } from "../archidoc/sync-client";
-import { fullSync, incrementalSync, getLastSyncStatus, getCurrentSourceBaseUrl, isMirrorSyncInProgress } from "../archidoc/sync-service";
+import {
+  fullSync,
+  incrementalSync,
+  getLastSyncStatus,
+  getCurrentSourceBaseUrl,
+  getTechnicalLotsCatalogueSnapshot,
+  isMirrorSyncInProgress,
+} from "../archidoc/sync-service";
 import { trackProject, refreshProject } from "../archidoc/import-service";
 import { env as envCfg, detectMisconfiguredArchidocBaseUrl } from "../env";
 import { validateRequest } from "../middleware/validate";
@@ -17,13 +24,8 @@ import {
   DESIGN_CONTRACT_TRIGGER_EVENTS,
   type InsertDesignContract,
   type InsertDesignContractMilestone,
-  archidocTechnicalLots,
-  archidocTechnicalLotCatalogue,
-  archidocSyncLog,
 } from "@shared/schema";
 import { DESIGN_CONTRACT_ERROR_CODES } from "../../shared/design-contract-errors";
-import { db } from "../db";
-import { desc, eq, asc } from "drizzle-orm";
 
 const router = Router();
 
@@ -88,6 +90,7 @@ router.get("/api/archidoc/status", async (_req, res) => {
       mirroredContractors: mirroredContractors.length,
       trackedProjects: trackedIds.length,
       siretIssueCount: siretIssues.length,
+      technicalLots: syncStatus.technicalLots,
       sourceBaseUrl,
       sourceHost,
       // Task #165: surface a server-evaluated "this prod app is wired
@@ -105,8 +108,8 @@ router.get("/api/archidoc/status", async (_req, res) => {
       pollingEnabled: envCfg.ARCHIDOC_POLLING_ENABLED,
     });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ message: `Failed to get ArchiDoc status: ${message}` });
+    console.error("[ArchiDoc Status] Failed to build status response");
+    res.status(500).json({ message: "Failed to get ArchiDoc status." });
   }
 });
 
@@ -174,8 +177,8 @@ router.post("/api/archidoc/sync", validateRequest({ body: z.object({}).strict().
       ...result,
     });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ message: `Sync failed: ${message}` });
+    console.error("[ArchiDoc Sync] Unexpected route failure");
+    res.status(500).json({ message: "Sync failed unexpectedly." });
   }
 });
 
@@ -421,35 +424,10 @@ router.get("/api/archidoc/proposal-fees/:archidocProjectId", async (req, res) =>
  */
 router.get("/api/archidoc/technical-lots", async (_req, res) => {
   try {
-    // All mirrored lots ordered by displayOrder, then code, then id.
-    const lots = await db
-      .select()
-      .from(archidocTechnicalLots)
-      .orderBy(
-        asc(archidocTechnicalLots.displayOrder),
-        asc(archidocTechnicalLots.code),
-        asc(archidocTechnicalLots.archidocId),
-      );
-
-    // Singleton catalogue metadata (may be absent on first boot).
-    const catalogueRows = await db
-      .select()
-      .from(archidocTechnicalLotCatalogue)
-      .where(eq(archidocTechnicalLotCatalogue.singletonKey, 1))
-      .limit(1);
-    const catalogue = catalogueRows[0] ?? null;
-
-    // Latest technical_lots sync log entry.
-    const syncLogRows = await db
-      .select()
-      .from(archidocSyncLog)
-      .where(eq(archidocSyncLog.syncType, "technical_lots"))
-      .orderBy(desc(archidocSyncLog.id))
-      .limit(1);
-    const syncLog = syncLogRows[0] ?? null;
+    const snapshot = await getTechnicalLotsCatalogueSnapshot();
 
     res.json({
-      lots: lots.map((lot) => ({
+      lots: snapshot.lots.map((lot) => ({
         id: lot.archidocId,
         code: lot.code,
         labelFr: lot.labelFr,
@@ -460,26 +438,30 @@ router.get("/api/archidoc/technical-lots", async (_req, res) => {
         updatedAt: lot.archidocUpdatedAt,
         syncedAt: lot.syncedAt,
       })),
-      catalogue: catalogue
+      catalogue: snapshot.catalogue
         ? {
-            revision: catalogue.revision,
-            changedAt: catalogue.changedAt,
-            syncedAt: catalogue.syncedAt,
+            revision: snapshot.catalogue.revision,
+            changedAt: snapshot.catalogue.changedAt,
+            syncedAt: snapshot.catalogue.syncedAt,
           }
         : null,
-      sync: syncLog
+      sync: snapshot.syncLog
         ? {
-            status: syncLog.status,
-            startedAt: syncLog.startedAt,
-            completedAt: syncLog.completedAt,
-            recordsUpdated: syncLog.recordsUpdated,
-            errorMessage: syncLog.errorMessage ?? null,
+            status: snapshot.syncLog.status,
+            startedAt: snapshot.syncLog.startedAt,
+            completedAt: snapshot.syncLog.completedAt,
+            recordsUpdated: snapshot.syncLog.recordsUpdated,
+            errorMessage:
+              snapshot.syncLog.status === "failed"
+                ? snapshot.availability.reason ?? "The latest technical-lot sync failed."
+                : null,
           }
         : null,
+      availability: snapshot.availability,
     });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ message: `Failed to get technical lots: ${message}` });
+    console.error("[ArchiDoc Technical Lots] Failed to read local catalogue");
+    res.status(500).json({ message: "Failed to get technical lots." });
   }
 });
 
