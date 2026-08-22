@@ -14,5 +14,7 @@ description: Durable rules for any ArchiDoc mirror sync or reconciliation work.
   **Why:** otherwise prior-backend active master rows can remain selectable indefinitely when polling is disabled or a different process held the boot lock.
 - **Never overwrite a cross-source technical-lot ID that any Planning revision references.** Reject the whole catalogue publication and retain the last-known-good row/catalogue instead.
   **Why:** Planning persists only the immutable upstream ID; a different backend reusing that ID would silently relabel approved history.
+- **Technical-lot availability distinguishes an empty first load from last-known-good data.** A failed refresh keeps the prior validated catalogue selectable; diagnostics use fixed safe codes/reasons and never retain upstream bodies, headers, values, or caught exceptions.
+  **Why:** operators must not lose a working Planning selector during an upstream outage, while raw failure detail can disclose credentials or untrusted content.
 
-**How to apply:** new sync triggers go through fullSync/incrementalSync/runContractorAutoSync (which own the lock); new sync UIs must handle failures/warnings/alreadyRunning.
+**How to apply:** new sync triggers go through fullSync/incrementalSync/runContractorAutoSync (which own the lock); new sync UIs must handle failures/warnings/alreadyRunning and the explicit catalogue availability state.
