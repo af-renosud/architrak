@@ -263,6 +263,71 @@ describe("7-page fixture — full pipeline coverage (poppler/gs integration)", (
     expect(findBlockingCompletenessWarnings(validation.warnings)).toHaveLength(0);
   }, 180000);
 
+  it("extracts dense OpenAI documents one page at a time to avoid truncated line JSON", async () => {
+    const images = [Buffer.from("page-1"), Buffer.from("page-2"), Buffer.from("page-3")];
+    const calls: number[] = [];
+    const fallbackCalls: number[] = [];
+    const receivedPageTexts: Array<Array<string | null> | undefined> = [];
+    const tableHeader = "DESIGNATION QUANT. UT PRIX NET HT PRIX PUBLIC MONTANT €";
+    const denseRow = "A0ABC item description 1,00 U 10,00 12,00 10,00";
+    const pageTexts = [
+      [tableHeader, ...Array(20).fill(denseRow)].join("\n"),
+      [tableHeader, ...Array(27).fill(denseRow)].join("\n"),
+      [tableHeader, ...Array(15).fill(denseRow)].join("\n"),
+    ];
+
+    const parsed = await parseDocument(Buffer.from("pdf"), "dense-quotation.pdf", {
+      pdfToImagesWithCoverage: async () => ({ images, pdfPageCount: 3 }),
+      getPageTexts: async () => pageTexts,
+      getActiveModel: async () => ({ provider: "openai", modelId: "gpt-4o" }),
+      parseWithOpenAI: async (chunkImages, _modelId, chunkPageTexts) => {
+        calls.push(chunkImages.length);
+        receivedPageTexts.push(chunkPageTexts);
+        return {
+          documentType: "quotation",
+          lineItems: [{
+            description: `Page ${calls.length}`,
+            total: 100,
+            pageHint: 1,
+          }],
+        };
+      },
+      parseWithGemini: async (chunkImages, _modelId, chunkPageTexts) => {
+        fallbackCalls.push(chunkImages.length);
+        return {
+          documentType: "quotation",
+          lineItems: (chunkPageTexts ?? []).flatMap((text, pageIndex) =>
+            (text?.split("\n") ?? []).map((_, rowIndex) => ({
+              description: `Complete row ${pageIndex + 1}.${rowIndex + 1}`,
+              total: 10,
+              pageHint: pageIndex + 1,
+            })),
+          ),
+        };
+      },
+      getDenseCompletenessFallbackModelId: async () => "gemini-test",
+    });
+
+    expect(calls).toEqual([1, 1, 1]);
+    expect(fallbackCalls).toEqual([]);
+    expect(receivedPageTexts).toEqual([
+      [pageTexts[0]],
+      [pageTexts[1]],
+      [pageTexts[2]],
+    ]);
+    expect(parsed.lineItems).toHaveLength(62);
+    expect(parsed.lineItems?.slice(0, 20).every((line) => line.pageHint === 1)).toBe(true);
+    expect(parsed.lineItems?.slice(20, 47).every((line) => line.pageHint === 2)).toBe(true);
+    expect(parsed.lineItems?.slice(47).every((line) => line.pageHint === 3)).toBe(true);
+    expect(parsed.extractionCoverage?.chunkCount).toBe(3);
+    expect(
+      parsed.extractionCoverage?.pageEvidence?.reduce(
+        (sum, page) => sum + page.candidateRows,
+        0,
+      ),
+    ).toBe(62);
+  });
+
   it("blocks when a text-evidenced page yields no line items in the extraction", async () => {
     const parsed = await parseDocument(pdf, "seven-page-devis.pdf", {
       getActiveModel: async () => ({ provider: "gemini", modelId: "test" }),

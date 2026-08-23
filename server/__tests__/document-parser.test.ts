@@ -172,7 +172,11 @@ describe("parseDocument retry & fallback", () => {
 
     expect(parseWithGemini).toHaveBeenCalledTimes(1);
     expect(parseWithOpenAI).toHaveBeenCalledTimes(1);
-    expect(parseWithOpenAI).toHaveBeenCalledWith(fakeImages, "gpt-4o");
+    expect(parseWithOpenAI).toHaveBeenCalledWith(
+      fakeImages,
+      "gpt-4o",
+      [null],
+    );
     expect(result).toEqual(successDoc);
   });
 
@@ -274,6 +278,8 @@ describe("Planning summary/totals-box recovery parser", () => {
     expect(prompt).toContain("negative means");
     expect(prompt).toContain("excludedGroups");
     expect(prompt).toContain("preTaxChargesHt");
+    expect(prompt).toContain("All monetary fields and indexes must be JSON numbers");
+    expect(prompt).toContain('"matchedLineItemIndexes":[1]');
     expect(prompt).toContain("never evidence");
     expect(prompt).toContain("Do NOT");
     expect(prompt).toContain('{"lines":[],"excludedGroups":[]}');

@@ -14,7 +14,7 @@
 - [Email-doc pipeline](email-doc-pipeline.md) — projectId assignment mirrors into intake (side-effectful); processing goes through the atomic claim; intake watermark + terminal skipped state enforced at capture/sweep/process/mirror.
 - [Intake queue drift](intake-queue-drift.md) — a doc can wedge on "analyzing" if its job goes terminal but the doc-state write fails; in_flight reclaim can't fix it, the sweeper drift-repair pass must.
 - [SIRET extraction safeguard](siret-extraction-safeguard.md) — vision models hallucinate SIRET digits; cross-check vs PDF text layer + Luhn, override only invalid/missing AI reads, never valid ones.
-- [Extraction completeness](extraction-completeness.md) — render ALL pages (pdfinfo back-check), chunk AI requests ≤5 pages with pageHint rebasing, per-CHUNK byte budget, deterministic text-layer evidence gates persistence.
+- [Extraction completeness](extraction-completeness.md) — render all pages; a strict whole-table text fallback is safe only when its row count matches independent evidence; option exclusions stay explicit and exact.
 - [Intake PDF rasterisation](intake-pdf-rasterisation.md) — a conversion failure masquerades as classification="unknown"; rasterise via a pdftoppm→pdftocairo→ghostscript fallback chain (gs is a nix dep), throw with per-strategy stderr on total failure.
 - [Prod one-shot actions](prod-side-actions-via-data-migrations.md) — when you can't publish or click in prod, a tightly-guarded data-only migration fires the action exactly once at first boot after the user publishes.
 - [Playwright run quirks](playwright-run-quirks.md) — run e2e specs in ONE shell call with `timeout -k` + file redirect; detached runs get killed between calls; hermetic specs must set the dev-login flag.
