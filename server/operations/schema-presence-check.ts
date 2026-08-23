@@ -221,37 +221,6 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
       ],
     },
   },
-  {
-    tag: "0114_pv_package_workflow",
-    artifact: {
-      kind: "all",
-      artifacts: [
-        { kind: "table", table: "marche_lot_assignments" },
-        { kind: "index", index: "marche_lot_assignments_active_unique" },
-        { kind: "trigger", table: "marche_lot_assignments", trigger: "marche_lot_assignment_project_trg" },
-        { kind: "table", table: "pv_packages" },
-        { kind: "trigger", table: "pv_packages", trigger: "pv_package_consistency_trg" },
-        { kind: "table", table: "pv_package_lots" },
-        { kind: "trigger", table: "pv_package_lots", trigger: "pv_package_lot_consistency_trg" },
-        { kind: "table", table: "pv_package_documents" },
-        { kind: "index", index: "pv_package_documents_one_base_unique" },
-        { kind: "index", index: "pv_package_documents_annex_order_unique" },
-        { kind: "trigger", table: "pv_package_documents", trigger: "pv_package_document_draft_trg" },
-        { kind: "table", table: "pv_reserves" },
-        { kind: "trigger", table: "pv_reserves", trigger: "pv_reserve_consistency_trg" },
-        { kind: "table", table: "pv_reserve_lots" },
-        { kind: "trigger", table: "pv_reserve_lots", trigger: "pv_reserve_lot_project_trg" },
-        { kind: "table", table: "pv_reserve_events" },
-        { kind: "trigger", table: "pv_reserve_events", trigger: "pv_reserve_events_append_only_trg" },
-        { kind: "table", table: "pv_package_revisions" },
-        { kind: "trigger", table: "pv_package_revisions", trigger: "pv_package_revisions_immutable_trg" },
-        { kind: "table", table: "pv_revision_reserves" },
-        { kind: "trigger", table: "pv_revision_reserves", trigger: "pv_revision_reserves_immutable_trg" },
-        { kind: "table", table: "pv_package_events" },
-        { kind: "trigger", table: "pv_package_events", trigger: "pv_package_events_append_only_trg" },
-      ],
-    },
-  },
 ];
 
 interface JournalFile {

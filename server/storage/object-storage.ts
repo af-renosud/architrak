@@ -87,34 +87,6 @@ export function buildPennylaneInvoiceObjectName(projectId: number, feeEntryId: n
   return `${privateDir}/projects/${projectId}/documents/pennylane-invoices/${feeEntryId}.pdf`;
 }
 
-/**
- * Immutable source/derivative object name for one PV package document.
- * `documentToken` is generated server-side and is not derived from a browser
- * supplied storage key.
- */
-export function buildPvPackageDocumentObjectName(
-  projectId: number,
-  packageId: number,
-  documentToken: string,
-  variant: "original" | "pdf",
-  extension: string,
-): string {
-  const privateDir = getPrivateDir();
-  const safeToken = documentToken.replace(/[^a-zA-Z0-9-]/g, "");
-  const safeExtension = extension.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
-  return `${privateDir}/projects/${projectId}/documents/pv-packages/${packageId}/${safeToken}-${variant}.${safeExtension}`;
-}
-
-/** One frozen PDF per confirmed package revision. */
-export function buildPvPackageRevisionObjectName(
-  projectId: number,
-  packageId: number,
-  revisionNumber: number,
-): string {
-  const privateDir = getPrivateDir();
-  return `${privateDir}/projects/${projectId}/documents/pv-packages/${packageId}/revisions/${revisionNumber}.pdf`;
-}
-
 export async function getDocumentBuffer(storageKey: string): Promise<Buffer> {
   const { bucketName, objectName } = parseStorageKey(storageKey);
   const bucket = objectStorageClient.bucket(bucketName);
