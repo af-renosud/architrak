@@ -40,6 +40,7 @@ vi.mock("../env", async () => {
 
 const fetchProjectsMock = vi.fn();
 const fetchTechnicalLotsMock = vi.fn();
+const fetchProposalFeesMock = vi.fn();
 const archidocConfiguredState = { value: true };
 vi.mock("../archidoc/sync-client", async () => {
   const actual =
@@ -51,6 +52,7 @@ vi.mock("../archidoc/sync-client", async () => {
     isArchidocConfigured: () => archidocConfiguredState.value,
     fetchProjects: fetchProjectsMock,
     fetchTechnicalLots: fetchTechnicalLotsMock,
+    fetchProposalFees: fetchProposalFeesMock,
   };
 });
 
@@ -282,6 +284,55 @@ describe("getCurrentSourceBaseUrl()", () => {
     envState.ARCHIDOC_BASE_URL = "https://archidoc-prod.example.com";
   });
 });
+
+describe.skipIf(skipModule).sequential(
+  "ArchiDoc proposal-fee sync diagnostics (integration)",
+  () => {
+    const feeProjectId = `proposal-fee-sync-log-${Date.now()}`;
+    let syncLogId: number | null = null;
+
+    afterAll(async () => {
+      const { db } = await import("../db");
+      await db.execute(
+        sql`DELETE FROM archidoc_proposal_fees WHERE archidoc_project_id = ${feeProjectId}`,
+      );
+      if (syncLogId != null) {
+        await db.execute(sql`DELETE FROM archidoc_sync_log WHERE id = ${syncLogId}`);
+      }
+    });
+
+    it("records a completed proposal-fee mirror outcome for safe status diagnostics", async () => {
+      const { db } = await import("../db");
+      const { syncAllProposalFees } = await import("../archidoc/sync-service");
+      fetchProposalFeesMock.mockResolvedValueOnce({
+        proposalFees: [{ projectId: feeProjectId, planningHt: 1500 }],
+      });
+
+      const result = await syncAllProposalFees();
+
+      expect(result).toEqual({ updated: 1 });
+      const rows = await db.execute(sql`
+        SELECT id, status, records_updated, error_message
+          FROM archidoc_sync_log
+         WHERE sync_type = 'proposal_fees'
+         ORDER BY id DESC
+         LIMIT 1
+      `);
+      const row = rows.rows[0] as {
+        id: number;
+        status: string;
+        records_updated: number;
+        error_message: string | null;
+      };
+      syncLogId = row.id;
+      expect(row).toMatchObject({
+        status: "completed",
+        records_updated: 1,
+        error_message: null,
+      });
+    });
+  },
+);
 
 describe.skipIf(skipModule).sequential(
   "ArchiDoc technical-lot mirror publication (integration)",

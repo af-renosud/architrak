@@ -41,6 +41,13 @@ vi.mock("../../archidoc/sync-service", () => ({
     lastSyncType: null,
     lastSyncStatus: null,
     lastSyncError: null,
+    resources: {
+      projects: { lastSync: null, status: null, recordsUpdated: null, errorCode: null, errorReason: null },
+      contractors: { lastSync: null, status: null, recordsUpdated: null, errorCode: null, errorReason: null },
+      trades: { lastSync: null, status: null, recordsUpdated: null, errorCode: null, errorReason: null },
+      proposalFees: { lastSync: null, status: null, recordsUpdated: null, errorCode: null, errorReason: null },
+      technicalLots: { lastSync: null, status: null, recordsUpdated: null, errorCode: null, errorReason: null },
+    },
     technicalLots: {
       lastSync: null,
       lastSyncStatus: null,
@@ -91,8 +98,11 @@ vi.mock("../../services/design-contract-parser", () => ({
 // After mocks are declared, import the db mock so we can configure it
 // ---------------------------------------------------------------------------
 import { db } from "../../db";
+import { fullSync, getLastSyncStatus } from "../../archidoc/sync-service";
 
 const mockSelect = db.select as ReturnType<typeof vi.fn>;
+const mockFullSync = vi.mocked(fullSync);
+const mockGetLastSyncStatus = vi.mocked(getLastSyncStatus);
 
 // Helpers to build a chainable drizzle-style query mock.
 function makeQueryChain(result: unknown) {
@@ -173,6 +183,65 @@ const SAMPLE_SYNC_LOG = {
   malformedSiretCount: 0,
   errorMessage: null,
 };
+
+describe("GET /api/archidoc/status", () => {
+  it("retains per-resource outcomes using only safe failure diagnostics", async () => {
+    mockGetLastSyncStatus.mockResolvedValueOnce({
+      configured: true,
+      lastSync: new Date("2026-08-22T16:54:44.000Z"),
+      lastSyncType: "contractors",
+      lastSyncStatus: "completed",
+      lastSyncError: null,
+      resources: {
+        projects: { lastSync: new Date(), status: "completed", recordsUpdated: 22, errorCode: null, errorReason: null },
+        contractors: {
+          lastSync: new Date(),
+          status: "failed",
+          recordsUpdated: 0,
+          errorCode: "unauthorized",
+          errorReason: "ArchiDoc rejected the configured sync credential.",
+        },
+        trades: { lastSync: new Date(), status: "completed", recordsUpdated: 35, errorCode: null, errorReason: null },
+        proposalFees: { lastSync: new Date(), status: "completed", recordsUpdated: 3, errorCode: null, errorReason: null },
+        technicalLots: { lastSync: new Date(), status: "completed", recordsUpdated: 35, errorCode: null, errorReason: null },
+      },
+      technicalLots: {
+        lastSync: new Date(),
+        lastSyncStatus: "completed",
+        lastSyncError: null,
+        count: 35,
+        activeCount: 35,
+        catalogueState: "ready",
+        selectable: true,
+        catalogueRevision: 1,
+        catalogueChangedAt: new Date(),
+        catalogueSyncedAt: new Date(),
+        diagnosticReason: null,
+        diagnosticCode: null,
+        lastFetch: null,
+      },
+    });
+
+    const res = await fetch(`${baseUrl}/api/archidoc/status`);
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      resources: {
+        contractors: { status: string; errorCode: string; errorReason: string };
+        technicalLots: { recordsUpdated: number };
+      };
+    };
+    expect(body.resources).toMatchObject({
+      contractors: {
+        status: "failed",
+        errorCode: "unauthorized",
+        errorReason: "ArchiDoc rejected the configured sync credential.",
+      },
+      technicalLots: { recordsUpdated: 35 },
+    });
+    expect(JSON.stringify(body)).not.toContain("production-secret");
+  });
+});
 
 describe("GET /api/archidoc/technical-lots", () => {
   it("returns lots, catalogue, and sync status when mirror is populated", async () => {
@@ -309,5 +378,72 @@ describe("GET /api/archidoc/technical-lots", () => {
     const body = await res.json() as { message: string };
     expect(body.message).toBe("Failed to get technical lots.");
     expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("unit-test-bearer-secret");
+  });
+});
+
+describe("POST /api/archidoc/sync", () => {
+  it("reports success only after every mirrored resource, including technical lots, succeeds", async () => {
+    mockFullSync.mockResolvedValueOnce({
+      projects: { updated: 22 },
+      contractors: { updated: 36 },
+      trades: { updated: 35 },
+      proposalFees: { updated: 3 },
+      technicalLots: { updated: 35 },
+    });
+
+    const res = await fetch(`${baseUrl}/api/archidoc/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      ok: boolean;
+      message: string;
+      failures: string[];
+      warnings: string[];
+      technicalLots: { updated: number };
+    };
+    expect(body).toMatchObject({
+      ok: true,
+      message: "Sync completed",
+      failures: [],
+      warnings: [],
+      technicalLots: { updated: 35 },
+    });
+  });
+
+  it("does not report overall success when technical-lot validation rejects publication", async () => {
+    mockFullSync.mockResolvedValueOnce({
+      projects: { updated: 22 },
+      contractors: { updated: 36 },
+      trades: { updated: 35 },
+      proposalFees: { updated: 3 },
+      technicalLots: {
+        updated: 0,
+        error: "invalid_response: The ArchiDoc technical-lot response failed contract validation.",
+      },
+    });
+
+    const res = await fetch(`${baseUrl}/api/archidoc/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      ok: boolean;
+      message: string;
+      failures: string[];
+    };
+    expect(body).toMatchObject({
+      ok: false,
+      message: "Sync completed with errors",
+      failures: [
+        "technicalLots: invalid_response: The ArchiDoc technical-lot response failed contract validation.",
+      ],
+    });
   });
 });

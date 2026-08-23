@@ -31,6 +31,10 @@ import {
 import { normalizeSiret } from "../gmail/document-parser";
 import { env } from "../env";
 import { validateIban, normaliseIban, validateBic, normaliseBic } from "@shared/iban";
+import {
+  toSafeArchidocSyncFailure,
+  type ArchidocSyncDiagnosticCode,
+} from "./sync-diagnostics";
 
 // Canonical form of the configured Archidoc backend URL — used to stamp
 // every mirror row so a future repointing of ARCHIDOC_BASE_URL can be
@@ -905,6 +909,7 @@ export async function syncAllProposalFees(): Promise<{ updated: number; error?: 
     return { updated: 0, error: "Not configured" };
   }
 
+  const log = await createSyncLog("proposal_fees");
   try {
     const response = await fetchProposalFees();
     let count = 0;
@@ -937,10 +942,12 @@ export async function syncAllProposalFees(): Promise<{ updated: number; error?: 
       count++;
     }
 
+    await completeSyncLog(log.id, "completed", count);
     console.log(`[ArchiDoc Sync] Proposal fees synced: ${count} records`);
     return { updated: count };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
+    await completeSyncLog(log.id, "failed", 0, message);
     console.error(`[ArchiDoc Sync] Proposal fees sync failed: ${message}`);
     return { updated: 0, error: message };
   }
@@ -1234,6 +1241,15 @@ export async function incrementalSync(): Promise<MirrorSyncResult> {
 }
 
 export type TechnicalLotCatalogueState = "ready" | "last_known_good" | "empty";
+type MirrorResourceSyncType = "projects" | "contractors" | "trades" | "proposalFees" | "technicalLots";
+
+export interface MirrorResourceSyncDiagnostic {
+  lastSync: Date | null;
+  status: string | null;
+  recordsUpdated: number | null;
+  errorCode: ArchidocSyncDiagnosticCode | null;
+  errorReason: string | null;
+}
 
 export interface TechnicalLotCatalogueAvailability {
   state: TechnicalLotCatalogueState;
@@ -1327,6 +1343,7 @@ export async function getLastSyncStatus(): Promise<{
   lastSyncType: string | null;
   lastSyncStatus: string | null;
   lastSyncError: string | null;
+  resources: Record<MirrorResourceSyncType, MirrorResourceSyncDiagnostic>;
   technicalLots: {
     lastSync: Date | null;
     lastSyncStatus: string | null;
@@ -1353,6 +1370,36 @@ export async function getLastSyncStatus(): Promise<{
     .from(archidocSyncLog)
     .orderBy(desc(archidocSyncLog.id))
     .limit(1);
+  const [projectLogs, contractorLogs, tradeLogs, proposalFeeLogs, technicalLotLogs] = await Promise.all([
+    db.select().from(archidocSyncLog).where(eq(archidocSyncLog.syncType, "projects")).orderBy(desc(archidocSyncLog.id)).limit(1),
+    db.select().from(archidocSyncLog).where(eq(archidocSyncLog.syncType, "contractors")).orderBy(desc(archidocSyncLog.id)).limit(1),
+    db.select().from(archidocSyncLog).where(eq(archidocSyncLog.syncType, "trades")).orderBy(desc(archidocSyncLog.id)).limit(1),
+    db.select().from(archidocSyncLog).where(eq(archidocSyncLog.syncType, "proposal_fees")).orderBy(desc(archidocSyncLog.id)).limit(1),
+    db.select().from(archidocSyncLog).where(eq(archidocSyncLog.syncType, "technical_lots")).orderBy(desc(archidocSyncLog.id)).limit(1),
+  ]);
+  const toResourceDiagnostic = (
+    entry: typeof archidocSyncLog.$inferSelect | undefined,
+  ): MirrorResourceSyncDiagnostic => {
+    const failure = entry?.status === "failed"
+      ? toSafeArchidocSyncFailure(entry.errorMessage)
+      : entry?.errorMessage?.startsWith("WARNING:")
+        ? toSafeArchidocSyncFailure(entry.errorMessage)
+        : null;
+    return {
+      lastSync: entry ? (entry.completedAt || entry.startedAt) : null,
+      status: entry?.status ?? null,
+      recordsUpdated: entry?.recordsUpdated ?? null,
+      errorCode: failure?.code ?? null,
+      errorReason: failure?.reason ?? null,
+    };
+  };
+  const resources: Record<MirrorResourceSyncType, MirrorResourceSyncDiagnostic> = {
+    projects: toResourceDiagnostic(projectLogs[0]),
+    contractors: toResourceDiagnostic(contractorLogs[0]),
+    trades: toResourceDiagnostic(tradeLogs[0]),
+    proposalFees: toResourceDiagnostic(proposalFeeLogs[0]),
+    technicalLots: toResourceDiagnostic(technicalLotLogs[0]),
+  };
 
   let technicalLots: {
     lastSync: Date | null;
@@ -1411,16 +1458,30 @@ export async function getLastSyncStatus(): Promise<{
   }
 
   if (lastLog.length === 0) {
-    return { configured, lastSync: null, lastSyncType: null, lastSyncStatus: null, lastSyncError: null, technicalLots };
+    return {
+      configured,
+      lastSync: null,
+      lastSyncType: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+      resources,
+      technicalLots,
+    };
   }
 
   const entry = lastLog[0];
+  const lastFailure = entry.status === "failed"
+    ? toSafeArchidocSyncFailure(entry.errorMessage)
+    : entry.errorMessage?.startsWith("WARNING:")
+      ? toSafeArchidocSyncFailure(entry.errorMessage)
+      : null;
   return {
     configured,
     lastSync: entry.completedAt || entry.startedAt,
     lastSyncType: entry.syncType,
     lastSyncStatus: entry.status,
-    lastSyncError: entry.errorMessage ?? null,
+    lastSyncError: lastFailure?.reason ?? null,
+    resources,
     technicalLots,
   };
 }

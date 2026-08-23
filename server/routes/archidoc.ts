@@ -86,6 +86,7 @@ router.get("/api/archidoc/status", async (_req, res) => {
       lastSyncType: syncStatus.lastSyncType,
       lastSyncStatus: syncStatus.lastSyncStatus,
       lastSyncError: syncStatus.lastSyncError,
+      resources: syncStatus.resources,
       mirroredProjects: mirroredProjects.length,
       mirroredContractors: mirroredContractors.length,
       trackedProjects: trackedIds.length,
