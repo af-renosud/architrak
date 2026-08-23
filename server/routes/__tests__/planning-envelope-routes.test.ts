@@ -570,6 +570,7 @@ describe("POST /api/planning-revisions/:id/rescrape", () => {
     expect(mockCreatePdfRevision).toHaveBeenCalledWith(expect.objectContaining({
       storageKey: "/private/planning/source.pdf",
       fileSha256: sha,
+      parserVersion: "planning-pdf-v3-option-reconciliation",
       rescrapedFromRevisionId: 5,
       expectedSourceVersion: 1,
       rawExtraction: recoveredParsed,

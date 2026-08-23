@@ -77,31 +77,57 @@ export interface ParsedDocument {
     note: string;
   };
   /** Deterministic audit metadata for the Planning-only totals-box recovery
-   *  pass. The AI never sets this block; the Planning extraction service does. */
+   *  pass. The AI never sets this block; the extraction service does. */
   planningSummaryRecovery?: {
     attempted: boolean;
     status: "reconciled" | "partial" | "none" | "failed";
+    originalExpectedHt: number;
     expectedHt: number;
     initialLineItemsTotal: number;
     difference: number;
     candidateCount: number;
     recoveredCount: number;
+    matchedRetainedCount: number;
+    excludedCount: number;
     ambiguousCandidateCount: number;
     recoveredTotal: number;
+    excludedTotal: number;
     finalLineItemsTotal: number;
     recoveredEvidence: Array<{
       description: string;
       totalHt: number;
       evidenceText: string;
+      action?: "added" | "matched";
+      lineItemIndexes?: number[];
       pageHint?: number;
       bbox?: { x: number; y: number; w: number; h: number };
     }>;
+    excludedEvidence: Array<{
+      description: string;
+      totalHt: number;
+      evidenceText: string;
+      lineItemIndexes: number[];
+      pageHint?: number;
+      bbox?: { x: number; y: number; w: number; h: number };
+    }>;
+    correctedTotals?: {
+      amountHt: number;
+      preTaxChargesHt: number;
+      tvaAmount: number;
+      amountTtc: number;
+      tvaRate?: number;
+      evidenceText: string;
+      pageHint?: number;
+      bbox?: { x: number; y: number; w: number; h: number };
+    };
     note: string;
   };
   date?: string;
   amountHt?: number;
   amountTtc?: number;
   tvaAmount?: number;
+  /** Printed pre-tax charges outside Montant H.T. (for example "FRAIS FIXES"). */
+  preTaxChargesHt?: number;
   tvaRate?: number;
   autoLiquidation?: boolean;
   retenueDeGarantie?: number;
@@ -246,7 +272,7 @@ Extraction Rules:
 - For each line item, also populate "pageHint": the 1-indexed page number of the PDF on which that line appears. Pages are provided to you as separate images in order — the first image is page 1, the second is page 2, and so on. If you cannot determine the page with confidence, omit pageHint for that line.
 - For each line item, also populate "bbox": the rectangle on the page image that visually contains that line's row in the table. Coordinates MUST be normalized to the [0, 1] range of the page image (x and w as a fraction of the image width; y and h as a fraction of the image height; origin at the top-left of the image). Make the box tight to the line row, including the description and the amount, but not neighbouring rows. If you cannot determine the box with confidence, omit bbox for that line — do not guess.
 - A single numbered item's description often spans MULTIPLE paragraphs or wrapped lines. All descriptive text between one priced row and the next belongs to the SAME line item — append it to that item's description. NEVER emit a separate line item for a continuation paragraph: a row that has no printed unit price and no printed total of its own is not a new line item.
-- For quotation/devis documents, inspect summary and totals boxes as well as the main item table. A separately priced option printed only in a summary/totals box is still a line item when nearby wording explicitly says it is retained/included in the Montant H.T. (for example "OPTIONS RETENUES DANS LE TOTAL"). Extract its printed description and HT amount even when quantity, unit, and unit price are absent. Do not extract rejected/excluded options, subtotals, tax, delivery charges, or TTC as line items, and never invent a balancing line from a totals difference.
+- For quotation/devis documents, inspect summary and totals boxes as well as the main item table. Preserve every separately priced row from the main item table, including optional and alternative proposals; the evidence-gated reconciliation step decides later whether an alternative is unretained. A separately priced option printed only in a summary/totals box is still a line item when nearby wording explicitly says it is retained/included in the Montant H.T. (for example "OPTIONS RETENUES DANS LE TOTAL"). Extract its printed description and HT amount even when quantity, unit, and unit price are absent. Do not extract subtotals, tax, delivery charges, or TTC as line items, and never invent a balancing line from a totals difference.
 - If a field is not visible on the document, omit it (do not guess).
 - Architect fee invoices (honoraires): when the ISSUER of the invoice (letterhead entity) is the architecture firm itself — e.g. "ARCHITECTS-FRANCE" / "SAS ARCHITECTS-FRANCE" — invoicing its own client for fees/honoraires (mission d'architecte, ouverture de dossier, phases de conception, etc.), use documentType="architect_fee_invoice". In that case contractorName is the ARCHITECTURE FIRM (the issuer) and clientName is the maitre d'ouvrage being billed. Never classify such a document as a contractor "invoice".
 - Payment confirmations (confirmation de paiement): a document that confirms a payment has been made or received — e.g. bank transfer receipts ("avis de virement", "relevé de virement"), payment receipts ("reçu de paiement", "accusé de réception de paiement"), or bank confirmation slips. Use documentType="payment_confirmation". Do NOT confuse with a facture d'acompte (which is a request for payment, not a confirmation) or with a situation de travaux.`;
@@ -269,6 +295,7 @@ const USER_PROMPT = `Analyze this French construction document and extract the f
 - tvaIntracom: contractor's intra-community VAT number if visible (e.g., "FR75820466761") — copy the full string including the FR prefix
 - date: document date in YYYY-MM-DD format
 - amountHt: total amount excluding tax (Montant HT) as a number with 2 decimal places
+- preTaxChargesHt: sum of separately printed pre-tax fixed, freight, delivery, or environmental charges added after amountHt and before TVA; use 0 when the totals box is legible and no such charge is printed; do not fold these charges into amountHt or lineItems
 - amountTtc: total amount including tax (Montant TTC) as a number with 2 decimal places
 - tvaAmount: TVA amount as a number with 2 decimal places
 - tvaRate: TVA rate as a percentage number (e.g., 20 for 20%). If auto-liquidation, set to 0.
@@ -278,7 +305,7 @@ const USER_PROMPT = `Analyze this French construction document and extract the f
 - paymentTerms: payment conditions text if visible (e.g., "30 jours fin de mois")
 - lotReferences: array of lot codes/references visible on the document (e.g., ["Lot 1", "Lot 7 - Electricite"])
 - description: brief description of the work/service
-- lineItems: array of line items, each with {description, quantity, unit, unitPrice, total, percentComplete, pageHint, bbox}. For SITUATION documents (situation de travaux), set percentComplete to the CUMULATIVE claimed completion percentage printed for the line (columns like "% avancement", "% réalisé", "Avancement cumulé"); omit percentComplete for all other document types. IMPORTANT: unitPrice and total must be the pre-tax (HT / hors taxes) amounts for each line — French quotations list line amounts HT in the body and only add TVA at the bottom, where the final total is TTC (tax-inclusive). Never copy TTC/tax-inclusive figures into line items. Multi-paragraph descriptions belong to ONE item: only create a new array entry when the document shows a new priced row — a paragraph without its own price is part of the previous item's description, never a new entry. On quotations/devis, also include separately priced options printed only in a summary/totals box when the document explicitly labels them as retained/included in the Montant H.T.; omit quantity/unit/unitPrice when they are not printed, and do not include rejected options, subtotals, TVA, delivery charges, or TTC.
+- lineItems: array of line items, each with {description, quantity, unit, unitPrice, total, percentComplete, pageHint, bbox}. For SITUATION documents (situation de travaux), set percentComplete to the CUMULATIVE claimed completion percentage printed for the line (columns like "% avancement", "% réalisé", "Avancement cumulé"); omit percentComplete for all other document types. IMPORTANT: unitPrice and total must be the pre-tax (HT / hors taxes) amounts for each line — French quotations list line amounts HT in the body and only add TVA at the bottom, where the final total is TTC (tax-inclusive). Never copy TTC/tax-inclusive figures into line items. Multi-paragraph descriptions belong to ONE item: only create a new array entry when the document shows a new priced row — a paragraph without its own price is part of the previous item's description, never a new entry. On quotations/devis, preserve every separately priced main-table row, including optional and alternative proposals; never omit one merely because it is absent from a retained-options summary. Also include separately priced options printed only in a summary/totals box when the document explicitly labels them as retained/included in the Montant H.T. Omit quantity/unit/unitPrice when they are not printed, and do not include subtotals, TVA, delivery charges, or TTC.
 - iban: contractor IBAN printed on the document if visible (typically in a "Coordonnées bancaires" / RIB block). Copy verbatim — preserve all characters including spaces; downstream code normalises and validates.
 - bic: contractor BIC / SWIFT code printed on the document if visible. Copy verbatim.
 
@@ -346,6 +373,11 @@ const EXTRACTION_SCHEMA: ResponseSchema = {
     amountHt: {
       type: SchemaType.NUMBER,
       description: "Total amount excluding tax (HT) with 2 decimal precision",
+      nullable: true,
+    },
+    preTaxChargesHt: {
+      type: SchemaType.NUMBER,
+      description: "Separate pre-tax charges added after amountHt and before TVA; 0 when totals are legible and no such charge is printed",
       nullable: true,
     },
     amountTtc: {
@@ -1220,7 +1252,13 @@ async function parseWithOpenAI(images: Buffer[], modelId: string): Promise<Parse
 export interface PlanningSummaryRecoveryContext {
   expectedHt: number;
   lineItemsTotal: number;
+  /** Signed HT minus line-items difference; positive means rows may be missing. */
   difference: number;
+  lineItems?: Array<{
+    index: number;
+    description: string;
+    totalHt: number;
+  }>;
 }
 
 export interface PlanningSummaryLineCandidate {
@@ -1229,8 +1267,38 @@ export interface PlanningSummaryLineCandidate {
   evidenceText: string;
   includedInTotal: boolean;
   amountBasis: string;
+  matchedLineItemIndexes?: number[];
   pageHint?: number;
   bbox?: { x: number; y: number; w: number; h: number };
+}
+
+export interface PlanningSummaryExcludedGroupCandidate {
+  description: string;
+  totalHt: number;
+  evidenceText: string;
+  excludedFromTotal: boolean;
+  amountBasis: string;
+  lineItemIndexes: number[];
+  pageHint?: number;
+  bbox?: { x: number; y: number; w: number; h: number };
+}
+
+export interface PlanningSummaryTotalsCandidate {
+  amountHt: number;
+  preTaxChargesHt: number;
+  tvaAmount: number;
+  amountTtc: number;
+  tvaRate?: number;
+  evidenceText: string;
+  pageHint?: number;
+  bbox?: { x: number; y: number; w: number; h: number };
+}
+
+export interface PlanningSummaryRecoveryEvidence {
+  lines: PlanningSummaryLineCandidate[];
+  excludedGroups: PlanningSummaryExcludedGroupCandidate[];
+  totals?: PlanningSummaryTotalsCandidate;
+  unsafeEvidenceCount?: number;
 }
 
 const PLANNING_SUMMARY_RECOVERY_SCHEMA: ResponseSchema = {
@@ -1262,6 +1330,12 @@ const PLANNING_SUMMARY_RECOVERY_SCHEMA: ResponseSchema = {
             type: SchemaType.STRING,
             description: 'Use exactly "HT" only when the printed amount is demonstrably pre-tax',
           },
+          matchedLineItemIndexes: {
+            type: SchemaType.ARRAY,
+            description: "1-based indexes from the supplied extracted-line inventory when those rows already represent this retained option",
+            nullable: true,
+            items: { type: SchemaType.NUMBER },
+          },
           pageHint: {
             type: SchemaType.NUMBER,
             description: "1-indexed page within the supplied image chunk",
@@ -1289,8 +1363,123 @@ const PLANNING_SUMMARY_RECOVERY_SCHEMA: ResponseSchema = {
         ],
       },
     },
+    excludedGroups: {
+      type: SchemaType.ARRAY,
+      description: "Extracted main-table option groups visibly excluded by the retained-option selection",
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          description: {
+            type: SchemaType.STRING,
+            description: "Verbatim option/group description",
+          },
+          totalHt: {
+            type: SchemaType.NUMBER,
+            description: "Sum of the referenced extracted HT rows",
+          },
+          evidenceText: {
+            type: SchemaType.STRING,
+            description: "Verbatim wording that proves this is an alternative not retained in the total",
+          },
+          excludedFromTotal: {
+            type: SchemaType.BOOLEAN,
+            description: "True only when the printed selection evidence excludes this group",
+          },
+          amountBasis: {
+            type: SchemaType.STRING,
+            description: 'Use exactly "HT" only for pre-tax extracted rows',
+          },
+          lineItemIndexes: {
+            type: SchemaType.ARRAY,
+            description: "Contiguous 1-based indexes from the supplied extracted-line inventory",
+            items: { type: SchemaType.NUMBER },
+          },
+          pageHint: {
+            type: SchemaType.NUMBER,
+            description: "1-indexed page within the supplied image chunk",
+            nullable: true,
+          },
+          bbox: {
+            type: SchemaType.OBJECT,
+            description: "Normalized bounding box around the option-selection evidence",
+            nullable: true,
+            properties: {
+              x: { type: SchemaType.NUMBER },
+              y: { type: SchemaType.NUMBER },
+              w: { type: SchemaType.NUMBER },
+              h: { type: SchemaType.NUMBER },
+            },
+            required: ["x", "y", "w", "h"],
+          },
+        },
+        required: [
+          "description",
+          "totalHt",
+          "evidenceText",
+          "excludedFromTotal",
+          "amountBasis",
+          "lineItemIndexes",
+        ],
+      },
+    },
+    totals: {
+      type: SchemaType.OBJECT,
+      description: "Complete printed totals box; omit unless every required amount is clearly visible",
+      nullable: true,
+      properties: {
+        amountHt: {
+          type: SchemaType.NUMBER,
+          description: "Printed Montant H.T. before separately printed pre-tax charges",
+        },
+        preTaxChargesHt: {
+          type: SchemaType.NUMBER,
+          description: "Sum of separately printed pre-tax fixed/delivery charges; use 0 when printed as zero or absent from the box",
+        },
+        tvaAmount: {
+          type: SchemaType.NUMBER,
+          description: "Printed TVA amount",
+        },
+        amountTtc: {
+          type: SchemaType.NUMBER,
+          description: "Printed Montant TTC",
+        },
+        tvaRate: {
+          type: SchemaType.NUMBER,
+          description: "Printed TVA percentage",
+          nullable: true,
+        },
+        evidenceText: {
+          type: SchemaType.STRING,
+          description: "Verbatim totals labels and values",
+        },
+        pageHint: {
+          type: SchemaType.NUMBER,
+          description: "1-indexed page within the supplied image chunk",
+          nullable: true,
+        },
+        bbox: {
+          type: SchemaType.OBJECT,
+          description: "Normalized bounding box around the complete totals box",
+          nullable: true,
+          properties: {
+            x: { type: SchemaType.NUMBER },
+            y: { type: SchemaType.NUMBER },
+            w: { type: SchemaType.NUMBER },
+            h: { type: SchemaType.NUMBER },
+          },
+          required: ["x", "y", "w", "h"],
+        },
+      },
+      required: [
+        "amountHt",
+        "preTaxChargesHt",
+        "tvaAmount",
+        "amountTtc",
+        "evidenceText",
+      ],
+    },
   },
-  required: ["lines"],
+  required: ["lines", "excludedGroups"],
 };
 
 export function buildPlanningSummaryRecoveryPrompt(
@@ -1298,27 +1487,46 @@ export function buildPlanningSummaryRecoveryPrompt(
   pageStart: number,
   pageEnd: number,
 ): string {
-  return `Re-examine quotation/devis pages ${pageStart}-${pageEnd} only for priced option rows that were omitted from the main extraction because they appear in a summary or totals box outside the main item table.
+  const extractedLineInventory = context.lineItems?.length
+    ? context.lineItems
+        .map((item) => `${item.index}. ${item.description} — HT ${item.totalHt.toFixed(2)}`)
+        .join("\n")
+    : "(No extracted-line inventory supplied.)";
+
+  return `Re-examine quotation/devis pages ${pageStart}-${pageEnd} for the complete totals box and for evidence showing which quoted options are retained versus alternative/unretained.
 
 Deterministic reconciliation signal:
-- Printed Montant H.T.: ${context.expectedHt.toFixed(2)}
+- Initially extracted Montant H.T.: ${context.expectedHt.toFixed(2)}
 - Already extracted HT line total: ${context.lineItemsTotal.toFixed(2)}
-- Unexplained positive difference: ${context.difference.toFixed(2)}
+- Signed HT-minus-lines difference: ${context.difference.toFixed(2)} (negative means the extracted rows exceed HT)
 
-Return a candidate only when ALL of the following are visibly supported on the supplied page images:
+Extracted-line inventory (stable 1-based indexes):
+${extractedLineInventory}
+
+For "lines", return every visibly retained/included option from a summary such as "OPTIONS RETENUES DANS LE TOTAL". When a retained option is already represented by one or more CONTIGUOUS rows in the inventory, set matchedLineItemIndexes to those exact indexes and ensure their sum equals totalHt. Omit matchedLineItemIndexes only when the retained option is genuinely absent from the inventory.
+
+For "excludedGroups", return an inventory group only when ALL of the following are visibly supported:
+1. The rows form a contiguous quoted option/alternative group.
+2. The PDF's option-selection wording and retained-options summary make clear that this group is NOT retained in Montant H.T.
+3. lineItemIndexes identifies every row in that group and their sum equals totalHt.
+Set excludedFromTotal=true and amountBasis="HT" only when these facts are visible. Merely being absent from a summary is not enough evidence.
+
+For "totals", return the complete box only when Montant H.T., any separately printed pre-tax fixed/delivery charges, TVA, and Montant TTC are all legible. preTaxChargesHt is the sum of those separately printed pre-tax charges and may be 0. Copy the labels and values into evidenceText. Do not fold charges into amountHt.
+
+For every retained line candidate:
 1. It has its own printed description and monetary amount.
 2. Nearby wording explicitly says the option is retained/included in the total or Montant H.T. (for example "OPTIONS RETENUES DANS LE TOTAL").
 3. The amount is demonstrably HT, either explicitly marked HT or visibly feeding the Montant H.T. total.
 
-Copy the description, amount, and nearby inclusion wording verbatim. Set includedInTotal=true and amountBasis="HT" only when those facts are visible. Omit quantity, unit, and unit price because this recovery concerns summary rows that often do not print them. pageHint is 1-indexed within the supplied image chunk.
+Copy descriptions, amounts, and nearby selection wording verbatim. pageHint is 1-indexed within the supplied image chunk.
 
 Do NOT return:
-- rows already belonging to the main item table;
-- rejected, excluded, or merely proposed options;
-- sous-totaux, Montant H.T., TVA, TTC, freight/delivery charges, discounts, or payment terms;
+- synthetic additions or exclusions calculated only from the difference;
+- ordinary base-work rows unrelated to an option selection;
+- sous-totaux, Montant H.T., TVA, TTC, charges, discounts, or payment terms as option line items;
 - any synthetic row calculated from the difference above.
 
-The arithmetic difference is only a signal to search; it is never evidence. If no qualifying printed row is visible, return {"lines":[]}. Return only valid JSON.`;
+Arithmetic is only a safety check; it is never evidence. If no qualifying evidence is visible, return {"lines":[],"excludedGroups":[]}. Return only valid JSON.`;
 }
 
 async function recoverPlanningSummaryWithGemini(
@@ -1390,7 +1598,7 @@ async function recoverPlanningSummaryWithOpenAI(
 
 function normalizePlanningSummaryRecoveryPayload(
   payload: unknown,
-): PlanningSummaryLineCandidate[] {
+): PlanningSummaryRecoveryEvidence {
   if (
     typeof payload !== "object"
     || payload === null
@@ -1400,8 +1608,12 @@ function normalizePlanningSummaryRecoveryPayload(
   }
 
   const normalized: PlanningSummaryLineCandidate[] = [];
+  let unsafeEvidenceCount = 0;
   for (const raw of (payload as { lines: unknown[] }).lines) {
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      unsafeEvidenceCount++;
+      continue;
+    }
     const value = raw as Record<string, unknown>;
     if (
       typeof value.description !== "string"
@@ -1411,6 +1623,7 @@ function normalizePlanningSummaryRecoveryPayload(
       || typeof value.includedInTotal !== "boolean"
       || typeof value.amountBasis !== "string"
     ) {
+      unsafeEvidenceCount++;
       continue;
     }
 
@@ -1421,6 +1634,14 @@ function normalizePlanningSummaryRecoveryPayload(
       includedInTotal: value.includedInTotal,
       amountBasis: value.amountBasis,
     };
+    if (Array.isArray(value.matchedLineItemIndexes)) {
+      candidate.matchedLineItemIndexes = value.matchedLineItemIndexes.filter(
+        (item): item is number => typeof item === "number" && Number.isFinite(item),
+      );
+      if (candidate.matchedLineItemIndexes.length !== value.matchedLineItemIndexes.length) {
+        unsafeEvidenceCount++;
+      }
+    }
     if (typeof value.pageHint === "number" && Number.isFinite(value.pageHint)) {
       candidate.pageHint = value.pageHint;
     }
@@ -1437,7 +1658,111 @@ function normalizePlanningSummaryRecoveryPayload(
     }
     normalized.push(candidate);
   }
-  return normalized;
+
+  const excludedGroups: PlanningSummaryExcludedGroupCandidate[] = [];
+  const rawExcludedGroups = (payload as { excludedGroups?: unknown }).excludedGroups;
+  if (Array.isArray(rawExcludedGroups)) {
+    for (const raw of rawExcludedGroups) {
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+        unsafeEvidenceCount++;
+        continue;
+      }
+      const value = raw as Record<string, unknown>;
+      if (
+        typeof value.description !== "string"
+        || typeof value.totalHt !== "number"
+        || !Number.isFinite(value.totalHt)
+        || typeof value.evidenceText !== "string"
+        || typeof value.excludedFromTotal !== "boolean"
+        || typeof value.amountBasis !== "string"
+        || !Array.isArray(value.lineItemIndexes)
+      ) {
+        unsafeEvidenceCount++;
+        continue;
+      }
+      const lineItemIndexes = value.lineItemIndexes.filter(
+        (item): item is number => typeof item === "number" && Number.isFinite(item),
+      );
+      if (lineItemIndexes.length !== value.lineItemIndexes.length) {
+        unsafeEvidenceCount++;
+      }
+      const candidate: PlanningSummaryExcludedGroupCandidate = {
+        description: value.description,
+        totalHt: value.totalHt,
+        evidenceText: value.evidenceText,
+        excludedFromTotal: value.excludedFromTotal,
+        amountBasis: value.amountBasis,
+        lineItemIndexes,
+      };
+      if (typeof value.pageHint === "number" && Number.isFinite(value.pageHint)) {
+        candidate.pageHint = value.pageHint;
+      }
+      if (typeof value.bbox === "object" && value.bbox !== null && !Array.isArray(value.bbox)) {
+        const bbox = value.bbox as Record<string, unknown>;
+        if (
+          typeof bbox.x === "number"
+          && typeof bbox.y === "number"
+          && typeof bbox.w === "number"
+          && typeof bbox.h === "number"
+        ) {
+          candidate.bbox = { x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h };
+        }
+      }
+      excludedGroups.push(candidate);
+    }
+  }
+
+  let totals: PlanningSummaryTotalsCandidate | undefined;
+  const rawTotals = (payload as { totals?: unknown }).totals;
+  if (typeof rawTotals === "object" && rawTotals !== null && !Array.isArray(rawTotals)) {
+    const value = rawTotals as Record<string, unknown>;
+    if (
+      typeof value.amountHt === "number"
+      && Number.isFinite(value.amountHt)
+      && typeof value.preTaxChargesHt === "number"
+      && Number.isFinite(value.preTaxChargesHt)
+      && typeof value.tvaAmount === "number"
+      && Number.isFinite(value.tvaAmount)
+      && typeof value.amountTtc === "number"
+      && Number.isFinite(value.amountTtc)
+      && typeof value.evidenceText === "string"
+    ) {
+      totals = {
+        amountHt: value.amountHt,
+        preTaxChargesHt: value.preTaxChargesHt,
+        tvaAmount: value.tvaAmount,
+        amountTtc: value.amountTtc,
+        evidenceText: value.evidenceText,
+      };
+      if (typeof value.tvaRate === "number" && Number.isFinite(value.tvaRate)) {
+        totals.tvaRate = value.tvaRate;
+      }
+      if (typeof value.pageHint === "number" && Number.isFinite(value.pageHint)) {
+        totals.pageHint = value.pageHint;
+      }
+      if (typeof value.bbox === "object" && value.bbox !== null && !Array.isArray(value.bbox)) {
+        const bbox = value.bbox as Record<string, unknown>;
+        if (
+          typeof bbox.x === "number"
+          && typeof bbox.y === "number"
+          && typeof bbox.w === "number"
+          && typeof bbox.h === "number"
+        ) {
+          totals.bbox = { x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h };
+        }
+      }
+    }
+    if (!totals) unsafeEvidenceCount++;
+  } else if (rawTotals != null) {
+    unsafeEvidenceCount++;
+  }
+
+  return {
+    lines: normalized,
+    excludedGroups,
+    ...(totals ? { totals } : {}),
+    ...(unsafeEvidenceCount > 0 ? { unsafeEvidenceCount } : {}),
+  };
 }
 
 export interface PlanningSummaryRecoveryDeps {
@@ -1463,7 +1788,7 @@ export async function recoverPlanningSummaryLineItemsFromPdf(
   fileName: string,
   context: PlanningSummaryRecoveryContext,
   deps: PlanningSummaryRecoveryDeps = {},
-): Promise<PlanningSummaryLineCandidate[]> {
+): Promise<PlanningSummaryRecoveryEvidence> {
   const renderWithCoverage: (buf: Buffer) => Promise<{ images: Buffer[]; pdfPageCount: number | null }> =
     deps.pdfToImagesWithCoverage
       ?? (deps.pdfToImages
@@ -1487,7 +1812,10 @@ export async function recoverPlanningSummaryLineItemsFromPdf(
   );
 
   const { provider, modelId } = await activeModel();
-  const candidates: PlanningSummaryLineCandidate[] = [];
+  const evidence: PlanningSummaryRecoveryEvidence = {
+    lines: [],
+    excludedGroups: [],
+  };
   const chunkCount = Math.ceil(images.length / EXTRACTION_CHUNK_PAGES);
 
   for (let index = 0; index < chunkCount; index++) {
@@ -1512,21 +1840,60 @@ export async function recoverPlanningSummaryLineItemsFromPdf(
       payload = await recoverWithOpenAI(chunkImages, modelId, prompt);
     }
 
-    for (const candidate of normalizePlanningSummaryRecoveryPayload(payload)) {
-      const rebased = { ...candidate };
-      if (typeof candidate.pageHint === "number" && Number.isFinite(candidate.pageHint)) {
-        if (candidate.pageHint >= 1 && candidate.pageHint <= chunkImages.length) {
-          rebased.pageHint = candidate.pageHint + pageOffset;
+    const normalized = normalizePlanningSummaryRecoveryPayload(payload);
+    evidence.unsafeEvidenceCount = (evidence.unsafeEvidenceCount ?? 0)
+      + (normalized.unsafeEvidenceCount ?? 0);
+    for (const candidate of normalized.lines) {
+      const rebased: PlanningSummaryLineCandidate = { ...candidate };
+      if (typeof rebased.pageHint === "number" && Number.isFinite(rebased.pageHint)) {
+        if (rebased.pageHint >= 1 && rebased.pageHint <= chunkImages.length) {
+          rebased.pageHint += pageOffset;
         } else {
           delete rebased.pageHint;
           delete rebased.bbox;
         }
       }
-      candidates.push(rebased);
+      evidence.lines.push(rebased);
+    }
+    for (const candidate of normalized.excludedGroups) {
+      const rebased: PlanningSummaryExcludedGroupCandidate = { ...candidate };
+      if (typeof rebased.pageHint === "number" && Number.isFinite(rebased.pageHint)) {
+        if (rebased.pageHint >= 1 && rebased.pageHint <= chunkImages.length) {
+          rebased.pageHint += pageOffset;
+        } else {
+          delete rebased.pageHint;
+          delete rebased.bbox;
+        }
+      }
+      evidence.excludedGroups.push(rebased);
+    }
+    if (normalized.totals) {
+      const rebased: PlanningSummaryTotalsCandidate = { ...normalized.totals };
+      if (typeof rebased.pageHint === "number" && Number.isFinite(rebased.pageHint)) {
+        if (rebased.pageHint >= 1 && rebased.pageHint <= chunkImages.length) {
+          rebased.pageHint += pageOffset;
+        } else {
+          delete rebased.pageHint;
+          delete rebased.bbox;
+        }
+      }
+      if (evidence.totals) {
+        const keys: Array<keyof Pick<
+          PlanningSummaryTotalsCandidate,
+          "amountHt" | "preTaxChargesHt" | "tvaAmount" | "amountTtc"
+        >> = ["amountHt", "preTaxChargesHt", "tvaAmount", "amountTtc"];
+        const conflicts = keys.some((key) => evidence.totals![key] !== rebased[key]);
+        if (conflicts) {
+          throw new Error("Planning summary recovery returned conflicting totals boxes");
+        }
+      } else {
+        evidence.totals = rebased;
+      }
     }
   }
 
-  return candidates;
+  if (evidence.unsafeEvidenceCount === 0) delete evidence.unsafeEvidenceCount;
+  return evidence;
 }
 
 function hasOpenAIKey(): boolean {
@@ -1573,7 +1940,7 @@ export function mergeChunkedParses(
     "description",
   ] as const;
   const LAST_WINS = [
-    "amountHt", "amountTtc", "tvaAmount", "tvaRate", "autoLiquidation",
+    "amountHt", "preTaxChargesHt", "amountTtc", "tvaAmount", "tvaRate", "autoLiquidation",
     "retenueDeGarantie", "netAPayer", "acompteRequired", "acomptePercent",
     "acompteAmountHt", "acompteTrigger",
   ] as const;

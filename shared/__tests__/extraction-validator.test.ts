@@ -39,6 +39,16 @@ describe("extraction-validator (TVA-neutral)", () => {
       }));
       expect(result.isValid).toBe(true);
     });
+
+    it("subtracts separately printed pre-tax charges before checking TVA", () => {
+      const result = validateExtraction(doc({
+        amountHt: 17_463.87,
+        preTaxChargesHt: 0.99,
+        amountTtc: 20_957.83,
+        tvaAmount: 3_492.97,
+      }));
+      expect(result.warnings.filter(w => w.field === "tvaAmount")).toHaveLength(0);
+    });
   });
 
   describe("auto-derivation of tvaAmount", () => {

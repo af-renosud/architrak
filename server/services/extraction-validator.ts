@@ -92,9 +92,12 @@ export function validateExtraction(parsed: ParsedDocument): ValidationResult {
   const ht = parsed.amountHt;
   const ttc = parsed.amountTtc;
   const tvaAmount = parsed.tvaAmount;
+  const preTaxChargesHt = Number.isFinite(Number(parsed.preTaxChargesHt))
+    ? roundCurrency(Number(parsed.preTaxChargesHt))
+    : 0;
 
   if (ht != null && ttc != null) {
-    const derived = deriveTvaAmount(ht, ttc);
+    const derived = deriveTvaAmount(roundCurrency(ht + preTaxChargesHt), ttc);
     if (tvaAmount != null) {
       checksRun++;
       if (Math.abs(roundCurrency(tvaAmount) - derived) > 0.01) {
@@ -102,7 +105,9 @@ export function validateExtraction(parsed: ParsedDocument): ValidationResult {
           field: "tvaAmount",
           expected: derived,
           actual: tvaAmount,
-          message: `TVA mismatch: TTC(${ttc}) − HT(${ht}) = ${derived}, but document shows ${tvaAmount}`,
+          message: preTaxChargesHt > 0
+            ? `TVA mismatch: TTC(${ttc}) − HT(${ht}) − pre-tax charges(${preTaxChargesHt}) = ${derived}, but document shows ${tvaAmount}`
+            : `TVA mismatch: TTC(${ttc}) − HT(${ht}) = ${derived}, but document shows ${tvaAmount}`,
           severity: "error",
         });
       } else {
@@ -117,12 +122,21 @@ export function validateExtraction(parsed: ParsedDocument): ValidationResult {
   if (parsed.autoLiquidation === true) {
     checksRun++;
     let passed = true;
-    if (ht != null && ttc != null && Math.abs(roundCurrency(ttc) - roundCurrency(ht)) > 0.01) {
+    const expectedAutoLiquidationTtc = ht == null
+      ? null
+      : roundCurrency(ht + preTaxChargesHt);
+    if (
+      expectedAutoLiquidationTtc != null
+      && ttc != null
+      && Math.abs(roundCurrency(ttc) - expectedAutoLiquidationTtc) > 0.01
+    ) {
       warnings.push({
         field: "amountTtc",
-        expected: roundCurrency(ht),
+        expected: expectedAutoLiquidationTtc,
         actual: ttc,
-        message: `Auto-liquidation declared but TTC (${ttc}) ≠ HT (${ht})`,
+        message: preTaxChargesHt > 0
+          ? `Auto-liquidation declared but TTC (${ttc}) ≠ HT plus pre-tax charges (${expectedAutoLiquidationTtc})`
+          : `Auto-liquidation declared but TTC (${ttc}) ≠ HT (${ht})`,
         severity: "error",
       });
       passed = false;

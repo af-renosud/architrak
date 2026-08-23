@@ -259,6 +259,9 @@ describe("Planning summary/totals-box recovery parser", () => {
         expectedHt: 17_463.87,
         lineItemsTotal: 10_908,
         difference: 6_555.87,
+        lineItems: [
+          { index: 1, description: "Base", totalHt: 10_908 },
+        ],
       },
       6,
       7,
@@ -267,26 +270,48 @@ describe("Planning summary/totals-box recovery parser", () => {
     expect(prompt).toContain("pages 6-7");
     expect(prompt).toContain("17463.87");
     expect(prompt).toContain("6555.87");
+    expect(prompt).toContain("1. Base");
+    expect(prompt).toContain("negative means");
+    expect(prompt).toContain("excludedGroups");
+    expect(prompt).toContain("preTaxChargesHt");
     expect(prompt).toContain("never evidence");
-    expect(prompt).toContain("do not");
-    expect(prompt).toContain('{"lines":[]}');
+    expect(prompt).toContain("Do NOT");
+    expect(prompt).toContain('{"lines":[],"excludedGroups":[]}');
   });
 
   it("checks every page in bounded chunks and rebases recovered page hints", async () => {
     const images = Array.from({ length: 6 }, (_, index) => Buffer.from(`page-${index + 1}`));
     const recoverWithGemini = vi
       .fn()
-      .mockResolvedValueOnce({ lines: [] })
+      .mockResolvedValueOnce({ lines: [], excludedGroups: [] })
       .mockRejectedValueOnce(new Error("[503 Service Unavailable] Gemini recovery overloaded"));
     const recoverWithOpenAI = vi.fn().mockResolvedValue({
         lines: [{
-          description: "OPTION EN TOTAL",
-          totalHt: 50,
-          evidenceText: "OPTIONS RETENUES DANS LE TOTAL",
-          includedInTotal: true,
+            description: "OPTION EN TOTAL",
+            totalHt: 50,
+            evidenceText: "OPTIONS RETENUES DANS LE TOTAL",
+            includedInTotal: true,
+            amountBasis: "HT",
+            pageHint: 1,
+          }],
+        excludedGroups: [{
+          description: "ALTERNATIVE NON RETENUE",
+          totalHt: 25,
+          evidenceText: "OPTION ALTERNATIVE; OPTIONS RETENUES DANS LE TOTAL",
+          excludedFromTotal: true,
           amountBasis: "HT",
+          lineItemIndexes: [1],
           pageHint: 1,
         }],
+        totals: {
+          amountHt: 150,
+          preTaxChargesHt: 0,
+          tvaAmount: 30,
+          amountTtc: 180,
+          tvaRate: 20,
+          evidenceText: "MONTANT H.T 150; TVA 30; TTC 180",
+          pageHint: 1,
+        },
       });
 
     const result = await recoverPlanningSummaryLineItemsFromPdf(
@@ -318,12 +343,25 @@ describe("Planning summary/totals-box recovery parser", () => {
       "gpt-4o",
       expect.stringContaining("pages 6-6"),
     );
-    expect(result).toEqual([
-      expect.objectContaining({
-        description: "OPTION EN TOTAL",
+    expect(result).toEqual({
+      lines: [
+        expect.objectContaining({
+          description: "OPTION EN TOTAL",
+          pageHint: 6,
+        }),
+      ],
+      excludedGroups: [
+        expect.objectContaining({
+          description: "ALTERNATIVE NON RETENUE",
+          lineItemIndexes: [1],
+          pageHint: 6,
+        }),
+      ],
+      totals: expect.objectContaining({
+        amountHt: 150,
         pageHint: 6,
       }),
-    ]);
+    });
   });
 
   it("discards malformed recovery rows without dereferencing unsafe output", async () => {
@@ -343,10 +381,15 @@ describe("Planning summary/totals-box recovery parser", () => {
             "not-an-object",
             { description: "Missing required evidence", totalHt: 50 },
           ],
+          excludedGroups: [],
         })),
       },
     );
 
-    expect(result).toEqual([]);
+    expect(result).toEqual({
+      lines: [],
+      excludedGroups: [],
+      unsafeEvidenceCount: 3,
+    });
   });
 });

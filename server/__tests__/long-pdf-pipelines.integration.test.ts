@@ -137,6 +137,7 @@ vi.mock("../gmail/document-parser", async (importOriginal) => {
   return {
     ...original,
     parseDocument: vi.fn(),
+    recoverPlanningSummaryLineItemsFromPdf: vi.fn(),
     matchToProject: vi.fn(async () => ({
       projectId: 3,
       contractorId: 11,
@@ -151,9 +152,15 @@ import { attemptIntakeJob } from "../services/intake/ingest-queue.service";
 import { processInvoiceUpload } from "../services/invoice-upload.service";
 import { processStandaloneBenchmarkUpload } from "../services/benchmark-ingest.service";
 import { rescrapeDevis } from "../services/devis-rescrape.service";
-import { parseDocument, type ParsedDocument } from "../gmail/document-parser";
+import {
+  parseDocument,
+  recoverPlanningSummaryLineItemsFromPdf,
+  type ParsedDocument,
+} from "../gmail/document-parser";
 
 const parseDocumentMock = parseDocument as unknown as ReturnType<typeof vi.fn>;
+const recoverPlanningSummaryMock =
+  recoverPlanningSummaryLineItemsFromPdf as unknown as ReturnType<typeof vi.fn>;
 
 const FIXTURE_PDF = readFileSync(join(__dirname, "fixtures", "seven-page-devis.pdf"));
 
@@ -243,6 +250,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  recoverPlanningSummaryMock.mockResolvedValue({ lines: [], excludedGroups: [] });
 });
 
 describe("email intake queue — long-PDF parse flows coverage into the routed devis (Task #352)", () => {
@@ -536,5 +544,68 @@ describe("devis re-scrape — long-PDF parse flows coverage into the updated dev
     expect(txSpies.updateSet).not.toHaveBeenCalled();
     expect(txSpies.insertValues).not.toHaveBeenCalled();
     expect(txSpies.execute).not.toHaveBeenCalled();
+  });
+
+  it("applies evidence-backed option reconciliation before replacing devis lines", async () => {
+    parseDocumentMock.mockResolvedValue({
+      documentType: "quotation",
+      contractorName: "RICHARDSON",
+      amountHt: 100,
+      amountTtc: 120,
+      tvaAmount: 20,
+      lineItems: [
+        { description: "Retained base", total: 100, quantity: 1, unitPrice: 100 },
+        { description: "Alternative not retained", total: 40, quantity: 1, unitPrice: 40 },
+      ],
+    } satisfies ParsedDocument);
+    recoverPlanningSummaryMock.mockResolvedValue({
+      lines: [{
+        description: "Retained base",
+        totalHt: 100,
+        evidenceText: "OPTIONS RETENUES DANS LE TOTAL",
+        includedInTotal: true,
+        amountBasis: "HT",
+        matchedLineItemIndexes: [1],
+      }],
+      excludedGroups: [{
+        description: "Alternative not retained",
+        totalHt: 40,
+        evidenceText: "OPTION ALTERNATIVE; OPTIONS RETENUES DANS LE TOTAL",
+        excludedFromTotal: true,
+        amountBasis: "HT",
+        lineItemIndexes: [2],
+      }],
+    });
+
+    const result = await rescrapeDevis(42);
+
+    expect(result.success).toBe(true);
+    expect(recoverPlanningSummaryMock).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      "seven-page-devis.pdf",
+      expect.objectContaining({
+        expectedHt: 100,
+        lineItemsTotal: 140,
+        difference: -40,
+      }),
+    );
+    const update = txSpies.updateSet.mock.calls[0][0] as {
+      aiExtractedData: ParsedDocument;
+      validationWarnings: WarningShape[];
+    };
+    expect(update.aiExtractedData.lineItems).toEqual([
+      expect.objectContaining({ description: "Retained base", total: 100 }),
+    ]);
+    expect(update.aiExtractedData.planningSummaryRecovery).toMatchObject({
+      status: "reconciled",
+      excludedCount: 1,
+      excludedTotal: 40,
+    });
+    expect(update.validationWarnings).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: "lineItems" })]),
+    );
+    const rows = txSpies.insertValues.mock.calls[0][0] as Array<{ description: string }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].description).toBe("Retained base");
   });
 });

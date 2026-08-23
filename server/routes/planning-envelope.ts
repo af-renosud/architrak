@@ -170,7 +170,7 @@ async function parsePlanningPdf(
   });
 
   return {
-    parserVersion: "planning-pdf-v2-totals-box",
+    parserVersion: "planning-pdf-v3-option-reconciliation",
     provider,
     modelId,
     rawExtraction: parsed as unknown as Record<string, unknown>,

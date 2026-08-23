@@ -13,6 +13,7 @@ import { safeExtractIban, safeExtractBic } from "../../shared/iban";
 import { toSentenceCase } from "../lib/sentence-case";
 import { coerceBbox } from "./devis-upload.service";
 import { deleteContextAssetObjects } from "./devis-line-context";
+import { recoverPlanningTotalsBoxLines } from "./planning-totals-recovery.service";
 import {
   devis as devisTable,
   devisLineItems as devisLineItemsTable,
@@ -101,7 +102,7 @@ export async function rescrapeDevis(devisId: number): Promise<RescrapeResult> {
   const { parseDocument, isTransientParseFailure, getParseFailureMessage } = await import(
     "../gmail/document-parser"
   );
-  const parsed = await parseDocument(buffer, fileName);
+  let parsed = await parseDocument(buffer, fileName);
 
   if (
     parsed.documentType === "unknown" &&
@@ -126,7 +127,13 @@ export async function rescrapeDevis(devisId: number): Promise<RescrapeResult> {
     };
   }
 
-  const validation = validateExtraction(parsed);
+  let validation = validateExtraction(parsed);
+  ({ parsed, validation } = await recoverPlanningTotalsBoxLines({
+    pdfBuffer: buffer,
+    fileName,
+    parsed,
+    validation,
+  }));
 
   // Task #350 — completeness hard gate, mirrored from the upload path: never
   // overwrite existing line items with a demonstrably partial extraction.
