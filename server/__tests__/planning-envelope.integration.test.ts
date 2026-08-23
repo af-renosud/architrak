@@ -420,6 +420,178 @@ describe("durable PDF import progress", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PDF re-scrape transaction safety
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("PDF re-scrape transaction safety", () => {
+  it("returns one draft for concurrent requests using the same source and parser version", async () => {
+    const source = await createPdfRevision({
+      projectId,
+      actor,
+      storageKey: `/bucket/planning/rescrape-source-${stamp}.pdf`,
+      fileName: `rescrape-source-${stamp}.pdf`,
+      fileSha256: "f".repeat(64),
+      mimeType: "application/pdf",
+      fileSizeBytes: 2048,
+      parserVersion: "planning-pdf-v1",
+      provider: "test",
+      modelId: "test-model",
+      rawExtraction: { documentType: "quotation" },
+      confidence: 95,
+      warnings: [],
+      reference: `RESCRAPE-SOURCE-${stamp}`,
+      amountHt: "100.00",
+      amountTtc: "120.00",
+      lines: [{ lineNumber: 1, description: "Original extraction", totalHt: "100.00" }],
+    });
+    const rescrapeInput = {
+      projectId,
+      actor,
+      storageKey: source.source!.storageKey!,
+      fileName: source.source!.fileName!,
+      fileSha256: source.source!.fileSha256!,
+      mimeType: source.source!.mimeType!,
+      fileSizeBytes: source.source!.fileSizeBytes!,
+      parserVersion: "planning-pdf-v2-totals-box",
+      provider: "test",
+      modelId: "test-model-v2",
+      rawExtraction: { documentType: "quotation", recovery: "current" },
+      confidence: 100,
+      warnings: [],
+      reference: `RESCRAPED-${stamp}`,
+      amountHt: "150.00",
+      amountTtc: "180.00",
+      lines: [
+        { lineNumber: 1, description: "Original extraction", totalHt: "100.00" },
+        { lineNumber: 2, description: "Recovered subtotal-box option", totalHt: "50.00" },
+      ],
+      rescrapedFromRevisionId: source.revision.id,
+      expectedSourceVersion: source.revision.version,
+    };
+
+    const [first, second] = await Promise.all([
+      createPdfRevision(rescrapeInput),
+      createPdfRevision(rescrapeInput),
+    ]);
+
+    expect(second.revision.id).toBe(first.revision.id);
+    expect(first.revision.status).toBe("draft");
+    const createdEvents = await db
+      .select()
+      .from(planningRevisionEvents)
+      .where(eq(planningRevisionEvents.revisionId, first.revision.id));
+    expect(createdEvents.filter((event) => event.action === "created")).toHaveLength(1);
+    expect(createdEvents.find((event) => event.action === "created")?.payload).toMatchObject({
+      rescrapedFromRevisionId: source.revision.id,
+      sourceRevisionVersion: source.revision.version,
+      sourceParserVersion: "planning-pdf-v2-totals-box",
+    });
+    const [unchangedSource] = await db
+      .select()
+      .from(planningRevisions)
+      .where(eq(planningRevisions.id, source.revision.id));
+    expect(unchangedSource.status).toBe("draft");
+    expect(unchangedSource.version).toBe(source.revision.version);
+  });
+
+  it("rejects a source that became superseded before the re-scrape transaction", async () => {
+    const source = await createPdfRevision({
+      projectId,
+      actor,
+      storageKey: `/bucket/planning/superseded-source-${stamp}.pdf`,
+      fileName: `superseded-source-${stamp}.pdf`,
+      fileSha256: "9".repeat(64),
+      mimeType: "application/pdf",
+      fileSizeBytes: 2048,
+      parserVersion: "planning-pdf-v1",
+      provider: "test",
+      modelId: "test-model",
+      rawExtraction: { documentType: "quotation" },
+      confidence: 100,
+      warnings: [],
+      contractorId,
+      reference: `SUPERSEDED-SOURCE-${stamp}`,
+      descriptionFr: "Source that will later be superseded",
+      amountHt: "200.00",
+      amountTtc: "240.00",
+      lines: [{ lineNumber: 1, description: "Approved source", totalHt: "200.00" }],
+    });
+    const reviewedSource = await reviewRevision({
+      revisionId: source.revision.id,
+      projectId,
+      actor,
+      expectedVersion: source.revision.version,
+    });
+    const approvedSource = await approveRevision({
+      revisionId: source.revision.id,
+      projectId,
+      actor,
+      expectedVersion: reviewedSource.revision.version,
+    });
+    const replacement = await createPdfRevision({
+      projectId,
+      actor,
+      storageKey: source.source!.storageKey!,
+      fileName: source.source!.fileName!,
+      fileSha256: source.source!.fileSha256!,
+      mimeType: source.source!.mimeType!,
+      fileSizeBytes: source.source!.fileSizeBytes!,
+      parserVersion: "planning-pdf-v2-totals-box",
+      provider: "test",
+      modelId: "test-model-v2",
+      rawExtraction: { documentType: "quotation" },
+      confidence: 100,
+      warnings: [],
+      contractorId,
+      reference: `SUPERSEDING-RESCRAPE-${stamp}`,
+      descriptionFr: "Replacement from the current parser",
+      amountHt: "250.00",
+      amountTtc: "300.00",
+      lines: [{ lineNumber: 1, description: "Replacement", totalHt: "250.00" }],
+      rescrapedFromRevisionId: approvedSource.revision.id,
+      expectedSourceVersion: approvedSource.revision.version,
+    });
+    const reviewedReplacement = await reviewRevision({
+      revisionId: replacement.revision.id,
+      projectId,
+      actor,
+      expectedVersion: replacement.revision.version,
+    });
+    await approveRevision({
+      revisionId: replacement.revision.id,
+      projectId,
+      actor,
+      expectedVersion: reviewedReplacement.revision.version,
+    });
+
+    await expect(createPdfRevision({
+      projectId,
+      actor,
+      storageKey: source.source!.storageKey!,
+      fileName: source.source!.fileName!,
+      fileSha256: source.source!.fileSha256!,
+      mimeType: source.source!.mimeType!,
+      fileSizeBytes: source.source!.fileSizeBytes!,
+      parserVersion: "planning-pdf-v3",
+      provider: "test",
+      modelId: "test-model-v3",
+      rawExtraction: { documentType: "quotation" },
+      confidence: 100,
+      warnings: [],
+      reference: `LATE-RESCRAPE-${stamp}`,
+      amountHt: "275.00",
+      amountTtc: "330.00",
+      rescrapedFromRevisionId: approvedSource.revision.id,
+      expectedSourceVersion: approvedSource.revision.version,
+    })).rejects.toMatchObject({
+      status: 409,
+      code: "REVISION_STATUS_CONFLICT",
+      details: { currentStatus: "superseded" },
+    } satisfies Partial<PlanningEnvelopeError>);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Cross-project lot refusal
 // ─────────────────────────────────────────────────────────────────────────────
 

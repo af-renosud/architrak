@@ -66,6 +66,10 @@ export type PlanningEnvelopeErrorCode =
   | "ARCHIDOC_TECHNICAL_LOT_NOT_FOUND"
   | "ARCHIDOC_TECHNICAL_LOT_INACTIVE"
   | "STORAGE_KEY_MISSING"
+  | "REVISION_SOURCE_INVALID"
+  | "REVISION_SOURCE_UNAVAILABLE"
+  | "AI_TRANSIENT"
+  | "DEVIS_PARSE_FAILED"
   | "IMPORT_JOB_NOT_FOUND"
   | "IMPORT_JOB_STATUS_CONFLICT";
 
@@ -978,6 +982,9 @@ export interface CreatePdfRevisionInput {
   rawExtraction: Record<string, unknown>;
   confidence: number;
   warnings: unknown[];
+  /** Set only when the PDF is being parsed again from an existing immutable source. */
+  rescrapedFromRevisionId?: number;
+  expectedSourceVersion?: number;
   // Corrected/extracted header values
   contractorId?: number | null;
   reference?: string | null;
@@ -1013,6 +1020,88 @@ export async function createPdfRevision(input: CreatePdfRevisionInput): Promise<
 
   return db.transaction(async (tx) => {
     await assertProjectMutable(input.projectId, tx);
+
+    let rescrapeSource: PlanningRevision | null = null;
+    if (input.rescrapedFromRevisionId != null) {
+      const [sourceRevision] = await tx
+        .select()
+        .from(planningRevisions)
+        .where(eq(planningRevisions.id, input.rescrapedFromRevisionId))
+        .for("update");
+      if (!sourceRevision) {
+        throw new PlanningEnvelopeError(404, "REVISION_NOT_FOUND", "Revision not found");
+      }
+      const [sourceEnvelope] = await tx
+        .select()
+        .from(planningEnvelopes)
+        .where(eq(planningEnvelopes.id, sourceRevision.envelopeId));
+      if (!sourceEnvelope || sourceEnvelope.projectId !== input.projectId) {
+        throw new PlanningEnvelopeError(404, "REVISION_NOT_FOUND", "Revision not found");
+      }
+      if (
+        input.expectedSourceVersion == null
+        || sourceRevision.version !== input.expectedSourceVersion
+      ) {
+        throw new PlanningEnvelopeError(
+          409,
+          "REVISION_CAS_CONFLICT",
+          `Version conflict: expected ${input.expectedSourceVersion}, got ${sourceRevision.version}`,
+          {
+            expectedVersion: input.expectedSourceVersion,
+            currentVersion: sourceRevision.version,
+          },
+        );
+      }
+      if (!["draft", "reviewed", "approved"].includes(sourceRevision.status)) {
+        throw new PlanningEnvelopeError(
+          409,
+          "REVISION_STATUS_CONFLICT",
+          `This ${sourceRevision.status} revision cannot be re-scraped`,
+          { currentStatus: sourceRevision.status },
+        );
+      }
+      const [immutableSource] = await tx
+        .select()
+        .from(planningRevisionSources)
+        .where(eq(planningRevisionSources.revisionId, sourceRevision.id));
+      if (
+        !immutableSource
+        || immutableSource.sourceKind !== "pdf_upload"
+        || !immutableSource.storageKey
+        || immutableSource.storageKey !== input.storageKey
+        || immutableSource.fileSha256 !== input.fileSha256
+      ) {
+        throw new PlanningEnvelopeError(
+          422,
+          "REVISION_SOURCE_INVALID",
+          "Revision does not have the expected immutable PDF source",
+        );
+      }
+
+      // Source-row locking serializes concurrent re-scrapes. The event/source
+      // lookup makes the operation idempotent for one source version and one
+      // parser version while still allowing a later parser version to be run.
+      const [existingRescrape] = await tx
+        .select({ revisionId: planningRevisionEvents.revisionId })
+        .from(planningRevisionEvents)
+        .innerJoin(
+          planningRevisionSources,
+          eq(planningRevisionSources.revisionId, planningRevisionEvents.revisionId),
+        )
+        .where(and(
+          eq(planningRevisionEvents.action, "created"),
+          eq(planningRevisionSources.parserVersion, input.parserVersion),
+          sql`${planningRevisionEvents.payload}->>'rescrapedFromRevisionId' = ${String(sourceRevision.id)}`,
+          sql`${planningRevisionEvents.payload}->>'sourceRevisionVersion' = ${String(sourceRevision.version)}`,
+        ))
+        .orderBy(desc(planningRevisionEvents.id))
+        .limit(1);
+      if (existingRescrape) {
+        const existingDetail = await getRevisionDetailWith(existingRescrape.revisionId, tx);
+        if (existingDetail) return existingDetail;
+      }
+      rescrapeSource = sourceRevision;
+    }
 
     if (input.importJobId != null) {
       const [job] = await tx
@@ -1056,6 +1145,9 @@ export async function createPdfRevision(input: CreatePdfRevisionInput): Promise<
         amountTtc: input.amountTtc ?? null,
         tvaRatePercent: input.tvaRatePercent ?? null,
         tvaAutoliquidation: input.tvaAutoliquidation ?? false,
+        supersedesRevisionId: rescrapeSource?.status === "approved"
+          ? rescrapeSource.id
+          : null,
         createdBy: input.actor,
       })
       .returning();
@@ -1099,6 +1191,12 @@ export async function createPdfRevision(input: CreatePdfRevisionInput): Promise<
       sourceKind: "pdf_upload",
       confidence: input.confidence,
       requiresVerification,
+      ...(rescrapeSource ? {
+        rescrapedFromRevisionId: rescrapeSource.id,
+        sourceRevisionVersion: rescrapeSource.version,
+        sourceFileSha256: input.fileSha256,
+        sourceParserVersion: input.parserVersion,
+      } : {}),
     });
 
     const [source] = await tx

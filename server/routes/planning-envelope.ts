@@ -12,7 +12,7 @@ import { z } from "zod";
 import { requireAuth } from "../auth/middleware";
 import { validateRequest } from "../middleware/validate";
 import { assertPdfMagic } from "../middleware/upload";
-import { uploadDocumentAtKey } from "../storage/object-storage";
+import { getDocumentBuffer, uploadDocumentAtKey } from "../storage/object-storage";
 import { storage } from "../storage";
 import {
   getEnvelopeSummary,
@@ -55,8 +55,139 @@ function safePlanningImportFailureMessage(error: unknown): string {
     if (error.code.startsWith("IMPORT_JOB_")) {
       return "The import status changed before the draft could be saved. Refresh the status and try again.";
     }
+    if (error.code === "AI_TRANSIENT" || error.code === "DEVIS_PARSE_FAILED") {
+      return error.message;
+    }
   }
   return "PDF import failed. Choose the file again to retry.";
+}
+
+/**
+ * Shared extraction-to-revision pipeline for both a new upload and a server-side
+ * re-scrape. Keeping this here ensures re-scrapes always use the current
+ * validator and totals-box recovery implementation.
+ */
+async function parsePlanningPdf(
+  pdfBuffer: Buffer,
+  fileName: string,
+  onParsed?: () => Promise<void>,
+) {
+  const { parseDocument, matchToProject, isTransientParseFailure } =
+    await import("../gmail/document-parser");
+  const { validateExtraction } = await import("../services/extraction-validator");
+  const { findBlockingCompletenessWarnings } =
+    await import("../services/extraction-completeness");
+  const { checkLotReferencesAgainstCatalog } =
+    await import("../services/lot-reference-validator");
+  const { recoverPlanningTotalsBoxLines } =
+    await import("../services/planning-totals-recovery.service");
+
+  let parsed = await parseDocument(pdfBuffer, fileName);
+  await onParsed?.();
+  if (
+    parsed.documentType === "unknown"
+    && !parsed.amountHt
+    && !parsed.contractorName
+    && !parsed.lineItems?.length
+  ) {
+    const transient = isTransientParseFailure(parsed);
+    throw new PlanningEnvelopeError(
+      transient ? 503 : 422,
+      transient ? "AI_TRANSIENT" : "DEVIS_PARSE_FAILED",
+      transient
+        ? "AI extraction is temporarily unavailable. Choose the PDF again to retry."
+        : "Could not extract usable planning data from this PDF. Check the file and try again.",
+    );
+  }
+
+  let validation = validateExtraction(parsed);
+  ({ parsed, validation } = await recoverPlanningTotalsBoxLines({
+    pdfBuffer,
+    fileName,
+    parsed,
+    validation,
+  }));
+
+  const blockingCompleteness = findBlockingCompletenessWarnings(validation.warnings);
+  const lotWarnings = await checkLotReferencesAgainstCatalog(parsed);
+  const corrected = { ...parsed, ...validation.correctedValues };
+  const allProjects = await storage.getProjects({ includeArchived: true });
+  const allContractors = (await storage.getContractors())
+    .filter((contractor) => contractor.archidocOrphanedAt == null);
+  const match = await matchToProject(parsed, allProjects, allContractors);
+  const warnings = [...validation.warnings, ...lotWarnings, ...match.warnings];
+
+  const parsedAny = parsed as unknown as Record<string, unknown>;
+  let provider = typeof parsedAny.provider === "string" ? parsedAny.provider : "";
+  let modelId = typeof parsedAny.modelId === "string" ? parsedAny.modelId : "";
+  if (!provider || !modelId) {
+    try {
+      const aiSetting = await storage.getAiModelSetting("document_parsing");
+      if (aiSetting) {
+        if (!provider) provider = aiSetting.provider ?? "unknown";
+        if (!modelId) modelId = aiSetting.modelId ?? "unknown";
+      }
+    } catch {
+      // Extraction remains valid when model-setting lookup is unavailable.
+    }
+    if (!provider) provider = "unknown";
+    if (!modelId) modelId = "unknown";
+  }
+
+  const amountHt = corrected.amountHt != null
+    ? String(roundCurrency(corrected.amountHt))
+    : null;
+  const amountTtc = corrected.amountTtc != null
+    ? String(roundCurrency(corrected.amountTtc))
+    : null;
+  const lines = (corrected.lineItems ?? []).map((item: Record<string, unknown>, idx: number) => {
+    const lineNum = typeof item.lineNumber === "number" ? item.lineNumber : idx + 1;
+    const totalRaw = typeof item.total === "number"
+      ? item.total
+      : (typeof item.total === "string" ? Number(item.total) : 0);
+    const unitPriceRaw = typeof item.unitPrice === "number"
+      ? item.unitPrice
+      : (typeof item.unitPrice === "string" ? Number(item.unitPrice) : null);
+    const qtyRaw = typeof item.quantity === "number"
+      ? item.quantity
+      : (typeof item.quantity === "string" ? Number(item.quantity) : null);
+    const pageHint = typeof item.pageHint === "number" ? item.pageHint : null;
+    const bbox = (item.bbox && typeof item.bbox === "object" && !Array.isArray(item.bbox))
+      ? (item.bbox as { x: number; y: number; w: number; h: number })
+      : null;
+    return {
+      lineNumber: lineNum,
+      description: String(item.description ?? ""),
+      quantity: qtyRaw != null && Number.isFinite(qtyRaw) ? String(qtyRaw) : null,
+      unit: typeof item.unit === "string" ? item.unit : null,
+      unitPriceHt: unitPriceRaw != null && Number.isFinite(unitPriceRaw)
+        ? String(roundCurrency(unitPriceRaw))
+        : null,
+      totalHt: String(roundCurrency(Number.isFinite(totalRaw) ? totalRaw : 0)),
+      pdfPageHint: pageHint,
+      pdfBbox: bbox,
+    };
+  });
+
+  return {
+    parserVersion: "planning-pdf-v2-totals-box",
+    provider,
+    modelId,
+    rawExtraction: parsed as unknown as Record<string, unknown>,
+    confidence: blockingCompleteness.length > 0
+      ? Math.min(validation.confidenceScore, 79)
+      : validation.confidenceScore,
+    warnings,
+    contractorId: match.contractorId ?? null,
+    reference: corrected.reference ?? corrected.devisNumber ?? null,
+    descriptionFr: corrected.description ?? corrected.contractorName ?? null,
+    documentDate: corrected.date ?? null,
+    amountHt,
+    amountTtc,
+    tvaRatePercent: null,
+    tvaAutoliquidation: corrected.autoLiquidation === true,
+    lines,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -134,6 +265,10 @@ const approveRevisionBody = z.object({
 });
 
 const promoteRevisionBody = z.object({
+  expectedVersion: z.number().int().positive(),
+});
+
+const rescrapeRevisionBody = z.object({
   expectedVersion: z.number().int().positive(),
 });
 
@@ -334,133 +469,17 @@ router.post(
 
       // Parse the PDF using the document parser
       await advanceStage("extracting");
-      const {
-        parseDocument,
-        matchToProject,
-        isTransientParseFailure,
-      } = await import("../gmail/document-parser");
-      const {
-        validateExtraction,
-      } = await import("../services/extraction-validator");
-      const {
-        findBlockingCompletenessWarnings,
-      } = await import("../services/extraction-completeness");
-      const {
-        checkLotReferencesAgainstCatalog,
-      } = await import("../services/lot-reference-validator");
-
-      let parsed = await parseDocument(file.buffer, safeFileName);
-      await advanceStage("validating");
-
-      // Reject only meaningless/transient parse failures (not blocking completeness warnings)
-      if (parsed.documentType === "unknown" && !parsed.amountHt && !parsed.contractorName && !parsed.lineItems?.length) {
-        const transient = isTransientParseFailure(parsed);
-        const message = transient
-          ? "AI extraction is temporarily unavailable. Choose the PDF again to retry."
-          : "Could not extract usable planning data from this PDF. Check the file and try again.";
-        const code = transient ? DEVIS_UPLOAD_ERROR_CODES.AI_TRANSIENT : DEVIS_UPLOAD_ERROR_CODES.DEVIS_PARSE_FAILED;
-        await failPlanningImportJob({
-          importJobId: importJob.id,
-          errorCode: code,
-          errorMessage: message,
-        });
-        logPlanningImport("failed", {
-          projectId,
-          importJobId: importJob.id,
-          fileName: safeFileName,
-          stage: "validating",
-          code,
-          durationMs: Date.now() - requestStartedAt,
-        });
-        return res.status(transient ? 503 : 422).json({
-          message,
-          code,
-        });
-      }
-
-      let validation = validateExtraction(parsed);
-      const {
-        recoverPlanningTotalsBoxLines,
-      } = await import("../services/planning-totals-recovery.service");
-      ({ parsed, validation } = await recoverPlanningTotalsBoxLines({
-        pdfBuffer: file.buffer,
-        fileName: safeFileName,
-        parsed,
-        validation,
-      }));
-
-      // Blocking completeness warnings are PERSISTED (not rejected) — they set requiresVerification=true
-      const blockingCompleteness = findBlockingCompletenessWarnings(validation.warnings);
-
-      const lotWarnings = await checkLotReferencesAgainstCatalog(parsed);
-      const corrected = { ...parsed, ...validation.correctedValues };
-      const allProjects = await storage.getProjects({ includeArchived: true });
-      const allContractors = (await storage.getContractors())
-        .filter((contractor) => contractor.archidocOrphanedAt == null);
-      const match = await matchToProject(parsed, allProjects, allContractors);
-      const allWarnings = [...validation.warnings, ...lotWarnings, ...match.warnings];
-
-      // Provider/model: prefer raw extraction metadata, fall back to configured AI model setting
-      const parsedAny = parsed as unknown as Record<string, unknown>;
-      let provider = typeof parsedAny.provider === "string" ? parsedAny.provider : "";
-      let modelId = typeof parsedAny.modelId === "string" ? parsedAny.modelId : "";
-      if (!provider || !modelId) {
-        try {
-          const aiSetting = await storage.getAiModelSetting("document_parsing");
-          if (aiSetting) {
-            if (!provider) provider = aiSetting.provider ?? "unknown";
-            if (!modelId) modelId = aiSetting.modelId ?? "unknown";
-          }
-        } catch {
-          // Non-fatal: fall back to unknown
-        }
-        if (!provider) provider = "unknown";
-        if (!modelId) modelId = "unknown";
-      }
-
-      const amountHt = corrected.amountHt != null
-        ? String(roundCurrency(corrected.amountHt))
-        : null;
-      const amountTtc = corrected.amountTtc != null
-        ? String(roundCurrency(corrected.amountTtc))
-        : null;
-
-      // Build line items — use correct field names from ParsedDocument
-      const lines = (corrected.lineItems ?? []).map((item: Record<string, unknown>, idx: number) => {
-        const lineNum = typeof item.lineNumber === "number" ? item.lineNumber : idx + 1;
-        // item.total (not item.totalHt) — matches ParsedDocument lineItems field name
-        const totalRaw = typeof item.total === "number" ? item.total : (typeof item.total === "string" ? Number(item.total) : 0);
-        // item.unitPrice (not item.unitPriceHt)
-        const unitPriceRaw = typeof item.unitPrice === "number" ? item.unitPrice : (typeof item.unitPrice === "string" ? Number(item.unitPrice) : null);
-        const qtyRaw = typeof item.quantity === "number" ? item.quantity : (typeof item.quantity === "string" ? Number(item.quantity) : null);
-        // item.pageHint (not item.pdfPageHint)
-        const pageHint = typeof item.pageHint === "number" ? item.pageHint : null;
-        // item.bbox (direct field)
-        const bbox = (item.bbox && typeof item.bbox === "object" && !Array.isArray(item.bbox))
-          ? (item.bbox as { x: number; y: number; w: number; h: number })
-          : null;
-        return {
-          lineNumber: lineNum,
-          description: String(item.description ?? ""),
-          quantity: qtyRaw != null && Number.isFinite(qtyRaw) ? String(qtyRaw) : null,
-          unit: typeof item.unit === "string" ? item.unit : null,
-          unitPriceHt: unitPriceRaw != null && Number.isFinite(unitPriceRaw) ? String(roundCurrency(unitPriceRaw)) : null,
-          totalHt: String(roundCurrency(Number.isFinite(totalRaw) ? totalRaw : 0)),
-          pdfPageHint: pageHint,
-          pdfBbox: bbox,
-        };
-      });
+      const parsedRevision = await parsePlanningPdf(
+        file.buffer,
+        safeFileName,
+        () => advanceStage("validating"),
+      );
 
       // Upload AFTER parse/validation succeeds (avoid orphaning rejected files)
       // Use deterministic key based on SHA256 so re-uploads of the same file are idempotent
       await advanceStage("storing");
       const objectName = buildPlanningSourceObjectName(projectId, fileSha256);
       const storageKey = await uploadDocumentAtKey(objectName, file.buffer, mimeType);
-
-      // Confidence: use validation score; if blocking completeness issues exist, cap at below threshold
-      const confidence = blockingCompleteness.length > 0
-        ? Math.min(validation.confidenceScore, 79) // force requiresVerification=true
-        : validation.confidenceScore;
 
       await advanceStage("saving");
       const detail = await createPdfRevision({
@@ -472,22 +491,7 @@ router.post(
         fileSha256,
         mimeType,
         fileSizeBytes,
-        parserVersion: "1.0",
-        provider,
-        modelId,
-        rawExtraction: parsed as unknown as Record<string, unknown>,
-        confidence,
-        warnings: allWarnings,
-        contractorId: match.contractorId ?? null,
-        // reference: prefer the generic reference, then the quotation number.
-        reference: corrected.reference ?? corrected.devisNumber ?? null,
-        descriptionFr: corrected.description ?? corrected.contractorName ?? null,
-        documentDate: corrected.date ?? null,
-        amountHt,
-        amountTtc,
-        tvaRatePercent: null, // Not inferred from extraction
-        tvaAutoliquidation: corrected.autoLiquidation === true,
-        lines,
+        ...parsedRevision,
       });
 
       logPlanningImport("succeeded", {
@@ -525,6 +529,12 @@ router.post(
             error: statusError instanceof Error ? statusError.message : String(statusError),
           });
         }
+      }
+      if (
+        err instanceof PlanningEnvelopeError
+        && (err.code === "AI_TRANSIENT" || err.code === "DEVIS_PARSE_FAILED")
+      ) {
+        return res.status(err.status).json({ message: err.message, code: err.code });
       }
       handlePlanningError(err, res);
     } finally {
@@ -580,6 +590,112 @@ router.get(
       const disposition = req.query.download === "1" ? "attachment" : "inline";
       res.setHeader("Content-Disposition", `${disposition}; filename="${safeName}"; filename*=UTF-8''${encodedName}`);
       stream.pipe(res);
+    } catch (err) {
+      handlePlanningError(err, res);
+    }
+  },
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/planning-revisions/:id/rescrape
+// Re-run the current parser against the existing immutable PDF source.
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.post(
+  "/api/planning-revisions/:id/rescrape",
+  requireAuth,
+  validateRequest({ params: revisionIdParams, body: rescrapeRevisionBody }),
+  async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const existing = await getRevisionById(id);
+      if (!existing) return res.status(404).json({ message: "Revision not found" });
+
+      const envelope = await getEnvelopeById(existing.revision.envelopeId);
+      if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+      const project = await storage.getProject(envelope.projectId);
+      if (!project) return res.status(404).json({ message: "Project not found" });
+      if (project.archivedAt) {
+        return res.status(409).json({
+          message: "Archived projects are read-only",
+          code: "PROJECT_ARCHIVED",
+        });
+      }
+      if (existing.revision.version !== req.body.expectedVersion) {
+        return res.status(409).json({
+          message: `Version conflict: expected ${req.body.expectedVersion}, got ${existing.revision.version}`,
+          code: "REVISION_CAS_CONFLICT",
+          details: {
+            expectedVersion: req.body.expectedVersion,
+            currentVersion: existing.revision.version,
+          },
+        });
+      }
+      if (!["draft", "reviewed", "approved"].includes(existing.revision.status)) {
+        return res.status(409).json({
+          message: `This ${existing.revision.status} revision cannot be re-scraped`,
+          code: "REVISION_STATUS_CONFLICT",
+          details: { currentStatus: existing.revision.status },
+        });
+      }
+
+      const source = existing.source;
+      if (
+        !source
+        || source.sourceKind !== "pdf_upload"
+        || !source.storageKey
+        || !source.fileSha256
+      ) {
+        return res.status(422).json({
+          message: "Revision does not have an immutable PDF upload source",
+          code: "REVISION_SOURCE_INVALID",
+        });
+      }
+
+      let pdfBuffer: Buffer;
+      try {
+        pdfBuffer = await getDocumentBuffer(source.storageKey);
+      } catch {
+        return res.status(503).json({
+          message: "The revision PDF is currently unavailable in object storage",
+          code: "REVISION_SOURCE_UNAVAILABLE",
+        });
+      }
+      try {
+        assertPdfMagic(pdfBuffer);
+      } catch {
+        return res.status(422).json({
+          message: "The stored revision source is not a valid PDF",
+          code: "REVISION_SOURCE_INVALID",
+        });
+      }
+      const actualSha = crypto.createHash("sha256").update(pdfBuffer).digest("hex");
+      if (actualSha !== source.fileSha256) {
+        return res.status(422).json({
+          message: "The stored PDF no longer matches its immutable source provenance",
+          code: "REVISION_SOURCE_INVALID",
+        });
+      }
+
+      const user = await storage.getUser(req.session.userId!);
+      const actor = user?.email ?? String(req.session.userId);
+      const fileName = path.basename(source.fileName ?? "planning.pdf")
+        .replace(/[\u0000-\u001f\u007f]/g, "")
+        .slice(0, 500) || "planning.pdf";
+      const parsedRevision = await parsePlanningPdf(pdfBuffer, fileName);
+      const detail = await createPdfRevision({
+        projectId: envelope.projectId,
+        actor,
+        storageKey: source.storageKey,
+        fileName,
+        fileSha256: source.fileSha256,
+        mimeType: source.mimeType ?? "application/pdf",
+        fileSizeBytes: pdfBuffer.length,
+        rescrapedFromRevisionId: id,
+        expectedSourceVersion: req.body.expectedVersion,
+        ...parsedRevision,
+      });
+      res.status(201).json(detail);
     } catch (err) {
       handlePlanningError(err, res);
     }

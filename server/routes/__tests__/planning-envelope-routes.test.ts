@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vites
 import express from "express";
 import type { AddressInfo } from "net";
 import { Readable } from "node:stream";
+import crypto from "node:crypto";
 
 // ── Mock service layer ──────────────────────────────────────────────────────
 
@@ -58,6 +59,7 @@ vi.mock("../../storage", async () => {
 
 vi.mock("../../storage/object-storage", () => ({
   uploadDocumentAtKey: vi.fn(),
+  getDocumentBuffer: vi.fn(),
   getDocumentStream: vi.fn(),
 }));
 
@@ -95,6 +97,7 @@ import {
 } from "../../gmail/document-parser";
 import { recoverPlanningTotalsBoxLines } from "../../services/planning-totals-recovery.service";
 import {
+  getDocumentBuffer,
   getDocumentStream,
   uploadDocumentAtKey,
 } from "../../storage/object-storage";
@@ -119,6 +122,7 @@ const mockMatchToProject = matchToProject as unknown as ReturnType<typeof vi.fn>
 const mockIsTransientParseFailure = isTransientParseFailure as unknown as ReturnType<typeof vi.fn>;
 const mockRecoverPlanningTotals = recoverPlanningTotalsBoxLines as unknown as ReturnType<typeof vi.fn>;
 const mockGetDocumentStream = getDocumentStream as unknown as ReturnType<typeof vi.fn>;
+const mockGetDocumentBuffer = getDocumentBuffer as unknown as ReturnType<typeof vi.fn>;
 const mockUploadDocumentAtKey = uploadDocumentAtKey as unknown as ReturnType<typeof vi.fn>;
 
 const mockGetProject = storage.getProject as unknown as ReturnType<typeof vi.fn>;
@@ -190,6 +194,7 @@ beforeEach(() => {
   mockIsTransientParseFailure.mockReset();
   mockRecoverPlanningTotals.mockReset();
   mockGetDocumentStream.mockReset();
+  mockGetDocumentBuffer.mockReset();
   mockUploadDocumentAtKey.mockReset();
   mockGetProject.mockReset();
   mockGetUser.mockReset();
@@ -214,6 +219,7 @@ describe("auth guard", () => {
       ["POST", "/api/projects/1/planning-envelope/revisions"],
       ["GET", "/api/planning-revisions/5"],
       ["GET", "/api/planning-revisions/5/pdf"],
+      ["POST", "/api/planning-revisions/5/rescrape"],
       ["PATCH", "/api/planning-revisions/5"],
     ];
     for (const [method, path] of routes) {
@@ -485,6 +491,167 @@ describe("POST /api/projects/:projectId/planning-envelope/import", () => {
         }),
       ],
     }));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/planning-revisions/:id/rescrape
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("POST /api/planning-revisions/:id/rescrape", () => {
+  const pdf = Buffer.from("%PDF-1.4\n%%EOF\n");
+  const sha = crypto.createHash("sha256").update(pdf).digest("hex");
+  const pdfDetail = {
+    ...FAKE_DETAIL,
+    source: {
+      sourceKind: "pdf_upload",
+      storageKey: "/private/planning/source.pdf",
+      fileName: "source.pdf",
+      fileSha256: sha,
+      mimeType: "application/pdf",
+      fileSizeBytes: pdf.length,
+    },
+  };
+
+  it("re-reads storage and invokes current totals-box recovery without mutating the source", async () => {
+    mockGetRevisionById.mockResolvedValue(pdfDetail);
+    mockGetEnvelopeById.mockResolvedValue(FAKE_ENVELOPE);
+    mockGetProject.mockResolvedValue(FAKE_PROJECT);
+    mockGetDocumentBuffer.mockResolvedValue(pdf);
+    const initiallyParsed = {
+      documentType: "quotation",
+      amountHt: 150,
+      amountTtc: 180,
+      contractorName: "RICHARDSON",
+      lineItems: [{ description: "Base", total: 100 }],
+    };
+    const recoveredParsed = {
+      ...initiallyParsed,
+      lineItems: [
+        ...initiallyParsed.lineItems,
+        { description: "Recovered option", total: 50, pageHint: 2 },
+      ],
+    };
+    mockParseDocument.mockResolvedValue(initiallyParsed);
+    mockRecoverPlanningTotals.mockResolvedValue({
+      parsed: recoveredParsed,
+      validation: {
+        isValid: true,
+        warnings: [],
+        correctedValues: {},
+        confidenceScore: 100,
+      },
+    });
+    mockMatchToProject.mockResolvedValue({
+      projectId: null,
+      contractorId: null,
+      confidence: 0,
+      warnings: [],
+    });
+    mockCreatePdfRevision.mockImplementation(async (input) => ({
+      revision: { ...FAKE_REVISION, id: 99, status: "draft" },
+      lines: input.lines,
+      source: { rawExtraction: input.rawExtraction },
+    }));
+
+    const response = await fetch(`${baseUrl}/api/planning-revisions/5/rescrape`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({ expectedVersion: 1 }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(mockGetDocumentBuffer).toHaveBeenCalledWith("/private/planning/source.pdf");
+    expect(mockRecoverPlanningTotals).toHaveBeenCalledWith(expect.objectContaining({
+      pdfBuffer: pdf,
+      fileName: "source.pdf",
+      parsed: initiallyParsed,
+    }));
+    expect(mockCreatePdfRevision).toHaveBeenCalledWith(expect.objectContaining({
+      storageKey: "/private/planning/source.pdf",
+      fileSha256: sha,
+      rescrapedFromRevisionId: 5,
+      expectedSourceVersion: 1,
+      rawExtraction: recoveredParsed,
+      lines: expect.arrayContaining([
+        expect.objectContaining({ description: "Recovered option", totalHt: "50" }),
+      ]),
+    }));
+    expect(pdfDetail.revision).toEqual(FAKE_REVISION);
+    expect(mockPatch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-PDF source without reading browser-supplied storage data", async () => {
+    mockGetRevisionById.mockResolvedValue({
+      ...FAKE_DETAIL,
+      source: { sourceKind: "manual", storageKey: null },
+    });
+    mockGetEnvelopeById.mockResolvedValue(FAKE_ENVELOPE);
+    mockGetProject.mockResolvedValue(FAKE_PROJECT);
+    const response = await fetch(`${baseUrl}/api/planning-revisions/5/rescrape`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({
+        expectedVersion: 1,
+        storageKey: "/browser/controlled.pdf",
+      }),
+    });
+    expect(response.status).toBe(422);
+    expect((await response.json()).code).toBe("REVISION_SOURCE_INVALID");
+    expect(mockGetDocumentBuffer).not.toHaveBeenCalled();
+  });
+
+  it("returns 503 when the immutable source object is unavailable", async () => {
+    mockGetRevisionById.mockResolvedValue(pdfDetail);
+    mockGetEnvelopeById.mockResolvedValue(FAKE_ENVELOPE);
+    mockGetProject.mockResolvedValue(FAKE_PROJECT);
+    mockGetDocumentBuffer.mockRejectedValue(new Error("object missing"));
+    const response = await fetch(`${baseUrl}/api/planning-revisions/5/rescrape`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({ expectedVersion: 1 }),
+    });
+    expect(response.status).toBe(503);
+    expect((await response.json()).code).toBe("REVISION_SOURCE_UNAVAILABLE");
+    expect(mockCreatePdfRevision).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 before reading storage for a stale expected version", async () => {
+    mockGetRevisionById.mockResolvedValue({
+      ...pdfDetail,
+      revision: { ...FAKE_REVISION, version: 3 },
+    });
+    mockGetEnvelopeById.mockResolvedValue(FAKE_ENVELOPE);
+    mockGetProject.mockResolvedValue(FAKE_PROJECT);
+    const response = await fetch(`${baseUrl}/api/planning-revisions/5/rescrape`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({ expectedVersion: 2 }),
+    });
+    expect(response.status).toBe(409);
+    expect((await response.json()).code).toBe("REVISION_CAS_CONFLICT");
+    expect(mockGetDocumentBuffer).not.toHaveBeenCalled();
+  });
+
+  it("rejects a superseded PDF revision before reading storage", async () => {
+    mockGetRevisionById.mockResolvedValue({
+      ...pdfDetail,
+      revision: { ...FAKE_REVISION, status: "superseded", version: 4 },
+    });
+    mockGetEnvelopeById.mockResolvedValue(FAKE_ENVELOPE);
+    mockGetProject.mockResolvedValue(FAKE_PROJECT);
+    const response = await fetch(`${baseUrl}/api/planning-revisions/5/rescrape`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({ expectedVersion: 4 }),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: "REVISION_STATUS_CONFLICT",
+      details: { currentStatus: "superseded" },
+    });
+    expect(mockGetDocumentBuffer).not.toHaveBeenCalled();
+    expect(mockCreatePdfRevision).not.toHaveBeenCalled();
   });
 });
 

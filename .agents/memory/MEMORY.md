@@ -42,3 +42,4 @@
 - [Legal closure provenance](legal-closure-provenance.md) — legal close transitions lock the exact prerequisite record and persist an immutable relationship snapshot; live links may change later.
 - [Cross-domain promotion provenance](cross-domain-promotion-provenance.md) — attach origins after frozen children; validate immediately and require reciprocal links at deferred commit.
 - [Planning quantity precision](planning-quantity-precision.md) — quantity is numeric(12,3), not money; validate its scale separately so PDF/database-formatted values such as 1.000 round-trip.
+- [Planning PDF re-scrape identity](planning-pdf-rescrape-identity.md) — re-scrapes are idempotent per source revision/version/parser; bump parser identity whenever extraction behavior changes.
