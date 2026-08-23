@@ -29,9 +29,19 @@ import { useQuery } from "@tanstack/react-query";
 export type PdfVariant = "original" | "translation" | "combined";
 
 interface PdfPopoutViewerProps {
-  devisId: number;
+  /**
+   * A devis source enables the original / translated / combined selector.
+   * A plain `pdfUrl` source is for other in-app documents, such as a Planning
+   * Envelope import, that have one canonical PDF.
+   */
+  devisId?: number;
   devisCode: string;
-  hasOriginal: boolean;
+  hasOriginal?: boolean;
+  pdfUrl?: string;
+  downloadUrl?: string;
+  downloadName?: string;
+  /** Stable ID used for the window's test IDs when no devis ID exists. */
+  viewerId?: string;
   onClose: () => void;
 }
 
@@ -106,17 +116,23 @@ type LoadState =
   | { kind: "ok" }
   | { kind: "error"; message: string };
 
-const FOCUSABLE_SELECTOR =
-  'a[href], button:not([disabled]), [role="combobox"], iframe, input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
 export function PdfPopoutViewer({
   devisId,
   devisCode,
-  hasOriginal,
+  hasOriginal = true,
+  pdfUrl: suppliedPdfUrl,
+  downloadUrl,
+  downloadName,
+  viewerId,
   onClose,
 }: PdfPopoutViewerProps) {
+  const isDevisPdf = typeof devisId === "number";
+  const idForTest = viewerId ?? String(devisId ?? "document");
   const { data: translation } = useQuery<TranslationStatusResponse>({
-    queryKey: ["/api/devis", devisId, "translation"],
+    queryKey: isDevisPdf
+      ? ["/api/devis", devisId, "translation"]
+      : ["pdf-popout", idForTest],
+    enabled: isDevisPdf,
   });
   const translationReady =
     translation?.status === "draft" ||
@@ -125,7 +141,7 @@ export function PdfPopoutViewer({
 
   const availableVariants: PdfVariant[] = [];
   if (hasOriginal) availableVariants.push("original");
-  if (translationReady) {
+  if (isDevisPdf && translationReady) {
     availableVariants.push("translation");
     if (hasOriginal) availableVariants.push("combined");
   }
@@ -175,7 +191,9 @@ export function PdfPopoutViewer({
   // Probe the PDF endpoint with HEAD before letting the iframe show; native
   // <iframe> never fires `onerror` for HTTP failures, so we can't surface a
   // retry-able error state without an explicit probe. Cheap (HEAD only).
-  const pdfUrl = `/api/devis/${devisId}/pdf?variant=${variant}`;
+  const pdfUrl = isDevisPdf
+    ? `/api/devis/${devisId}/pdf?variant=${variant}`
+    : suppliedPdfUrl ?? "";
   useEffect(() => {
     let cancelled = false;
     setLoadState({ kind: "loading" });
@@ -309,36 +327,16 @@ export function PdfPopoutViewer({
     }));
   };
 
-  const trapFocus = useCallback((e: KeyboardEvent) => {
-    if (e.key !== "Tab") return;
-    const root = containerRef.current;
-    if (!root) return;
-    const focusable = Array.from(
-      root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
-    ).filter((el) => !el.hasAttribute("disabled") && el.offsetParent !== null);
-    if (focusable.length === 0) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    const active = document.activeElement as HTMLElement | null;
-    if (e.shiftKey) {
-      if (active === first || !root.contains(active)) {
-        e.preventDefault();
-        last.focus();
-      }
-    } else {
-      if (active === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    }
-  }, []);
-
   useEffect(() => {
     openerRef.current = document.activeElement as HTMLElement | null;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
+        const root = containerRef.current;
+        const active = document.activeElement as HTMLElement | null;
+        if (root && active && root.contains(active)) {
+          e.stopPropagation();
+          onClose();
+        }
         return;
       }
       // Alt+Arrow nudges the popout's position when focus is inside the
@@ -368,7 +366,6 @@ export function PdfPopoutViewer({
           }
         }
       }
-      trapFocus(e);
     };
     window.addEventListener("keydown", onKey, true);
     const t = window.setTimeout(() => containerRef.current?.focus(), 0);
@@ -384,9 +381,10 @@ export function PdfPopoutViewer({
         }
       }
     };
-  }, [onClose, trapFocus, nudgePosition]);
+  }, [onClose, nudgePosition]);
 
-  const downloadName = `DEVIS-${devisCode}-${variant}.pdf`;
+  const resolvedDownloadName = downloadName ?? `DEVIS-${devisCode}-${variant}.pdf`;
+  const resolvedDownloadUrl = downloadUrl ?? pdfUrl;
   const isMinimized = !!frame.minimized;
   const renderHeight = isMinimized ? COLLAPSED_H : frame.h;
 
@@ -394,10 +392,10 @@ export function PdfPopoutViewer({
     <div
       ref={containerRef}
       role="dialog"
-      aria-modal="true"
+      aria-modal="false"
       aria-label={`PDF viewer for ${devisCode}`}
       tabIndex={-1}
-      data-testid={`dialog-pdf-popout-${devisId}`}
+      data-testid={`dialog-pdf-popout-${idForTest}`}
       data-minimized={isMinimized ? "true" : "false"}
       className="fixed z-[60] flex flex-col bg-white dark:bg-neutral-900 border border-[#0B2545]/30 dark:border-neutral-700 rounded-lg shadow-2xl overflow-hidden focus:outline-none"
       style={{
@@ -412,13 +410,13 @@ export function PdfPopoutViewer({
       <div
         className="flex items-center gap-2 px-3 py-2 bg-[#0B2545] text-white cursor-move select-none"
         onPointerDown={onPointerDownDrag}
-        data-testid={`pdf-popout-handle-${devisId}`}
+        data-testid={`pdf-popout-handle-${idForTest}`}
       >
         <GripHorizontal size={14} className="opacity-70" />
         <FileText size={14} />
         <span
           className="text-[12px] font-semibold tracking-tight truncate"
-          data-testid={`pdf-popout-title-${devisId}`}
+          data-testid={`pdf-popout-title-${idForTest}`}
         >
           {devisCode}
         </span>
@@ -430,7 +428,7 @@ export function PdfPopoutViewer({
             <Select value={variant} onValueChange={onVariantChange}>
               <SelectTrigger
                 className="h-7 w-[140px] bg-white/10 border-white/20 text-white text-[11px] focus:ring-white/40"
-                data-testid={`select-pdf-variant-${devisId}`}
+                data-testid={`select-pdf-variant-${idForTest}`}
               >
                 <SelectValue />
               </SelectTrigger>
@@ -439,7 +437,7 @@ export function PdfPopoutViewer({
                   <SelectItem
                     key={v}
                     value={v}
-                    data-testid={`select-pdf-variant-${devisId}-option-${v}`}
+                    data-testid={`select-pdf-variant-${idForTest}-option-${v}`}
                   >
                     {v === "original"
                       ? "Original (FR)"
@@ -458,7 +456,7 @@ export function PdfPopoutViewer({
                 size="icon"
                 variant="ghost"
                 className="h-7 w-7 text-white hover:bg-white/15"
-                data-testid={`button-pdf-popout-shortcuts-${devisId}`}
+                data-testid={`button-pdf-popout-shortcuts-${idForTest}`}
                 aria-label="Show keyboard shortcuts"
               >
                 <Keyboard size={14} />
@@ -467,7 +465,7 @@ export function PdfPopoutViewer({
             <PopoverContent
               align="end"
               className="w-72 text-[12px]"
-              data-testid={`popover-pdf-popout-shortcuts-${devisId}`}
+              data-testid={`popover-pdf-popout-shortcuts-${idForTest}`}
             >
               <div className="font-semibold mb-2">Keyboard shortcuts</div>
               <ul className="space-y-1.5">
@@ -512,9 +510,9 @@ export function PdfPopoutViewer({
             asChild
           >
             <a
-              href={pdfUrl}
-              download={downloadName}
-              data-testid={`button-pdf-download-${devisId}`}
+              href={resolvedDownloadUrl}
+              download={resolvedDownloadName}
+              data-testid={`button-pdf-download-${idForTest}`}
               aria-label="Download PDF"
               onClick={(e) => e.stopPropagation()}
             >
@@ -529,7 +527,7 @@ export function PdfPopoutViewer({
             onClick={() =>
               setFrame((f) => ({ ...f, minimized: !f.minimized }))
             }
-            data-testid={`button-pdf-popout-minimize-${devisId}`}
+            data-testid={`button-pdf-popout-minimize-${idForTest}`}
             aria-label={isMinimized ? "Restore PDF viewer" : "Minimize PDF viewer"}
           >
             {isMinimized ? <Maximize2 size={14} /> : <Minus size={14} />}
@@ -540,7 +538,7 @@ export function PdfPopoutViewer({
             variant="ghost"
             className="h-7 w-7 text-white hover:bg-white/15"
             onClick={onClose}
-            data-testid={`button-pdf-popout-close-${devisId}`}
+            data-testid={`button-pdf-popout-close-${idForTest}`}
             aria-label="Close PDF viewer"
           >
             <X size={14} />
@@ -552,14 +550,14 @@ export function PdfPopoutViewer({
           {availableVariants.length === 0 ? (
             <div
               className="h-full flex items-center justify-center text-[12px] text-muted-foreground"
-              data-testid={`pdf-popout-empty-${devisId}`}
+              data-testid={`pdf-popout-empty-${idForTest}`}
             >
               No PDF available
             </div>
           ) : loadState.kind === "error" ? (
             <div
               className="h-full flex flex-col items-center justify-center gap-3 text-center px-6"
-              data-testid={`pdf-popout-error-${devisId}`}
+              data-testid={`pdf-popout-error-${idForTest}`}
             >
               <AlertTriangle size={28} className="text-amber-500" />
               <p className="text-[12px] text-foreground max-w-xs">
@@ -571,7 +569,7 @@ export function PdfPopoutViewer({
                 variant="outline"
                 className="gap-1.5 text-[11px]"
                 onClick={() => setReloadToken((n) => n + 1)}
-                data-testid={`button-pdf-popout-retry-${devisId}`}
+                data-testid={`button-pdf-popout-retry-${idForTest}`}
               >
                 <RefreshCw size={12} />
                 Retry
@@ -584,7 +582,7 @@ export function PdfPopoutViewer({
               src={pdfUrl}
               title={`PDF — ${devisCode} (${variant})`}
               className="w-full h-full border-0"
-              data-testid={`pdf-popout-iframe-${devisId}`}
+              data-testid={`pdf-popout-iframe-${idForTest}`}
               onLoad={() => {
                 try {
                   iframeRef.current?.focus();
@@ -597,8 +595,8 @@ export function PdfPopoutViewer({
         </div>
       )}
       {!isMinimized && (
-        // Modal dialog decision: this popout is treated as a true modal
-        // (aria-modal + focus trap + Esc closes + opener-focus restore).
+        // This is deliberately a non-modal floating window: architects can
+        // drag it beside a form and continue editing with the PDF in view.
         // The resize handle is a real button so it's reachable via Tab and
         // operable via arrow keys (Shift = larger step) for keyboard users.
         <button
@@ -606,7 +604,7 @@ export function PdfPopoutViewer({
           className="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize bg-[#0B2545]/20 hover:bg-[#0B2545]/40 focus:bg-[#0B2545]/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0B2545]"
           onPointerDown={onPointerDownResize}
           onKeyDown={onResizeKeyDown}
-          data-testid={`pdf-popout-resize-${devisId}`}
+          data-testid={`pdf-popout-resize-${idForTest}`}
           data-pdf-popout-resize="true"
           aria-label="Resize PDF viewer (use arrow keys, Shift for larger step)"
           style={{
