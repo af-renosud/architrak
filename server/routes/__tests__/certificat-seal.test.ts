@@ -20,6 +20,7 @@ vi.mock("../../storage", async () => {
       "updateCertificat",
       "getCertificatSources",
       "getCertificatPayments",
+      "getProject",
     ]),
   };
 });
@@ -30,6 +31,15 @@ vi.mock("../../communications/certificat-generator", () => ({
   BankingMismatchError: class extends Error {},
 }));
 vi.mock("../../communications/email-sender", () => ({ sendCertificat: vi.fn() }));
+vi.mock("../../services/supplier-certificate-dispatch.service", () => ({
+  assertSupplierCertificateDispatchValid: vi.fn(),
+  SupplierCertificateDispatchError: class extends Error {},
+}));
+vi.mock("../../services/supplier-certificate-rollout.service", () => ({
+  isSupplierDirectPaymentAllowedForProject: vi.fn().mockReturnValue(true),
+  SUPPLIER_DIRECT_PAYMENT_ROLLOUT_BLOCKED:
+    "SUPPLIER_DIRECT_PAYMENT_ROLLOUT_BLOCKED",
+}));
 vi.mock("../../services/certificat-deductions.service", () => ({
   resolveCertificatDeductions: vi.fn().mockResolvedValue({
     retenueGarantie: "0.00",
@@ -46,10 +56,19 @@ vi.mock("../../storage/object-storage", () => ({
 
 import certificatsRouter from "../certificats";
 import { storage } from "../../storage";
+import { generateCertificatPdf } from "../../communications/certificat-generator";
+import { isSupplierDirectPaymentAllowedForProject } from "../../services/supplier-certificate-rollout.service";
 
 const getCertificat = storage.getCertificat as unknown as ReturnType<typeof vi.fn>;
 const updateCertificat = storage.updateCertificat as unknown as ReturnType<typeof vi.fn>;
 const getCertificatPayments = storage.getCertificatPayments as unknown as ReturnType<typeof vi.fn>;
+const getProject = storage.getProject as unknown as ReturnType<typeof vi.fn>;
+const generatePdf =
+  generateCertificatPdf as unknown as ReturnType<typeof vi.fn>;
+const supplierRolloutAllowed =
+  isSupplierDirectPaymentAllowedForProject as unknown as ReturnType<
+    typeof vi.fn
+  >;
 
 const sealedCert = {
   id: 7,
@@ -100,6 +119,73 @@ afterAll(async () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  supplierRolloutAllowed.mockReturnValue(true);
+});
+
+describe("POST /api/certificats/:id/preview — supplier rollout", () => {
+  it("blocks an unsealed supplier draft outside the project canary", async () => {
+    getCertificat.mockResolvedValue({
+      ...sealedCert,
+      certificateTrack: "supplier_direct_payment",
+      pdfStorageKey: null,
+      issuedAt: null,
+      status: "draft",
+    });
+    getProject.mockResolvedValue({
+      id: 1,
+      archidocId: "project-not-allowlisted",
+    });
+    supplierRolloutAllowed.mockReturnValue(false);
+
+    const res = await fetch(`${baseUrl}/api/certificats/7/preview`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: "SUPPLIER_DIRECT_PAYMENT_ROLLOUT_BLOCKED",
+    });
+    expect(generatePdf).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["missing project", undefined],
+    ["project without ArchiDoc identity", { id: 1, archidocId: null }],
+  ])("fails closed for an unsealed supplier draft with %s", async (_label, project) => {
+    getCertificat.mockResolvedValue({
+      ...sealedCert,
+      certificateTrack: "supplier_direct_payment",
+      pdfStorageKey: null,
+      issuedAt: null,
+      status: "draft",
+    });
+    getProject.mockResolvedValue(project);
+
+    const res = await fetch(`${baseUrl}/api/certificats/7/preview`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: "SUPPLIER_DIRECT_PAYMENT_ROLLOUT_BLOCKED",
+    });
+    expect(supplierRolloutAllowed).not.toHaveBeenCalled();
+    expect(generatePdf).not.toHaveBeenCalled();
+  });
+
+  it("continues serving pinned supplier history after the canary is disabled", async () => {
+    getCertificat.mockResolvedValue({
+      ...sealedCert,
+      certificateTrack: "supplier_direct_payment",
+    });
+    supplierRolloutAllowed.mockReturnValue(false);
+
+    const res = await fetch(`${baseUrl}/api/certificats/7/preview`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("%PDF-pinned");
+    expect(supplierRolloutAllowed).not.toHaveBeenCalled();
+    expect(generatePdf).not.toHaveBeenCalled();
+  });
 });
 
 describe("PATCH /api/certificats/:id — issuance seal", () => {

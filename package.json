@@ -9,6 +9,7 @@
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
     "prepublish-check": "tsx script/prepublish-check.ts",
+    "validate:supplier-release-live": "tsx scripts/validate-supplier-certificate-live-contract.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
   },

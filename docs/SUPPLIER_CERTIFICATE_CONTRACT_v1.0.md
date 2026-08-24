@@ -457,3 +457,39 @@ green rather than duplicating it in downstream tasks:
 | Contractor PDF Retenue/acompte wording | `server/communications/__tests__/certificat-retenue-explain.test.ts`, `server/communications/__tests__/certificat-acompte-preview.test.ts` |
 | Sealed-row email, deduplicated send, contractor notice | `server/communications/__tests__/certificat-send-dedupe.test.ts` |
 | Atomic reissue/supersede behavior | `server/__tests__/certificat-reissue.integration.test.ts` |
+
+## 12. Release gate and project canary
+
+Supplier direct-payment issuance is fail-closed outside automated tests.
+`SUPPLIER_DIRECT_PAYMENT_PROJECT_ALLOWLIST` is a comma-separated list of
+**stable ArchiDoc project IDs**:
+
+- unset, empty, or whitespace-only: no project may preview, create, reissue,
+  or newly seal a supplier direct-payment certificate;
+- one explicit ID: one-project canary;
+- several explicit IDs: controlled rollout to exactly those projects;
+- partial matches and wildcards are not supported.
+
+The allowlist never replaces identity, banking, assignment, document-IBAN, or
+source-integrity checks. A project on the allowlist must still pass the entire
+contract.
+
+Emergency disable procedure:
+
+1. clear or remove `SUPPLIER_DIRECT_PAYMENT_PROJECT_ALLOWLIST`;
+2. publish/restart the application so the server reloads the environment;
+3. confirm a supplier preview returns
+   `SUPPLIER_DIRECT_PAYMENT_ROLLOUT_BLOCKED`;
+4. confirm sealed supplier history and pinned PDF downloads remain readable.
+
+The rollout gate controls **new issuance**. It does not mutate, unseal,
+regenerate, or hide existing certificates. A previously sealed certificate may
+still be sent only if the normal live readiness, source-set, and source-amount
+checks pass.
+
+Do not add a production project ID until the acceptance record in §10 is
+countersigned and the secret-safe live validation command succeeds:
+
+```sh
+npm run validate:supplier-release-live
+```

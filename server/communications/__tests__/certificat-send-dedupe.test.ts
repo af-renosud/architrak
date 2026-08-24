@@ -30,6 +30,9 @@ vi.mock("../../storage", async () => {
 vi.mock("../../services/certificat-seal.service", () => ({
   sealCertificat: vi.fn(),
 }));
+vi.mock("../../services/supplier-certificate-dispatch.service", () => ({
+  assertSupplierCertificateDispatchValid: vi.fn(),
+}));
 vi.mock("../certificat-generator", () => ({
   buildCertificatEmailBody: vi.fn().mockReturnValue("BODY"),
 }));
@@ -52,6 +55,7 @@ vi.mock("../../storage/object-storage", () => ({
 import { sendCertificat, sendCommunication } from "../email-sender";
 import { storage } from "../../storage";
 import { sealCertificat } from "../../services/certificat-seal.service";
+import { assertSupplierCertificateDispatchValid } from "../../services/supplier-certificate-dispatch.service";
 import { buildCertificatEmailBody } from "../certificat-generator";
 import {
   getDocumentBuffer,
@@ -75,6 +79,10 @@ const getGmail =
   getUncachableGmailClient as unknown as ReturnType<typeof vi.fn>;
 const claimComm =
   storage.claimProjectCommunicationForSending as unknown as ReturnType<
+    typeof vi.fn
+  >;
+const assertSupplierDispatch =
+  assertSupplierCertificateDispatchValid as unknown as ReturnType<
     typeof vi.fn
   >;
 
@@ -113,6 +121,7 @@ beforeEach(() => {
   getGmail.mockResolvedValue({
     users: { messages: { send: vi.fn() } },
   });
+  assertSupplierDispatch.mockResolvedValue(undefined);
 });
 
 // Task #519 — every certificat send now creates TWO communications: the
@@ -558,6 +567,83 @@ describe("sendCertificat — supplier direct payment", () => {
     expect(updateComm).toHaveBeenCalledWith(55, {
       status: "failed",
     });
+  });
+
+  it("fails a direct Hub retry before Gmail when live supplier dispatch checks fail", async () => {
+    const supplierCert = {
+      ...sealedCert,
+      certificateTrack: "supplier_direct_payment",
+      issuanceSnapshot: supplierIssuanceSnapshot("a".repeat(64)),
+    };
+    const gmailSend = vi.fn();
+    getGmail.mockResolvedValue({
+      users: { messages: { send: gmailSend } },
+    });
+    claimComm.mockResolvedValue({
+      id: 55,
+      projectId: 1,
+      type: "certificat_sent",
+      status: "sending",
+      recipientType: "client",
+      recipientEmail: "client@example.com",
+      recipientName: "Client",
+      subject: "Supplier payment",
+      body: "Body",
+      relatedCertificatId: 7,
+      attachmentStorageKeys: [
+        "projects/1/CERT-C7.pdf",
+        "projects/1/RIB-FOURNISSEUR-RIB.pdf",
+      ],
+    });
+    (storage.getCertificat as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue(supplierCert);
+    assertSupplierDispatch.mockRejectedValueOnce(
+      new Error("supplier readiness changed"),
+    );
+
+    await expect(sendCommunication(55)).rejects.toThrow(
+      "supplier readiness changed",
+    );
+    expect(assertSupplierDispatch).toHaveBeenCalledWith(supplierCert);
+    expect(updateComm).toHaveBeenCalledWith(55, { status: "failed" });
+    expect(gmailSend).not.toHaveBeenCalled();
+  });
+
+  it("applies live supplier dispatch checks to supplier-notice retries too", async () => {
+    const supplierCert = {
+      ...sealedCert,
+      certificateTrack: "supplier_direct_payment",
+      issuanceSnapshot: supplierIssuanceSnapshot("a".repeat(64)),
+    };
+    const gmailSend = vi.fn();
+    getGmail.mockResolvedValue({
+      users: { messages: { send: gmailSend } },
+    });
+    claimComm.mockResolvedValue({
+      id: 56,
+      projectId: 1,
+      type: "certificat_supplier_notice",
+      status: "sending",
+      recipientType: "supplier",
+      recipientEmail: "supplier@example.com",
+      recipientName: "Supplier",
+      subject: "Supplier notice",
+      body: "Body",
+      relatedCertificatId: 7,
+      attachmentStorageKeys: [],
+    });
+    (storage.getCertificat as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue(supplierCert);
+    assertSupplierDispatch.mockRejectedValueOnce(
+      new Error("supplier source changed"),
+    );
+
+    await expect(sendCommunication(56)).rejects.toThrow(
+      "supplier source changed",
+    );
+    expect(assertSupplierDispatch).toHaveBeenCalledWith(supplierCert);
+    expect(updateComm).toHaveBeenCalledWith(56, { status: "failed" });
+    expect(gmailSend).not.toHaveBeenCalled();
   });
 });
 

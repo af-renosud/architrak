@@ -34,6 +34,10 @@ import type {
   SupplierPaymentReadinessSnapshot,
 } from "@shared/supplier-payment-readiness";
 import { ibansMatch, normaliseIban } from "@shared/iban";
+import {
+  isSupplierDirectPaymentAllowedForProject,
+  SUPPLIER_DIRECT_PAYMENT_ROLLOUT_BLOCKED,
+} from "./supplier-certificate-rollout.service";
 
 interface MultiInvoiceCertDerivationBase {
   contractorId: number;
@@ -124,7 +128,10 @@ function refuse(status: 404 | 409, body: InvoiceCertRefusal["body"]): DeriveResu
  */
 export async function deriveCertificatFromInvoices(
   invoiceIds: number[],
-  options: { allowCertificatId?: number } = {},
+  options: {
+    allowCertificatId?: number;
+    skipSupplierRolloutGate?: boolean;
+  } = {},
 ): Promise<DeriveResult> {
   const uniqueIds = Array.from(new Set(invoiceIds));
   if (uniqueIds.length === 0) {
@@ -179,6 +186,18 @@ export async function deriveCertificatFromInvoices(
         });
       }
       throw error;
+    }
+    if (
+      !options.skipSupplierRolloutGate &&
+      !isSupplierDirectPaymentAllowedForProject(
+        readiness.assignment.projectId,
+      )
+    ) {
+      return refuse(409, {
+        code: SUPPLIER_DIRECT_PAYMENT_ROLLOUT_BLOCKED,
+        message:
+          "Le paiement direct fournisseur n'est pas encore activé pour ce projet. Aucun nouveau certificat fournisseur ne peut être émis.",
+      });
     }
 
     const supplierRows: MultiInvoiceCertDerivationBase["invoices"] = [];

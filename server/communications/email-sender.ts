@@ -16,6 +16,7 @@ import type { InsertProjectCommunication } from "@shared/schema";
 import { CLIENT_NO_PAYMENT_NOTICE } from "@shared/signature-message-template";
 import type { Certificat } from "@shared/schema";
 import type { SupplierPaymentReadinessSnapshot } from "@shared/supplier-payment-readiness";
+import { assertSupplierCertificateDispatchValid } from "../services/supplier-certificate-dispatch.service";
 
 interface SealedSupplierDirectPaymentSnapshot {
   readiness: SupplierPaymentReadinessSnapshot;
@@ -610,14 +611,35 @@ export async function sendCommunication(
   }
 
   let requiredSupplierAttachmentKeys: [string, string] | null = null;
+  let relatedSupplierCert: Certificat | null = null;
+
+  // Every supplier certificate communication path, including direct Hub
+  // retries and supplier notices, must re-run the same live payment safety
+  // checks as the project-level Send action. The only exception is the
+  // rollout allowlist for an already sealed issuance.
+  if (comm.relatedCertificatId) {
+    const relatedCert = await storage.getCertificat(
+      comm.relatedCertificatId,
+    );
+    if (relatedCert?.certificateTrack === "supplier_direct_payment") {
+      relatedSupplierCert = relatedCert;
+      try {
+        await assertSupplierCertificateDispatchValid(relatedCert);
+      } catch (error) {
+        await storage.updateProjectCommunication(communicationId, {
+          status: "failed",
+        });
+        throw error;
+      }
+    }
+  }
 
   // A supplier client communication may have been recorded as failed before
   // the protected RIB could be mirrored. A direct hub retry must repeat that
   // authenticated, hash-verified retrieval rather than sending the sealed
   // certificat without its frozen RIB attachment.
-  if (comm.type === "certificat_sent" && comm.relatedCertificatId) {
-    const cert = await storage.getCertificat(comm.relatedCertificatId);
-    if (cert?.certificateTrack === "supplier_direct_payment") {
+  if (comm.type === "certificat_sent" && relatedSupplierCert) {
+      const cert = relatedSupplierCert;
       const supplierSnapshot =
         getSealedSupplierDirectPaymentSnapshot(cert);
       const currentAttachments = Array.isArray(comm.attachmentStorageKeys)
@@ -682,7 +704,6 @@ export async function sendCommunication(
         pinnedPdfKey,
         finalRibKeys[0],
       ];
-    }
   }
 
   // Task #519/521 — a communication can be queued as `failed` precisely

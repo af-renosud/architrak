@@ -102,6 +102,12 @@ const envSchema = z.object({
   ARCHIDOC_SYNC_API_KEY: optionalString(),
   ARCHIDOC_WEBHOOK_SECRET: optionalString(),
   ARCHIDOC_POLLING_ENABLED: booleanFlag(false),
+  // Supplier direct-payment canary gate. Unset/empty means no project may
+  // preview, create, reissue or newly seal a supplier certificate. Add only
+  // explicit stable ArchiDoc project IDs, comma-separated, to widen the
+  // rollout. Tests preserve historical fixture behavior when the variable is
+  // absent; production and development fail closed.
+  SUPPLIER_DIRECT_PAYMENT_PROJECT_ALLOWLIST: optionalString(),
 
   // --- Gmail inbox scanning (per-user OAuth monitor) --------------------
   // Task #305: Gmail inbox scanning used to be (mis)gated behind
@@ -236,6 +242,13 @@ const envSchema = z.object({
   // users.messages.send always succeeds. Lets browser tests exercise the
   // bundled-send flow without hitting a real Gmail OAuth connection.
   E2E_FAKE_GMAIL: booleanFlag(false),
+
+  // --- E2E ArchiDoc RIB mock (NEVER enable in production) -------------
+  // Starts a tiny local HTTP server that serves a protected RIB PDF
+  // endpoint with the exact headers expected by the supplier send flow.
+  // Keeps browser release-gate runs self-contained without any external
+  // ArchiDoc dependency.
+  E2E_ARCHIDOC_MOCK_RIB: booleanFlag(false),
 
   // --- Pre-publish smoke boot (script/prepublish-check.ts) -------------
   // When true, server boot skips ALL background workers: schedulers,

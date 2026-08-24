@@ -131,6 +131,111 @@ describe("supplier payment readiness evaluation", () => {
     ).toContain("supplier_banking_canonical_mismatch");
   });
 
+  it("reports each identity and contact blocker independently", () => {
+    const inactive = validSnapshot();
+    inactive.supplier.isActive = false;
+    expect(
+      evaluateSupplierPaymentReadiness({
+        canonicalPartner,
+        projectArchidocId: "project-archidoc-1",
+        issueDate: "2026-08-24",
+        snapshot: inactive,
+      }),
+    ).toEqual(["supplier_inactive"]);
+
+    const identity = validSnapshot();
+    identity.supplier.address1 = null;
+    expect(
+      evaluateSupplierPaymentReadiness({
+        canonicalPartner,
+        projectArchidocId: "project-archidoc-1",
+        issueDate: "2026-08-24",
+        snapshot: identity,
+      }),
+    ).toEqual(["supplier_identity_incomplete"]);
+
+    const contact = validSnapshot();
+    contact.supplier.primaryContact!.email = "not-an-email";
+    expect(
+      evaluateSupplierPaymentReadiness({
+        canonicalPartner,
+        projectArchidocId: "project-archidoc-1",
+        issueDate: "2026-08-24",
+        snapshot: contact,
+      }),
+    ).toEqual(["supplier_contact_incomplete"]);
+  });
+
+  it("reports invalid banking and incomplete verification provenance independently", () => {
+    const invalidIban = validSnapshot();
+    invalidIban.supplier.banking!.iban = "FR001234";
+    expect(
+      evaluateSupplierPaymentReadiness({
+        canonicalPartner: { ...canonicalPartner, iban: "FR001234" },
+        projectArchidocId: "project-archidoc-1",
+        issueDate: "2026-08-24",
+        snapshot: invalidIban,
+      }),
+    ).toContain("supplier_banking_invalid");
+
+    const invalidBic = validSnapshot();
+    invalidBic.supplier.banking!.bic = "INVALID";
+    expect(
+      evaluateSupplierPaymentReadiness({
+        canonicalPartner: { ...canonicalPartner, bic: "INVALID" },
+        projectArchidocId: "project-archidoc-1",
+        issueDate: "2026-08-24",
+        snapshot: invalidBic,
+      }),
+    ).toContain("supplier_banking_invalid");
+
+    const provenance = validSnapshot();
+    provenance.supplier.banking!.bankingVerifiedBy = null;
+    expect(
+      evaluateSupplierPaymentReadiness({
+        canonicalPartner,
+        projectArchidocId: "project-archidoc-1",
+        issueDate: "2026-08-24",
+        snapshot: provenance,
+      }),
+    ).toEqual(["supplier_banking_provenance_incomplete"]);
+  });
+
+  it("reports assignment mismatch, ineligibility and date bounds independently", () => {
+    const mismatch = validSnapshot();
+    mismatch.assignment.projectId = "another-project";
+    expect(
+      evaluateSupplierPaymentReadiness({
+        canonicalPartner,
+        projectArchidocId: "project-archidoc-1",
+        issueDate: "2026-08-24",
+        snapshot: mismatch,
+      }),
+    ).toEqual(["project_assignment_mismatch"]);
+
+    const ineligible = validSnapshot();
+    ineligible.assignment.directPaymentStatus = "suspended";
+    expect(
+      evaluateSupplierPaymentReadiness({
+        canonicalPartner,
+        projectArchidocId: "project-archidoc-1",
+        issueDate: "2026-08-24",
+        snapshot: ineligible,
+      }),
+    ).toEqual(["project_assignment_ineligible"]);
+
+    for (const issueDate of ["2025-12-31", "2027-01-02"]) {
+      expect(
+        evaluateSupplierPaymentReadiness({
+          canonicalPartner,
+          projectArchidocId: "project-archidoc-1",
+          issueDate,
+          snapshot: validSnapshot(),
+        }),
+      ).toEqual(["project_assignment_not_current"]);
+    }
+  });
+
   it("accepts verified banking without the optional BIC", () => {
     const snapshot = validSnapshot();
     snapshot.supplier.banking!.bic = null;

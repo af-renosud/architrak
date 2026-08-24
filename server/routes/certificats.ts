@@ -38,6 +38,14 @@ import {
   SupplierPaymentReadinessError,
 } from "../services/supplier-payment-readiness.service";
 import type { CertificateTrack } from "@shared/supplier-payment-readiness";
+import {
+  assertSupplierCertificateDispatchValid,
+  SupplierCertificateDispatchError,
+} from "../services/supplier-certificate-dispatch.service";
+import {
+  isSupplierDirectPaymentAllowedForProject,
+  SUPPLIER_DIRECT_PAYMENT_ROLLOUT_BLOCKED,
+} from "../services/supplier-certificate-rollout.service";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
@@ -794,6 +802,19 @@ router.post(
         res.setHeader("Content-Disposition", `inline; filename="${cert.pdfFileName || fallbackFileName}"`);
         return res.send(pinned);
       }
+      if (cert.certificateTrack === "supplier_direct_payment") {
+        const project = await storage.getProject(cert.projectId);
+        if (
+          !project?.archidocId ||
+          !isSupplierDirectPaymentAllowedForProject(project.archidocId)
+        ) {
+          return res.status(409).json({
+            code: SUPPLIER_DIRECT_PAYMENT_ROLLOUT_BLOCKED,
+            message:
+              "Le paiement direct fournisseur n'est pas encore activé pour ce projet. Aucun nouvel aperçu de certificat fournisseur ne peut être généré.",
+          });
+        }
+      }
       const { pdfBuffer } = await generateCertificatPdf(certId, { mode: "preview" });
       const previewFileName =
         cert.certificateTrack === "supplier_direct_payment"
@@ -1208,71 +1229,7 @@ router.post(
         });
       }
       if (cert.certificateTrack === "supplier_direct_payment") {
-        await assertSupplierPaymentReadiness({
-          contractorId: cert.contractorId,
-          projectId: cert.projectId,
-          issueDate: cert.dateIssued ?? undefined,
-        });
-        const sourceRows = await storage.getCertificatSources(cert.id);
-        const sourceInvoiceIds = Array.from(
-          new Set(
-            sourceRows
-              .map((source) => source.invoiceId)
-              .filter((invoiceId): invoiceId is number => invoiceId != null),
-          ),
-        );
-        if (
-          sourceInvoiceIds.length === 0 ||
-          sourceRows.some(
-            (source) =>
-              source.situationId != null || source.invoiceId == null,
-          )
-        ) {
-          return res.status(409).json({
-            code: "SUPPLIER_CERTIFICATE_SOURCE_SET_INVALID",
-            message:
-              "Le paiement direct fournisseur ne possède pas un ensemble de sources facture-only valide.",
-          });
-        }
-        const currentSourceDerivation =
-          await deriveCertificatFromInvoices(sourceInvoiceIds, {
-            allowCertificatId: cert.id,
-          });
-        if (!currentSourceDerivation.ok) {
-          return res
-            .status(currentSourceDerivation.refusal.status)
-            .json(currentSourceDerivation.refusal.body);
-        }
-        if (
-          currentSourceDerivation.derivation.certificateTrack !==
-          "supplier_direct_payment"
-        ) {
-          return res.status(409).json({
-            code: "CERTIFICATE_TRACK_IMMUTABLE",
-            message:
-              "Le partenaire n'est plus classé comme fournisseur dans ArchiDoc.",
-          });
-        }
-        if (
-          cert.pdfStorageKey &&
-          (cert.totalWorksHt !==
-            currentSourceDerivation.derivation.totalWorksHt ||
-            cert.netToPayHt !==
-              currentSourceDerivation.derivation.supplierDirectPayment
-                .netToPayHt ||
-            cert.tvaAmount !==
-              currentSourceDerivation.derivation.supplierDirectPayment
-                .tvaAmount ||
-            cert.netToPayTtc !==
-              currentSourceDerivation.derivation.supplierDirectPayment
-                .netToPayTtc)
-        ) {
-          return res.status(409).json({
-            code: "SUPPLIER_SOURCE_AMOUNT_CHANGED",
-            message:
-              "Les montants d'une facture source ont changé depuis l'émission du certificat fournisseur. Réémettez le certificat avant l'envoi.",
-          });
-        }
+        await assertSupplierCertificateDispatchValid(cert);
       }
       // Task #566 — final-payment gate at the last exit: a solde certificat
       // (already-sealed rows included, which skip the seal's resolver
@@ -1372,6 +1329,12 @@ router.post(
         });
       }
       if (err instanceof SupplierCertificateSourceError) {
+        return res.status(409).json({
+          code: err.code,
+          message: err.message,
+        });
+      }
+      if (err instanceof SupplierCertificateDispatchError) {
         return res.status(409).json({
           code: err.code,
           message: err.message,

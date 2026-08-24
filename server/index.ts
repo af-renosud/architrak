@@ -1,7 +1,7 @@
 import express from "express";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -30,6 +30,31 @@ import { startHealthzWatchdog } from "./operations/healthz-watchdog";
 
 const app = express();
 const httpServer = createServer(app);
+
+function startE2eArchidocMockServer() {
+  const port = 4545;
+  const token = "mock-archidoc-key";
+  const pdf = Buffer.from(
+    "%PDF-1.4\n1 0 obj<<>>endobj\n2 0 obj<< /Type /Catalog /Pages 3 0 R>>endobj\n3 0 obj<< /Type /Pages /Kids [4 0 R] /Count 1>>endobj\n4 0 obj<< /Type /Page /Parent 3 0 R /MediaBox [0 0 72 72] /Contents 5 0 R>>endobj\n5 0 obj<< /Length 44>>stream\nBT /F1 12 Tf 10 40 Td (RIB TEST) Tj ET\nendstream endobj\nxref\n0 6\n0000000000 65535 f \ntrailer<< /Root 2 0 R /Size 6>>\nstartxref\n0\n%%EOF",
+    "latin1",
+  );
+  const sha = createHash("sha256").update(pdf).digest("hex");
+  const mockServer = createServer((req, res) => {
+    const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+    const ok = req.method === "GET" && /^\/api\/integrations\/architrak\/v1\/suppliers\/[^/]+\/rib\/[^/]+$/.test(url.pathname);
+    if (!ok) return res.writeHead(404).end("not found");
+    if (req.headers.authorization !== `Bearer ${token}`) return res.writeHead(401).end("unauthorized");
+    if (req.headers["x-archidoc-rib-sha256"] !== sha) return res.writeHead(412).end("bad sha");
+    res.writeHead(200, {
+      "content-type": "application/pdf",
+      "cache-control": "private, no-store",
+      "content-disposition": 'attachment; filename="RIB-test.pdf"',
+      etag: `"${sha}"`,
+    });
+    res.end(pdf);
+  });
+  mockServer.listen(port, "127.0.0.1", () => log(`ArchiDoc E2E mock listening on ${port}`));
+}
 
 declare module "http" {
   interface IncomingMessage {
@@ -302,6 +327,9 @@ app.use((req, res, next) => {
   seedBenchmarkTags(SEED_BENCHMARK_TAGS).catch(err => {
     console.warn("[Benchmark] tag seed failed:", (err as Error).message);
   });
+  if (env.E2E_ARCHIDOC_MOCK_RIB) {
+    startE2eArchidocMockServer();
+  }
   } // end !env.SMOKE_BOOT
 
   app.use(errorHandler);
