@@ -1,8 +1,19 @@
-import { storage } from "../storage";
+import {
+  storage,
+  SupplierDirectPaymentSealConflictError,
+} from "../storage";
 import { generateCertificatPdf } from "../communications/certificat-generator";
 import { resolveCertificatDeductions } from "./certificat-deductions.service";
 import { enqueueDriveUpload } from "./drive/upload-queue.service";
 import type { Certificat, InsertCertificatSource } from "@shared/schema";
+import {
+  deriveCertificatFromInvoices,
+  SupplierCertificateSourceError,
+} from "./certificat-from-invoices.service";
+import {
+  assertSupplierPaymentReadiness,
+} from "./supplier-payment-readiness.service";
+import type { SupplierPaymentReadinessSnapshot } from "@shared/supplier-payment-readiness";
 
 /**
  * Task #451 — certificat issuance seal.
@@ -48,6 +59,11 @@ export async function sealCertificat(certificatId: number): Promise<{
     if (existing.pdfStorageKey) {
       return { certificat: existing, pdfStorageKey: existing.pdfStorageKey, alreadySealed: true };
     }
+    // Legacy rows are backfilled by migration 0115. The nullish fallback also
+    // keeps pre-migration fixtures and restored snapshots on the historical
+    // contractor track rather than accidentally entering supplier logic.
+    const certificateTrack =
+      existing.certificateTrack ?? "contractor_works";
 
     // Task #462 — deductions are resolved on create/PATCH, but the world can
     // move between then and issuance (a deposit becomes 'paid', a marché
@@ -60,7 +76,129 @@ export async function sealCertificat(certificatId: number): Promise<{
     // (no retenue, no prorata, no recoupment, no previous payments) and
     // must never be re-resolved through the cumulative deduction engine —
     // the resolver's prior-cumulative math is meaningless for a deposit.
-    const freshDeductions = existing.acompteDevisId != null ? null : await resolveCertificatDeductions({
+    const today = new Date().toISOString().split("T")[0];
+    const dateIssued = existing.dateIssued ?? today;
+    let supplierReadinessSnapshot: SupplierPaymentReadinessSnapshot | null =
+      null;
+    let supplierSourceSnapshot:
+      | {
+          invoices: Array<{
+            invoiceId: number;
+            invoiceNumber: string;
+            amountHt: string;
+            tvaAmount: string;
+            amountTtc: string;
+            devisId: number;
+            invoiceExtractedIban: string | null;
+            devisStatus: string;
+            devisAcompteInvoiceId: number | null;
+            devisExtractedIban: string | null;
+          }>;
+        }
+      | null = null;
+
+    let freshDeductions;
+    if (certificateTrack === "supplier_direct_payment") {
+      const existingSources = await storage.getCertificatSources(certificatId);
+      const sourceInvoiceIds = Array.from(
+        new Set(
+          existingSources
+            .map((source) => source.invoiceId)
+            .filter((invoiceId): invoiceId is number => invoiceId != null),
+        ),
+      );
+      if (
+        sourceInvoiceIds.length === 0 ||
+        existingSources.some(
+          (source) => source.situationId != null || source.invoiceId == null,
+        )
+      ) {
+        throw new SupplierCertificateSourceError(
+          "Le paiement direct fournisseur ne possède pas un ensemble de sources facture-only valide.",
+        );
+      }
+      const derivation = await deriveCertificatFromInvoices(sourceInvoiceIds, {
+        allowCertificatId: certificatId,
+      });
+      if (
+        !derivation.ok ||
+        derivation.derivation.certificateTrack !==
+          "supplier_direct_payment"
+      ) {
+        throw new SupplierCertificateSourceError(
+          derivation.ok
+            ? "L'intervenant n'est plus classé comme fournisseur."
+            : derivation.refusal.body.message,
+        );
+      }
+      // Freeze the final readiness check used for issuance. The derivation
+      // already checked readiness before validating invoice evidence; this
+      // second check is intentionally last so the immutable snapshot cannot
+      // lag behind the state that actually authorized the seal.
+      supplierReadinessSnapshot = await assertSupplierPaymentReadiness({
+        contractorId: existing.contractorId,
+        projectId: existing.projectId,
+        issueDate: dateIssued,
+      });
+      const supplier = derivation.derivation;
+      const guardedInvoices = await Promise.all(
+        supplier.invoices.map(async (source) => {
+          const [invoice, parentDevis] = await Promise.all([
+            storage.getInvoice(source.invoiceId),
+            storage.getDevis(source.devisId),
+          ]);
+          if (
+            !invoice ||
+            !parentDevis ||
+            invoice.devisId !== parentDevis.id
+          ) {
+            throw new SupplierCertificateSourceError(
+              "Une facture ou son devis de rattachement a disparu avant l'émission.",
+            );
+          }
+          return {
+            invoiceId: source.invoiceId,
+            devisId: source.devisId,
+            invoiceNumber: source.invoiceNumber,
+            amountHt: source.amountHt,
+            tvaAmount: source.tvaAmount,
+            amountTtc: source.amountTtc,
+            invoiceExtractedIban: invoice.extractedIban,
+            devisStatus: parentDevis.status,
+            devisAcompteInvoiceId: parentDevis.acompteInvoiceId,
+            devisExtractedIban: parentDevis.extractedIban,
+          };
+        }),
+      );
+      supplierSourceSnapshot = {
+        invoices: guardedInvoices,
+      };
+      freshDeductions = {
+        totalWorksHt: supplier.totalWorksHt,
+        pvMvAdjustment: "0.00",
+        previousPayments: "0.00",
+        retenueGarantie: "0.00",
+        cumulativeProrataDeduction: "0.00",
+        periodProrataDeduction: "0.00",
+        cumulativeAcompteRecoupment: "0.00",
+        periodAcompteRecoupment: "0.00",
+        tvaRatePercent: supplier.supplierDirectPayment.tvaRatePercent,
+        tvaAutoliquidation: false,
+        tvaRateSource: "documentary",
+        netToPayHt: supplier.supplierDirectPayment.netToPayHt,
+        tvaAmount: supplier.supplierDirectPayment.tvaAmount,
+        netToPayTtc: supplier.supplierDirectPayment.netToPayTtc,
+        isSolde: false,
+        retenueReleased: false,
+        retenueReleaseAmount: "0.00",
+        retenueReleaseReason: null,
+        retenueReleaseDate: null,
+        pvOverrideReason: null,
+        pvOverrideByUserId: null,
+        pvOverrideAt: null,
+      };
+    } else {
+      freshDeductions = existing.acompteDevisId != null ? null : await resolveCertificatDeductions({
       projectId: existing.projectId,
       contractorId: existing.contractorId,
       totalWorksHt: existing.totalWorksHt,
@@ -92,10 +230,14 @@ export async function sealCertificat(certificatId: number): Promise<{
       // de réception gate through the seal recompute.
       pvOverride: existing.pvOverrideReason != null,
       excludeCertificatId: certificatId,
-    });
+      });
+    }
     if (freshDeductions) {
-      const drifted = (Object.entries(freshDeductions) as Array<[keyof typeof freshDeductions, string]>)
-        .some(([key, value]) => (existing[key] ?? "0.00") !== value);
+      const drifted = (
+        Object.entries(freshDeductions) as Array<
+          [keyof Certificat, unknown]
+        >
+      ).some(([key, value]) => existing[key] !== value);
       if (drifted) {
         await storage.updateCertificat(certificatId, freshDeductions);
         continue;
@@ -110,9 +252,24 @@ export async function sealCertificat(certificatId: number): Promise<{
     if (!rendered.storageKey) {
       throw new Error(`Certificat ${certificatId} issuance render did not persist a storage key`);
     }
-
-    const today = new Date().toISOString().split("T")[0];
-    const dateIssued = existing.dateIssued ?? today;
+    if (certificateTrack === "supplier_direct_payment") {
+      const expectedSourceIds = (supplierSourceSnapshot?.invoices ?? [])
+        .map((invoice) => invoice.invoiceId)
+        .sort((a, b) => a - b);
+      const renderedSourceIds = Array.from(
+        new Set(rendered.sourceInvoiceIds),
+      ).sort((a, b) => a - b);
+      if (
+        expectedSourceIds.length !== renderedSourceIds.length ||
+        expectedSourceIds.some(
+          (invoiceId, index) => invoiceId !== renderedSourceIds[index],
+        )
+      ) {
+        throw new SupplierCertificateSourceError(
+          "Le PDF fournisseur rendu ne contient pas exactement l'ensemble de factures verrouillé par le certificat.",
+        );
+      }
+    }
 
     // Junction rows are computed BEFORE the seal write so the conditional
     // UPDATE and the certificat_sources inserts commit in one transaction —
@@ -124,14 +281,16 @@ export async function sealCertificat(certificatId: number): Promise<{
     }));
     const situationIds = new Set<number>();
     const devisSeen = new Set<number>();
-    for (const invoiceId of rendered.sourceInvoiceIds) {
-      const invoice = await storage.getInvoice(invoiceId);
-      if (!invoice || devisSeen.has(invoice.devisId)) continue;
-      devisSeen.add(invoice.devisId);
-      const situations = await storage.getSituationsByDevis(invoice.devisId);
-      for (const s of situations) {
-        if (s.invoiceId != null && rendered.sourceInvoiceIds.includes(s.invoiceId)) {
-          situationIds.add(s.id);
+    if (certificateTrack === "contractor_works") {
+      for (const invoiceId of rendered.sourceInvoiceIds) {
+        const invoice = await storage.getInvoice(invoiceId);
+        if (!invoice || devisSeen.has(invoice.devisId)) continue;
+        devisSeen.add(invoice.devisId);
+        const situations = await storage.getSituationsByDevis(invoice.devisId);
+        for (const s of situations) {
+          if (s.invoiceId != null && rendered.sourceInvoiceIds.includes(s.invoiceId)) {
+            situationIds.add(s.id);
+          }
         }
       }
     }
@@ -145,6 +304,7 @@ export async function sealCertificat(certificatId: number): Promise<{
       sealedAt: new Date().toISOString(),
       projectId: existing.projectId,
       contractorId: existing.contractorId,
+      certificateTrack,
       certificateRef: existing.certificateRef,
       dateIssued,
       totalWorksHt: existing.totalWorksHt,
@@ -167,29 +327,53 @@ export async function sealCertificat(certificatId: number): Promise<{
       tvaAmount: existing.tvaAmount,
       netToPayTtc: existing.netToPayTtc,
       sourceInvoiceIds: rendered.sourceInvoiceIds,
+      supplierDirectPayment:
+        certificateTrack === "supplier_direct_payment"
+          ? {
+              readiness: supplierReadinessSnapshot,
+              sources: supplierSourceSnapshot,
+            }
+          : null,
       pdfFileName: rendered.fileName,
     };
 
-    const sealed = await storage.sealCertificat(certificatId, {
-      pdfStorageKey: rendered.storageKey,
-      pdfFileName: rendered.fileName,
-      issuanceSnapshot,
-      dateIssued,
-      sourceRows,
-      expectedVersion,
-      // Task #605 — the seal's source-linking pass runs under the same
-      // per-(project, contractor) advisory lock as grouped certificat
-      // creation, and REFUSES the whole seal (CertificatSourceConflictError,
-      // full rollback — the freshly rendered PDF is an orphan) if any
-      // rendered source is already certified by another live certificat: a
-      // manual certificat can never issue a document authorizing payment of
-      // a facture a grouped certificat already certifies.
-      projectId: existing.projectId,
-      contractorId: existing.contractorId,
-      // Task #627 — freeze the bank-transfer reference at seal time so every
-      // subsequent PDF view, reissue and payment ledger show the same string.
-      paymentTransferRef: rendered.transferRef,
-    });
+    let sealed: Certificat | null;
+    try {
+      sealed = await storage.sealCertificat(certificatId, {
+        pdfStorageKey: rendered.storageKey,
+        pdfFileName: rendered.fileName,
+        issuanceSnapshot,
+        dateIssued,
+        sourceRows,
+        expectedVersion,
+        // Task #605 — the seal's source-linking pass runs under the same
+        // per-(project, contractor) advisory lock as grouped certificat
+        // creation, and REFUSES the whole seal (CertificatSourceConflictError,
+        // full rollback — the freshly rendered PDF is an orphan) if any
+        // rendered source is already certified by another live certificat: a
+        // manual certificat can never issue a document authorizing payment of
+        // a facture a grouped certificat already certifies.
+        projectId: existing.projectId,
+        contractorId: existing.contractorId,
+        supplierDirectPaymentGuard:
+          certificateTrack === "supplier_direct_payment" &&
+          supplierReadinessSnapshot &&
+          supplierSourceSnapshot
+            ? {
+                readiness: supplierReadinessSnapshot,
+                invoices: supplierSourceSnapshot.invoices,
+              }
+            : undefined,
+        // Task #627 — freeze the bank-transfer reference at seal time so every
+        // subsequent PDF view, reissue and payment ledger show the same string.
+        paymentTransferRef: rendered.transferRef,
+      });
+    } catch (error) {
+      if (error instanceof SupplierDirectPaymentSealConflictError) {
+        throw new SupplierCertificateSourceError(error.message);
+      }
+      throw error;
+    }
 
     if (sealed) {
       // Winner-only Drive mirror, with the pinned key. Idempotent on

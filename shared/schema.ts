@@ -22,6 +22,12 @@ import {
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+import {
+  CERTIFICATE_TRACKS,
+  type CertificateTrack,
+} from "./supplier-payment-readiness";
+
+export { CERTIFICATE_TRACKS, type CertificateTrack };
 
 // -----------------------------------------------------------------------------
 // Devis sign-off contract — shared enums and embedded-jsonb shapes (AT1)
@@ -826,6 +832,13 @@ export const certificats = pgTable("certificats", {
   id: serial("id").primaryKey(),
   projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
   contractorId: integer("contractor_id").notNull().references(() => contractors.id),
+  // Supplier certificate contract v1 — explicit server-authoritative track.
+  // Existing rows backfill to contractor_works. The generic request schemas
+  // omit this column; only the typed creation/reissue services may set it.
+  certificateTrack: text("certificate_track")
+    .$type<CertificateTrack>()
+    .notNull()
+    .default("contractor_works"),
   certificateRef: text("certificate_ref").notNull(),
   dateIssued: date("date_issued"),
   totalWorksHt: numeric("total_works_ht", { precision: 12, scale: 2 }).notNull(),
@@ -952,6 +965,12 @@ export const certificats = pgTable("certificats", {
   check(
     "certificats_status_check",
     sql`${table.status} IN ('draft', 'ready', 'sent', 'paid', 'superseded')`,
+  ),
+  check(
+    "certificats_certificate_track_check",
+    sql`${table.certificateTrack} IN (${sql.raw(
+      CERTIFICATE_TRACKS.map((track) => `'${track}'`).join(", "),
+    )})`,
   ),
 ]);
 
@@ -2365,6 +2384,9 @@ export const insertCertificatSchema = createInsertSchema(certificats).omit({
   // Task #491 — acompte linkage is set exclusively by the dedicated
   // acompte-certificat route; never via the generic create/PATCH API.
   acompteDevisId: true,
+  // Supplier certificate contract v1 — track is derived from the partner and
+  // creation path; callers cannot choose or mutate it.
+  certificateTrack: true,
 });
 
 export const insertCertificatSourceSchema = createInsertSchema(certificatSources).omit({
@@ -2405,6 +2427,14 @@ export type SituationLine = typeof situationLines.$inferSelect;
 export type InsertSituationLine = z.infer<typeof insertSituationLineSchema>;
 export type Certificat = typeof certificats.$inferSelect;
 export type InsertCertificat = z.infer<typeof insertCertificatSchema>;
+/**
+ * Internal write shape. HTTP callers only ever parse InsertCertificat, whose
+ * Zod schema omits certificateTrack; trusted creation/reissue services use
+ * this type to persist the server-derived track.
+ */
+export type ServerInsertCertificat = InsertCertificat & {
+  certificateTrack?: CertificateTrack;
+};
 
 // Task #465 — payment-ledger request schema. Strict scale-2 amount, closed
 // method vocabulary; `source` and timestamps are server-set.

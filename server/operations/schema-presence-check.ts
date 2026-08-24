@@ -229,6 +229,20 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
       trigger: "planning_uploaded_draft_delete_guard_trg",
     },
   },
+  {
+    tag: "0115_supplier_certificate_track",
+    artifact: {
+      kind: "all",
+      artifacts: [
+        { kind: "column", table: "certificats", column: "certificate_track" },
+        {
+          kind: "constraint",
+          table: "certificats",
+          constraint: "certificats_certificate_track_check",
+        },
+      ],
+    },
+  },
 ];
 
 interface JournalFile {

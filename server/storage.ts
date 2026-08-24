@@ -1,6 +1,7 @@
 import { db } from "./db";
 import { createHash, randomUUID } from "node:crypto";
 import { computeCertificatPaymentState, type CertificatPaymentState } from "@shared/financial-utils";
+import type { SupplierPaymentReadinessSnapshot } from "@shared/supplier-payment-readiness";
 import { eq, ne, desc, asc, and, or, inArray, isNotNull, isNull, lt, lte, gte, like, ilike, sql, type SQL } from "drizzle-orm";
 import {
   devisLineContexts, devisLineContextAssets, devisCostAnalyses,
@@ -57,7 +58,7 @@ import {
   type SituationLine, type InsertSituationLine,
   marcheDocuments,
   type MarcheDocument, type InsertMarcheDocument,
-  type Certificat, type InsertCertificat,
+  type Certificat, type InsertCertificat, type ServerInsertCertificat,
   certificatSources, type CertificatSource, type InsertCertificatSource,
   certificatPayments, certificatPaymentAudits, certificatPaymentSuggestions,
   type CertificatPayment, type InsertCertificatPayment, type CertificatPaymentAudit,
@@ -162,6 +163,31 @@ export class CertificatSourceConflictError extends Error {
       `Émission refusée : ${conflictingInvoiceIds.length > 1 ? "des factures de ce certificat sont déjà certifiées" : "une facture de ce certificat est déjà certifiée"} par ${claimingCertificateRefs.join(", ")} — deux certificats actifs ne peuvent pas autoriser le paiement de la même facture.`,
     );
     this.name = "CertificatSourceConflictError";
+  }
+}
+
+export interface SupplierDirectPaymentSealGuard {
+  readiness: SupplierPaymentReadinessSnapshot;
+  invoices: Array<{
+    invoiceId: number;
+    devisId: number;
+    invoiceNumber: string;
+    amountHt: string;
+    tvaAmount: string;
+    amountTtc: string;
+    invoiceExtractedIban: string | null;
+    devisStatus: string;
+    devisAcompteInvoiceId: number | null;
+    devisExtractedIban: string | null;
+  }>;
+}
+
+export class SupplierDirectPaymentSealConflictError extends Error {
+  readonly code = "SUPPLIER_SEAL_INPUT_CHANGED";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "SupplierDirectPaymentSealConflictError";
   }
 }
 
@@ -420,7 +446,7 @@ export interface IStorage {
 
   getCertificat(id: number): Promise<Certificat | undefined>;
 
-  createCertificat(data: InsertCertificat): Promise<Certificat>;
+  createCertificat(data: ServerInsertCertificat): Promise<Certificat>;
 
   updateCertificat(id: number, data: Partial<InsertCertificat>): Promise<Certificat | undefined>;
   // Task #465 — client-payment ledger. All mutations are single atomic
@@ -463,7 +489,7 @@ export interface IStorage {
   getCertificatReissues(certificatIds: number[]): Promise<Certificat[]>;
   // Task #457 — atomic reissue: insert the replacement draft AND mark the
   // original superseded in ONE transaction; both roll back on any failure.
-  reissueCertificat(originalId: number, draft: InsertCertificat & { reissuedFromCertificatId: number }): Promise<Certificat>;
+  reissueCertificat(originalId: number, draft: ServerInsertCertificat & { reissuedFromCertificatId: number }): Promise<Certificat>;
 
   getFeesByProject(projectId: number): Promise<Fee[]>;
 
@@ -506,6 +532,16 @@ export interface IStorage {
   getSoftDeletedArchidocContractors(): Promise<ArchidocContractor[]>;
 
   getArchidocContractor(archidocId: string): Promise<ArchidocContractor | undefined>;
+
+  /**
+   * Payment-safe supplier mirror seam. Task #669 populates the frozen
+   * ArchiDoc v1 readiness data; until then the implementation returns
+   * undefined and supplier certificate creation fails closed.
+   */
+  getSupplierPaymentReadinessSnapshot(input: {
+    supplierArchidocId: string;
+    projectArchidocId: string;
+  }): Promise<SupplierPaymentReadinessSnapshot | undefined>;
 
   upsertArchidocContractor(data: Omit<ArchidocContractor, "syncedAt">): Promise<ArchidocContractor>;
 
@@ -1247,6 +1283,7 @@ export interface IStorage {
     expectedVersion: number;
     projectId: number;
     contractorId: number;
+    supplierDirectPaymentGuard?: SupplierDirectPaymentSealGuard;
     /** Task #627 — frozen bank-transfer reference, written once at seal time. */
     paymentTransferRef?: string | null;
   }): Promise<Certificat | null>;
@@ -2242,7 +2279,7 @@ export class DatabaseStorage implements IStorage {
     return cert;
   }
 
-  async createCertificat(data: InsertCertificat): Promise<Certificat> {
+  async createCertificat(data: ServerInsertCertificat): Promise<Certificat> {
     const [cert] = await db.insert(certificats).values(data).returning();
     return cert;
   }
@@ -2269,7 +2306,7 @@ export class DatabaseStorage implements IStorage {
 
   async reissueCertificat(
     originalId: number,
-    draft: InsertCertificat & { reissuedFromCertificatId: number },
+    draft: ServerInsertCertificat & { reissuedFromCertificatId: number },
   ): Promise<Certificat> {
     // Task #457 — the paired lifecycle transition (new draft + original →
     // superseded) must be all-or-nothing: a committed draft with a
@@ -2291,6 +2328,12 @@ export class DatabaseStorage implements IStorage {
         .where(eq(certificats.id, originalId))
         .returning();
       if (!superseded) throw new Error(`Certificat ${originalId} disappeared during reissue`);
+      const replacementTrack = draft.certificateTrack ?? "contractor_works";
+      if (replacementTrack !== superseded.certificateTrack) {
+        throw new Error(
+          `Certificate track is immutable across reissue (${superseded.certificateTrack} -> ${replacementTrack})`,
+        );
+      }
       const [created] = await tx.insert(certificats).values(draft).returning();
       // Multi-facture certificats — the reissue REPLACES the original, so it
       // must certify the same source documents: copy the junction rows or the
@@ -2302,7 +2345,7 @@ export class DatabaseStorage implements IStorage {
         .from(certificatSources)
         .where(eq(certificatSources.certificatId, originalId));
       if (originalSources.length > 0) {
-        await tx
+        const copied = await tx
           .insert(certificatSources)
           .values(
             originalSources.map((s) => ({
@@ -2311,7 +2354,12 @@ export class DatabaseStorage implements IStorage {
               situationId: s.situationId,
             })),
           )
-          .onConflictDoNothing();
+          .returning({ id: certificatSources.id });
+        if (copied.length !== originalSources.length) {
+          throw new Error(
+            `Certificat reissue copied ${copied.length}/${originalSources.length} source rows`,
+          );
+        }
       }
       return created;
     });
@@ -2730,6 +2778,7 @@ export class DatabaseStorage implements IStorage {
     expectedVersion: number;
     projectId: number;
     contractorId: number;
+    supplierDirectPaymentGuard?: SupplierDirectPaymentSealGuard;
     /** Task #627 — frozen bank-transfer reference, written once at seal time. */
     paymentTransferRef?: string | null;
   }): Promise<Certificat | null> {
@@ -2748,6 +2797,202 @@ export class DatabaseStorage implements IStorage {
       // sides see each other's committed certificat_sources rows and one
       // facture can never be certified by two live certificats.
       await tx.execute(sql`select pg_advisory_xact_lock(${seal.projectId}, ${seal.contractorId})`);
+      const [current] = await tx
+        .select({
+          projectId: certificats.projectId,
+          contractorId: certificats.contractorId,
+          certificateTrack: certificats.certificateTrack,
+          supplierArchidocId: contractors.archidocId,
+          supplierPartnerType: contractors.archidocPartnerType,
+          projectArchidocId: projects.archidocId,
+        })
+        .from(certificats)
+        .innerJoin(contractors, eq(certificats.contractorId, contractors.id))
+        .innerJoin(projects, eq(certificats.projectId, projects.id))
+        .where(
+          and(
+            eq(certificats.id, id),
+            isNull(certificats.pdfStorageKey),
+            eq(certificats.version, seal.expectedVersion),
+          ),
+        )
+        .for("update");
+      if (!current) return null;
+      if (
+        current.projectId !== seal.projectId ||
+        current.contractorId !== seal.contractorId
+      ) {
+        throw new SupplierDirectPaymentSealConflictError(
+          "Le projet ou le fournisseur du certificat a changé avant l'émission.",
+        );
+      }
+      if (current.certificateTrack === "supplier_direct_payment") {
+        const guard = seal.supplierDirectPaymentGuard;
+        if (!guard) {
+          throw new SupplierDirectPaymentSealConflictError(
+            "L'émission fournisseur est bloquée : la garde transactionnelle des factures et de la préparation au paiement est absente.",
+          );
+        }
+        const sourceInvoiceIds = Array.from(
+          new Set(
+            seal.sourceRows
+              .map((row) => row.invoiceId)
+              .filter((invoiceId): invoiceId is number => invoiceId != null),
+          ),
+        ).sort((a, b) => a - b);
+        const guardedInvoiceIds = Array.from(
+          new Set(guard.invoices.map((invoice) => invoice.invoiceId)),
+        ).sort((a, b) => a - b);
+        if (
+          sourceInvoiceIds.length === 0 ||
+          seal.sourceRows.some(
+            (row) => row.situationId != null || row.invoiceId == null,
+          ) ||
+          sourceInvoiceIds.length !== guardedInvoiceIds.length ||
+          sourceInvoiceIds.some(
+            (invoiceId, index) => invoiceId !== guardedInvoiceIds[index],
+          )
+        ) {
+          throw new SupplierDirectPaymentSealConflictError(
+            "L'ensemble de factures fournisseur a changé avant l'émission.",
+          );
+        }
+
+        const lockedInvoices = await tx
+          .select({
+            id: invoices.id,
+            devisId: invoices.devisId,
+            projectId: invoices.projectId,
+            contractorId: invoices.contractorId,
+            invoiceNumber: invoices.invoiceNumber,
+            amountHt: invoices.amountHt,
+            tvaAmount: invoices.tvaAmount,
+            amountTtc: invoices.amountTtc,
+            status: invoices.status,
+            datePaid: invoices.datePaid,
+            extractedIban: invoices.extractedIban,
+          })
+          .from(invoices)
+          .where(inArray(invoices.id, sourceInvoiceIds))
+          .orderBy(invoices.id)
+          .for("update");
+        const guardedById = new Map(
+          guard.invoices.map((invoice) => [invoice.invoiceId, invoice]),
+        );
+        if (lockedInvoices.length !== sourceInvoiceIds.length) {
+          throw new SupplierDirectPaymentSealConflictError(
+            "Une facture fournisseur a disparu avant l'émission.",
+          );
+        }
+        for (const invoice of lockedInvoices) {
+          const expected = guardedById.get(invoice.id);
+          if (
+            !expected ||
+            invoice.projectId !== seal.projectId ||
+            invoice.contractorId !== seal.contractorId ||
+            invoice.devisId !== expected.devisId ||
+            invoice.invoiceNumber !== expected.invoiceNumber ||
+            invoice.status !== "approved" ||
+            invoice.datePaid != null ||
+            invoice.amountHt !== expected.amountHt ||
+            invoice.tvaAmount !== expected.tvaAmount ||
+            invoice.amountTtc !== expected.amountTtc ||
+            invoice.extractedIban !== expected.invoiceExtractedIban
+          ) {
+            throw new SupplierDirectPaymentSealConflictError(
+              `La facture fournisseur #${invoice.invoiceNumber} a changé avant l'émission.`,
+            );
+          }
+        }
+
+        const devisIds = Array.from(
+          new Set(guard.invoices.map((invoice) => invoice.devisId)),
+        ).sort((a, b) => a - b);
+        const lockedDevis = await tx
+          .select({
+            id: devis.id,
+            projectId: devis.projectId,
+            contractorId: devis.contractorId,
+            status: devis.status,
+            acompteInvoiceId: devis.acompteInvoiceId,
+            extractedIban: devis.extractedIban,
+          })
+          .from(devis)
+          .where(inArray(devis.id, devisIds))
+          .orderBy(devis.id)
+          .for("update");
+        if (lockedDevis.length !== devisIds.length) {
+          throw new SupplierDirectPaymentSealConflictError(
+            "Un devis de rattachement fournisseur a disparu avant l'émission.",
+          );
+        }
+        const expectedByDevisId = new Map(
+          guard.invoices.map((invoice) => [invoice.devisId, invoice]),
+        );
+        for (const parentDevis of lockedDevis) {
+          const expected = expectedByDevisId.get(parentDevis.id);
+          if (
+            !expected ||
+            parentDevis.projectId !== seal.projectId ||
+            parentDevis.contractorId !== seal.contractorId ||
+            parentDevis.status === "void" ||
+            parentDevis.status !== expected.devisStatus ||
+            parentDevis.acompteInvoiceId !==
+              expected.devisAcompteInvoiceId ||
+            parentDevis.extractedIban !== expected.devisExtractedIban
+          ) {
+            throw new SupplierDirectPaymentSealConflictError(
+              "Un devis de rattachement fournisseur a changé avant l'émission.",
+            );
+          }
+        }
+        const linkedSituations = await tx
+          .select({ id: situations.id })
+          .from(situations)
+          .where(inArray(situations.invoiceId, sourceInvoiceIds))
+          .limit(1);
+        if (linkedSituations.length > 0) {
+          throw new SupplierDirectPaymentSealConflictError(
+            "Une facture fournisseur a été rattachée à une situation avant l'émission.",
+          );
+        }
+
+        if (
+          current.supplierPartnerType !== "supplier" ||
+          !current.supplierArchidocId ||
+          !current.projectArchidocId
+        ) {
+          throw new SupplierDirectPaymentSealConflictError(
+            "Le lien ArchiDoc du fournisseur ou du projet a changé avant l'émission.",
+          );
+        }
+        // The readiness-sync writer must take this same advisory lock before
+        // replacing a mirrored snapshot. That makes this lookup + comparison
+        // part of the seal's transaction lock domain without implementing the
+        // separate readiness persistence task here.
+        const currentReadiness =
+          await this.getSupplierPaymentReadinessSnapshot({
+            supplierArchidocId: current.supplierArchidocId,
+            projectArchidocId: current.projectArchidocId,
+          });
+        const expectedProvenance = guard.readiness.provenance;
+        const currentProvenance = currentReadiness?.provenance;
+        if (
+          !currentReadiness ||
+          !currentProvenance ||
+          currentProvenance.schemaVersion !==
+            expectedProvenance.schemaVersion ||
+          currentProvenance.sourceSequence !==
+            expectedProvenance.sourceSequence ||
+          currentProvenance.capturedAt !== expectedProvenance.capturedAt ||
+          currentProvenance.contentSha256 !==
+            expectedProvenance.contentSha256
+        ) {
+          throw new SupplierDirectPaymentSealConflictError(
+            "La préparation au paiement ArchiDoc a changé avant l'émission du certificat fournisseur.",
+          );
+        }
+      }
       const [cert] = await tx
         .update(certificats)
         .set({
@@ -3219,6 +3464,17 @@ export class DatabaseStorage implements IStorage {
   async getArchidocContractor(archidocId: string): Promise<ArchidocContractor | undefined> {
     const [contractor] = await db.select().from(archidocContractors).where(eq(archidocContractors.archidocId, archidocId));
     return contractor;
+  }
+
+  async getSupplierPaymentReadinessSnapshot(_input: {
+    supplierArchidocId: string;
+    projectArchidocId: string;
+  }): Promise<SupplierPaymentReadinessSnapshot | undefined> {
+    // Intentionally fail closed. The existing generic /api/suppliers mirror
+    // does not carry the frozen verification provenance or project assignment
+    // required for a payment instruction. Task #669 replaces this loader with
+    // the versioned readiness mirror.
+    return undefined;
   }
 
   async restoreArchidocContractor(archidocId: string): Promise<ArchidocContractor | undefined> {

@@ -57,6 +57,94 @@ export interface InvoiceTvaLike {
   amountTtc: string | number;
 }
 
+export interface SupplierDirectPaymentInvoiceLike extends InvoiceTvaLike {
+  tvaAmount: string | number;
+}
+
+export type SupplierDirectPaymentTotalsResult =
+  | {
+      ok: true;
+      totalWorksHt: number;
+      tvaAmount: number;
+      netToPayHt: number;
+      netToPayTtc: number;
+      effectiveTvaRatePercent: number;
+    }
+  | {
+      ok: false;
+      reason: "invalid_amount" | "inconsistent_tva";
+      offendingIndex: number | null;
+    };
+
+/**
+ * Supplier direct-payment certificats pay the selected invoices exactly as
+ * approved. They never enter the contractor works waterfall: no cumulative
+ * progress, retenue, prorata or acompte recoupment is involved.
+ */
+export function computeSupplierDirectPaymentTotals(
+  invoices: ReadonlyArray<SupplierDirectPaymentInvoiceLike>,
+): SupplierDirectPaymentTotalsResult {
+  if (invoices.length === 0) {
+    return { ok: false, reason: "invalid_amount", offendingIndex: null };
+  }
+
+  let sumHt = 0;
+  let sumTva = 0;
+  let sumTtc = 0;
+  for (let i = 0; i < invoices.length; i++) {
+    const invoice = invoices[i];
+    const ht =
+      typeof invoice.amountHt === "number"
+        ? invoice.amountHt
+        : Number(invoice.amountHt);
+    const tva =
+      typeof invoice.tvaAmount === "number"
+        ? invoice.tvaAmount
+        : Number(invoice.tvaAmount);
+    const ttc =
+      typeof invoice.amountTtc === "number"
+        ? invoice.amountTtc
+        : Number(invoice.amountTtc);
+    if (
+      !Number.isFinite(ht) ||
+      !Number.isFinite(tva) ||
+      !Number.isFinite(ttc) ||
+      ht <= 0 ||
+      tva < 0 ||
+      ttc <= 0
+    ) {
+      return { ok: false, reason: "invalid_amount", offendingIndex: i };
+    }
+    if (roundCurrency(ht + tva) !== roundCurrency(ttc)) {
+      return { ok: false, reason: "inconsistent_tva", offendingIndex: i };
+    }
+    sumHt += ht;
+    sumTva += tva;
+    sumTtc += ttc;
+  }
+
+  const totalWorksHt = roundCurrency(sumHt);
+  const tvaAmount = roundCurrency(sumTva);
+  const netToPayTtc = roundCurrency(sumTtc);
+  if (roundCurrency(totalWorksHt + tvaAmount) !== netToPayTtc) {
+    return { ok: false, reason: "inconsistent_tva", offendingIndex: null };
+  }
+  const effectiveTvaRatePercent =
+    computeEffectiveTvaRatePercent(totalWorksHt, netToPayTtc);
+  if (effectiveTvaRatePercent == null) {
+    return { ok: false, reason: "inconsistent_tva", offendingIndex: null };
+  }
+
+  return {
+    ok: true,
+    totalWorksHt,
+    tvaAmount,
+    netToPayHt: totalWorksHt,
+    netToPayTtc,
+    effectiveTvaRatePercent,
+  };
+}
+
 export function checkInvoiceSetTvaCompatibility(invoices: ReadonlyArray<InvoiceTvaLike>):
   | { ok: true; effectiveRatePercent: number }
   | { ok: false; effectiveRatePercent: number | null; offendingIndex: number | null } {

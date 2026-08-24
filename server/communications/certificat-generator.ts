@@ -6,6 +6,8 @@ import { roundCurrency } from "@shared/financial-utils";
 import type { Certificat, Project, Contractor, Devis, Lot, Invoice, Avenant } from "@shared/schema";
 import { formatLotDescription } from "@shared/lot-label";
 import { ibansMatch, normaliseIban } from "@shared/iban";
+import { assertSupplierPaymentReadiness } from "../services/supplier-payment-readiness.service";
+import { SupplierCertificateSourceError } from "../services/certificat-from-invoices.service";
 import { deriveTransferRef } from "../services/certificat-transfer-ref.service";
 
 interface DevisWithDetails {
@@ -720,6 +722,16 @@ export async function generateCertificatPdf(
 
   const contractor = await storage.getContractor(certificat.contractorId);
   if (!contractor) throw new Error(`Contractor ${certificat.contractorId} not found`);
+  const certificateTrack =
+    certificat.certificateTrack ?? "contractor_works";
+
+  if (certificateTrack === "supplier_direct_payment") {
+    await assertSupplierPaymentReadiness({
+      contractorId: certificat.contractorId,
+      projectId: certificat.projectId,
+      issueDate: certificat.dateIssued ?? undefined,
+    });
+  }
 
   // Task #225 — Banking gate. A certificat de paiement IS a payment
   // instruction; we refuse to materialise one without a verified IBAN.
@@ -743,6 +755,17 @@ export async function generateCertificatPdf(
     sourceRows.map((s) => s.invoiceId).filter((id): id is number => id != null),
   );
   const scoped = selectedInvoiceIds.size > 0;
+  if (
+    certificateTrack === "supplier_direct_payment" &&
+    (!scoped ||
+      sourceRows.some(
+        (source) => source.situationId != null || source.invoiceId == null,
+      ))
+  ) {
+    throw new SupplierCertificateSourceError(
+      "Le paiement direct fournisseur doit être lié uniquement à une ou plusieurs factures approuvées.",
+    );
+  }
 
   const devisWithInvoices = await Promise.all(
     allActiveDevis.map(async (d) => {
@@ -823,7 +846,10 @@ export async function generateCertificatPdf(
 
   const devisDetails: DevisWithDetails[] = await Promise.all(
     scopedEntries.map(async ({ devis: d, invoices }) => {
-      const lot = d.lotId ? (await storage.getLot(d.lotId)) ?? null : null;
+      const lot =
+        certificateTrack === "contractor_works" && d.lotId
+          ? (await storage.getLot(d.lotId)) ?? null
+          : null;
       const invoicedTtc = invoices.reduce((sum, inv) => sum + parseFloat(inv.amountTtc), 0);
       return { devis: d, lot, invoices, invoicedTtc };
     })
@@ -834,22 +860,56 @@ export async function generateCertificatPdf(
     loadLogoAsBase64("architects_order_logo"),
   ]);
 
-  const annexeData = await buildAnnexeData(certificat, project, contractor, activeDevis);
+  let html: string;
+  if (certificateTrack === "supplier_direct_payment") {
+    // Safety-first core template. The final supplier visual design is a
+    // separate concern, but this branch must remain invoice-only and must
+    // never enter the contractor annexe, financial summary or deductions
+    // presentation pipeline.
+    html = buildSupplierDirectPaymentHtml({
+      certificat,
+      project,
+      supplier: contractor,
+      devisDetails,
+      companyLogoBase64,
+      architectsLogoBase64,
+      transferRef,
+    });
+  } else {
+    const annexeData = await buildAnnexeData(
+      certificat,
+      project,
+      contractor,
+      activeDevis,
+    );
 
-  // Task #485 — resolve the actual retention rate the same way the
-  // deduction resolver does (marché rate, 5% default, bank guarantee ⇒ 0),
-  // so the explanation text matches the applied deduction.
-  const marche = (await storage.getMarchesByProject(project.id)).find(
-    (m) => m.contractorId === certificat.contractorId,
-  );
-  const hasBankGuarantee = marche?.hasBankGuarantee ?? false;
-  const retenuePercent = hasBankGuarantee
-    ? 0
-    : marche?.retenueGarantiePercent != null
-      ? parseFloat(marche.retenueGarantiePercent)
-      : 5;
+    // Task #485 — resolve the actual retention rate the same way the
+    // deduction resolver does (marché rate, 5% default, bank guarantee ⇒ 0),
+    // so the explanation text matches the applied deduction.
+    const marche = (await storage.getMarchesByProject(project.id)).find(
+      (m) => m.contractorId === certificat.contractorId,
+    );
+    const hasBankGuarantee = marche?.hasBankGuarantee ?? false;
+    const retenuePercent = hasBankGuarantee
+      ? 0
+      : marche?.retenueGarantiePercent != null
+        ? parseFloat(marche.retenueGarantiePercent)
+        : 5;
 
-  const html = buildCertificatHtml({ certificat, project, contractor, devisDetails, companyLogoBase64, architectsLogoBase64, annexeData, retenuePercent, hasBankGuarantee, isAcompte: certificat.acompteDevisId != null, transferRef });
+    html = buildCertificatHtml({
+      certificat,
+      project,
+      contractor,
+      devisDetails,
+      companyLogoBase64,
+      architectsLogoBase64,
+      annexeData,
+      retenuePercent,
+      hasBankGuarantee,
+      isAcompte: certificat.acompteDevisId != null,
+      transferRef,
+    });
+  }
 
   const dateStr = new Date().toISOString().split("T")[0].replace(/-/g, "");
   const projectCode = (project.code || "PROJ").replace(/[^a-zA-Z0-9]/g, "");
@@ -942,6 +1002,141 @@ function renderBankingBlock(contractor: Contractor, proposeHtml: string = "", tr
       </div>
     </div>${transferRefHtml}
   </div>`;
+}
+
+function buildSupplierDirectPaymentHtml(data: {
+  certificat: Certificat;
+  project: Project;
+  supplier: Contractor;
+  devisDetails: DevisWithDetails[];
+  companyLogoBase64: string | null;
+  architectsLogoBase64: string | null;
+  transferRef: string | null;
+}): string {
+  const {
+    certificat,
+    project,
+    supplier,
+    devisDetails,
+    companyLogoBase64,
+    architectsLogoBase64,
+    transferRef,
+  } = data;
+  const invoiceRows = devisDetails.flatMap(({ devis: parentDevis, invoices }) =>
+    invoices.map(
+      (invoice) => `<tr>
+        <td>${escapeHtml(invoice.invoiceNumber)}</td>
+        <td>${escapeHtml(parentDevis.devisCode)}</td>
+        <td class="num">${formatCurrencyNoSymbol(invoice.amountHt)}</td>
+        <td class="num">${formatCurrencyNoSymbol(invoice.tvaAmount)}</td>
+        <td class="num">${formatCurrencyNoSymbol(invoice.amountTtc)}</td>
+      </tr>`,
+    ),
+  );
+  const tvaRate = certificat.tvaAutoliquidation
+    ? "0 % — autoliquidation"
+    : `${escapeHtml(certificat.tvaRatePercent ?? "0")} % effectif`;
+  const supplierAddress = [
+    supplier.address,
+    [supplier.postcode, supplier.town].filter(Boolean).join(" "),
+  ]
+    .filter(Boolean)
+    .map((line) => escapeHtml(line as string))
+    .join("<br>");
+  const clientAddress = project.clientAddress
+    ? `<div class="detail">${escapeHtml(project.clientAddress)}</div>`
+    : "";
+  const companyLogo = companyLogoBase64
+    ? `<img src="${companyLogoBase64}" alt="Architects-France">`
+    : `<div class="firm">ARCHITECTS-FRANCE</div>`;
+  const orderLogo = architectsLogoBase64
+    ? `<img src="${architectsLogoBase64}" alt="Ordre des Architectes">`
+    : "";
+  const banking = renderBankingBlock(supplier, "", transferRef);
+
+  return `<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>${escapeHtml(certificat.certificateRef)} — Paiement direct fournisseur</title>
+<style>
+  @page {
+    size: A4;
+    margin: 10mm;
+    border: 0.65pt solid #0B2545;
+    padding: 5mm;
+    @bottom-left { content: "${escapeCssString(project.name)}"; font-size: 7pt; color: #7E7F83; }
+    @bottom-center { content: "${formatDateFr(certificat.dateIssued)}"; font-size: 7pt; color: #7E7F83; }
+    @bottom-right { content: "Page " counter(page) " / " counter(pages); font-size: 7pt; color: #7E7F83; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: Arial, sans-serif; font-size: 9pt; color: #34312D; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; }
+  .header img { max-height: 44px; max-width: 150px; }
+  .firm { color: #0B2545; font-weight: 800; letter-spacing: .12em; }
+  h1 { margin: 6mm 0 1mm; color: #0B2545; font-size: 18pt; }
+  .reference { color: #7E7F83; margin-bottom: 5mm; }
+  .parties { display: flex; gap: 4mm; margin-bottom: 5mm; }
+  .party { width: 50%; background: #F8F9FA; border-left: 3pt solid #C1A27B; padding: 3mm; }
+  .label { color: #7E7F83; font-size: 7pt; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
+  .name { color: #0B2545; font-size: 11pt; font-weight: 700; margin: 1mm 0; }
+  .detail { color: #4B5563; font-size: 8pt; line-height: 1.4; }
+  h2 { margin: 5mm 0 2mm; color: #0B2545; font-size: 10pt; text-transform: uppercase; letter-spacing: .06em; }
+  table { width: 100%; border-collapse: collapse; }
+  th { background: #0B2545; color: white; padding: 2.5mm; text-align: left; font-size: 7pt; text-transform: uppercase; }
+  td { padding: 2.5mm; border-bottom: .5pt solid #E6E6E6; }
+  .num { text-align: right; white-space: nowrap; }
+  .totals { width: 52%; margin: 4mm 0 5mm auto; }
+  .totals td:first-child { font-weight: 700; }
+  .totals .grand td { background: #F3F6F9; color: #0B2545; font-size: 12pt; font-weight: 800; border-top: 2pt solid #C1A27B; }
+  .banking-card { background: #F3F6F9; border: 1pt solid #0B2545; border-left: 3pt solid #C1A27B; padding: 3mm; page-break-inside: avoid; }
+  .banking-card-title, .banking-key-label, .transfer-ref-label { color: #0B2545; font-size: 7pt; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
+  .banking-holder { margin: 1mm 0 2mm; }
+  .banking-keys { display: flex; gap: 3mm; }
+  .banking-key { background: white; border: .5pt solid #C9D3DD; padding: 2mm; }
+  .banking-key-iban { width: 68%; }
+  .banking-key-bic { flex: 1; }
+  .banking-key-value { color: #B23A48; font-family: "Courier New", monospace; font-size: 11pt; font-weight: 700; white-space: nowrap; }
+  .banking-key-missing { color: #7E7F83; font-size: 8pt; font-style: italic; }
+  .transfer-ref-box { margin-top: 2mm; padding: 2mm; background: #EDF4FF; border-left: 3pt solid #1D4ED8; }
+  .transfer-ref-value { color: #1E3A8A; font-family: "Courier New", monospace; font-size: 10pt; font-weight: 700; }
+  .attestation { margin-top: 5mm; padding: 3mm; border: .75pt solid #C9D3DD; line-height: 1.5; }
+</style>
+</head>
+<body>
+  <div class="header">${companyLogo}${orderLogo}</div>
+  <h1>Certificat de paiement direct fournisseur</h1>
+  <div class="reference">Référence <strong>${escapeHtml(certificat.certificateRef)}</strong> — ${formatDateFr(certificat.dateIssued)}</div>
+  <div class="parties">
+    <div class="party">
+      <div class="label">Projet / maître d'ouvrage</div>
+      <div class="name">${escapeHtml(project.name)}</div>
+      <div class="detail">${escapeHtml(project.clientName)}</div>
+      ${clientAddress}
+    </div>
+    <div class="party">
+      <div class="label">Fournisseur bénéficiaire</div>
+      <div class="name">${escapeHtml(supplier.name)}</div>
+      <div class="detail">${supplierAddress || "Adresse non communiquée"}</div>
+    </div>
+  </div>
+  <h2>Factures certifiées</h2>
+  <table>
+    <thead><tr><th>Facture</th><th>Devis de rattachement</th><th class="num">HT</th><th class="num">TVA</th><th class="num">TTC</th></tr></thead>
+    <tbody>${invoiceRows.join("")}</tbody>
+  </table>
+  <table class="totals">
+    <tr><td>Total HT</td><td class="num">${formatCurrencyNoSymbol(certificat.netToPayHt)}</td></tr>
+    <tr><td>TVA <span class="detail">(${tvaRate})</span></td><td class="num">${formatCurrencyNoSymbol(certificat.tvaAmount)}</td></tr>
+    <tr class="grand"><td>Net à payer TTC</td><td class="num">${formatCurrencyNoSymbol(certificat.netToPayTtc)}</td></tr>
+  </table>
+  ${banking}
+  <div class="attestation">
+    Le présent certificat autorise exclusivement le paiement direct des factures listées ci-dessus au fournisseur bénéficiaire, pour un montant total de
+    <strong>${formatCurrencyNoSymbol(certificat.netToPayTtc)} TTC</strong>.
+  </div>
+</body>
+</html>`;
 }
 
 function buildCertificatHtml(data: CertificatPdfData): string {
@@ -1937,6 +2132,7 @@ export async function buildCertificatPreviewHtml(opts?: { isAcompte?: boolean })
     id: -1,
     projectId: -1,
     contractorId: -1,
+    certificateTrack: "contractor_works",
     acompteDevisId: isAcompte ? -2 : null,
     // Task #566 — PV-gate override audit fields (unused by the sample).
     pvOverrideReason: null,

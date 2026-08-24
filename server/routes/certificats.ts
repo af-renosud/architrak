@@ -1,7 +1,11 @@
 import { Router } from "express";
 import { z } from "zod";
 import { storage, CertificatSourceConflictError } from "../storage";
-import { insertCertificatSchema, type InsertCertificat } from "@shared/schema";
+import {
+  insertCertificatSchema,
+  type InsertCertificat,
+  type ServerInsertCertificat,
+} from "@shared/schema";
 import { generateCertificatPdf, BankingDetailsMissingError, BankingMismatchError } from "../communications/certificat-generator";
 import { sendCertificat, sendCommunication, CommunicationSendInProgressError } from "../communications/email-sender";
 import { validateRequest } from "../middleware/validate";
@@ -21,7 +25,13 @@ import {
   createCertificatFromInvoices,
   InvoiceStateChangedError,
   DerivationRefusedError,
+  SupplierCertificateSourceError,
 } from "../services/certificat-from-invoices.service";
+import {
+  assertSupplierPaymentReadiness,
+  SupplierPaymentReadinessError,
+} from "../services/supplier-payment-readiness.service";
+import type { CertificateTrack } from "@shared/supplier-payment-readiness";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
@@ -204,6 +214,14 @@ router.post(
     // contract, overriding whatever the FE sent for the derived fields.
     let deductions;
     try {
+      const partner = await storage.getContractor(body.contractorId);
+      if (partner?.archidocPartnerType === "supplier") {
+        return res.status(409).json({
+          code: "SUPPLIER_CERTIFICATE_REQUIRES_INVOICE_SOURCES",
+          message:
+            "Un paiement direct fournisseur doit être créé depuis une ou plusieurs factures approuvées. La création manuelle sans sources est interdite.",
+        });
+      }
       deductions = await resolveCertificatDeductions({
         projectId,
         contractorId: body.contractorId,
@@ -299,22 +317,84 @@ router.post(
     // acompte certificat per devis — the original is superseded in the
     // same transaction, so the insert never trips it.
     const isAcompteCert = existing.acompteDevisId != null;
-    const deductions = isAcompteCert
+    let supplierDerivation:
+      | Extract<
+          Awaited<ReturnType<typeof deriveCertificatFromInvoices>>,
+          { ok: true }
+        >["derivation"]
+      | null = null;
+    if (existing.certificateTrack === "supplier_direct_payment") {
+      const sourceRows = await storage.getCertificatSources(existing.id);
+      const sourceInvoiceIds = Array.from(
+        new Set(
+          sourceRows
+            .map((source) => source.invoiceId)
+            .filter((invoiceId): invoiceId is number => invoiceId != null),
+        ),
+      );
+      if (
+        sourceInvoiceIds.length === 0 ||
+        sourceRows.some(
+          (source) => source.situationId != null || source.invoiceId == null,
+        )
+      ) {
+        return res.status(409).json({
+          code: "SUPPLIER_CERTIFICATE_SOURCE_SET_INVALID",
+          message:
+            "Le certificat fournisseur ne possède pas un ensemble de sources facture-only valide et ne peut pas être réémis.",
+        });
+      }
+      const result = await deriveCertificatFromInvoices(sourceInvoiceIds, {
+        allowCertificatId: existing.id,
+      });
+      if (!result.ok) {
+        return res.status(result.refusal.status).json(result.refusal.body);
+      }
+      if (result.derivation.certificateTrack !== "supplier_direct_payment") {
+        return res.status(409).json({
+          code: "SUPPLIER_CERTIFICATE_PARTNER_CHANGED",
+          message:
+            "L'intervenant n'est plus classé comme fournisseur dans ArchiDoc. La réémission est bloquée.",
+        });
+      }
+      supplierDerivation = result.derivation;
+    }
+    const isFixedCert =
+      isAcompteCert ||
+      existing.certificateTrack === "supplier_direct_payment";
+    const deductions = isFixedCert
       ? {
-          retenueGarantie: existing.retenueGarantie ?? "0.00",
-          cumulativeProrataDeduction: existing.cumulativeProrataDeduction,
-          periodProrataDeduction: existing.periodProrataDeduction,
-          cumulativeAcompteRecoupment: existing.cumulativeAcompteRecoupment,
-          periodAcompteRecoupment: existing.periodAcompteRecoupment,
-          tvaRatePercent: existing.tvaRatePercent,
-          tvaAutoliquidation: existing.tvaAutoliquidation,
-          tvaRateSource: existing.tvaRateSource,
-          netToPayHt: existing.netToPayHt,
-          tvaAmount: existing.tvaAmount,
-          netToPayTtc: existing.netToPayTtc,
-          isSolde: existing.isSolde,
-          retenueReleased: existing.retenueReleased,
-          retenueReleaseAmount: existing.retenueReleaseAmount,
+          retenueGarantie: "0.00",
+          cumulativeProrataDeduction: "0.00",
+          periodProrataDeduction: "0.00",
+          cumulativeAcompteRecoupment: "0.00",
+          periodAcompteRecoupment: "0.00",
+          tvaRatePercent:
+            supplierDerivation?.supplierDirectPayment?.tvaRatePercent ??
+            existing.tvaRatePercent,
+          tvaAutoliquidation:
+            existing.certificateTrack === "supplier_direct_payment"
+              ? false
+              : existing.tvaAutoliquidation,
+          tvaRateSource:
+            existing.certificateTrack === "supplier_direct_payment"
+              ? ("documentary" as const)
+              : existing.tvaRateSource,
+          netToPayHt:
+            supplierDerivation?.supplierDirectPayment?.netToPayHt ??
+            existing.netToPayHt,
+          tvaAmount:
+            supplierDerivation?.supplierDirectPayment?.tvaAmount ??
+            existing.tvaAmount,
+          netToPayTtc:
+            supplierDerivation?.supplierDirectPayment?.netToPayTtc ??
+            existing.netToPayTtc,
+          isSolde:
+            existing.certificateTrack === "supplier_direct_payment"
+              ? false
+              : existing.isSolde,
+          retenueReleased: false,
+          retenueReleaseAmount: "0.00",
         }
       : await resolveCertificatDeductions({
           projectId: existing.projectId,
@@ -340,11 +420,19 @@ router.post(
         const draft = await storage.reissueCertificat(id, {
           projectId: existing.projectId,
           contractorId: existing.contractorId,
+          certificateTrack: existing.certificateTrack,
           certificateRef: nextRef,
           dateIssued: null,
-          totalWorksHt: existing.totalWorksHt,
-          pvMvAdjustment: existing.pvMvAdjustment,
-          previousPayments: existing.previousPayments,
+          totalWorksHt:
+            supplierDerivation?.totalWorksHt ?? existing.totalWorksHt,
+          pvMvAdjustment:
+            existing.certificateTrack === "supplier_direct_payment"
+              ? "0.00"
+              : existing.pvMvAdjustment,
+          previousPayments:
+            existing.certificateTrack === "supplier_direct_payment"
+              ? "0.00"
+              : existing.previousPayments,
           ...deductions,
           retenueReleaseReason: existing.retenueReleaseReason,
           retenueReleaseDate: existing.retenueReleaseDate,
@@ -358,7 +446,7 @@ router.post(
           // Task #491 — preserve the acompte link so the clone stays outside
           // the waterfall (and the one-live-acompte-per-devis index holds).
           acompteDevisId: existing.acompteDevisId,
-        } as InsertCertificat & { reissuedFromCertificatId: number });
+        } as ServerInsertCertificat & { reissuedFromCertificatId: number });
         return res.status(201).json(draft);
       } catch (err) {
         const { code, constraint } = pgErrorInfo(err);
@@ -407,6 +495,44 @@ router.patch(
 
     const existing = await storage.getCertificat(id);
     if (!existing) return res.status(404).json({ message: "Certificat not found" });
+
+    if (existing.certificateTrack === "supplier_direct_payment") {
+      const allowedOnSupplier = new Set(["status", "notes"]);
+      const blocked = Object.keys(body).filter(
+        (key) => !allowedOnSupplier.has(key),
+      );
+      if (
+        blocked.length > 0 ||
+        retenueOverride !== undefined ||
+        prorataOverride !== undefined ||
+        tvaRateOverride !== undefined ||
+        releaseRetenue !== undefined ||
+        releaseReason !== undefined ||
+        isSolde !== undefined ||
+        pvOverrideReason !== undefined
+      ) {
+        return res.status(409).json({
+          code: "SUPPLIER_CERTIFICATE_FIXED",
+          message:
+            "Les montants et les sources d'un paiement direct fournisseur sont dérivés des factures approuvées et ne peuvent pas être modifiés manuellement. Utilisez la réémission pour corriger le document.",
+          blockedFields: blocked,
+        });
+      }
+    }
+
+    if (
+      body.contractorId != null &&
+      existing.certificateTrack === "contractor_works"
+    ) {
+      const newPartner = await storage.getContractor(body.contractorId);
+      if (newPartner?.archidocPartnerType === "supplier") {
+        return res.status(409).json({
+          code: "CERTIFICATE_TRACK_IMMUTABLE",
+          message:
+            "Un certificat de travaux ne peut pas être transformé en paiement direct fournisseur.",
+        });
+      }
+    }
 
     // Task #457 — `superseded` is TERMINAL and server-set only (written
     // exclusively by the atomic reissue transaction). A superseded certificat
@@ -665,6 +791,20 @@ router.post(
           mismatches: err.mismatches,
         });
       }
+      if (err instanceof SupplierPaymentReadinessError) {
+        return res.status(422).json({
+          code: err.code,
+          message:
+            "Le paiement direct fournisseur est bloqué : les données de préparation au paiement ArchiDoc sont absentes, incomplètes ou ne sont plus valides.",
+          blockers: err.blockers,
+        });
+      }
+      if (err instanceof SupplierCertificateSourceError) {
+        return res.status(409).json({
+          code: err.code,
+          message: err.message,
+        });
+      }
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ message: `Preview generation failed: ${message}` });
     }
@@ -726,19 +866,41 @@ async function buildPreviewPayload(invoiceIds: number[], res: import("express").
   if (!result.ok) return res.status(result.refusal.status).json(result.refusal.body);
   const d = result.derivation;
   let deductions;
-  try {
-    deductions = await resolveCertificatDeductions({
-      projectId: d.projectId,
-      contractorId: d.contractorId,
-      totalWorksHt: d.totalWorksHt,
-      pvMvAdjustment: "0.00",
-      previousPayments: d.previousPayments,
-      documentaryBasisInvoices: d.invoices.map((r) => ({ amountHt: r.amountHt, amountTtc: r.amountTtc })),
-    });
-  } catch (err) {
-    const mapped = mapSoldeError(err);
-    if (mapped) return res.status(mapped.status).json(mapped.body);
-    throw err;
+  if (d.certificateTrack === "supplier_direct_payment") {
+    deductions = {
+      retenueGarantie: "0.00",
+      cumulativeProrataDeduction: "0.00",
+      periodProrataDeduction: "0.00",
+      cumulativeAcompteRecoupment: "0.00",
+      periodAcompteRecoupment: "0.00",
+      tvaRatePercent: d.supplierDirectPayment.tvaRatePercent,
+      tvaAutoliquidation: false,
+      tvaRateSource: "documentary",
+      netToPayHt: d.supplierDirectPayment.netToPayHt,
+      tvaAmount: d.supplierDirectPayment.tvaAmount,
+      netToPayTtc: d.supplierDirectPayment.netToPayTtc,
+      isSolde: false,
+      retenueReleased: false,
+      retenueReleaseAmount: "0.00",
+    };
+  } else {
+    try {
+      deductions = await resolveCertificatDeductions({
+        projectId: d.projectId,
+        contractorId: d.contractorId,
+        totalWorksHt: d.totalWorksHt,
+        pvMvAdjustment: "0.00",
+        previousPayments: d.previousPayments,
+        documentaryBasisInvoices: d.invoices.map((r) => ({
+          amountHt: r.amountHt,
+          amountTtc: r.amountTtc,
+        })),
+      });
+    } catch (err) {
+      const mapped = mapSoldeError(err);
+      if (mapped) return res.status(mapped.status).json(mapped.body);
+      throw err;
+    }
   }
   const nextRef = await storage.getNextCertificateRef(d.projectId);
   // Backwards-compatible single-invoice fields alongside the multi shape.
@@ -756,9 +918,23 @@ async function buildPreviewPayload(invoiceIds: number[], res: import("express").
 
 async function handleCreateFromInvoices(
   invoiceIds: number[],
-  identity: { projectId: number; contractorId: number },
   res: import("express").Response,
 ) {
+  const preview = await deriveCertificatFromInvoices(invoiceIds);
+  if (!preview.ok) {
+    return res
+      .status(preview.refusal.status)
+      .json(preview.refusal.body);
+  }
+  const identity: {
+    projectId: number;
+    contractorId: number;
+    certificateTrack: CertificateTrack;
+  } = {
+    projectId: preview.derivation.projectId,
+    contractorId: preview.derivation.contractorId,
+    certificateTrack: preview.derivation.certificateTrack,
+  };
   // Task #612 — mirror the same IBAN gate the preview handler relies on via
   // generateCertificatPdf. A cert created without an IBAN can never be
   // previewed or issued; block here with the same 422 code so the FE can
@@ -811,7 +987,7 @@ router.post(
     // chain lock inside the service transaction.
     const invoiceRef = await storage.getInvoice(invoiceId);
     if (!invoiceRef) return res.status(404).json({ code: "INVOICE_NOT_FOUND", message: "Facture introuvable." });
-    await handleCreateFromInvoices([invoiceId], { projectId: invoiceRef.projectId, contractorId: invoiceRef.contractorId }, res);
+    await handleCreateFromInvoices([invoiceId], res);
   },
 );
 
@@ -835,7 +1011,7 @@ async function checkSelectionProject(invoiceIds: number[], projectId: number, re
     }
   }
   const first = await storage.getInvoice(uniqueIds[0]);
-  return { uniqueIds, identity: { projectId, contractorId: first!.contractorId } };
+  return { uniqueIds };
 }
 
 router.post(
@@ -854,7 +1030,7 @@ router.post(
   async (req, res) => {
     const checked = await checkSelectionProject(req.body.invoiceIds, Number(req.params.projectId), res);
     if (!checked) return;
-    await handleCreateFromInvoices(checked.uniqueIds, checked.identity, res);
+    await handleCreateFromInvoices(checked.uniqueIds, res);
   },
 );
 
@@ -908,6 +1084,73 @@ router.post(
           message: `Certificat ${cert.certificateRef} was superseded by a reissue and cannot be sent. Send the replacement instead.`,
         });
       }
+      if (cert.certificateTrack === "supplier_direct_payment") {
+        await assertSupplierPaymentReadiness({
+          contractorId: cert.contractorId,
+          projectId: cert.projectId,
+          issueDate: cert.dateIssued ?? undefined,
+        });
+        const sourceRows = await storage.getCertificatSources(cert.id);
+        const sourceInvoiceIds = Array.from(
+          new Set(
+            sourceRows
+              .map((source) => source.invoiceId)
+              .filter((invoiceId): invoiceId is number => invoiceId != null),
+          ),
+        );
+        if (
+          sourceInvoiceIds.length === 0 ||
+          sourceRows.some(
+            (source) =>
+              source.situationId != null || source.invoiceId == null,
+          )
+        ) {
+          return res.status(409).json({
+            code: "SUPPLIER_CERTIFICATE_SOURCE_SET_INVALID",
+            message:
+              "Le paiement direct fournisseur ne possède pas un ensemble de sources facture-only valide.",
+          });
+        }
+        const currentSourceDerivation =
+          await deriveCertificatFromInvoices(sourceInvoiceIds, {
+            allowCertificatId: cert.id,
+          });
+        if (!currentSourceDerivation.ok) {
+          return res
+            .status(currentSourceDerivation.refusal.status)
+            .json(currentSourceDerivation.refusal.body);
+        }
+        if (
+          currentSourceDerivation.derivation.certificateTrack !==
+          "supplier_direct_payment"
+        ) {
+          return res.status(409).json({
+            code: "CERTIFICATE_TRACK_IMMUTABLE",
+            message:
+              "Le partenaire n'est plus classé comme fournisseur dans ArchiDoc.",
+          });
+        }
+        if (
+          cert.pdfStorageKey &&
+          (cert.totalWorksHt !==
+            currentSourceDerivation.derivation.totalWorksHt ||
+            cert.netToPayHt !==
+              currentSourceDerivation.derivation.supplierDirectPayment
+                .netToPayHt ||
+            cert.tvaAmount !==
+              currentSourceDerivation.derivation.supplierDirectPayment
+                .tvaAmount ||
+            cert.netToPayTtc !==
+              currentSourceDerivation.derivation.supplierDirectPayment
+                .netToPayTtc)
+        ) {
+          return res.status(409).json({
+            code: "SUPPLIER_SOURCE_AMOUNT_CHANGED",
+            message:
+              "Les montants d'une facture source ont changé depuis l'émission du certificat fournisseur. Réémettez le certificat avant l'envoi.",
+          });
+        }
+      }
       // Task #566 — final-payment gate at the last exit: a solde certificat
       // (already-sealed rows included, which skip the seal's resolver
       // recompute) must not go out without an approved PV de réception or a
@@ -926,18 +1169,20 @@ router.post(
         }
       }
 
-      const devisList = await storage.getDevisByProject(projectId);
-      const contractorDevis = devisList.filter((d) => d.contractorId === cert.contractorId && d.status !== "void");
-      const missingFields: string[] = [];
-      for (const d of contractorDevis) {
-        if (!d.lotId) missingFields.push(`Devis "${d.devisCode}" is missing lot assignment`);
-        if (!d.descriptionUk || d.descriptionUk.trim() === "") missingFields.push(`Devis "${d.devisCode}" is missing English works description`);
-      }
-      if (missingFields.length > 0) {
-        return res.status(400).json({
-          message: "Cannot send certificat: some devis are missing required fields",
-          errors: missingFields,
-        });
+      if (cert.certificateTrack === "contractor_works") {
+        const devisList = await storage.getDevisByProject(projectId);
+        const contractorDevis = devisList.filter((d) => d.contractorId === cert.contractorId && d.status !== "void");
+        const missingFields: string[] = [];
+        for (const d of contractorDevis) {
+          if (!d.lotId) missingFields.push(`Devis "${d.devisCode}" is missing lot assignment`);
+          if (!d.descriptionUk || d.descriptionUk.trim() === "") missingFields.push(`Devis "${d.devisCode}" is missing English works description`);
+        }
+        if (missingFields.length > 0) {
+          return res.status(400).json({
+            message: "Cannot send certificat: some devis are missing required fields",
+            errors: missingFields,
+          });
+        }
       }
 
       // Task #543 — one-click send: queue AND dispatch. sendCertificat()
@@ -993,6 +1238,20 @@ router.post(
           contractorName: err.contractorName,
           archidocIban: err.archidocIban,
           mismatches: err.mismatches,
+        });
+      }
+      if (err instanceof SupplierPaymentReadinessError) {
+        return res.status(422).json({
+          code: err.code,
+          message:
+            "Le paiement direct fournisseur est bloqué : les données de préparation au paiement ArchiDoc sont absentes, incomplètes ou ne sont plus valides.",
+          blockers: err.blockers,
+        });
+      }
+      if (err instanceof SupplierCertificateSourceError) {
+        return res.status(409).json({
+          code: err.code,
+          message: err.message,
         });
       }
       // Task #605 — a source in the rendered annexe is already certified by

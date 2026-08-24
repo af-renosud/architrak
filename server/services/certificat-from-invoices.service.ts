@@ -15,14 +15,24 @@ import {
   certificatSources,
   invoices as invoicesTable,
   devis as devisTable,
+  contractors as contractorsTable,
   type Certificat,
   type Invoice,
 } from "@shared/schema";
 import { eq, inArray, sql } from "drizzle-orm";
 import { resolveCertificatDeductions } from "./certificat-deductions.service";
-import { checkInvoiceSetTvaCompatibility } from "@shared/financial-utils";
+import {
+  checkInvoiceSetTvaCompatibility,
+  computeSupplierDirectPaymentTotals,
+} from "@shared/financial-utils";
+import {
+  assertSupplierPaymentReadiness,
+  SupplierPaymentReadinessError,
+} from "./supplier-payment-readiness.service";
+import type { CertificateTrack } from "@shared/supplier-payment-readiness";
+import { ibansMatch, normaliseIban } from "@shared/iban";
 
-export interface MultiInvoiceCertDerivation {
+interface MultiInvoiceCertDerivationBase {
   contractorId: number;
   projectId: number;
   invoices: Array<{
@@ -32,6 +42,7 @@ export interface MultiInvoiceCertDerivation {
     mode: "situation" | "invoice";
     periodClaimHt: number;
     amountHt: string;
+    tvaAmount: string;
     amountTtc: string;
   }>;
   periodClaimHt: number;
@@ -39,6 +50,21 @@ export interface MultiInvoiceCertDerivation {
   previousPayments: string;
   priorCertificateRef: string | null;
 }
+
+export type MultiInvoiceCertDerivation =
+  | (MultiInvoiceCertDerivationBase & {
+      certificateTrack: "contractor_works";
+      supplierDirectPayment: null;
+    })
+  | (MultiInvoiceCertDerivationBase & {
+      certificateTrack: "supplier_direct_payment";
+      supplierDirectPayment: {
+        tvaRatePercent: string;
+        tvaAmount: string;
+        netToPayHt: string;
+        netToPayTtc: string;
+      };
+    });
 
 export type InvoiceCertRefusal =
   | { status: 404; body: { code: string; message: string } }
@@ -51,7 +77,10 @@ export type DeriveResult =
 /** Latest non-superseded, non-acompte certificat — same ordering as the resolver. */
 export async function latestPriorProgressCert(projectId: number, contractorId: number) {
   const priors = (await storage.getCertificatsByProjectAndContractor(projectId, contractorId)).filter(
-    (c) => c.status !== "superseded" && c.acompteDevisId == null,
+    (c) =>
+      c.status !== "superseded" &&
+      c.acompteDevisId == null &&
+      c.certificateTrack === "contractor_works",
   );
   return (
     priors
@@ -67,9 +96,13 @@ export async function latestPriorProgressCert(projectId: number, contractorId: n
 }
 
 /** Live (non-superseded) certificat already certifying this invoice, if any. */
-export async function liveCertForInvoice(invoiceId: number): Promise<Certificat | null> {
+export async function liveCertForInvoice(
+  invoiceId: number,
+  allowCertificatId?: number,
+): Promise<Certificat | null> {
   const sources = await storage.getCertificatSourcesForDocuments({ invoiceIds: [invoiceId], situationIds: [] });
   for (const src of sources) {
+    if (src.certificatId === allowCertificatId) continue;
     const cert = await storage.getCertificat(src.certificatId);
     if (cert && cert.status !== "superseded") return cert;
   }
@@ -85,7 +118,10 @@ function refuse(status: 404 | 409, body: InvoiceCertRefusal["body"]): DeriveResu
  * Read-only: powers both the preview endpoints and the under-lock
  * re-derivation inside `createCertificatFromInvoices`.
  */
-export async function deriveCertificatFromInvoices(invoiceIds: number[]): Promise<DeriveResult> {
+export async function deriveCertificatFromInvoices(
+  invoiceIds: number[],
+  options: { allowCertificatId?: number } = {},
+): Promise<DeriveResult> {
   const uniqueIds = Array.from(new Set(invoiceIds));
   if (uniqueIds.length === 0) {
     return refuse(409, { code: "NO_INVOICES", message: "Aucune facture sélectionnée." });
@@ -111,6 +147,187 @@ export async function deriveCertificatFromInvoices(invoiceIds: number[]): Promis
         message: "Un certificat regroupe les factures d'une seule entreprise — sélectionnez des factures du même intervenant.",
       });
     }
+  }
+
+  const partner = await storage.getContractor(first.contractorId);
+  if (!partner) {
+    return refuse(404, {
+      code: "CONTRACTOR_NOT_FOUND",
+      message: "Intervenant introuvable.",
+    });
+  }
+
+  if (partner.archidocPartnerType === "supplier") {
+    try {
+      await assertSupplierPaymentReadiness({
+        contractorId: first.contractorId,
+        projectId: first.projectId,
+      });
+    } catch (error) {
+      if (error instanceof SupplierPaymentReadinessError) {
+        return refuse(409, {
+          code: error.code,
+          message:
+            error.blockers.includes("readiness_not_synchronised")
+              ? "Les données de préparation au paiement de ce fournisseur ne sont pas encore synchronisées depuis ArchiDoc."
+              : "Ce fournisseur n'est pas prêt pour un paiement direct. Vérifiez son identité, son contact, ses coordonnées bancaires et son affectation au projet dans ArchiDoc.",
+        });
+      }
+      throw error;
+    }
+
+    const supplierRows: MultiInvoiceCertDerivationBase["invoices"] = [];
+    for (const invoice of loaded) {
+      if (invoice.status !== "approved" || invoice.datePaid != null) {
+        return refuse(409, {
+          code: invoice.datePaid != null ? "SUPPLIER_INVOICE_PAID" : "SUPPLIER_INVOICE_NOT_APPROVED",
+          message:
+            invoice.datePaid != null
+              ? `La facture #${invoice.invoiceNumber} est déjà payée.`
+              : `La facture #${invoice.invoiceNumber} doit être approuvée avant de pouvoir être certifiée pour paiement direct.`,
+          invoiceId: invoice.id,
+        });
+      }
+      const devis = await storage.getDevis(invoice.devisId);
+      if (!devis) {
+        return refuse(404, { code: "DEVIS_NOT_FOUND", message: "Devis parent introuvable." });
+      }
+      if (devis.status === "void" || devis.signOffStage === "void") {
+        return refuse(409, {
+          code: "DEVIS_VOID",
+          message: `Le devis parent de la facture #${invoice.invoiceNumber} est annulé.`,
+          invoiceId: invoice.id,
+        });
+      }
+      if (devis.acompteInvoiceId === invoice.id) {
+        return refuse(409, {
+          code: "INVOICE_IS_ACOMPTE",
+          message: `La facture #${invoice.invoiceNumber} est une facture d'acompte et ne peut pas être utilisée pour un paiement direct fournisseur.`,
+          invoiceId: invoice.id,
+        });
+      }
+      const canonicalIban = normaliseIban(partner.iban);
+      if (
+        devis.extractedIban &&
+        !ibansMatch(devis.extractedIban, partner.iban)
+      ) {
+        const override = await storage.findBankingMismatchOverride({
+          docKind: "devis",
+          docId: devis.id,
+          docIban: devis.extractedIban,
+          archidocIban: canonicalIban,
+        });
+        if (!override) {
+          return refuse(409, {
+            code: "BANKING_MISMATCH",
+            message: `L'IBAN du devis ${devis.devisCode} ne correspond pas à l'IBAN fournisseur vérifié dans ArchiDoc. Un override audité et limité à ce document est requis.`,
+            invoiceId: invoice.id,
+          });
+        }
+      }
+      if (
+        invoice.extractedIban &&
+        !ibansMatch(invoice.extractedIban, partner.iban)
+      ) {
+        const override = await storage.findBankingMismatchOverride({
+          docKind: "invoice",
+          docId: invoice.id,
+          docIban: invoice.extractedIban,
+          archidocIban: canonicalIban,
+        });
+        if (!override) {
+          return refuse(409, {
+            code: "BANKING_MISMATCH",
+            message: `L'IBAN de la facture #${invoice.invoiceNumber} ne correspond pas à l'IBAN fournisseur vérifié dans ArchiDoc. Un override audité et limité à ce document est requis.`,
+            invoiceId: invoice.id,
+          });
+        }
+      }
+      const situations = await storage.getSituationsByDevis(invoice.devisId);
+      if (situations.some((s) => s.invoiceId === invoice.id)) {
+        return refuse(409, {
+          code: "SUPPLIER_SITUATION_NOT_ALLOWED",
+          message: `La facture #${invoice.invoiceNumber} est liée à une situation de travaux — le paiement direct fournisseur accepte uniquement des factures simples.`,
+          invoiceId: invoice.id,
+        });
+      }
+      const existingCert = await liveCertForInvoice(
+        invoice.id,
+        options.allowCertificatId,
+      );
+      if (existingCert) {
+        return refuse(409, {
+          code: "INVOICE_ALREADY_CERTIFIED",
+          message: `La facture #${invoice.invoiceNumber} est déjà certifiée par ${existingCert.certificateRef}.`,
+          certificateRef: existingCert.certificateRef,
+          certificatId: existingCert.id,
+          invoiceId: invoice.id,
+        });
+      }
+      supplierRows.push({
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.invoiceNumber,
+        devisId: invoice.devisId,
+        mode: "invoice",
+        periodClaimHt: Number(invoice.amountHt),
+        amountHt: invoice.amountHt,
+        tvaAmount: invoice.tvaAmount,
+        amountTtc: invoice.amountTtc,
+      });
+    }
+
+    if (supplierRows.length > 1) {
+      const compatibility = checkInvoiceSetTvaCompatibility(supplierRows);
+      if (!compatibility.ok) {
+        const offender =
+          compatibility.offendingIndex != null
+            ? supplierRows[compatibility.offendingIndex]
+            : null;
+        return refuse(409, {
+          code: "TVA_MIXED",
+          message: offender
+            ? `Les factures sélectionnées portent des taux de TVA incompatibles (facture #${offender.invoiceNumber}) — créez des certificats séparés.`
+            : "Les factures sélectionnées portent des taux de TVA incompatibles — créez des certificats séparés.",
+          invoiceId: offender?.invoiceId,
+        });
+      }
+    }
+    const totals = computeSupplierDirectPaymentTotals(supplierRows);
+    if (!totals.ok) {
+      const offender =
+        totals.offendingIndex != null
+          ? supplierRows[totals.offendingIndex]
+          : null;
+      return refuse(409, {
+        code:
+          totals.reason === "inconsistent_tva"
+            ? "SUPPLIER_INVOICE_TVA_INCONSISTENT"
+            : "SUPPLIER_INVOICE_AMOUNT_INVALID",
+        message: offender
+          ? `Les montants HT, TVA et TTC de la facture #${offender.invoiceNumber} sont invalides ou incohérents.`
+          : "Les montants HT, TVA et TTC des factures sélectionnées sont invalides ou incohérents.",
+        invoiceId: offender?.invoiceId,
+      });
+    }
+    return {
+      ok: true,
+      derivation: {
+        certificateTrack: "supplier_direct_payment",
+        contractorId: first.contractorId,
+        projectId: first.projectId,
+        invoices: supplierRows,
+        periodClaimHt: totals.totalWorksHt,
+        totalWorksHt: totals.totalWorksHt.toFixed(2),
+        previousPayments: "0.00",
+        priorCertificateRef: null,
+        supplierDirectPayment: {
+          tvaRatePercent: totals.effectiveTvaRatePercent.toFixed(2),
+          tvaAmount: totals.tvaAmount.toFixed(2),
+          netToPayHt: totals.netToPayHt.toFixed(2),
+          netToPayTtc: totals.netToPayTtc.toFixed(2),
+        },
+      },
+    };
   }
 
   const rows: MultiInvoiceCertDerivation["invoices"] = [];
@@ -142,7 +359,10 @@ export async function deriveCertificatFromInvoices(invoiceIds: number[]): Promis
         invoiceId: invoice.id,
       });
     }
-    const existingCert = await liveCertForInvoice(invoice.id);
+    const existingCert = await liveCertForInvoice(
+      invoice.id,
+      options.allowCertificatId,
+    );
     if (existingCert) {
       return refuse(409, {
         code: "INVOICE_ALREADY_CERTIFIED",
@@ -174,6 +394,7 @@ export async function deriveCertificatFromInvoices(invoiceIds: number[]): Promis
       mode: situation ? "situation" : "invoice",
       periodClaimHt,
       amountHt: invoice.amountHt,
+      tvaAmount: invoice.tvaAmount,
       amountTtc: invoice.amountTtc,
     });
   }
@@ -208,11 +429,13 @@ export async function deriveCertificatFromInvoices(invoiceIds: number[]): Promis
     derivation: {
       contractorId: first.contractorId,
       projectId: first.projectId,
+      certificateTrack: "contractor_works",
       invoices: rows,
       periodClaimHt,
       totalWorksHt: totalWorksHt.toFixed(2),
       previousPayments: previousPayments.toFixed(2),
       priorCertificateRef: prior?.certificateRef ?? null,
+      supplierDirectPayment: null,
     },
   };
 }
@@ -225,6 +448,15 @@ export class InvoiceStateChangedError extends Error {
 export class DerivationRefusedError extends Error {
   constructor(public refusal: InvoiceCertRefusal) {
     super("derivation_refused");
+  }
+}
+
+export class SupplierCertificateSourceError extends Error {
+  readonly code = "SUPPLIER_CERTIFICATE_SOURCE_SET_INVALID";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "SupplierCertificateSourceError";
   }
 }
 
@@ -245,11 +477,30 @@ export class DerivationRefusedError extends Error {
  */
 export async function createCertificatFromInvoices(
   invoiceIds: number[],
-  identity: { projectId: number; contractorId: number },
+  identity: {
+    projectId: number;
+    contractorId: number;
+    /** Legacy trusted callers omit the track and remain contractor-only. */
+    certificateTrack?: CertificateTrack;
+  },
 ): Promise<Certificat> {
   const uniqueIds = Array.from(new Set(invoiceIds)).sort((a, b) => a - b);
+  const expectedTrack = identity.certificateTrack ?? "contractor_works";
   return db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(${identity.projectId}, ${identity.contractorId})`);
+    const [lockedPartner] = await tx
+      .select({ archidocPartnerType: contractorsTable.archidocPartnerType })
+      .from(contractorsTable)
+      .where(eq(contractorsTable.id, identity.contractorId))
+      .for("update");
+    if (!lockedPartner) throw new InvoiceStateChangedError();
+    const currentTrack: CertificateTrack =
+      lockedPartner.archidocPartnerType === "supplier"
+        ? "supplier_direct_payment"
+        : "contractor_works";
+    if (currentTrack !== expectedTrack) {
+      throw new InvoiceStateChangedError();
+    }
     // Ordered FOR UPDATE locks on every facture (deterministic order avoids
     // deadlocks between concurrent overlapping selections).
     const lockedInvoices = await tx
@@ -260,7 +511,13 @@ export async function createCertificatFromInvoices(
       .for("update");
     if (lockedInvoices.length !== uniqueIds.length) throw new InvoiceStateChangedError();
     for (const inv of lockedInvoices) {
-      if (inv.status === "void") throw new InvoiceStateChangedError();
+      if (
+        inv.status === "void" ||
+        (expectedTrack === "supplier_direct_payment" &&
+          (inv.status !== "approved" || inv.datePaid != null))
+      ) {
+        throw new InvoiceStateChangedError();
+      }
       // The advisory lock was taken for the pre-lock identity — a concurrent
       // reassignment would let the derivation run outside the lock's protection.
       if (inv.projectId !== identity.projectId || inv.contractorId !== identity.contractorId) {
@@ -300,15 +557,39 @@ export async function createCertificatFromInvoices(
     const result = await deriveCertificatFromInvoices(uniqueIds);
     if (!result.ok) throw new DerivationRefusedError(result.refusal);
     const d = result.derivation;
-    const deductions = await resolveCertificatDeductions({
-      projectId: d.projectId,
-      contractorId: d.contractorId,
-      totalWorksHt: d.totalWorksHt,
-      pvMvAdjustment: "0.00",
-      previousPayments: d.previousPayments,
-      // Documentary TVA must reflect the certified documents only.
-      documentaryBasisInvoices: d.invoices.map((r) => ({ amountHt: r.amountHt, amountTtc: r.amountTtc })),
-    });
+    if (d.certificateTrack !== expectedTrack) {
+      throw new InvoiceStateChangedError();
+    }
+    const deductions =
+      d.certificateTrack === "supplier_direct_payment"
+        ? {
+            retenueGarantie: "0.00",
+            cumulativeProrataDeduction: "0.00",
+            periodProrataDeduction: "0.00",
+            cumulativeAcompteRecoupment: "0.00",
+            periodAcompteRecoupment: "0.00",
+            tvaRatePercent: d.supplierDirectPayment.tvaRatePercent,
+            tvaAutoliquidation: false,
+            tvaRateSource: "documentary" as const,
+            netToPayHt: d.supplierDirectPayment.netToPayHt,
+            tvaAmount: d.supplierDirectPayment.tvaAmount,
+            netToPayTtc: d.supplierDirectPayment.netToPayTtc,
+            isSolde: false,
+            retenueReleased: false,
+            retenueReleaseAmount: "0.00",
+          }
+        : await resolveCertificatDeductions({
+            projectId: d.projectId,
+            contractorId: d.contractorId,
+            totalWorksHt: d.totalWorksHt,
+            pvMvAdjustment: "0.00",
+            previousPayments: d.previousPayments,
+            // Documentary TVA must reflect the certified documents only.
+            documentaryBasisInvoices: d.invoices.map((r) => ({
+              amountHt: r.amountHt,
+              amountTtc: r.amountTtc,
+            })),
+          });
 
     const nextRef = await storage.getNextCertificateRef(d.projectId);
     const invoiceNumbers = d.invoices.map((r) => `#${r.invoiceNumber}`).join(", ");
@@ -317,6 +598,7 @@ export async function createCertificatFromInvoices(
       .values({
         projectId: d.projectId,
         contractorId: d.contractorId,
+        certificateTrack: d.certificateTrack,
         certificateRef: nextRef,
         dateIssued: new Date().toISOString().split("T")[0],
         totalWorksHt: d.totalWorksHt,
@@ -324,9 +606,13 @@ export async function createCertificatFromInvoices(
         previousPayments: d.previousPayments,
         status: "draft",
         notes:
-          d.invoices.length === 1
-            ? `Créé depuis la facture ${invoiceNumbers}.`
-            : `Créé depuis les factures ${invoiceNumbers}.`,
+          d.certificateTrack === "supplier_direct_payment"
+            ? d.invoices.length === 1
+              ? `Paiement direct fournisseur créé depuis la facture ${invoiceNumbers}.`
+              : `Paiement direct fournisseur créé depuis les factures ${invoiceNumbers}.`
+            : d.invoices.length === 1
+              ? `Créé depuis la facture ${invoiceNumbers}.`
+              : `Créé depuis les factures ${invoiceNumbers}.`,
         ...deductions,
       })
       .returning();
