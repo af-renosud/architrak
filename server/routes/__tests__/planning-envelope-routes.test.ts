@@ -21,6 +21,7 @@ vi.mock("../../services/planning-envelope.service", () => ({
   touchPlanningImportJob: vi.fn(),
   failPlanningImportJob: vi.fn(),
   getRecentPlanningImports: vi.fn(),
+  deletePlanningUploadedDraft: vi.fn(),
   patchRevision: vi.fn(),
   reviewRevision: vi.fn(),
   approveRevision: vi.fn(),
@@ -61,6 +62,7 @@ vi.mock("../../storage/object-storage", () => ({
   uploadDocumentAtKey: vi.fn(),
   getDocumentBuffer: vi.fn(),
   getDocumentStream: vi.fn(),
+  deleteDocument: vi.fn(),
 }));
 
 vi.mock("../../auth/middleware", () => ({
@@ -83,6 +85,7 @@ import {
   touchPlanningImportJob,
   failPlanningImportJob,
   getRecentPlanningImports,
+  deletePlanningUploadedDraft,
   patchRevision,
   reviewRevision,
   approveRevision,
@@ -97,6 +100,7 @@ import {
 } from "../../gmail/document-parser";
 import { recoverPlanningTotalsBoxLines } from "../../services/planning-totals-recovery.service";
 import {
+  deleteDocument,
   getDocumentBuffer,
   getDocumentStream,
   uploadDocumentAtKey,
@@ -112,6 +116,7 @@ const mockAdvanceImportStage = advancePlanningImportStage as unknown as ReturnTy
 const mockTouchImportJob = touchPlanningImportJob as unknown as ReturnType<typeof vi.fn>;
 const mockFailImportJob = failPlanningImportJob as unknown as ReturnType<typeof vi.fn>;
 const mockGetRecentImports = getRecentPlanningImports as unknown as ReturnType<typeof vi.fn>;
+const mockDeletePlanningUploadedDraft = deletePlanningUploadedDraft as unknown as ReturnType<typeof vi.fn>;
 const mockPatch = patchRevision as unknown as ReturnType<typeof vi.fn>;
 const mockReview = reviewRevision as unknown as ReturnType<typeof vi.fn>;
 const mockApprove = approveRevision as unknown as ReturnType<typeof vi.fn>;
@@ -123,6 +128,7 @@ const mockIsTransientParseFailure = isTransientParseFailure as unknown as Return
 const mockRecoverPlanningTotals = recoverPlanningTotalsBoxLines as unknown as ReturnType<typeof vi.fn>;
 const mockGetDocumentStream = getDocumentStream as unknown as ReturnType<typeof vi.fn>;
 const mockGetDocumentBuffer = getDocumentBuffer as unknown as ReturnType<typeof vi.fn>;
+const mockDeleteDocument = deleteDocument as unknown as ReturnType<typeof vi.fn>;
 const mockUploadDocumentAtKey = uploadDocumentAtKey as unknown as ReturnType<typeof vi.fn>;
 
 const mockGetProject = storage.getProject as unknown as ReturnType<typeof vi.fn>;
@@ -184,6 +190,7 @@ beforeEach(() => {
   mockTouchImportJob.mockReset();
   mockFailImportJob.mockReset();
   mockGetRecentImports.mockReset();
+  mockDeletePlanningUploadedDraft.mockReset();
   mockPatch.mockReset();
   mockReview.mockReset();
   mockApprove.mockReset();
@@ -195,6 +202,7 @@ beforeEach(() => {
   mockRecoverPlanningTotals.mockReset();
   mockGetDocumentStream.mockReset();
   mockGetDocumentBuffer.mockReset();
+  mockDeleteDocument.mockReset();
   mockUploadDocumentAtKey.mockReset();
   mockGetProject.mockReset();
   mockGetUser.mockReset();
@@ -219,6 +227,7 @@ describe("auth guard", () => {
       ["POST", "/api/projects/1/planning-envelope/revisions"],
       ["GET", "/api/planning-revisions/5"],
       ["GET", "/api/planning-revisions/5/pdf"],
+      ["DELETE", "/api/planning-revisions/5"],
       ["POST", "/api/planning-revisions/5/rescrape"],
       ["PATCH", "/api/planning-revisions/5"],
     ];
@@ -491,6 +500,130 @@ describe("POST /api/projects/:projectId/planning-envelope/import", () => {
         }),
       ],
     }));
+  });
+
+  it("cannot delete a same-SHA replacement uploaded while old-source cleanup is in flight", async () => {
+    const pdfBytes = "%PDF-1.4\n%%EOF\n";
+    const fileSha256 = crypto.createHash("sha256").update(Buffer.from(pdfBytes)).digest("hex");
+    const oldStorageKey = `/private/projects/1/planning-sources/${fileSha256}.pdf`;
+    const storedObjects = new Set([oldStorageKey]);
+
+    mockDeletePlanningUploadedDraft.mockResolvedValue({
+      revisionId: 5,
+      projectId: 1,
+      fileName: "old-copy.pdf",
+      storageKeyToDelete: oldStorageKey,
+      deletedImportJobIds: [87],
+    });
+
+    let signalCleanupStarted!: () => void;
+    const cleanupStarted = new Promise<void>((resolve) => {
+      signalCleanupStarted = resolve;
+    });
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    mockDeleteDocument.mockImplementation(async (storageKey: string) => {
+      signalCleanupStarted();
+      await cleanupGate;
+      storedObjects.delete(storageKey);
+    });
+
+    mockGetProject.mockResolvedValue(FAKE_PROJECT);
+    mockCreateImportJob.mockResolvedValue({
+      id: 901,
+      fileName: "replacement.pdf",
+      fileSha256,
+      status: "processing",
+      stage: "accepted",
+      revisionId: null,
+      errorCode: null,
+      errorMessage: null,
+      startedAt: new Date(),
+      updatedAt: new Date(),
+      completedAt: null,
+    });
+    const parsed = {
+      documentType: "quotation" as const,
+      reference: "REPLACEMENT",
+      amountHt: 100,
+      amountTtc: 120,
+      tvaAmount: 20,
+      lineItems: [{ description: "Replacement line", total: 100 }],
+    };
+    mockParseDocument.mockResolvedValue(parsed);
+    mockIsTransientParseFailure.mockReturnValue(false);
+    mockRecoverPlanningTotals.mockResolvedValue({
+      parsed,
+      validation: {
+        isValid: true,
+        warnings: [],
+        correctedValues: {},
+        confidenceScore: 100,
+      },
+    });
+    mockMatchToProject.mockResolvedValue({
+      projectId: null,
+      contractorId: null,
+      confidence: 0,
+      warnings: [],
+    });
+
+    let replacementObjectName: string | null = null;
+    mockUploadDocumentAtKey.mockImplementation(async (objectName: string) => {
+      replacementObjectName = objectName;
+      const storageKey = `/${objectName}`;
+      storedObjects.add(storageKey);
+      return storageKey;
+    });
+    mockCreatePdfRevision.mockImplementation(async (input) => ({
+      revision: { ...FAKE_REVISION, id: 901 },
+      lines: input.lines,
+      source: { storageKey: input.storageKey, fileSha256: input.fileSha256 },
+    }));
+
+    const deleteResponsePromise = fetch(`${baseUrl}/api/planning-revisions/5`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({ expectedVersion: 1 }),
+    });
+
+    let replacementStorageKey: string | undefined;
+    try {
+      await cleanupStarted;
+
+      const form = new FormData();
+      form.append(
+        "file",
+        new Blob([pdfBytes], { type: "application/pdf" }),
+        "replacement.pdf",
+      );
+      const importResponse = await fetch(`${baseUrl}/api/projects/1/planning-envelope/import`, {
+        method: "POST",
+        headers: { "x-test-user-id": "42" },
+        body: form,
+      });
+
+      expect(importResponse.status).toBe(201);
+      expect(replacementObjectName).toMatch(
+        new RegExp(`/planning-sources/import-901-${fileSha256}\\.pdf$`),
+      );
+      replacementStorageKey = (
+        mockCreatePdfRevision.mock.calls.at(-1)?.[0] as { storageKey?: string } | undefined
+      )?.storageKey;
+      expect(replacementStorageKey).toBe(`/${replacementObjectName}`);
+      expect(replacementStorageKey).not.toBe(oldStorageKey);
+      expect(mockDeleteDocument).toHaveBeenCalledWith(oldStorageKey);
+    } finally {
+      releaseCleanup();
+    }
+
+    const deleteResponse = await deleteResponsePromise;
+    expect(deleteResponse.status).toBe(200);
+    expect(storedObjects.has(oldStorageKey)).toBe(false);
+    expect(replacementStorageKey).toBeDefined();
+    expect(storedObjects.has(replacementStorageKey!)).toBe(true);
   });
 });
 
@@ -805,6 +938,111 @@ describe("GET /api/planning-revisions/:id", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.revision.id).toBe(5);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /api/planning-revisions/:id
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("DELETE /api/planning-revisions/:id", () => {
+  it("deletes the guarded draft and removes an unshared source object", async () => {
+    mockDeletePlanningUploadedDraft.mockResolvedValue({
+      revisionId: 5,
+      projectId: 1,
+      fileName: "unwanted.pdf",
+      storageKeyToDelete: "/bucket/planning/unwanted.pdf",
+      deletedImportJobIds: [88],
+    });
+    mockDeleteDocument.mockResolvedValue(undefined);
+
+    const res = await fetch(`${baseUrl}/api/planning-revisions/5`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({ expectedVersion: 3 }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ deleted: true, revisionId: 5 });
+    expect(mockDeletePlanningUploadedDraft).toHaveBeenCalledWith({
+      revisionId: 5,
+      expectedVersion: 3,
+    });
+    expect(mockDeleteDocument).toHaveBeenCalledWith("/bucket/planning/unwanted.pdf");
+  });
+
+  it("keeps a source object that another planning revision still references", async () => {
+    mockDeletePlanningUploadedDraft.mockResolvedValue({
+      revisionId: 5,
+      projectId: 1,
+      fileName: "shared.pdf",
+      storageKeyToDelete: null,
+      deletedImportJobIds: [],
+    });
+
+    const res = await fetch(`${baseUrl}/api/planning-revisions/5`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({ expectedVersion: 1 }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockDeleteDocument).not.toHaveBeenCalled();
+  });
+
+  it("keeps deletion successful when post-commit object cleanup fails", async () => {
+    mockDeletePlanningUploadedDraft.mockResolvedValue({
+      revisionId: 5,
+      projectId: 1,
+      fileName: "cleanup-failure.pdf",
+      storageKeyToDelete: "/bucket/planning/cleanup-failure.pdf",
+      deletedImportJobIds: [],
+    });
+    mockDeleteDocument.mockRejectedValue(new Error("storage unavailable"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const res = await fetch(`${baseUrl}/api/planning-revisions/5`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({ expectedVersion: 1 }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ deleted: true, revisionId: 5 });
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("source-object cleanup failed"),
+      expect.any(Error),
+    );
+    warn.mockRestore();
+  });
+
+  it("returns the service refusal without attempting storage cleanup", async () => {
+    mockDeletePlanningUploadedDraft.mockRejectedValue(new PlanningEnvelopeError(
+      409,
+      "REVISION_DELETE_NOT_ALLOWED",
+      "Only an unused uploaded draft can be deleted",
+    ));
+
+    const res = await fetch(`${baseUrl}/api/planning-revisions/5`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({ expectedVersion: 1 }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: "REVISION_DELETE_NOT_ALLOWED" });
+    expect(mockDeleteDocument).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing expected version before calling the service", async () => {
+    const res = await fetch(`${baseUrl}/api/planning-revisions/5`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json", "x-test-user-id": "42" },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(400);
+    expect(mockDeletePlanningUploadedDraft).not.toHaveBeenCalled();
   });
 });
 

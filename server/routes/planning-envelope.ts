@@ -12,7 +12,7 @@ import { z } from "zod";
 import { requireAuth } from "../auth/middleware";
 import { validateRequest } from "../middleware/validate";
 import { assertPdfMagic } from "../middleware/upload";
-import { getDocumentBuffer, uploadDocumentAtKey } from "../storage/object-storage";
+import { deleteDocument, getDocumentBuffer, uploadDocumentAtKey } from "../storage/object-storage";
 import { storage } from "../storage";
 import {
   getEnvelopeSummary,
@@ -25,6 +25,7 @@ import {
   touchPlanningImportJob,
   failPlanningImportJob,
   getRecentPlanningImports,
+  deletePlanningUploadedDraft,
   patchRevision,
   reviewRevision,
   approveRevision,
@@ -272,21 +273,31 @@ const rescrapeRevisionBody = z.object({
   expectedVersion: z.number().int().positive(),
 });
 
+const deleteRevisionBody = z.object({
+  expectedVersion: z.number().int().positive(),
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Deterministic planning source object key
+// Immutable planning source object key
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Deterministic key for a planning PDF source:
- * projects/{projectId}/planning-sources/{sha256}.pdf
- * Concurrent re-uploads collapse onto the same object (idempotent overwrite).
+ * Unique immutable key for one planning import:
+ * projects/{projectId}/planning-sources/import-{importJobId}-{sha256}.pdf
+ *
+ * The import-job generation prevents cleanup authorized for an older draft
+ * from deleting a same-SHA replacement uploaded immediately after commit.
  */
-function buildPlanningSourceObjectName(projectId: number, sha256Hex: string): string {
+function buildPlanningSourceObjectName(
+  projectId: number,
+  importJobId: number,
+  sha256Hex: string,
+): string {
   const env = process.env;
   const privateDir = env.PRIVATE_OBJECT_DIR;
   if (!privateDir) throw new Error("PRIVATE_OBJECT_DIR not set");
   const dirPart = privateDir.startsWith("/") ? privateDir.slice(1).split("/").slice(1).join("/") : privateDir.split("/").slice(1).join("/");
-  return `${dirPart}/projects/${projectId}/planning-sources/${sha256Hex}.pdf`;
+  return `${dirPart}/projects/${projectId}/planning-sources/import-${importJobId}-${sha256Hex}.pdf`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -415,7 +426,8 @@ router.post(
       const user = await storage.getUser(req.session.userId!);
       const actor = user?.email ?? String(req.session.userId);
 
-      // Compute file SHA256 BEFORE parse/upload (used for dedup key and provenance)
+      // Compute file SHA256 BEFORE parse/upload (used for provenance and the
+      // content-identifying portion of this import's immutable object key).
       const fileSha256 = crypto.createHash("sha256").update(file.buffer).digest("hex");
       const fileSizeBytes = file.buffer.length;
       const mimeType = file.mimetype || "application/pdf";
@@ -475,10 +487,11 @@ router.post(
         () => advanceStage("validating"),
       );
 
-      // Upload AFTER parse/validation succeeds (avoid orphaning rejected files)
-      // Use deterministic key based on SHA256 so re-uploads of the same file are idempotent
+      // Upload AFTER parse/validation succeeds (avoid orphaning rejected files).
+      // Each import gets an immutable generation key. Same-SHA replacements must
+      // never reuse a key whose prior draft cleanup may already be in flight.
       await advanceStage("storing");
-      const objectName = buildPlanningSourceObjectName(projectId, fileSha256);
+      const objectName = buildPlanningSourceObjectName(projectId, importJob.id, fileSha256);
       const storageKey = await uploadDocumentAtKey(objectName, file.buffer, mimeType);
 
       await advanceStage("saving");
@@ -590,6 +603,49 @@ router.get(
       const disposition = req.query.download === "1" ? "attachment" : "inline";
       res.setHeader("Content-Disposition", `${disposition}; filename="${safeName}"; filename*=UTF-8''${encodedName}`);
       stream.pipe(res);
+    } catch (err) {
+      handlePlanningError(err, res);
+    }
+  },
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /api/planning-revisions/:id
+// Permanently remove an unused PDF-uploaded draft.
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.delete(
+  "/api/planning-revisions/:id",
+  requireAuth,
+  validateRequest({ params: revisionIdParams, body: deleteRevisionBody }),
+  async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const result = await deletePlanningUploadedDraft({
+        revisionId: id,
+        expectedVersion: req.body.expectedVersion,
+      });
+
+      if (result.storageKeyToDelete) {
+        try {
+          await deleteDocument(result.storageKeyToDelete);
+        } catch (storageError) {
+          console.warn(
+            `[PlanningDraftDelete] Deleted revision ${id}, but source-object cleanup failed (continuing):`,
+            storageError,
+          );
+        }
+      }
+
+      const user = await storage.getUser(req.session.userId!);
+      console.info("[PlanningDraftDelete]", JSON.stringify({
+        revisionId: id,
+        projectId: result.projectId,
+        fileName: result.fileName,
+        deletedImportJobIds: result.deletedImportJobIds,
+        actor: user?.email ?? String(req.session.userId),
+      }));
+      res.json({ deleted: true, revisionId: id });
     } catch (err) {
       handlePlanningError(err, res);
     }

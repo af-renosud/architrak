@@ -58,6 +58,8 @@ export type PlanningEnvelopeErrorCode =
   | "REVISION_CROSS_PROJECT_LOT"
   | "REVISION_SUPERSEDES_MISMATCH"
   | "REVISION_EMPTY_PATCH"
+  | "REVISION_DELETE_NOT_ALLOWED"
+  | "REVISION_DELETE_IMPORT_ACTIVE"
   | "PROJECT_NOT_FOUND"
   | "PROJECT_ARCHIVED"
   | "CONTRACTOR_NOT_FOUND"
@@ -131,6 +133,7 @@ export interface EnvelopeSummary {
 export interface PlanningImportSummary {
   id: number;
   fileName: string;
+  fileSha256: string;
   status: PlanningImportStatus;
   stage: PlanningImportStage;
   revisionId: number | null;
@@ -139,6 +142,14 @@ export interface PlanningImportSummary {
   startedAt: Date;
   updatedAt: Date;
   completedAt: Date | null;
+}
+
+export interface DeletePlanningUploadedDraftResult {
+  revisionId: number;
+  projectId: number;
+  fileName: string | null;
+  storageKeyToDelete: string | null;
+  deletedImportJobIds: number[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -313,12 +324,16 @@ function buildApprovedSnapshot(
 type TxClient = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type TxOrDb = typeof db | TxClient;
 
-async function assertProjectMutable(projectId: number, tx: TxClient): Promise<void> {
+async function assertProjectMutable(
+  projectId: number,
+  tx: TxClient,
+  lockMode: "share" | "update" = "share",
+): Promise<void> {
   const [project] = await tx
     .select({ id: projects.id, archivedAt: projects.archivedAt })
     .from(projects)
     .where(eq(projects.id, projectId))
-    .for("share");
+    .for(lockMode);
 
   if (!project) {
     throw new PlanningEnvelopeError(404, "PROJECT_NOT_FOUND", "Project not found");
@@ -341,6 +356,7 @@ function toPlanningImportSummary(row: PlanningImportJob): PlanningImportSummary 
   return {
     id: row.id,
     fileName: row.fileName,
+    fileSha256: row.fileSha256,
     status: row.status as PlanningImportStatus,
     stage: row.stage as PlanningImportStage,
     revisionId: row.revisionId,
@@ -548,6 +564,180 @@ async function getRevisionDetail(revisionId: number): Promise<RevisionDetail | n
 
 export async function getRevisionById(id: number): Promise<RevisionDetail | null> {
   return getRevisionDetail(id);
+}
+
+/**
+ * Permanently remove a disposable PDF-uploaded draft.
+ *
+ * The preliminary identity read is intentionally followed by locked re-reads
+ * inside the transaction. It gives us the project row to lock first (the same
+ * lock order used by other planning mutations) without trusting stale state.
+ */
+export async function deletePlanningUploadedDraft(input: {
+  revisionId: number;
+  expectedVersion: number;
+}): Promise<DeletePlanningUploadedDraftResult> {
+  const [identity] = await db
+    .select({ projectId: planningEnvelopes.projectId })
+    .from(planningRevisions)
+    .innerJoin(planningEnvelopes, eq(planningEnvelopes.id, planningRevisions.envelopeId))
+    .where(eq(planningRevisions.id, input.revisionId));
+
+  if (!identity) {
+    throw new PlanningEnvelopeError(404, "REVISION_NOT_FOUND", "Planning revision not found");
+  }
+
+  return db.transaction(async (tx) => {
+    // Import/PDF creation takes a shared lock on this row. The conflicting
+    // exclusive lock closes the empty-result race around the active-import
+    // check and keeps post-commit object cleanup safe.
+    await assertProjectMutable(identity.projectId, tx, "update");
+
+    const [envelope] = await tx
+      .select()
+      .from(planningEnvelopes)
+      .where(eq(planningEnvelopes.projectId, identity.projectId))
+      .for("share");
+    if (!envelope) {
+      throw new PlanningEnvelopeError(404, "ENVELOPE_NOT_FOUND", "Planning envelope not found");
+    }
+
+    const [revision] = await tx
+      .select()
+      .from(planningRevisions)
+      .where(eq(planningRevisions.id, input.revisionId))
+      .for("update");
+    if (!revision) {
+      throw new PlanningEnvelopeError(404, "REVISION_NOT_FOUND", "Planning revision not found");
+    }
+    if (revision.envelopeId !== envelope.id) {
+      throw new PlanningEnvelopeError(
+        409,
+        "REVISION_WRONG_PROJECT",
+        "Planning revision belongs to a different project",
+      );
+    }
+    if (revision.version !== input.expectedVersion) {
+      throw new PlanningEnvelopeError(
+        409,
+        "REVISION_CAS_CONFLICT",
+        `Version conflict: expected ${input.expectedVersion}, got ${revision.version}`,
+        {
+          expectedVersion: input.expectedVersion,
+          currentVersion: revision.version,
+        },
+      );
+    }
+    if (
+      revision.status !== "draft"
+      || revision.promotedDevisId != null
+      || revision.promotedAt != null
+      || revision.promotedBy != null
+      || revision.supersedesRevisionId != null
+    ) {
+      throw new PlanningEnvelopeError(
+        409,
+        "REVISION_DELETE_NOT_ALLOWED",
+        "Only an unused uploaded draft can be deleted",
+        { currentStatus: revision.status },
+      );
+    }
+
+    const [dependentRevision] = await tx
+      .select({ id: planningRevisions.id })
+      .from(planningRevisions)
+      .where(eq(planningRevisions.supersedesRevisionId, revision.id))
+      .for("share");
+    if (dependentRevision) {
+      throw new PlanningEnvelopeError(
+        409,
+        "REVISION_DELETE_NOT_ALLOWED",
+        "This draft is part of a revision history and cannot be deleted",
+      );
+    }
+
+    const [linkedDevis] = await tx
+      .select({ id: devis.id })
+      .from(devis)
+      .where(eq(devis.sourcePlanningRevisionId, revision.id))
+      .for("share");
+    if (linkedDevis) {
+      throw new PlanningEnvelopeError(
+        409,
+        "REVISION_DELETE_NOT_ALLOWED",
+        "This draft is linked to a live devis and cannot be deleted",
+      );
+    }
+
+    const [source] = await tx
+      .select()
+      .from(planningRevisionSources)
+      .where(eq(planningRevisionSources.revisionId, revision.id))
+      .for("update");
+    if (
+      !source
+      || source.sourceKind !== "pdf_upload"
+      || !source.storageKey
+      || !source.fileSha256
+    ) {
+      throw new PlanningEnvelopeError(
+        409,
+        "REVISION_DELETE_NOT_ALLOWED",
+        "Only a draft created from an uploaded PDF can be deleted",
+      );
+    }
+
+    const activeImports = await tx
+      .select({ id: planningImportJobs.id })
+      .from(planningImportJobs)
+      .where(and(
+        eq(planningImportJobs.projectId, identity.projectId),
+        eq(planningImportJobs.fileSha256, source.fileSha256),
+        eq(planningImportJobs.status, "processing"),
+      ))
+      .for("update");
+    if (activeImports.length > 0) {
+      throw new PlanningEnvelopeError(
+        409,
+        "REVISION_DELETE_IMPORT_ACTIVE",
+        "This PDF is still being processed. Wait for the import to finish, then try again.",
+      );
+    }
+
+    const deletedImportJobs = await tx
+      .delete(planningImportJobs)
+      .where(eq(planningImportJobs.revisionId, revision.id))
+      .returning({ id: planningImportJobs.id });
+
+    const deletedRevisions = await tx
+      .delete(planningRevisions)
+      .where(and(
+        eq(planningRevisions.id, revision.id),
+        eq(planningRevisions.version, input.expectedVersion),
+      ))
+      .returning({ id: planningRevisions.id });
+    if (deletedRevisions.length !== 1) {
+      throw new PlanningEnvelopeError(
+        409,
+        "REVISION_CAS_CONFLICT",
+        "The planning draft changed before it could be deleted",
+      );
+    }
+
+    const [sharedSource] = await tx
+      .select({ id: planningRevisionSources.id })
+      .from(planningRevisionSources)
+      .where(eq(planningRevisionSources.storageKey, source.storageKey))
+      .limit(1);
+
+    return {
+      revisionId: revision.id,
+      projectId: identity.projectId,
+      fileName: source.fileName,
+      storageKeyToDelete: sharedSource ? null : source.storageKey,
+      deletedImportJobIds: deletedImportJobs.map((row) => row.id),
+    };
+  });
 }
 
 export async function getEnvelopeSummary(projectId: number): Promise<EnvelopeSummary | null> {

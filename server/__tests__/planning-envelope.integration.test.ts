@@ -17,6 +17,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, inArray } from "drizzle-orm";
+import { Client } from "pg";
 import { db } from "../db";
 import {
   contractors,
@@ -43,6 +44,7 @@ import {
   failPlanningImportJob,
   getRecentPlanningImports,
   touchPlanningImportJob,
+  deletePlanningUploadedDraft,
   ensureEnvelope,
   getEnvelopeSummary,
   promoteRevision,
@@ -416,6 +418,392 @@ describe("durable PDF import progress", () => {
     await failPlanningImportJob({ importJobId: first.id, errorCode: "TEST_END", errorMessage: "Test cleanup" });
     await failPlanningImportJob({ importJobId: second.id, errorCode: "TEST_END", errorMessage: "Test cleanup" });
     await failPlanningImportJob({ importJobId: otherProjectJob.id, errorCode: "TEST_END", errorMessage: "Test cleanup" });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Disposable uploaded-draft deletion
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("uploaded planning draft deletion", () => {
+  let pdfSequence = 0;
+
+  async function createDisposablePdfDraft(
+    overrides: Partial<Parameters<typeof createPdfRevision>[0]> = {},
+  ) {
+    pdfSequence += 1;
+    const sha = (pdfSequence % 16).toString(16).repeat(64);
+    return createPdfRevision({
+      projectId,
+      actor,
+      contractorId,
+      storageKey: `/bucket/planning/delete-${stamp}-${pdfSequence}.pdf`,
+      fileName: `delete-${stamp}-${pdfSequence}.pdf`,
+      fileSha256: sha,
+      mimeType: "application/pdf",
+      fileSizeBytes: 2048,
+      parserVersion: `delete-test-${pdfSequence}`,
+      provider: "test",
+      modelId: "test-model",
+      rawExtraction: { documentType: "quotation" },
+      confidence: 95,
+      warnings: [],
+      reference: `DELETE-${stamp}-${pdfSequence}`,
+      descriptionFr: "Disposable uploaded planning draft",
+      amountHt: "100.00",
+      amountTtc: "120.00",
+      lines: [{ lineNumber: 1, description: "Disposable line", totalHt: "100.00" }],
+      ...overrides,
+    });
+  }
+
+  it("atomically removes the draft, extraction records, events, and completed import", async () => {
+    const sha = "1".repeat(64);
+    const job = await createPlanningImportJob({
+      projectId,
+      actor,
+      fileName: `delete-import-${stamp}.pdf`,
+      fileSha256: sha,
+      mimeType: "application/pdf",
+      fileSizeBytes: 2048,
+    });
+    const draft = await createDisposablePdfDraft({
+      importJobId: job.id,
+      fileSha256: sha,
+      storageKey: `/bucket/planning/delete-import-${stamp}.pdf`,
+      fileName: `delete-import-${stamp}.pdf`,
+    });
+
+    const result = await deletePlanningUploadedDraft({
+      revisionId: draft.revision.id,
+      expectedVersion: draft.revision.version,
+    });
+
+    expect(result).toMatchObject({
+      revisionId: draft.revision.id,
+      projectId,
+      storageKeyToDelete: `/bucket/planning/delete-import-${stamp}.pdf`,
+      deletedImportJobIds: [job.id],
+    });
+    expect(await db.select().from(planningRevisions).where(eq(planningRevisions.id, draft.revision.id))).toHaveLength(0);
+    expect(await db.select().from(planningRevisionLines).where(eq(planningRevisionLines.revisionId, draft.revision.id))).toHaveLength(0);
+    expect(await db.select().from(planningRevisionSources).where(eq(planningRevisionSources.revisionId, draft.revision.id))).toHaveLength(0);
+    expect(await db.select().from(planningRevisionEvents).where(eq(planningRevisionEvents.revisionId, draft.revision.id))).toHaveLength(0);
+    expect(await db.select().from(planningImportJobs).where(eq(planningImportJobs.id, job.id))).toHaveLength(0);
+  });
+
+  it("refuses manual, reviewed, approved, superseded, and promoted records", async () => {
+    const manual = await createReviewableRevision();
+    await expect(deletePlanningUploadedDraft({
+      revisionId: manual.revision.id,
+      expectedVersion: manual.revision.version,
+    })).rejects.toMatchObject({ code: "REVISION_DELETE_NOT_ALLOWED" });
+
+    const reviewedDraft = await createDisposablePdfDraft();
+    const reviewed = await reviewRevision({
+      revisionId: reviewedDraft.revision.id,
+      projectId,
+      actor,
+      expectedVersion: reviewedDraft.revision.version,
+    });
+    await expect(deletePlanningUploadedDraft({
+      revisionId: reviewed.revision.id,
+      expectedVersion: reviewed.revision.version,
+    })).rejects.toMatchObject({ code: "REVISION_DELETE_NOT_ALLOWED" });
+
+    const approvedDraft = await createDisposablePdfDraft();
+    const approvedReview = await reviewRevision({
+      revisionId: approvedDraft.revision.id,
+      projectId,
+      actor,
+      expectedVersion: approvedDraft.revision.version,
+    });
+    const approved = await approveRevision({
+      revisionId: approvedDraft.revision.id,
+      projectId,
+      actor,
+      expectedVersion: approvedReview.revision.version,
+    });
+    await expect(deletePlanningUploadedDraft({
+      revisionId: approved.revision.id,
+      expectedVersion: approved.revision.version,
+    })).rejects.toMatchObject({ code: "REVISION_DELETE_NOT_ALLOWED" });
+
+    const successorDraft = await reviseRevision({
+      revisionId: approved.revision.id,
+      projectId,
+      actor,
+    });
+    const successorReview = await reviewRevision({
+      revisionId: successorDraft.revision.id,
+      projectId,
+      actor,
+      expectedVersion: successorDraft.revision.version,
+    });
+    await approveRevision({
+      revisionId: successorDraft.revision.id,
+      projectId,
+      actor,
+      expectedVersion: successorReview.revision.version,
+    });
+    const [superseded] = await db
+      .select()
+      .from(planningRevisions)
+      .where(eq(planningRevisions.id, approved.revision.id));
+    expect(superseded.status).toBe("superseded");
+    await expect(deletePlanningUploadedDraft({
+      revisionId: superseded.id,
+      expectedVersion: superseded.version,
+    })).rejects.toMatchObject({ code: "REVISION_DELETE_NOT_ALLOWED" });
+
+    const promotedDraft = await createDisposablePdfDraft();
+    const promotedReview = await reviewRevision({
+      revisionId: promotedDraft.revision.id,
+      projectId,
+      actor,
+      expectedVersion: promotedDraft.revision.version,
+    });
+    const promotedApproved = await approveRevision({
+      revisionId: promotedDraft.revision.id,
+      projectId,
+      actor,
+      expectedVersion: promotedReview.revision.version,
+    });
+    await promoteRevision({
+      revisionId: promotedDraft.revision.id,
+      projectId,
+      actor,
+      expectedVersion: promotedApproved.revision.version,
+    });
+    const [promoted] = await db
+      .select()
+      .from(planningRevisions)
+      .where(eq(planningRevisions.id, promotedDraft.revision.id));
+    await expect(deletePlanningUploadedDraft({
+      revisionId: promoted.id,
+      expectedVersion: promoted.version,
+    })).rejects.toMatchObject({ code: "REVISION_DELETE_NOT_ALLOWED" });
+  });
+
+  it("refuses stale versions and archived projects without changing the draft", async () => {
+    const draft = await createDisposablePdfDraft();
+    await expect(deletePlanningUploadedDraft({
+      revisionId: draft.revision.id,
+      expectedVersion: draft.revision.version + 1,
+    })).rejects.toMatchObject({ code: "REVISION_CAS_CONFLICT" });
+    expect(await db.select().from(planningRevisions).where(eq(planningRevisions.id, draft.revision.id))).toHaveLength(1);
+
+    const [temporaryProject] = await db
+      .insert(projects)
+      .values({
+        name: `Delete archived ${stamp}`,
+        code: `DELETE-ARCH-${stamp}`,
+        clientName: "Archived client",
+      })
+      .returning();
+    try {
+      const archivedDraft = await createDisposablePdfDraft({ projectId: temporaryProject.id });
+      await db
+        .update(projects)
+        .set({ archivedAt: new Date() })
+        .where(eq(projects.id, temporaryProject.id));
+      await expect(deletePlanningUploadedDraft({
+        revisionId: archivedDraft.revision.id,
+        expectedVersion: archivedDraft.revision.version,
+      })).rejects.toMatchObject({ code: "PROJECT_ARCHIVED" });
+      expect(await db.select().from(planningRevisions).where(eq(planningRevisions.id, archivedDraft.revision.id))).toHaveLength(1);
+    } finally {
+      await db.delete(projects).where(eq(projects.id, temporaryProject.id));
+    }
+  });
+
+  it("refuses deletion while the same PDF has an active import", async () => {
+    const sha = "a".repeat(64);
+    const draft = await createDisposablePdfDraft({ fileSha256: sha });
+    const activeJob = await createPlanningImportJob({
+      projectId,
+      actor,
+      fileName: `active-delete-${stamp}.pdf`,
+      fileSha256: sha,
+      mimeType: "application/pdf",
+      fileSizeBytes: 1024,
+    });
+
+    await expect(deletePlanningUploadedDraft({
+      revisionId: draft.revision.id,
+      expectedVersion: draft.revision.version,
+    })).rejects.toMatchObject({ code: "REVISION_DELETE_IMPORT_ACTIVE" });
+
+    await failPlanningImportJob({
+      importJobId: activeJob.id,
+      errorCode: "TEST_END",
+      errorMessage: "Test cleanup",
+    });
+    await expect(deletePlanningUploadedDraft({
+      revisionId: draft.revision.id,
+      expectedVersion: draft.revision.version,
+    })).resolves.toMatchObject({ revisionId: draft.revision.id });
+  });
+
+  it("serializes deletion against a matching import becoming active", async () => {
+    const sha = "d".repeat(64);
+    const draft = await createDisposablePdfDraft({ fileSha256: sha });
+    const blocker = new Client({ connectionString: process.env.DATABASE_URL });
+    await blocker.connect();
+
+    let transactionOpen = false;
+    let activeJobId: number | null = null;
+    try {
+      await blocker.query("BEGIN");
+      transactionOpen = true;
+      await blocker.query(
+        "SELECT id FROM projects WHERE id = $1 FOR SHARE",
+        [projectId],
+      );
+
+      let deletionSettled = false;
+      const deletionPromise = deletePlanningUploadedDraft({
+        revisionId: draft.revision.id,
+        expectedVersion: draft.revision.version,
+      }).then(
+        (value) => {
+          deletionSettled = true;
+          return value;
+        },
+        (error) => {
+          deletionSettled = true;
+          throw error;
+        },
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(deletionSettled).toBe(false);
+
+      const inserted = await blocker.query<{ id: number }>(
+        `INSERT INTO planning_import_jobs
+           (project_id, file_name, file_sha256, mime_type, file_size_bytes, created_by)
+         VALUES ($1, $2, $3, 'application/pdf', 1024, $4)
+         RETURNING id`,
+        [projectId, `interleaved-${stamp}.pdf`, sha, actor],
+      );
+      activeJobId = inserted.rows[0].id;
+      await blocker.query("COMMIT");
+      transactionOpen = false;
+
+      await expect(deletionPromise).rejects.toMatchObject({
+        code: "REVISION_DELETE_IMPORT_ACTIVE",
+      });
+      expect(await db.select().from(planningRevisions).where(eq(planningRevisions.id, draft.revision.id))).toHaveLength(1);
+    } finally {
+      if (transactionOpen) {
+        await blocker.query("ROLLBACK").catch(() => undefined);
+      }
+      await blocker.end();
+    }
+
+    if (activeJobId != null) {
+      await failPlanningImportJob({
+        importJobId: activeJobId,
+        errorCode: "TEST_END",
+        errorMessage: "Test cleanup",
+      });
+    }
+    await deletePlanningUploadedDraft({
+      revisionId: draft.revision.id,
+      expectedVersion: draft.revision.version,
+    });
+  });
+
+  it("does not request object deletion while another revision shares the source key", async () => {
+    const sharedKey = `/bucket/planning/shared-delete-${stamp}.pdf`;
+    const sharedSha = "b".repeat(64);
+    const first = await createDisposablePdfDraft({
+      storageKey: sharedKey,
+      fileSha256: sharedSha,
+      parserVersion: "shared-delete-v1",
+    });
+    const second = await createDisposablePdfDraft({
+      storageKey: sharedKey,
+      fileSha256: sharedSha,
+      parserVersion: "shared-delete-v2",
+    });
+
+    const firstResult = await deletePlanningUploadedDraft({
+      revisionId: first.revision.id,
+      expectedVersion: first.revision.version,
+    });
+    expect(firstResult.storageKeyToDelete).toBeNull();
+
+    const secondResult = await deletePlanningUploadedDraft({
+      revisionId: second.revision.id,
+      expectedVersion: second.revision.version,
+    });
+    expect(secondResult.storageKeyToDelete).toBe(sharedKey);
+  });
+
+  it("preserves aggregate project cascades for protected PDF revisions and import history", async () => {
+    const [temporaryProject] = await db
+      .insert(projects)
+      .values({
+        name: `Delete cascade ${stamp}`,
+        code: `DELETE-CASCADE-${stamp}`,
+        clientName: "Cascade client",
+      })
+      .returning();
+    const sha = "e".repeat(64);
+    const fileName = `cascade-${stamp}.pdf`;
+
+    const importJob = await createPlanningImportJob({
+      projectId: temporaryProject.id,
+      actor,
+      fileName,
+      fileSha256: sha,
+      mimeType: "application/pdf",
+      fileSizeBytes: 2048,
+    });
+    const draft = await createDisposablePdfDraft({
+      projectId: temporaryProject.id,
+      importJobId: importJob.id,
+      fileSha256: sha,
+      fileName,
+    });
+    const reviewed = await reviewRevision({
+      revisionId: draft.revision.id,
+      projectId: temporaryProject.id,
+      actor,
+      expectedVersion: draft.revision.version,
+    });
+    await approveRevision({
+      revisionId: draft.revision.id,
+      projectId: temporaryProject.id,
+      actor,
+      expectedVersion: reviewed.revision.version,
+    });
+
+    await db.delete(projects).where(eq(projects.id, temporaryProject.id));
+
+    expect(await db.select().from(planningRevisions).where(eq(planningRevisions.id, draft.revision.id))).toHaveLength(0);
+    expect(await db.select().from(planningRevisionSources).where(eq(planningRevisionSources.revisionId, draft.revision.id))).toHaveLength(0);
+    expect(await db.select().from(planningRevisionEvents).where(eq(planningRevisionEvents.revisionId, draft.revision.id))).toHaveLength(0);
+    expect(await db.select().from(planningImportJobs).where(eq(planningImportJobs.id, importJob.id))).toHaveLength(0);
+  });
+
+  it("keeps the database guard closed for direct deletion of protected records", async () => {
+    const manual = await createReviewableRevision();
+    await expect(
+      db.delete(planningRevisions).where(eq(planningRevisions.id, manual.revision.id)),
+    ).rejects.toBeDefined();
+
+    const pdf = await createDisposablePdfDraft();
+    const reviewed = await reviewRevision({
+      revisionId: pdf.revision.id,
+      projectId,
+      actor,
+      expectedVersion: pdf.revision.version,
+    });
+    await expect(
+      db.delete(planningRevisions).where(eq(planningRevisions.id, reviewed.revision.id)),
+    ).rejects.toBeDefined();
   });
 });
 
