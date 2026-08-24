@@ -21,3 +21,10 @@ uri = "file://cert-preview-task535.pdf"
 type = "pdf"
 title = "Certificat de Paiement — Sample (updated)"
 description = "Payment proposal sentence now sits inside the banking-details box, alongside the red IBAN/SWIFT — amount and recipient in one frame."
+
+[[outputs]]
+id = "_fNG4tl7ibvIrd3yGxCwa"
+uri = "file://deliverables/archidoc-supplier-payment-contract-v1.0.zip"
+type = "unspecified"
+title = "ArchiDoc supplier-payment contract bundle"
+description = "One ZIP containing the versioned contract and all six required supplier-payment wire fixtures."
