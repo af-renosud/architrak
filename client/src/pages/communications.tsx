@@ -407,6 +407,7 @@ function formatDate(date: string | Date | null): string {
 const typeIcons: Record<string, typeof Send> = {
   certificat_sent: FileCheck,
   certificat_contractor_notice: FileCheck,
+  certificat_supplier_notice: FileCheck,
   payment_chase: Clock,
   devis_signature_context: PenLine,
   devis_check_bundle: MessageSquare,
@@ -416,6 +417,7 @@ const typeIcons: Record<string, typeof Send> = {
 const typeLabels: Record<string, string> = {
   certificat_sent: "Certificat Sent",
   certificat_contractor_notice: "Contractor Payment Notice",
+  certificat_supplier_notice: "Supplier Direct-Payment Notice",
   payment_chase: "Payment Chase",
   devis_signature_context: "Devis Sent (Signature)",
   devis_check_bundle: "Devis Questions Bundle",
@@ -636,6 +638,7 @@ export default function Communications() {
               <SelectItem value="all">All Types</SelectItem>
               <SelectItem value="certificat_sent">Certificat Sent</SelectItem>
               <SelectItem value="certificat_contractor_notice">Contractor Payment Notice</SelectItem>
+              <SelectItem value="certificat_supplier_notice">Supplier Direct-Payment Notice</SelectItem>
               <SelectItem value="payment_chase">Payment Chase</SelectItem>
               <SelectItem value="devis_signature_context">Devis Sent (Signature)</SelectItem>
               <SelectItem value="devis_check_bundle">Devis Questions Bundle</SelectItem>

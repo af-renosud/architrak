@@ -85,6 +85,7 @@ export async function sealCertificat(certificatId: number): Promise<{
           invoices: Array<{
             invoiceId: number;
             invoiceNumber: string;
+            invoiceDate: string | null;
             amountHt: string;
             tvaAmount: string;
             amountTtc: string;
@@ -160,6 +161,7 @@ export async function sealCertificat(certificatId: number): Promise<{
             invoiceId: source.invoiceId,
             devisId: source.devisId,
             invoiceNumber: source.invoiceNumber,
+            invoiceDate: invoice.dateIssued,
             amountHt: source.amountHt,
             tvaAmount: source.tvaAmount,
             amountTtc: source.amountTtc,
@@ -248,9 +250,22 @@ export async function sealCertificat(certificatId: number): Promise<{
     // matches, so the PDF/snapshot/row can never disagree.
     const expectedVersion = existing.version;
 
-    const rendered = await generateCertificatPdf(certificatId, { mode: "issue" });
+    const rendered = await generateCertificatPdf(certificatId, {
+      mode: "issue",
+      ...(supplierReadinessSnapshot
+        ? { supplierReadinessSnapshot }
+        : {}),
+    });
     if (!rendered.storageKey) {
       throw new Error(`Certificat ${certificatId} issuance render did not persist a storage key`);
+    }
+    if (
+      certificateTrack === "supplier_direct_payment" &&
+      !rendered.supplierPresentation
+    ) {
+      throw new Error(
+        `Certificat ${certificatId} issuance render did not produce a frozen supplier presentation`,
+      );
     }
     if (certificateTrack === "supplier_direct_payment") {
       const expectedSourceIds = (supplierSourceSnapshot?.invoices ?? [])
@@ -330,11 +345,18 @@ export async function sealCertificat(certificatId: number): Promise<{
       supplierDirectPayment:
         certificateTrack === "supplier_direct_payment"
           ? {
+              projectArchidocId:
+                supplierReadinessSnapshot?.assignment.projectId ?? null,
+              supplierArchidocId:
+                supplierReadinessSnapshot?.supplier.id ?? null,
               readiness: supplierReadinessSnapshot,
               sources: supplierSourceSnapshot,
+              presentation: rendered.supplierPresentation,
+              paymentTransferRef: rendered.transferRef,
             }
           : null,
       pdfFileName: rendered.fileName,
+      pdfStorageKey: rendered.storageKey,
     };
 
     let sealed: Certificat | null;

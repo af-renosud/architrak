@@ -7,7 +7,7 @@
  */
 
 import { useState } from "react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Button } from "@/components/ui/button";
@@ -29,6 +29,22 @@ interface PaymentLedgerResponse {
   fullyPaid: boolean;
   overpaid: boolean;
 }
+interface CertificatSource {
+  id: number;
+  invoice?: {
+    id: number;
+    invoiceNumber: string;
+    dateIssued: string | null;
+    amountHt: string;
+    tvaAmount: string | null;
+    amountTtc: string;
+  } | null;
+}
+type CertificatWithSupplierPresentation = Certificat & {
+  supplierPresentation?: {
+    supplier: { name: string };
+  } | null;
+};
 
 // Task #466 — a single draft suggestion (client "paid" reply).
 function PaymentSuggestionCard({ suggestion, onDone }: { suggestion: CertificatPaymentSuggestion; onDone: () => void }) {
@@ -330,19 +346,32 @@ export function CertificatPaymentsSection({ cert }: { cert: Certificat }) {
   );
 }
 
-export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Certificat; contractor?: Contractor; onClose: () => void }) {
+export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: CertificatWithSupplierPresentation; contractor?: Contractor; onClose: () => void }) {
   const { toast } = useToast();
+  const isSupplier = cert.certificateTrack === "supplier_direct_payment";
+  const { data: sources, isLoading: sourcesLoading, error: sourcesError } = useQuery<CertificatSource[]>({
+    queryKey: ["/api/certificats", String(cert.id), "sources"],
+    enabled: isSupplier,
+  });
   return (
     <Dialog open onOpenChange={onClose}>
       <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-[16px] font-black uppercase tracking-tight">
-            Certificat {cert.certificateRef}
+            {isSupplier
+              ? `Paiement direct fournisseur — ${cert.certificateRef}`
+              : `Certificat ${cert.certificateRef}`}
           </DialogTitle>
+          <DialogDescription className="sr-only">
+            {isSupplier
+              ? "Détail du paiement direct fournisseur et de ses factures sources."
+              : "Détail du certificat et de son suivi de paiement."}
+          </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <StatusBadge status={cert.status} />
+            {isSupplier && <span className="rounded-full border border-emerald-700/30 bg-emerald-700/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-emerald-800" data-testid={`badge-certificate-track-${cert.id}`}>Paiement direct fournisseur</span>}
             <div className="flex items-center gap-3">
               {cert.driveWebViewLink && (
                 <a
@@ -378,15 +407,18 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
 
           {contractor && (
             <div>
-              <TechnicalLabel>Contractor</TechnicalLabel>
+              <TechnicalLabel>{isSupplier ? "Fournisseur" : "Contractor"}</TechnicalLabel>
               <p className="text-[13px] font-semibold text-foreground mt-1" data-testid="text-cert-detail-contractor">
-                {contractor.name}
+                {isSupplier
+                  ? cert.supplierPresentation?.supplier.name ??
+                    contractor.name
+                  : contractor.name}
               </p>
             </div>
           )}
 
           {/* Task #487 — non-blocking BIC warning in the detail dialog */}
-          {contractor && !contractor.bic && (
+          {!isSupplier && contractor && !contractor.bic && (
             <div
               className="flex items-start gap-2 rounded-md border border-amber-300/70 dark:border-amber-500/30 bg-amber-50/70 dark:bg-amber-950/20 px-3 py-2"
               data-testid="warning-bic-missing-detail"
@@ -406,6 +438,30 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
             </div>
           )}
 
+          {isSupplier ? (
+            <div className="space-y-3 p-4 rounded-xl border border-emerald-700/20 bg-emerald-50/30" data-testid="supplier-readiness-summary">
+              <TechnicalLabel>Factures sources du paiement direct</TechnicalLabel>
+              {sourcesLoading ? <p className="text-[11px] text-muted-foreground">Chargement des factures sources…</p> : sourcesError ? <p className="text-[11px] text-destructive">{(sourcesError as Error).message}</p> : (sources ?? []).length ? (
+                (sources ?? []).map((source) => source.invoice && (
+                  <div className="border-t border-emerald-700/15 pt-2" key={source.invoice.id} data-testid={`supplier-source-row-${source.invoice.id}`}>
+                    <div className="flex justify-between gap-3 text-[12px]"><span className="font-semibold">Facture #{source.invoice.invoiceNumber}</span><span className="text-muted-foreground">{source.invoice.dateIssued ? new Date(`${source.invoice.dateIssued}T12:00:00`).toLocaleDateString("fr-FR") : "Date non communiquée"}</span></div>
+                    <div className="mt-1 flex justify-between gap-2 text-[11px] tabular-nums"><Amount value={parseFloat(source.invoice.amountHt)} denomination="HT" /><Amount value={parseFloat(source.invoice.tvaAmount ?? "0")} denomination="TVA" /><Amount value={parseFloat(source.invoice.amountTtc)} denomination="TTC" /></div>
+                  </div>
+                ))
+              ) : <p className="text-[11px] text-muted-foreground">Aucune facture source disponible.</p>}
+              <div className="space-y-1 border-t border-emerald-700/15 pt-3">
+                <div className="flex items-center justify-between"><TechnicalLabel>Total HT</TechnicalLabel><Amount value={parseFloat(cert.netToPayHt)} denomination="HT" /></div>
+                <div className="flex items-center justify-between"><TechnicalLabel>Total TVA</TechnicalLabel><Amount value={parseFloat(cert.tvaAmount)} denomination="TVA" /></div>
+                <div className="flex items-center justify-between"><TechnicalLabel>Total à payer TTC</TechnicalLabel><span className="text-[16px] font-bold"><Amount value={parseFloat(cert.netToPayTtc)} denomination="TTC" /></span></div>
+                {cert.paymentTransferRef && (
+                  <div className="flex items-center justify-between gap-3 pt-1">
+                    <TechnicalLabel>Référence du virement</TechnicalLabel>
+                    <span className="font-mono text-[12px] font-semibold" data-testid="supplier-transfer-reference">{cert.paymentTransferRef}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
           <div className="space-y-3 p-4 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
             <div className="flex items-center justify-between gap-2">
               <TechnicalLabel>Total Works HT</TechnicalLabel>
@@ -490,6 +546,7 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
               </div>
             </div>
           </div>
+          )}
 
           {cert.paymentTransferRef && (
             <div

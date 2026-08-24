@@ -178,6 +178,7 @@ export interface SupplierDirectPaymentSealGuard {
     invoiceId: number;
     devisId: number;
     invoiceNumber: string;
+    invoiceDate: string | null;
     amountHt: string;
     tvaAmount: string;
     amountTtc: string;
@@ -2711,7 +2712,10 @@ export class DatabaseStorage implements IStorage {
       .where(
         and(
           eq(projectCommunications.relatedCertificatId, certificatId),
-          eq(projectCommunications.type, "certificat_contractor_notice"),
+          inArray(projectCommunications.type, [
+            "certificat_contractor_notice",
+            "certificat_supplier_notice",
+          ]),
           inArray(projectCommunications.status, ["queued", "failed"]),
         ),
       )
@@ -2751,7 +2755,11 @@ export class DatabaseStorage implements IStorage {
         and(
           // Task #519 — the scan watches BOTH the client certificat thread
           // and the contractor payment-notice thread.
-          inArray(projectCommunications.type, ["certificat_sent", "certificat_contractor_notice"]),
+          inArray(projectCommunications.type, [
+            "certificat_sent",
+            "certificat_contractor_notice",
+            "certificat_supplier_notice",
+          ]),
           eq(projectCommunications.status, "sent"),
           isNotNull(projectCommunications.emailThreadId),
           ne(certificats.status, "superseded"),
@@ -2871,6 +2879,7 @@ export class DatabaseStorage implements IStorage {
             projectId: invoices.projectId,
             contractorId: invoices.contractorId,
             invoiceNumber: invoices.invoiceNumber,
+            invoiceDate: invoices.dateIssued,
             amountHt: invoices.amountHt,
             tvaAmount: invoices.tvaAmount,
             amountTtc: invoices.amountTtc,
@@ -2898,6 +2907,7 @@ export class DatabaseStorage implements IStorage {
             invoice.contractorId !== seal.contractorId ||
             invoice.devisId !== expected.devisId ||
             invoice.invoiceNumber !== expected.invoiceNumber ||
+            invoice.invoiceDate !== expected.invoiceDate ||
             invoice.status !== "approved" ||
             invoice.datePaid != null ||
             invoice.amountHt !== expected.amountHt ||

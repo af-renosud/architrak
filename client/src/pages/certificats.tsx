@@ -24,7 +24,13 @@ import { insertCertificatSchema } from "@shared/schema";
 import type { Project, Contractor, Certificat, CertificatPayment, Invoice, Marche, Devis } from "@shared/schema";
 
 // Task #556 — server enriches "sent" certificats with the email evidence.
-type CertificatWithSentInfo = Certificat & { sentAt?: string; sentToEmail?: string };
+type CertificatWithSentInfo = Certificat & {
+  sentAt?: string;
+  sentToEmail?: string;
+  supplierPresentation?: {
+    supplier: { name: string };
+  } | null;
+};
 import { computeCertificatDeductions, computeEffectiveTvaRatePercent } from "@shared/financial-utils";
 import { z } from "zod";
 
@@ -508,10 +514,11 @@ export default function Certificats() {
               // Task #487 — flag missing BIC on unsent certs so the architect
               // can chase the contractor before the client receives the PDF.
               const certContractor = contractors?.find((c) => c.id === cert.contractorId);
-              const missingBic = certContractor && !certContractor.bic && (cert.status === "draft" || cert.status === "ready");
+              const isSupplierCert = cert.certificateTrack === "supplier_direct_payment";
+              const missingBic = !isSupplierCert && certContractor && !certContractor.bic && (cert.status === "draft" || cert.status === "ready");
               // Task #609 — flag missing IBAN (harder blocker: preview and
               // issuance are entirely refused without an IBAN).
-              const missingIban = certContractor && !certContractor.iban && (cert.status === "draft" || cert.status === "ready");
+              const missingIban = !isSupplierCert && certContractor && !certContractor.iban && (cert.status === "draft" || cert.status === "ready");
               return (
                 <LuxuryCard key={cert.id} data-testid={`card-certificat-${cert.id}`}>
                   {missingIban && (
@@ -547,8 +554,16 @@ export default function Certificats() {
                     <div className="flex items-center gap-4 flex-wrap">
                       <div>
                         <CertificateRefBadge data-testid={`text-cert-ref-${cert.id}`}>{cert.certificateRef}</CertificateRefBadge>
+                        {isSupplierCert && (
+                          <span className="mt-1 inline-flex rounded-full border border-emerald-700/30 bg-emerald-700/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-emerald-800" data-testid={`badge-certificate-track-${cert.id}`}>
+                            Paiement direct fournisseur
+                          </span>
+                        )}
                         <p className="text-[12px] text-foreground mt-0.5">
-                          {getContractorName(cert.contractorId)}
+                          {isSupplierCert
+                            ? cert.supplierPresentation?.supplier.name ??
+                              getContractorName(cert.contractorId)
+                            : getContractorName(cert.contractorId)}
                         </p>
                         {cert.dateIssued && (
                           <p className="text-[10px] text-muted-foreground mt-0.5">{cert.dateIssued}</p>
@@ -700,7 +715,7 @@ export default function Certificats() {
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
-                          {(contractors ?? []).filter((c) => !c.archidocOrphanedAt).map((c) => (
+                          {(contractors ?? []).filter((c) => !c.archidocOrphanedAt && c.archidocPartnerType !== "supplier").map((c) => (
                             <SelectItem key={c.id} value={String(c.id)}>
                               {c.name}
                             </SelectItem>

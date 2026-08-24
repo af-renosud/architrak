@@ -158,6 +158,7 @@ beforeEach(() => {
   mockedStorage.getInvoice.mockResolvedValue({
     id: 41,
     devisId: 11,
+    dateIssued: "2026-08-20",
     extractedIban: null,
   });
   mockedStorage.getDevis.mockResolvedValue({
@@ -203,6 +204,49 @@ beforeEach(() => {
     fileName: "supplier-cert.pdf",
     sourceInvoiceIds: [41],
     transferRef: "FAC-SUP-41",
+    supplierPresentation: {
+      certificateRef: "SUP-90",
+      issueDate: "2026-08-24",
+      project: {
+        id: 1,
+        archidocId: "project-1",
+        code: "P1",
+        name: "Project",
+        clientName: "Client",
+        clientContactEmail: "client@example.com",
+        clientAddress: null,
+      },
+      supplier: {
+        id: "supplier-1",
+        name: "Supplier",
+        contactName: "Supplier Contact",
+        contactEmail: "supplier@example.com",
+      },
+      banking: {
+        accountHolderName: "Supplier",
+        iban: "FR7630006000011234567890189",
+      },
+      assignment: {
+        id: "assignment-1",
+        directPaymentStatus: "eligible",
+      },
+      invoices: [
+        {
+          invoiceId: 41,
+          invoiceNumber: "FAC-SUP-41",
+          invoiceDate: "2026-08-20",
+          amountHt: "1000.00",
+          tvaAmount: "200.00",
+          amountTtc: "1200.00",
+        },
+      ],
+      totals: {
+        netToPayHt: "1000.00",
+        tvaAmount: "200.00",
+        netToPayTtc: "1200.00",
+      },
+      transferRef: "FAC-SUP-41",
+    },
   });
   mockedStorage.sealCertificat.mockResolvedValue({
     ...supplierCert,
@@ -223,6 +267,10 @@ describe("supplier direct-payment seal", () => {
     });
     expect(derive).toHaveBeenCalledWith([41], {
       allowCertificatId: 90,
+    });
+    expect(generate).toHaveBeenCalledWith(90, {
+      mode: "issue",
+      supplierReadinessSnapshot: readinessSnapshot,
     });
     const seal = mockedStorage.sealCertificat.mock.calls[0][1];
     expect(seal.sourceRows).toEqual([
@@ -251,19 +299,35 @@ describe("supplier direct-payment seal", () => {
       netToPayTtc: "1200.00",
       sourceInvoiceIds: [41],
       supplierDirectPayment: {
+        projectArchidocId: "project-1",
+        supplierArchidocId: "supplier-1",
         readiness: readinessSnapshot,
+        presentation: expect.objectContaining({
+          certificateRef: "SUP-90",
+          supplier: expect.objectContaining({ name: "Supplier" }),
+          invoices: [
+            expect.objectContaining({
+              invoiceId: 41,
+              invoiceNumber: "FAC-SUP-41",
+            }),
+          ],
+        }),
         sources: {
           invoices: [
             {
               invoiceId: 41,
               invoiceNumber: "FAC-SUP-41",
+              invoiceDate: "2026-08-20",
               amountHt: "1000.00",
               tvaAmount: "200.00",
               amountTtc: "1200.00",
             },
           ],
         },
+        paymentTransferRef: "FAC-SUP-41",
       },
+      pdfFileName: "supplier-cert.pdf",
+      pdfStorageKey: "supplier-cert.pdf",
     });
   });
 
@@ -274,6 +338,7 @@ describe("supplier direct-payment seal", () => {
       fileName: "supplier-cert.pdf",
       sourceInvoiceIds: [],
       transferRef: "FAC-SUP-41",
+      supplierPresentation: {} as any,
     });
 
     await expect(sealCertificat(90)).rejects.toMatchObject({

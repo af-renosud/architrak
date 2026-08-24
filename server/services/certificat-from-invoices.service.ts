@@ -29,7 +29,10 @@ import {
   assertSupplierPaymentReadiness,
   SupplierPaymentReadinessError,
 } from "./supplier-payment-readiness.service";
-import type { CertificateTrack } from "@shared/supplier-payment-readiness";
+import type {
+  CertificateTrack,
+  SupplierPaymentReadinessSnapshot,
+} from "@shared/supplier-payment-readiness";
 import { ibansMatch, normaliseIban } from "@shared/iban";
 
 interface MultiInvoiceCertDerivationBase {
@@ -59,6 +62,7 @@ export type MultiInvoiceCertDerivation =
   | (MultiInvoiceCertDerivationBase & {
       certificateTrack: "supplier_direct_payment";
       supplierDirectPayment: {
+        readiness: SupplierPaymentReadinessSnapshot;
         tvaRatePercent: string;
         tvaAmount: string;
         netToPayHt: string;
@@ -158,8 +162,9 @@ export async function deriveCertificatFromInvoices(
   }
 
   if (partner.archidocPartnerType === "supplier") {
+    let readiness: SupplierPaymentReadinessSnapshot;
     try {
-      await assertSupplierPaymentReadiness({
+      readiness = await assertSupplierPaymentReadiness({
         contractorId: first.contractorId,
         projectId: first.projectId,
       });
@@ -321,6 +326,7 @@ export async function deriveCertificatFromInvoices(
         previousPayments: "0.00",
         priorCertificateRef: null,
         supplierDirectPayment: {
+          readiness,
           tvaRatePercent: totals.effectiveTvaRatePercent.toFixed(2),
           tvaAmount: totals.tvaAmount.toFixed(2),
           netToPayHt: totals.netToPayHt.toFixed(2),

@@ -3,10 +3,16 @@ import { z } from "zod";
 import { storage, CertificatSourceConflictError } from "../storage";
 import {
   insertCertificatSchema,
+  type Certificat,
   type InsertCertificat,
   type ServerInsertCertificat,
 } from "@shared/schema";
-import { generateCertificatPdf, BankingDetailsMissingError, BankingMismatchError } from "../communications/certificat-generator";
+import {
+  generateCertificatPdf,
+  BankingDetailsMissingError,
+  BankingMismatchError,
+  type SupplierDirectPaymentPresentation,
+} from "../communications/certificat-generator";
 import { sendCertificat, sendCommunication, CommunicationSendInProgressError } from "../communications/email-sender";
 import { validateRequest } from "../middleware/validate";
 import {
@@ -56,6 +62,24 @@ function pgErrorInfo(err: unknown): { code?: string; constraint?: string } {
     current = (current as { cause?: unknown }).cause;
   }
   return {};
+}
+
+function publicCertificatDto(cert: Certificat) {
+  const { issuanceSnapshot: _privateIssuanceSnapshot, ...publicFields } =
+    cert;
+  const supplierPresentation =
+    cert.certificateTrack === "supplier_direct_payment" &&
+    cert.issuanceSnapshot &&
+    typeof cert.issuanceSnapshot === "object"
+      ? (
+          cert.issuanceSnapshot as {
+            supplierDirectPayment?: {
+              presentation?: SupplierDirectPaymentPresentation | null;
+            };
+          }
+        ).supplierDirectPayment?.presentation ?? null
+      : null;
+  return { ...publicFields, supplierPresentation };
 }
 
 const deductionOverrideShape = {
@@ -174,8 +198,8 @@ router.get("/api/projects/:projectId/certificats", async (req, res) => {
   const enriched = certs.map((c) => {
     const sent = sentComms.get(c.id);
     return sent
-      ? { ...c, sentAt: sent.sentAt.toISOString(), sentToEmail: sent.recipientEmail }
-      : c;
+      ? { ...publicCertificatDto(c), sentAt: sent.sentAt.toISOString(), sentToEmail: sent.recipientEmail }
+      : publicCertificatDto(c);
   });
   res.json(enriched);
 });
@@ -258,7 +282,7 @@ router.post(
       try {
         const nextRef = await storage.getNextCertificateRef(projectId);
         const cert = await storage.createCertificat({ ...body, ...deductions, ...releaseAudit, ...pvAudit, projectId, certificateRef: nextRef });
-        return res.status(201).json(cert);
+        return res.status(201).json(publicCertificatDto(cert));
       } catch (err) {
         const { code, constraint } = pgErrorInfo(err);
         if (code === "23505" && constraint === "certificats_solde_unique") {
@@ -472,9 +496,9 @@ router.get("/api/certificats/:id", async (req, res) => {
   const sentComms = await storage.getCertificatSentComms([cert.id]);
   const sent = sentComms.get(cert.id);
   if (sent) {
-    return res.json({ ...cert, sentAt: sent.sentAt.toISOString(), sentToEmail: sent.recipientEmail });
+    return res.json({ ...publicCertificatDto(cert), sentAt: sent.sentAt.toISOString(), sentToEmail: sent.recipientEmail });
   }
-  res.json(cert);
+  res.json(publicCertificatDto(cert));
 });
 
 router.patch(
@@ -718,7 +742,7 @@ router.patch(
     ) {
       const cert = await storage.updateCertificat(id, patch);
       if (!cert) return res.status(404).json({ message: "Certificat not found" });
-      return res.json(cert);
+      return res.json(publicCertificatDto(cert));
     }
     let cert;
     try {
@@ -746,7 +770,7 @@ router.patch(
         blockedFields: Object.keys(body).filter((k) => k !== "status" && k !== "notes"),
       });
     }
-    res.json(cert);
+    res.json(publicCertificatDto(cert));
   },
 );
 
@@ -762,13 +786,21 @@ router.post(
       // bytes; drafts render ephemerally (nothing persisted).
       if (cert.pdfStorageKey) {
         const pinned = await getDocumentBuffer(cert.pdfStorageKey);
+        const fallbackFileName =
+          cert.certificateTrack === "supplier_direct_payment"
+            ? `Certificat_Paiement_Direct_Fournisseur_${cert.certificateRef}.pdf`
+            : `Certificat_${cert.certificateRef}.pdf`;
         res.setHeader("Content-Type", "application/pdf");
-        res.setHeader("Content-Disposition", `inline; filename="${cert.pdfFileName || `Certificat_${cert.certificateRef}.pdf`}"`);
+        res.setHeader("Content-Disposition", `inline; filename="${cert.pdfFileName || fallbackFileName}"`);
         return res.send(pinned);
       }
       const { pdfBuffer } = await generateCertificatPdf(certId, { mode: "preview" });
+      const previewFileName =
+        cert.certificateTrack === "supplier_direct_payment"
+          ? `Certificat_Paiement_Direct_Fournisseur_${cert.certificateRef}.pdf`
+          : `Certificat_${cert.certificateRef}.pdf`;
       res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `inline; filename="Certificat_${cert.certificateRef}.pdf"`);
+      res.setHeader("Content-Disposition", `inline; filename="${previewFileName}"`);
       res.send(pdfBuffer);
     } catch (err: unknown) {
       // Task #225 — surface the banking-gate blocker as 422 with the
@@ -824,8 +856,12 @@ router.get(
         return res.status(404).json({ code: "CERTIFICAT_NOT_SEALED", message: "Certificat has not been issued yet — no pinned PDF exists" });
       }
       const pinned = await getDocumentBuffer(cert.pdfStorageKey);
+      const fallbackFileName =
+        cert.certificateTrack === "supplier_direct_payment"
+          ? `Certificat_Paiement_Direct_Fournisseur_${cert.certificateRef}.pdf`
+          : `Certificat_${cert.certificateRef}.pdf`;
       res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `inline; filename="${cert.pdfFileName || `Certificat_${cert.certificateRef}.pdf`}"`);
+      res.setHeader("Content-Disposition", `inline; filename="${cert.pdfFileName || fallbackFileName}"`);
       res.setHeader("Content-Length", String(pinned.length));
       res.send(pinned);
     } catch (err: unknown) {
@@ -842,7 +878,65 @@ router.get(
   async (req, res) => {
     const cert = await storage.getCertificat(Number(req.params.id));
     if (!cert) return res.status(404).json({ message: "Certificat not found" });
-    res.json(await storage.getCertificatSources(cert.id));
+    const sources = await storage.getCertificatSources(cert.id);
+    const frozenSupplierInvoices =
+      cert.certificateTrack === "supplier_direct_payment" &&
+      cert.issuanceSnapshot &&
+      typeof cert.issuanceSnapshot === "object"
+        ? (
+            cert.issuanceSnapshot as {
+              supplierDirectPayment?: {
+                sources?: {
+                  invoices?: Array<{
+                    invoiceId: number;
+                    invoiceNumber: string;
+                    invoiceDate: string | null;
+                    amountHt: string;
+                    tvaAmount: string;
+                    amountTtc: string;
+                  }>;
+                };
+              };
+            }
+          ).supplierDirectPayment?.sources?.invoices ?? []
+        : [];
+    const frozenByInvoiceId = new Map(
+      frozenSupplierInvoices.map((invoice) => [invoice.invoiceId, invoice]),
+    );
+    const enriched = await Promise.all(
+      sources.map(async (source) => {
+        if (source.invoiceId == null) return { ...source, invoice: null };
+        const frozen = frozenByInvoiceId.get(source.invoiceId);
+        if (frozen) {
+          return {
+            ...source,
+            invoice: {
+              id: frozen.invoiceId,
+              invoiceNumber: frozen.invoiceNumber,
+              dateIssued: frozen.invoiceDate,
+              amountHt: frozen.amountHt,
+              tvaAmount: frozen.tvaAmount,
+              amountTtc: frozen.amountTtc,
+            },
+          };
+        }
+        const invoice = await storage.getInvoice(source.invoiceId);
+        return {
+          ...source,
+          invoice: invoice
+            ? {
+                id: invoice.id,
+                invoiceNumber: invoice.invoiceNumber,
+                dateIssued: invoice.dateIssued,
+                amountHt: invoice.amountHt,
+                tvaAmount: invoice.tvaAmount,
+                amountTtc: invoice.amountTtc,
+              }
+            : null,
+        };
+      }),
+    );
+    res.json(enriched);
   },
 );
 
@@ -865,6 +959,10 @@ async function buildPreviewPayload(invoiceIds: number[], res: import("express").
   const result = await deriveCertificatFromInvoices(invoiceIds);
   if (!result.ok) return res.status(result.refusal.status).json(result.refusal.body);
   const d = result.derivation;
+  const supplierReadiness =
+    d.certificateTrack === "supplier_direct_payment"
+      ? d.supplierDirectPayment.readiness
+      : null;
   let deductions;
   if (d.certificateTrack === "supplier_direct_payment") {
     deductions = {
@@ -912,6 +1010,31 @@ async function buildPreviewPayload(invoiceIds: number[], res: import("express").
       mode: firstRow.mode,
     },
     deductions,
+    supplierReadiness: supplierReadiness
+      ? {
+          supplierName: supplierReadiness.supplier.name,
+          siret: supplierReadiness.supplier.siret,
+          contactName:
+            supplierReadiness.supplier.primaryContact?.name ?? null,
+          contactEmail:
+            supplierReadiness.supplier.primaryContact?.email ?? null,
+          accountHolderName:
+            supplierReadiness.supplier.banking?.accountHolderName ?? null,
+          iban: supplierReadiness.supplier.banking?.iban ?? null,
+          bic: supplierReadiness.supplier.banking?.bic ?? null,
+          bankName: supplierReadiness.supplier.banking?.bankName ?? null,
+          bankingVerifiedAt:
+            supplierReadiness.supplier.banking?.bankingVerifiedAt ?? null,
+          bankingVerifiedBy:
+            supplierReadiness.supplier.banking?.bankingVerifiedBy
+              ?.displayName ?? null,
+          assignmentStatus:
+            supplierReadiness.assignment.directPaymentStatus,
+          assignmentValidFrom: supplierReadiness.assignment.validFrom,
+          assignmentValidUntil: supplierReadiness.assignment.validUntil,
+          sourceSequence: supplierReadiness.provenance.sourceSequence,
+        }
+      : null,
     nextRef,
   });
 }
@@ -950,7 +1073,7 @@ async function handleCreateFromInvoices(
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const cert = await createCertificatFromInvoices(invoiceIds, identity);
-      return res.status(201).json(cert);
+      return res.status(201).json(publicCertificatDto(cert));
     } catch (err) {
       if (err instanceof InvoiceStateChangedError) {
         return res.status(409).json({ code: "INVOICE_STATE_CHANGED", message: "Une facture a changé pendant la création — actualisez et réessayez." });

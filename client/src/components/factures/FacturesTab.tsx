@@ -79,6 +79,7 @@ interface CertInvoiceLink {
 interface CertificatPreview {
   derivation: {
     mode: "situation" | "invoice";
+    certificateTrack: "contractor_works" | "supplier_direct_payment";
     periodClaimHt: number;
     totalWorksHt: string;
     previousPayments: string;
@@ -96,6 +97,22 @@ interface CertificatPreview {
     netToPayTtc: string;
   };
   nextRef: string;
+  supplierReadiness: {
+    supplierName: string;
+    siret: string | null;
+    contactName: string | null;
+    contactEmail: string | null;
+    accountHolderName: string | null;
+    iban: string | null;
+    bic: string | null;
+    bankName: string | null;
+    bankingVerifiedAt: string | null;
+    bankingVerifiedBy: string | { displayName?: string } | null;
+    assignmentStatus: string | null;
+    assignmentValidFrom: string | null;
+    assignmentValidUntil: string | null;
+    sourceSequence: string | null;
+  } | null;
 }
 
 // Task #496 — read-only confirmation dialog: everything server-derived, the
@@ -144,6 +161,8 @@ function CreateCertificatDialog({
       </span>
     </div>
   );
+  const isSupplier = preview?.derivation.certificateTrack === "supplier_direct_payment";
+  const supplier = preview?.supplierReadiness;
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
@@ -151,10 +170,10 @@ function CreateCertificatDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Award size={18} className="text-[#c1a27b]" />
-            Créer le certificat — Facture #{invoice.invoiceNumber}
+            {isSupplier ? "Autoriser le paiement direct fournisseur" : `Créer le certificat — Facture #${invoice.invoiceNumber}`}
           </DialogTitle>
           <DialogDescription>
-            Montants dérivés automatiquement de la facture et des certificats précédents. Vérifiez puis confirmez — rien à saisir.
+            {isSupplier ? "Vérifiez l'identité, le mandat et les coordonnées du fournisseur avant confirmation." : "Montants dérivés automatiquement de la facture et des certificats précédents. Vérifiez puis confirmez — rien à saisir."}
           </DialogDescription>
         </DialogHeader>
 
@@ -168,7 +187,28 @@ function CreateCertificatDialog({
           <p className="text-[13px] text-destructive" data-testid="text-certificat-preview-error">
             {(error as Error).message}
           </p>
-        ) : preview ? (
+          ) : preview ? isSupplier ? (
+            <div className="space-y-3">
+              <div className="rounded-lg border border-emerald-700/25 bg-emerald-50/50 px-3 py-2" data-testid="supplier-readiness-summary">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-800">Paiement direct fournisseur prêt à autoriser</p>
+                {row("Fournisseur", supplier?.supplierName ?? contractorName)}
+                {row("SIRET", supplier?.siret ?? "Non communiqué")}
+                {row("Contact", [supplier?.contactName, supplier?.contactEmail].filter(Boolean).join(" · ") || "Non communiqué")}
+                {row("Titulaire du compte", supplier?.accountHolderName ?? "Non communiqué")}
+                {row("IBAN", supplier?.iban ?? "Non communiqué")}
+                {row("BIC", supplier?.bic ?? "Non communiqué")}
+                {row("Banque", supplier?.bankName ?? "Non communiquée")}
+                {row("Vérification bancaire", supplier?.bankingVerifiedAt ? `Vérifiée le ${new Date(supplier.bankingVerifiedAt).toLocaleDateString("fr-FR")}` : "Non communiquée")}
+                {row("Mandat de paiement direct", [supplier?.assignmentStatus, supplier?.assignmentValidFrom && `depuis le ${supplier.assignmentValidFrom}`, supplier?.assignmentValidUntil && `jusqu'au ${supplier.assignmentValidUntil}`].filter(Boolean).join(" · ") || "Non communiqué")}
+              </div>
+              <div className="rounded-lg border border-border/60 px-3 py-2" data-testid={`supplier-source-row-${invoice.id}`}>
+                {row("Facture source", `#${invoice.invoiceNumber}`)}
+                {row("Montant HT", <Amount value={parseFloat(invoice.amountHt)} denomination="HT" />)}
+                {row("TVA", <Amount value={parseFloat(invoice.tvaAmount ?? "0")} denomination="TVA" />)}
+                {row("Montant TTC", <Amount value={parseFloat(invoice.amountTtc)} denomination="TTC" />, { bold: true })}
+              </div>
+            </div>
+          ) : (
           <div className="space-y-3">
             <div className="rounded-lg bg-muted/40 px-3 py-2">
               {row("Référence", preview.nextRef, { testId: "text-preview-ref" })}
@@ -216,10 +256,10 @@ function CreateCertificatDialog({
             className="bg-[#0B2545] hover:bg-[#0B2545]/90 text-white gap-1.5"
             disabled={!preview || createMutation.isPending}
             onClick={() => createMutation.mutate()}
-            data-testid="button-confirm-create-certificat"
+            data-testid={isSupplier ? "button-confirm-supplier-direct-payment" : "button-confirm-create-certificat"}
           >
             {createMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <Award size={14} />}
-            Créer le certificat
+            {isSupplier ? "Confirmer le paiement direct fournisseur" : "Créer le certificat"}
           </Button>
         </div>
       </DialogContent>
@@ -250,7 +290,7 @@ function CreateMultiCertificatDialog({
 
   const { data: preview, isLoading, error } = useQuery<CertificatPreview & {
     derivation: CertificatPreview["derivation"] & {
-      invoices: Array<{ invoiceId: number; invoiceNumber: string; periodClaimHt: number }>;
+       invoices: Array<{ invoiceId: number; invoiceNumber: string; periodClaimHt: number; amountHt?: number | string; tvaAmount?: number | string; amountTtc?: number | string }>;
     };
   }>({
     queryKey: [`/api/projects/${projectId}/certificats/from-invoices/preview`, invoiceIds.join(",")],
@@ -295,6 +335,8 @@ function CreateMultiCertificatDialog({
       </span>
     </div>
   );
+  const isSupplier = preview?.derivation.certificateTrack === "supplier_direct_payment";
+  const supplier = preview?.supplierReadiness;
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
@@ -302,10 +344,10 @@ function CreateMultiCertificatDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Award size={18} className="text-[#c1a27b]" />
-            Certificat groupé — {invoices.length} factures
+            {isSupplier ? `Paiement direct fournisseur groupé — ${invoices.length} factures` : `Certificat groupé — ${invoices.length} factures`}
           </DialogTitle>
           <DialogDescription>
-            Un seul certificat couvrant les factures sélectionnées de {contractorName}. Montants dérivés automatiquement — vérifiez puis confirmez.
+            {isSupplier ? `Autorisation unique de paiement direct au fournisseur ${contractorName}, sur les factures sélectionnées.` : `Un seul certificat couvrant les factures sélectionnées de ${contractorName}. Montants dérivés automatiquement — vérifiez puis confirmez.`}
           </DialogDescription>
         </DialogHeader>
 
@@ -319,7 +361,30 @@ function CreateMultiCertificatDialog({
           <p className="text-[13px] text-destructive" data-testid="text-certificat-multi-preview-error">
             {(error as Error).message}
           </p>
-        ) : preview ? (
+          ) : preview ? isSupplier ? (
+            <div className="space-y-3">
+              <div className="rounded-lg border border-emerald-700/25 bg-emerald-50/50 px-3 py-2" data-testid="supplier-readiness-summary">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-800">Paiement direct fournisseur prêt à autoriser</p>
+                {row("Fournisseur", supplier?.supplierName ?? contractorName)}
+                {row("SIRET", supplier?.siret ?? "Non communiqué")}
+                {row("Contact", [supplier?.contactName, supplier?.contactEmail].filter(Boolean).join(" · ") || "Non communiqué")}
+                {row("Titulaire du compte", supplier?.accountHolderName ?? "Non communiqué")}
+                {row("IBAN", supplier?.iban ?? "Non communiqué")}
+                {row("BIC", supplier?.bic ?? "Non communiqué")}
+                {row("Banque", supplier?.bankName ?? "Non communiquée")}
+                {row("Mandat de paiement direct", [supplier?.assignmentStatus, supplier?.assignmentValidFrom && `depuis le ${supplier.assignmentValidFrom}`, supplier?.assignmentValidUntil && `jusqu'au ${supplier.assignmentValidUntil}`].filter(Boolean).join(" · ") || "Non communiqué")}
+              </div>
+              <div className="rounded-lg border border-border/60 px-3 py-2">
+                {(preview.derivation.invoices ?? []).map((source) => {
+                  const original = invoices.find((invoice) => invoice.id === source.invoiceId);
+                  return <div key={source.invoiceId} className="border-b border-border/40 py-2 last:border-0" data-testid={`supplier-source-row-${source.invoiceId}`}>
+                    <p className="text-[11px] font-semibold">Facture #{source.invoiceNumber}</p>
+                    <div className="flex justify-between gap-2 text-[11px] text-muted-foreground"><Amount value={Number(source.amountHt ?? original?.amountHt ?? 0)} denomination="HT" /><Amount value={Number(source.tvaAmount ?? original?.tvaAmount ?? 0)} denomination="TVA" /><Amount value={Number(source.amountTtc ?? original?.amountTtc ?? 0)} denomination="TTC" /></div>
+                  </div>;
+                })}
+              </div>
+            </div>
+          ) : (
           <div className="space-y-3">
             <div className="rounded-lg bg-muted/40 px-3 py-2">
               {row("Référence", preview.nextRef, { testId: "text-preview-multi-ref" })}
@@ -364,7 +429,7 @@ function CreateMultiCertificatDialog({
           </div>
         ) : null}
 
-        {!contractorIban && (
+        {!isSupplier && !contractorIban && (
           <div
             className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2.5"
             data-testid="banner-no-iban-multi"
@@ -387,16 +452,18 @@ function CreateMultiCertificatDialog({
             className="bg-[#0B2545] hover:bg-[#0B2545]/90 text-white gap-1.5"
             disabled={!preview || createMutation.isPending}
             onClick={() => createMutation.mutate()}
-            data-testid="button-confirm-create-certificat-multi"
+            data-testid={isSupplier ? "button-confirm-supplier-direct-payment-multi" : "button-confirm-create-certificat-multi"}
           >
             {createMutation.isPending ? (
               <Loader2 size={14} className="animate-spin" />
-            ) : !contractorIban ? (
+            ) : !isSupplier && !contractorIban ? (
               <AlertTriangle size={14} />
             ) : (
               <Award size={14} />
             )}
-            Créer le certificat groupé
+            {isSupplier
+              ? "Confirmer le paiement direct fournisseur"
+              : "Créer le certificat groupé"}
           </Button>
         </div>
       </DialogContent>
@@ -569,11 +636,11 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                 className="bg-[#0B2545] hover:bg-[#0B2545]/90 text-white gap-1.5"
                 disabled={selectedInvoices.length < 2 || isArchived}
                 onClick={() => setMultiCertDialogOpen(true)}
-                data-testid="button-create-certificat-multi"
+                data-testid={contractors.find((c) => c.id === selectedInvoices[0]?.contractorId)?.archidocPartnerType === "supplier" ? "button-create-supplier-direct-payment-multi" : "button-create-certificat-multi"}
                 title={selectedInvoices.length < 2 ? "Sélectionnez au moins 2 factures" : undefined}
               >
                 <Award size={13} />
-                <span className="text-[10px] font-bold uppercase tracking-widest">Certificat groupé ({selectedInvoices.length})</span>
+                <span className="text-[10px] font-bold uppercase tracking-widest">{contractors.find((c) => c.id === selectedInvoices[0]?.contractorId)?.archidocPartnerType === "supplier" ? `Paiement direct fournisseur (${selectedInvoices.length})` : `Certificat groupé (${selectedInvoices.length})`}</span>
               </Button>
             </div>
           </div>
@@ -584,6 +651,8 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
         <div className="space-y-3">
           {invoices.map((inv) => {
             const dv = devisMap.get(inv.devisId);
+            const contractor = contractors.find((c) => c.id === inv.contractorId);
+            const isSupplier = contractor?.archidocPartnerType === "supplier";
             const isEligibleForCert =
               !certLinkByInvoice.get(inv.id) && dv?.acompteInvoiceId !== inv.id && inv.status !== "void" && !isArchived;
             const selectionContractorId = selectedForCert.size > 0
@@ -656,10 +725,10 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                               e.stopPropagation();
                               setCertDialogInvoice(inv);
                             }}
-                            data-testid={`button-create-certificat-facture-${inv.id}`}
+                            data-testid={isSupplier ? `button-create-supplier-direct-payment-facture-${inv.id}` : `button-create-certificat-facture-${inv.id}`}
                           >
                             <Award size={13} />
-                            <span className="text-[10px] font-bold uppercase tracking-widest">Créer le certificat</span>
+                            <span className="text-[10px] font-bold uppercase tracking-widest">{isSupplier ? "Paiement direct fournisseur" : "Créer le certificat"}</span>
                           </Button>
                         );
                       })()}

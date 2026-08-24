@@ -1,15 +1,69 @@
 import fs from "fs";
 import path from "path";
+import { createHash } from "crypto";
 import { fileURLToPath } from "url";
 import { getUncachableGmailClient, isGmailConfigured, isFakeGmailMode } from "../gmail/client";
 import { getGmailClientForUser } from "../gmail/user-client";
 import { storage } from "../storage";
-import { buildCertificatEmailBody } from "./certificat-generator";
+import {
+  buildCertificatEmailBody,
+  type SupplierDirectPaymentPresentation,
+} from "./certificat-generator";
 import { sealCertificat } from "../services/certificat-seal.service";
 import { getDocumentBuffer, uploadDocument } from "../storage/object-storage";
 import { env } from "../env";
 import type { InsertProjectCommunication } from "@shared/schema";
 import { CLIENT_NO_PAYMENT_NOTICE } from "@shared/signature-message-template";
+import type { Certificat } from "@shared/schema";
+import type { SupplierPaymentReadinessSnapshot } from "@shared/supplier-payment-readiness";
+
+interface SealedSupplierDirectPaymentSnapshot {
+  readiness: SupplierPaymentReadinessSnapshot;
+  presentation: SupplierDirectPaymentPresentation;
+  sources: {
+    invoices: Array<{
+      invoiceId: number;
+      invoiceNumber: string;
+      invoiceDate: string | null;
+      amountHt: string;
+      tvaAmount: string;
+      amountTtc: string;
+    }>;
+  };
+  paymentTransferRef?: string | null;
+}
+
+function getSealedSupplierDirectPaymentSnapshot(
+  certificat: Certificat,
+): SealedSupplierDirectPaymentSnapshot {
+  const issuance = certificat.issuanceSnapshot;
+  if (!issuance || typeof issuance !== "object") {
+    throw new Error(
+      `Le certificat fournisseur ${certificat.certificateRef} ne possède pas de snapshot d'émission.`,
+    );
+  }
+  const supplierDirectPayment = (
+    issuance as { supplierDirectPayment?: unknown }
+  ).supplierDirectPayment;
+  if (!supplierDirectPayment || typeof supplierDirectPayment !== "object") {
+    throw new Error(
+      `Le certificat fournisseur ${certificat.certificateRef} ne possède pas de snapshot de paiement direct.`,
+    );
+  }
+  const snapshot =
+    supplierDirectPayment as Partial<SealedSupplierDirectPaymentSnapshot>;
+  if (
+    !snapshot.readiness ||
+    !snapshot.presentation ||
+    !snapshot.sources ||
+    !Array.isArray(snapshot.sources.invoices)
+  ) {
+    throw new Error(
+      `Le snapshot fournisseur ${certificat.certificateRef} est incomplet.`,
+    );
+  }
+  return snapshot as SealedSupplierDirectPaymentSnapshot;
+}
 
 /**
  * Task #225 — Pull the contractor's RIB (PDF of bank-account details)
@@ -57,6 +111,102 @@ async function mirrorRibForAttachment(args: {
   }
 }
 
+async function mirrorSupplierRibForAttachment(args: {
+  projectId: number;
+  supplierArchidocId: string;
+  ribDocument: {
+    id: string;
+    fileName: string;
+    mimeType: "application/pdf";
+    sha256: string;
+    downloadPath: string;
+  };
+}): Promise<string> {
+  const baseUrl = env.ARCHIDOC_BASE_URL;
+  const apiKey = env.ARCHIDOC_SYNC_API_KEY;
+  if (!baseUrl || !apiKey) {
+    throw new Error(
+      "RIB fournisseur indisponible : la connexion ArchiDoc n'est pas configurée.",
+    );
+  }
+  const expectedPath =
+    `/api/integrations/architrak/v1/suppliers/${encodeURIComponent(args.supplierArchidocId)}` +
+    `/rib/${encodeURIComponent(args.ribDocument.id)}`;
+  if (args.ribDocument.downloadPath !== expectedPath) {
+    throw new Error(
+      "RIB fournisseur refusé : le chemin ArchiDoc ne correspond pas au fournisseur et au document scellés.",
+    );
+  }
+  const base = new URL(baseUrl);
+  const url = new URL(args.ribDocument.downloadPath, base);
+  if (url.origin !== base.origin || url.pathname !== expectedPath) {
+    throw new Error(
+      "RIB fournisseur refusé : origine ou chemin ArchiDoc invalide.",
+    );
+  }
+
+  const response = await fetch(url.toString(), {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      Accept: "application/pdf",
+      "X-ArchiDoc-RIB-SHA256": args.ribDocument.sha256,
+    },
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `RIB fournisseur indisponible dans ArchiDoc (HTTP ${response.status}) — l'émission reste scellée et l'envoi peut être réessayé.`,
+    );
+  }
+  const contentType = response.headers.get("content-type")?.split(";")[0].trim();
+  const cacheControl = response.headers.get("cache-control")?.toLowerCase() ?? "";
+  const disposition =
+    response.headers.get("content-disposition")?.toLowerCase() ?? "";
+  const etag = response.headers.get("etag")?.toLowerCase() ?? "";
+  if (
+    contentType !== "application/pdf" ||
+    !cacheControl.includes("private") ||
+    !cacheControl.includes("no-store") ||
+    !disposition.includes("attachment") ||
+    !etag.includes(args.ribDocument.sha256.toLowerCase())
+  ) {
+    throw new Error(
+      "RIB fournisseur refusé : les garanties de confidentialité ou de version ArchiDoc sont absentes.",
+    );
+  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.length === 0 || buffer.length > 20 * 1024 * 1024) {
+    throw new Error("RIB fournisseur refusé : taille de document invalide.");
+  }
+  const pdfHeaderOffset = buffer.indexOf(Buffer.from("%PDF-"));
+  const pdfTail = buffer
+    .subarray(Math.max(0, buffer.length - 2048))
+    .toString("latin1");
+  if (
+    pdfHeaderOffset < 0 ||
+    pdfHeaderOffset > 1024 ||
+    !pdfTail.includes("%%EOF")
+  ) {
+    throw new Error(
+      "RIB fournisseur refusé : le contenu reçu n'est pas un fichier PDF valide.",
+    );
+  }
+  const actualSha256 = createHash("sha256").update(buffer).digest("hex");
+  if (actualSha256 !== args.ribDocument.sha256.toLowerCase()) {
+    throw new Error(
+      "RIB fournisseur refusé : l'empreinte du document ne correspond pas au snapshot scellé.",
+    );
+  }
+  const declaredBaseName = path
+    .basename(args.ribDocument.fileName, path.extname(args.ribDocument.fileName))
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  const fileName = `RIB-FOURNISSEUR-${declaredBaseName || args.ribDocument.id}.pdf`;
+  return uploadDocument(args.projectId, fileName, buffer, "application/pdf");
+}
+
 /**
  * Task #269 — subject of the certificat email sent to the client.
  * "Certificat de Paiement" is a preserved French domain term (see
@@ -68,6 +218,13 @@ export function buildCertificatEmailSubject(opts: {
   projectName: string;
 }): string {
   return `Certificat de Paiement ${opts.certificateRef} - ${opts.projectName}`;
+}
+
+export function buildSupplierCertificatEmailSubject(opts: {
+  certificateRef: string;
+  projectName: string;
+}): string {
+  return `Certificat de paiement fournisseur ${opts.certificateRef} – paiement direct client – ${opts.projectName}`;
 }
 
 /**
@@ -119,6 +276,42 @@ export function buildContractorNoticeEmailBody(opts: {
   );
 }
 
+export function buildSupplierNoticeEmailSubject(opts: {
+  certificateRef: string;
+  projectName: string;
+}): string {
+  return `Paiement direct fournisseur ${opts.certificateRef} – ${opts.projectName} – règlement demandé au client`;
+}
+
+export function buildSupplierNoticeEmailBody(opts: {
+  supplierName: string;
+  contactName: string;
+  certificateRef: string;
+  projectName: string;
+  netToPayTtc: string;
+  invoiceNumbers: string[];
+}): string {
+  const n = Number(opts.netToPayTtc);
+  const amount = Number.isFinite(n)
+    ? new Intl.NumberFormat("fr-FR", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }).format(n)
+    : opts.netToPayTtc;
+  const invoiceLabel =
+    opts.invoiceNumbers.length === 1
+      ? `la facture ${opts.invoiceNumbers[0]}`
+      : `les factures ${opts.invoiceNumbers.join(", ")}`;
+  return (
+    `Bonjour ${opts.contactName},\n\n` +
+    `Nous vous informons que le certificat de paiement direct fournisseur ${opts.certificateRef}, ` +
+    `établi au bénéfice de ${opts.supplierName} pour le projet « ${opts.projectName} », a été transmis ` +
+    `au maître d'ouvrage avec instruction de régler ${invoiceLabel}, pour un total de ${amount} € TTC.\n\n` +
+    `Merci de répondre simplement à cet e-mail dès réception du virement afin que nous puissions mettre à jour le suivi du paiement.\n\n` +
+    `Cordialement,\nSAS Architects-France\n`
+  );
+}
+
 export async function sendCertificat(certificatId: number): Promise<number> {
   // Task #451 — issuance seal FIRST: render once, pin the bytes. Re-sends
   // and concurrent sends all attach the same pinned PDF (idempotent inside
@@ -132,29 +325,46 @@ export async function sendCertificat(certificatId: number): Promise<number> {
 
   const contractor = await storage.getContractor(certificat.contractorId);
   if (!contractor) throw new Error(`Contractor not found`);
+  const supplierTrack =
+    certificat.certificateTrack === "supplier_direct_payment";
+  const supplierSnapshot = supplierTrack
+    ? getSealedSupplierDirectPaymentSnapshot(certificat)
+    : null;
 
   // Task #478 — the recipient is the client's CONTACT EMAIL, never
   // clientAddress (a postal address in real data). Fail loudly when it is
   // missing rather than queueing an email Gmail will reject or misroute —
   // and that the payment-reply scanner could never match.
-  const recipientEmail = (project.clientContactEmail ?? "").trim();
+  const supplierPresentation = supplierSnapshot?.presentation ?? null;
+  const recipientEmail = (
+    supplierPresentation?.project.clientContactEmail ??
+    project.clientContactEmail ??
+    ""
+  ).trim();
   if (!recipientEmail || !recipientEmail.includes("@")) {
     throw new Error(
-      `Client contact email missing or invalid on project "${project.name}" — set it on the project before sending the certificat`,
+      `Client contact email missing or invalid on project "${supplierPresentation?.project.name ?? project.name}" — set it on the project before issuing the certificat`,
     );
   }
 
-  const subject = buildCertificatEmailSubject({
-    certificateRef: certificat.certificateRef,
-    projectName: project.name,
-  });
+  const subject = supplierTrack
+    ? buildSupplierCertificatEmailSubject({
+        certificateRef: certificat.certificateRef,
+        projectName: supplierPresentation?.project.name ?? project.name,
+      })
+    : buildCertificatEmailSubject({
+        certificateRef: certificat.certificateRef,
+        projectName: project.name,
+      });
   const body = buildCertificatEmailBody({ certificat, project, contractor });
 
-  // Task #225 — attach the contractor's RIB alongside the certificat so
-  // the client has the bank details in a separate document the bank can
-  // file as a single PDF. Non-fatal on failure.
+  // Contractor RIB mirroring remains the legacy non-fatal path. Supplier RIB
+  // retrieval is protected and mandatory: create the stable failed
+  // communication first so a hash/auth/download failure is durable in the
+  // hub, while the already sealed certificat remains valid and the same send
+  // action can retry the exact frozen RIB.
   const attachmentStorageKeys: string[] = [storageKey];
-  if (contractor.ribDocumentUrl) {
+  if (!supplierTrack && contractor.ribDocumentUrl) {
     const ribKey = await mirrorRibForAttachment({
       projectId: project.id,
       ribDocumentUrl: contractor.ribDocumentUrl,
@@ -168,11 +378,12 @@ export async function sendCertificat(certificatId: number): Promise<number> {
     type: "certificat_sent",
     recipientType: "client",
     recipientEmail,
-    recipientName: project.clientName,
+    recipientName:
+      supplierPresentation?.project.clientName ?? project.clientName,
     subject,
     body,
     attachmentStorageKeys,
-    status: "queued",
+    status: supplierTrack ? "failed" : "queued",
     relatedCertificatId: certificatId,
     // Task #451 — idempotent under concurrent send: the dedupe key is stable
     // per issuance (certificat + pinned bytes), so racing send requests hit
@@ -182,6 +393,45 @@ export async function sendCertificat(certificatId: number): Promise<number> {
   };
 
   let created = await storage.createProjectCommunication(comm);
+
+  if (supplierTrack && supplierSnapshot && created.status === "failed") {
+    const existingAttachmentKeys = Array.isArray(
+      created.attachmentStorageKeys,
+    )
+      ? created.attachmentStorageKeys
+      : [];
+    const existingRibKey = existingAttachmentKeys.find(
+      (key) => key !== storageKey,
+    );
+    if (!existingRibKey) {
+      const banking = supplierSnapshot.readiness.supplier.banking;
+      if (!banking?.ribDocument) {
+        throw new Error(
+          "RIB fournisseur absent du snapshot scellé — l'échec est enregistré et l'envoi peut être réessayé après vérification ArchiDoc.",
+        );
+      }
+      try {
+        const ribKey = await mirrorSupplierRibForAttachment({
+          projectId: project.id,
+          supplierArchidocId: supplierSnapshot.readiness.supplier.id,
+          ribDocument: banking.ribDocument,
+        });
+        const supplierAttachmentStorageKeys = [
+          ...attachmentStorageKeys,
+          ribKey,
+        ];
+        const updated = await storage.updateProjectCommunication(created.id, {
+          attachmentStorageKeys: supplierAttachmentStorageKeys,
+        });
+        if (updated) created = updated;
+      } catch (error) {
+        console.error(
+          `[Certificat] Protected supplier RIB attachment failed for sealed certificat ${certificat.certificateRef}; communication ${created.id} remains failed and retryable`,
+        );
+        throw error;
+      }
+    }
+  }
 
   // Task #539 — retryability: the stable dedupe key means a PREVIOUSLY
   // FAILED client send returns the existing failed row instead of inserting
@@ -203,31 +453,63 @@ export async function sendCertificat(certificatId: number): Promise<number> {
   // email queues a FAILED communication row (visible in the hub, retryable
   // once the email is fixed) instead of silently skipping. Same stable
   // dedupe key scheme as the client comm, so re-sends share one row.
-  const contractorEmail = (contractor.email ?? "").trim();
-  const contractorEmailValid = isValidRecipientEmail(contractorEmail);
+  const noticeEmail = (
+    supplierPresentation?.supplier.contactEmail ??
+    contractor.email ??
+    ""
+  ).trim();
+  const noticeEmailValid = isValidRecipientEmail(noticeEmail);
+  const noticeRecipientName =
+    supplierPresentation?.supplier.contactName ??
+    contractor.name;
+  const noticeType = supplierTrack
+    ? "certificat_supplier_notice"
+    : "certificat_contractor_notice";
   await storage.createProjectCommunication({
     projectId: project.id,
-    type: "certificat_contractor_notice",
-    recipientType: "contractor",
-    recipientEmail: contractorEmail,
-    recipientName: contractor.name,
-    subject: buildContractorNoticeEmailSubject({
-      certificateRef: certificat.certificateRef,
-      projectName: project.name,
-    }),
-    body: buildContractorNoticeEmailBody({
-      contractorName: contractor.name,
-      certificateRef: certificat.certificateRef,
-      projectName: project.name,
-      netToPayTtc: certificat.netToPayTtc,
-    }),
-    status: contractorEmailValid ? "queued" : "failed",
+    type: noticeType,
+    recipientType: supplierTrack ? "supplier" : "contractor",
+    recipientEmail: noticeEmail,
+    recipientName: noticeRecipientName,
+    subject: supplierTrack
+      ? buildSupplierNoticeEmailSubject({
+          certificateRef: certificat.certificateRef,
+          projectName:
+            supplierPresentation?.project.name ?? project.name,
+        })
+      : buildContractorNoticeEmailSubject({
+          certificateRef: certificat.certificateRef,
+          projectName: project.name,
+        }),
+    body:
+      supplierTrack && supplierSnapshot
+        ? buildSupplierNoticeEmailBody({
+            supplierName: supplierPresentation?.supplier.name ??
+              supplierSnapshot.readiness.supplier.name,
+            contactName: noticeRecipientName,
+            certificateRef: certificat.certificateRef,
+            projectName:
+              supplierPresentation?.project.name ?? project.name,
+            netToPayTtc: certificat.netToPayTtc,
+            invoiceNumbers: supplierPresentation?.invoices.map(
+              (invoice) => invoice.invoiceNumber,
+            ) ?? supplierSnapshot.sources.invoices.map(
+              (invoice) => invoice.invoiceNumber,
+            ),
+          })
+        : buildContractorNoticeEmailBody({
+            contractorName: contractor.name,
+            certificateRef: certificat.certificateRef,
+            projectName: project.name,
+            netToPayTtc: certificat.netToPayTtc,
+          }),
+    status: noticeEmailValid ? "queued" : "failed",
     relatedCertificatId: certificatId,
-    dedupeKey: `certificat_contractor_notice:${certificatId}:${storageKey}`,
+    dedupeKey: `${noticeType}:${certificatId}:${storageKey}`,
   });
-  if (!contractorEmailValid) {
+  if (!noticeEmailValid) {
     console.warn(
-      `[Certificat] Contractor "${contractor.name}" has no valid email — contractor payment notice for ${certificat.certificateRef} queued as FAILED (fix the contractor email, then retry the send from the communications hub)`,
+      `[Certificat] ${supplierTrack ? "Supplier" : "Contractor"} "${contractor.name}" has no valid notice email — payment notice for ${certificat.certificateRef} queued as FAILED`,
     );
   }
 
@@ -327,6 +609,82 @@ export async function sendCommunication(
     );
   }
 
+  let requiredSupplierAttachmentKeys: [string, string] | null = null;
+
+  // A supplier client communication may have been recorded as failed before
+  // the protected RIB could be mirrored. A direct hub retry must repeat that
+  // authenticated, hash-verified retrieval rather than sending the sealed
+  // certificat without its frozen RIB attachment.
+  if (comm.type === "certificat_sent" && comm.relatedCertificatId) {
+    const cert = await storage.getCertificat(comm.relatedCertificatId);
+    if (cert?.certificateTrack === "supplier_direct_payment") {
+      const supplierSnapshot =
+        getSealedSupplierDirectPaymentSnapshot(cert);
+      const currentAttachments = Array.isArray(comm.attachmentStorageKeys)
+        ? comm.attachmentStorageKeys
+        : [];
+      const pinnedPdfKey = cert.pdfStorageKey;
+      const hasSupplierRib = currentAttachments.some(
+        (key) => key !== pinnedPdfKey,
+      );
+      if (!hasSupplierRib) {
+        const ribDocument =
+          supplierSnapshot.readiness.supplier.banking?.ribDocument;
+        if (!pinnedPdfKey || !ribDocument) {
+          await storage.updateProjectCommunication(communicationId, {
+            status: "failed",
+          });
+          throw new Error(
+            "RIB fournisseur absent du snapshot scellé — l'envoi reste en échec et peut être réessayé après vérification ArchiDoc.",
+          );
+        }
+        try {
+          const ribKey = await mirrorSupplierRibForAttachment({
+            projectId: comm.projectId,
+            supplierArchidocId:
+              supplierSnapshot.readiness.supplier.id,
+            ribDocument,
+          });
+          const attachmentStorageKeys = [pinnedPdfKey, ribKey];
+          await storage.updateProjectCommunication(communicationId, {
+            attachmentStorageKeys,
+          });
+          comm.attachmentStorageKeys = attachmentStorageKeys;
+        } catch (error) {
+          await storage.updateProjectCommunication(communicationId, {
+            status: "failed",
+          });
+          throw error;
+        }
+      }
+      const finalAttachmentKeys = Array.isArray(
+        comm.attachmentStorageKeys,
+      )
+        ? comm.attachmentStorageKeys
+        : [];
+      const finalRibKeys = finalAttachmentKeys.filter(
+        (key) => key !== pinnedPdfKey,
+      );
+      if (
+        !pinnedPdfKey ||
+        finalAttachmentKeys.length !== 2 ||
+        !finalAttachmentKeys.includes(pinnedPdfKey) ||
+        finalRibKeys.length !== 1
+      ) {
+        await storage.updateProjectCommunication(communicationId, {
+          status: "failed",
+        });
+        throw new Error(
+          "Pièces jointes fournisseur incomplètes : le PDF scellé et un seul RIB vérifié sont obligatoires.",
+        );
+      }
+      requiredSupplierAttachmentKeys = [
+        pinnedPdfKey,
+        finalRibKeys[0],
+      ];
+    }
+  }
+
   // Task #519/521 — a communication can be queued as `failed` precisely
   // because the recipient email is missing or was wrong (contractor notice
   // without an email on file, or with a stale address). Guard every send so
@@ -339,7 +697,10 @@ export async function sendCommunication(
   //   (b) clearing or invalidating it after a prior valid send fails closed
   //       rather than disclosing payment content to a stale address.
   let recipient = (comm.recipientEmail ?? "").trim();
-  if (comm.type === "certificat_contractor_notice") {
+  if (
+    comm.type === "certificat_contractor_notice" ||
+    comm.type === "certificat_supplier_notice"
+  ) {
     // Every contractor notice MUST have a linked certificat so we can look up
     // the contractor's current email. A notice with no cert link cannot be
     // safely sent — there is no trusted source for the recipient — so we
@@ -351,8 +712,16 @@ export async function sendCommunication(
       );
     }
     const cert = await storage.getCertificat(comm.relatedCertificatId);
-    const contractor = cert ? await storage.getContractor(cert.contractorId) : undefined;
-    const fresh = (contractor?.email ?? "").trim();
+    const contractor = cert
+      ? await storage.getContractor(cert.contractorId)
+      : undefined;
+    const fresh =
+      comm.type === "certificat_supplier_notice" && cert
+        ? (
+            getSealedSupplierDirectPaymentSnapshot(cert).readiness.supplier
+              .primaryContact?.email ?? ""
+          ).trim()
+        : (contractor?.email ?? "").trim();
     // Unconditionally replace recipient — if fresh is invalid the guard below
     // will fail closed. Persist only when the address actually changed so
     // the comm row reflects the address that was (or would be) used.
@@ -432,7 +801,21 @@ export async function sendCommunication(
         });
       } catch (err) {
         console.error(`[EmailSender] Failed to load attachment ${key}:`, err);
+        if (requiredSupplierAttachmentKeys?.includes(key)) {
+          throw new Error(
+            `Required supplier payment attachment unavailable: ${key}`,
+            { cause: err },
+          );
+        }
       }
+    }
+    if (
+      requiredSupplierAttachmentKeys &&
+      attachments.length !== requiredSupplierAttachmentKeys.length
+    ) {
+      throw new Error(
+        "Required supplier payment attachments were not loaded completely",
+      );
     }
 
     const boundary = `boundary_${Date.now()}`;

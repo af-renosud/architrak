@@ -9,6 +9,7 @@ import { ibansMatch, normaliseIban } from "@shared/iban";
 import { assertSupplierPaymentReadiness } from "../services/supplier-payment-readiness.service";
 import { SupplierCertificateSourceError } from "../services/certificat-from-invoices.service";
 import { deriveTransferRef } from "../services/certificat-transfer-ref.service";
+import type { SupplierPaymentReadinessSnapshot } from "@shared/supplier-payment-readiness";
 
 interface DevisWithDetails {
   devis: Devis;
@@ -61,6 +62,63 @@ export class BankingMismatchError extends Error {
     super(`Contractor ${contractorId} (${contractorName}) has ${mismatches.length} doc(s) with a mismatched IBAN`);
     this.name = "BankingMismatchError";
   }
+}
+
+export interface SupplierDirectPaymentPresentation {
+  certificateRef: string;
+  issueDate: string;
+  project: {
+    id: number;
+    archidocId: string;
+    code: string | null;
+    name: string;
+    clientName: string | null;
+    clientContactEmail: string | null;
+    clientAddress: string | null;
+  };
+  supplier: {
+    id: string;
+    name: string;
+    siret: string | null;
+    address1: string | null;
+    address2: string | null;
+    postcode: string | null;
+    town: string | null;
+    countryCode: string | null;
+    contactName: string | null;
+    contactJobTitle: string | null;
+    contactEmail: string | null;
+  };
+  banking: {
+    accountHolderName: string;
+    iban: string;
+    bic: string | null;
+    bankName: string | null;
+    verifiedAt: string | null;
+    verifiedBy: string | null;
+  };
+  assignment: {
+    id: string;
+    directPaymentStatus: string;
+    validFrom: string | null;
+    validUntil: string | null;
+  };
+  invoices: Array<{
+    invoiceId: number;
+    invoiceNumber: string;
+    invoiceDate: string | null;
+    amountHt: string;
+    tvaAmount: string;
+    amountTtc: string;
+  }>;
+  totals: {
+    netToPayHt: string;
+    tvaAmount: string;
+    netToPayTtc: string;
+    tvaRatePercent: string;
+    tvaAutoliquidation: boolean;
+  };
+  transferRef: string | null;
 }
 
 interface AvenantRow {
@@ -698,7 +756,10 @@ function buildProjectSummaryHtml(ps: ProjectSummarySection): string {
  */
 export async function generateCertificatPdf(
   certificatId: number,
-  opts: { mode: "preview" | "issue" } = { mode: "preview" },
+  opts: {
+    mode: "preview" | "issue";
+    supplierReadinessSnapshot?: SupplierPaymentReadinessSnapshot;
+  } = { mode: "preview" },
 ): Promise<{
   storageKey: string | null;
   pdfBuffer: Buffer;
@@ -713,6 +774,7 @@ export async function generateCertificatPdf(
     displayName: string;
     seedDevisCode: string;
   };
+  supplierPresentation: SupplierDirectPaymentPresentation | null;
 }> {
   const certificat = await storage.getCertificat(certificatId);
   if (!certificat) throw new Error(`Certificat ${certificatId} not found`);
@@ -725,12 +787,15 @@ export async function generateCertificatPdf(
   const certificateTrack =
     certificat.certificateTrack ?? "contractor_works";
 
+  let supplierReadinessSnapshot: SupplierPaymentReadinessSnapshot | null = null;
   if (certificateTrack === "supplier_direct_payment") {
-    await assertSupplierPaymentReadiness({
-      contractorId: certificat.contractorId,
-      projectId: certificat.projectId,
-      issueDate: certificat.dateIssued ?? undefined,
-    });
+    supplierReadinessSnapshot =
+      opts.supplierReadinessSnapshot ??
+      await assertSupplierPaymentReadiness({
+        contractorId: certificat.contractorId,
+        projectId: certificat.projectId,
+        issueDate: certificat.dateIssued ?? undefined,
+      });
   }
 
   // Task #225 — Banking gate. A certificat de paiement IS a payment
@@ -738,7 +803,11 @@ export async function generateCertificatPdf(
   // The mirror writer (sync-service.upsertContractor) only stores
   // checksum-valid IBANs, so a null here means ArchiDoc has nothing
   // usable for this contractor.
-  if (!contractor.iban) {
+  const authoritativeIban =
+    certificateTrack === "supplier_direct_payment"
+      ? supplierReadinessSnapshot?.supplier.banking?.iban ?? null
+      : contractor.iban;
+  if (!authoritativeIban) {
     throw new BankingDetailsMissingError(contractor.id, contractor.name);
   }
 
@@ -783,10 +852,10 @@ export async function generateCertificatPdf(
   // Null/empty extracted_iban is treated as "AI couldn't see one" and is
   // skipped — only an actually-extracted, validated IBAN can fire the
   // gate. Comparison is whitespace/case insensitive via ibansMatch.
-  const archidocIbanCanonical = normaliseIban(contractor.iban);
+  const archidocIbanCanonical = normaliseIban(authoritativeIban);
   const mismatches: BankingMismatchDocRef[] = [];
   for (const { devis: d, invoices: invoicesForDevis } of scopedEntries) {
-    if (d.extractedIban && !ibansMatch(d.extractedIban, contractor.iban)) {
+    if (d.extractedIban && !ibansMatch(d.extractedIban, authoritativeIban)) {
       const override = await storage.findBankingMismatchOverride({
         docKind: "devis",
         docId: d.id,
@@ -800,7 +869,7 @@ export async function generateCertificatPdf(
       }
     }
     for (const inv of invoicesForDevis) {
-      if (inv.extractedIban && !ibansMatch(inv.extractedIban, contractor.iban)) {
+      if (inv.extractedIban && !ibansMatch(inv.extractedIban, authoritativeIban)) {
         const override = await storage.findBankingMismatchOverride({
           docKind: "invoice",
           docId: inv.id,
@@ -855,6 +924,80 @@ export async function generateCertificatPdf(
     })
   );
 
+  let supplierPresentation: SupplierDirectPaymentPresentation | null = null;
+  if (certificateTrack === "supplier_direct_payment") {
+    const readiness = supplierReadinessSnapshot;
+    const banking = readiness?.supplier.banking;
+    if (!readiness || !banking?.iban || !banking.accountHolderName) {
+      throw new SupplierCertificateSourceError(
+        "Le snapshot de présentation fournisseur est incomplet.",
+      );
+    }
+    supplierPresentation = {
+      certificateRef: certificat.certificateRef,
+      issueDate:
+        certificat.dateIssued ?? new Date().toISOString().slice(0, 10),
+      project: {
+        id: project.id,
+        archidocId:
+          project.archidocId ?? readiness.assignment.projectId,
+        code: project.code,
+        name: project.name,
+        clientName: project.clientName,
+        clientContactEmail: project.clientContactEmail,
+        clientAddress: project.clientAddress,
+      },
+      supplier: {
+        id: readiness.supplier.id,
+        name: readiness.supplier.name,
+        siret: readiness.supplier.siret,
+        address1: readiness.supplier.address1,
+        address2: readiness.supplier.address2,
+        postcode: readiness.supplier.postcode,
+        town: readiness.supplier.town,
+        countryCode: readiness.supplier.countryCode,
+        contactName: readiness.supplier.primaryContact?.name ?? null,
+        contactJobTitle:
+          readiness.supplier.primaryContact?.jobTitle ?? null,
+        contactEmail:
+          readiness.supplier.primaryContact?.email ?? null,
+      },
+      banking: {
+        accountHolderName: banking.accountHolderName,
+        iban: banking.iban,
+        bic: banking.bic,
+        bankName: banking.bankName,
+        verifiedAt: banking.bankingVerifiedAt,
+        verifiedBy: banking.bankingVerifiedBy?.displayName ?? null,
+      },
+      assignment: {
+        id: readiness.assignment.id,
+        directPaymentStatus:
+          readiness.assignment.directPaymentStatus,
+        validFrom: readiness.assignment.validFrom,
+        validUntil: readiness.assignment.validUntil,
+      },
+      invoices: devisDetails.flatMap(({ invoices }) =>
+        invoices.map((invoice) => ({
+          invoiceId: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
+          invoiceDate: invoice.dateIssued,
+          amountHt: invoice.amountHt,
+          tvaAmount: invoice.tvaAmount,
+          amountTtc: invoice.amountTtc,
+        })),
+      ),
+      totals: {
+        netToPayHt: certificat.netToPayHt,
+        tvaAmount: certificat.tvaAmount,
+        netToPayTtc: certificat.netToPayTtc,
+        tvaRatePercent: certificat.tvaRatePercent ?? "0.00",
+        tvaAutoliquidation: certificat.tvaAutoliquidation,
+      },
+      transferRef,
+    };
+  }
+
   const [companyLogoBase64, architectsLogoBase64] = await Promise.all([
     loadLogoAsBase64("company_logo"),
     loadLogoAsBase64("architects_order_logo"),
@@ -862,18 +1005,19 @@ export async function generateCertificatPdf(
 
   let html: string;
   if (certificateTrack === "supplier_direct_payment") {
-    // Safety-first core template. The final supplier visual design is a
-    // separate concern, but this branch must remain invoice-only and must
-    // never enter the contractor annexe, financial summary or deductions
-    // presentation pipeline.
+    if (!supplierReadinessSnapshot) {
+      throw new SupplierCertificateSourceError(
+        "La préparation au paiement fournisseur est absente du rendu.",
+      );
+    }
     html = buildSupplierDirectPaymentHtml({
       certificat,
       project,
-      supplier: contractor,
       devisDetails,
       companyLogoBase64,
       architectsLogoBase64,
       transferRef,
+      readiness: supplierReadinessSnapshot,
     });
   } else {
     const annexeData = await buildAnnexeData(
@@ -913,7 +1057,11 @@ export async function generateCertificatPdf(
 
   const dateStr = new Date().toISOString().split("T")[0].replace(/-/g, "");
   const projectCode = (project.code || "PROJ").replace(/[^a-zA-Z0-9]/g, "");
-  const docName = `CERT-${projectCode}-${certificat.certificateRef}-${dateStr}`;
+  const certificateRef = certificat.certificateRef.replace(/[^a-zA-Z0-9_-]/g, "");
+  const docName =
+    certificateTrack === "supplier_direct_payment"
+      ? `CERT-PAIEMENT-DIRECT-FOURNISSEUR-${projectCode}-${certificateRef}-${dateStr}`
+      : `CERT-${projectCode}-${certificateRef}-${dateStr}`;
   const fileName = `${docName}.pdf`;
 
   const pdfBuffer = await convertHtmlToPdf(html, docName);
@@ -921,7 +1069,14 @@ export async function generateCertificatPdf(
 
   // Task #451 — previews are ephemeral: return the bytes and persist nothing.
   if (opts.mode !== "issue") {
-    return { storageKey: null, pdfBuffer, fileName, sourceInvoiceIds, transferRef };
+    return {
+      storageKey: null,
+      pdfBuffer,
+      fileName,
+      sourceInvoiceIds,
+      transferRef,
+      supplierPresentation,
+    };
   }
 
   const storageKey = await uploadDocument(project.id, fileName, pdfBuffer, "application/pdf");
@@ -940,7 +1095,15 @@ export async function generateCertificatPdf(
     seedDevisCode: seedDevis?.devisCode ?? `cert-${certificat.certificateRef}`,
   };
 
-  return { storageKey, pdfBuffer, fileName, sourceInvoiceIds, transferRef, driveSeed };
+  return {
+    storageKey,
+    pdfBuffer,
+    fileName,
+    sourceInvoiceIds,
+    transferRef,
+    driveSeed,
+    supplierPresentation,
+  };
 }
 
 /**
@@ -1004,29 +1167,77 @@ function renderBankingBlock(contractor: Contractor, proposeHtml: string = "", tr
   </div>`;
 }
 
+function renderSupplierBankingBlock(
+  readiness: SupplierPaymentReadinessSnapshot,
+  transferRef: string | null,
+): string {
+  const banking = readiness.supplier.banking;
+  if (!banking?.iban || !banking.accountHolderName) {
+    throw new SupplierCertificateSourceError(
+      "Les coordonnées bancaires vérifiées du fournisseur sont absentes du snapshot de paiement.",
+    );
+  }
+  const bicValue = banking.bic
+    ? `<div class="banking-key-value">${escapeHtml(banking.bic)}</div>`
+    : `<div class="banking-key-missing">NON COMMUNIQUÉ PAR L'ÉTABLISSEMENT</div>`;
+  const transferRefHtml = transferRef
+    ? `
+    <div class="transfer-ref-box">
+      <div class="transfer-ref-label">Référence obligatoire du virement</div>
+      <div class="transfer-ref-value">${escapeHtml(transferRef)}</div>
+    </div>`
+    : "";
+  const verification = [
+    banking.bankName,
+    banking.bankingVerifiedAt
+      ? `vérifié le ${formatDateFr(banking.bankingVerifiedAt)}`
+      : null,
+    banking.bankingVerifiedBy?.displayName
+      ? `par ${banking.bankingVerifiedBy.displayName}`
+      : null,
+  ].filter((value): value is string => Boolean(value));
+  return `
+  <div class="banking-card">
+    <div class="banking-card-title">Instruction de paiement direct</div>
+    <div class="banking-holder">${escapeHtml(banking.accountHolderName)}</div>
+    ${verification.length > 0 ? `<div class="detail">${verification.map(escapeHtml).join(" — ")}</div>` : ""}
+    <div class="banking-keys">
+      <div class="banking-key banking-key-iban">
+        <div class="banking-key-label">IBAN vérifié</div>
+        <div class="banking-key-value">${escapeHtml(formatIbanForPrint(banking.iban))}</div>
+      </div>
+      <div class="banking-key banking-key-bic">
+        <div class="banking-key-label">SWIFT / BIC</div>
+        ${bicValue}
+      </div>
+    </div>${transferRefHtml}
+  </div>`;
+}
+
 function buildSupplierDirectPaymentHtml(data: {
   certificat: Certificat;
   project: Project;
-  supplier: Contractor;
   devisDetails: DevisWithDetails[];
   companyLogoBase64: string | null;
   architectsLogoBase64: string | null;
   transferRef: string | null;
+  readiness: SupplierPaymentReadinessSnapshot;
 }): string {
   const {
     certificat,
     project,
-    supplier,
     devisDetails,
     companyLogoBase64,
     architectsLogoBase64,
     transferRef,
+    readiness,
   } = data;
-  const invoiceRows = devisDetails.flatMap(({ devis: parentDevis, invoices }) =>
+  const supplier = readiness.supplier;
+  const invoiceRows = devisDetails.flatMap(({ invoices }) =>
     invoices.map(
       (invoice) => `<tr>
         <td>${escapeHtml(invoice.invoiceNumber)}</td>
-        <td>${escapeHtml(parentDevis.devisCode)}</td>
+        <td>${invoice.dateIssued ? escapeHtml(formatDateFr(invoice.dateIssued)) : "Non communiquée"}</td>
         <td class="num">${formatCurrencyNoSymbol(invoice.amountHt)}</td>
         <td class="num">${formatCurrencyNoSymbol(invoice.tvaAmount)}</td>
         <td class="num">${formatCurrencyNoSymbol(invoice.amountTtc)}</td>
@@ -1037,12 +1248,21 @@ function buildSupplierDirectPaymentHtml(data: {
     ? "0 % — autoliquidation"
     : `${escapeHtml(certificat.tvaRatePercent ?? "0")} % effectif`;
   const supplierAddress = [
-    supplier.address,
+    supplier.address1,
+    supplier.address2,
     [supplier.postcode, supplier.town].filter(Boolean).join(" "),
+    supplier.countryCode,
   ]
     .filter(Boolean)
     .map((line) => escapeHtml(line as string))
     .join("<br>");
+  const supplierContact = supplier.primaryContact
+    ? [
+        supplier.primaryContact.name,
+        supplier.primaryContact.jobTitle,
+        supplier.primaryContact.email,
+      ].filter((value): value is string => Boolean(value))
+    : [];
   const clientAddress = project.clientAddress
     ? `<div class="detail">${escapeHtml(project.clientAddress)}</div>`
     : "";
@@ -1052,13 +1272,13 @@ function buildSupplierDirectPaymentHtml(data: {
   const orderLogo = architectsLogoBase64
     ? `<img src="${architectsLogoBase64}" alt="Ordre des Architectes">`
     : "";
-  const banking = renderBankingBlock(supplier, "", transferRef);
+  const banking = renderSupplierBankingBlock(readiness, transferRef);
 
   return `<!DOCTYPE html>
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<title>${escapeHtml(certificat.certificateRef)} — Paiement direct fournisseur</title>
+<title>${escapeHtml(certificat.certificateRef)} — Certificat de paiement fournisseur — paiement direct client</title>
 <style>
   @page {
     size: A4;
@@ -1105,7 +1325,7 @@ function buildSupplierDirectPaymentHtml(data: {
 </head>
 <body>
   <div class="header">${companyLogo}${orderLogo}</div>
-  <h1>Certificat de paiement direct fournisseur</h1>
+  <h1>Certificat de paiement fournisseur — paiement direct client</h1>
   <div class="reference">Référence <strong>${escapeHtml(certificat.certificateRef)}</strong> — ${formatDateFr(certificat.dateIssued)}</div>
   <div class="parties">
     <div class="party">
@@ -1117,12 +1337,14 @@ function buildSupplierDirectPaymentHtml(data: {
     <div class="party">
       <div class="label">Fournisseur bénéficiaire</div>
       <div class="name">${escapeHtml(supplier.name)}</div>
+      <div class="detail">SIRET ${escapeHtml(supplier.siret ?? "non communiqué")}</div>
       <div class="detail">${supplierAddress || "Adresse non communiquée"}</div>
+      ${supplierContact.length > 0 ? `<div class="detail">${supplierContact.map(escapeHtml).join(" — ")}</div>` : ""}
     </div>
   </div>
-  <h2>Factures certifiées</h2>
+  <h2>Factures justificatives du paiement direct</h2>
   <table>
-    <thead><tr><th>Facture</th><th>Devis de rattachement</th><th class="num">HT</th><th class="num">TVA</th><th class="num">TTC</th></tr></thead>
+    <thead><tr><th>Facture fournisseur</th><th>Date</th><th class="num">HT</th><th class="num">TVA</th><th class="num">TTC</th></tr></thead>
     <tbody>${invoiceRows.join("")}</tbody>
   </table>
   <table class="totals">
@@ -1132,8 +1354,8 @@ function buildSupplierDirectPaymentHtml(data: {
   </table>
   ${banking}
   <div class="attestation">
-    Le présent certificat autorise exclusivement le paiement direct des factures listées ci-dessus au fournisseur bénéficiaire, pour un montant total de
-    <strong>${formatCurrencyNoSymbol(certificat.netToPayTtc)} TTC</strong>.
+    Instruction au maître d'ouvrage : régler directement au fournisseur bénéficiaire les seules factures listées ci-dessus, pour un montant total de
+    <strong>${formatCurrencyNoSymbol(certificat.netToPayTtc)} TTC</strong>, sur le compte vérifié indiqué et avec la référence de virement fournie.
   </div>
 </body>
 </html>`;
@@ -2273,6 +2495,64 @@ export async function buildCertificatPreviewHtml(opts?: { isAcompte?: boolean })
 
 export function buildCertificatEmailBody(data: { certificat: Certificat; project: Project; contractor: Contractor }): string {
   const { certificat, project, contractor } = data;
+  if (certificat.certificateTrack === "supplier_direct_payment") {
+    const issuance =
+      certificat.issuanceSnapshot &&
+      typeof certificat.issuanceSnapshot === "object"
+        ? certificat.issuanceSnapshot as {
+            supplierDirectPayment?: {
+              readiness?: {
+                supplier?: { name?: string };
+              };
+              sources?: {
+                invoices?: Array<{ invoiceNumber?: string }>;
+              };
+              presentation?: SupplierDirectPaymentPresentation;
+              paymentTransferRef?: string | null;
+            };
+          }
+        : null;
+    const presentation =
+      issuance?.supplierDirectPayment?.presentation;
+    const supplier =
+      presentation?.supplier.name ??
+      issuance?.supplierDirectPayment?.readiness?.supplier?.name;
+    const invoiceNumbers =
+      presentation?.invoices
+        ?.map((invoice) => invoice.invoiceNumber)
+        .filter((value): value is string => Boolean(value)) ??
+      issuance?.supplierDirectPayment?.sources?.invoices
+        ?.map((invoice) => invoice.invoiceNumber)
+        .filter((value): value is string => Boolean(value)) ?? [];
+    const transferRef =
+      certificat.paymentTransferRef ??
+      issuance?.supplierDirectPayment?.paymentTransferRef ??
+      null;
+    if (!supplier || invoiceNumbers.length === 0) {
+      throw new Error(
+        `Le snapshot d'émission fournisseur ${certificat.certificateRef} est incomplet.`,
+      );
+    }
+    if (!presentation) {
+      throw new Error(
+        `La présentation figée du certificat fournisseur ${certificat.certificateRef} est absente.`,
+      );
+    }
+    return `Dear Client,
+
+Please find attached supplier direct-payment certificate no. ${certificat.certificateRef} for project "${presentation.project.name}" (${presentation.project.code ?? ""}).
+
+This payment instruction is issued in favour of supplier ${supplier} and covers only supplier invoice${invoiceNumbers.length > 1 ? "s" : ""} ${invoiceNumbers.join(", ")}.
+
+Amount payable HT: ${formatCurrency(certificat.netToPayHt)}
+TVA: ${formatCurrency(certificat.tvaAmount)}
+Amount payable TTC: ${formatCurrency(certificat.netToPayTtc)}
+${transferRef ? `Bank transfer reference: ${transferRef}\n` : ""}
+Please arrange direct payment using the verified bank details shown in the sealed certificate and attached supplier RIB.
+
+Kind regards,
+SAS Architects-France`;
+  }
   return `Dear Client,
 
 Please find attached Certificat de Paiement no. ${certificat.certificateRef} for project "${project.name}" (${project.code}).

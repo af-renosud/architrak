@@ -186,7 +186,9 @@ export async function scanCertificatReplies(gmail: gmail_v1.Gmail, scope?: numbe
       // ("we received the payment"). The counterparty is always the
       // communication's recipient; only the phrase set and the suggestion
       // kind differ.
-      const isContractorNotice = comm.type === "certificat_contractor_notice";
+      const isCounterpartyNotice =
+        comm.type === "certificat_contractor_notice" ||
+        comm.type === "certificat_supplier_notice";
       const counterpartyAddress = (comm.recipientEmail ?? "").trim().toLowerCase();
       if (!counterpartyAddress) continue;
 
@@ -204,7 +206,7 @@ export async function scanCertificatReplies(gmail: gmail_v1.Gmail, scope?: numbe
         // Fully covered — nothing left to suggest for.
         if (state.fullyPaid || state.outstanding <= 0) continue;
 
-        const detection = isContractorNotice
+        const detection = isCounterpartyNotice
           ? detectReceivedConfirmation(extractPlainText(msg))
           : detectPaidConfirmation(extractPlainText(msg));
         const emailDate = msg.internalDate ? new Date(Number(msg.internalDate)) : new Date();
@@ -215,7 +217,7 @@ export async function scanCertificatReplies(gmail: gmail_v1.Gmail, scope?: numbe
           emailMessageId: messageId,
           emailThreadId: comm.emailThreadId,
           senderEmail: sender,
-          kind: isContractorNotice ? "contractor_received" : "client_paid",
+          kind: isCounterpartyNotice ? "contractor_received" : "client_paid",
           emailDate,
           matchedExcerpt: detection.excerpt,
           suggestedAmount: state.outstanding.toFixed(2),
@@ -223,11 +225,11 @@ export async function scanCertificatReplies(gmail: gmail_v1.Gmail, scope?: numbe
           status: detection.matched ? "pending_review" : "ambiguous",
         });
         if (created) {
-          const who = isContractorNotice ? "contractor" : "client";
+          const who = isCounterpartyNotice ? "counterparty" : "client";
           if (detection.matched) {
             result.suggestionsCreated++;
             console.log(
-              `[PaymentSuggestions] cert ${cert.certificateRef}: "${isContractorNotice ? "received" : "paid"}" ${who} reply from ${sender} → suggestion #${created.id} (${state.outstanding.toFixed(2)} € outstanding)`,
+              `[PaymentSuggestions] cert ${cert.certificateRef}: "${isCounterpartyNotice ? "received" : "paid"}" ${who} reply from ${sender} → suggestion #${created.id} (${state.outstanding.toFixed(2)} € outstanding)`,
             );
           } else {
             result.ambiguousCreated++;
