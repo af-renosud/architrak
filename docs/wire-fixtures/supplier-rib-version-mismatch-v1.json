@@ -1,0 +1,7 @@
+{
+  "code": "RIB_VERSION_MISMATCH",
+  "supplierId": "supplier_01J6ARCHITRAK000000000001",
+  "requestedDocumentId": "rib_01J6ARCHITRAK0000000000001",
+  "currentDocumentId": "rib_01J6ARCHITRAK0000000000002",
+  "message": "The supplier RIB changed after this feed version. Refresh supplier payment readiness before retrying."
+}

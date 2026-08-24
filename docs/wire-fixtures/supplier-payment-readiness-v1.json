@@ -1,0 +1,69 @@
+{
+  "contractVersion": "supplier-payment-readiness.v1",
+  "syncWindow": {
+    "mode": "incremental",
+    "afterSequenceExclusive": "8420",
+    "throughSequenceInclusive": "8421",
+    "minimumAvailableSequence": "8000"
+  },
+  "nextPageToken": null,
+  "changes": [
+    {
+      "sequence": "8421",
+      "operation": "upsert",
+      "changedAt": "2026-08-24T09:12:00Z",
+      "supplier": {
+        "id": "supplier_01J6ARCHITRAK000000000001",
+        "partnerType": "supplier",
+        "name": "Matériaux Exemple SAS",
+        "siret": "73282932000074",
+        "address1": "18 rue des Ateliers",
+        "address2": null,
+        "town": "Lyon",
+        "postcode": "69007",
+        "countryCode": "FR",
+        "isActive": true,
+        "primaryContact": {
+          "id": "contact_01J6ARCHITRAK00000000001",
+          "name": "Claire Martin",
+          "jobTitle": "Responsable comptes clients",
+          "email": "claire.martin@example.test",
+          "mobile": "+33600000001"
+        },
+        "banking": {
+          "accountHolderName": "MATERIAUX EXEMPLE SAS",
+          "iban": "FR7630006000011234567890189",
+          "bic": "AGRIFRPPXXX",
+          "bankName": "Banque Exemple",
+          "bankingVerificationStatus": "verified",
+          "bankingVerifiedAt": "2026-08-20T14:32:00Z",
+          "bankingVerifiedBy": {
+            "id": "user_01J6ARCHITRAK000000000001",
+            "displayName": "Camille Exemple"
+          },
+          "bankingVerificationMethod": "manual_rib_review",
+          "ribDocument": {
+            "id": "rib_01J6ARCHITRAK0000000000001",
+            "fileName": "rib-materiaux-exemple.pdf",
+            "mimeType": "application/pdf",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "downloadPath": "/api/integrations/architrak/v1/suppliers/supplier_01J6ARCHITRAK000000000001/rib/rib_01J6ARCHITRAK0000000000001",
+            "updatedAt": "2026-08-20T14:32:00Z"
+          }
+        },
+        "projectPaymentAssignments": [
+          {
+            "id": "assignment_01J6ARCHITRAK000000001",
+            "projectId": "project_01J6ARCHITRAK00000000001",
+            "directPaymentStatus": "eligible",
+            "validFrom": "2026-08-01",
+            "validUntil": null,
+            "reason": "Paiement direct client prévu au marché.",
+            "updatedAt": "2026-08-24T09:12:00Z"
+          }
+        ],
+        "updatedAt": "2026-08-24T09:12:00Z"
+      }
+    }
+  ]
+}

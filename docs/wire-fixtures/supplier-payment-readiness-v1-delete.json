@@ -1,0 +1,18 @@
+{
+  "contractVersion": "supplier-payment-readiness.v1",
+  "syncWindow": {
+    "mode": "incremental",
+    "afterSequenceExclusive": "8421",
+    "throughSequenceInclusive": "8422",
+    "minimumAvailableSequence": "8000"
+  },
+  "nextPageToken": null,
+  "changes": [
+    {
+      "sequence": "8422",
+      "operation": "delete",
+      "changedAt": "2026-08-24T10:00:00Z",
+      "supplierId": "supplier_01J6ARCHITRAK000000000099"
+    }
+  ]
+}

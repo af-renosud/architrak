@@ -1,0 +1,5 @@
+{
+  "code": "SYNC_CURSOR_EXPIRED",
+  "minimumAvailableSequence": "8000",
+  "message": "Run a bootstrap sync before resuming incrementally."
+}
