@@ -61,7 +61,7 @@ const derive =
 const readinessSnapshot = {
   provenance: {
     schemaVersion: "archidoc_supplier_payment_readiness_v1",
-    sourceSequence: 9,
+    sourceSequence: "9",
     capturedAt: "2026-08-20T10:01:00Z",
     contentSha256: "f".repeat(64),
   },

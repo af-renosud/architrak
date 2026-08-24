@@ -163,6 +163,7 @@ router.post("/api/archidoc/sync", validateRequest({ body: z.object({}).strict().
       trades: result.trades,
       proposalFees: result.proposalFees,
       technicalLots: result.technicalLots,
+      supplierPaymentReadiness: result.supplierPaymentReadiness,
     };
     const failures = Object.entries(parts)
       .filter(([, r]) => r.error)

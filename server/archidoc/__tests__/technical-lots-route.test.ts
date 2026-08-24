@@ -389,6 +389,7 @@ describe("POST /api/archidoc/sync", () => {
       trades: { updated: 35 },
       proposalFees: { updated: 3 },
       technicalLots: { updated: 35 },
+      supplierPaymentReadiness: { updated: 4, deleted: 0 },
     });
 
     const res = await fetch(`${baseUrl}/api/archidoc/sync`, {
@@ -424,6 +425,7 @@ describe("POST /api/archidoc/sync", () => {
         updated: 0,
         error: "invalid_response: The ArchiDoc technical-lot response failed contract validation.",
       },
+      supplierPaymentReadiness: { updated: 4, deleted: 0 },
     });
 
     const res = await fetch(`${baseUrl}/api/archidoc/sync`, {

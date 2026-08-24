@@ -67,11 +67,11 @@ export interface SupplierProjectPaymentAssignment {
  * Task #669 will populate this from the frozen ArchiDoc v1 feed. Until then
  * the storage loader returns no snapshot and the core fails closed.
  */
-export interface SupplierPaymentReadinessSnapshot {
+export interface SupplierPaymentReadinessMirrorSnapshot {
   provenance: {
     schemaVersion: typeof SUPPLIER_PAYMENT_READINESS_SCHEMA_VERSION;
     /** Monotonic ArchiDoc readiness-feed sequence that produced this view. */
-    sourceSequence: number;
+    sourceSequence: string;
     /** Time the immutable mirror snapshot was captured in ArchiTrak. */
     capturedAt: string;
     /** Canonical SHA-256 of the mirrored supplier + selected assignment. */
@@ -92,5 +92,10 @@ export interface SupplierPaymentReadinessSnapshot {
     banking: SupplierPaymentBankingSnapshot | null;
     updatedAt: string;
   };
+  assignment: SupplierProjectPaymentAssignment | null;
+}
+
+export interface SupplierPaymentReadinessSnapshot
+  extends Omit<SupplierPaymentReadinessMirrorSnapshot, "assignment"> {
   assignment: SupplierProjectPaymentAssignment;
 }

@@ -8,7 +8,7 @@ import { insertCertificatSchema } from "@shared/schema";
 const validSnapshot = (): SupplierPaymentReadinessSnapshot => ({
   provenance: {
     schemaVersion: "archidoc_supplier_payment_readiness_v1",
-    sourceSequence: 42,
+    sourceSequence: "42",
     capturedAt: "2026-08-20T10:01:00Z",
     contentSha256: "d".repeat(64),
   },
@@ -131,9 +131,23 @@ describe("supplier payment readiness evaluation", () => {
     ).toContain("supplier_banking_canonical_mismatch");
   });
 
+  it("accepts verified banking without the optional BIC", () => {
+    const snapshot = validSnapshot();
+    snapshot.supplier.banking!.bic = null;
+
+    expect(
+      evaluateSupplierPaymentReadiness({
+        canonicalPartner: { ...canonicalPartner, bic: null },
+        projectArchidocId: "project-archidoc-1",
+        issueDate: "2026-08-24",
+        snapshot,
+      }),
+    ).toEqual([]);
+  });
+
   it("rejects an unversioned or invalid feed snapshot", () => {
     const snapshot = validSnapshot();
-    snapshot.provenance.sourceSequence = -1;
+    snapshot.provenance.sourceSequence = "-1";
 
     expect(
       evaluateSupplierPaymentReadiness({

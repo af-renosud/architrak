@@ -9,6 +9,10 @@ import {
 } from "./sync-service";
 import { isArchidocConfigured } from "./sync-client";
 import { normalizeSiret } from "../gmail/document-parser";
+import {
+  syncSupplierPaymentReadinessWithinHeldLock,
+  type SupplierPaymentReadinessSyncResult,
+} from "./supplier-payment-readiness-sync";
 
 export const CONTRACTOR_AUTO_SYNC_TYPE = "contractor_auto_import";
 
@@ -86,6 +90,7 @@ export interface ContractorAutoSyncResult {
   warning?: string;
   // True when another mirror sync held the shared lock; nothing ran.
   alreadyRunning?: boolean;
+  supplierPaymentReadiness?: SupplierPaymentReadinessSyncResult;
 }
 
 export async function runContractorAutoSync(options: { incremental?: boolean } = {}): Promise<ContractorAutoSyncResult> {
@@ -124,6 +129,13 @@ async function runContractorAutoSyncLocked(options: { incremental?: boolean } = 
     if (mirrorResult.error) {
       throw new Error(mirrorResult.error);
     }
+    const supplierPaymentReadiness =
+      await syncSupplierPaymentReadinessWithinHeldLock();
+    if (supplierPaymentReadiness.error) {
+      console.warn(
+        "[ArchiDoc Contractor AutoSync] Supplier payment-readiness refresh failed; retained last-known-good readiness mirror",
+      );
+    }
 
     // If the mirror wipe guard fired, the upstream response looked
     // empty/truncated and reconciliation was refused. This run's snapshot is
@@ -150,6 +162,7 @@ async function runContractorAutoSyncLocked(options: { incremental?: boolean } = 
         orphaned: 0,
         unorphaned: 0,
         warning: mirrorResult.warning,
+        supplierPaymentReadiness,
       };
     }
 
@@ -256,7 +269,15 @@ async function runContractorAutoSyncLocked(options: { incremental?: boolean } = 
       `[ArchiDoc Contractor AutoSync] Done: mirror=${mirrorResult.updated} created=${created} updated=${updated} skipped=${skipped} orphaned=${orphaned}`,
     );
 
-    return { mirrorUpdated: mirrorResult.updated, created, updated, skipped, orphaned, unorphaned };
+    return {
+      mirrorUpdated: mirrorResult.updated,
+      created,
+      updated,
+      skipped,
+      orphaned,
+      unorphaned,
+      supplierPaymentReadiness,
+    };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     await db

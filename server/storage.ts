@@ -1,7 +1,12 @@
 import { db } from "./db";
 import { createHash, randomUUID } from "node:crypto";
 import { computeCertificatPaymentState, type CertificatPaymentState } from "@shared/financial-utils";
-import type { SupplierPaymentReadinessSnapshot } from "@shared/supplier-payment-readiness";
+import {
+  SUPPLIER_PAYMENT_READINESS_SCHEMA_VERSION,
+  type SupplierPaymentReadinessMirrorSnapshot,
+  type SupplierPaymentReadinessSnapshot,
+} from "@shared/supplier-payment-readiness";
+import { env } from "./env";
 import { eq, ne, desc, asc, and, or, inArray, isNotNull, isNull, lt, lte, gte, like, ilike, sql, type SQL } from "drizzle-orm";
 import {
   devisLineContexts, devisLineContextAssets, devisCostAnalyses,
@@ -18,6 +23,7 @@ import {
   bankingMismatchOverrides,
   type BankingMismatchOverride, type InsertBankingMismatchOverride,
   archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog, archidocSiretIssues,
+  archidocSupplierPaymentReadiness, archidocSupplierPaymentAssignments,
   emailDocuments, gmailProcessedMessages, gmailMessageFailures, projectDocuments, projectIntakeDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
   aiModelSettings, appSettings, templateAssets, users, devisTranslations, wishListItems,
   benchmarkDocuments, benchmarkItems, benchmarkTags, benchmarkItemTags,
@@ -541,7 +547,7 @@ export interface IStorage {
   getSupplierPaymentReadinessSnapshot(input: {
     supplierArchidocId: string;
     projectArchidocId: string;
-  }): Promise<SupplierPaymentReadinessSnapshot | undefined>;
+  }): Promise<SupplierPaymentReadinessMirrorSnapshot | undefined>;
 
   upsertArchidocContractor(data: Omit<ArchidocContractor, "syncedAt">): Promise<ArchidocContractor>;
 
@@ -3466,15 +3472,119 @@ export class DatabaseStorage implements IStorage {
     return contractor;
   }
 
-  async getSupplierPaymentReadinessSnapshot(_input: {
+  async getSupplierPaymentReadinessSnapshot(input: {
     supplierArchidocId: string;
     projectArchidocId: string;
-  }): Promise<SupplierPaymentReadinessSnapshot | undefined> {
-    // Intentionally fail closed. The existing generic /api/suppliers mirror
-    // does not carry the frozen verification provenance or project assignment
-    // required for a payment instruction. Task #669 replaces this loader with
-    // the versioned readiness mirror.
-    return undefined;
+  }): Promise<SupplierPaymentReadinessMirrorSnapshot | undefined> {
+    let currentSourceBaseUrl: string;
+    try {
+      if (!env.ARCHIDOC_BASE_URL) return undefined;
+      currentSourceBaseUrl = new URL(
+        env.ARCHIDOC_BASE_URL,
+      ).origin.toLowerCase();
+    } catch {
+      return undefined;
+    }
+    const [row] = await db
+      .select({
+        readiness: archidocSupplierPaymentReadiness,
+        assignmentId:
+          archidocSupplierPaymentAssignments.assignmentArchidocId,
+        assignmentProjectId:
+          archidocSupplierPaymentAssignments.projectArchidocId,
+        directPaymentStatus:
+          archidocSupplierPaymentAssignments.directPaymentStatus,
+        validFrom: archidocSupplierPaymentAssignments.validFrom,
+        validUntil: archidocSupplierPaymentAssignments.validUntil,
+        assignmentReason: archidocSupplierPaymentAssignments.reason,
+        assignmentUpdatedAt:
+          archidocSupplierPaymentAssignments.assignmentUpdatedAt,
+      })
+      .from(archidocSupplierPaymentReadiness)
+      .leftJoin(
+        archidocSupplierPaymentAssignments,
+        and(
+          eq(
+            archidocSupplierPaymentAssignments.supplierArchidocId,
+            archidocSupplierPaymentReadiness.supplierArchidocId,
+          ),
+          eq(
+            archidocSupplierPaymentAssignments.projectArchidocId,
+            input.projectArchidocId,
+          ),
+        ),
+      )
+      .where(
+        eq(
+          archidocSupplierPaymentReadiness.supplierArchidocId,
+          input.supplierArchidocId,
+        ),
+      )
+      .limit(1);
+    if (
+      !row ||
+      row.readiness.isDeleted ||
+      row.readiness.sourceBaseUrl !== currentSourceBaseUrl
+    ) {
+      return undefined;
+    }
+    const supplier = {
+      id: row.readiness.supplierArchidocId,
+      partnerType: "supplier" as const,
+      name: row.readiness.name,
+      siret: row.readiness.siret,
+      address1: row.readiness.address1,
+      address2: row.readiness.address2,
+      town: row.readiness.town,
+      postcode: row.readiness.postcode,
+      countryCode: row.readiness.countryCode,
+      isActive: row.readiness.isActive,
+      primaryContact: row.readiness.primaryContact ?? null,
+      banking: row.readiness.banking ?? null,
+      updatedAt: row.readiness.supplierUpdatedAt.toISOString(),
+    };
+    const assignment =
+      row.assignmentId &&
+      row.assignmentProjectId &&
+      row.directPaymentStatus &&
+      row.assignmentUpdatedAt
+        ? {
+            id: row.assignmentId,
+            projectId: row.assignmentProjectId,
+            directPaymentStatus:
+              row.directPaymentStatus as
+                | "eligible"
+                | "not_eligible"
+                | "suspended",
+            validFrom: row.validFrom,
+            validUntil: row.validUntil,
+            reason: row.assignmentReason,
+            updatedAt: row.assignmentUpdatedAt.toISOString(),
+          }
+        : null;
+    const sourceSequence = row.readiness.sourceSequence;
+    const contentSha256 = createHash("sha256")
+      .update(
+        JSON.stringify({
+          schemaVersion:
+            SUPPLIER_PAYMENT_READINESS_SCHEMA_VERSION,
+          sourceSequence,
+          supplier,
+          assignment,
+        }),
+      )
+      .digest("hex");
+    return {
+      provenance: {
+        schemaVersion:
+          SUPPLIER_PAYMENT_READINESS_SCHEMA_VERSION,
+        sourceSequence,
+        capturedAt: row.readiness.capturedAt.toISOString(),
+        contentSha256,
+      },
+      supplier,
+      assignment,
+    };
   }
 
   async restoreArchidocContractor(archidocId: string): Promise<ArchidocContractor | undefined> {

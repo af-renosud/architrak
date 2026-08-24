@@ -1,4 +1,10 @@
 import { env } from "../env";
+import {
+  supplierPaymentCursorExpiredSchema,
+  supplierPaymentReadinessResponseSchema,
+  type SupplierPaymentReadinessMode,
+  type SupplierPaymentReadinessResponse,
+} from "./supplier-payment-readiness-wire";
 
 const getBaseUrl = () => env.ARCHIDOC_BASE_URL;
 const getApiKey = () => env.ARCHIDOC_SYNC_API_KEY;
@@ -42,6 +48,9 @@ interface ArchidocFetchOptions<T> {
   validate?: (raw: unknown) => T;
   successReason?: (value: T) => string;
   onDiagnostic?: (diagnostic: ArchidocFetchDiagnostic) => void;
+  handleErrorResponse?: (
+    response: Response,
+  ) => Promise<Error | undefined>;
 }
 
 function safeHttpFailure(status: number): Pick<ArchidocFetchDiagnostic, "code" | "reason"> {
@@ -132,6 +141,8 @@ async function archidocFetch<T>(
     });
 
     if (!response.ok) {
+      const handled = await options.handleErrorResponse?.(response);
+      if (handled) throw handled;
       const failure = safeHttpFailure(response.status);
       const diagnostic = makeFetchDiagnostic(endpoint, startedAt, {
         outcome: "error",
@@ -165,7 +176,7 @@ async function archidocFetch<T>(
         outcome: "error",
         status: response.status,
         code: "invalid_response",
-        reason: "The ArchiDoc technical-lot response failed contract validation.",
+        reason: "The ArchiDoc response failed contract validation.",
       });
       options.onDiagnostic?.(diagnostic);
       throw new ArchidocFetchError(diagnostic);
@@ -180,7 +191,15 @@ async function archidocFetch<T>(
     options.onDiagnostic?.(diagnostic);
     return value;
   } catch (error) {
-    if (error instanceof ArchidocFetchError) throw error;
+    if (
+      error instanceof ArchidocFetchError ||
+      (
+        error instanceof Error &&
+        error.name === "SupplierPaymentCursorExpiredError"
+      )
+    ) {
+      throw error;
+    }
     const timedOut =
       error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError");
     const diagnostic = makeFetchDiagnostic(endpoint, startedAt, {
@@ -339,6 +358,62 @@ export async function fetchContractors(since?: string): Promise<{ contractors: A
 
 export async function fetchSuppliers(): Promise<ArchidocSupplierData[]> {
   return archidocFetch<ArchidocSupplierData[]>("/api/suppliers");
+}
+
+export class SupplierPaymentCursorExpiredError extends Error {
+  constructor(public readonly minimumAvailableSequence: string) {
+    super(
+      `Supplier payment-readiness cursor expired; minimum available sequence is ${minimumAvailableSequence}.`,
+    );
+    this.name = "SupplierPaymentCursorExpiredError";
+  }
+}
+
+export async function fetchSupplierPaymentReadinessPage(input: {
+  mode?: SupplierPaymentReadinessMode;
+  afterSequence?: string;
+  pageToken?: string;
+  limit?: number;
+}): Promise<SupplierPaymentReadinessResponse> {
+  const params: Record<string, string> = {};
+  if (input.pageToken) {
+    params.pageToken = input.pageToken;
+  } else {
+    if (!input.mode) {
+      throw new Error(
+        "Supplier payment-readiness first page requires a sync mode.",
+      );
+    }
+    params.mode = input.mode;
+    if (input.afterSequence !== undefined) {
+      params.afterSequence = input.afterSequence;
+    }
+    params.limit = String(input.limit ?? 200);
+  }
+  return archidocFetch<SupplierPaymentReadinessResponse>(
+    "/api/integrations/architrak/v1/supplier-payment-readiness",
+    {
+      params,
+      validate: (raw) => supplierPaymentReadinessResponseSchema.parse(raw),
+      successReason: (value) =>
+        `Validated ${value.changes.length} supplier payment-readiness change(s).`,
+      handleErrorResponse: async (response) => {
+        if (response.status !== 410) return undefined;
+        let raw: unknown;
+        try {
+          raw = await response.json();
+        } catch {
+          return undefined;
+        }
+        const parsed = supplierPaymentCursorExpiredSchema.safeParse(raw);
+        return parsed.success
+          ? new SupplierPaymentCursorExpiredError(
+              parsed.data.minimumAvailableSequence,
+            )
+          : undefined;
+      },
+    },
+  );
 }
 
 export async function fetchTrades(): Promise<{ trades: ArchidocTradeData[]; syncTimestamp: string }> {

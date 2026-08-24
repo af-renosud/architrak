@@ -25,6 +25,8 @@ import { z } from "zod";
 import {
   CERTIFICATE_TRACKS,
   type CertificateTrack,
+  type SupplierPaymentPrimaryContact,
+  type SupplierPaymentBankingSnapshot,
 } from "./supplier-payment-readiness";
 
 export { CERTIFICATE_TRACKS, type CertificateTrack };
@@ -1379,6 +1381,155 @@ export const archidocContractors = pgTable("archidoc_contractors", {
   check("archidoc_contractors_partner_type_chk", sql`${table.partnerType} IN ('contractor', 'supplier')`),
   index("archidoc_contractors_is_deleted_idx").on(table.isDeleted),
 ]);
+
+export const archidocSupplierPaymentReadiness = pgTable(
+  "archidoc_supplier_payment_readiness",
+  {
+    supplierArchidocId: varchar("supplier_archidoc_id", {
+      length: 255,
+    }).primaryKey(),
+    partnerType: varchar("partner_type", { length: 32 })
+      .notNull()
+      .default("supplier"),
+    name: text("name").notNull(),
+    siret: text("siret"),
+    address1: text("address1"),
+    address2: text("address2"),
+    town: text("town"),
+    postcode: text("postcode"),
+    countryCode: varchar("country_code", { length: 2 }),
+    isActive: boolean("is_active").notNull(),
+    primaryContact: jsonb("primary_contact").$type<
+      SupplierPaymentPrimaryContact | null
+    >(),
+    banking: jsonb("banking").$type<
+      SupplierPaymentBankingSnapshot | null
+    >(),
+    sourceSequence: numeric("source_sequence", {
+      precision: 30,
+      scale: 0,
+    }).notNull(),
+    payloadSha256: varchar("payload_sha256", { length: 64 }).notNull(),
+    changedAt: timestamp("changed_at", { withTimezone: true }).notNull(),
+    supplierUpdatedAt: timestamp("supplier_updated_at", {
+      withTimezone: true,
+    }).notNull(),
+    capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
+    sourceBaseUrl: text("source_base_url").notNull(),
+    isDeleted: boolean("is_deleted").notNull().default(false),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (table) => [
+    check(
+      "archidoc_supplier_payment_readiness_partner_type_chk",
+      sql`${table.partnerType} = 'supplier'`,
+    ),
+    check(
+      "archidoc_supplier_payment_readiness_siret_chk",
+      sql`${table.siret} IS NULL OR ${table.siret} ~ '^[0-9]{14}$'`,
+    ),
+    check(
+      "archidoc_supplier_payment_readiness_country_chk",
+      sql`${table.countryCode} IS NULL OR ${table.countryCode} ~ '^[A-Z]{2}$'`,
+    ),
+    check(
+      "archidoc_supplier_payment_readiness_sequence_chk",
+      sql`${table.sourceSequence} >= 0`,
+    ),
+    check(
+      "archidoc_supplier_payment_readiness_hash_chk",
+      sql`${table.payloadSha256} ~ '^[a-f0-9]{64}$'`,
+    ),
+    index("archidoc_supplier_payment_readiness_active_idx").on(
+      table.isDeleted,
+      table.isActive,
+    ),
+  ],
+);
+
+export const archidocSupplierPaymentAssignments = pgTable(
+  "archidoc_supplier_payment_assignments",
+  {
+    id: serial("id").primaryKey(),
+    supplierArchidocId: varchar("supplier_archidoc_id", {
+      length: 255,
+    })
+      .notNull()
+      .references(
+        () => archidocSupplierPaymentReadiness.supplierArchidocId,
+        { onDelete: "cascade" },
+      ),
+    assignmentArchidocId: varchar("assignment_archidoc_id", {
+      length: 255,
+    }).notNull(),
+    projectArchidocId: varchar("project_archidoc_id", {
+      length: 255,
+    }).notNull(),
+    directPaymentStatus: varchar("direct_payment_status", {
+      length: 32,
+    }).notNull(),
+    validFrom: date("valid_from"),
+    validUntil: date("valid_until"),
+    reason: text("reason"),
+    assignmentUpdatedAt: timestamp("assignment_updated_at", {
+      withTimezone: true,
+    }).notNull(),
+    capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    unique("archidoc_supplier_payment_assignments_upstream_unique").on(
+      table.assignmentArchidocId,
+    ),
+    unique("archidoc_supplier_payment_assignments_supplier_project_unique").on(
+      table.supplierArchidocId,
+      table.projectArchidocId,
+    ),
+    index("archidoc_supplier_payment_assignments_supplier_idx").on(
+      table.supplierArchidocId,
+    ),
+    index("archidoc_supplier_payment_assignments_project_idx").on(
+      table.projectArchidocId,
+    ),
+    check(
+      "archidoc_supplier_payment_assignments_status_chk",
+      sql`${table.directPaymentStatus} IN ('eligible', 'not_eligible', 'suspended')`,
+    ),
+    check(
+      "archidoc_supplier_payment_assignments_dates_chk",
+      sql`${table.validFrom} IS NULL OR ${table.validUntil} IS NULL OR ${table.validFrom} <= ${table.validUntil}`,
+    ),
+  ],
+);
+
+export const archidocSupplierPaymentCursor = pgTable(
+  "archidoc_supplier_payment_cursor",
+  {
+    singletonKey: integer("singleton_key").primaryKey().default(1),
+    contractVersion: varchar("contract_version", { length: 64 }).notNull(),
+    lastSequence: numeric("last_sequence", {
+      precision: 30,
+      scale: 0,
+    }).notNull(),
+    minimumAvailableSequence: numeric("minimum_available_sequence", {
+      precision: 30,
+      scale: 0,
+    }).notNull(),
+    sourceBaseUrl: text("source_base_url").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    check(
+      "archidoc_supplier_payment_cursor_singleton_chk",
+      sql`${table.singletonKey} = 1`,
+    ),
+    check(
+      "archidoc_supplier_payment_cursor_sequence_chk",
+      sql`${table.lastSequence} >= 0 AND ${table.minimumAvailableSequence} >= 0`,
+    ),
+  ],
+);
 
 export const archidocTrades = pgTable("archidoc_trades", {
   archidocId: varchar("archidoc_id", { length: 255 }).primaryKey(),

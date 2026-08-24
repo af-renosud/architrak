@@ -9,6 +9,7 @@ import {
   archidocSiretIssues,
   archidocTechnicalLots,
   archidocTechnicalLotCatalogue,
+  archidocSupplierPaymentReadiness,
   planningRevisions,
 } from "@shared/schema";
 import {
@@ -35,6 +36,10 @@ import {
   toSafeArchidocSyncFailure,
   type ArchidocSyncDiagnosticCode,
 } from "./sync-diagnostics";
+import {
+  syncSupplierPaymentReadinessWithinHeldLock,
+  type SupplierPaymentReadinessSyncResult,
+} from "./supplier-payment-readiness-sync";
 
 // Canonical form of the configured Archidoc backend URL — used to stamp
 // every mirror row so a future repointing of ARCHIDOC_BASE_URL can be
@@ -275,6 +280,24 @@ export async function upsertProject(p: ArchidocProjectData) {
 export async function upsertContractor(
   c: ArchidocContractorData,
 ): Promise<{ siretIssue: MirrorSiretIssue | null }> {
+  const [versionedReadiness] = await db
+    .select({
+      supplierArchidocId:
+        archidocSupplierPaymentReadiness.supplierArchidocId,
+    })
+    .from(archidocSupplierPaymentReadiness)
+    .where(
+      eq(
+        archidocSupplierPaymentReadiness.supplierArchidocId,
+        c.id,
+      ),
+    )
+    .limit(1);
+  if (versionedReadiness) {
+    // Ownership is keyed by stable ArchiDoc ID, never by the optional and
+    // untrusted legacy partnerType discriminator. This includes tombstones.
+    return { siretIssue: null };
+  }
   const normalisedSiret = normaliseMirrorSiret(c.siret, { archidocId: c.id, name: c.name });
   const rawTrimmed = c.siret == null ? "" : String(c.siret).trim();
   const siretIssue: MirrorSiretIssue | null =
@@ -1159,6 +1182,7 @@ export interface MirrorSyncResult {
   trades: { updated: number; error?: string };
   proposalFees: { updated: number; error?: string };
   technicalLots: { updated: number; error?: string; warning?: string };
+  supplierPaymentReadiness: SupplierPaymentReadinessSyncResult;
   // True when another sync already held the mirror-sync lock; nothing ran.
   alreadyRunning?: boolean;
 }
@@ -1169,6 +1193,7 @@ const ALREADY_RUNNING_RESULT: MirrorSyncResult = {
   trades: { updated: 0 },
   proposalFees: { updated: 0 },
   technicalLots: { updated: 0 },
+  supplierPaymentReadiness: { updated: 0, deleted: 0 },
   alreadyRunning: true,
 };
 
@@ -1185,6 +1210,12 @@ export async function fullSync(): Promise<MirrorSyncResult> {
       syncAllProposalFees(),
       syncTechnicalLots(),
     ]);
+    // Run after the legacy contractor feed so the versioned payment-readiness
+    // supplier data is the final authoritative promotion for shared partners.
+    const supplierPaymentReadinessResult =
+      await syncSupplierPaymentReadinessWithinHeldLock({
+        forceBootstrap: true,
+      });
 
     console.log("[ArchiDoc Sync] Full sync complete", {
       projects: projectsResult.updated,
@@ -1192,6 +1223,9 @@ export async function fullSync(): Promise<MirrorSyncResult> {
       trades: tradesResult.updated,
       proposalFees: feesResult.updated,
       technicalLots: technicalLotsResult.updated,
+      supplierPaymentReadiness:
+        supplierPaymentReadinessResult.updated +
+        supplierPaymentReadinessResult.deleted,
     });
 
     return {
@@ -1200,6 +1234,7 @@ export async function fullSync(): Promise<MirrorSyncResult> {
       trades: tradesResult,
       proposalFees: feesResult,
       technicalLots: technicalLotsResult,
+      supplierPaymentReadiness: supplierPaymentReadinessResult,
     };
   });
 
@@ -1223,6 +1258,8 @@ export async function incrementalSync(): Promise<MirrorSyncResult> {
       syncAllProposalFees(),
       syncTechnicalLots(),
     ]);
+    const supplierPaymentReadinessResult =
+      await syncSupplierPaymentReadinessWithinHeldLock();
 
     return {
       projects: projectsResult,
@@ -1230,6 +1267,7 @@ export async function incrementalSync(): Promise<MirrorSyncResult> {
       trades: tradesResult,
       proposalFees: feesResult,
       technicalLots: technicalLotsResult,
+      supplierPaymentReadiness: supplierPaymentReadinessResult,
     };
   });
 
@@ -1241,7 +1279,13 @@ export async function incrementalSync(): Promise<MirrorSyncResult> {
 }
 
 export type TechnicalLotCatalogueState = "ready" | "last_known_good" | "empty";
-type MirrorResourceSyncType = "projects" | "contractors" | "trades" | "proposalFees" | "technicalLots";
+type MirrorResourceSyncType =
+  | "projects"
+  | "contractors"
+  | "trades"
+  | "proposalFees"
+  | "technicalLots"
+  | "supplierPaymentReadiness";
 
 export interface MirrorResourceSyncDiagnostic {
   lastSync: Date | null;
@@ -1370,12 +1414,13 @@ export async function getLastSyncStatus(): Promise<{
     .from(archidocSyncLog)
     .orderBy(desc(archidocSyncLog.id))
     .limit(1);
-  const [projectLogs, contractorLogs, tradeLogs, proposalFeeLogs, technicalLotLogs] = await Promise.all([
+  const [projectLogs, contractorLogs, tradeLogs, proposalFeeLogs, technicalLotLogs, supplierPaymentReadinessLogs] = await Promise.all([
     db.select().from(archidocSyncLog).where(eq(archidocSyncLog.syncType, "projects")).orderBy(desc(archidocSyncLog.id)).limit(1),
     db.select().from(archidocSyncLog).where(eq(archidocSyncLog.syncType, "contractors")).orderBy(desc(archidocSyncLog.id)).limit(1),
     db.select().from(archidocSyncLog).where(eq(archidocSyncLog.syncType, "trades")).orderBy(desc(archidocSyncLog.id)).limit(1),
     db.select().from(archidocSyncLog).where(eq(archidocSyncLog.syncType, "proposal_fees")).orderBy(desc(archidocSyncLog.id)).limit(1),
     db.select().from(archidocSyncLog).where(eq(archidocSyncLog.syncType, "technical_lots")).orderBy(desc(archidocSyncLog.id)).limit(1),
+    db.select().from(archidocSyncLog).where(eq(archidocSyncLog.syncType, "supplier_payment_readiness")).orderBy(desc(archidocSyncLog.id)).limit(1),
   ]);
   const toResourceDiagnostic = (
     entry: typeof archidocSyncLog.$inferSelect | undefined,
@@ -1399,6 +1444,9 @@ export async function getLastSyncStatus(): Promise<{
     trades: toResourceDiagnostic(tradeLogs[0]),
     proposalFees: toResourceDiagnostic(proposalFeeLogs[0]),
     technicalLots: toResourceDiagnostic(technicalLotLogs[0]),
+    supplierPaymentReadiness: toResourceDiagnostic(
+      supplierPaymentReadinessLogs[0],
+    ),
   };
 
   let technicalLots: {

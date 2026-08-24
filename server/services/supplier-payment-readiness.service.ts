@@ -7,6 +7,7 @@ import {
 } from "@shared/iban";
 import {
   SUPPLIER_PAYMENT_READINESS_SCHEMA_VERSION,
+  type SupplierPaymentReadinessMirrorSnapshot,
   type SupplierPaymentReadinessSnapshot,
 } from "@shared/supplier-payment-readiness";
 
@@ -58,7 +59,7 @@ export function evaluateSupplierPaymentReadiness(input: {
   };
   projectArchidocId: string;
   issueDate: string;
-  snapshot: SupplierPaymentReadinessSnapshot;
+  snapshot: SupplierPaymentReadinessMirrorSnapshot;
 }): SupplierPaymentReadinessBlocker[] {
   const { canonicalPartner, projectArchidocId, issueDate, snapshot } = input;
   const blockers: SupplierPaymentReadinessBlocker[] = [];
@@ -67,8 +68,7 @@ export function evaluateSupplierPaymentReadiness(input: {
   if (
     snapshot.provenance.schemaVersion !==
       SUPPLIER_PAYMENT_READINESS_SCHEMA_VERSION ||
-    !Number.isSafeInteger(snapshot.provenance.sourceSequence) ||
-    snapshot.provenance.sourceSequence < 0 ||
+    !/^(0|[1-9]\d*)$/.test(snapshot.provenance.sourceSequence) ||
     !Number.isFinite(Date.parse(snapshot.provenance.capturedAt)) ||
     !/^[a-f0-9]{64}$/.test(snapshot.provenance.contentSha256)
   ) {
@@ -108,7 +108,8 @@ export function evaluateSupplierPaymentReadiness(input: {
     blockers.push("supplier_banking_unverified");
   } else {
     const iban = validateIban(banking.iban);
-    const bicValid = validateBic(banking.bic).valid;
+    const bicValid =
+      banking.bic == null || validateBic(banking.bic).valid;
     if (!iban.valid || !bicValid) blockers.push("supplier_banking_invalid");
     if (
       !ibansMatch(canonicalPartner.iban, banking.iban) ||
@@ -131,15 +132,18 @@ export function evaluateSupplierPaymentReadiness(input: {
   }
 
   const assignment = snapshot.assignment;
-  if (assignment.projectId !== projectArchidocId) {
+  if (!assignment || assignment.projectId !== projectArchidocId) {
     blockers.push("project_assignment_mismatch");
   }
-  if (assignment.directPaymentStatus !== "eligible") {
+  if (assignment && assignment.directPaymentStatus !== "eligible") {
     blockers.push("project_assignment_ineligible");
   }
   if (
-    (assignment.validFrom != null && issueDate < assignment.validFrom) ||
-    (assignment.validUntil != null && issueDate > assignment.validUntil)
+    assignment &&
+    (
+      (assignment.validFrom != null && issueDate < assignment.validFrom) ||
+      (assignment.validUntil != null && issueDate > assignment.validUntil)
+    )
   ) {
     blockers.push("project_assignment_not_current");
   }
@@ -184,5 +188,8 @@ export async function assertSupplierPaymentReadiness(input: {
     snapshot,
   });
   if (evaluated.length > 0) throw new SupplierPaymentReadinessError(evaluated);
-  return snapshot;
+  if (!snapshot.assignment) {
+    throw new SupplierPaymentReadinessError(["project_assignment_mismatch"]);
+  }
+  return { ...snapshot, assignment: snapshot.assignment };
 }

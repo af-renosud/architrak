@@ -243,6 +243,42 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
       ],
     },
   },
+  {
+    tag: "0116_supplier_payment_readiness_sync",
+    artifact: {
+      kind: "all",
+      artifacts: [
+        { kind: "table", table: "archidoc_supplier_payment_readiness" },
+        {
+          kind: "constraint",
+          table: "archidoc_supplier_payment_readiness",
+          constraint:
+            "archidoc_supplier_payment_readiness_sequence_chk",
+        },
+        { kind: "table", table: "archidoc_supplier_payment_assignments" },
+        {
+          kind: "constraint",
+          table: "archidoc_supplier_payment_assignments",
+          constraint:
+            "archidoc_supplier_payment_assignments_supplier_archidoc_id_archidoc_supplier_payment_readiness_supplier_archidoc_id_fk",
+        },
+        {
+          kind: "index",
+          index: "archidoc_supplier_payment_assignments_supplier_idx",
+        },
+        {
+          kind: "index",
+          index: "archidoc_supplier_payment_assignments_project_idx",
+        },
+        { kind: "table", table: "archidoc_supplier_payment_cursor" },
+        {
+          kind: "constraint",
+          table: "archidoc_supplier_payment_cursor",
+          constraint: "archidoc_supplier_payment_cursor_singleton_chk",
+        },
+      ],
+    },
+  },
 ];
 
 interface JournalFile {

@@ -16,5 +16,11 @@ description: Durable rules for any ArchiDoc mirror sync or reconciliation work.
   **Why:** Planning persists only the immutable upstream ID; a different backend reusing that ID would silently relabel approved history.
 - **Technical-lot availability distinguishes an empty first load from last-known-good data.** A failed refresh keeps the prior validated catalogue selectable; diagnostics use fixed safe codes/reasons and never retain upstream bodies, headers, values, or caught exceptions.
   **Why:** operators must not lose a working Planning selector during an upstream outage, while raw failure detail can disclose credentials or untrusted content.
+- **Supplier payment-readiness sequences stay exact unsigned-decimal strings and the cursor advances only after the entire frozen page window validates and commits.** Reject duplicate sequences, cursor regression, changed same-sequence payloads, and source changes without bootstrap.
+  **Why:** JavaScript numbers lose upstream sequence precision, while partial page publication or cursor movement can authorize payment from an incoherent snapshot.
+- **Once the versioned readiness feed claims a supplier ID, no legacy contractor/supplier feed may overwrite or resurrect it—even if legacy partner type is missing or wrong, and even when the readiness row is a tombstone.**
+  **Why:** ArchiDoc readiness is the payment-authoritative supplier identity; legacy labels and refresh failures are not ownership signals.
+- **Readiness publication takes the same project/supplier transaction advisory-lock pair as certificate sealing before changing supplier, assignment, or tombstone state.**
+  **Why:** a seal must compare and issue against one serial readiness state, never race an assignment/banking update.
 
 **How to apply:** new sync triggers go through fullSync/incrementalSync/runContractorAutoSync (which own the lock); new sync UIs must handle failures/warnings/alreadyRunning and the explicit catalogue availability state.

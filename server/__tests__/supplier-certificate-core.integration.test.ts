@@ -49,7 +49,7 @@ function readinessSnapshot(): SupplierPaymentReadinessSnapshot {
   return {
     provenance: {
       schemaVersion: "archidoc_supplier_payment_readiness_v1",
-      sourceSequence: 100,
+      sourceSequence: "100",
       capturedAt: "2026-08-20T10:01:00Z",
       contentSha256: "e".repeat(64),
     },
@@ -561,7 +561,7 @@ describe("supplier direct-payment certificate core", () => {
     const guardedReadiness = readinessSnapshot();
     readinessSpy.mockImplementation(async () => {
       const advanced = readinessSnapshot();
-      advanced.provenance.sourceSequence += 1;
+      advanced.provenance.sourceSequence = "101";
       advanced.provenance.contentSha256 = "a".repeat(64);
       return advanced;
     });

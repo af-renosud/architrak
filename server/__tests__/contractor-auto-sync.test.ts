@@ -9,7 +9,13 @@ interface State {
   updateContractorPayloads: Record<string, unknown>[];
 }
 
-const { state, dbSpy, syncContractorsMock, isArchidocConfiguredMock } = vi.hoisted(() => {
+const {
+  state,
+  dbSpy,
+  syncContractorsMock,
+  syncSupplierReadinessMock,
+  isArchidocConfiguredMock,
+} = vi.hoisted(() => {
   const state: State = {
     nextId: 1000,
     archidocContractors: [],
@@ -159,9 +165,19 @@ const { state, dbSpy, syncContractorsMock, isArchidocConfiguredMock } = vi.hoist
     updated: 0 as number,
     error: undefined as string | undefined,
   }));
+  const syncSupplierReadinessMock = vi.fn(async () => ({
+    updated: 0,
+    deleted: 0,
+  }));
   const isArchidocConfiguredMock = vi.fn(() => true);
 
-  return { state, dbSpy, syncContractorsMock, isArchidocConfiguredMock };
+  return {
+    state,
+    dbSpy,
+    syncContractorsMock,
+    syncSupplierReadinessMock,
+    isArchidocConfiguredMock,
+  };
 });
 
 vi.mock("../db", () => ({ db: dbSpy, pool: {} }));
@@ -178,6 +194,10 @@ vi.mock("../archidoc/sync-service", () => ({
 }));
 vi.mock("../archidoc/sync-client", () => ({
   isArchidocConfigured: isArchidocConfiguredMock,
+}));
+vi.mock("../archidoc/supplier-payment-readiness-sync", () => ({
+  syncSupplierPaymentReadinessWithinHeldLock:
+    syncSupplierReadinessMock,
 }));
 
 import { runContractorAutoSync, CONTRACTOR_AUTO_SYNC_TYPE } from "../archidoc/contractor-auto-sync";
@@ -223,6 +243,11 @@ function resetState() {
   state.updateContractorPayloads = [];
   syncContractorsMock.mockReset();
   syncContractorsMock.mockResolvedValue({ updated: 1, error: undefined });
+  syncSupplierReadinessMock.mockReset();
+  syncSupplierReadinessMock.mockResolvedValue({
+    updated: 0,
+    deleted: 0,
+  });
   isArchidocConfiguredMock.mockReset();
   isArchidocConfiguredMock.mockReturnValue(true);
   vi.spyOn(console, "log").mockImplementation(() => {});
