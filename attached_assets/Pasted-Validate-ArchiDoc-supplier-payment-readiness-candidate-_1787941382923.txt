@@ -1,0 +1,73 @@
+Validate ArchiDoc supplier-payment readiness candidate
+
+Perform a strictly read-only validation of ArchiDoc’s supplier-payment-readiness.v1 integration for the approved supplier candidate.
+
+Approved candidate
+
+Supplier: RICHARDSON
+ArchiDoc supplier numeric ID: 15
+Project: LIVERMORE/DANCE (AUMES) 1181/2
+ArchiDoc project ID: a01aa380-c068-4a8d-8559-a14cff475b94
+Architecture requirements
+
+Use ArchiTrak’s released canonical partner/contractor mirror:
+
+The partner must have partnerType: "supplier".
+ArchiDoc’s immutable payment supplier ID maps to ArchiTrak’s archidocId.
+ArchiTrak migrations 0115 and 0116 remain authoritative.
+Do not introduce another supplier model or identity mapping.
+Do not merge, deploy, or reuse incompatible ArchiTrak PR #1.
+Safety restrictions
+
+This validation must be read-only:
+
+Do not create or modify partners, contractors, projects, assignments, certificates, migrations, allowlists, or production data.
+Do not enable direct payment.
+Do not issue or send a certificate.
+Do not retrieve, display, log, or return bank details.
+Do not expose protected-document URLs, paths, object keys, credentials, tokens, or secrets.
+Do not download or return the protected RIB.
+Do not weaken authentication, HMAC validation, request binding, authorization, redaction, or audit controls.
+Keep the production project allowlist empty.
+Validation steps
+
+Inspect the current ArchiTrak implementation and confirm it consumes supplier-payment-readiness.v1 through the canonical supplier partner mirror.
+Call ArchiDoc’s authenticated readiness feed using the existing production server-to-server integration.
+Locate only the approved RICHARDSON candidate by its canonical ArchiDoc payment identity—not by supplier name alone.
+Confirm that any returned project assignment refers only to the approved LIVERMORE/DANCE project ID.
+Validate the protected-RIB contract through the existing authenticated, request-bound endpoint without exposing or returning the document.
+Confirm:
+authentication passes;
+supplier identity binding passes;
+project binding passes;
+current-document validation passes;
+integrity/hash validation passes;
+protected-document authorization and audit behavior pass;
+no banking values or protected locations appear in logs or output.
+Do not proceed to any rollout decision unless the validator reports exactly:
+{
+  "protectedRib": "passed"
+}
+Required output
+
+Return a concise, redacted validation report containing only:
+
+{
+  "candidateFound": true,
+  "partnerType": "supplier",
+  "canonicalIdentityMatched": true,
+  "approvedProjectOnly": true,
+  "authentication": "passed",
+  "requestBinding": "passed",
+  "protectedRib": "passed",
+  "bankingDataExposed": false,
+  "protectedLocationExposed": false,
+  "productionMutated": false,
+  "rolloutRecommendation": "hold"
+}
+If any check fails or cannot be completed, return "failed" or "not_tested" for that check, explain the failure without sensitive data, and keep:
+
+{
+  "rolloutRecommendation": "hold"
+}
+Do not implement fixes or mutate production as part of this request. Report findings only.
