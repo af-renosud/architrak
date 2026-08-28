@@ -1,0 +1,53 @@
+Here’s a brief summary you can paste into the ArchiTrak Agent:
+
+We have completed the ArchiDoc side of the new supplier direct-payment integration and opened the corresponding ArchiTrak implementation here:
+
+ArchiTrak PR: https://github.com/af-renosud/architrak/pull/1
+Branch: agent/richardson-supplier-payment-readiness
+Reviewed head: 02866316e6d28dee8f13bff6a02db1949a1e2152
+
+Important correction: suppliers are not contractors
+Our original misunderstanding was treating suppliers as contractor-shaped records.
+
+The correct model is:
+
+Contractors continue to use the existing contractor and devis workflows unchanged.
+Direct-payment suppliers come exclusively from ArchiDoc Partners → Suppliers, backed by ff_suppliers.
+ArchiTrak must identify them using the immutable opaque paymentSupplierId.
+ArchiTrak must not create a contractor record for Richardson or any other supplier.
+Legacy contractor-backed supplier history is audit-only and must not enter the active supplier feed.
+A supplier quotation is stored separately from the existing contractor-backed devis records.
+What has been implemented
+The PR adds:
+
+A strict consumer for ArchiDoc’s frozen supplier-payment-readiness.v1 feed.
+A dedicated read-only payment-supplier mirror in ArchiTrak.
+Automatic recovery from an expired incremental cursor using bootstrap plus incremental catch-up.
+A separate supplier quotation table and multipart PDF upload routes.
+Idempotent PDF hashing and ingestion.
+Supplier matching by:
+opaque paymentSupplierId; or
+exact SIRET within an active, eligible project assignment.
+Name-only matching always requires manual review.
+Idempotent supplier appointment without touching contractors or contractor devis.
+Protected RIB retrieval with authenticated requests and SHA-256 verification.
+Operator-only access for quotation, appointment, preview, and sync routes.
+Validation already completed
+ArchiDoc producer: 4 suites / 35 tests passed.
+ArchiTrak consumer and HTTP journey: 3 files / 18 tests passed.
+TypeScript check passed.
+The ArchiDoc and ArchiTrak frozen fixtures are byte-identical.
+Migration 0114_supplier_payment_readiness.sql passed a rollback-only isolated PostgreSQL replay.
+Independent architecture review passed.
+Proper development test to run
+Please test with synthetic data only:
+
+Apply migration 0114 to an isolated ArchiTrak development database.
+Configure ArchiTrak to call the development ArchiDoc integration endpoint.
+Create/sync a synthetic supplier named RICHARDSON TEST with synthetic contact, SIRET, banking, RIB and project-assignment data.
+Confirm it creates exactly one payment-supplier mirror and no contractor.
+Upload a synthetic Richardson quotation PDF twice using the same source document ID.
+Confirm ArchiTrak stores one quotation, matches it to the supplier, and appoints that supplier idempotently.
+Confirm cross-project, inactive, deleted, ineligible, name-only and changed-PDF cases fail closed.
+Do not issue a certificate during this test.
+No production Richardson data, production migration, production allowlist, real RIB details, contractor creation, publishing, or certificate issuance has been authorized.
