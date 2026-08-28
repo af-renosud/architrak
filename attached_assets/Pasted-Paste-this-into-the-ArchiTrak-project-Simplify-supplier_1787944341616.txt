@@ -1,0 +1,148 @@
+Paste this into the **ArchiTrak project**:
+
+---
+
+# Simplify supplier payment certificates to match contractors
+
+Implement the agreed simplified supplier payment-certificate workflow in ArchiTrak.
+
+## Goal
+
+A supplier from ArchiDoc’s **Partners → Suppliers** list must work like a contractor when creating a payment certificate:
+
+1. The supplier and RIB are entered and saved once in ArchiDoc.
+2. ArchiTrak mirrors the supplier as a partner.
+3. The user selects that supplier while creating a payment certificate.
+4. ArchiTrak fetches the current saved certificate data from ArchiDoc.
+5. ArchiTrak injects those values into the certificate.
+
+Do not expose readiness feeds, validators, allowlists, hashes, or confirmation tokens as user-facing workflow steps.
+
+## Canonical supplier identity
+
+Continue using ArchiTrak’s released partner mirror:
+
+```json
+{
+  "partnerType": "supplier",
+  "archidocId": "<immutable ArchiDoc payment supplier ID>"
+}
+```
+
+Requirements:
+
+- `archidocId` is the supplier ID used in calls to ArchiDoc.
+- Do not create a duplicate contractor or supplier master.
+- Keep ArchiTrak migrations 0115 and 0116 authoritative.
+- Do not merge, deploy, copy, or revive incompatible ArchiTrak PR #1.
+
+## Certificate-generation request
+
+When the user selects a supplier and generates or refreshes a payment certificate, call:
+
+```http
+GET /api/integrations/architrak/v1/suppliers/{archidocId}/payment-certificate-handoff?projectId={archidocProjectId}&issueDate={YYYY-MM-DD}
+Authorization: Bearer {existing ArchiDoc integration credential}
+Accept: application/json
+```
+
+Use the response as the current authoritative certificate input.
+
+The response supplies:
+
+- supplier identity;
+- legal name and address;
+- saved account-holder name;
+- saved IBAN;
+- optional BIC;
+- bank name;
+- applicable project assignment;
+- current protected RIB metadata.
+
+Strictly parse the response. Do not invent fallback banking values or reuse stale values when the request fails.
+
+## Protected RIB retrieval
+
+If certificate generation needs the original RIB PDF, use the returned current document metadata to call:
+
+```http
+GET /api/integrations/architrak/v1/suppliers/{archidocId}/rib/{documentId}
+Authorization: Bearer {existing ArchiDoc integration credential}
+X-ArchiDoc-RIB-SHA256: {sha256 returned by the handoff}
+```
+
+This is an internal server-to-server request, not another user confirmation step.
+
+Verify the returned PDF against the expected hash before using it. Never place the protected URL, path, document bytes, or hash in browser-visible state.
+
+## User experience
+
+The ArchiTrak workflow should be:
+
+1. Open or create a payment certificate.
+2. Select a partner where `partnerType === "supplier"`.
+3. Select the relevant ArchiDoc project if it is not already known.
+4. Generate or refresh the certificate.
+5. ArchiTrak retrieves the supplier information and fills the certificate.
+
+Do not ask the user to:
+
+- run a readiness validator;
+- manage a rollout allowlist;
+- confirm the RIB again;
+- enter the same banking fields again;
+- copy an IBAN or RIB between applications;
+- understand document hashes or integration tokens.
+
+## Background synchronisation
+
+The existing `supplier-payment-readiness.v1` feed may remain for background partner mirroring and change detection.
+
+It must not be a user-managed prerequisite for certificate creation. At certificate-generation time, the on-demand handoff is authoritative.
+
+## Error handling
+
+If the handoff returns `409 SUPPLIER_NOT_PAYMENT_READY`, show a concise message such as:
+
+> Les informations de paiement de ce fournisseur ne sont pas encore disponibles dans ArchiDoc. Vérifiez sa fiche fournisseur, puis réessayez.
+
+For authentication, network, or server failures, show:
+
+> ArchiDoc est temporairement indisponible. Aucun certificat n’a été généré avec des coordonnées bancaires non vérifiées.
+
+Never silently use cached or manually guessed banking information after a failed handoff.
+
+## Security boundaries
+
+- All ArchiDoc calls are server-to-server.
+- Continue using the existing integration credential.
+- Never expose credentials or protected RIB locations to the browser.
+- Never log banking values, PDF bytes, authorization headers, or protected document paths.
+- Do not weaken authentication, supplier/project binding, current-document checks, or integrity validation.
+- Do not automatically issue, seal, send, or mark a certificate as paid.
+- Do not modify ArchiDoc as part of this ArchiTrak task.
+
+## Completion criteria
+
+The work is complete when:
+
+- an ArchiDoc supplier mirrored as `partnerType: "supplier"` can be selected as the certificate payee;
+- ArchiTrak calls the on-demand handoff using that partner’s `archidocId`;
+- returned supplier and banking values populate the appropriate certificate fields;
+- the protected RIB is fetched internally only when required;
+- no additional RIB confirmation is presented to the user;
+- failures never fall back to stale or invented banking details;
+- contractor certificate behavior remains unchanged;
+- supplier-specific certificate calculations remain unchanged;
+- tests cover successful handoff, unavailable supplier, stale RIB, hash mismatch, authentication failure, and preservation of the existing contractor workflow.
+
+After implementation, report:
+
+1. files changed;
+2. tests run and results;
+3. the final user workflow;
+4. any actual incompatibility found in the existing ArchiDoc contract.
+
+Do not include banking values, credentials, document paths, protected URLs, or RIB contents in the report.
+
+---
