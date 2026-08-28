@@ -4,7 +4,6 @@ vi.mock("../../storage", () => ({
   storage: {
     getContractor: vi.fn(),
     getProject: vi.fn(),
-    getSupplierPaymentReadinessSnapshot: vi.fn(),
   },
 }));
 
@@ -16,9 +15,6 @@ import {
 
 const getContractor = vi.mocked(storage.getContractor);
 const getProject = vi.mocked(storage.getProject);
-const getSnapshot = vi.mocked(
-  storage.getSupplierPaymentReadinessSnapshot,
-);
 
 const partner = {
   id: 10,
@@ -46,7 +42,6 @@ describe("supplier payment readiness canonical preconditions", () => {
     vi.resetAllMocks();
     getContractor.mockResolvedValue(partner as never);
     getProject.mockResolvedValue(project as never);
-    getSnapshot.mockResolvedValue(null);
   });
 
   it("fails when the canonical partner or project is missing", async () => {
@@ -86,7 +81,7 @@ describe("supplier payment readiness canonical preconditions", () => {
     await expectBlockers(["partner_archidoc_orphaned"]);
   });
 
-  it("fails closed when no versioned readiness snapshot is synchronized", async () => {
-    await expectBlockers(["readiness_not_synchronised"]);
+  it("fails closed when the on-demand handoff is unavailable", async () => {
+    await expectBlockers(["handoff_unavailable"]);
   });
 });

@@ -8,6 +8,7 @@ vi.mock("../../storage", async () => {
     storage: createStorageMock([
       "getCertificat",
       "getCertificatSources",
+      "getProject",
       "getInvoice",
       "getDevis",
       "updateCertificat",
@@ -37,6 +38,11 @@ vi.mock("../certificat-from-invoices.service", () => ({
 
 vi.mock("../drive/upload-queue.service", () => ({
   enqueueDriveUpload: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("../supplier-certificate-rollout.service", () => ({
+  isSupplierDirectPaymentAllowedForProject: vi.fn().mockReturnValue(true),
+  SUPPLIER_DIRECT_PAYMENT_ROLLOUT_BLOCKED:
+    "SUPPLIER_DIRECT_PAYMENT_ROLLOUT_BLOCKED",
 }));
 
 import { storage } from "../../storage";
@@ -152,6 +158,10 @@ const supplierCert = {
 beforeEach(() => {
   vi.clearAllMocks();
   mockedStorage.getCertificat.mockResolvedValue(supplierCert);
+  mockedStorage.getProject.mockResolvedValue({
+    id: 1,
+    archidocId: "project-1",
+  });
   mockedStorage.getCertificatSources.mockResolvedValue([
     { certificatId: 90, invoiceId: 41, situationId: null },
   ]);
@@ -263,10 +273,14 @@ describe("supplier direct-payment seal", () => {
     expect(assertReadiness).toHaveBeenCalledWith({
       contractorId: 2,
       projectId: 1,
-      issueDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+      issueDate: "2026-08-28",
+      verifyProtectedRib: true,
     });
+    expect(assertReadiness).toHaveBeenCalledTimes(1);
     expect(derive).toHaveBeenCalledWith([41], {
       allowCertificatId: 90,
+      issueDate: "2026-08-28",
+      supplierReadinessSnapshot: readinessSnapshot,
     });
     expect(generate).toHaveBeenCalledWith(90, {
       mode: "issue",
@@ -329,6 +343,32 @@ describe("supplier direct-payment seal", () => {
       pdfFileName: "supplier-cert.pdf",
       pdfStorageKey: "supplier-cert.pdf",
     });
+  });
+
+  it("cannot switch to a second handoff after invoice evidence validation", async () => {
+    const changedUpstream = structuredClone(readinessSnapshot);
+    changedUpstream.supplier.banking!.ribDocument!.id = "rib-changed";
+    assertReadiness
+      .mockResolvedValueOnce(readinessSnapshot)
+      .mockResolvedValueOnce(changedUpstream);
+
+    await sealCertificat(90);
+
+    expect(assertReadiness).toHaveBeenCalledTimes(1);
+    expect(derive).toHaveBeenCalledWith(
+      [41],
+      expect.objectContaining({
+        supplierReadinessSnapshot: readinessSnapshot,
+      }),
+    );
+    expect(generate).toHaveBeenCalledWith(90, {
+      mode: "issue",
+      supplierReadinessSnapshot: readinessSnapshot,
+    });
+    expect(
+      mockedStorage.sealCertificat.mock.calls[0][1]
+        .supplierDirectPaymentGuard?.readiness,
+    ).toBe(readinessSnapshot);
   });
 
   it("refuses a rendered PDF whose source set drifts from the locked invoices", async () => {

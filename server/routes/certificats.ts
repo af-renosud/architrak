@@ -55,6 +55,18 @@ const sendCertParams = z.object({
   projectId: z.coerce.number().int().positive(),
   certId: z.coerce.number().int().positive(),
 });
+const certificateIssueDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine((value) => {
+    const [year, month, day] = value.split("-").map(Number);
+    const parsed = new Date(Date.UTC(year, month - 1, day));
+    return (
+      parsed.getUTCFullYear() === year &&
+      parsed.getUTCMonth() === month - 1 &&
+      parsed.getUTCDate() === day
+    );
+  }, "Invalid certificate issue date");
 
 // Task #243 — `retenueOverride` / `prorataOverride` let an architect force a
 // cumulative deduction for edge cases. They are NOT columns: the handler pulls
@@ -87,7 +99,15 @@ function publicCertificatDto(cert: Certificat) {
           }
         ).supplierDirectPayment?.presentation ?? null
       : null;
-  return { ...publicFields, supplierPresentation };
+  const publicSupplierPresentation = supplierPresentation
+    ? {
+        ...supplierPresentation,
+        // Banking values are rendered into the protected certificate PDF, but
+        // never returned in browser-visible JSON.
+        banking: undefined,
+      }
+    : null;
+  return { ...publicFields, supplierPresentation: publicSupplierPresentation };
 }
 
 const deductionOverrideShape = {
@@ -179,6 +199,18 @@ function mapSoldeError(err: unknown): { status: number; body: Record<string, unk
     };
   }
   return null;
+}
+
+function supplierHandoffFailureBody(error: SupplierPaymentReadinessError) {
+  const unavailable = error.blockers.includes("handoff_unavailable");
+  return {
+    code: unavailable
+      ? "ARCHIDOC_TEMPORARILY_UNAVAILABLE"
+      : "SUPPLIER_NOT_PAYMENT_READY",
+    message: unavailable
+      ? "ArchiDoc est temporairement indisponible. Aucun certificat n’a été généré avec des coordonnées bancaires non vérifiées."
+      : "Les informations de paiement de ce fournisseur ne sont pas encore disponibles dans ArchiDoc. Vérifiez sa fiche fournisseur, puis réessayez.",
+  };
 }
 
 const createCertificatBodySchema = insertCertificatSchema
@@ -845,12 +877,7 @@ router.post(
         });
       }
       if (err instanceof SupplierPaymentReadinessError) {
-        return res.status(422).json({
-          code: err.code,
-          message:
-            "Le paiement direct fournisseur est bloqué : les données de préparation au paiement ArchiDoc sont absentes, incomplètes ou ne sont plus valides.",
-          blockers: err.blockers,
-        });
+        return res.status(409).json(supplierHandoffFailureBody(err));
       }
       if (err instanceof SupplierCertificateSourceError) {
         return res.status(409).json({
@@ -976,8 +1003,14 @@ router.get(
 // (server/services/certificat-from-invoices.service.ts); the single-invoice
 // endpoints below are thin wrappers over the N-invoice versions.
 
-async function buildPreviewPayload(invoiceIds: number[], res: import("express").Response) {
-  const result = await deriveCertificatFromInvoices(invoiceIds);
+async function buildPreviewPayload(
+  invoiceIds: number[],
+  res: import("express").Response,
+  requestedIssueDate?: string,
+) {
+  const issueDate =
+    requestedIssueDate ?? new Date().toISOString().split("T")[0];
+  const result = await deriveCertificatFromInvoices(invoiceIds, { issueDate });
   if (!result.ok) return res.status(result.refusal.status).json(result.refusal.body);
   const d = result.derivation;
   const supplierReadiness =
@@ -1024,9 +1057,21 @@ async function buildPreviewPayload(invoiceIds: number[], res: import("express").
   const nextRef = await storage.getNextCertificateRef(d.projectId);
   // Backwards-compatible single-invoice fields alongside the multi shape.
   const firstRow = d.invoices[0];
+  const publicDerivation =
+    d.certificateTrack === "supplier_direct_payment"
+      ? {
+          ...d,
+          supplierDirectPayment: {
+            tvaRatePercent: d.supplierDirectPayment.tvaRatePercent,
+            tvaAmount: d.supplierDirectPayment.tvaAmount,
+            netToPayHt: d.supplierDirectPayment.netToPayHt,
+            netToPayTtc: d.supplierDirectPayment.netToPayTtc,
+          },
+        }
+      : d;
   return res.json({
     derivation: {
-      ...d,
+      ...publicDerivation,
       devisId: firstRow.devisId,
       mode: firstRow.mode,
     },
@@ -1039,23 +1084,13 @@ async function buildPreviewPayload(invoiceIds: number[], res: import("express").
             supplierReadiness.supplier.primaryContact?.name ?? null,
           contactEmail:
             supplierReadiness.supplier.primaryContact?.email ?? null,
-          accountHolderName:
-            supplierReadiness.supplier.banking?.accountHolderName ?? null,
-          iban: supplierReadiness.supplier.banking?.iban ?? null,
-          bic: supplierReadiness.supplier.banking?.bic ?? null,
-          bankName: supplierReadiness.supplier.banking?.bankName ?? null,
-          bankingVerifiedAt:
-            supplierReadiness.supplier.banking?.bankingVerifiedAt ?? null,
-          bankingVerifiedBy:
-            supplierReadiness.supplier.banking?.bankingVerifiedBy
-              ?.displayName ?? null,
           assignmentStatus:
             supplierReadiness.assignment.directPaymentStatus,
           assignmentValidFrom: supplierReadiness.assignment.validFrom,
           assignmentValidUntil: supplierReadiness.assignment.validUntil,
-          sourceSequence: supplierReadiness.provenance.sourceSequence,
         }
       : null,
+    issueDate,
     nextRef,
   });
 }
@@ -1063,8 +1098,11 @@ async function buildPreviewPayload(invoiceIds: number[], res: import("express").
 async function handleCreateFromInvoices(
   invoiceIds: number[],
   res: import("express").Response,
+  requestedIssueDate?: string,
 ) {
-  const preview = await deriveCertificatFromInvoices(invoiceIds);
+  const issueDate =
+    requestedIssueDate ?? new Date().toISOString().split("T")[0];
+  const preview = await deriveCertificatFromInvoices(invoiceIds, { issueDate });
   if (!preview.ok) {
     return res
       .status(preview.refusal.status)
@@ -1074,17 +1112,22 @@ async function handleCreateFromInvoices(
     projectId: number;
     contractorId: number;
     certificateTrack: CertificateTrack;
+    issueDate: string;
   } = {
     projectId: preview.derivation.projectId,
     contractorId: preview.derivation.contractorId,
     certificateTrack: preview.derivation.certificateTrack,
+    issueDate,
   };
   // Task #612 — mirror the same IBAN gate the preview handler relies on via
   // generateCertificatPdf. A cert created without an IBAN can never be
   // previewed or issued; block here with the same 422 code so the FE can
   // show the banking-missing message immediately, before any DB writes.
   const contractor = await storage.getContractor(identity.contractorId);
-  if (!contractor?.iban) {
+  if (
+    identity.certificateTrack === "contractor_works" &&
+    !contractor?.iban
+  ) {
     return res.status(422).json({
       code: "BANKING_DETAILS_MISSING",
       message: `Coordonnées bancaires manquantes — à compléter dans Archi Doc`,
@@ -1124,20 +1167,24 @@ router.get(
 // empty — every figure is derived here, never accepted from the client.
 router.post(
   "/api/invoices/:id/create-certificat",
-  validateRequest({ params: idParams, body: z.object({}).strict().optional() }),
+  validateRequest({
+    params: idParams,
+    body: z.object({ issueDate: certificateIssueDate.optional() }).strict().optional(),
+  }),
   async (req, res) => {
     const invoiceId = Number(req.params.id);
     // Identity read only — everything financial is (re-)derived under the
     // chain lock inside the service transaction.
     const invoiceRef = await storage.getInvoice(invoiceId);
     if (!invoiceRef) return res.status(404).json({ code: "INVOICE_NOT_FOUND", message: "Facture introuvable." });
-    await handleCreateFromInvoices([invoiceId], res);
+    await handleCreateFromInvoices([invoiceId], res, req.body?.issueDate);
   },
 );
 
 // ─── Multi-facture certificats — grouped creation from a selection ─────────
 const fromInvoicesBody = z.object({
   invoiceIds: z.array(z.number().int().positive()).min(1).max(50),
+  issueDate: certificateIssueDate.optional(),
 });
 
 /** Load the selection, enforce URL-project ownership, return shared identity. */
@@ -1164,7 +1211,7 @@ router.post(
   async (req, res) => {
     const checked = await checkSelectionProject(req.body.invoiceIds, Number(req.params.projectId), res);
     if (!checked) return;
-    await buildPreviewPayload(checked.uniqueIds, res);
+    await buildPreviewPayload(checked.uniqueIds, res, req.body.issueDate);
   },
 );
 
@@ -1174,7 +1221,11 @@ router.post(
   async (req, res) => {
     const checked = await checkSelectionProject(req.body.invoiceIds, Number(req.params.projectId), res);
     if (!checked) return;
-    await handleCreateFromInvoices(checked.uniqueIds, res);
+    await handleCreateFromInvoices(
+      checked.uniqueIds,
+      res,
+      req.body.issueDate,
+    );
   },
 );
 
@@ -1321,12 +1372,7 @@ router.post(
         });
       }
       if (err instanceof SupplierPaymentReadinessError) {
-        return res.status(422).json({
-          code: err.code,
-          message:
-            "Le paiement direct fournisseur est bloqué : les données de préparation au paiement ArchiDoc sont absentes, incomplètes ou ne sont plus valides.",
-          blockers: err.blockers,
-        });
+        return res.status(409).json(supplierHandoffFailureBody(err));
       }
       if (err instanceof SupplierCertificateSourceError) {
         return res.status(409).json({

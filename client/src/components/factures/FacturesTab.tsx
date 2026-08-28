@@ -77,6 +77,7 @@ interface CertInvoiceLink {
 }
 
 interface CertificatPreview {
+  issueDate: string;
   derivation: {
     mode: "situation" | "invoice";
     certificateTrack: "contractor_works" | "supplier_direct_payment";
@@ -102,16 +103,9 @@ interface CertificatPreview {
     siret: string | null;
     contactName: string | null;
     contactEmail: string | null;
-    accountHolderName: string | null;
-    iban: string | null;
-    bic: string | null;
-    bankName: string | null;
-    bankingVerifiedAt: string | null;
-    bankingVerifiedBy: string | { displayName?: string } | null;
     assignmentStatus: string | null;
     assignmentValidFrom: string | null;
     assignmentValidUntil: string | null;
-    sourceSequence: string | null;
   } | null;
 }
 
@@ -136,7 +130,9 @@ function CreateCertificatDialog({
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", `/api/invoices/${invoice.id}/create-certificat`, {});
+      const res = await apiRequest("POST", `/api/invoices/${invoice.id}/create-certificat`, {
+        issueDate: preview?.issueDate,
+      });
       return res.json();
     },
     onSuccess: (cert: { certificateRef: string }) => {
@@ -173,7 +169,7 @@ function CreateCertificatDialog({
             {isSupplier ? "Autoriser le paiement direct fournisseur" : `Créer le certificat — Facture #${invoice.invoiceNumber}`}
           </DialogTitle>
           <DialogDescription>
-            {isSupplier ? "Vérifiez l'identité, le mandat et les coordonnées du fournisseur avant confirmation." : "Montants dérivés automatiquement de la facture et des certificats précédents. Vérifiez puis confirmez — rien à saisir."}
+            {isSupplier ? "Vérifiez l'identité et les factures du fournisseur avant confirmation." : "Montants dérivés automatiquement de la facture et des certificats précédents. Vérifiez puis confirmez — rien à saisir."}
           </DialogDescription>
         </DialogHeader>
 
@@ -194,11 +190,6 @@ function CreateCertificatDialog({
                 {row("Fournisseur", supplier?.supplierName ?? contractorName)}
                 {row("SIRET", supplier?.siret ?? "Non communiqué")}
                 {row("Contact", [supplier?.contactName, supplier?.contactEmail].filter(Boolean).join(" · ") || "Non communiqué")}
-                {row("Titulaire du compte", supplier?.accountHolderName ?? "Non communiqué")}
-                {row("IBAN", supplier?.iban ?? "Non communiqué")}
-                {row("BIC", supplier?.bic ?? "Non communiqué")}
-                {row("Banque", supplier?.bankName ?? "Non communiquée")}
-                {row("Vérification bancaire", supplier?.bankingVerifiedAt ? `Vérifiée le ${new Date(supplier.bankingVerifiedAt).toLocaleDateString("fr-FR")}` : "Non communiquée")}
                 {row("Mandat de paiement direct", [supplier?.assignmentStatus, supplier?.assignmentValidFrom && `depuis le ${supplier.assignmentValidFrom}`, supplier?.assignmentValidUntil && `jusqu'au ${supplier.assignmentValidUntil}`].filter(Boolean).join(" · ") || "Non communiqué")}
               </div>
               <div className="rounded-lg border border-border/60 px-3 py-2" data-testid={`supplier-source-row-${invoice.id}`}>
@@ -302,7 +293,10 @@ function CreateMultiCertificatDialog({
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", `/api/projects/${projectId}/certificats/from-invoices`, { invoiceIds });
+      const res = await apiRequest("POST", `/api/projects/${projectId}/certificats/from-invoices`, {
+        invoiceIds,
+        issueDate: preview?.issueDate,
+      });
       return res.json();
     },
     onSuccess: (cert: { certificateRef: string }) => {
@@ -368,10 +362,6 @@ function CreateMultiCertificatDialog({
                 {row("Fournisseur", supplier?.supplierName ?? contractorName)}
                 {row("SIRET", supplier?.siret ?? "Non communiqué")}
                 {row("Contact", [supplier?.contactName, supplier?.contactEmail].filter(Boolean).join(" · ") || "Non communiqué")}
-                {row("Titulaire du compte", supplier?.accountHolderName ?? "Non communiqué")}
-                {row("IBAN", supplier?.iban ?? "Non communiqué")}
-                {row("BIC", supplier?.bic ?? "Non communiqué")}
-                {row("Banque", supplier?.bankName ?? "Non communiquée")}
                 {row("Mandat de paiement direct", [supplier?.assignmentStatus, supplier?.assignmentValidFrom && `depuis le ${supplier.assignmentValidFrom}`, supplier?.assignmentValidUntil && `jusqu'au ${supplier.assignmentValidUntil}`].filter(Boolean).join(" · ") || "Non communiqué")}
               </div>
               <div className="rounded-lg border border-border/60 px-3 py-2">

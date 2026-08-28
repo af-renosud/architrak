@@ -22,6 +22,24 @@ import {
   situations,
 } from "@shared/schema";
 import type { SupplierPaymentReadinessSnapshot } from "@shared/supplier-payment-readiness";
+vi.mock("../archidoc/sync-client", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../archidoc/sync-client")>();
+  return {
+    ...actual,
+    fetchSupplierPaymentCertificateHandoff: vi.fn(),
+    verifySupplierProtectedRib: vi.fn().mockResolvedValue(undefined),
+  };
+});
+vi.mock("../services/supplier-certificate-rollout.service", () => ({
+  isSupplierDirectPaymentAllowedForProject: vi.fn().mockReturnValue(true),
+  SUPPLIER_DIRECT_PAYMENT_ROLLOUT_BLOCKED:
+    "SUPPLIER_DIRECT_PAYMENT_ROLLOUT_BLOCKED",
+}));
+import {
+  fetchSupplierPaymentCertificateHandoff,
+  SupplierPaymentCertificateNotReadyError,
+} from "../archidoc/sync-client";
 import {
   storage,
   SupplierDirectPaymentSealConflictError,
@@ -40,6 +58,7 @@ let supplierArchidocId: string;
 let server: http.Server;
 let base: string;
 let readinessSpy: ReturnType<typeof vi.spyOn>;
+const handoffSpy = vi.mocked(fetchSupplierPaymentCertificateHandoff);
 let sequence = 0;
 
 const iban = "FR7630006000011234567890189";
@@ -103,6 +122,17 @@ function readinessSnapshot(): SupplierPaymentReadinessSnapshot {
       reason: null,
       updatedAt: "2026-08-20T10:00:00Z",
     },
+  };
+}
+
+function paymentHandoff() {
+  const snapshot = readinessSnapshot();
+  return {
+    contractVersion: "supplier-payment-certificate-handoff.v1" as const,
+    projectId: projectArchidocId,
+    issueDate: "2026-08-28",
+    supplier: snapshot.supplier,
+    assignment: snapshot.assignment,
   };
 }
 
@@ -207,6 +237,11 @@ beforeAll(async () => {
 beforeEach(() => {
   readinessSpy.mockReset();
   readinessSpy.mockImplementation(async () => readinessSnapshot());
+  handoffSpy.mockReset();
+  handoffSpy.mockImplementation(async (input) => ({
+    ...paymentHandoff(),
+    issueDate: input.issueDate,
+  }));
 });
 
 afterAll(async () => {
@@ -235,9 +270,34 @@ afterAll(async () => {
 });
 
 describe("supplier direct-payment certificate core", () => {
-  it("fails closed while the ArchiDoc readiness snapshot is not synchronised", async () => {
+  it("persists the explicit preview issue date across a UTC rollover", async () => {
     const invoice = await insertSupplierInvoice();
-    readinessSpy.mockResolvedValue(undefined);
+    const issueDate = "2026-08-24";
+    const preview = await request(
+      "POST",
+      `/api/projects/${projectId}/certificats/from-invoices/preview`,
+      { invoiceIds: [invoice.id], issueDate },
+    );
+    expect(preview.status).toBe(200);
+    expect(preview.body.issueDate).toBe(issueDate);
+
+    const created = await request(
+      "POST",
+      `/api/projects/${projectId}/certificats/from-invoices`,
+      { invoiceIds: [invoice.id], issueDate: preview.body.issueDate },
+    );
+    expect(created.status).toBe(201);
+    expect(created.body.dateIssued).toBe(issueDate);
+    expect(handoffSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ issueDate }),
+    );
+  });
+
+  it("fails closed while the ArchiDoc handoff is not ready", async () => {
+    const invoice = await insertSupplierInvoice();
+    handoffSpy.mockRejectedValue(
+      new SupplierPaymentCertificateNotReadyError(),
+    );
 
     const response = await request(
       "GET",
@@ -245,7 +305,7 @@ describe("supplier direct-payment certificate core", () => {
     );
 
     expect(response.status).toBe(409);
-    expect(response.body.code).toBe("SUPPLIER_PAYMENT_NOT_READY");
+    expect(response.body.code).toBe("SUPPLIER_NOT_PAYMENT_READY");
   });
 
   it("requires an approved, unpaid, non-situation invoice", async () => {

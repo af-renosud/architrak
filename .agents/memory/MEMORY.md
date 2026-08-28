@@ -45,3 +45,4 @@
 - [Planning PDF re-scrape identity](planning-pdf-rescrape-identity.md) — re-scrapes are idempotent per source revision/version/parser; bump parser identity whenever extraction behavior changes.
 - [Planning draft deletion concurrency](planning-draft-deletion-concurrency.md) — project locks close pre-commit races; immutable per-import object keys stop stale post-commit cleanup deleting replacements.
 - [GitHub connector source sync](github-connector-source-sync.md) — connector OAuth may not authenticate CLI Git; preserve exact history through Git Data API and advance refs without force.
+- [Supplier handoff integrity](supplier-handoff-integrity.md) — seal from one dated handoff; dispatch requires the live digest to match sealed evidence; keep rollout gating server-only.

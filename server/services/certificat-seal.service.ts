@@ -14,6 +14,10 @@ import {
   assertSupplierPaymentReadiness,
 } from "./supplier-payment-readiness.service";
 import type { SupplierPaymentReadinessSnapshot } from "@shared/supplier-payment-readiness";
+import {
+  isSupplierDirectPaymentAllowedForProject,
+  SUPPLIER_DIRECT_PAYMENT_ROLLOUT_BLOCKED,
+} from "./supplier-certificate-rollout.service";
 
 /**
  * Task #451 — certificat issuance seal.
@@ -100,6 +104,23 @@ export async function sealCertificat(certificatId: number): Promise<{
 
     let freshDeductions;
     if (certificateTrack === "supplier_direct_payment") {
+      const project = await storage.getProject(existing.projectId);
+      if (
+        !project?.archidocId ||
+        !isSupplierDirectPaymentAllowedForProject(project.archidocId)
+      ) {
+        throw new SupplierCertificateSourceError(
+          `${SUPPLIER_DIRECT_PAYMENT_ROLLOUT_BLOCKED}: le paiement direct fournisseur n'est pas activé pour ce projet.`,
+        );
+      }
+      // One final, issue-date-bound handoff authorizes every subsequent seal
+      // check. It is also the exact snapshot rendered and persisted.
+      supplierReadinessSnapshot = await assertSupplierPaymentReadiness({
+        contractorId: existing.contractorId,
+        projectId: existing.projectId,
+        issueDate: dateIssued,
+        verifyProtectedRib: true,
+      });
       const existingSources = await storage.getCertificatSources(certificatId);
       const sourceInvoiceIds = Array.from(
         new Set(
@@ -120,6 +141,8 @@ export async function sealCertificat(certificatId: number): Promise<{
       }
       const derivation = await deriveCertificatFromInvoices(sourceInvoiceIds, {
         allowCertificatId: certificatId,
+        issueDate: dateIssued,
+        supplierReadinessSnapshot,
       });
       if (
         !derivation.ok ||
@@ -132,15 +155,6 @@ export async function sealCertificat(certificatId: number): Promise<{
             : derivation.refusal.body.message,
         );
       }
-      // Freeze the final readiness check used for issuance. The derivation
-      // already checked readiness before validating invoice evidence; this
-      // second check is intentionally last so the immutable snapshot cannot
-      // lag behind the state that actually authorized the seal.
-      supplierReadinessSnapshot = await assertSupplierPaymentReadiness({
-        contractorId: existing.contractorId,
-        projectId: existing.projectId,
-        issueDate: dateIssued,
-      });
       const supplier = derivation.derivation;
       const guardedInvoices = await Promise.all(
         supplier.invoices.map(async (source) => {

@@ -2982,30 +2982,12 @@ export class DatabaseStorage implements IStorage {
             "Le lien ArchiDoc du fournisseur ou du projet a changé avant l'émission.",
           );
         }
-        // The readiness-sync writer must take this same advisory lock before
-        // replacing a mirrored snapshot. That makes this lookup + comparison
-        // part of the seal's transaction lock domain without implementing the
-        // separate readiness persistence task here.
-        const currentReadiness =
-          await this.getSupplierPaymentReadinessSnapshot({
-            supplierArchidocId: current.supplierArchidocId,
-            projectArchidocId: current.projectArchidocId,
-          });
-        const expectedProvenance = guard.readiness.provenance;
-        const currentProvenance = currentReadiness?.provenance;
         if (
-          !currentReadiness ||
-          !currentProvenance ||
-          currentProvenance.schemaVersion !==
-            expectedProvenance.schemaVersion ||
-          currentProvenance.sourceSequence !==
-            expectedProvenance.sourceSequence ||
-          currentProvenance.capturedAt !== expectedProvenance.capturedAt ||
-          currentProvenance.contentSha256 !==
-            expectedProvenance.contentSha256
+          guard.readiness.supplier.id !== current.supplierArchidocId ||
+          guard.readiness.assignment.projectId !== current.projectArchidocId
         ) {
           throw new SupplierDirectPaymentSealConflictError(
-            "La préparation au paiement ArchiDoc a changé avant l'émission du certificat fournisseur.",
+            "Le handoff ArchiDoc ne correspond plus au fournisseur ou au projet du certificat.",
           );
         }
       }

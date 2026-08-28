@@ -85,7 +85,8 @@ async function mirrorRibForAttachment(args: {
   ribDocumentName: string | null;
 }): Promise<string | null> {
   const baseUrl = env.ARCHIDOC_BASE_URL;
-  const apiKey = env.ARCHIDOC_SYNC_API_KEY;
+  const apiKey =
+    env.ARCHIDOC_SYNC_API_KEY_NEXT ?? env.ARCHIDOC_SYNC_API_KEY;
   if (!baseUrl || !apiKey) return null;
   try {
     const url = new URL(args.ribDocumentUrl, baseUrl);
@@ -124,7 +125,8 @@ async function mirrorSupplierRibForAttachment(args: {
   };
 }): Promise<string> {
   const baseUrl = env.ARCHIDOC_BASE_URL;
-  const apiKey = env.ARCHIDOC_SYNC_API_KEY;
+  const apiKey =
+    env.ARCHIDOC_SYNC_API_KEY_NEXT ?? env.ARCHIDOC_SYNC_API_KEY;
   if (!baseUrl || !apiKey) {
     throw new Error(
       "RIB fournisseur indisponible : la connexion ArchiDoc n'est pas configurée.",

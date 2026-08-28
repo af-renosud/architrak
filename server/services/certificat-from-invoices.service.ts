@@ -131,6 +131,8 @@ export async function deriveCertificatFromInvoices(
   options: {
     allowCertificatId?: number;
     skipSupplierRolloutGate?: boolean;
+    issueDate?: string;
+    supplierReadinessSnapshot?: SupplierPaymentReadinessSnapshot;
   } = {},
 ): Promise<DeriveResult> {
   const uniqueIds = Array.from(new Set(invoiceIds));
@@ -169,37 +171,51 @@ export async function deriveCertificatFromInvoices(
   }
 
   if (partner.archidocPartnerType === "supplier") {
+    // Operator-only canary/kill-switch. It is deliberately checked before the
+    // on-demand handoff, is never surfaced in UI, and is bypassed only for
+    // already-issued history (dispatch passes the explicit legacy flag).
+    if (!options.skipSupplierRolloutGate) {
+      const supplierProject = await storage.getProject(first.projectId);
+      if (
+        !supplierProject?.archidocId ||
+        !isSupplierDirectPaymentAllowedForProject(supplierProject.archidocId)
+      ) {
+        return refuse(409, {
+          code: SUPPLIER_DIRECT_PAYMENT_ROLLOUT_BLOCKED,
+          message:
+            "Le paiement direct fournisseur n'est pas encore activé pour ce projet. Aucun nouveau certificat fournisseur ne peut être émis.",
+        });
+      }
+    }
     let readiness: SupplierPaymentReadinessSnapshot;
     try {
-      readiness = await assertSupplierPaymentReadiness({
-        contractorId: first.contractorId,
-        projectId: first.projectId,
-      });
+      readiness =
+        options.supplierReadinessSnapshot ??
+        await assertSupplierPaymentReadiness({
+          contractorId: first.contractorId,
+          projectId: first.projectId,
+          issueDate: options.issueDate,
+        });
     } catch (error) {
       if (error instanceof SupplierPaymentReadinessError) {
+        const unavailable = error.blockers.includes("handoff_unavailable");
+        const notReady =
+          error.blockers.includes("handoff_not_ready") ||
+          error.blockers.includes("rib_integrity_invalid");
         return refuse(409, {
-          code: error.code,
+          code: unavailable
+            ? "ARCHIDOC_TEMPORARILY_UNAVAILABLE"
+            : notReady
+              ? "SUPPLIER_NOT_PAYMENT_READY"
+              : error.code,
           message:
-            error.blockers.includes("readiness_not_synchronised")
-              ? "Les données de préparation au paiement de ce fournisseur ne sont pas encore synchronisées depuis ArchiDoc."
-              : "Ce fournisseur n'est pas prêt pour un paiement direct. Vérifiez son identité, son contact, ses coordonnées bancaires et son affectation au projet dans ArchiDoc.",
+            unavailable
+              ? "ArchiDoc est temporairement indisponible. Aucun certificat n’a été généré avec des coordonnées bancaires non vérifiées."
+              : "Les informations de paiement de ce fournisseur ne sont pas encore disponibles dans ArchiDoc. Vérifiez sa fiche fournisseur, puis réessayez.",
         });
       }
       throw error;
     }
-    if (
-      !options.skipSupplierRolloutGate &&
-      !isSupplierDirectPaymentAllowedForProject(
-        readiness.assignment.projectId,
-      )
-    ) {
-      return refuse(409, {
-        code: SUPPLIER_DIRECT_PAYMENT_ROLLOUT_BLOCKED,
-        message:
-          "Le paiement direct fournisseur n'est pas encore activé pour ce projet. Aucun nouveau certificat fournisseur ne peut être émis.",
-      });
-    }
-
     const supplierRows: MultiInvoiceCertDerivationBase["invoices"] = [];
     for (const invoice of loaded) {
       if (invoice.status !== "approved" || invoice.datePaid != null) {
@@ -230,10 +246,11 @@ export async function deriveCertificatFromInvoices(
           invoiceId: invoice.id,
         });
       }
-      const canonicalIban = normaliseIban(partner.iban);
+       const handoffIban = readiness.supplier.banking?.iban ?? null;
+       const canonicalIban = normaliseIban(handoffIban);
       if (
         devis.extractedIban &&
-        !ibansMatch(devis.extractedIban, partner.iban)
+         !ibansMatch(devis.extractedIban, handoffIban)
       ) {
         const override = await storage.findBankingMismatchOverride({
           docKind: "devis",
@@ -251,7 +268,7 @@ export async function deriveCertificatFromInvoices(
       }
       if (
         invoice.extractedIban &&
-        !ibansMatch(invoice.extractedIban, partner.iban)
+         !ibansMatch(invoice.extractedIban, handoffIban)
       ) {
         const override = await storage.findBankingMismatchOverride({
           docKind: "invoice",
@@ -507,6 +524,8 @@ export async function createCertificatFromInvoices(
     contractorId: number;
     /** Legacy trusted callers omit the track and remain contractor-only. */
     certificateTrack?: CertificateTrack;
+    /** One date is carried from preview through the transaction and persisted. */
+    issueDate?: string;
   },
 ): Promise<Certificat> {
   const uniqueIds = Array.from(new Set(invoiceIds)).sort((a, b) => a - b);
@@ -579,7 +598,9 @@ export async function createCertificatFromInvoices(
     // Full re-derivation UNDER the lock (guards + situations + prior chain
     // read committed state; concurrent progress-cert creators hold the same
     // advisory lock, so what we read is final).
-    const result = await deriveCertificatFromInvoices(uniqueIds);
+    const result = await deriveCertificatFromInvoices(uniqueIds, {
+      issueDate: identity.issueDate,
+    });
     if (!result.ok) throw new DerivationRefusedError(result.refusal);
     const d = result.derivation;
     if (d.certificateTrack !== expectedTrack) {
@@ -625,7 +646,8 @@ export async function createCertificatFromInvoices(
         contractorId: d.contractorId,
         certificateTrack: d.certificateTrack,
         certificateRef: nextRef,
-        dateIssued: new Date().toISOString().split("T")[0],
+        dateIssued:
+          identity.issueDate ?? new Date().toISOString().split("T")[0],
         totalWorksHt: d.totalWorksHt,
         pvMvAdjustment: "0.00",
         previousPayments: d.previousPayments,

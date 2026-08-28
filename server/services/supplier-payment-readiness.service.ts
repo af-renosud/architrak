@@ -1,4 +1,5 @@
 import { storage } from "../storage";
+import { createHash } from "crypto";
 import {
   ibansMatch,
   normaliseBic,
@@ -10,6 +11,12 @@ import {
   type SupplierPaymentReadinessMirrorSnapshot,
   type SupplierPaymentReadinessSnapshot,
 } from "@shared/supplier-payment-readiness";
+import {
+  ArchidocFetchError,
+  fetchSupplierPaymentCertificateHandoff,
+  SupplierPaymentCertificateNotReadyError,
+  verifySupplierProtectedRib,
+} from "../archidoc/sync-client";
 
 export type SupplierPaymentReadinessBlocker =
   | "partner_not_found"
@@ -30,7 +37,10 @@ export type SupplierPaymentReadinessBlocker =
   | "supplier_banking_provenance_incomplete"
   | "project_assignment_mismatch"
   | "project_assignment_ineligible"
-  | "project_assignment_not_current";
+  | "project_assignment_not_current"
+  | "handoff_not_ready"
+  | "handoff_unavailable"
+  | "rib_integrity_invalid";
 
 export class SupplierPaymentReadinessError extends Error {
   readonly code = "SUPPLIER_PAYMENT_NOT_READY";
@@ -155,6 +165,7 @@ export async function assertSupplierPaymentReadiness(input: {
   contractorId: number;
   projectId: number;
   issueDate?: string;
+  verifyProtectedRib?: boolean;
 }): Promise<SupplierPaymentReadinessSnapshot> {
   const [partner, project] = await Promise.all([
     storage.getContractor(input.contractorId),
@@ -173,23 +184,79 @@ export async function assertSupplierPaymentReadiness(input: {
     throw new SupplierPaymentReadinessError(blockers);
   }
 
-  const snapshot = await storage.getSupplierPaymentReadinessSnapshot({
-    supplierArchidocId: partner.archidocId,
-    projectArchidocId: project.archidocId,
-  });
-  if (!snapshot) {
-    throw new SupplierPaymentReadinessError(["readiness_not_synchronised"]);
+  const issueDate = input.issueDate ?? new Date().toISOString().slice(0, 10);
+  let handoff;
+  try {
+    handoff = await fetchSupplierPaymentCertificateHandoff({
+      supplierArchidocId: partner.archidocId,
+      projectArchidocId: project.archidocId,
+      issueDate,
+    });
+  } catch (error) {
+    if (error instanceof SupplierPaymentCertificateNotReadyError) {
+      throw new SupplierPaymentReadinessError(["handoff_not_ready"]);
+    }
+    if (error instanceof ArchidocFetchError) {
+      throw new SupplierPaymentReadinessError(["handoff_unavailable"]);
+    }
+    throw error;
   }
 
+  const capturedAt = new Date().toISOString();
+  const snapshot: SupplierPaymentReadinessMirrorSnapshot = {
+    provenance: {
+      schemaVersion: SUPPLIER_PAYMENT_READINESS_SCHEMA_VERSION,
+      // On-demand handoffs are complete point-in-time reads, not readiness-feed
+      // events. The content digest, rather than a mirror cursor, pins evidence.
+      sourceSequence: "0",
+      capturedAt,
+      contentSha256: createHash("sha256")
+        .update(JSON.stringify(handoff))
+        .digest("hex"),
+    },
+    supplier: handoff.supplier,
+    assignment: handoff.assignment,
+  };
+
   const evaluated = evaluateSupplierPaymentReadiness({
-    canonicalPartner: partner,
+    // Identity comes from the canonical partner row. Banking is deliberately
+    // supplied from the handoff itself: mirrored banking may be stale and is
+    // never a fallback for certificate generation.
+    canonicalPartner: {
+      ...partner,
+      iban: handoff.supplier.banking.iban,
+      bic: handoff.supplier.banking.bic,
+    },
     projectArchidocId: project.archidocId,
-    issueDate: input.issueDate ?? new Date().toISOString().slice(0, 10),
+    issueDate,
     snapshot,
   });
   if (evaluated.length > 0) throw new SupplierPaymentReadinessError(evaluated);
   if (!snapshot.assignment) {
     throw new SupplierPaymentReadinessError(["project_assignment_mismatch"]);
+  }
+  if (input.verifyProtectedRib) {
+    const rib = snapshot.supplier.banking?.ribDocument;
+    if (!rib) {
+      throw new SupplierPaymentReadinessError(["rib_integrity_invalid"]);
+    }
+    try {
+      await verifySupplierProtectedRib({
+        supplierArchidocId: snapshot.supplier.id,
+        documentId: rib.id,
+        expectedSha256: rib.sha256,
+        downloadPath: rib.downloadPath,
+      });
+    } catch (error) {
+      if (error instanceof ArchidocFetchError) {
+        throw new SupplierPaymentReadinessError(
+          error.diagnostic.code === "invalid_response"
+            ? ["rib_integrity_invalid"]
+            : ["handoff_unavailable"],
+        );
+      }
+      throw error;
+    }
   }
   return { ...snapshot, assignment: snapshot.assignment };
 }

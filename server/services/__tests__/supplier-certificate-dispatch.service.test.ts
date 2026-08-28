@@ -25,6 +25,12 @@ const getSources = vi.mocked(storage.getCertificatSources);
 const derive = vi.mocked(deriveCertificatFromInvoices);
 const assertReadiness = vi.mocked(assertSupplierPaymentReadiness);
 
+const currentReadiness = {
+  supplier: { id: "supplier-1" },
+  assignment: { projectId: "project-1" },
+  provenance: { contentSha256: "a".repeat(64) },
+};
+
 const supplierCert = {
   id: 7,
   projectId: 1,
@@ -36,6 +42,16 @@ const supplierCert = {
   netToPayHt: "100.00",
   tvaAmount: "20.00",
   netToPayTtc: "120.00",
+  issuanceSnapshot: {
+    dateIssued: "2026-08-24",
+    supplierDirectPayment: {
+      supplierArchidocId: "supplier-1",
+      projectArchidocId: "project-1",
+      readiness: {
+        provenance: { contentSha256: "a".repeat(64) },
+      },
+    },
+  },
 } as Certificat;
 
 const successfulDerivation = {
@@ -54,7 +70,7 @@ const successfulDerivation = {
 describe("supplier certificate dispatch revalidation", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    assertReadiness.mockResolvedValue({} as never);
+    assertReadiness.mockResolvedValue(currentReadiness as never);
     getSources.mockResolvedValue([
       { invoiceId: 31, situationId: null },
     ] as never);
@@ -73,6 +89,8 @@ describe("supplier certificate dispatch revalidation", () => {
     expect(derive).toHaveBeenCalledWith([31], {
       allowCertificatId: 7,
       skipSupplierRolloutGate: true,
+      issueDate: "2026-08-24",
+      supplierReadinessSnapshot: currentReadiness,
     });
   });
 
@@ -141,5 +159,31 @@ describe("supplier certificate dispatch revalidation", () => {
     ).rejects.toMatchObject<SupplierCertificateDispatchError>({
       code: "SUPPLIER_SOURCE_AMOUNT_CHANGED",
     });
+  });
+
+  it("requires reissue when banking or protected-RIB identity changed after seal", async () => {
+    assertReadiness.mockResolvedValue({
+      ...currentReadiness,
+      provenance: { contentSha256: "b".repeat(64) },
+    } as never);
+    await expect(
+      assertSupplierCertificateDispatchValid(supplierCert),
+    ).rejects.toMatchObject<SupplierCertificateDispatchError>({
+      code: "SUPPLIER_REISSUE_REQUIRED",
+    });
+  });
+
+  it("requires reissue when the sealed issue date diverges", async () => {
+    await expect(
+      assertSupplierCertificateDispatchValid({
+        ...supplierCert,
+        dateIssued: "2026-08-25",
+      }),
+    ).rejects.toMatchObject<SupplierCertificateDispatchError>({
+      code: "SUPPLIER_REISSUE_REQUIRED",
+    });
+    expect(assertReadiness).toHaveBeenCalledWith(
+      expect.objectContaining({ issueDate: "2026-08-25" }),
+    );
   });
 });

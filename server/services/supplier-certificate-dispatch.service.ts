@@ -13,6 +13,42 @@ export class SupplierCertificateDispatchError extends Error {
   }
 }
 
+function sealedSupplierEvidence(cert: Certificat): {
+  issueDate: string;
+  supplierArchidocId: string;
+  projectArchidocId: string;
+  contentSha256: string;
+} | null {
+  if (!cert.issuanceSnapshot || typeof cert.issuanceSnapshot !== "object") {
+    return null;
+  }
+  const snapshot = cert.issuanceSnapshot as {
+    dateIssued?: unknown;
+    supplierDirectPayment?: {
+      supplierArchidocId?: unknown;
+      projectArchidocId?: unknown;
+      readiness?: {
+        provenance?: { contentSha256?: unknown };
+      };
+    };
+  };
+  const supplier = snapshot.supplierDirectPayment;
+  if (
+    typeof snapshot.dateIssued !== "string" ||
+    typeof supplier?.supplierArchidocId !== "string" ||
+    typeof supplier.projectArchidocId !== "string" ||
+    typeof supplier.readiness?.provenance?.contentSha256 !== "string"
+  ) {
+    return null;
+  }
+  return {
+    issueDate: snapshot.dateIssued,
+    supplierArchidocId: supplier.supplierArchidocId,
+    projectArchidocId: supplier.projectArchidocId,
+    contentSha256: supplier.readiness.provenance.contentSha256,
+  };
+}
+
 /**
  * Revalidates a supplier payment instruction immediately before dispatch.
  *
@@ -26,10 +62,17 @@ export async function assertSupplierCertificateDispatchValid(
 ): Promise<void> {
   if (cert.certificateTrack !== "supplier_direct_payment") return;
 
-  await assertSupplierPaymentReadiness({
+  const issueDate = cert.dateIssued;
+  if (!issueDate) {
+    throw new SupplierCertificateDispatchError(
+      "SUPPLIER_REISSUE_REQUIRED",
+      "Les données fournisseur scellées ne correspondent plus à ArchiDoc. Réémettez le certificat avant l'envoi.",
+    );
+  }
+  const currentReadiness = await assertSupplierPaymentReadiness({
     contractorId: cert.contractorId,
     projectId: cert.projectId,
-    issueDate: cert.dateIssued ?? undefined,
+    issueDate,
   });
   const sourceRows = await storage.getCertificatSources(cert.id);
   const sourceInvoiceIds = Array.from(
@@ -55,6 +98,8 @@ export async function assertSupplierCertificateDispatchValid(
     {
       allowCertificatId: cert.id,
       skipSupplierRolloutGate: cert.pdfStorageKey != null,
+      issueDate,
+      supplierReadinessSnapshot: currentReadiness,
     },
   );
   if (!currentSourceDerivation.ok) {
@@ -87,5 +132,20 @@ export async function assertSupplierCertificateDispatchValid(
       "SUPPLIER_SOURCE_AMOUNT_CHANGED",
       "Les montants d'une facture source ont changé depuis l'émission du certificat fournisseur. Réémettez le certificat avant l'envoi.",
     );
+  }
+  if (cert.pdfStorageKey) {
+    const sealed = sealedSupplierEvidence(cert);
+    if (
+      !sealed ||
+      sealed.issueDate !== issueDate ||
+      sealed.supplierArchidocId !== currentReadiness.supplier.id ||
+      sealed.projectArchidocId !== currentReadiness.assignment.projectId ||
+      sealed.contentSha256 !== currentReadiness.provenance.contentSha256
+    ) {
+      throw new SupplierCertificateDispatchError(
+        "SUPPLIER_REISSUE_REQUIRED",
+        "Les données fournisseur scellées ne correspondent plus à ArchiDoc. Réémettez le certificat avant l'envoi.",
+      );
+    }
   }
 }

@@ -5,6 +5,12 @@ import {
   type SupplierPaymentReadinessMode,
   type SupplierPaymentReadinessResponse,
 } from "./supplier-payment-readiness-wire";
+import { createHash } from "crypto";
+import {
+  supplierPaymentCertificateHandoffSchema,
+  supplierPaymentCertificateNotReadySchema,
+  type SupplierPaymentCertificateHandoff,
+} from "./supplier-payment-certificate-handoff-wire";
 
 const getBaseUrl = () => env.ARCHIDOC_BASE_URL;
 const getApiKey = () =>
@@ -41,6 +47,13 @@ export class ArchidocFetchError extends Error {
     const status = diagnostic.status == null ? "no HTTP response" : `HTTP ${diagnostic.status}`;
     super(`${diagnostic.code}: ${diagnostic.reason} (${status}, ${diagnostic.durationMs}ms)`);
     this.name = "ArchidocFetchError";
+  }
+}
+
+export class SupplierPaymentCertificateNotReadyError extends Error {
+  constructor() {
+    super("Supplier payment-certificate handoff is not ready.");
+    this.name = "SupplierPaymentCertificateNotReadyError";
   }
 }
 
@@ -200,7 +213,10 @@ async function archidocFetch<T>(
       error instanceof ArchidocFetchError ||
       (
         error instanceof Error &&
-        error.name === "SupplierPaymentCursorExpiredError"
+        (
+          error.name === "SupplierPaymentCursorExpiredError" ||
+          error.name === "SupplierPaymentCertificateNotReadyError"
+        )
       )
     ) {
       throw error;
@@ -217,6 +233,169 @@ async function archidocFetch<T>(
     });
     options.onDiagnostic?.(diagnostic);
     throw new ArchidocFetchError(diagnostic);
+  }
+}
+
+export async function fetchSupplierPaymentCertificateHandoff(input: {
+  supplierArchidocId: string;
+  projectArchidocId: string;
+  issueDate: string;
+}): Promise<SupplierPaymentCertificateHandoff> {
+  const endpoint =
+    `/api/integrations/architrak/v1/suppliers/${encodeURIComponent(input.supplierArchidocId)}` +
+    "/payment-certificate-handoff";
+  const handoff = await archidocFetch<SupplierPaymentCertificateHandoff>(
+    endpoint,
+    {
+      params: {
+        projectId: input.projectArchidocId,
+        issueDate: input.issueDate,
+      },
+      validate: (raw) => supplierPaymentCertificateHandoffSchema.parse(raw),
+      successReason: () => "Supplier payment-certificate handoff validated.",
+      handleErrorResponse: async (response) => {
+        if (response.status !== 409) return undefined;
+        let raw: unknown;
+        try {
+          raw = await response.json();
+        } catch {
+          return undefined;
+        }
+        return supplierPaymentCertificateNotReadySchema.safeParse(raw).success
+          ? new SupplierPaymentCertificateNotReadyError()
+          : undefined;
+      },
+    },
+  );
+  if (
+    handoff.supplier.id !== input.supplierArchidocId ||
+    handoff.projectId !== input.projectArchidocId ||
+    handoff.assignment.projectId !== input.projectArchidocId ||
+    handoff.issueDate !== input.issueDate
+  ) {
+    const diagnostic = makeFetchDiagnostic(
+      "/api/integrations/architrak/v1/suppliers/:supplierId/payment-certificate-handoff",
+      Date.now(),
+      {
+        outcome: "error",
+        status: 200,
+        code: "invalid_response",
+        reason: "The ArchiDoc handoff did not match the requested supplier, project, and issue date.",
+      },
+    );
+    throw new ArchidocFetchError(diagnostic);
+  }
+  return handoff;
+}
+
+function isPdf(buffer: Buffer): boolean {
+  const header = buffer.indexOf(Buffer.from("%PDF-"));
+  const tail = buffer
+    .subarray(Math.max(0, buffer.length - 2048))
+    .toString("latin1");
+  return header >= 0 && header <= 1024 && tail.includes("%%EOF");
+}
+
+/**
+ * Retrieves protected RIB bytes only for server-side integrity validation.
+ * The path, expected hash and bytes are intentionally absent from all errors
+ * and diagnostics.
+ */
+export async function verifySupplierProtectedRib(input: {
+  supplierArchidocId: string;
+  documentId: string;
+  expectedSha256: string;
+  downloadPath: string;
+}): Promise<void> {
+  const baseUrl = getBaseUrl();
+  const apiKey = getApiKey();
+  const safeEndpoint =
+    "/api/integrations/architrak/v1/suppliers/:supplierId/rib/:documentId";
+  if (!baseUrl || !apiKey) {
+    throw new ArchidocFetchError(makeFetchDiagnostic(safeEndpoint, Date.now(), {
+      outcome: "error",
+      status: null,
+      code: "not_configured",
+      reason: "ArchiDoc sync is not configured.",
+    }));
+  }
+  const expectedPath =
+    `/api/integrations/architrak/v1/suppliers/${input.supplierArchidocId}/rib/${input.documentId}`;
+  if (input.downloadPath !== expectedPath) {
+    throw new ArchidocFetchError(makeFetchDiagnostic(safeEndpoint, Date.now(), {
+      outcome: "error",
+      status: null,
+      code: "invalid_response",
+      reason: "Protected RIB metadata failed identity binding.",
+    }));
+  }
+  const startedAt = Date.now();
+  try {
+    const response = await fetch(new URL(input.downloadPath, baseUrl), {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/pdf",
+        "X-ArchiDoc-RIB-SHA256": input.expectedSha256,
+      },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) {
+      const failure = response.status === 409
+        ? {
+            code: "invalid_response" as const,
+            reason: "The protected RIB is no longer the current document.",
+          }
+        : safeHttpFailure(response.status);
+      throw new ArchidocFetchError(makeFetchDiagnostic(safeEndpoint, startedAt, {
+        outcome: "error",
+        status: response.status,
+        ...failure,
+      }));
+    }
+    const contentType =
+      response.headers.get("content-type")?.split(";")[0].trim() ?? "";
+    const declaredLength = Number(response.headers.get("content-length"));
+    if (
+      Number.isFinite(declaredLength) &&
+      declaredLength > 20 * 1024 * 1024
+    ) {
+      throw new ArchidocFetchError(makeFetchDiagnostic(safeEndpoint, startedAt, {
+        outcome: "error",
+        status: response.status,
+        code: "invalid_response",
+        reason: "Protected RIB size validation failed.",
+      }));
+    }
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const actualSha256 = createHash("sha256").update(bytes).digest("hex");
+    if (
+      contentType !== "application/pdf" ||
+      bytes.length === 0 ||
+      bytes.length > 20 * 1024 * 1024 ||
+      !isPdf(bytes) ||
+      actualSha256 !== input.expectedSha256
+    ) {
+      throw new ArchidocFetchError(makeFetchDiagnostic(safeEndpoint, startedAt, {
+        outcome: "error",
+        status: response.status,
+        code: "invalid_response",
+        reason: "Protected RIB integrity validation failed.",
+      }));
+    }
+  } catch (error) {
+    if (error instanceof ArchidocFetchError) throw error;
+    const timedOut =
+      error instanceof DOMException &&
+      (error.name === "TimeoutError" || error.name === "AbortError");
+    throw new ArchidocFetchError(makeFetchDiagnostic(safeEndpoint, startedAt, {
+      outcome: "error",
+      status: null,
+      code: timedOut ? "timeout" : "network_error",
+      reason: timedOut
+        ? "The ArchiDoc request timed out after 30 seconds."
+        : "The ArchiDoc request failed before an HTTP response was received.",
+    }));
   }
 }
 
