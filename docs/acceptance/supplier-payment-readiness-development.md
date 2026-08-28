@@ -32,3 +32,8 @@ Authenticated routes provide multipart ingestion, metadata/preview reads,
 confirmation, and architect-operator readiness sync/status; only an existing
 `@renosud.com` user may reach them. Apply the migration only to an isolated
 development database before a DB-backed journey.
+
+An isolated rollback-only PostgreSQL schema replay of migration `0114` passed:
+one supplier, eligible assignment, quotation and appointment were inserted;
+duplicate source ingestion was blocked; no contractor or `devis` tables were
+created or changed; and the isolated schema was removed afterwards.
