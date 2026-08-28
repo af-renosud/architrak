@@ -44,3 +44,4 @@
 - [Planning quantity precision](planning-quantity-precision.md) — quantity is numeric(12,3), not money; validate its scale separately so PDF/database-formatted values such as 1.000 round-trip.
 - [Planning PDF re-scrape identity](planning-pdf-rescrape-identity.md) — re-scrapes are idempotent per source revision/version/parser; bump parser identity whenever extraction behavior changes.
 - [Planning draft deletion concurrency](planning-draft-deletion-concurrency.md) — project locks close pre-commit races; immutable per-import object keys stop stale post-commit cleanup deleting replacements.
+- [GitHub connector source sync](github-connector-source-sync.md) — connector OAuth may not authenticate CLI Git; preserve exact history through Git Data API and advance refs without force.
