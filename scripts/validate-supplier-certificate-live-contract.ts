@@ -18,7 +18,9 @@ assert(
 const validationBaseUrl =
   env.ARCHIDOC_STAGING_BASE_URL ?? env.ARCHIDOC_BASE_URL;
 const validationApiKey =
-  env.ARCHIDOC_STAGING_SYNC_API_KEY ?? env.ARCHIDOC_SYNC_API_KEY;
+  env.ARCHIDOC_STAGING_SYNC_API_KEY ??
+  env.ARCHIDOC_SYNC_API_KEY_NEXT ??
+  env.ARCHIDOC_SYNC_API_KEY;
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

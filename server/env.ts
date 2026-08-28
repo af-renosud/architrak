@@ -100,6 +100,9 @@ const envSchema = z.object({
   // --- ArchiDoc sync + webhooks (feature-scoped) -----------------------
   ARCHIDOC_BASE_URL: optionalUrl(),
   ARCHIDOC_SYNC_API_KEY: optionalString(),
+  // Rotation slot. Prefer this when configured while retaining the previous
+  // key for rollback until both production applications have been verified.
+  ARCHIDOC_SYNC_API_KEY_NEXT: optionalString(),
   // Validation-only ArchiDoc staging connection. These never replace the
   // application's normal ArchiDoc connection; the explicit release validator
   // opts into them when both are configured.

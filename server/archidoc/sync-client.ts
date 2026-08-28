@@ -7,7 +7,8 @@ import {
 } from "./supplier-payment-readiness-wire";
 
 const getBaseUrl = () => env.ARCHIDOC_BASE_URL;
-const getApiKey = () => env.ARCHIDOC_SYNC_API_KEY;
+const getApiKey = () =>
+  env.ARCHIDOC_SYNC_API_KEY_NEXT ?? env.ARCHIDOC_SYNC_API_KEY;
 const TECHNICAL_LOTS_ENDPOINT = "/api/integrations/architrak/technical-lots";
 
 export function isArchidocConfigured(): boolean {
