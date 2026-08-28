@@ -54,6 +54,7 @@ import adminArchisignRenderingRouter from "./admin-archisign-rendering";
 import healthzRouter from "./healthz";
 import designContractsRouter from "./design-contracts";
 import reconciliationRouter from "./reconciliation";
+import supplierDirectPaymentQuotationsRouter from "./supplier-direct-payment-quotations";
 
 // IDOR / Tenancy assumption (single-tenant deployment):
 // ArchiTrak runs as a dedicated single-firm deployment for Renosud
@@ -91,7 +92,7 @@ export async function registerRoutes(
   app.use(healthzRouter);
 
   app.use("/api/webhooks", webhookLimiter);
-  app.use(["/api/devis/:devisId/invoices/upload", "/api/projects/:projectId/devis/upload", "/api/projects/:projectId/intake/upload", "/api/design-contracts/preview", "/api/devis/:id/record-signed-copy", "/api/projects/:projectId/planning-envelope/import"], uploadLimiter);
+  app.use(["/api/devis/:devisId/invoices/upload", "/api/projects/:projectId/devis/upload", "/api/projects/:projectId/intake/upload", "/api/design-contracts/preview", "/api/devis/:id/record-signed-copy", "/api/projects/:projectId/planning-envelope/import", "/api/supplier-direct-payment-quotations"], uploadLimiter);
   app.use("/api", apiLimiter);
 
   app.use(projectsRouter);
@@ -146,6 +147,7 @@ export async function registerRoutes(
   app.use(adminArchisignRenderingRouter);
   app.use(designContractsRouter);
   app.use(reconciliationRouter);
+  app.use(supplierDirectPaymentQuotationsRouter);
   app.use(planningEnvelopeRouter);
 
   return httpServer;
