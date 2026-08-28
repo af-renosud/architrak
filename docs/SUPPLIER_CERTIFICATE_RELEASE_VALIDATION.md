@@ -19,7 +19,8 @@ document paths, response bodies, credentials, or endpoint hostnames.
 | ArchiDoc development countersignature | PASS | Countersigned contract and separate acceptance record retained on 2026-08-28 |
 | ArchiDoc development contract endpoint | PASS | Authenticated bootstrap export passed ArchiTrak's exact strict production schema parser |
 | Protected development RIB retrieval | PASS | ArchiDoc verified PDF, private/no-store, attachment, ETag, byte hash and 409 mismatch behavior |
-| Production ArchiDoc endpoint | **NOT VALIDATED** | ArchiDoc made no publication or production configuration change |
+| Production ArchiDoc endpoint | PARTIAL PASS | Authentication rejection, bootstrap and incremental replay pass; feed currently contains zero supplier changes |
+| Production protected RIB | **BLOCKED** | Production feed has no current verified supplier/RIB candidate |
 | Production enablement | **NOT ATTEMPTED** | Required by the release constraint |
 
 ## Commands and results
@@ -114,6 +115,17 @@ Development contract acceptance on 2026-08-28:
   `docs/SUPPLIER_CERTIFICATE_ACCEPTANCE_v1.0.md` and
   `validation_exports/`.
 
+Production endpoint validation on 2026-08-28:
+
+- the rotated production credential was accepted;
+- unauthenticated and invalid credentials were rejected;
+- `supplier-payment-readiness.v1` bootstrap completed in one page with zero
+  changes;
+- repeated incremental requests were byte-identical;
+- the expired-cursor probe confirmed that history is still retained;
+- protected RIB validation could not run because the production feed currently
+  contains no verified supplier/RIB candidate.
+
 ## Required evidence before GO
 
 The development contract and fixture compatibility gates are complete.
@@ -121,12 +133,13 @@ Production remains blocked until:
 
 1. ArchiDoc publishes the versioned endpoint to an identified staging
    environment and confirms the earliest implementation date.
-2. The live validator passes authentication rejection, bootstrap/pagination,
-   incremental replay, cursor expiry (when history has compacted), protected
-   RIB byte/hash/header checks, and the RIB version-mismatch response.
-3. The supplier and contractor browser release flows pass against that staging
-   contract.
-4. Only then may production receive one explicit ArchiDoc project ID for the
+2. One intended production canary supplier is completed in ArchiDoc with a
+   verified current RIB and active eligible assignment.
+3. The production validator passes the protected RIB byte/hash/header checks
+   and RIB version-mismatch response for that supplier.
+4. The supplier and contractor browser release flows pass against that
+   production contract.
+5. Only then may production receive one explicit ArchiDoc project ID for the
    canary.
 
 ## Disable path
