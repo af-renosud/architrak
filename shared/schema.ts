@@ -19,6 +19,7 @@ import {
   bigint,
   vector,
   foreignKey,
+  customType,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -1359,6 +1360,94 @@ export const archidocContractors = pgTable("archidoc_contractors", {
   check("archidoc_contractors_siret_format", sql`${table.siret} IS NULL OR ${table.siret} ~ '^[0-9]{14}$'`),
   check("archidoc_contractors_partner_type_chk", sql`${table.partnerType} IN ('contractor', 'supplier')`),
   index("archidoc_contractors_is_deleted_idx").on(table.isDeleted),
+]);
+
+// supplier-payment-readiness.v1 is deliberately a separate, read-only mirror.
+// Its opaque `paymentSupplierId` is ArchiDoc-owned and must never be treated as
+// a contractors.id or copied into the contractors table.
+export const archidocPaymentSuppliers = pgTable("archidoc_payment_suppliers", {
+  paymentSupplierId: varchar("payment_supplier_id", { length: 255 }).primaryKey(),
+  name: text("name").notNull(),
+  normalizedName: text("normalized_name").notNull(),
+  siret: varchar("siret", { length: 14 }),
+  iban: varchar("iban", { length: 34 }),
+  bic: varchar("bic", { length: 11 }),
+  accountHolderName: text("account_holder_name"),
+  bankingVerificationStatus: text("banking_verification_status"),
+  ribMetadata: jsonb("rib_metadata").notNull(),
+  sourceHash: varchar("source_hash", { length: 64 }).notNull(),
+  sourceSequence: bigint("source_sequence", { mode: "bigint" }).notNull(),
+  isActive: boolean("is_active").notNull(),
+  isDeleted: boolean("is_deleted").notNull().default(false),
+  deletedAt: timestamp("deleted_at"),
+  sourceBaseUrl: text("source_base_url").notNull(),
+  archidocUpdatedAt: timestamp("archidoc_updated_at").notNull(),
+  syncedAt: timestamp("synced_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  check("archidoc_payment_suppliers_siret_chk", sql`${table.siret} IS NULL OR ${table.siret} ~ '^[0-9]{14}$'`),
+  check("archidoc_payment_suppliers_lifecycle_chk", sql`(${table.isDeleted} = false AND ${table.deletedAt} IS NULL) OR ${table.isDeleted} = true`),
+  index("archidoc_payment_suppliers_siret_idx").on(table.siret),
+  index("archidoc_payment_suppliers_active_idx").on(table.isDeleted, table.normalizedName),
+]);
+
+export const archidocPaymentSupplierAssignments = pgTable("archidoc_payment_supplier_assignments", {
+  paymentSupplierId: varchar("payment_supplier_id", { length: 255 }).notNull().references(() => archidocPaymentSuppliers.paymentSupplierId, { onDelete: "restrict" }),
+  archidocProjectId: varchar("archidoc_project_id", { length: 255 }).notNull(),
+  assignmentId: varchar("assignment_id", { length: 255 }).notNull(),
+  directPaymentStatus: text("direct_payment_status").notNull(),
+  validFrom: text("valid_from"),
+  validUntil: text("valid_until"),
+  reason: text("reason"),
+  sourceHash: varchar("source_hash", { length: 64 }).notNull(),
+  sourceSequence: bigint("source_sequence", { mode: "bigint" }).notNull(),
+  isDeleted: boolean("is_deleted").notNull().default(false),
+  deletedAt: timestamp("deleted_at"),
+  updatedAt: timestamp("updated_at").notNull(),
+  syncedAt: timestamp("synced_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  unique("archidoc_payment_supplier_assignment_unique").on(table.paymentSupplierId, table.archidocProjectId, table.assignmentId),
+  index("archidoc_payment_supplier_assignments_project_idx").on(table.archidocProjectId, table.isDeleted),
+]);
+
+export const archidocPaymentSupplierSyncState = pgTable("archidoc_payment_supplier_sync_state", {
+  stream: varchar("stream", { length: 64 }).primaryKey(),
+  sequence: bigint("sequence", { mode: "bigint" }).notNull().default(BigInt(0)),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  check("archidoc_payment_supplier_sync_state_sequence_chk", sql`${table.sequence} >= 0`),
+]);
+
+const bytea = customType<{ data: Buffer }>({
+  dataType() {
+    return "bytea";
+  },
+});
+
+export const supplierDirectPaymentQuotations = pgTable("supplier_direct_payment_quotations", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  archidocProjectId: varchar("archidoc_project_id", { length: 255 }).notNull(),
+  sourceDocumentId: text("source_document_id").notNull(),
+  sourceSha256: varchar("source_sha256", { length: 64 }).notNull(),
+  fileName: text("file_name").notNull(),
+  sourcePdf: bytea("source_pdf").notNull(),
+  extractedPaymentSupplierId: varchar("extracted_payment_supplier_id", { length: 255 }),
+  extractedSupplierName: text("extracted_supplier_name"),
+  extractedSupplierSiret: varchar("extracted_supplier_siret", { length: 14 }),
+  matchStatus: text("match_status").notNull().default("review_required"),
+  matchReason: text("match_reason"),
+  matchEvidence: jsonb("match_evidence").notNull().default({}),
+  appointedPaymentSupplierId: varchar("appointed_payment_supplier_id", { length: 255 }).references(() => archidocPaymentSuppliers.paymentSupplierId, { onDelete: "restrict" }),
+  appointedAt: timestamp("appointed_at"),
+  appointedByUserId: integer("appointed_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  unique("supplier_direct_payment_quotations_source_unique").on(table.projectId, table.sourceDocumentId),
+  check("supplier_direct_payment_quotations_sha256_chk", sql`${table.sourceSha256} ~ '^[a-f0-9]{64}$'`),
+  check("supplier_direct_payment_quotations_siret_chk", sql`${table.extractedSupplierSiret} IS NULL OR ${table.extractedSupplierSiret} ~ '^[0-9]{14}$'`),
+  check("supplier_direct_payment_quotations_status_chk", sql`${table.matchStatus} IN ('review_required', 'matched', 'appointed')`),
+  index("supplier_direct_payment_quotations_supplier_idx").on(table.appointedPaymentSupplierId),
 ]);
 
 export const archidocTrades = pgTable("archidoc_trades", {
