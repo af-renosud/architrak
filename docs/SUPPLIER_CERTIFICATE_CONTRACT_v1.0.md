@@ -1,7 +1,8 @@
 # Supplier Direct-Payment Certificate Contract v1.0
 
-**Status:** ArchiTrak-frozen proposal, awaiting ArchiDoc countersignature  
+**Status:** Countersigned for development wire-contract acceptance; production rollout not authorized
 **Frozen by ArchiTrak:** 2026-08-24  
+**Development countersignature:** 2026-08-28
 **Wire contract literal:** `supplier-payment-readiness.v1`  
 **Fixture:** `docs/wire-fixtures/supplier-payment-readiness-v1.json`
 
@@ -439,8 +440,31 @@ ArchiDoc acceptance must confirm:
 6. byte-for-byte acceptance of the checked-in fixture;
 7. its earliest implementation and staging availability date.
 
-Until that confirmation is recorded, this document is the ArchiTrak proposal,
-not evidence that the ArchiDoc endpoint exists.
+### Development countersignature
+
+ArchiDoc countersigns all seven acceptance items above for its development
+implementation on **2026-08-28**. ArchiTrak confirms on **2026-08-28** that the
+exported authenticated development bootstrap response passes its exact strict
+`supplier-payment-readiness.v1` production schema parser.
+
+The joint development validation also confirms:
+
+- authenticated bootstrap access using the configured development bearer
+  credential;
+- two byte-identical incremental responses from the bootstrap high-water mark;
+- protected current-RIB retrieval with the declared PDF response headers,
+  ETag, and byte-level SHA-256 match;
+- `409 RIB_VERSION_MISMATCH` for an incorrect declared RIB hash.
+
+Retained secret-free evidence:
+
+- `validation_exports/archidoc-supplier-readiness-bootstrap.json`;
+- `validation_exports/archidoc-supplier-readiness-validation-report.md`;
+- `docs/SUPPLIER_CERTIFICATE_ACCEPTANCE_v1.0.md`.
+
+This countersignature accepts the **development wire contract only**. It does
+not authorize publication, production configuration, a production supplier
+project, or production rollout. Earliest staging availability remains pending.
 
 ## 11. Existing contractor characterization coverage
 

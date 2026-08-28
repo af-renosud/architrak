@@ -1,6 +1,6 @@
 # Supplier certificate release validation
 
-**Validation date:** 2026-08-24  
+**Validation dates:** 2026-08-24 and 2026-08-28
 **Decision:** **NO-GO — production supplier issuance remains disabled**
 
 This record intentionally contains no supplier identities, bank details,
@@ -16,9 +16,10 @@ document paths, response bodies, credentials, or endpoint hostnames.
 | Contractor non-regression | PASS locally | Retention, prorata, insurance, PV, banking, seal, PDF and communication suites |
 | Supplier/contractor browser release flows | PASS locally | Isolated fake-Gmail flow with a protected-RIB mock; all fixtures removed afterward |
 | Project canary and kill switch | PASS | Exact ArchiDoc project-ID allowlist; non-canary preview refused; sealed canary PDF remained readable |
-| ArchiDoc countersignature | **FAIL / missing** | The contract still records an ArchiTrak proposal awaiting ArchiDoc acceptance |
-| Configured ArchiDoc live contract endpoint | **FAIL** | Authenticated bootstrap returned HTTP 404 through the strict client |
-| Protected live RIB retrieval | **BLOCKED** | No live readiness response exists from which to select current protected RIB metadata |
+| ArchiDoc development countersignature | PASS | Countersigned contract and separate acceptance record retained on 2026-08-28 |
+| ArchiDoc development contract endpoint | PASS | Authenticated bootstrap export passed ArchiTrak's exact strict production schema parser |
+| Protected development RIB retrieval | PASS | ArchiDoc verified PDF, private/no-store, attachment, ETag, byte hash and 409 mismatch behavior |
+| Production ArchiDoc endpoint | **NOT VALIDATED** | ArchiDoc made no publication or production configuration change |
 | Production enablement | **NOT ATTEMPTED** | Required by the release constraint |
 
 ## Commands and results
@@ -87,7 +88,7 @@ Browser release flow:
 - all temporary browser fixtures and the protected-RIB mock were removed, and
   the normal development workflow environment was restored.
 
-Secret-safe live validation:
+Initial secret-safe configured-environment validation:
 
 ```sh
 npm run validate:supplier-release-live
@@ -97,19 +98,35 @@ Result: **FAIL** — the configured ArchiDoc host does not expose
 `supplier-payment-readiness.v1`; the authenticated request returned HTTP 404.
 The validator stopped without logging a response body or any protected value.
 
+Development contract acceptance on 2026-08-28:
+
+- ArchiDoc's authenticated development self-test returned HTTP 200;
+- the exported bootstrap passed ArchiTrak's exact strict
+  `supplier-payment-readiness.v1` schema parser with one fixture upsert;
+- repeated incremental requests were byte-identical;
+- protected RIB retrieval passed the required headers, PDF envelope, ETag and
+  byte-level SHA-256 checks;
+- an incorrect RIB hash returned HTTP 409 with
+  `RIB_VERSION_MISMATCH`;
+- the countersigned contract, acceptance record, bootstrap export and
+  secret-free report are retained in
+  `docs/SUPPLIER_CERTIFICATE_CONTRACT_v1.0.md`,
+  `docs/SUPPLIER_CERTIFICATE_ACCEPTANCE_v1.0.md` and
+  `validation_exports/`.
+
 ## Required evidence before GO
 
-1. ArchiDoc countersigns every item in the contract acceptance record.
-2. ArchiDoc publishes the versioned endpoint to an identified staging
+The development contract and fixture compatibility gates are complete.
+Production remains blocked until:
+
+1. ArchiDoc publishes the versioned endpoint to an identified staging
    environment and confirms the earliest implementation date.
-3. Both applications accept the same checked-in bytes for all six supplier
-   fixtures.
-4. The live validator passes authentication rejection, bootstrap/pagination,
+2. The live validator passes authentication rejection, bootstrap/pagination,
    incremental replay, cursor expiry (when history has compacted), protected
    RIB byte/hash/header checks, and the RIB version-mismatch response.
-5. The supplier and contractor browser release flows pass against that staging
+3. The supplier and contractor browser release flows pass against that staging
    contract.
-6. Only then may production receive one explicit ArchiDoc project ID for the
+4. Only then may production receive one explicit ArchiDoc project ID for the
    canary.
 
 ## Disable path
