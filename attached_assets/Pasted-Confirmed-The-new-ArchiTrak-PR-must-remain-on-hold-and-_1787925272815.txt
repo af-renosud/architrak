@@ -1,0 +1,38 @@
+Confirmed. The new ArchiTrak PR must remain on hold and must not be merged, migrated, or deployed.
+
+Answers to the reconciliation questions
+Why was the canonical-partner model changed?
+It should not have been changed. The new PR was developed from an outdated ArchiTrak checkout and I incorrectly interpreted “ff_suppliers is ArchiDoc’s canonical supplier master” as requiring a separate ArchiTrak supplier model. That overlooked the countersigned design where ArchiTrak represents the supplier in its existing canonical partner/contractor mirror with partnerType: "supplier". This was an incorrect architectural inference.
+
+Does ArchiDoc still emit the agreed supplier-payment-readiness.v1 contract?
+Yes at the code and fixture level. The ArchiDoc producer tests passed against the frozen supplier-payment-readiness.v1 fixture, and the fixture copied into the proposed PR was byte-identical to ArchiDoc’s fixture.
+I did not perform a live production endpoint call, so I am not claiming independent runtime verification of the published endpoint.
+
+Is the supplier ID the same immutable ID used by the existing ArchiTrak mirror?
+Yes. The feed’s supplier.id is the immutable ArchiDoc supplier identity. It should populate the existing ArchiTrak canonical mirror identity—not create a second identity namespace or parallel supplier master.
+
+Can the banking, verification, protected RIB, and assignment fields be added without replacing the released architecture?
+Yes. They can and should extend the existing canonical supplier mirror where partnerType: "supplier", while preserving:
+
+the existing immutable ArchiDoc supplier ID;
+migrations 0115 and 0116;
+existing quotation and supplier-certificate workflows;
+contractor behavior for partnerType: "contractor".
+A separate payment-supplier mirror and separate supplier quotation architecture are not required merely to consume the additional readiness fields.
+
+Was the new PR based on the current production branch containing migrations 0115 and 0116?
+No. It was based on ArchiTrak commit:
+
+9eb0909db1bc58761935d27b76930af23b7fcdcb
+
+That checkout considered 0114 the next migration and did not contain the already released 0115_supplier_certificate_track and 0116_supplier_payment_readiness_sync work. Therefore PR #1 is incompatible with the current production migration history and must not be merged.
+
+Current safety status
+PR #1 is open but held.
+It has not been merged or deployed.
+Its proposed migration has not been applied to production.
+No real Richardson supplier, banking, contact, or RIB data was entered.
+No certificate was issued.
+No production project was allowlisted by this work.
+The production allowlist should remain empty.
+The correct next step is to reconcile against the current ArchiTrak production branch and restrict any future change to filling gaps in the already released canonical-partner implementation.
