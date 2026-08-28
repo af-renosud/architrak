@@ -140,6 +140,7 @@ timeoutMs = 120000
 [userenv]
 
 [userenv.development]
+ARCHIDOC_STAGING_BASE_URL = "https://9e7c5f6c-2648-453a-a615-dfd4e879ed8d-00-2o2glazxnwp0u.riker.replit.dev"
 
 [userenv.production]
 PUBLIC_BASE_URL = "https://architrak.replit.app"

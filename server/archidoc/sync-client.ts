@@ -45,6 +45,10 @@ export class ArchidocFetchError extends Error {
 
 interface ArchidocFetchOptions<T> {
   params?: Record<string, string>;
+  connection?: {
+    baseUrl: string;
+    apiKey: string;
+  };
   validate?: (raw: unknown) => T;
   successReason?: (value: T) => string;
   onDiagnostic?: (diagnostic: ArchidocFetchDiagnostic) => void;
@@ -96,8 +100,8 @@ async function archidocFetch<T>(
   options: ArchidocFetchOptions<T> = {},
 ): Promise<T> {
   const startedAt = Date.now();
-  const baseUrl = getBaseUrl();
-  const apiKey = getApiKey();
+  const baseUrl = options.connection?.baseUrl ?? getBaseUrl();
+  const apiKey = options.connection?.apiKey ?? getApiKey();
 
   if (!baseUrl || !apiKey) {
     const diagnostic = makeFetchDiagnostic(endpoint, startedAt, {
@@ -374,6 +378,10 @@ export async function fetchSupplierPaymentReadinessPage(input: {
   afterSequence?: string;
   pageToken?: string;
   limit?: number;
+  connection?: {
+    baseUrl: string;
+    apiKey: string;
+  };
 }): Promise<SupplierPaymentReadinessResponse> {
   const params: Record<string, string> = {};
   if (input.pageToken) {
@@ -394,6 +402,7 @@ export async function fetchSupplierPaymentReadinessPage(input: {
     "/api/integrations/architrak/v1/supplier-payment-readiness",
     {
       params,
+      connection: input.connection,
       validate: (raw) => supplierPaymentReadinessResponseSchema.parse(raw),
       successReason: (value) =>
         `Validated ${value.changes.length} supplier payment-readiness change(s).`,

@@ -9,6 +9,17 @@ import type {
   SupplierPaymentReadinessResponse,
 } from "../server/archidoc/supplier-payment-readiness-wire";
 
+const hasStagingBaseUrl = !!env.ARCHIDOC_STAGING_BASE_URL;
+const hasStagingApiKey = !!env.ARCHIDOC_STAGING_SYNC_API_KEY;
+assert(
+  hasStagingBaseUrl === hasStagingApiKey,
+  "ARCHIDOC_STAGING_BASE_URL and ARCHIDOC_STAGING_SYNC_API_KEY must be configured together",
+);
+const validationBaseUrl =
+  env.ARCHIDOC_STAGING_BASE_URL ?? env.ARCHIDOC_BASE_URL;
+const validationApiKey =
+  env.ARCHIDOC_STAGING_SYNC_API_KEY ?? env.ARCHIDOC_SYNC_API_KEY;
+
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
@@ -31,10 +42,10 @@ async function directContractRequest(input: {
   afterSequence?: string;
   limit?: number;
 }): Promise<Response> {
-  assert(env.ARCHIDOC_BASE_URL, "ARCHIDOC_BASE_URL is not configured");
+  assert(validationBaseUrl, "No ArchiDoc validation base URL is configured");
   const url = new URL(
     "/api/integrations/architrak/v1/supplier-payment-readiness",
-    env.ARCHIDOC_BASE_URL,
+    validationBaseUrl,
   );
   url.searchParams.set("mode", input.mode);
   if (input.afterSequence !== undefined) {
@@ -59,6 +70,10 @@ async function collectBootstrap(): Promise<{
   let page = await fetchSupplierPaymentReadinessPage({
     mode: "bootstrap",
     limit: 200,
+    connection: {
+      baseUrl: validationBaseUrl!,
+      apiKey: validationApiKey!,
+    },
   });
   const throughSequenceInclusive =
     page.syncWindow.throughSequenceInclusive;
@@ -94,6 +109,10 @@ async function collectBootstrap(): Promise<{
     tokens.add(page.nextPageToken);
     page = await fetchSupplierPaymentReadinessPage({
       pageToken: page.nextPageToken,
+      connection: {
+        baseUrl: validationBaseUrl!,
+        apiKey: validationApiKey!,
+      },
     });
   }
 
@@ -103,11 +122,8 @@ async function collectBootstrap(): Promise<{
 async function validateProtectedRib(
   changes: SupplierPaymentReadinessChange[],
 ): Promise<"passed" | "no-current-rib-candidate"> {
-  assert(env.ARCHIDOC_BASE_URL, "ARCHIDOC_BASE_URL is not configured");
-  assert(
-    env.ARCHIDOC_SYNC_API_KEY,
-    "ARCHIDOC_SYNC_API_KEY is not configured",
-  );
+  assert(validationBaseUrl, "No ArchiDoc validation base URL is configured");
+  assert(validationApiKey, "No ArchiDoc validation credential is configured");
   const candidate = changes.find(
     (change) =>
       change.operation === "upsert" &&
@@ -120,10 +136,10 @@ async function validateProtectedRib(
   }
   const rib = candidate.supplier.banking?.ribDocument;
   assert(rib, "Selected live supplier has no protected RIB metadata");
-  const url = new URL(rib.downloadPath, env.ARCHIDOC_BASE_URL);
+  const url = new URL(rib.downloadPath, validationBaseUrl);
   const response = await fetch(url, {
     headers: {
-      Authorization: `Bearer ${env.ARCHIDOC_SYNC_API_KEY}`,
+      Authorization: `Bearer ${validationApiKey}`,
       Accept: "application/pdf",
       "X-ArchiDoc-RIB-SHA256": rib.sha256,
     },
@@ -161,7 +177,7 @@ async function validateProtectedRib(
 
   const mismatchResponse = await fetch(url, {
     headers: {
-      Authorization: `Bearer ${env.ARCHIDOC_SYNC_API_KEY}`,
+      Authorization: `Bearer ${validationApiKey}`,
       Accept: "application/json",
       "X-ArchiDoc-RIB-SHA256": "0".repeat(64),
     },
@@ -182,11 +198,12 @@ async function validateProtectedRib(
 }
 
 async function main() {
-  assert(env.ARCHIDOC_BASE_URL, "ARCHIDOC_BASE_URL is not configured");
-  assert(
-    env.ARCHIDOC_SYNC_API_KEY,
-    "ARCHIDOC_SYNC_API_KEY is not configured",
-  );
+  assert(validationBaseUrl, "No ArchiDoc validation base URL is configured");
+  assert(validationApiKey, "No ArchiDoc validation credential is configured");
+  const connection = {
+    baseUrl: validationBaseUrl,
+    apiKey: validationApiKey,
+  };
 
   const missingAuth = await directContractRequest({
     mode: "bootstrap",
@@ -210,11 +227,13 @@ async function main() {
     mode: "incremental",
     afterSequence: bootstrap.throughSequenceInclusive,
     limit: 20,
+    connection,
   });
   const incrementalB = await fetchSupplierPaymentReadinessPage({
     mode: "incremental",
     afterSequence: bootstrap.throughSequenceInclusive,
     limit: 20,
+    connection,
   });
   assert(
     stableResponse(incrementalA) === stableResponse(incrementalB),
@@ -227,6 +246,7 @@ async function main() {
       mode: "incremental",
       afterSequence: "0",
       limit: 1,
+      connection,
     });
     expiredCursorContract = "history-retained";
   } catch (error) {
@@ -239,9 +259,11 @@ async function main() {
   }
 
   const protectedRib = await validateProtectedRib(bootstrap.changes);
-  const host = new URL(env.ARCHIDOC_BASE_URL).hostname.toLowerCase();
+  const host = new URL(validationBaseUrl).hostname.toLowerCase();
   const environmentClassification =
-    /(^|[.-])(staging|stage|test|sandbox|dev)([.-]|$)/.test(host)
+    hasStagingBaseUrl
+      ? "staging-override"
+      : /(^|[.-])(staging|stage|test|sandbox|dev)([.-]|$)/.test(host)
       ? "staging-like"
       : "unclassified";
 

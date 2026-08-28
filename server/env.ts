@@ -100,6 +100,11 @@ const envSchema = z.object({
   // --- ArchiDoc sync + webhooks (feature-scoped) -----------------------
   ARCHIDOC_BASE_URL: optionalUrl(),
   ARCHIDOC_SYNC_API_KEY: optionalString(),
+  // Validation-only ArchiDoc staging connection. These never replace the
+  // application's normal ArchiDoc connection; the explicit release validator
+  // opts into them when both are configured.
+  ARCHIDOC_STAGING_BASE_URL: optionalUrl(),
+  ARCHIDOC_STAGING_SYNC_API_KEY: optionalString(),
   ARCHIDOC_WEBHOOK_SECRET: optionalString(),
   ARCHIDOC_POLLING_ENABLED: booleanFlag(false),
   // Supplier direct-payment canary gate. Unset/empty means no project may
