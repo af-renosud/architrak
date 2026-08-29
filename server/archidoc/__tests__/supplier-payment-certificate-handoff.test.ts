@@ -42,7 +42,7 @@ function handoff() {
       primaryContact: {
         id: "contact-1",
         name: "Contact",
-        jobTitle: null,
+        title: null,
         email: "contact@example.test",
         mobile: null,
       },

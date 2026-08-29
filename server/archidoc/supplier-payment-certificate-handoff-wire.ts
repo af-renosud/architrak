@@ -1,7 +1,6 @@
 import { z } from "zod";
 import {
   supplierPaymentBankingWireSchema,
-  supplierPaymentPrimaryContactWireSchema,
   supplierProjectPaymentAssignmentWireSchema,
 } from "./supplier-payment-readiness-wire";
 
@@ -27,6 +26,24 @@ const utcTimestamp = z
   .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/)
   .refine((value) => Number.isFinite(Date.parse(value)), "invalid UTC timestamp");
 
+const handoffPrimaryContactSchema = z
+  .object({
+    id: requiredTrimmedString,
+    name: requiredTrimmedString,
+    title: nullableTrimmedString,
+    email: z
+      .string()
+      .email()
+      .refine((value) => value.trim() === value)
+      .nullable(),
+    mobile: nullableTrimmedString,
+  })
+  .strict()
+  .transform(({ title, ...contact }) => ({
+    ...contact,
+    jobTitle: title,
+  }));
+
 const handoffSupplierSchema = z
   .object({
     id: requiredTrimmedString,
@@ -39,7 +56,7 @@ const handoffSupplierSchema = z
     postcode: nullableTrimmedString,
     countryCode: z.string().regex(/^[A-Z]{2}$/).nullable(),
     isActive: z.boolean(),
-    primaryContact: supplierPaymentPrimaryContactWireSchema.nullable(),
+    primaryContact: handoffPrimaryContactSchema.nullable(),
     banking: supplierPaymentBankingWireSchema,
     updatedAt: utcTimestamp,
   })
