@@ -7,7 +7,20 @@ vi.mock("../../storage", () => ({
   },
 }));
 
+vi.mock("../../archidoc/sync-client", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../archidoc/sync-client")>();
+  return {
+    ...actual,
+    fetchSupplierPaymentCertificateHandoff: vi.fn(),
+  };
+});
+
 import { storage } from "../../storage";
+import {
+  ArchidocFetchError,
+  fetchSupplierPaymentCertificateHandoff,
+} from "../../archidoc/sync-client";
 import {
   assertSupplierPaymentReadiness,
   SupplierPaymentReadinessError,
@@ -15,6 +28,7 @@ import {
 
 const getContractor = vi.mocked(storage.getContractor);
 const getProject = vi.mocked(storage.getProject);
+const fetchHandoff = vi.mocked(fetchSupplierPaymentCertificateHandoff);
 
 const partner = {
   id: 10,
@@ -42,6 +56,17 @@ describe("supplier payment readiness canonical preconditions", () => {
     vi.resetAllMocks();
     getContractor.mockResolvedValue(partner as never);
     getProject.mockResolvedValue(project as never);
+    fetchHandoff.mockRejectedValue(
+      new ArchidocFetchError({
+        endpoint: "supplier-payment-certificate-handoff",
+        outcome: "error",
+        status: null,
+        durationMs: 0,
+        checkedAt: "2026-08-24T00:00:00.000Z",
+        code: "unavailable",
+        reason: "Test fixture: ArchiDoc unavailable",
+      }),
+    );
   });
 
   it("fails when the canonical partner or project is missing", async () => {

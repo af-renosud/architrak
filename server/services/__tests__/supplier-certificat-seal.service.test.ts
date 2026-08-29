@@ -157,6 +157,8 @@ const supplierCert = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-08-28T12:00:00Z"));
   mockedStorage.getCertificat.mockResolvedValue(supplierCert);
   mockedStorage.getProject.mockResolvedValue({
     id: 1,
