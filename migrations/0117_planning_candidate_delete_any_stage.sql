@@ -2,6 +2,32 @@
 -- may be removed regardless of its review/approval/revision-history stage.
 -- Promotion to Live Delivery remains the permanent deletion boundary.
 
+CREATE TABLE IF NOT EXISTS "planning_revision_line_reviews" (
+  "id" serial PRIMARY KEY NOT NULL,
+  "line_id" integer NOT NULL,
+  "status" text DEFAULT 'unchecked' NOT NULL,
+  "notes" text,
+  "reviewed_by" text,
+  "reviewed_at" timestamp,
+  "created_at" timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  "updated_at" timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  CONSTRAINT "planning_revision_line_reviews_line_id_unique" UNIQUE("line_id"),
+  CONSTRAINT "planning_revision_line_reviews_status_chk"
+    CHECK ("status" IN ('unchecked', 'green', 'amber', 'red'))
+);--> statement-breakpoint
+
+DO $$ BEGIN
+  ALTER TABLE "planning_revision_line_reviews"
+    ADD CONSTRAINT "planning_revision_line_reviews_line_id_fk"
+    FOREIGN KEY ("line_id") REFERENCES "planning_revision_lines"("id")
+    ON DELETE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;--> statement-breakpoint
+
+CREATE INDEX IF NOT EXISTS "planning_revision_line_reviews_line_id_idx"
+  ON "planning_revision_line_reviews" USING btree ("line_id");--> statement-breakpoint
+
 CREATE OR REPLACE FUNCTION guard_planning_revision_immutable()
 RETURNS trigger
 LANGUAGE plpgsql

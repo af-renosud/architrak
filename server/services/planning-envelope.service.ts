@@ -12,6 +12,7 @@ import {
   planningEnvelopes,
   planningRevisions,
   planningRevisionLines,
+  planningRevisionLineReviews,
   planningRevisionSources,
   planningRevisionEvents,
   planningImportJobs,
@@ -24,6 +25,7 @@ import {
   type PlanningEnvelope,
   type PlanningRevision,
   type PlanningRevisionLine,
+  type PlanningRevisionLineReview,
   type PlanningRevisionSource,
   type PlanningImportJob,
   type PlanningImportStage,
@@ -54,6 +56,8 @@ export type PlanningEnvelopeErrorCode =
   | "REVISION_SNAPSHOT_HASH_MISMATCH"
   | "REVISION_SNAPSHOT_IDENTITY_MISMATCH"
   | "REVISION_ALREADY_PROMOTED"
+  | "REVISION_PROMOTED_IMMUTABLE"
+  | "REVISION_LINE_NOT_FOUND"
   | "REVISION_NOT_APPROVED"
   | "REVISION_CROSS_PROJECT_LOT"
   | "REVISION_SUPERSEDES_MISMATCH"
@@ -94,6 +98,7 @@ export class PlanningEnvelopeError extends Error {
 export interface RevisionDetail {
   revision: PlanningRevision;
   lines: PlanningRevisionLine[];
+  lineReviews: PlanningRevisionLineReview[];
   source: PlanningRevisionSource | null;
 }
 
@@ -555,7 +560,14 @@ async function getRevisionDetailWith(
     .from(planningRevisionSources)
     .where(eq(planningRevisionSources.revisionId, revisionId));
 
-  return { revision, lines, source: source ?? null };
+  const lineReviews = lines.length > 0
+    ? await c
+      .select()
+      .from(planningRevisionLineReviews)
+      .where(inArray(planningRevisionLineReviews.lineId, lines.map((line) => line.id)))
+    : [];
+
+  return { revision, lines, lineReviews, source: source ?? null };
 }
 
 async function getRevisionDetail(revisionId: number): Promise<RevisionDetail | null> {
@@ -797,9 +809,16 @@ export async function getEnvelopeSummary(projectId: number): Promise<EnvelopeSum
         .select()
         .from(planningRevisionSources)
         .where(eq(planningRevisionSources.revisionId, rev.id));
+      const lineReviews = lines.length > 0
+        ? await db
+          .select()
+          .from(planningRevisionLineReviews)
+          .where(inArray(planningRevisionLineReviews.lineId, lines.map((line) => line.id)))
+        : [];
       return {
         revision: rev,
         lines,
+        lineReviews,
         source: source ?? null,
         contractorName: rev.contractorId ? (contractorMap.get(rev.contractorId) ?? null) : null,
         lotNumber: rev.archidocTechnicalLotId
@@ -1127,7 +1146,7 @@ export async function createManualRevision(input: CreateManualRevisionInput): Pr
       .from(planningRevisionSources)
       .where(eq(planningRevisionSources.revisionId, revision.id));
 
-    return { revision, lines, source: source ?? null };
+    return { revision, lines, lineReviews: [], source: source ?? null };
   });
 }
 
@@ -1399,7 +1418,7 @@ export async function createPdfRevision(input: CreatePdfRevisionInput): Promise<
       }
     }
 
-    return { revision, lines, source: source ?? null };
+    return { revision, lines, lineReviews: [], source: source ?? null };
   });
 }
 
@@ -1555,6 +1574,97 @@ export async function patchRevision(input: PatchRevisionInput): Promise<Revision
     });
 
     return (await getRevisionDetailWith(input.revisionId, tx))!;
+  });
+}
+
+export async function updatePlanningLineReview(input: {
+  revisionId: number;
+  lineId: number;
+  projectId: number;
+  actor: string;
+  expectedVersion: number;
+  status: "unchecked" | "green" | "amber" | "red";
+  notes?: string | null;
+}): Promise<RevisionDetail> {
+  return db.transaction(async (tx) => {
+    const [revision] = await tx
+      .select()
+      .from(planningRevisions)
+      .where(eq(planningRevisions.id, input.revisionId))
+      .for("update");
+    if (!revision) {
+      throw new PlanningEnvelopeError(404, "REVISION_NOT_FOUND", "Revision not found");
+    }
+    const [envelope] = await tx
+      .select()
+      .from(planningEnvelopes)
+      .where(eq(planningEnvelopes.id, revision.envelopeId));
+    if (!envelope || envelope.projectId !== input.projectId) {
+      throw new PlanningEnvelopeError(403, "REVISION_WRONG_PROJECT", "Revision does not belong to this project");
+    }
+    await assertProjectMutable(input.projectId, tx);
+    if (revision.promotedDevisId != null) {
+      throw new PlanningEnvelopeError(
+        409,
+        "REVISION_PROMOTED_IMMUTABLE",
+        "Line reviews move to Live Delivery after promotion",
+      );
+    }
+    if (revision.version !== input.expectedVersion) {
+      throw new PlanningEnvelopeError(
+        409,
+        "REVISION_CAS_CONFLICT",
+        `Version conflict: expected ${input.expectedVersion}, got ${revision.version}`,
+        { expectedVersion: input.expectedVersion, currentVersion: revision.version },
+      );
+    }
+    const [line] = await tx
+      .select({ id: planningRevisionLines.id })
+      .from(planningRevisionLines)
+      .where(and(
+        eq(planningRevisionLines.id, input.lineId),
+        eq(planningRevisionLines.revisionId, input.revisionId),
+      ))
+      .for("share");
+    if (!line) {
+      throw new PlanningEnvelopeError(404, "REVISION_LINE_NOT_FOUND", "Planning line not found");
+    }
+
+    const notes = input.notes?.trim() || null;
+    await tx
+      .insert(planningRevisionLineReviews)
+      .values({
+        lineId: input.lineId,
+        status: input.status,
+        notes,
+        reviewedBy: input.actor,
+        reviewedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: planningRevisionLineReviews.lineId,
+        set: {
+          status: input.status,
+          notes,
+          reviewedBy: input.actor,
+          reviewedAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
+
+    await tx
+      .update(planningRevisions)
+      .set({ version: revision.version + 1, updatedAt: new Date() })
+      .where(eq(planningRevisions.id, revision.id));
+    await appendEvent(tx, revision.id, "line_review_updated", input.actor, {
+      lineId: input.lineId,
+      status: input.status,
+      hasNotes: notes != null,
+    });
+
+    const detail = await getRevisionDetailWith(revision.id, tx);
+    if (!detail) throw new PlanningEnvelopeError(404, "REVISION_NOT_FOUND", "Revision not found");
+    return detail;
   });
 }
 
@@ -1861,7 +1971,8 @@ export async function reviseRevision(input: ReviseRevisionInput): Promise<Revisi
     const [current] = await tx
       .select()
       .from(planningRevisions)
-      .where(eq(planningRevisions.id, input.revisionId));
+      .where(eq(planningRevisions.id, input.revisionId))
+      .for("update");
 
     if (!current) {
       throw new PlanningEnvelopeError(404, "REVISION_NOT_FOUND", "Revision not found");
@@ -1889,6 +2000,22 @@ export async function reviseRevision(input: ReviseRevisionInput): Promise<Revisi
       .from(planningRevisionLines)
       .where(eq(planningRevisionLines.revisionId, input.revisionId))
       .orderBy(planningRevisionLines.lineNumber);
+    const oldLineReviews = await tx
+      .select({
+        lineId: planningRevisionLineReviews.lineId,
+        status: planningRevisionLineReviews.status,
+        notes: planningRevisionLineReviews.notes,
+        reviewedBy: planningRevisionLineReviews.reviewedBy,
+        reviewedAt: planningRevisionLineReviews.reviewedAt,
+        createdAt: planningRevisionLineReviews.createdAt,
+        updatedAt: planningRevisionLineReviews.updatedAt,
+      })
+      .from(planningRevisionLineReviews)
+      .innerJoin(
+        planningRevisionLines,
+        eq(planningRevisionLines.id, planningRevisionLineReviews.lineId),
+      )
+      .where(eq(planningRevisionLines.revisionId, input.revisionId));
 
     // Create new draft revision linked to the source
     const [newRevision] = await tx
@@ -1914,7 +2041,7 @@ export async function reviseRevision(input: ReviseRevisionInput): Promise<Revisi
 
     // Copy lines
     if (oldLines.length > 0) {
-      await tx.insert(planningRevisionLines).values(
+      const copiedLines = await tx.insert(planningRevisionLines).values(
         oldLines.map((l) => ({
           revisionId: newRevision.id,
           lineNumber: l.lineNumber,
@@ -1926,7 +2053,29 @@ export async function reviseRevision(input: ReviseRevisionInput): Promise<Revisi
           pdfPageHint: l.pdfPageHint,
           pdfBbox: l.pdfBbox,
         })),
+      ).returning({ id: planningRevisionLines.id, lineNumber: planningRevisionLines.lineNumber });
+      const copiedLineIdByNumber = new Map(
+        copiedLines.map((line) => [line.lineNumber, line.id]),
       );
+      const oldLineNumberById = new Map(
+        oldLines.map((line) => [line.id, line.lineNumber]),
+      );
+      const copiedReviews = oldLineReviews.flatMap((review) => {
+        const lineNumber = oldLineNumberById.get(review.lineId);
+        const lineId = lineNumber == null ? undefined : copiedLineIdByNumber.get(lineNumber);
+        return lineId == null ? [] : [{
+          lineId,
+          status: review.status,
+          notes: review.notes,
+          reviewedBy: review.reviewedBy,
+          reviewedAt: review.reviewedAt,
+          createdAt: review.createdAt,
+          updatedAt: review.updatedAt,
+        }];
+      });
+      if (copiedReviews.length > 0) {
+        await tx.insert(planningRevisionLineReviews).values(copiedReviews);
+      }
     }
 
     // Manual source for the new revision
@@ -2141,8 +2290,30 @@ export async function promoteRevision(input: PromoteRevisionInput): Promise<Prom
 
     // Create devis line items from SNAPSHOT lines (not from live planningRevisionLines)
     if (snap.lines.length > 0) {
+      const planningReviews = await tx
+        .select({
+          lineNumber: planningRevisionLines.lineNumber,
+          status: planningRevisionLineReviews.status,
+          notes: planningRevisionLineReviews.notes,
+        })
+        .from(planningRevisionLineReviews)
+        .innerJoin(
+          planningRevisionLines,
+          eq(planningRevisionLines.id, planningRevisionLineReviews.lineId),
+        )
+        .where(eq(planningRevisionLines.revisionId, input.revisionId));
+      const reviewsByLine = new Map(
+        planningReviews.map((review) => [review.lineNumber, review]),
+      );
       await tx.insert(devisLineItems).values(
         snap.lines.map((l, idx) => ({
+          ...(() => {
+            const review = reviewsByLine.get(l.lineNumber ?? idx + 1);
+            return {
+              checkStatus: review?.status ?? "unchecked",
+              checkNotes: review?.notes ?? null,
+            };
+          })(),
           devisId: newDevis.id,
           lineNumber: l.lineNumber ?? idx + 1,
           description: l.description,

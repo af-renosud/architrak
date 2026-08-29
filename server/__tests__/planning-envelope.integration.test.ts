@@ -27,6 +27,7 @@ import {
   planningEnvelopes,
   planningImportJobs,
   planningRevisionEvents,
+  planningRevisionLineReviews,
   planningRevisionLines,
   planningRevisionSources,
   planningRevisions,
@@ -51,6 +52,7 @@ import {
   reviewRevision,
   patchRevision,
   reviseRevision,
+  updatePlanningLineReview,
 } from "../services/planning-envelope.service";
 import { backfillMutablePlanningTechnicalLots } from "../archidoc/sync-service";
 
@@ -238,6 +240,178 @@ describe("ensureEnvelope", () => {
     ]);
     const ids = results.map((e) => e.id);
     expect(new Set(ids).size).toBe(1); // all the same
+  });
+});
+
+describe("planning line review", () => {
+  it("persists internal traffic-light notes at every planning stage and carries them into Live Delivery", async () => {
+    const draft = await createReviewableRevision({
+      lines: [{
+        lineNumber: 1,
+        description: "Reviewable planning line",
+        quantity: "1.000",
+        unit: "u",
+        unitPriceHt: "1000.00",
+        totalHt: "1000.00",
+      }],
+    });
+    const lineId = draft.lines[0].id;
+
+    const draftReviewed = await updatePlanningLineReview({
+      revisionId: draft.revision.id,
+      lineId,
+      projectId,
+      actor,
+      expectedVersion: draft.revision.version,
+      status: "green",
+      notes: "Checked against the supplier quotation.",
+    });
+    expect(draftReviewed.lineReviews).toEqual([
+      expect.objectContaining({
+        lineId,
+        status: "green",
+        notes: "Checked against the supplier quotation.",
+        reviewedBy: actor,
+      }),
+    ]);
+
+    const reviewed = await reviewRevision({
+      revisionId: draft.revision.id,
+      projectId,
+      actor,
+      expectedVersion: draftReviewed.revision.version,
+    });
+    const reviewedUpdated = await updatePlanningLineReview({
+      revisionId: draft.revision.id,
+      lineId,
+      projectId,
+      actor,
+      expectedVersion: reviewed.revision.version,
+      status: "amber",
+      notes: "Keep under review while alternatives are compared.",
+    });
+    const approved = await approveRevision({
+      revisionId: draft.revision.id,
+      projectId,
+      actor,
+      expectedVersion: reviewedUpdated.revision.version,
+    });
+    const approvedUpdated = await updatePlanningLineReview({
+      revisionId: draft.revision.id,
+      lineId,
+      projectId,
+      actor,
+      expectedVersion: approved.revision.version,
+      status: "red",
+      notes: "Internal discrepancy to resolve before commitment.",
+    });
+
+    const promoted = await promoteRevision({
+      revisionId: draft.revision.id,
+      projectId,
+      actor,
+      expectedVersion: approvedUpdated.revision.version,
+    });
+    const [liveLine] = await db
+      .select()
+      .from(devisLineItems)
+      .where(eq(devisLineItems.devisId, promoted.devisId));
+    expect(liveLine).toMatchObject({
+      checkStatus: "red",
+      checkNotes: "Internal discrepancy to resolve before commitment.",
+    });
+    await expect(db
+      .update(planningRevisionLineReviews)
+      .set({ status: "green" })
+      .where(eq(planningRevisionLineReviews.lineId, lineId)))
+      .rejects.toBeDefined();
+
+    await expect(updatePlanningLineReview({
+      revisionId: draft.revision.id,
+      lineId,
+      projectId,
+      actor,
+      expectedVersion: approvedUpdated.revision.version + 1,
+      status: "green",
+    })).rejects.toMatchObject({ code: "REVISION_PROMOTED_IMMUTABLE" });
+  });
+
+  it("copies reviews into a revised candidate and cascades them when an older candidate is deleted", async () => {
+    const parent = await createReviewableRevision({
+      lines: [{ lineNumber: 1, description: "Inherited review line", totalHt: "1000.00" }],
+    });
+    const parentReviewedLine = await updatePlanningLineReview({
+      revisionId: parent.revision.id,
+      lineId: parent.lines[0].id,
+      projectId,
+      actor,
+      expectedVersion: parent.revision.version,
+      status: "green",
+      notes: "Carry this internal note into the next revision.",
+    });
+    const reviewedParent = await reviewRevision({
+      revisionId: parent.revision.id,
+      projectId,
+      actor,
+      expectedVersion: parentReviewedLine.revision.version,
+    });
+    const approvedParent = await approveRevision({
+      revisionId: parent.revision.id,
+      projectId,
+      actor,
+      expectedVersion: reviewedParent.revision.version,
+    });
+
+    const successor = await reviseRevision({
+      revisionId: parent.revision.id,
+      projectId,
+      actor,
+    });
+    expect(successor.lineReviews).toEqual([
+      expect.objectContaining({
+        lineId: successor.lines[0].id,
+        status: "green",
+        notes: "Carry this internal note into the next revision.",
+      }),
+    ]);
+
+    const reviewedSuccessor = await reviewRevision({
+      revisionId: successor.revision.id,
+      projectId,
+      actor,
+      expectedVersion: successor.revision.version,
+    });
+    await approveRevision({
+      revisionId: successor.revision.id,
+      projectId,
+      actor,
+      expectedVersion: reviewedSuccessor.revision.version,
+    });
+    const supersededUpdate = await updatePlanningLineReview({
+      revisionId: parent.revision.id,
+      lineId: parent.lines[0].id,
+      projectId,
+      actor,
+      expectedVersion: approvedParent.revision.version,
+      status: "amber",
+      notes: "Superseded, but retained as an internal audit note.",
+    });
+    expect(supersededUpdate.revision.status).toBe("superseded");
+
+    await deletePlanningUploadedDraft({
+      revisionId: parent.revision.id,
+      expectedVersion: supersededUpdate.revision.version,
+    });
+    expect(await db
+      .select()
+      .from(planningRevisionLineReviews)
+      .where(eq(planningRevisionLineReviews.lineId, parent.lines[0].id)))
+      .toHaveLength(0);
+    const [successorAfterDelete] = await db
+      .select()
+      .from(planningRevisions)
+      .where(eq(planningRevisions.id, successor.revision.id));
+    expect(successorAfterDelete.supersedesRevisionId).toBeNull();
   });
 });
 
@@ -795,11 +969,11 @@ describe("uploaded planning draft deletion", () => {
     expect(await db.select().from(planningImportJobs).where(eq(planningImportJobs.id, importJob.id))).toHaveLength(0);
   });
 
-  it("keeps the database guard closed for direct deletion of protected records", async () => {
+  it("allows direct deletion of unpromoted planning records", async () => {
     const manual = await createReviewableRevision();
     await expect(
       db.delete(planningRevisions).where(eq(planningRevisions.id, manual.revision.id)),
-    ).rejects.toBeDefined();
+    ).resolves.toBeDefined();
 
     const pdf = await createDisposablePdfDraft();
     const reviewed = await reviewRevision({
@@ -810,7 +984,7 @@ describe("uploaded planning draft deletion", () => {
     });
     await expect(
       db.delete(planningRevisions).where(eq(planningRevisions.id, reviewed.revision.id)),
-    ).rejects.toBeDefined();
+    ).resolves.toBeDefined();
   });
 });
 

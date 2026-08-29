@@ -118,6 +118,12 @@ test.describe("Planning uploaded draft deletion", () => {
            VALUES ($1, 'manual')`,
           [manualRevisionId],
         );
+        await db.query(
+          `INSERT INTO planning_revision_lines
+             (revision_id, line_number, description, quantity, unit, unit_price_ht, total_ht)
+           VALUES ($1, 1, 'Manual line for internal review', '1.000', 'u', '100.00', '100.00')`,
+          [manualRevisionId],
+        );
 
         await db.query("COMMIT");
       } catch (error) {
@@ -180,6 +186,46 @@ test.describe("Planning uploaded draft deletion", () => {
         [uploadedRevisionId],
       );
       expect(deletedRevision.rowCount).toBe(0);
+
+      await page.getByTestId(`planning-envelope-review-${manualRevisionId}`).click();
+      const reviewDialog = page.getByTestId("planning-envelope-review-dialog");
+      await expect(reviewDialog).toBeVisible();
+      const [statusResponse] = await Promise.all([
+        page.waitForResponse(
+          (response) =>
+            response.request().method() === "PATCH" &&
+            response.url().includes(`/api/planning-revisions/${manualRevisionId}/lines/`) &&
+            response.url().endsWith("/review"),
+        ),
+        reviewDialog.getByRole("button", { name: "Flagged" }).click(),
+      ]);
+      expect(statusResponse.ok()).toBe(true);
+      await reviewDialog.getByRole("button", { name: "Add note" }).click();
+      await reviewDialog.getByPlaceholder("Internal note for the project team…").fill(
+        "Internal budget discrepancy for the architect team.",
+      );
+      const [noteResponse] = await Promise.all([
+        page.waitForResponse(
+          (response) =>
+            response.request().method() === "PATCH" &&
+            response.url().includes(`/api/planning-revisions/${manualRevisionId}/lines/`) &&
+            response.url().endsWith("/review"),
+        ),
+        reviewDialog.getByRole("button", { name: "Save note" }).click(),
+      ]);
+      expect(noteResponse.ok()).toBe(true);
+      await reviewDialog.getByRole("button", { name: "Close workspace" }).click();
+
+      await page.reload();
+      await expect(page.getByTestId("panel-planning-envelope")).toBeVisible();
+      await page.getByTestId(`planning-envelope-review-${manualRevisionId}`).click();
+      await expect(page.getByTestId("planning-envelope-review-dialog").getByRole("button", { name: "Flagged" }))
+        .toHaveAttribute("data-active", "true");
+      await page.getByTestId("planning-envelope-review-dialog").getByRole("button", { name: "Note" }).click();
+      await expect(page.getByPlaceholder("Internal note for the project team…")).toHaveValue(
+        "Internal budget discrepancy for the architect team.",
+      );
+      await page.getByRole("button", { name: "Close workspace" }).click();
 
       await page.getByTestId(`planning-envelope-delete-${manualRevisionId}`).click();
       await expect(page.getByTestId("planning-envelope-delete-dialog")).toContainText("Delete this candidate quotation?");

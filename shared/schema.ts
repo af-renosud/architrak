@@ -3962,6 +3962,24 @@ export const planningRevisionLines = pgTable("planning_revision_lines", {
   check("planning_revision_lines_quantity_nonneg_chk", sql`${table.quantity} IS NULL OR ${table.quantity} >= 0`),
 ]);
 
+export const planningRevisionLineReviews = pgTable("planning_revision_line_reviews", {
+  id: serial("id").primaryKey(),
+  lineId: integer("line_id").notNull().references(() => planningRevisionLines.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("unchecked"),
+  notes: text("notes"),
+  reviewedBy: text("reviewed_by"),
+  reviewedAt: timestamp("reviewed_at"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  unique("planning_revision_line_reviews_line_id_unique").on(table.lineId),
+  index("planning_revision_line_reviews_line_id_idx").on(table.lineId),
+  check(
+    "planning_revision_line_reviews_status_chk",
+    sql`${table.status} IN ('unchecked', 'green', 'amber', 'red')`,
+  ),
+]);
+
 export const planningRevisionSources = pgTable("planning_revision_sources", {
   id: serial("id").primaryKey(),
   revisionId: integer("revision_id").notNull().references(() => planningRevisions.id, { onDelete: "cascade" }),
@@ -4053,6 +4071,7 @@ export const planningRevisionEvents = pgTable("planning_revision_events", {
 export type PlanningEnvelope = typeof planningEnvelopes.$inferSelect;
 export type PlanningRevision = typeof planningRevisions.$inferSelect;
 export type PlanningRevisionLine = typeof planningRevisionLines.$inferSelect;
+export type PlanningRevisionLineReview = typeof planningRevisionLineReviews.$inferSelect;
 export type PlanningRevisionSource = typeof planningRevisionSources.$inferSelect;
 export type PlanningImportJob = typeof planningImportJobs.$inferSelect;
 export type PlanningRevisionEvent = typeof planningRevisionEvents.$inferSelect;

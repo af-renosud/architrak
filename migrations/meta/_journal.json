@@ -827,6 +827,20 @@
       "when": 1787990400000,
       "tag": "0117_planning_candidate_delete_any_stage",
       "breakpoints": true
+    },
+    {
+      "idx": 118,
+      "version": "7",
+      "when": 1787994000000,
+      "tag": "0118_restore_planning_audit_guards",
+      "breakpoints": true
+    },
+    {
+      "idx": 119,
+      "version": "7",
+      "when": 1787997600000,
+      "tag": "0119_planning_line_review_promotion_guard",
+      "breakpoints": true
     }
   ]
 }

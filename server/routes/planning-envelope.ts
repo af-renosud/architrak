@@ -27,6 +27,7 @@ import {
   getRecentPlanningImports,
   deletePlanningUploadedDraft,
   patchRevision,
+  updatePlanningLineReview,
   reviewRevision,
   approveRevision,
   reviseRevision,
@@ -197,6 +198,10 @@ async function parsePlanningPdf(
 
 const projectIdParams = z.object({ projectId: z.coerce.number().int().positive() });
 const revisionIdParams = z.object({ id: z.coerce.number().int().positive() });
+const revisionLineIdParams = z.object({
+  id: z.coerce.number().int().positive(),
+  lineId: z.coerce.number().int().positive(),
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Body schemas — server-owned fields are stripped at Zod level
@@ -254,6 +259,12 @@ const patchRevisionBody = z.object({
   tvaRatePercent: decimalNonNeg.nullable().optional(),
   tvaAutoliquidation: z.boolean().optional(),
   lines: z.array(lineSchema).optional(),
+});
+
+const planningLineReviewBody = z.object({
+  expectedVersion: z.number().int().positive(),
+  status: z.enum(["unchecked", "green", "amber", "red"]),
+  notes: z.string().max(4000).nullable().optional(),
 });
 
 const reviewRevisionBody = z.object({
@@ -791,6 +802,33 @@ router.patch(
       if (err instanceof PlanningEnvelopeError && err.code === "REVISION_CAS_CONFLICT") {
         return res.status(409).json({ message: err.message, code: err.code, details: err.details });
       }
+      handlePlanningError(err, res);
+    }
+  },
+);
+
+router.patch(
+  "/api/planning-revisions/:id/lines/:lineId/review",
+  requireAuth,
+  validateRequest({ params: revisionLineIdParams, body: planningLineReviewBody }),
+  async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const existing = await getRevisionById(id);
+      if (!existing) return res.status(404).json({ message: "Revision not found" });
+      const envelope = await getEnvelopeById(existing.revision.envelopeId);
+      if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+      const user = await storage.getUser(req.session.userId!);
+      const actor = user?.email ?? String(req.session.userId);
+      const detail = await updatePlanningLineReview({
+        revisionId: id,
+        lineId: Number(req.params.lineId),
+        projectId: envelope.projectId,
+        actor,
+        ...req.body,
+      });
+      res.json(detail);
+    } catch (err) {
       handlePlanningError(err, res);
     }
   },

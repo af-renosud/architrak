@@ -282,9 +282,31 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   {
     tag: "0117_planning_candidate_delete_any_stage",
     artifact: {
+      kind: "all",
+      artifacts: [
+        { kind: "table", table: "planning_revision_line_reviews" },
+        {
+          kind: "trigger",
+          table: "planning_revisions",
+          trigger: "planning_uploaded_draft_delete_guard_trg",
+        },
+      ],
+    },
+  },
+  {
+    tag: "0118_restore_planning_audit_guards",
+    artifact: {
       kind: "trigger",
       table: "planning_revisions",
-      trigger: "planning_uploaded_draft_delete_guard_trg",
+      trigger: "planning_revision_immutable_trg",
+    },
+  },
+  {
+    tag: "0119_planning_line_review_promotion_guard",
+    artifact: {
+      kind: "trigger",
+      table: "planning_revision_line_reviews",
+      trigger: "planning_line_review_promotion_guard_trg",
     },
   },
 ];
