@@ -611,7 +611,7 @@ router.get(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DELETE /api/planning-revisions/:id
-// Permanently remove an unused PDF-uploaded draft.
+// Permanently remove an unpromoted planning candidate.
 // ─────────────────────────────────────────────────────────────────────────────
 
 router.delete(
@@ -631,14 +631,14 @@ router.delete(
           await deleteDocument(result.storageKeyToDelete);
         } catch (storageError) {
           console.warn(
-            `[PlanningDraftDelete] Deleted revision ${id}, but source-object cleanup failed (continuing):`,
+            `[PlanningCandidateDelete] Deleted revision ${id}, but source-object cleanup failed (continuing):`,
             storageError,
           );
         }
       }
 
       const user = await storage.getUser(req.session.userId!);
-      console.info("[PlanningDraftDelete]", JSON.stringify({
+      console.info("[PlanningCandidateDelete]", JSON.stringify({
         revisionId: id,
         projectId: result.projectId,
         fileName: result.fileName,

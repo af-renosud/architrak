@@ -567,7 +567,7 @@ export async function getRevisionById(id: number): Promise<RevisionDetail | null
 }
 
 /**
- * Permanently remove a disposable PDF-uploaded draft.
+ * Permanently remove an unpromoted planning candidate at any planning stage.
  *
  * The preliminary identity read is intentionally followed by locked re-reads
  * inside the transaction. It gives us the project row to lock first (the same
@@ -629,30 +629,15 @@ export async function deletePlanningUploadedDraft(input: {
       );
     }
     if (
-      revision.status !== "draft"
-      || revision.promotedDevisId != null
+      revision.promotedDevisId != null
       || revision.promotedAt != null
       || revision.promotedBy != null
-      || revision.supersedesRevisionId != null
     ) {
       throw new PlanningEnvelopeError(
         409,
         "REVISION_DELETE_NOT_ALLOWED",
-        "Only an unused uploaded draft can be deleted",
+        "A planning quotation that has been promoted to Live Delivery cannot be deleted",
         { currentStatus: revision.status },
-      );
-    }
-
-    const [dependentRevision] = await tx
-      .select({ id: planningRevisions.id })
-      .from(planningRevisions)
-      .where(eq(planningRevisions.supersedesRevisionId, revision.id))
-      .for("share");
-    if (dependentRevision) {
-      throw new PlanningEnvelopeError(
-        409,
-        "REVISION_DELETE_NOT_ALLOWED",
-        "This draft is part of a revision history and cannot be deleted",
       );
     }
 
@@ -665,7 +650,7 @@ export async function deletePlanningUploadedDraft(input: {
       throw new PlanningEnvelopeError(
         409,
         "REVISION_DELETE_NOT_ALLOWED",
-        "This draft is linked to a live devis and cannot be deleted",
+        "This planning quotation is linked to a live devis and cannot be deleted",
       );
     }
 
@@ -674,34 +659,23 @@ export async function deletePlanningUploadedDraft(input: {
       .from(planningRevisionSources)
       .where(eq(planningRevisionSources.revisionId, revision.id))
       .for("update");
-    if (
-      !source
-      || source.sourceKind !== "pdf_upload"
-      || !source.storageKey
-      || !source.fileSha256
-    ) {
-      throw new PlanningEnvelopeError(
-        409,
-        "REVISION_DELETE_NOT_ALLOWED",
-        "Only a draft created from an uploaded PDF can be deleted",
-      );
-    }
-
-    const activeImports = await tx
-      .select({ id: planningImportJobs.id })
-      .from(planningImportJobs)
-      .where(and(
-        eq(planningImportJobs.projectId, identity.projectId),
-        eq(planningImportJobs.fileSha256, source.fileSha256),
-        eq(planningImportJobs.status, "processing"),
-      ))
-      .for("update");
-    if (activeImports.length > 0) {
-      throw new PlanningEnvelopeError(
-        409,
-        "REVISION_DELETE_IMPORT_ACTIVE",
-        "This PDF is still being processed. Wait for the import to finish, then try again.",
-      );
+    if (source?.fileSha256) {
+      const activeImports = await tx
+        .select({ id: planningImportJobs.id })
+        .from(planningImportJobs)
+        .where(and(
+          eq(planningImportJobs.projectId, identity.projectId),
+          eq(planningImportJobs.fileSha256, source.fileSha256),
+          eq(planningImportJobs.status, "processing"),
+        ))
+        .for("update");
+      if (activeImports.length > 0) {
+        throw new PlanningEnvelopeError(
+          409,
+          "REVISION_DELETE_IMPORT_ACTIVE",
+          "This PDF is still being processed. Wait for the import to finish, then try again.",
+        );
+      }
     }
 
     const deletedImportJobs = await tx
@@ -720,21 +694,25 @@ export async function deletePlanningUploadedDraft(input: {
       throw new PlanningEnvelopeError(
         409,
         "REVISION_CAS_CONFLICT",
-        "The planning draft changed before it could be deleted",
+        "The planning quotation changed before it could be deleted",
       );
     }
 
-    const [sharedSource] = await tx
-      .select({ id: planningRevisionSources.id })
-      .from(planningRevisionSources)
-      .where(eq(planningRevisionSources.storageKey, source.storageKey))
-      .limit(1);
+    let storageKeyToDelete: string | null = null;
+    if (source?.storageKey) {
+      const [sharedSource] = await tx
+        .select({ id: planningRevisionSources.id })
+        .from(planningRevisionSources)
+        .where(eq(planningRevisionSources.storageKey, source.storageKey))
+        .limit(1);
+      storageKeyToDelete = sharedSource ? null : source.storageKey;
+    }
 
     return {
       revisionId: revision.id,
       projectId: identity.projectId,
-      fileName: source.fileName,
-      storageKeyToDelete: sharedSource ? null : source.storageKey,
+      fileName: source?.fileName ?? null,
+      storageKeyToDelete,
       deletedImportJobIds: deletedImportJobs.map((row) => row.id),
     };
   });

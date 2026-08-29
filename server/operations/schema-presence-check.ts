@@ -279,6 +279,14 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
       ],
     },
   },
+  {
+    tag: "0117_planning_candidate_delete_any_stage",
+    artifact: {
+      kind: "trigger",
+      table: "planning_revisions",
+      trigger: "planning_uploaded_draft_delete_guard_trg",
+    },
+  },
 ];
 
 interface JournalFile {

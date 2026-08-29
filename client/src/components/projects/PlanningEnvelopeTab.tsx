@@ -151,8 +151,8 @@ export function PlanningEnvelopeTab({ projectId, contractors, isArchived }: Prop
         setEditing(null);
       }
       toast({
-        title: "Uploaded devis deleted",
-        description: "The unwanted planning draft was removed. You can import a replacement PDF now.",
+        title: "Candidate quotation deleted",
+        description: "The quotation and its planning-only records were removed.",
       });
     },
     onError: (e: Error) => toast({
@@ -240,13 +240,15 @@ export function PlanningEnvelopeTab({ projectId, contractors, isArchived }: Prop
       <AlertDialog open={!!deleteRevision} onOpenChange={(v) => !v && !deleteDraft.isPending && setDeleteRevision(null)}>
         <AlertDialogContent data-testid="planning-envelope-delete-dialog">
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete this uploaded devis?</AlertDialogTitle>
+            <AlertDialogTitle>Delete this candidate quotation?</AlertDialogTitle>
             <AlertDialogDescription>
-              This permanently removes the draft, its extracted lines, and its uploaded PDF from the Planning Envelope. This action cannot be undone.
+              This permanently removes the quotation and all of its planning-only records
+              {deleteRevision?.source?.sourceKind === "pdf_upload" ? ", including its extracted lines and uploaded PDF" : ""}.
+              Later revisions will remain available. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleteDraft.isPending}>Keep draft</AlertDialogCancel>
+            <AlertDialogCancel disabled={deleteDraft.isPending}>Keep quotation</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={deleteDraft.isPending}
@@ -262,7 +264,7 @@ export function PlanningEnvelopeTab({ projectId, contractors, isArchived }: Prop
               data-testid="planning-envelope-delete-confirm"
             >
               {deleteDraft.isPending ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
-              {deleteDraft.isPending ? "Deleting…" : "Delete uploaded devis"}
+              {deleteDraft.isPending ? "Deleting…" : "Delete quotation"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -327,8 +329,7 @@ function RevisionCard({ item, revisions, projectId, isArchived, isRescraping, is
   const immutable = r.status === "approved" || r.status === "superseded";
   const canRevise = r.status === "approved";
   const canApprove = r.status === "reviewed";
-  const isSupersessionLinked = !!r.supersedesRevisionId || revisions.some((candidate) => candidate.revision.supersedesRevisionId === r.id);
-  const canDeleteUploadedDraft = item.source?.sourceKind === "pdf_upload" && r.status === "draft" && !r.promotedDevisId && !isArchived && !isSupersessionLinked && !hasActiveMatchingImport;
+  const canDeleteCandidate = !r.promotedDevisId && !isArchived && !hasActiveMatchingImport;
   const sourceWarnings = item.source?.warnings ?? [];
   const prior = r.supersedesRevisionId ? revisions.find((candidate) => candidate.revision.id === r.supersedesRevisionId) : undefined;
   const variance = prior ? Number(r.amountHt) - Number(prior.revision.amountHt) : null;
@@ -345,7 +346,7 @@ function RevisionCard({ item, revisions, projectId, isArchived, isRescraping, is
     <div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="flex items-center gap-2 flex-wrap"><FileText size={15} className="text-[#9a5c36]" /><span className="font-semibold text-sm">{r.reference || "Unreferenced revision"}</span><Badge className={`text-[10px] ${stateClasses[r.status]}`}>{stateLabels[r.status]}</Badge>{immutable && <LockKeyhole size={12} className="text-muted-foreground" />}</div><p className="text-xs text-muted-foreground mt-1 truncate">{r.descriptionFr || "No scope description"} · {item.contractorName ?? "Contractor not assigned"} · {lotDisplay}</p></div><div className="text-right whitespace-nowrap"><p className="font-semibold text-sm"><Amount value={euro(r.amountHt)} denomination="HT" /></p><p className="text-[10px] text-muted-foreground"><Amount value={euro(r.amountTtc)} denomination="TTC" /></p></div></div>
     <div className="mt-3 flex items-center gap-3 flex-wrap text-[10px] text-muted-foreground"><span>v{r.version}</span><span>{r.documentDate ? `Document ${dateLabel(r.documentDate)}` : `Updated ${dateLabel(r.updatedAt)}`}</span><span>{item.source?.sourceKind === "pdf_upload" ? `PDF · ${item.source.fileName ?? "source file"}` : "Manual entry"}</span>{item.source?.confidence != null && <span>Confidence {item.source.confidence}%</span>}{item.source?.requiresVerification && <span className="text-amber-700 flex items-center gap-1"><AlertTriangle size={11} /> Verification required</span>}{item.legacyLotNeedsReview && <span className="text-amber-700 flex items-center gap-1" data-testid={`planning-envelope-legacy-lot-review-${r.id}`}><AlertTriangle size={11} /> Legacy lot needs review</span>}</div>
     {sourceWarnings.length > 0 && <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900"><div className="flex gap-2"><Info size={13} className="mt-0.5 shrink-0" /><div>{sourceWarnings.slice(0, 2).map((warning, i) => <div key={i}>{warning.message ?? "Source warning"}</div>)}</div></div></div>}
-    <div className="mt-3 flex items-center justify-between gap-2 flex-wrap"><div className="flex gap-3 flex-wrap">{item.source?.sourceKind === "pdf_upload" && <><a className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-primary hover:underline" href={`/api/planning-revisions/${r.id}/pdf?download=1`} download data-testid={`planning-envelope-pdf-${r.id}`}><Download size={12} /> Source PDF</a><button type="button" className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-primary hover:underline" onClick={onViewPdf} data-testid={`planning-envelope-view-pdf-${r.id}`}><FileText size={12} /> View PDF</button></>}{r.promotedDevisId && <a href={`/projets/${projectId}?tab=devis&devis=${r.promotedDevisId}`} className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 hover:underline" data-testid={`planning-envelope-live-link-${r.id}`}>Live devis #{r.promotedDevisId}</a>}</div><div className="flex gap-2 flex-wrap">{!immutable && !isArchived && <Button variant="outline" size="sm" onClick={onEdit} data-testid={`planning-envelope-edit-${r.id}`}><Pencil size={12} /> Edit</Button>}{r.status === "draft" && !isArchived && <Button variant="outline" size="sm" onClick={onReview} data-testid={`planning-envelope-review-${r.id}`}><Check size={12} /> Review</Button>}{canApprove && !isArchived && <Button variant="outline" size="sm" onClick={() => onAction(`/api/planning-revisions/${r.id}/approve`, { expectedVersion: r.version })} data-testid={`planning-envelope-approve-${r.id}`}><ShieldCheck size={12} /> Approve</Button>}{item.source?.sourceKind === "pdf_upload" && r.status !== "superseded" && !isArchived && <Button variant="outline" size="sm" disabled={isRescraping} onClick={onRescrape} data-testid={`planning-envelope-rescrape-${r.id}`} title="Run the current PDF extraction rules again and create a new draft">{isRescraping ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}{isRescraping ? "Re-scraping…" : "Re-scrape PDF"}</Button>}{canDeleteUploadedDraft && <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" disabled={isDeleting} onClick={onDelete} data-testid={`planning-envelope-delete-${r.id}`}>{isDeleting ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}{isDeleting ? "Deleting…" : "Delete uploaded devis"}</Button>}{canRevise && !isArchived && <Button variant="outline" size="sm" onClick={() => onAction(`/api/planning-revisions/${r.id}/revise`, {})} data-testid={`planning-envelope-revise-${r.id}`}><RefreshCw size={12} /> Revise</Button>}{r.status === "approved" && !r.promotedDevisId && !isArchived && <Button size="sm" onClick={onPromote} data-testid={`planning-envelope-promote-${r.id}`}><FileCheck2 size={12} /> Promote to Live</Button>}</div></div>
+    <div className="mt-3 flex items-center justify-between gap-2 flex-wrap"><div className="flex gap-3 flex-wrap">{item.source?.sourceKind === "pdf_upload" && <><a className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-primary hover:underline" href={`/api/planning-revisions/${r.id}/pdf?download=1`} download data-testid={`planning-envelope-pdf-${r.id}`}><Download size={12} /> Source PDF</a><button type="button" className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-primary hover:underline" onClick={onViewPdf} data-testid={`planning-envelope-view-pdf-${r.id}`}><FileText size={12} /> View PDF</button></>}{r.promotedDevisId && <a href={`/projets/${projectId}?tab=devis&devis=${r.promotedDevisId}`} className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 hover:underline" data-testid={`planning-envelope-live-link-${r.id}`}>Live devis #{r.promotedDevisId}</a>}</div><div className="flex gap-2 flex-wrap">{!immutable && !isArchived && <Button variant="outline" size="sm" onClick={onEdit} data-testid={`planning-envelope-edit-${r.id}`}><Pencil size={12} /> Edit</Button>}{r.status === "draft" && !isArchived && <Button variant="outline" size="sm" onClick={onReview} data-testid={`planning-envelope-review-${r.id}`}><Check size={12} /> Review</Button>}{canApprove && !isArchived && <Button variant="outline" size="sm" onClick={() => onAction(`/api/planning-revisions/${r.id}/approve`, { expectedVersion: r.version })} data-testid={`planning-envelope-approve-${r.id}`}><ShieldCheck size={12} /> Approve</Button>}{item.source?.sourceKind === "pdf_upload" && r.status !== "superseded" && !isArchived && <Button variant="outline" size="sm" disabled={isRescraping} onClick={onRescrape} data-testid={`planning-envelope-rescrape-${r.id}`} title="Run the current PDF extraction rules again and create a new draft">{isRescraping ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}{isRescraping ? "Re-scraping…" : "Re-scrape PDF"}</Button>}{canDeleteCandidate && <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" disabled={isDeleting} onClick={onDelete} data-testid={`planning-envelope-delete-${r.id}`}>{isDeleting ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}{isDeleting ? "Deleting…" : "Delete"}</Button>}{canRevise && !isArchived && <Button variant="outline" size="sm" onClick={() => onAction(`/api/planning-revisions/${r.id}/revise`, {})} data-testid={`planning-envelope-revise-${r.id}`}><RefreshCw size={12} /> Revise</Button>}{r.status === "approved" && !r.promotedDevisId && !isArchived && <Button size="sm" onClick={onPromote} data-testid={`planning-envelope-promote-${r.id}`}><FileCheck2 size={12} /> Promote to Live</Button>}</div></div>
   </LuxuryCard>;
 }
 

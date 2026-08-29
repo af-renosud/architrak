@@ -132,7 +132,7 @@ test.describe("Planning uploaded draft deletion", () => {
       const uploadedCard = page.getByTestId(`planning-envelope-revision-${uploadedRevisionId}`);
       await expect(uploadedCard).toBeVisible();
       await expect(page.getByTestId(`planning-envelope-delete-${uploadedRevisionId}`)).toHaveCount(0);
-      await expect(page.getByTestId(`planning-envelope-delete-${manualRevisionId}`)).toHaveCount(0);
+      await expect(page.getByTestId(`planning-envelope-delete-${manualRevisionId}`)).toBeVisible();
 
       await db.query(
         `UPDATE planning_import_jobs
@@ -157,7 +157,7 @@ test.describe("Planning uploaded draft deletion", () => {
       await page.getByTestId(`planning-envelope-delete-${uploadedRevisionId}`).click();
       const dialog = page.getByTestId("planning-envelope-delete-dialog");
       await expect(dialog).toBeVisible();
-      await expect(dialog).toContainText("Delete this uploaded devis?");
+      await expect(dialog).toContainText("Delete this candidate quotation?");
       await expect(dialog).toContainText("cannot be undone");
 
       const [deleteResponse] = await Promise.all([
@@ -180,6 +180,19 @@ test.describe("Planning uploaded draft deletion", () => {
         [uploadedRevisionId],
       );
       expect(deletedRevision.rowCount).toBe(0);
+
+      await page.getByTestId(`planning-envelope-delete-${manualRevisionId}`).click();
+      await expect(page.getByTestId("planning-envelope-delete-dialog")).toContainText("Delete this candidate quotation?");
+      const [manualDeleteResponse] = await Promise.all([
+        page.waitForResponse(
+          (response) =>
+            response.request().method() === "DELETE" &&
+            response.url().includes(`/api/planning-revisions/${manualRevisionId}`),
+        ),
+        page.getByTestId("planning-envelope-delete-confirm").click(),
+      ]);
+      expect(manualDeleteResponse.ok()).toBe(true);
+      await expect(page.getByTestId(`planning-envelope-revision-${manualRevisionId}`)).toHaveCount(0);
     } finally {
       if (projectId != null) {
         await db.query("DELETE FROM projects WHERE id = $1", [projectId]);

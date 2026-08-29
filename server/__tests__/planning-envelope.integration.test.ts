@@ -492,12 +492,15 @@ describe("uploaded planning draft deletion", () => {
     expect(await db.select().from(planningImportJobs).where(eq(planningImportJobs.id, job.id))).toHaveLength(0);
   });
 
-  it("refuses manual, reviewed, approved, superseded, and promoted records", async () => {
+  it("deletes manual, reviewed, approved, and superseded records but refuses promoted records", async () => {
     const manual = await createReviewableRevision();
     await expect(deletePlanningUploadedDraft({
       revisionId: manual.revision.id,
       expectedVersion: manual.revision.version,
-    })).rejects.toMatchObject({ code: "REVISION_DELETE_NOT_ALLOWED" });
+    })).resolves.toMatchObject({
+      revisionId: manual.revision.id,
+      storageKeyToDelete: null,
+    });
 
     const reviewedDraft = await createDisposablePdfDraft();
     const reviewed = await reviewRevision({
@@ -509,7 +512,7 @@ describe("uploaded planning draft deletion", () => {
     await expect(deletePlanningUploadedDraft({
       revisionId: reviewed.revision.id,
       expectedVersion: reviewed.revision.version,
-    })).rejects.toMatchObject({ code: "REVISION_DELETE_NOT_ALLOWED" });
+    })).resolves.toMatchObject({ revisionId: reviewed.revision.id });
 
     const approvedDraft = await createDisposablePdfDraft();
     const approvedReview = await reviewRevision({
@@ -524,11 +527,6 @@ describe("uploaded planning draft deletion", () => {
       actor,
       expectedVersion: approvedReview.revision.version,
     });
-    await expect(deletePlanningUploadedDraft({
-      revisionId: approved.revision.id,
-      expectedVersion: approved.revision.version,
-    })).rejects.toMatchObject({ code: "REVISION_DELETE_NOT_ALLOWED" });
-
     const successorDraft = await reviseRevision({
       revisionId: approved.revision.id,
       projectId,
@@ -554,7 +552,16 @@ describe("uploaded planning draft deletion", () => {
     await expect(deletePlanningUploadedDraft({
       revisionId: superseded.id,
       expectedVersion: superseded.version,
-    })).rejects.toMatchObject({ code: "REVISION_DELETE_NOT_ALLOWED" });
+    })).resolves.toMatchObject({ revisionId: superseded.id });
+    const [survivingSuccessor] = await db
+      .select()
+      .from(planningRevisions)
+      .where(eq(planningRevisions.id, successorDraft.revision.id));
+    expect(survivingSuccessor.supersedesRevisionId).toBeNull();
+    await expect(deletePlanningUploadedDraft({
+      revisionId: survivingSuccessor.id,
+      expectedVersion: survivingSuccessor.version,
+    })).resolves.toMatchObject({ revisionId: survivingSuccessor.id });
 
     const promotedDraft = await createDisposablePdfDraft();
     const promotedReview = await reviewRevision({
