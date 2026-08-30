@@ -49,8 +49,9 @@ interface Props { projectId: string; contractors: Choice[]; isArchived: boolean;
 
 export function PlanningEnvelopeTab({ projectId, contractors, isArchived }: Props) {
   const { toast } = useToast();
-  const [dialog, setDialog] = useState<"new" | "edit" | "review" | null>(null);
+  const [dialog, setDialog] = useState<"new" | "edit" | null>(null);
   const [editing, setEditing] = useState<Revision | null>(null);
+  const [reviewing, setReviewing] = useState<Revision | null>(null);
   const [promote, setPromote] = useState<Revision | null>(null);
   const [deleteRevision, setDeleteRevision] = useState<Revision | null>(null);
   const [verificationNote, setVerificationNote] = useState("");
@@ -102,12 +103,12 @@ export function PlanningEnvelopeTab({ projectId, contractors, isArchived }: Prop
   const invalidate = () => { queryClient.invalidateQueries({ queryKey: key }); queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis") }); };
   const action = useMutation({
     mutationFn: async ({ url, body }: { url: string; body?: unknown }) => { const response = await apiRequest("POST", url, body); return response.json(); },
-    onSuccess: () => { invalidate(); setDialog(null); setEditing(null); setPromote(null); setVerificationNote(""); toast({ title: "Planning envelope updated" }); },
+    onSuccess: () => { invalidate(); setDialog(null); setEditing(null); setReviewing(null); setPromote(null); setVerificationNote(""); toast({ title: "Planning envelope updated" }); },
     onError: (e: Error) => toast({ title: "Action could not be completed", description: e.message, variant: "destructive" }),
   });
   const patch = useMutation({
     mutationFn: async ({ id, body }: { id: number; body: unknown }) => { const response = await apiRequest("PATCH", `/api/planning-revisions/${id}`, body); return response.json(); },
-    onSuccess: () => { invalidate(); setDialog(null); setEditing(null); toast({ title: "Revision saved" }); },
+    onSuccess: () => { invalidate(); setDialog(null); setEditing(null); setReviewing(null); setVerificationNote(""); toast({ title: "Revision saved" }); },
     onError: (e: Error) => toast({ title: "Revision could not be saved", description: e.message, variant: "destructive" }),
   });
   const rescrape = useMutation({
@@ -150,6 +151,10 @@ export function PlanningEnvelopeTab({ projectId, contractors, isArchived }: Prop
       if (editing?.revision.id === deletedId) {
         setDialog(null);
         setEditing(null);
+      }
+      if (reviewing?.revision.id === deletedId) {
+        setReviewing(null);
+        setVerificationNote("");
       }
       toast({
         title: "Candidate quotation deleted",
@@ -234,44 +239,26 @@ export function PlanningEnvelopeTab({ projectId, contractors, isArchived }: Prop
         return <div key={`${lot.archidocTechnicalLotId ?? lot.lotId}-${lot.description}`} className="flex justify-between gap-3 rounded-lg border border-border/70 px-3 py-2 text-xs"><div className="min-w-0"><p className="font-semibold truncate">{lotLabel}{lot.description}</p><p className="text-[10px] text-muted-foreground">{lot.count} candidate{lot.count === 1 ? "" : "s"}</p></div><div className="text-right whitespace-nowrap"><p><Amount value={euro(lot.amountHt)} denomination="HT" /></p><p className="text-muted-foreground"><Amount value={euro(lot.amountTtc)} denomination="TTC" /></p></div></div>;
       })}</div></LuxuryCard> : null}
       {!data?.revisions?.length ? <LuxuryCard className="py-12 text-center" data-testid="planning-envelope-empty"><FilePlus2 size={23} className="mx-auto text-[#b9784c]" /><p className="mt-3 text-sm font-semibold">No planning candidates yet</p><p className="mt-1 text-xs text-muted-foreground">Create a revision manually or import a contractor PDF to establish the first working envelope.</p></LuxuryCard> :
-        <div className="space-y-3">{data.revisions.map((item) => <RevisionCard key={item.revision.id} item={item} revisions={data.revisions} projectId={projectId} isArchived={isArchived} isRescraping={rescrape.isPending && rescrape.variables?.id === item.revision.id} isDeleting={deleteDraft.isPending && deleteDraft.variables?.id === item.revision.id} hasActiveMatchingImport={data.imports?.some((importItem) => importItem.status === "processing" && importItem.fileSha256 === item.source?.fileSha256) === true} onEdit={() => { setEditing(item); setDialog("edit"); }} onReview={() => { setEditing(item); setDialog("review"); }} onAction={(url, body) => action.mutate({ url, body })} onRescrape={() => rescrape.mutate({ id: item.revision.id, expectedVersion: item.revision.version })} onDelete={() => setDeleteRevision(item)} onPromote={() => setPromote(item)} onViewPdf={() => setPdfRevision(item)} />)}</div>}
-      <RevisionDialog open={dialog === "new" || dialog === "edit"} item={dialog === "edit" ? editing : null} contractors={contractors} technicalLotsData={technicalLotsData} technicalLotsError={technicalLotsError} technicalLotsFetching={technicalLotsFetching || technicalLotsRetrying} technicalLotsIsStale={technicalLotsIsStale} onTechnicalLotsRetry={() => void retryTechnicalLots()} pending={patch.isPending || action.isPending} onClose={() => { setDialog(null); setEditing(null); }} onSubmit={(body) => dialog === "edit" && editing ? patch.mutate({ id: editing.revision.id, body: { ...(body as Record<string, unknown>), expectedVersion: editing.revision.version } }) : action.mutate({ url: `/api/projects/${projectId}/planning-envelope/revisions`, body })} />
-      <Dialog open={dialog === "review"} onOpenChange={(v) => !v && setDialog(null)}>
-        <DialogContent className="flex max-h-[92vh] max-w-6xl flex-col overflow-hidden border-[#c9d8d5] bg-[#fdfefd] p-0" data-testid="planning-envelope-review-dialog">
-          <DialogHeader className="shrink-0 border-b border-[#d8e1df] bg-[#f3f7f6] px-5 py-4 sm:px-7">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <TechnicalLabel>Internal quotation review · Planning Envelope</TechnicalLabel>
-                <DialogTitle className="mt-1 text-xl font-medium tracking-tight text-[#173b39]">{editing?.revision.reference || "Planning revision"}</DialogTitle>
-                <DialogDescription className="mt-1 text-xs">Check each persisted line against the source document. Notes stay inside ArchiDoc and are never sent to the supplier.</DialogDescription>
-              </div>
-              {editing && <div className="hidden text-right sm:block"><p className="font-mono text-sm font-semibold text-[#173b39]">v{editing.revision.version}</p><p className="text-[10px] text-muted-foreground">{editing.source?.fileName ?? "Manual revision"}</p></div>}
-            </div>
-          </DialogHeader>
-          {editing && <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-7">
-            <PlanningLineReviewWorkspace
-              revisionId={editing.revision.id}
-              version={editing.revision.version}
-              lines={editing.lines}
-              lineReviews={editing.lineReviews}
-              readOnly={isArchived}
+        <div className="space-y-3">{data.revisions.map((item) => {
+          const isReviewing = reviewing?.revision.id === item.revision.id;
+          return <div key={item.revision.id} className="space-y-2">
+            <RevisionCard item={item} revisions={data.revisions} projectId={projectId} isArchived={isArchived} isReviewing={isReviewing} isRescraping={rescrape.isPending && rescrape.variables?.id === item.revision.id} isDeleting={deleteDraft.isPending && deleteDraft.variables?.id === item.revision.id} hasActiveMatchingImport={data.imports?.some((importItem) => importItem.status === "processing" && importItem.fileSha256 === item.source?.fileSha256) === true} onEdit={() => { setEditing(item); setDialog("edit"); }} onReview={() => { setReviewing(isReviewing ? null : item); setVerificationNote(""); }} onAction={(url, body) => action.mutate({ url, body })} onRescrape={() => rescrape.mutate({ id: item.revision.id, expectedVersion: item.revision.version })} onDelete={() => setDeleteRevision(item)} onPromote={() => setPromote(item)} onViewPdf={() => setPdfRevision(item)} />
+            {isReviewing && reviewing && <InlinePlanningReview
+              item={reviewing}
+              isArchived={isArchived}
+              verificationNote={verificationNote}
+              actionPending={action.isPending}
+              onVerificationNoteChange={setVerificationNote}
+              onClose={() => { setReviewing(null); setVerificationNote(""); }}
               onUpdated={(updated) => {
-                if (updated.lineReviews) setEditing((current) => current ? { ...current, lineReviews: updated.lineReviews, revision: { ...current.revision, version: updated.version ?? current.revision.version } } : current);
+                if (updated.lineReviews) setReviewing((current) => current ? { ...current, lineReviews: updated.lineReviews, revision: { ...current.revision, version: updated.version ?? current.revision.version } } : current);
                 void queryClient.invalidateQueries({ queryKey: key });
               }}
-            />
-            {editing.source?.requiresVerification && <div className="mt-5 border-t border-border/60 pt-4">
-              <TechnicalLabel>Source verification note</TechnicalLabel>
-              <p className="mt-1 mb-2 text-[11px] text-amber-800">A note of at least 10 characters is required before this extracted revision can be marked reviewed.</p>
-              <Textarea value={verificationNote} onChange={(e) => setVerificationNote(e.target.value)} placeholder="Describe what you verified against the PDF…" data-testid="planning-envelope-verification-note" />
-            </div>}
-            <div className="mt-5 flex justify-end gap-2 border-t border-border/60 pt-4">
-              <Button variant="outline" onClick={() => setDialog(null)}>Close workspace</Button>
-              {editing.revision.status === "draft" && <Button disabled={action.isPending || (!!editing.source?.requiresVerification && verificationNote.trim().length < 10)} onClick={() => action.mutate({ url: `/api/planning-revisions/${editing.revision.id}/review`, body: { expectedVersion: editing.revision.version, ...(verificationNote ? { verificationNote } : {}) } })} data-testid="planning-envelope-review-confirm"><ShieldCheck size={13} /> Confirm revision review</Button>}
-            </div>
-          </div>}
-        </DialogContent>
-      </Dialog>
+              onConfirm={() => action.mutate({ url: `/api/planning-revisions/${reviewing.revision.id}/review`, body: { expectedVersion: reviewing.revision.version, ...(verificationNote ? { verificationNote } : {}) } })}
+            />}
+          </div>;
+        })}</div>}
+      <RevisionDialog open={dialog === "new" || dialog === "edit"} item={dialog === "edit" ? editing : null} contractors={contractors} technicalLotsData={technicalLotsData} technicalLotsError={technicalLotsError} technicalLotsFetching={technicalLotsFetching || technicalLotsRetrying} technicalLotsIsStale={technicalLotsIsStale} onTechnicalLotsRetry={() => void retryTechnicalLots()} pending={patch.isPending || action.isPending} onClose={() => { setDialog(null); setEditing(null); }} onSubmit={(body) => dialog === "edit" && editing ? patch.mutate({ id: editing.revision.id, body: { ...(body as Record<string, unknown>), expectedVersion: editing.revision.version } }) : action.mutate({ url: `/api/projects/${projectId}/planning-envelope/revisions`, body })} />
       <AlertDialog open={!!promote} onOpenChange={(v) => !v && setPromote(null)}><AlertDialogContent data-testid="planning-envelope-promote-dialog"><AlertDialogHeader><AlertDialogTitle>Promote this revision to Live Delivery?</AlertDialogTitle><AlertDialogDescription>This creates a new provisional Live devis from the approved planning revision. The planning record remains unchanged and can still be audited.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Keep in planning</AlertDialogCancel><AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" disabled={action.isPending} onClick={() => promote && action.mutate({ url: `/api/planning-revisions/${promote.revision.id}/promote`, body: { expectedVersion: promote.revision.version } })} data-testid="planning-envelope-promote-confirm">Create provisional devis</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
       <AlertDialog open={!!deleteRevision} onOpenChange={(v) => !v && !deleteDraft.isPending && setDeleteRevision(null)}>
         <AlertDialogContent data-testid="planning-envelope-delete-dialog">
@@ -323,6 +310,43 @@ export function PlanningEnvelopeTab({ projectId, contractors, isArchived }: Prop
   );
 }
 
+function InlinePlanningReview({ item, isArchived, verificationNote, actionPending, onVerificationNoteChange, onClose, onUpdated, onConfirm }: {
+  item: Revision;
+  isArchived: boolean;
+  verificationNote: string;
+  actionPending: boolean;
+  onVerificationNoteChange: (value: string) => void;
+  onClose: () => void;
+  onUpdated: (updated: { version?: number; lineReviews?: PlanningLineReview[] }) => void;
+  onConfirm: () => void;
+}) {
+  return <section className="overflow-hidden rounded-2xl border border-[#c9d8d5] bg-[#fdfefd] shadow-sm" data-testid="planning-envelope-review-inline">
+    <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[#d8e1df] bg-[#f3f7f6] px-4 py-4 sm:px-6">
+      <div className="min-w-0">
+        <TechnicalLabel>Internal quotation review · Planning Envelope</TechnicalLabel>
+        <h3 className="mt-1 text-xl font-medium tracking-tight text-[#173b39]">{item.revision.reference || "Planning revision"}</h3>
+        <p className="mt-1 max-w-3xl text-xs text-muted-foreground">Check each persisted line against the source document. Notes stay inside ArchiDoc and are never sent to the supplier.</p>
+      </div>
+      <div className="flex items-start gap-4">
+        <div className="text-right"><p className="font-mono text-sm font-semibold text-[#173b39]">v{item.revision.version}</p><p className="max-w-64 truncate text-[10px] text-muted-foreground" title={item.source?.fileName ?? "Manual revision"}>{item.source?.fileName ?? "Manual revision"}</p></div>
+        <Button variant="ghost" size="sm" onClick={onClose} data-testid="planning-envelope-review-close"><X size={14} /> Collapse</Button>
+      </div>
+    </div>
+    <div className="px-4 py-5 sm:px-6">
+      <PlanningLineReviewWorkspace revisionId={item.revision.id} version={item.revision.version} lines={item.lines} lineReviews={item.lineReviews} readOnly={isArchived} onUpdated={onUpdated} />
+      {item.source?.requiresVerification && <div className="mt-5 border-t border-border/60 pt-4">
+        <TechnicalLabel>Source verification note</TechnicalLabel>
+        <p className="mb-2 mt-1 text-[11px] text-amber-800">A note of at least 10 characters is required before this extracted revision can be marked reviewed.</p>
+        <Textarea value={verificationNote} onChange={(event) => onVerificationNoteChange(event.target.value)} placeholder="Describe what you verified against the PDF…" data-testid="planning-envelope-verification-note" />
+      </div>}
+      <div className="mt-5 flex flex-wrap justify-end gap-2 border-t border-border/60 pt-4">
+        <Button variant="outline" onClick={onClose}>Collapse review</Button>
+        {item.revision.status === "draft" && <Button disabled={actionPending || (!!item.source?.requiresVerification && verificationNote.trim().length < 10)} onClick={onConfirm} data-testid="planning-envelope-review-confirm"><ShieldCheck size={13} /> Confirm revision review</Button>}
+      </div>
+    </div>
+  </section>;
+}
+
 function PlanningImportStatus({ imports, localImport, revisions, isArchived, onOpenRevision, onChooseFile }: { imports: PlanningImport[]; localImport: { fileName: string; startedAt: string } | null; revisions: Revision[]; isArchived: boolean; onOpenRevision: (revisionId: number) => void; onChooseFile: () => void }) {
   const hasMatchingServerImport = !!localImport && imports.some((item) => item.status === "processing" && item.fileName === localImport.fileName);
   const visibleImports = imports.slice(0, 6);
@@ -360,7 +384,7 @@ function PlanningImportStatus({ imports, localImport, revisions, isArchived, onO
   </LuxuryCard>;
 }
 
-function RevisionCard({ item, revisions, projectId, isArchived, isRescraping, isDeleting, hasActiveMatchingImport, onEdit, onReview, onAction, onRescrape, onDelete, onPromote, onViewPdf }: { item: Revision; revisions: Revision[]; projectId: string; isArchived: boolean; isRescraping: boolean; isDeleting: boolean; hasActiveMatchingImport: boolean; onEdit: () => void; onReview: () => void; onAction: (url: string, body?: unknown) => void; onRescrape: () => void; onDelete: () => void; onPromote: () => void; onViewPdf: () => void }) {
+function RevisionCard({ item, revisions, projectId, isArchived, isReviewing, isRescraping, isDeleting, hasActiveMatchingImport, onEdit, onReview, onAction, onRescrape, onDelete, onPromote, onViewPdf }: { item: Revision; revisions: Revision[]; projectId: string; isArchived: boolean; isReviewing: boolean; isRescraping: boolean; isDeleting: boolean; hasActiveMatchingImport: boolean; onEdit: () => void; onReview: () => void; onAction: (url: string, body?: unknown) => void; onRescrape: () => void; onDelete: () => void; onPromote: () => void; onViewPdf: () => void }) {
   const r = item.revision;
   const immutable = r.status === "approved" || r.status === "superseded";
   const canRevise = r.status === "approved";
@@ -378,11 +402,11 @@ function RevisionCard({ item, revisions, projectId, isArchived, isRescraping, is
       ? `Lot ${item.lotNumber}`
       : "Lot not assigned";
 
-  return <LuxuryCard className={`p-4 ${immutable ? "bg-muted/20" : ""}`} data-testid={`planning-envelope-revision-${r.id}`}>
+  return <LuxuryCard className={`p-4 transition-colors ${immutable ? "bg-muted/20" : ""} ${isReviewing ? "border-[#5f8d87] bg-[#f7fbfa] ring-1 ring-[#5f8d87]/25" : ""}`} data-testid={`planning-envelope-revision-${r.id}`}>
     <div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="flex items-center gap-2 flex-wrap"><FileText size={15} className="text-[#9a5c36]" /><span className="font-semibold text-sm">{r.reference || "Unreferenced revision"}</span><Badge className={`text-[10px] ${stateClasses[r.status]}`}>{stateLabels[r.status]}</Badge>{immutable && <LockKeyhole size={12} className="text-muted-foreground" />}</div><p className="text-xs text-muted-foreground mt-1 truncate">{r.descriptionFr || "No scope description"} · {item.contractorName ?? "Contractor not assigned"} · {lotDisplay}</p></div><div className="text-right whitespace-nowrap"><p className="font-semibold text-sm"><Amount value={euro(r.amountHt)} denomination="HT" /></p><p className="text-[10px] text-muted-foreground"><Amount value={euro(r.amountTtc)} denomination="TTC" /></p></div></div>
     <div className="mt-3 flex items-center gap-3 flex-wrap text-[10px] text-muted-foreground"><span>v{r.version}</span><span>{r.documentDate ? `Document ${dateLabel(r.documentDate)}` : `Updated ${dateLabel(r.updatedAt)}`}</span><span>{item.source?.sourceKind === "pdf_upload" ? `PDF · ${item.source.fileName ?? "source file"}` : "Manual entry"}</span>{item.source?.confidence != null && <span>Confidence {item.source.confidence}%</span>}{item.source?.requiresVerification && <span className="text-amber-700 flex items-center gap-1"><AlertTriangle size={11} /> Verification required</span>}{item.legacyLotNeedsReview && <span className="text-amber-700 flex items-center gap-1" data-testid={`planning-envelope-legacy-lot-review-${r.id}`}><AlertTriangle size={11} /> Legacy lot needs review</span>}{item.lineReviews && <span className="inline-flex items-center gap-1 text-[#35655f]"><ShieldCheck size={11} /> {item.lineReviews.filter((review) => review.status === "green").length}/{item.lines.length} lines checked</span>}</div>
     {sourceWarnings.length > 0 && <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900"><div className="flex gap-2"><Info size={13} className="mt-0.5 shrink-0" /><div>{sourceWarnings.slice(0, 2).map((warning, i) => <div key={i}>{warning.message ?? "Source warning"}</div>)}</div></div></div>}
-    <div className="mt-3 flex items-center justify-between gap-2 flex-wrap"><div className="flex gap-3 flex-wrap">{item.source?.sourceKind === "pdf_upload" && <><a className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-primary hover:underline" href={`/api/planning-revisions/${r.id}/pdf?download=1`} download data-testid={`planning-envelope-pdf-${r.id}`}><Download size={12} /> Source PDF</a><button type="button" className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-primary hover:underline" onClick={onViewPdf} data-testid={`planning-envelope-view-pdf-${r.id}`}><FileText size={12} /> View PDF</button></>}{r.promotedDevisId && <a href={`/projets/${projectId}?tab=devis&devis=${r.promotedDevisId}`} className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 hover:underline" data-testid={`planning-envelope-live-link-${r.id}`}>Live devis #{r.promotedDevisId}</a>}</div><div className="flex gap-2 flex-wrap">{!immutable && !isArchived && <Button variant="outline" size="sm" onClick={onEdit} data-testid={`planning-envelope-edit-${r.id}`}><Pencil size={12} /> Edit</Button>}{!r.promotedDevisId && !isArchived && <Button variant="outline" size="sm" onClick={onReview} data-testid={`planning-envelope-review-${r.id}`}><Check size={12} /> Review lines</Button>}{canApprove && !isArchived && <Button variant="outline" size="sm" onClick={() => onAction(`/api/planning-revisions/${r.id}/approve`, { expectedVersion: r.version })} data-testid={`planning-envelope-approve-${r.id}`}><ShieldCheck size={12} /> Approve</Button>}{item.source?.sourceKind === "pdf_upload" && r.status !== "superseded" && !isArchived && <Button variant="outline" size="sm" disabled={isRescraping} onClick={onRescrape} data-testid={`planning-envelope-rescrape-${r.id}`} title="Run the current PDF extraction rules again and create a new draft">{isRescraping ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}{isRescraping ? "Re-scraping…" : "Re-scrape PDF"}</Button>}{canDeleteCandidate && <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" disabled={isDeleting} onClick={onDelete} data-testid={`planning-envelope-delete-${r.id}`}>{isDeleting ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}{isDeleting ? "Deleting…" : "Delete"}</Button>}{canRevise && !isArchived && <Button variant="outline" size="sm" onClick={() => onAction(`/api/planning-revisions/${r.id}/revise`, {})} data-testid={`planning-envelope-revise-${r.id}`}><RefreshCw size={12} /> Revise</Button>}{r.status === "approved" && !r.promotedDevisId && !isArchived && <Button size="sm" onClick={onPromote} data-testid={`planning-envelope-promote-${r.id}`}><FileCheck2 size={12} /> Promote to Live</Button>}</div></div>
+    <div className="mt-3 flex items-center justify-between gap-2 flex-wrap"><div className="flex gap-3 flex-wrap">{item.source?.sourceKind === "pdf_upload" && <><a className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-primary hover:underline" href={`/api/planning-revisions/${r.id}/pdf?download=1`} download data-testid={`planning-envelope-pdf-${r.id}`}><Download size={12} /> Source PDF</a><button type="button" className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-primary hover:underline" onClick={onViewPdf} data-testid={`planning-envelope-view-pdf-${r.id}`}><FileText size={12} /> View PDF</button></>}{r.promotedDevisId && <a href={`/projets/${projectId}?tab=devis&devis=${r.promotedDevisId}`} className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 hover:underline" data-testid={`planning-envelope-live-link-${r.id}`}>Live devis #{r.promotedDevisId}</a>}</div><div className="flex gap-2 flex-wrap">{!immutable && !isArchived && <Button variant="outline" size="sm" onClick={onEdit} data-testid={`planning-envelope-edit-${r.id}`}><Pencil size={12} /> Edit</Button>}{!r.promotedDevisId && !isArchived && <Button variant={isReviewing ? "secondary" : "outline"} size="sm" onClick={onReview} aria-expanded={isReviewing} data-testid={`planning-envelope-review-${r.id}`}>{isReviewing ? <X size={12} /> : <Check size={12} />} {isReviewing ? "Collapse review" : "Review lines"}</Button>}{canApprove && !isArchived && <Button variant="outline" size="sm" onClick={() => onAction(`/api/planning-revisions/${r.id}/approve`, { expectedVersion: r.version })} data-testid={`planning-envelope-approve-${r.id}`}><ShieldCheck size={12} /> Approve</Button>}{item.source?.sourceKind === "pdf_upload" && r.status !== "superseded" && !isArchived && <Button variant="outline" size="sm" disabled={isRescraping} onClick={onRescrape} data-testid={`planning-envelope-rescrape-${r.id}`} title="Run the current PDF extraction rules again and create a new draft">{isRescraping ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}{isRescraping ? "Re-scraping…" : "Re-scrape PDF"}</Button>}{canDeleteCandidate && <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" disabled={isDeleting} onClick={onDelete} data-testid={`planning-envelope-delete-${r.id}`}>{isDeleting ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}{isDeleting ? "Deleting…" : "Delete"}</Button>}{canRevise && !isArchived && <Button variant="outline" size="sm" onClick={() => onAction(`/api/planning-revisions/${r.id}/revise`, {})} data-testid={`planning-envelope-revise-${r.id}`}><RefreshCw size={12} /> Revise</Button>}{r.status === "approved" && !r.promotedDevisId && !isArchived && <Button size="sm" onClick={onPromote} data-testid={`planning-envelope-promote-${r.id}`}><FileCheck2 size={12} /> Promote to Live</Button>}</div></div>
   </LuxuryCard>;
 }
 

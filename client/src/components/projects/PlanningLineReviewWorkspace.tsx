@@ -83,8 +83,8 @@ export function PlanningLineReviewWorkspace({
         <div className="border-l border-[#d8e1df] pl-3"><TechnicalLabel>Attention</TechnicalLabel><p className="mt-1 text-lg font-semibold text-amber-700">{counts.flagged}</p><p className="text-[10px] text-muted-foreground">lines flagged or held</p></div>
         <div className="border-l border-[#d8e1df] pl-3"><TechnicalLabel>Internal notes</TechnicalLabel><p className="mt-1 text-lg font-semibold text-[#173b39]">{reviews.filter((r) => r.notes?.trim()).length}</p><p className="text-[10px] text-muted-foreground">reviewer annotations</p></div>
       </div>
-      <div className="overflow-hidden rounded-xl border border-border/80 bg-card">
-        <div className="hidden grid-cols-[3rem_minmax(0,1fr)_5rem_6.5rem_7rem_8rem] gap-3 border-b bg-[#f8faf9] px-4 py-2 text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground md:grid">
+      <div className="overflow-x-auto rounded-xl border border-border/80 bg-card">
+        <div className="hidden min-w-[760px] grid-cols-[3rem_minmax(18rem,1fr)_5.5rem_7rem_7.5rem_12rem] gap-3 border-b bg-[#f8faf9] px-4 py-2 text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground lg:grid">
           <span>#</span><span>Scope / description</span><span className="text-right">Qty</span><span className="text-right">Unit price</span><span className="text-right">Total HT</span><span className="text-center">Review</span>
         </div>
         {lines.map((line, index) => {
@@ -92,13 +92,13 @@ export function PlanningLineReviewWorkspace({
           const review = reviewByLine.get(line.id);
           const noteOpen = openNotes === line.id;
           return <div key={line.id} className={`border-b last:border-b-0 transition-colors ${review?.status === "red" ? "bg-rose-50/35" : review?.status === "amber" ? "bg-amber-50/30" : review?.status === "green" ? "bg-emerald-50/20" : ""}`} data-testid={`planning-line-review-${line.id}`}>
-            <div className="grid grid-cols-[2rem_minmax(0,1fr)] gap-3 px-4 py-3 md:grid-cols-[3rem_minmax(0,1fr)_5rem_6.5rem_7rem_8rem] md:items-center">
+            <div className="grid grid-cols-[2rem_minmax(0,1fr)] gap-3 px-4 py-3 lg:min-w-[760px] lg:grid-cols-[3rem_minmax(18rem,1fr)_5.5rem_7rem_7.5rem_12rem] lg:items-center">
               <span className="font-mono text-[11px] text-muted-foreground">{line.lineNumber}</span>
-              <div className="min-w-0"><p className="text-xs font-medium leading-5 text-foreground">{line.description || "Untitled line"}</p><p className="mt-0.5 text-[10px] text-muted-foreground md:hidden">{line.quantity} {line.unit} · <Amount value={Number(line.totalHt || 0)} denomination="HT" /></p></div>
-              <span className="hidden text-right font-mono text-[11px] md:block">{line.quantity} <span className="text-muted-foreground">{line.unit}</span></span>
-              <span className="hidden text-right font-mono text-[11px] md:block"><Amount value={Number(line.unitPriceHt || 0)} denomination="HT" /></span>
-              <span className="hidden text-right font-mono text-[11px] font-semibold md:block"><Amount value={Number(line.totalHt || 0)} denomination="HT" /></span>
-              <div className="col-span-2 flex items-center justify-between gap-2 md:col-span-1 md:justify-center">
+              <div className="min-w-0"><p className="break-words text-xs font-medium leading-5 text-foreground">{line.description || "Untitled line"}</p><p className="mt-0.5 text-[10px] text-muted-foreground lg:hidden">{line.quantity} {line.unit} · <Amount value={Number(line.totalHt || 0)} denomination="HT" /></p></div>
+              <span className="hidden text-right font-mono text-[11px] lg:block">{line.quantity} <span className="text-muted-foreground">{line.unit}</span></span>
+              <span className="hidden text-right font-mono text-[11px] lg:block"><Amount value={Number(line.unitPriceHt || 0)} denomination="HT" /></span>
+              <span className="hidden text-right font-mono text-[11px] font-semibold lg:block"><Amount value={Number(line.totalHt || 0)} denomination="HT" /></span>
+              <div className="col-span-2 flex flex-wrap items-center justify-between gap-2 lg:col-span-1 lg:justify-end">
                 <div className="flex gap-1" role="group" aria-label={`Review line ${line.lineNumber}`}>
                   <button type="button" data-active={review?.status === "unchecked" || !review} aria-label="Not reviewed" title="Not reviewed" disabled={readOnly || save.isPending} onClick={() => choose(line, "unchecked")} className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 transition-transform hover:-translate-y-px data-[active=true]:border-slate-400 data-[active=true]:bg-slate-100"><Circle size={13} /></button>
                   {states.map(({ key, label, icon: Icon, className }) => <button key={key} type="button" data-active={review?.status === key} aria-label={label} title={label} disabled={readOnly || save.isPending} onClick={() => choose(line, key)} className={`inline-flex h-7 min-w-7 items-center justify-center rounded-md border px-1.5 text-[9px] font-bold transition-transform hover:-translate-y-px data-[active=true]:border-transparent ${className}`}><Icon size={13} /></button>)}
@@ -106,7 +106,7 @@ export function PlanningLineReviewWorkspace({
                 <Button type="button" variant="ghost" size="sm" className={`h-7 gap-1 px-2 text-[10px] ${review?.notes ? "text-[#173b39]" : "text-muted-foreground"}`} onClick={() => setOpenNotes(noteOpen ? null : line.id!)}><MessageSquare size={12} />{review?.notes ? "Note" : "Add note"}<ChevronDown size={11} className={noteOpen ? "rotate-180 transition-transform" : "transition-transform"} /></Button>
               </div>
             </div>
-            {noteOpen && <div className="border-t border-border/50 bg-[#fbfcfb] px-4 py-3 pl-12 md:pl-16"><Textarea disabled={readOnly || save.isPending} value={draftNotes[line.id] ?? review?.notes ?? ""} onChange={(event) => setDraftNotes((current) => ({ ...current, [line.id!]: event.target.value }))} placeholder="Internal note for the project team…" className="min-h-[68px] resize-y bg-white text-xs" data-testid={`planning-line-review-note-${line.id}`} /><div className="mt-2 flex items-center justify-between"><span className="text-[10px] text-muted-foreground">{review?.reviewedAt ? `Last reviewed ${new Date(review.reviewedAt).toLocaleDateString("fr-FR")}` : "Internal only · never shared with supplier"}</span>{!readOnly && <Button type="button" size="sm" className="h-7 text-[10px]" disabled={save.isPending} onClick={() => save.mutate({ lineId: line.id!, status: review?.status ?? "unchecked", notes: draftNotes[line.id!] ?? review?.notes ?? "" })}><Check size={12} /> Save note</Button>}</div></div>}
+            {noteOpen && <div className="border-t border-border/50 bg-[#fbfcfb] px-4 py-3 sm:pl-12 lg:pl-16"><Textarea disabled={readOnly || save.isPending} value={draftNotes[line.id] ?? review?.notes ?? ""} onChange={(event) => setDraftNotes((current) => ({ ...current, [line.id!]: event.target.value }))} placeholder="Internal note for the project team…" className="min-h-[68px] resize-y bg-white text-xs" data-testid={`planning-line-review-note-${line.id}`} /><div className="mt-2 flex flex-wrap items-center justify-between gap-2"><span className="text-[10px] text-muted-foreground">{review?.reviewedAt ? `Last reviewed ${new Date(review.reviewedAt).toLocaleDateString("fr-FR")}` : "Internal only · never shared with supplier"}</span>{!readOnly && <Button type="button" size="sm" className="h-7 text-[10px]" disabled={save.isPending} onClick={() => save.mutate({ lineId: line.id!, status: review?.status ?? "unchecked", notes: draftNotes[line.id!] ?? review?.notes ?? "" })}><Check size={12} /> Save note</Button>}</div></div>}
           </div>;
         })}
       </div>

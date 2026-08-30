@@ -104,13 +104,10 @@ test.describe("Planning quantity precision", () => {
         `/api/planning-revisions/${revisionId}/pdf?download=1`,
       );
       await expect(page.getByTestId(`planning-envelope-pdf-${revisionId}`)).toHaveAttribute("download", "");
-      await expect(page.getByTestId(`planning-envelope-view-pdf-${revisionId}`)).toHaveAttribute(
-        "href",
-        `/api/planning-revisions/${revisionId}/pdf`,
-      );
-      await expect(page.getByTestId(`planning-envelope-view-pdf-${revisionId}`)).toHaveAttribute("target", "_blank");
-      await expect(page.getByTestId(`planning-envelope-view-pdf-${revisionId}`)).toHaveAttribute("rel", "noopener noreferrer");
+      await expect(page.getByTestId(`planning-envelope-view-pdf-${revisionId}`)).toBeVisible();
 
+      await page.getByTestId(`planning-envelope-review-${revisionId}`).click();
+      await expect(page.getByTestId("planning-envelope-review-inline")).toBeVisible();
       await page.getByTestId(`planning-envelope-edit-${revisionId}`).click();
       await expect(page.getByTestId("planning-envelope-form")).toBeVisible();
       await expect(page.getByRole("spinbutton", { name: "Quantity" })).toHaveValue("1.000");
@@ -125,6 +122,8 @@ test.describe("Planning quantity precision", () => {
       ]);
       expect(saveResponse.ok()).toBe(true);
       await expect(page.getByTestId("planning-envelope-form")).toHaveCount(0);
+      await expect(page.getByTestId("planning-envelope-review-inline")).toHaveCount(0);
+      await expect(page.getByTestId(`planning-envelope-review-${revisionId}`)).toHaveAttribute("aria-expanded", "false");
 
       const persisted = await db.query<{ quantity: string; version: number }>(
         `SELECT prl.quantity::text AS quantity, pr.version
@@ -136,7 +135,12 @@ test.describe("Planning quantity precision", () => {
       expect(persisted.rows).toEqual([{ quantity: "1.000", version: 2 }]);
 
       await page.getByTestId(`planning-envelope-review-${revisionId}`).click();
-      await expect(page.getByTestId("planning-envelope-review-dialog")).toBeVisible();
+      await expect(page.getByTestId("planning-envelope-review-inline")).toBeVisible();
+      await expect(page.getByTestId(`planning-envelope-review-${revisionId}`)).toHaveAttribute("aria-expanded", "true");
+      await page.getByTestId(`planning-envelope-view-pdf-${revisionId}`).click();
+      await expect(page.getByTestId(`dialog-pdf-popout-planning-${revisionId}`)).toBeVisible();
+      await expect(page.getByTestId("planning-envelope-review-inline")).toBeVisible();
+      await page.getByTestId(`button-pdf-popout-close-planning-${revisionId}`).click();
       const [reviewResponse] = await Promise.all([
         page.waitForResponse((response) =>
           response.request().method() === "POST"
@@ -145,6 +149,7 @@ test.describe("Planning quantity precision", () => {
         page.getByTestId("planning-envelope-review-confirm").click(),
       ]);
       expect(reviewResponse.ok()).toBe(true);
+      await expect(page.getByTestId("planning-envelope-review-inline")).toHaveCount(0);
       await expect(page.getByTestId(`planning-envelope-revision-${revisionId}`)).toContainText("Reviewed");
     } finally {
       if (projectId != null) {

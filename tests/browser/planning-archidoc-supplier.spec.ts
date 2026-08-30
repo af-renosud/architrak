@@ -95,7 +95,7 @@ test.describe("Planning ArchiDoc supplier selection", () => {
 
       const revisionId = body.revisions[0].revision.id;
       await page.getByTestId(`planning-envelope-review-${revisionId}`).click();
-      await expect(page.getByTestId("planning-envelope-review-dialog")).toBeVisible();
+      await expect(page.getByTestId("planning-envelope-review-inline")).toBeVisible();
       const [reviewResponse] = await Promise.all([
         page.waitForResponse((response) =>
           response.request().method() === "POST"

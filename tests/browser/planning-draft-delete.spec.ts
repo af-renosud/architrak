@@ -188,8 +188,8 @@ test.describe("Planning uploaded draft deletion", () => {
       expect(deletedRevision.rowCount).toBe(0);
 
       await page.getByTestId(`planning-envelope-review-${manualRevisionId}`).click();
-      const reviewDialog = page.getByTestId("planning-envelope-review-dialog");
-      await expect(reviewDialog).toBeVisible();
+      const reviewWorkspace = page.getByTestId("planning-envelope-review-inline");
+      await expect(reviewWorkspace).toBeVisible();
       const [statusResponse] = await Promise.all([
         page.waitForResponse(
           (response) =>
@@ -197,11 +197,12 @@ test.describe("Planning uploaded draft deletion", () => {
             response.url().includes(`/api/planning-revisions/${manualRevisionId}/lines/`) &&
             response.url().endsWith("/review"),
         ),
-        reviewDialog.getByRole("button", { name: "Flagged" }).click(),
+        reviewWorkspace.getByRole("button", { name: "Flagged" }).click(),
       ]);
       expect(statusResponse.ok()).toBe(true);
-      await reviewDialog.getByRole("button", { name: "Add note" }).click();
-      await reviewDialog.getByPlaceholder("Internal note for the project team…").fill(
+      await expect(reviewWorkspace).toContainText("1");
+      await reviewWorkspace.getByRole("button", { name: "Add note" }).click();
+      await reviewWorkspace.getByPlaceholder("Internal note for the project team…").fill(
         "Internal budget discrepancy for the architect team.",
       );
       const [noteResponse] = await Promise.all([
@@ -211,21 +212,22 @@ test.describe("Planning uploaded draft deletion", () => {
             response.url().includes(`/api/planning-revisions/${manualRevisionId}/lines/`) &&
             response.url().endsWith("/review"),
         ),
-        reviewDialog.getByRole("button", { name: "Save note" }).click(),
+        reviewWorkspace.getByRole("button", { name: "Save note" }).click(),
       ]);
       expect(noteResponse.ok()).toBe(true);
-      await reviewDialog.getByRole("button", { name: "Close workspace" }).click();
+      await reviewWorkspace.getByRole("button", { name: "Collapse review" }).click();
+      await expect(reviewWorkspace).toHaveCount(0);
 
       await page.reload();
       await expect(page.getByTestId("panel-planning-envelope")).toBeVisible();
       await page.getByTestId(`planning-envelope-review-${manualRevisionId}`).click();
-      await expect(page.getByTestId("planning-envelope-review-dialog").getByRole("button", { name: "Flagged" }))
+      await expect(page.getByTestId("planning-envelope-review-inline").getByRole("button", { name: "Flagged" }))
         .toHaveAttribute("data-active", "true");
-      await page.getByTestId("planning-envelope-review-dialog").getByRole("button", { name: "Note" }).click();
+      await page.getByTestId("planning-envelope-review-inline").getByRole("button", { name: "Note" }).click();
       await expect(page.getByPlaceholder("Internal note for the project team…")).toHaveValue(
         "Internal budget discrepancy for the architect team.",
       );
-      await page.getByRole("button", { name: "Close workspace" }).click();
+      await page.getByTestId("planning-envelope-review-close").click();
 
       await page.getByTestId(`planning-envelope-delete-${manualRevisionId}`).click();
       await expect(page.getByTestId("planning-envelope-delete-dialog")).toContainText("Delete this candidate quotation?");
