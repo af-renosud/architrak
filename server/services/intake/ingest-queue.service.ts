@@ -35,13 +35,16 @@
 
 import crypto from "crypto";
 import { storage } from "../../storage";
+import { db } from "../../db";
 import { getDocumentBuffer } from "../../storage/object-storage";
 import { assertPdfMagic } from "../../middleware/upload";
 import { processDevisUpload } from "../devis-upload.service";
 import { processInvoiceUpload } from "../invoice-upload.service";
+import { getOpeningAcompteResolutionSuggestion } from "../acompte.service";
 import { enqueueReconciliation } from "../reconciliation/reconciliation-queue.service";
 import type { ParsedDocument } from "../../gmail/document-parser";
-import type { InsertMarcheDocument, ProjectIntakeDocument } from "@shared/schema";
+import { acompteNoInvoicePayments, projectIntakeDocuments, type InsertMarcheDocument, type ProjectIntakeDocument } from "@shared/schema";
+import { eq } from "drizzle-orm";
 
 export const MAX_INTAKE_ATTEMPTS = 5;
 
@@ -93,6 +96,41 @@ export async function enqueueIntakeJob(intakeDocumentId: number): Promise<void> 
   }
 }
 
+export async function requeueIntakeDocument(
+  intakeDocumentId: number,
+  opts: { rejectConfirmedEvidence?: boolean } = {},
+): Promise<boolean> {
+  const prepared = await db.transaction(async (tx) => {
+    const [doc] = await tx.select().from(projectIntakeDocuments)
+      .where(eq(projectIntakeDocuments.id, intakeDocumentId)).for("update");
+    if (!doc) return "missing" as const;
+    if (opts.rejectConfirmedEvidence) {
+      const [audit] = await tx.select({ id: acompteNoInvoicePayments.id })
+        .from(acompteNoInvoicePayments)
+        .where(eq(acompteNoInvoicePayments.sourceIntakeDocumentId, intakeDocumentId));
+      if (audit) return "evidence" as const;
+    }
+    if (doc.promotedId || doc.routingState === "routed" || doc.analysisState === "analyzing" || doc.analysisState === "pending") {
+      return "active" as const;
+    }
+    await tx.update(projectIntakeDocuments).set({
+      analysisState: "pending",
+      routingState: "unrouted",
+    }).where(eq(projectIntakeDocuments.id, intakeDocumentId));
+    return "prepared" as const;
+  });
+  if (prepared === "missing" || prepared === "evidence") return false;
+  if (prepared === "active") return true;
+  const existingJob = await storage.getIntakeJobByDocumentId(intakeDocumentId);
+  if (existingJob) {
+    await storage.resetIntakeJobForRetry(existingJob.id);
+    void attemptIntakeJob(existingJob.id);
+  } else {
+    void enqueueIntakeJob(intakeDocumentId);
+  }
+  return true;
+}
+
 function norm(value: string | null | undefined): string | null {
   if (!value) return null;
   const cleaned = value.replace(/\s+/g, " ").trim().toLowerCase();
@@ -117,18 +155,23 @@ function computeContentHash(parsed: ParsedDocument): string | null {
     (parsed.amountHt != null ||
       parsed.amountTtc != null ||
       !!parsed.contractorName ||
+      !!parsed.projectName ||
+      !!parsed.projectReference ||
       (parsed.lineItems?.length ?? 0) > 0);
   if (!hasSignal) return null;
 
   const canonical = JSON.stringify({
     type: parsed.documentType,
     contractor: norm(parsed.contractorName),
+    projectName: norm(parsed.projectName),
+    projectReference: norm(parsed.projectReference),
     devisNumber: norm(parsed.devisNumber),
     invoiceNumber: norm(parsed.invoiceNumber),
     reference: norm(parsed.reference),
     siret: parsed.siret ? parsed.siret.replace(/\D/g, "") || null : null,
     amountHt: parsed.amountHt ?? null,
     amountTtc: parsed.amountTtc ?? null,
+    acomptePaidAmountTtc: parsed.acomptePaidAmountTtc ?? null,
     date: norm(parsed.date),
     lines: (parsed.lineItems ?? []).map((li) => [
       norm(li.description),
@@ -231,6 +274,17 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
   if (!doc) {
     // The owning doc vanished (cascade delete). Nothing to do — treat as
     // a clean success so the queue row terminates rather than retrying.
+    return;
+  }
+  const owningProject = typeof storage.getProject === "function"
+    ? await storage.getProject(doc.projectId)
+    : undefined;
+  if (owningProject?.archivedAt != null) {
+    await storage.updateProjectIntakeDocument(doc.id, {
+      analysisState: "analyzed",
+      routingState: "parked",
+      notes: appendNote(doc.notes, "Parked: archived projects are read-only."),
+    });
     return;
   }
 
@@ -478,6 +532,16 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
         const allProjects = await storage.getProjects({ includeArchived: true });
         const allContractors = await storage.getContractors();
         const match = await matchToProject(parsed, allProjects, allContractors);
+        if ((parsed.projectName || parsed.projectReference) && match.projectId !== doc.projectId) {
+          await park(
+            doc,
+            fingerprint,
+            match.projectId == null
+              ? "Invoice parked: labelled project identity is unresolved or conflicting."
+              : `Invoice parked: labelled project identity belongs to project ${match.projectId}, not intake project ${doc.projectId}.`,
+          );
+          return;
+        }
         if (!match.contractorId) {
           await park(doc, fingerprint, "Invoice parked: could not identify the contractor for unique devis matching.");
           return;
@@ -515,6 +579,21 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
           throw new TransientIntakeError(
             `invoice routing transient: ${(result.data as { message?: string }).message ?? "unknown"}`,
           );
+        }
+        const openingAcompteResolution = getOpeningAcompteResolutionSuggestion(candidates[0], parsed);
+        if (openingAcompteResolution) {
+          await storage.updateProjectIntakeDocument(doc.id, {
+            extractedData: {
+              ...parsed,
+              openingAcompteResolution,
+            },
+          });
+          await park(
+            doc,
+            fingerprint,
+            `Invoice parked: it reports a paid deposit of ${openingAcompteResolution.amountTtc.toFixed(2)} EUR matching devis ${openingAcompteResolution.devisCode}. Confirm the payment evidence to create the internal deposit certificat and retry routing.`,
+          );
+          return;
         }
         await park(doc, fingerprint, `Invoice routing failed: ${(result.data as { message?: string }).message ?? "unknown"}`);
         return;

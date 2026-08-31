@@ -13,7 +13,7 @@ import { z } from "zod";
 import { storage } from "../storage";
 import { requireAuth } from "../auth/middleware";
 import { validateRequest } from "../middleware/validate";
-import { nextAcompteState, resolveAcompteAmounts, linkAcompteInvoiceTx } from "../services/acompte.service";
+import { nextAcompteState, resolveAcompteAmounts, linkAcompteInvoiceTx, confirmNoInvoiceAcomptePayment } from "../services/acompte.service";
 import { db } from "../db";
 import { certificats, devis as devisTable } from "@shared/schema";
 import { eq, sql } from "drizzle-orm";
@@ -81,6 +81,45 @@ const markPaidBodySchema = z
     datePaid: z.string().datetime({ offset: true }).optional(),
   })
   .strict();
+
+// Task #686: this intentionally does not share the broad mark-paid endpoint.
+// The literal confirmation and source evidence make the exceptional
+// no-supplier-invoice path explicit and auditable.
+const confirmNoInvoiceBodySchema = z.object({
+  confirmed: z.literal(true),
+  sourceIntakeDocumentId: z.coerce.number().int().positive(),
+  paymentReference: z.string().trim().min(1).max(500),
+  paidAt: z.string().datetime({ offset: true }),
+}).strict();
+
+router.post(
+  "/api/devis/:id/acompte/confirm-paid-no-invoice",
+  requireAuth,
+  validateRequest({ params: idParams, body: confirmNoInvoiceBodySchema }),
+  async (req, res, next) => {
+    try {
+      const body = req.body as z.infer<typeof confirmNoInvoiceBodySchema>;
+      const result = await confirmNoInvoiceAcomptePayment({
+        devisId: Number(req.params.id),
+        sourceIntakeDocumentId: body.sourceIntakeDocumentId,
+        paymentReference: body.paymentReference,
+        paidAt: new Date(body.paidAt),
+        confirmedByUserId: Number(req.session.userId),
+      });
+      if (result.outcome === "not_found") return res.status(404).json({ message: "Devis not found" });
+      if (result.outcome === "invalid") return res.status(409).json({ message: result.message, code: result.code });
+      const { requeueIntakeDocument } = await import("../services/intake/ingest-queue.service");
+      await requeueIntakeDocument(body.sourceIntakeDocumentId);
+      return res.status(result.replayed ? 200 : 201).json({
+        certificatId: result.certificatId,
+        replayed: result.replayed,
+        routingRetryTriggered: true,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 router.post(
   "/api/devis/:id/acompte/mark-paid",

@@ -47,3 +47,4 @@
 - [GitHub connector source sync](github-connector-source-sync.md) — connector OAuth may not authenticate CLI Git; preserve exact history through Git Data API and advance refs without force.
 - [Supplier handoff integrity](supplier-handoff-integrity.md) — seal from one dated handoff; dispatch requires the live digest to match sealed evidence; keep rollout gating server-only.
 - [Trigger redefinition inheritance](trigger-redefinition-inheritance.md) — later migrations redefining shared trigger functions must start from the latest prior definition, then add the narrow change.
+- [No-invoice deposit evidence](no-invoice-deposit-evidence.md) — confirmation is a locked, append-only financial event; freeze source identity, reject archived projects, and delete DB rows before object bytes.

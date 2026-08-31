@@ -24,7 +24,7 @@ import {
   type BankingMismatchOverride, type InsertBankingMismatchOverride,
   archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog, archidocSiretIssues,
   archidocSupplierPaymentReadiness, archidocSupplierPaymentAssignments,
-  emailDocuments, gmailProcessedMessages, gmailMessageFailures, projectDocuments, projectIntakeDocuments, projectCommunications, paymentReminders, clientPaymentEvidence,
+  emailDocuments, gmailProcessedMessages, gmailMessageFailures, projectDocuments, projectIntakeDocuments, projectCommunications, paymentReminders, clientPaymentEvidence, acompteNoInvoicePayments,
   aiModelSettings, appSettings, templateAssets, users, devisTranslations, wishListItems,
   benchmarkDocuments, benchmarkItems, benchmarkTags, benchmarkItemTags,
   devisChecks, devisCheckMessages, devisCheckTokens,
@@ -77,7 +77,7 @@ import {
   type ArchidocProject, type ArchidocContractor, type ArchidocTrade, type ArchidocProposalFee, type ArchidocSyncLogEntry, type ArchidocSiretIssue,
   type EmailDocument, type InsertEmailDocument,
   type ProjectDocument, type InsertProjectDocument,
-  type ProjectIntakeDocument, type InsertProjectIntakeDocument,
+  type ProjectIntakeDocument, type InsertProjectIntakeDocument, type AcompteNoInvoicePayment,
   intakeJobs, type IntakeJob, type InsertIntakeJob,
   documentEmbeddings, type DocumentEmbedding, type InsertDocumentEmbedding,
   overlapCases, type OverlapCase, type OverlapCaseStatus,
@@ -635,6 +635,9 @@ export interface IStorage {
   getProjectIntakeDocuments(projectId: number, opts?: { includeVoid?: boolean }): Promise<(ProjectIntakeDocument & { isVoid: boolean })[]>;
 
   getProjectIntakeDocument(id: number): Promise<ProjectIntakeDocument | undefined>;
+  /** Task #686 — immutable evidence for a paid no-invoice opening deposit. */
+  getAcompteNoInvoicePayment(devisId: number): Promise<AcompteNoInvoicePayment | undefined>;
+  getAcompteNoInvoicePaymentBySource(intakeDocumentId: number): Promise<AcompteNoInvoicePayment | undefined>;
 
   createProjectIntakeDocument(data: InsertProjectIntakeDocument): Promise<ProjectIntakeDocument>;
 
@@ -4098,6 +4101,20 @@ export class DatabaseStorage implements IStorage {
   async getProjectIntakeDocument(id: number): Promise<ProjectIntakeDocument | undefined> {
     const [doc] = await db.select().from(projectIntakeDocuments).where(eq(projectIntakeDocuments.id, id));
     return doc;
+  }
+
+  async getAcompteNoInvoicePayment(devisId: number): Promise<AcompteNoInvoicePayment | undefined> {
+    const [payment] = await db
+      .select()
+      .from(acompteNoInvoicePayments)
+      .where(eq(acompteNoInvoicePayments.devisId, devisId));
+    return payment;
+  }
+
+  async getAcompteNoInvoicePaymentBySource(intakeDocumentId: number): Promise<AcompteNoInvoicePayment | undefined> {
+    const [payment] = await db.select().from(acompteNoInvoicePayments)
+      .where(eq(acompteNoInvoicePayments.sourceIntakeDocumentId, intakeDocumentId));
+    return payment;
   }
 
   async createProjectIntakeDocument(data: InsertProjectIntakeDocument): Promise<ProjectIntakeDocument> {

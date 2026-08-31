@@ -102,23 +102,9 @@ router.post(
       const doc = await storage.getProjectIntakeDocument(id);
       if (!doc) return res.status(404).json({ message: "Document not found" });
 
-      // Reset the user-facing state so the UI doesn't show a stale
-      // failed/parked verdict while the pipeline re-runs.
-      await storage.updateProjectIntakeDocument(id, {
-        analysisState: "pending",
-        routingState: "unrouted",
-      });
-
-      // Reset the queue row (if any) back to a fresh pending state, then
-      // fire one immediate attempt. enqueueIntakeJob is idempotent and
-      // (re)creates the row if it was never made.
-      const existingJob = await storage.getIntakeJobByDocumentId(id);
-      const { enqueueIntakeJob, attemptIntakeJob } = await import("../services/intake/ingest-queue.service");
-      if (existingJob) {
-        await storage.resetIntakeJobForRetry(existingJob.id);
-        void attemptIntakeJob(existingJob.id);
-      } else {
-        void enqueueIntakeJob(id);
+      const { requeueIntakeDocument } = await import("../services/intake/ingest-queue.service");
+      if (!(await requeueIntakeDocument(id, { rejectConfirmedEvidence: true }))) {
+        return res.status(409).json({ message: "This document is immutable payment evidence and cannot be re-analyzed." });
       }
       res.json({ id, status: "reanalysis_triggered" });
     } catch (err: unknown) {
@@ -278,6 +264,11 @@ router.delete(
           message: `This document was routed into ${doc.promotedKind ?? "a record"} #${doc.promotedId}. Delete that record first, then remove the intake document.`,
         });
       }
+      if (await storage.getAcompteNoInvoicePaymentBySource(id)) {
+        return res.status(409).json({
+          message: "This document is immutable evidence for a confirmed deposit payment and cannot be deleted.",
+        });
+      }
 
       // Gmail-mirrored docs: tombstone the source email document FIRST so a
       // concurrent/later email-document update cannot resurrect this intake
@@ -286,14 +277,14 @@ router.delete(
         await storage.tombstoneEmailDocumentIntake(doc.sourceEmailDocumentId);
       }
 
-      // Best-effort storage cleanup — a missing/failed object delete must not
-      // block removing the row (the object is unreachable without it anyway).
+      // Delete the database row first. Its RESTRICT evidence FK is the
+      // concurrency-safe decision; only a committed deletion may erase bytes.
+      await storage.deleteProjectIntakeDocument(id);
       try {
         await deleteDocument(doc.storageKey);
       } catch (err) {
         console.warn(`[intake] Failed to delete storage object for intake doc ${id} (continuing):`, err);
       }
-      await storage.deleteProjectIntakeDocument(id);
       console.log(`[intake] Deleted intake document ${id} ("${doc.fileName}") from project ${doc.projectId}`);
       res.json({ id, deleted: true });
     } catch (err: unknown) {

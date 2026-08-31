@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { Upload, FileText, Download, Mail, HardDriveUpload, Inbox, ArrowRight, RotateCw, Trash2, Eye, EyeOff, Paperclip } from "lucide-react";
+import { Upload, FileText, Download, Mail, HardDriveUpload, Inbox, ArrowRight, RotateCw, Trash2, Eye, EyeOff, Paperclip, BadgeCheck } from "lucide-react";
 import { Link } from "wouter";
 import {
   AlertDialog,
@@ -28,6 +28,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { useToast } from "@/hooks/use-toast";
@@ -35,6 +38,15 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { Devis, ProjectIntakeDocument, Situation } from "@shared/schema";
 
 type IntakeListItem = ProjectIntakeDocument & { isVoid?: boolean };
+
+interface OpeningAcompteResolution {
+  devisId: number;
+  devisCode: string;
+  amountHt: number;
+  amountTtc: number;
+  evidenceText: string;
+  suggestedPaidAt: string | null;
+}
 
 interface IntakeTabProps {
   projectId: string;
@@ -95,6 +107,106 @@ function evidenceKind(doc: ProjectIntakeDocument): "situation" | "commande" | nu
   if (doc.routingState !== "parked" || doc.promotedId) return null;
   const type = (doc.extractedData as { documentType?: string } | null)?.documentType;
   return type === "situation" || type === "commande" ? type : null;
+}
+
+function openingAcompteResolution(doc: ProjectIntakeDocument): OpeningAcompteResolution | null {
+  if (doc.routingState !== "parked" || doc.promotedId) return null;
+  const value = (
+    doc.extractedData as { openingAcompteResolution?: Partial<OpeningAcompteResolution> } | null
+  )?.openingAcompteResolution;
+  if (
+    !value
+    || !Number.isInteger(value.devisId)
+    || typeof value.devisCode !== "string"
+    || typeof value.amountHt !== "number"
+    || typeof value.amountTtc !== "number"
+    || typeof value.evidenceText !== "string"
+  ) {
+    return null;
+  }
+  return value as OpeningAcompteResolution;
+}
+
+const eurFormatter = new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" });
+
+function ConfirmOpeningAcompteDialog({
+  projectId,
+  doc,
+  resolution,
+  onClose,
+}: {
+  projectId: string;
+  doc: ProjectIntakeDocument;
+  resolution: OpeningAcompteResolution;
+  onClose: () => void;
+}) {
+  const { toast } = useToast();
+  const [paidAt, setPaidAt] = useState(resolution.suggestedPaidAt ?? "");
+  const [paymentReference, setPaymentReference] = useState("");
+  const [confirmed, setConfirmed] = useState(false);
+  const mutation = useMutation({
+    mutationFn: () =>
+      apiRequest("POST", `/api/devis/${resolution.devisId}/acompte/confirm-paid-no-invoice`, {
+        confirmed: true,
+        sourceIntakeDocumentId: doc.id,
+        paymentReference,
+        paidAt: new Date(`${paidAt}T00:00:00.000Z`).toISOString(),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "intake"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "devis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "certificats"] });
+      toast({
+        title: "Deposit payment confirmed",
+        description: "The audited deposit certificat was created and invoice routing is retrying.",
+      });
+      onClose();
+    },
+    onError: (error: Error) => {
+      toast({ title: "Confirmation failed", description: error.message, variant: "destructive" });
+    },
+  });
+  const canSubmit = confirmed && paidAt !== "" && paymentReference.trim() !== "";
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent data-testid="dialog-confirm-opening-acompte">
+        <DialogHeader>
+          <DialogTitle>Confirm paid opening deposit</DialogTitle>
+          <DialogDescription>
+            This supplier invoice reports a deposit that exactly matches the blocked deposit on devis {resolution.devisCode}.
+            Confirming creates an internal audited certificat; it does not create a supplier invoice.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="rounded-lg border bg-muted/30 p-3 text-sm space-y-1">
+            <p><span className="font-medium">Source:</span> {doc.fileName}</p>
+            <p><span className="font-medium">Deposit:</span> {eurFormatter.format(resolution.amountTtc)} TTC ({eurFormatter.format(resolution.amountHt)} HT)</p>
+            <p className="text-muted-foreground"><span className="font-medium text-foreground">Evidence:</span> “{resolution.evidenceText}”</p>
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="opening-acompte-paid-at">Bank payment date</Label>
+            <Input id="opening-acompte-paid-at" type="date" value={paidAt} onChange={(event) => setPaidAt(event.target.value)} data-testid="input-opening-acompte-date" />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="opening-acompte-reference">Payment reference</Label>
+            <Input id="opening-acompte-reference" value={paymentReference} onChange={(event) => setPaymentReference(event.target.value)} placeholder="Bank transfer reference" data-testid="input-opening-acompte-reference" />
+          </div>
+          <label className="flex items-start gap-3 text-sm">
+            <Checkbox checked={confirmed} onCheckedChange={(value) => setConfirmed(value === true)} data-testid="checkbox-confirm-opening-acompte" />
+            <span>I confirm that this deposit was paid, the date and reference are correct, and this PDF is the supporting evidence.</span>
+          </label>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button onClick={() => mutation.mutate()} disabled={!canSubmit || mutation.isPending} data-testid="button-submit-opening-acompte">
+            {mutation.isPending ? "Confirming..." : "Confirm and retry invoice"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 function AttachEvidenceDialog({
@@ -231,6 +343,7 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
   const { toast } = useToast();
   const [showVoid, setShowVoid] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [acompteTarget, setAcompteTarget] = useState<ProjectIntakeDocument | null>(null);
   const dragDepth = useRef(0);
 
   const { data: intakeDocs, isLoading } = useQuery<IntakeListItem[]>({
@@ -511,6 +624,8 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
             const draftHref = promotedHref(projectId, doc);
             const canRetry =
               !isArchived && (doc.analysisState === "failed" || doc.routingState === "failed" || doc.routingState === "parked");
+            const acompteResolution = openingAcompteResolution(doc);
+            const extractedIdentity = doc.extractedData as { projectName?: string; projectReference?: string } | null;
             return (
               <LuxuryCard key={doc.id} className="p-4" data-testid={`card-intake-doc-${doc.id}`}>
                 <div className="flex items-center justify-between gap-3">
@@ -560,6 +675,11 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
                           {doc.notes}
                         </p>
                       )}
+                      {(extractedIdentity?.projectName || extractedIdentity?.projectReference) && (
+                        <p className="text-[10px] text-blue-700 dark:text-blue-300 mt-1" data-testid={`text-intake-project-evidence-${doc.id}`}>
+                          Project evidence: {extractedIdentity.projectName ?? extractedIdentity.projectReference}
+                        </p>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-1 flex-shrink-0">
@@ -584,6 +704,18 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
                       >
                         <Paperclip size={12} />
                         <span className="text-[9px] font-bold uppercase tracking-widest">Attach</span>
+                      </Button>
+                    )}
+                    {!isArchived && acompteResolution && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8"
+                        onClick={() => setAcompteTarget(doc)}
+                        data-testid={`button-resolve-opening-acompte-${doc.id}`}
+                      >
+                        <BadgeCheck size={12} />
+                        <span className="text-[9px] font-bold uppercase tracking-widest">Confirm deposit</span>
                       </Button>
                     )}
                     {canRetry && (
@@ -640,6 +772,14 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
           projectId={projectId}
           doc={attachTarget}
           onClose={() => setAttachTarget(null)}
+        />
+      )}
+      {acompteTarget && openingAcompteResolution(acompteTarget) && (
+        <ConfirmOpeningAcompteDialog
+          projectId={projectId}
+          doc={acompteTarget}
+          resolution={openingAcompteResolution(acompteTarget)!}
+          onClose={() => setAcompteTarget(null)}
         />
       )}
 

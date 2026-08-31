@@ -28,9 +28,10 @@
  * compared at 2 decimals only at evaluation time.
  */
 import type { Devis } from "@shared/schema";
-import { certificats, devis as devisTable } from "@shared/schema";
+import { acompteNoInvoicePayments, certificats, devis as devisTable, projectIntakeDocuments, projects } from "@shared/schema";
+import { deriveTvaAmount, roundCurrency } from "@shared/financial-utils";
 import { db } from "../db";
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 
 export type AcompteState = "none" | "pending" | "invoiced" | "paid" | "applied";
 
@@ -233,14 +234,210 @@ export function resolveAcompteAmounts(d: {
   const explicit = d.acompteAmountHt != null ? parseFloat(d.acompteAmountHt) : NaN;
   const pct = d.acomptePercent != null ? parseFloat(d.acomptePercent) : NaN;
 
-  const round = (n: number) => Math.round(n * 100) / 100;
-
   if (Number.isFinite(explicit) && explicit > 0) {
     const ratio = devisHt > 0 ? devisTtc / devisHt : 1;
-    return { amountHt: round(explicit), amountTtc: round(explicit * ratio) };
+    return { amountHt: roundCurrency(explicit), amountTtc: roundCurrency(explicit * ratio) };
   }
   if (Number.isFinite(pct) && pct > 0 && devisHt > 0) {
-    return { amountHt: round((devisHt * pct) / 100), amountTtc: round((devisTtc * pct) / 100) };
+    return { amountHt: roundCurrency((devisHt * pct) / 100), amountTtc: roundCurrency((devisTtc * pct) / 100) };
   }
   return null;
+}
+
+export interface OpeningAcompteResolutionSuggestion {
+  devisId: number;
+  devisCode: string;
+  amountHt: number;
+  amountTtc: number;
+  evidenceText: string;
+  suggestedPaidAt: string | null;
+}
+
+export function isExplicitPaidAcompteEvidence(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const normalized = value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  return normalized.includes("acompte verse")
+    || normalized.includes("acompte deja paye")
+    || normalized.includes("deduction acompte");
+}
+
+export function getOpeningAcompteResolutionSuggestion(
+  devis: Devis,
+  parsed: {
+    documentType?: string;
+    date?: string;
+    acomptePaidAmountTtc?: unknown;
+    acomptePaidEvidenceText?: unknown;
+  },
+): OpeningAcompteResolutionSuggestion | null {
+  if (
+    parsed.documentType !== "invoice"
+    || devis.status === "void"
+    || devis.signOffStage !== "client_signed_off"
+    || !devis.acompteRequired
+    || devis.acompteState !== "pending"
+    || devis.acompteInvoiceId != null
+    || !isExplicitPaidAcompteEvidence(parsed.acomptePaidEvidenceText)
+  ) {
+    return null;
+  }
+  const expected = resolveAcompteAmounts(devis);
+  const evidenceAmount = typeof parsed.acomptePaidAmountTtc === "number"
+    ? parsed.acomptePaidAmountTtc
+    : Number(parsed.acomptePaidAmountTtc);
+  if (!expected || !Number.isFinite(evidenceAmount) || roundCurrency(evidenceAmount) !== expected.amountTtc) {
+    return null;
+  }
+  return {
+    devisId: devis.id,
+    devisCode: devis.devisCode,
+    amountHt: expected.amountHt,
+    amountTtc: expected.amountTtc,
+    evidenceText: parsed.acomptePaidEvidenceText,
+    suggestedPaidAt: /^\d{4}-\d{2}-\d{2}$/.test(parsed.date ?? "") ? parsed.date! : null,
+  };
+}
+
+export type ConfirmNoInvoiceAcompteResult =
+  | { outcome: "ok"; certificatId: number; replayed: boolean }
+  | { outcome: "not_found" }
+  | { outcome: "invalid"; code: string; message: string };
+
+/**
+ * Task #686 — the sole write path for an operator-confirmed opening deposit
+ * that has no supplier invoice. It locks the devis, source evidence and
+ * existing audit mapping in one transaction. Invoice linking uses the same
+ * devis lock, preserving the no-invoice/invoice XOR invariant.
+ */
+export async function confirmNoInvoiceAcomptePayment(input: {
+  devisId: number;
+  sourceIntakeDocumentId: number;
+  paidAt: Date;
+  paymentReference: string;
+  confirmedByUserId: number;
+}): Promise<ConfirmNoInvoiceAcompteResult> {
+  if (input.paidAt.getTime() > Date.now()) {
+    return { outcome: "invalid", code: "acompte_payment_date_future", message: "Payment date cannot be in the future." };
+  }
+  return db.transaction(async (tx) => {
+    const [locked] = await tx.select().from(devisTable).where(eq(devisTable.id, input.devisId)).for("update");
+    if (!locked) return { outcome: "not_found" as const };
+    const [project] = await tx.select().from(projects).where(eq(projects.id, locked.projectId)).for("update");
+    if (!project || project.archivedAt != null) {
+      return { outcome: "invalid" as const, code: "acompte_project_archived", message: "Archived projects are read-only." };
+    }
+    // Replay is intentionally evaluated before lifecycle eligibility: the
+    // first commit has already moved pending → paid, so checking pending
+    // first would make a safely retried request look like a conflict.
+    const [existingAudit] = await tx
+      .select()
+      .from(acompteNoInvoicePayments)
+      .where(eq(acompteNoInvoicePayments.devisId, locked.id))
+      .for("update");
+    if (existingAudit) {
+      if (
+        existingAudit.sourceIntakeDocumentId !== input.sourceIntakeDocumentId
+        || existingAudit.paymentReference !== input.paymentReference
+        || existingAudit.paidAt.getTime() !== input.paidAt.getTime()
+        || existingAudit.confirmedByUserId !== input.confirmedByUserId
+      ) {
+        return {
+          outcome: "invalid" as const,
+          code: "acompte_confirmation_conflict",
+          message: "This deposit already has different confirmed payment evidence.",
+        };
+      }
+      return { outcome: "ok" as const, certificatId: existingAudit.certificatId, replayed: true };
+    }
+    if (locked.status === "void" || locked.signOffStage === "void") {
+      return { outcome: "invalid" as const, code: "acompte_devis_void", message: "Devis is void." };
+    }
+    if (locked.signOffStage !== "client_signed_off") {
+      return { outcome: "invalid" as const, code: "acompte_devis_not_signed", message: "Devis must be client-signed." };
+    }
+    if (!locked.acompteRequired || locked.acompteState !== "pending") {
+      return { outcome: "invalid" as const, code: "acompte_invalid_transition", message: "A pending acompte is required." };
+    }
+    if (locked.acompteInvoiceId != null) {
+      return { outcome: "invalid" as const, code: "acompte_invoice_linked", message: "A supplier invoice is already linked." };
+    }
+    const amounts = resolveAcompteAmounts(locked);
+    if (!amounts) {
+      return { outcome: "invalid" as const, code: "acompte_amount_missing", message: "No positive acompte amount is configured." };
+    }
+    const [source] = await tx
+      .select()
+      .from(projectIntakeDocuments)
+      .where(eq(projectIntakeDocuments.id, input.sourceIntakeDocumentId))
+      .for("update");
+    if (!source || source.projectId !== locked.projectId) {
+      return { outcome: "invalid" as const, code: "acompte_source_project_mismatch", message: "Source intake document does not belong to this project." };
+    }
+    if (!source.contentFingerprint) {
+      return { outcome: "invalid" as const, code: "acompte_source_unfingerprinted", message: "Source evidence has no verified content fingerprint." };
+    }
+    const extracted = source.extractedData as Record<string, unknown> | null;
+    const extractedAmount = extracted?.acomptePaidAmountTtc;
+    const evidenceAmount = typeof extractedAmount === "number" ? extractedAmount : Number(extractedAmount);
+    if (
+      !Number.isFinite(evidenceAmount)
+      || roundCurrency(evidenceAmount) !== amounts.amountTtc
+      || !isExplicitPaidAcompteEvidence(extracted?.acomptePaidEvidenceText)
+    ) {
+      return { outcome: "invalid" as const, code: "acompte_source_amount_mismatch", message: "Source evidence does not report the expected paid deposit TTC amount." };
+    }
+    const [existingCert] = await tx
+      .select()
+      .from(certificats)
+      .where(and(eq(certificats.acompteDevisId, locked.id), ne(certificats.status, "superseded")))
+      .for("update");
+    let cert = existingCert;
+    if (cert) {
+      if (roundCurrency(Number(cert.netToPayHt)) !== amounts.amountHt || roundCurrency(Number(cert.netToPayTtc)) !== amounts.amountTtc) {
+        return { outcome: "invalid" as const, code: "acompte_certificat_amount_mismatch", message: "Existing acompte certificat does not match the devis amount." };
+      }
+    } else {
+      // Serialize reference allocation per project; certificate_ref's unique
+      // constraint remains the final database backstop.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${locked.projectId})`);
+      const rows = await tx.select({ ref: certificats.certificateRef }).from(certificats).where(eq(certificats.projectId, locked.projectId));
+      const next = rows.reduce((max, row) => Math.max(max, Number(/^C(\d+)$/.exec(row.ref)?.[1] ?? 0)), 0) + 1;
+      const tvaAmount = deriveTvaAmount(amounts.amountHt, amounts.amountTtc);
+      const rate = amounts.amountHt > 0 ? roundCurrency((tvaAmount / amounts.amountHt) * 100) : 0;
+      [cert] = await tx.insert(certificats).values({
+        projectId: locked.projectId, contractorId: locked.contractorId, certificateRef: `C${next}`,
+        dateIssued: input.paidAt.toISOString().slice(0, 10), totalWorksHt: amounts.amountHt.toFixed(2),
+        pvMvAdjustment: "0.00", previousPayments: "0.00", retenueGarantie: "0.00",
+        cumulativeProrataDeduction: "0.00", periodProrataDeduction: "0.00",
+        cumulativeAcompteRecoupment: "0.00", periodAcompteRecoupment: "0.00",
+        tvaRatePercent: rate.toFixed(2), tvaAutoliquidation: false, tvaRateSource: "documentary",
+        netToPayHt: amounts.amountHt.toFixed(2), tvaAmount: tvaAmount.toFixed(2), netToPayTtc: amounts.amountTtc.toFixed(2),
+        notes: `Acompte (opening/deposit) on devis ${locked.devisCode} — no supplier invoice.`,
+        acompteDevisId: locked.id,
+      }).returning();
+    }
+    await tx.insert(acompteNoInvoicePayments).values({
+      devisId: locked.id, certificatId: cert.id, sourceIntakeDocumentId: source.id,
+      sourceStorageKey: source.storageKey, sourceFileName: source.fileName,
+      sourceContentFingerprint: source.contentFingerprint,
+      amountHt: amounts.amountHt.toFixed(2), amountTtc: amounts.amountTtc.toFixed(2),
+      paidAt: input.paidAt, paymentReference: input.paymentReference,
+      evidenceText: typeof extracted?.acomptePaidEvidenceText === "string" ? extracted.acomptePaidEvidenceText : null,
+      confirmedByUserId: input.confirmedByUserId,
+    });
+    await tx.update(devisTable).set({
+      acompteState: "paid",
+      acompteAmountHt:
+        locked.acompteAmountHt != null && parseFloat(locked.acompteAmountHt) > 0
+          ? locked.acompteAmountHt
+          : amounts.amountHt.toFixed(2),
+      acomptePaidAt: input.paidAt,
+      acomptePaidVia: "certificat_no_invoice",
+      updatedAt: sql`now()`,
+    }).where(eq(devisTable.id, locked.id));
+    return { outcome: "ok" as const, certificatId: cert.id, replayed: false };
+  });
 }

@@ -57,6 +57,14 @@ export interface ParsedDocument {
   contractorName?: string;
   clientName?: string;
   projectAddress?: string;
+  /** Explicitly labelled project/site name printed on the source document. */
+  projectName?: string;
+  /** Explicitly labelled project/site reference or code (not the document number). */
+  projectReference?: string;
+  /** TTC deposit amount explicitly shown as already paid/deducted. */
+  acomptePaidAmountTtc?: number;
+  /** Verbatim source line supporting the paid-deposit amount. */
+  acomptePaidEvidenceText?: string;
   reference?: string;
   invoiceNumber?: string;
   devisNumber?: string;
@@ -292,6 +300,10 @@ const USER_PROMPT = `Analyze this French construction document and extract the f
 - contractorName: the company/contractor name (the entity providing the service/goods, often at the top of the document)
 - clientName: the client/maitre d'ouvrage name (the entity receiving the service)
 - projectAddress: site/project address if visible
+- projectName: the project or chantier name ONLY when it is clearly labelled (for example "Projet", "Chantier", "Opération", "Nom du projet"). Copy the complete printed value, including any parenthesised locality or number. Omit when it is merely inferred from an address, client, filename, or prose.
+- projectReference: the project/site reference or code ONLY when it is clearly labelled (for example "Réf. projet", "Référence chantier", "Code opération"). This is NOT the devis, invoice, or general document reference; omit it unless the label identifies it as a project/site reference.
+- acomptePaidAmountTtc: on an invoice or situation, the TTC amount explicitly printed as already paid/deducted under wording such as "Acompte versé", "Acompte déjà payé", or "Déduction acompte". Omit for a requested or unpaid acompte.
+- acomptePaidEvidenceText: the short verbatim line proving acomptePaidAmountTtc. Omit unless acomptePaidAmountTtc is present.
 - reference: primary document reference number
 - invoiceNumber: specific invoice number if this is a facture (e.g., "FA-2024-001")
 - devisNumber: specific devis number if this is a devis (e.g., "DEV-2024-042")
@@ -364,6 +376,26 @@ const EXTRACTION_SCHEMA: ResponseSchema = {
     projectAddress: {
       type: SchemaType.STRING,
       description: "Site/project address",
+      nullable: true,
+    },
+    projectName: {
+      type: SchemaType.STRING,
+      description: "Complete project/site name, only when explicitly labelled Projet, Chantier, Opération, or equivalent",
+      nullable: true,
+    },
+    projectReference: {
+      type: SchemaType.STRING,
+      description: "Project/site reference or code, only when explicitly labelled as such; never use a devis or invoice number",
+      nullable: true,
+    },
+    acomptePaidAmountTtc: {
+      type: SchemaType.NUMBER,
+      description: "TTC amount explicitly printed as an already-paid or deducted acompte",
+      nullable: true,
+    },
+    acomptePaidEvidenceText: {
+      type: SchemaType.STRING,
+      description: "Short verbatim line proving the already-paid acompte amount",
       nullable: true,
     },
     reference: {
@@ -2186,14 +2218,14 @@ export function mergeChunkedParses(
   if (chunks.length === 1 && chunks[0].pageOffset === 0) return chunks[0].parsed;
 
   const FIRST_WINS = [
-    "contractorName", "clientName", "projectAddress", "reference", "invoiceNumber",
+    "contractorName", "clientName", "projectAddress", "projectName", "projectReference", "reference", "invoiceNumber",
     "devisNumber", "siret", "tvaIntracom", "date", "paymentTerms", "iban", "bic",
     "description",
   ] as const;
   const LAST_WINS = [
     "amountHt", "preTaxChargesHt", "amountTtc", "tvaAmount", "tvaRate", "autoLiquidation",
     "retenueDeGarantie", "netAPayer", "acompteRequired", "acomptePercent",
-    "acompteAmountHt", "acompteTrigger",
+    "acompteAmountHt", "acompteTrigger", "acomptePaidAmountTtc", "acomptePaidEvidenceText",
   ] as const;
 
   const merged: ParsedDocument = { documentType: "unknown" };
@@ -2488,6 +2520,18 @@ export async function parseDocument(
   }
 
   if (parsed) {
+    const textIdentity = extractLabelledProjectIdentityFromTextLayer(pageTexts);
+    if (!parsed.projectName && textIdentity.projectName) parsed.projectName = textIdentity.projectName;
+    if (!parsed.projectReference && textIdentity.projectReference) {
+      parsed.projectReference = textIdentity.projectReference;
+    }
+    if (parsed.documentType === "invoice" || parsed.documentType === "situation") {
+      const paidAcompte = extractPaidAcompteFromTextLayer(pageTexts);
+      if (paidAcompte) {
+        parsed.acomptePaidAmountTtc = paidAcompte.amountTtc;
+        parsed.acomptePaidEvidenceText = paidAcompte.evidenceText;
+      }
+    }
     // Task #356 — fold continuation-paragraph fragments (a "line" with no
     // price and no item reference whose predecessor ends mid-enumeration)
     // back into the previous item's description. Prevents phantom numbered
@@ -2532,6 +2576,165 @@ export function getParseFailureMessage(parsed: ParsedDocument): string | null {
   if (parsed.documentType !== "unknown" || typeof parsed.rawText !== "string") return null;
   const m = parsed.rawText.match(/^Parse failed(?:\s*\(transient\))?:\s*(.+)$/);
   return m ? m[1] : null;
+}
+
+/**
+ * Canonical identity form deliberately removes accents, whitespace,
+ * punctuation and parentheses. It is used for equality only: no substring or
+ * fuzzy comparison is permitted for labelled project identity.
+ */
+export function normalizeProjectIdentity(value: string | null | undefined): string {
+  return (value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+export function extractLabelledProjectIdentityFromTextLayer(
+  pageTexts: Array<string | null | undefined>,
+): { projectName?: string; projectReference?: string } {
+  let projectName: string | undefined;
+  let projectReference: string | undefined;
+  for (const pageText of pageTexts) {
+    for (const rawLine of pageText?.split(/\r?\n/) ?? []) {
+      const line = rawLine.replace(/\s+/g, " ").trim();
+      if (!line || line.length > 300) continue;
+      if (!projectName) {
+        const nameMatch = line.match(
+          /^(?:nom\s+du\s+)?(?:projet|chantier|op[ée]ration)\s*(?::|[-–—])\s*(.{4,200})$/i,
+        );
+        const candidate = nameMatch?.[1]?.trim();
+        if (candidate && /[A-Za-zÀ-ÖØ-öø-ÿ0-9]/.test(candidate)) projectName = candidate;
+      }
+      if (!projectReference) {
+        const referenceMatch = line.match(
+          /^(?:r[ée]f(?:[ée]rence)?\.?\s+(?:du\s+)?(?:projet|chantier)|code\s+(?:projet|op[ée]ration))\s*(?::|[-–—])\s*(.{2,100})$/i,
+        );
+        const candidate = referenceMatch?.[1]?.trim();
+        if (candidate && /[A-Za-zÀ-ÖØ-öø-ÿ0-9]/.test(candidate)) projectReference = candidate;
+      }
+      if (projectName && projectReference) return { projectName, projectReference };
+    }
+  }
+  return { projectName, projectReference };
+}
+
+function parseFrenchCurrencyAmount(raw: string): number | null {
+  const normalized = raw
+    .replace(/[\s\u00a0\u202f]/g, "")
+    .replace(/\.(?=\d{3}(?:\D|$))/g, "")
+    .replace(",", ".");
+  const amount = Number(normalized);
+  return Number.isFinite(amount) && amount > 0 ? amount : null;
+}
+
+export function extractPaidAcompteFromTextLayer(
+  pageTexts: Array<string | null | undefined>,
+): { amountTtc: number; evidenceText: string } | null {
+  for (const pageText of pageTexts) {
+    for (const rawLine of pageText?.split(/\r?\n/) ?? []) {
+      const line = rawLine.replace(/\s+/g, " ").trim();
+      const normalized = line
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase();
+      if (
+        !normalized.includes("acompte verse")
+        && !normalized.includes("acompte deja paye")
+        && !normalized.includes("deduction acompte")
+      ) {
+        continue;
+      }
+      const amounts = Array.from(line.matchAll(/(\d[\d\s\u00a0\u202f.]*(?:,\d{1,2})?)\s*€/g));
+      const rawAmount = amounts.at(-1)?.[1];
+      const amountTtc = rawAmount ? parseFrenchCurrencyAmount(rawAmount) : null;
+      if (amountTtc != null) return { amountTtc, evidenceText: line.slice(0, 500) };
+    }
+  }
+  return null;
+}
+
+type ProjectIdentityResolution =
+  | { kind: "none" }
+  | { kind: "matched"; project: Project; evidence: string }
+  | { kind: "blocked"; evidence: string; warning: ValidationWarning };
+
+/**
+ * Resolve only explicit project fields. A field must equal a complete live
+ * project name or code after canonicalisation; a partial site name is never a
+ * match. The union of all labelled evidence must contain one candidate, which
+ * makes duplicate master data and contradictory labels fail closed.
+ */
+function resolveLabelledProjectIdentity(
+  parsed: ParsedDocument,
+  projects: Project[],
+): ProjectIdentityResolution {
+  const liveProjects = projects.filter((project) => project.archivedAt == null);
+  const fields: Array<{ label: string; value: string | undefined }> = [
+    { label: "project name", value: parsed.projectName },
+    { label: "project reference", value: parsed.projectReference },
+  ];
+  const hits = new Map<number, { project: Project; labels: string[] }>();
+  const suppliedFields = fields.filter((field) => normalizeProjectIdentity(field.value));
+
+  for (const field of suppliedFields) {
+    const normalized = normalizeProjectIdentity(field.value);
+    const candidates = liveProjects.filter((project) =>
+      normalizeProjectIdentity(project.name) === normalized
+      || normalizeProjectIdentity(project.code) === normalized,
+    );
+    if (candidates.length !== 1) {
+      const supplied = `${field.label} "${field.value!.trim()}"`;
+      const detail = candidates.length === 0
+        ? "does not exactly match a live project"
+        : `matches ${candidates.length} live projects`;
+      return {
+        kind: "blocked",
+        evidence: `${supplied} ${detail}; no project assigned`,
+        warning: {
+          field: "project_identity_ambiguous",
+          expected: "exactly one live project for every labelled identity",
+          actual: supplied,
+          message: `Labelled ${supplied} ${detail}. No project was assigned.`,
+          severity: "warning",
+        },
+      };
+    }
+    for (const project of candidates) {
+      const hit = hits.get(project.id) ?? { project, labels: [] };
+      hit.labels.push(`${field.label} "${field.value!.trim()}"`);
+      hits.set(project.id, hit);
+    }
+  }
+
+  if (hits.size === 0) return { kind: "none" };
+  if (hits.size === 1) {
+    const hit = Array.from(hits.values())[0];
+    return {
+      kind: "matched",
+      project: hit.project,
+      evidence: `${hit.labels.join("; ")} exactly matches live project "${hit.project.name}" (code ${hit.project.code}, id ${hit.project.id})`,
+    };
+  }
+
+  const candidates = Array.from(hits.values())
+    .map((hit) => `"${hit.project.name}" (code ${hit.project.code}, id ${hit.project.id})`)
+    .join(", ");
+  const supplied = suppliedFields
+    .map((field) => `${field.label} "${field.value!.trim()}"`)
+    .join("; ");
+  return {
+    kind: "blocked",
+    evidence: `${supplied} maps to multiple live projects: ${candidates}; no project assigned`,
+    warning: {
+      field: "project_identity_ambiguous",
+      expected: "exactly one live project",
+      actual: supplied,
+      message: `Conflicting or duplicate labelled project identity: ${supplied} maps to ${candidates}. No project was assigned.`,
+      severity: "warning",
+    },
+  };
 }
 
 export async function matchToProject(
@@ -2658,7 +2861,30 @@ export async function matchToProject(
     console.log(`[matchToProject] Contractor matched by name=${bestNameContractor.name}@${Math.round(bestNameScore * 100)}%`);
   }
 
-  for (const project of projects) {
+  // Explicit project identity is stronger than client/address scoring, but
+  // only when it resolves to exactly one non-archived master project. A
+  // conflict or duplicate deliberately suppresses the fuzzy fallback too.
+  const identity = resolveLabelledProjectIdentity(parsed, projects);
+  if (identity.kind === "matched") {
+    bestProjectId = identity.project.id;
+    bestScore = Math.max(bestScore, 100);
+    matchedFields.projectIdentity = identity.evidence;
+    if (parsed.projectName?.trim()) {
+      matchedFields.projectName =
+        `${parsed.projectName.trim()} → ${identity.project.name} (exact normalized labelled project identity)`;
+    }
+    if (parsed.projectReference?.trim()) {
+      matchedFields.projectReference =
+        `${parsed.projectReference.trim()} → ${identity.project.code} (exact normalized labelled project identity)`;
+    }
+  } else if (identity.kind === "blocked") {
+    matchedFields.projectIdentity = identity.evidence;
+    warnings.push(identity.warning);
+  }
+
+  for (const project of identity.kind === "none"
+    ? projects.filter((candidate) => candidate.archivedAt == null)
+    : []) {
     let projectScore = 0;
 
     if (parsed.clientName && project.clientName) {

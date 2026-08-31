@@ -3,8 +3,8 @@ import http from "http";
 import express from "express";
 import type { AddressInfo } from "net";
 import { db } from "../db";
-import { certificats, projects, contractors, marches, devis, invoices } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { acompteNoInvoicePayments, certificats, projects, contractors, marches, devis, invoices, projectIntakeDocuments, users } from "@shared/schema";
+import { eq, sql } from "drizzle-orm";
 import certificatsRouter from "../routes/certificats";
 import acompteRouter from "../routes/acompte";
 import { linkAcompteInvoiceTx } from "../services/acompte.service";
@@ -36,7 +36,11 @@ vi.mock("../services/drive/upload-queue.service", () => ({
   enqueueDriveUpload: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../auth/middleware", () => ({
-  requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
+  requireAuth: (req: { session: { userId?: number } }, _res: unknown, next: () => void) => {
+    req.session ??= {};
+    req.session.userId = 1;
+    next();
+  },
 }));
 
 import { sealCertificat } from "../services/certificat-seal.service";
@@ -96,6 +100,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await new Promise<void>((r) => server.close(() => r()));
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('app.allow_acompte_audit_delete', 'true', true)`);
+    await tx.delete(acompteNoInvoicePayments).where(eq(acompteNoInvoicePayments.devisId, devisId));
+  });
   await db.delete(certificats).where(eq(certificats.projectId, projectId));
   await db.delete(devis).where(eq(devis.projectId, projectId));
   await db.delete(marches).where(eq(marches.projectId, projectId));
@@ -341,5 +349,103 @@ describe("acompte certificat without invoice — full lifecycle", () => {
     expect(clone.cumulativeAcompteRecoupment).toBe("0.00");
     const [original] = await db.select().from(certificats).where(eq(certificats.id, acompteCert.id));
     expect(original.status).toBe("superseded");
+  });
+
+  it("confirms paid no-invoice deposit from matching intake evidence and is replay-safe", async () => {
+    // The seeded test user is normally present in integration DBs; create a
+    // durable operator for isolated databases too.
+    await db.insert(users).values({ id: 1, googleId: "t686-operator", email: "operator@renosud.com" }).onConflictDoNothing();
+    const [d] = await db.insert(devis).values({
+      projectId, contractorId, devisCode: "T686.1.audit", descriptionFr: "Audited deposit",
+      amountHt: "1000.00", amountTtc: "1200.00", acompteRequired: true,
+      acompteAmountHt: "200.00", acompteState: "pending", signOffStage: "client_signed_off",
+    }).returning();
+    const [source] = await db.insert(projectIntakeDocuments).values({
+      projectId, fileName: "proof.pdf", storageKey: "tests/proof.pdf",
+      contentFingerprint: "a".repeat(64),
+      extractedData: { documentType: "invoice", acomptePaidAmountTtc: 240, acomptePaidEvidenceText: "Acompte versé 240 €" },
+    }).returning();
+    try {
+      const body = { confirmed: true, sourceIntakeDocumentId: source.id, paymentReference: "VIR-T686", paidAt: "2025-01-15T10:00:00.000Z" };
+      const [first, replay] = await Promise.all([
+        post(`/api/devis/${d.id}/acompte/confirm-paid-no-invoice`, body),
+        post(`/api/devis/${d.id}/acompte/confirm-paid-no-invoice`, body),
+      ]);
+      expect([first.status, replay.status].sort()).toEqual([200, 201]);
+      const replies = await Promise.all([first.json(), replay.json()]);
+      expect(replies[0].certificatId).toBe(replies[1].certificatId);
+      const [audit] = await db.select().from(acompteNoInvoicePayments).where(eq(acompteNoInvoicePayments.devisId, d.id));
+      expect(audit.amountHt).toBe("200.00");
+      expect(audit.amountTtc).toBe("240.00");
+      expect(audit.sourceIntakeDocumentId).toBe(source.id);
+    } finally {
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT set_config('app.allow_acompte_audit_delete', 'true', true)`);
+        await tx.delete(acompteNoInvoicePayments).where(eq(acompteNoInvoicePayments.devisId, d.id));
+      });
+      await db.delete(certificats).where(eq(certificats.acompteDevisId, d.id));
+      await db.delete(projectIntakeDocuments).where(eq(projectIntakeDocuments.id, source.id));
+      await db.delete(devis).where(eq(devis.id, d.id));
+    }
+  });
+
+  it("persists a percent-only deposit amount so the next certificat recoups it", async () => {
+    await db.insert(users).values({ id: 1, googleId: "t686-operator", email: "operator@renosud.com" }).onConflictDoNothing();
+    const [freshContractor] = await db.insert(contractors).values({
+      name: `T686 percent contractor ${Date.now()}`,
+    }).returning();
+    const [d] = await db.insert(devis).values({
+      projectId,
+      contractorId: freshContractor.id,
+      devisCode: "T686.2.percent",
+      descriptionFr: "Percentage-only audited deposit",
+      amountHt: "1000.00",
+      amountTtc: "1200.00",
+      acompteRequired: true,
+      acomptePercent: "20.00",
+      acompteAmountHt: null,
+      acompteState: "pending",
+      signOffStage: "client_signed_off",
+    }).returning();
+    const [source] = await db.insert(projectIntakeDocuments).values({
+      projectId,
+      fileName: "percent-proof.pdf",
+      storageKey: "tests/percent-proof.pdf",
+      contentFingerprint: "b".repeat(64),
+      extractedData: {
+        documentType: "invoice",
+        acomptePaidAmountTtc: 240,
+        acomptePaidEvidenceText: "Acompte déjà payé 240 €",
+      },
+    }).returning();
+    try {
+      const confirmation = await post(`/api/devis/${d.id}/acompte/confirm-paid-no-invoice`, {
+        confirmed: true,
+        sourceIntakeDocumentId: source.id,
+        paymentReference: "VIR-T686-PERCENT",
+        paidAt: "2025-01-16T10:00:00.000Z",
+      });
+      expect(confirmation.status).toBe(201);
+      const [stored] = await db.select().from(devis).where(eq(devis.id, d.id));
+      expect(stored.acompteAmountHt).toBe("200.00");
+
+      const certRes = await post(`/api/projects/${projectId}/certificats`, {
+        contractorId: freshContractor.id,
+        totalWorksHt: "1000.00",
+      });
+      expect(certRes.status).toBe(201);
+      const cert = await certRes.json();
+      expect(cert.cumulativeAcompteRecoupment).toBe("200.00");
+      expect(cert.periodAcompteRecoupment).toBe("200.00");
+    } finally {
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT set_config('app.allow_acompte_audit_delete', 'true', true)`);
+        await tx.delete(acompteNoInvoicePayments).where(eq(acompteNoInvoicePayments.devisId, d.id));
+      });
+      await db.delete(certificats).where(eq(certificats.contractorId, freshContractor.id));
+      await db.delete(projectIntakeDocuments).where(eq(projectIntakeDocuments.id, source.id));
+      await db.delete(devis).where(eq(devis.id, d.id));
+      await db.delete(contractors).where(eq(contractors.id, freshContractor.id));
+    }
   });
 });

@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
+  extractLabelledProjectIdentityFromTextLayer,
+  extractPaidAcompteFromTextLayer,
   matchToProject,
   normalizeSiret,
   extractSirenFromTva,
@@ -25,6 +27,20 @@ function makeContractor(overrides: Partial<Contractor> & { id: number; name: str
 }
 
 const NO_PROJECTS: Project[] = [];
+
+function makeProject(overrides: Partial<Project> & { id: number; name: string; code: string }): Project {
+  return {
+    id: overrides.id,
+    name: overrides.name,
+    code: overrides.code,
+    clientName: "Client test",
+    status: "active",
+    archivedAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  } as Project;
+}
 
 describe("normalizeSiret", () => {
   it("strips spaces, dots and dashes", () => {
@@ -192,5 +208,136 @@ describe("matchToProject — contractor matching", () => {
     const result = await matchToProject(parsed, NO_PROJECTS, [atPiscines, atTravaux]);
     expect(result.contractorId).toBeNull();
     expect(result.warnings).toHaveLength(0);
+  });
+});
+
+describe("matchToProject — labelled project identity", () => {
+  const trutken = makeProject({
+    id: 1358,
+    name: "TRÜTKEN (VERFEUIL) 1358",
+    code: "1358",
+  });
+
+  it("assigns the complete labelled TRÜTKEN (VERFEUIL) 1358 project name", async () => {
+    const result = await matchToProject(
+      { documentType: "quotation", projectName: "TRÜTKEN (VERFEUIL) 1358" },
+      [trutken],
+      [],
+    );
+    expect(result.projectId).toBe(1358);
+    expect(result.matchedFields.projectIdentity).toContain("TRÜTKEN (VERFEUIL) 1358");
+    expect(result.matchedFields.projectIdentity).toContain("exactly matches live project");
+  });
+
+  it("matches accent, punctuation and parenthesis variations deterministically", async () => {
+    const result = await matchToProject(
+      { documentType: "invoice", projectName: "Trutken - Verfeuil / 1358" },
+      [trutken],
+      [],
+    );
+    expect(result.projectId).toBe(1358);
+  });
+
+  it("assigns an explicitly labelled project reference/code", async () => {
+    const result = await matchToProject(
+      { documentType: "invoice", projectReference: "1358" },
+      [trutken],
+      [],
+    );
+    expect(result.projectId).toBe(1358);
+    expect(result.matchedFields.projectIdentity).toContain("project reference");
+  });
+
+  it("does not assign from a partial or weak labelled project text", async () => {
+    const result = await matchToProject(
+      { documentType: "quotation", projectName: "TRUTKEN VERFEUIL" },
+      [trutken],
+      [],
+    );
+    expect(result.projectId).toBeNull();
+  });
+
+  it("does not assign a duplicated normalized project identity", async () => {
+    const duplicate = makeProject({
+      id: 99,
+      name: "Trutken Verfeuil 1358",
+      code: "OTHER",
+    });
+    const result = await matchToProject(
+      { documentType: "quotation", projectName: "TRÜTKEN (VERFEUIL) 1358" },
+      [trutken, duplicate],
+      [],
+    );
+    expect(result.projectId).toBeNull();
+    expect(result.warnings.some((warning) => warning.field === "project_identity_ambiguous")).toBe(true);
+  });
+
+  it("never assigns an archived project from labelled identity", async () => {
+    const archived = makeProject({ ...trutken, id: 14, archivedAt: new Date() });
+    const result = await matchToProject(
+      { documentType: "quotation", projectName: archived.name },
+      [archived],
+      [],
+    );
+    expect(result.projectId).toBeNull();
+  });
+
+  it("assigns nothing when labelled project name and reference conflict", async () => {
+    const other = makeProject({ id: 77, name: "Maison Martin", code: "MARTIN-77" });
+    const result = await matchToProject(
+      {
+        documentType: "quotation",
+        projectName: trutken.name,
+        projectReference: other.code,
+      },
+      [trutken, other],
+      [],
+    );
+    expect(result.projectId).toBeNull();
+    expect(result.matchedFields.projectIdentity).toContain("no project assigned");
+  });
+
+  it("fails closed when one labelled identity matches and another is unknown", async () => {
+    const result = await matchToProject(
+      {
+        documentType: "invoice",
+        projectName: trutken.name,
+        projectReference: "TYPO-UNKNOWN",
+      },
+      [trutken],
+      [],
+    );
+    expect(result.projectId).toBeNull();
+    expect(result.warnings.some((warning) => warning.field === "project_identity_ambiguous")).toBe(true);
+  });
+});
+
+describe("deterministic text-layer intake evidence", () => {
+  it("extracts an accented labelled project identity without relying on AI", () => {
+    expect(
+      extractLabelledProjectIdentityFromTextLayer([
+        "FACTURE FR25.26-0144\nChantier : TRÜTKEN (VERFEUIL) 1358\nRéférence projet : 1358",
+      ]),
+    ).toEqual({
+      projectName: "TRÜTKEN (VERFEUIL) 1358",
+      projectReference: "1358",
+    });
+  });
+
+  it("ignores an unlabelled project-looking phrase", () => {
+    expect(
+      extractLabelledProjectIdentityFromTextLayer(["Travaux réalisés chez TRÜTKEN (VERFEUIL) 1358"]),
+    ).toEqual({ projectName: undefined, projectReference: undefined });
+  });
+
+  it("extracts the TTC amount from an explicit paid-deposit line", () => {
+    expect(extractPaidAcompteFromTextLayer(["Acompte versé        1\u202f488,00 €"])).toEqual({
+      amountTtc: 1488,
+      evidenceText: "Acompte versé 1 488,00 €",
+    });
+  });
+
+  it("does not treat a requested deposit as a paid deposit", () => {
+    expect(extractPaidAcompteFromTextLayer(["Acompte à verser : 1 488,00 €"])).toBeNull();
   });
 });

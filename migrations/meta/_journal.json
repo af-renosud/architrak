@@ -841,6 +841,13 @@
       "when": 1787997600000,
       "tag": "0119_planning_line_review_promotion_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 120,
+      "version": "7",
+      "when": 1788001200000,
+      "tag": "0120_acompte_no_invoice_payment_audit",
+      "breakpoints": true
     }
   ]
 }

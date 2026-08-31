@@ -1740,6 +1740,33 @@ export const projectIntakeDocuments = pgTable("project_intake_documents", {
   uniqueIndex("project_intake_documents_source_email_doc_idx").on(table.sourceEmailDocumentId),
 ]);
 
+// Task #686 — an audited supplier opening deposit which was paid without a
+// supplier invoice. This is deliberately separate from certificat_payments:
+// that ledger records client payments to the architect, whereas this records
+// the operator-confirmed supplier deposit and its parsed source evidence.
+export const acompteNoInvoicePayments = pgTable("acompte_no_invoice_payments", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "restrict" }),
+  certificatId: integer("certificat_id").notNull().references(() => certificats.id, { onDelete: "restrict" }),
+  sourceIntakeDocumentId: integer("source_intake_document_id").notNull().references(() => projectIntakeDocuments.id, { onDelete: "restrict" }),
+  sourceStorageKey: text("source_storage_key").notNull(),
+  sourceFileName: text("source_file_name").notNull(),
+  sourceContentFingerprint: text("source_content_fingerprint").notNull(),
+  amountHt: numeric("amount_ht", { precision: 12, scale: 2 }).notNull(),
+  amountTtc: numeric("amount_ttc", { precision: 12, scale: 2 }).notNull(),
+  paidAt: timestamp("paid_at", { withTimezone: true }).notNull(),
+  paymentReference: text("payment_reference").notNull(),
+  evidenceText: text("evidence_text"),
+  confirmedByUserId: integer("confirmed_by_user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  confirmedAt: timestamp("confirmed_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  uniqueIndex("acompte_no_invoice_payments_devis_unique").on(table.devisId),
+  uniqueIndex("acompte_no_invoice_payments_certificat_unique").on(table.certificatId),
+  index("acompte_no_invoice_payments_source_intake_document_id_idx").on(table.sourceIntakeDocumentId),
+  index("acompte_no_invoice_payments_confirmed_by_user_id_idx").on(table.confirmedByUserId),
+  check("acompte_no_invoice_payments_amounts_nonnegative", sql`${table.amountHt} > 0 AND ${table.amountTtc} > 0`),
+]);
+
 // ---------------------------------------------------------------------
 // Background ingest & auto-routing (Task #230)
 // ---------------------------------------------------------------------
@@ -2752,6 +2779,7 @@ export type ProjectDocument = typeof projectDocuments.$inferSelect;
 export type InsertProjectDocument = z.infer<typeof insertProjectDocumentSchema>;
 export type ProjectIntakeDocument = typeof projectIntakeDocuments.$inferSelect;
 export type InsertProjectIntakeDocument = z.infer<typeof insertProjectIntakeDocumentSchema>;
+export type AcompteNoInvoicePayment = typeof acompteNoInvoicePayments.$inferSelect;
 export type ProjectCommunication = typeof projectCommunications.$inferSelect;
 export type InsertProjectCommunication = z.infer<typeof insertProjectCommunicationSchema>;
 export type PaymentReminder = typeof paymentReminders.$inferSelect;
