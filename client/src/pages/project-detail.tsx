@@ -529,6 +529,23 @@ export default function ProjectDetail() {
   const hasAnyDocs = (projectDocuments?.length ?? 0) > 0;
   const [docFilter, setDocFilter] = useState<"orphans" | "all">("orphans");
   const visibleDocs = docFilter === "orphans" ? orphanDocs : (projectDocuments ?? []);
+  // Plans are project reference material rather than supplier source PDFs.
+  // Keep the first attached plan available to Planning Envelope as an independent
+  // review aid; it deliberately remains available on archived projects.
+  const floorPlanDocument = (projectDocuments ?? []).find(
+    (document) => document.documentType?.toLowerCase() === "plan",
+  );
+  const floorPlan = floorPlanDocument
+    ? {
+        fileName: floorPlanDocument.fileName,
+        previewUrl: floorPlanDocument.sourceEmailDocumentId
+          ? `/api/email-documents/${floorPlanDocument.sourceEmailDocumentId}/preview`
+          : `/api/documents/${floorPlanDocument.id}/preview`,
+        downloadUrl: floorPlanDocument.sourceEmailDocumentId
+          ? `/api/email-documents/${floorPlanDocument.sourceEmailDocumentId}/download`
+          : `/api/documents/${floorPlanDocument.id}/download`,
+      }
+    : null;
 
   const { data: projectComms } = useQuery<ProjectCommunication[]>({
     queryKey: projectScopedKey(projectId, "communications"),
@@ -1494,9 +1511,11 @@ export default function ProjectDetail() {
 
           <TabsContent value="planning-envelope">
             <PlanningEnvelopeTab
+              key={projectId}
               projectId={projectId!}
               contractors={contractors ?? []}
               isArchived={isArchived}
+              floorPlan={floorPlan}
             />
           </TabsContent>
 

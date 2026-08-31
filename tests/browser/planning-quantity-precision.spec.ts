@@ -1,5 +1,24 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import { Client } from "pg";
+import { deleteDocument } from "../../server/storage/object-storage";
+
+const TINY_PDF = Buffer.from(
+  `%PDF-1.4
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]>>endobj
+xref
+0 4
+0000000000 65535 f
+0000000009 00000 n
+0000000052 00000 n
+0000000101 00000 n
+trailer<</Size 4/Root 1 0 R>>
+startxref
+164
+%%EOF`,
+  "latin1",
+);
 
 async function devLogin(api: APIRequestContext, email: string) {
   const response = await api.post("/api/auth/dev-login", { data: { email } });
@@ -22,6 +41,7 @@ test.describe("Planning quantity precision", () => {
 
     let projectId: number | null = null;
     let contractorId: number | null = null;
+    let floorPlanStorageKey: string | null = null;
 
     try {
       const api = context.request;
@@ -37,6 +57,37 @@ test.describe("Planning quantity precision", () => {
       expect(projectResponse.ok()).toBe(true);
       const project = (await projectResponse.json()) as { id: number };
       projectId = project.id;
+      const floorPlanUpload = await api.post(`/api/projects/${projectId}/documents/upload`, {
+        multipart: {
+          file: {
+            name: `ground-floor-${unique}.pdf`,
+            mimeType: "application/pdf",
+            buffer: TINY_PDF,
+          },
+          documentType: "plan",
+          uploadedBy: "e2e",
+        },
+      });
+      expect(floorPlanUpload.ok()).toBe(true);
+      const floorPlanDocument = (await floorPlanUpload.json()) as {
+        id: number;
+        storageKey: string;
+      };
+      floorPlanStorageKey = floorPlanDocument.storageKey;
+
+      const floorPlanPreview = await api.get(
+        `/api/documents/${floorPlanDocument.id}/preview`,
+      );
+      expect(floorPlanPreview.ok()).toBe(true);
+      expect(floorPlanPreview.headers()["content-type"]).toContain("application/pdf");
+      expect(floorPlanPreview.headers()["content-disposition"]).toMatch(/^inline;/);
+      expect((await floorPlanPreview.body()).subarray(0, 5).toString()).toBe("%PDF-");
+
+      const floorPlanDownload = await api.get(
+        `/api/documents/${floorPlanDocument.id}/download`,
+      );
+      expect(floorPlanDownload.ok()).toBe(true);
+      expect(floorPlanDownload.headers()["content-disposition"]).toMatch(/^attachment;/);
 
       const contractorResult = await db.query<{ id: number }>(
         `INSERT INTO contractors (name) VALUES ($1) RETURNING id`,
@@ -46,6 +97,7 @@ test.describe("Planning quantity precision", () => {
 
       await db.query("BEGIN");
       let revisionId: number;
+      let secondRevisionId: number;
       try {
         const envelopeResult = await db.query<{ id: number }>(
           `INSERT INTO planning_envelopes (project_id) VALUES ($1) RETURNING id`,
@@ -66,11 +118,27 @@ test.describe("Planning quantity precision", () => {
           ],
         );
         revisionId = revisionResult.rows[0].id;
+        const secondRevisionResult = await db.query<{ id: number }>(
+          `INSERT INTO planning_revisions
+             (envelope_id, contractor_id, reference, description_fr, amount_ht, amount_ttc,
+              tva_rate_percent, created_by)
+           VALUES ($1, $2, $3, 'Alternative imported planning works', '80.00', '96.00', '20.00', $4)
+           RETURNING id`,
+          [
+            envelopeResult.rows[0].id,
+            contractorId,
+            `QTY-ALT-${unique}`,
+            email,
+          ],
+        );
+        secondRevisionId = secondRevisionResult.rows[0].id;
         await db.query(
           `INSERT INTO planning_revision_lines
              (revision_id, line_number, description, quantity, unit, unit_price_ht, total_ht)
-           VALUES ($1, 1, 'Imported work', '1.000', 'u', '100.00', '100.00')`,
-          [revisionId],
+           VALUES
+             ($1, 1, 'Imported work', '1.000', 'u', '100.00', '100.00'),
+             ($2, 1, 'Alternative work', '1.000', 'u', '80.00', '80.00')`,
+          [revisionId, secondRevisionId],
         );
         await db.query(
           `INSERT INTO planning_revision_sources
@@ -97,6 +165,21 @@ test.describe("Planning quantity precision", () => {
       }
 
       const page = await context.newPage();
+      const pdfResponse = {
+        status: 200,
+        headers: { "content-type": "application/pdf" },
+        body: "%PDF-1.4\n% planning popout browser fixture\n",
+      };
+      await page.route(`**/api/planning-revisions/${revisionId}/pdf*`, (route) =>
+        route.fulfill({
+          ...pdfResponse,
+          headers: {
+            ...pdfResponse.headers,
+            "content-disposition": "inline; filename=planning.pdf",
+          },
+          body: route.request().method() === "HEAD" ? "" : pdfResponse.body,
+        }),
+      );
       await page.goto(`/projets/${projectId}?tab=planning-envelope`);
       await expect(page.getByTestId(`planning-envelope-revision-${revisionId}`)).toBeVisible();
       await expect(page.getByTestId(`planning-envelope-pdf-${revisionId}`)).toHaveAttribute(
@@ -138,8 +221,55 @@ test.describe("Planning quantity precision", () => {
       await expect(page.getByTestId("planning-envelope-review-inline")).toBeVisible();
       await expect(page.getByTestId(`planning-envelope-review-${revisionId}`)).toHaveAttribute("aria-expanded", "true");
       await page.getByTestId(`planning-envelope-view-pdf-${revisionId}`).click();
-      await expect(page.getByTestId(`dialog-pdf-popout-planning-${revisionId}`)).toBeVisible();
+      const sourcePdf = page.getByTestId(`dialog-pdf-popout-planning-${revisionId}`);
+      await expect(sourcePdf).toBeVisible();
       await expect(page.getByTestId("planning-envelope-review-inline")).toBeVisible();
+      await page.getByTestId(`button-pdf-popout-minimize-planning-${revisionId}`).click();
+      await expect(sourcePdf).toHaveAttribute("data-minimized", "true");
+      await page.evaluate(
+        ({ key, value }) => window.sessionStorage.setItem(key, value),
+        {
+          key: `architrak.floorPlanPopout.frame.floor-plan-${projectId}`,
+          value: JSON.stringify({
+            x: 9_999,
+            y: 9_999,
+            w: 9_999,
+            h: 9_999,
+            minimized: false,
+          }),
+        },
+      );
+      await page.getByTestId(`planning-envelope-open-floor-plan-${projectId}`).click();
+      const floorPlan = page.getByTestId(`dialog-pdf-popout-floor-plan-${projectId}`);
+      await expect(floorPlan).toBeVisible();
+      await expect(floorPlan).toHaveAttribute("aria-label", /Floor plan viewer/);
+      await expect(page.getByTestId(`pdf-popout-iframe-floor-plan-${projectId}`)).toBeVisible();
+      const recoveredFrame = await floorPlan.boundingBox();
+      expect(recoveredFrame).not.toBeNull();
+      expect(recoveredFrame!.x).toBeGreaterThanOrEqual(0);
+      expect(recoveredFrame!.y).toBeGreaterThanOrEqual(0);
+      expect(recoveredFrame!.x + recoveredFrame!.width).toBeLessThanOrEqual(1440);
+      expect(recoveredFrame!.y + recoveredFrame!.height).toBeLessThanOrEqual(1000);
+      await expect(page.getByTestId("planning-envelope-review-inline")).toBeVisible();
+      await page.getByTestId(`button-pdf-popout-minimize-floor-plan-${projectId}`).click();
+      await expect(floorPlan).toHaveAttribute("data-minimized", "true");
+      await page.getByTestId(`button-pdf-popout-close-floor-plan-${projectId}`).click();
+      await page.getByTestId(`planning-envelope-open-floor-plan-${projectId}`).click();
+      await expect(floorPlan).toHaveAttribute("data-minimized", "true");
+      await page.getByTestId(`button-pdf-popout-minimize-floor-plan-${projectId}`).click();
+      await expect(floorPlan).toHaveAttribute("data-minimized", "false");
+      await page.getByTestId(`button-pdf-popout-minimize-floor-plan-${projectId}`).click();
+      await expect(floorPlan).toHaveAttribute("data-minimized", "true");
+      await page.getByTestId(`planning-envelope-review-${secondRevisionId}`).click();
+      await expect(page.getByTestId("planning-envelope-review-inline")).toContainText(
+        `QTY-ALT-${unique}`,
+      );
+      await expect(floorPlan).toBeVisible();
+      await page.getByTestId(`planning-envelope-review-${revisionId}`).click();
+      await expect(page.getByTestId("planning-envelope-review-inline")).toContainText(
+        `QTY-${unique}`,
+      );
+      await expect(floorPlan).toBeVisible();
       await page.getByTestId(`button-pdf-popout-close-planning-${revisionId}`).click();
       const [reviewResponse] = await Promise.all([
         page.waitForResponse((response) =>
@@ -151,12 +281,24 @@ test.describe("Planning quantity precision", () => {
       expect(reviewResponse.ok()).toBe(true);
       await expect(page.getByTestId("planning-envelope-review-inline")).toHaveCount(0);
       await expect(page.getByTestId(`planning-envelope-revision-${revisionId}`)).toContainText("Reviewed");
+
+      await db.query("UPDATE projects SET archived_at = NOW() WHERE id = $1", [projectId]);
+      await page.reload();
+      await expect(page.getByTestId("planning-envelope-archived-banner")).toBeVisible();
+      await expect(page.getByTestId(`planning-envelope-open-floor-plan-${projectId}`)).toBeEnabled();
+      await expect(page.getByTestId("planning-envelope-import")).toBeDisabled();
+      await expect(page.getByTestId("planning-envelope-new")).toBeDisabled();
+      await page.getByTestId(`planning-envelope-open-floor-plan-${projectId}`).click();
+      await expect(floorPlan).toBeVisible();
     } finally {
       if (projectId != null) {
         await db.query("DELETE FROM projects WHERE id = $1", [projectId]);
       }
       if (contractorId != null) {
         await db.query("DELETE FROM contractors WHERE id = $1", [contractorId]);
+      }
+      if (floorPlanStorageKey) {
+        await deleteDocument(floorPlanStorageKey).catch(() => undefined);
       }
       await db.query("DELETE FROM users WHERE email = $1", [email]).catch(() => undefined);
       await context.close();

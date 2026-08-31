@@ -4,6 +4,7 @@ import { storage } from "../storage";
 import { upload } from "../middleware/upload";
 import { uploadDocument, getDocumentStream } from "../storage/object-storage";
 import { validateRequest } from "../middleware/validate";
+import { requireAuth } from "../auth/middleware";
 
 const router = Router();
 
@@ -62,6 +63,22 @@ router.get("/api/documents/:id/download", async (req, res) => {
   }
 });
 
+router.get("/api/documents/:id/preview", requireAuth, async (req, res) => {
+  try {
+    const doc = await storage.getProjectDocument(Number(req.params.id));
+    if (!doc) return res.status(404).json({ message: "Document not found" });
+
+    const { stream, contentType, size } = await getDocumentStream(doc.storageKey);
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Disposition", `inline; filename="${doc.fileName}"`);
+    if (size) res.setHeader("Content-Length", String(size));
+    stream.pipe(res);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ message: `Preview failed: ${message}` });
+  }
+});
+
 router.get("/api/email-documents/:id/download", async (req, res) => {
   try {
     const doc = await storage.getEmailDocument(Number(req.params.id));
@@ -75,6 +92,23 @@ router.get("/api/email-documents/:id/download", async (req, res) => {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ message: `Download failed: ${message}` });
+  }
+});
+
+router.get("/api/email-documents/:id/preview", requireAuth, async (req, res) => {
+  try {
+    const doc = await storage.getEmailDocument(Number(req.params.id));
+    if (!doc || !doc.storageKey) return res.status(404).json({ message: "Document not found" });
+
+    const fileName = doc.attachmentFileName || "document.pdf";
+    const { stream, contentType, size } = await getDocumentStream(doc.storageKey);
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
+    if (size) res.setHeader("Content-Length", String(size));
+    stream.pipe(res);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ message: `Preview failed: ${message}` });
   }
 });
 

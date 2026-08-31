@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { AlertTriangle, Check, Download, FileCheck2, FilePlus2, FileText, Info, Loader2, LockKeyhole, Pencil, Plus, RefreshCw, ShieldCheck, Trash2, Upload, X } from "lucide-react";
+import { AlertTriangle, Check, Download, FileCheck2, FilePlus2, FileText, Info, Loader2, LockKeyhole, Map, Pencil, Plus, RefreshCw, ShieldCheck, Trash2, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -45,9 +45,10 @@ const importStageLabels: Record<PlanningImport["stage"], string> = { accepted: "
 
 const TECHNICAL_LOTS_KEY = ["/api/archidoc/technical-lots"];
 
-interface Props { projectId: string; contractors: Choice[]; isArchived: boolean; }
+interface FloorPlanSource { previewUrl: string; downloadUrl: string; fileName: string; }
+interface Props { projectId: string; contractors: Choice[]; isArchived: boolean; floorPlan?: FloorPlanSource | null; }
 
-export function PlanningEnvelopeTab({ projectId, contractors, isArchived }: Props) {
+export function PlanningEnvelopeTab({ projectId, contractors, isArchived, floorPlan }: Props) {
   const { toast } = useToast();
   const [dialog, setDialog] = useState<"new" | "edit" | null>(null);
   const [editing, setEditing] = useState<Revision | null>(null);
@@ -56,6 +57,7 @@ export function PlanningEnvelopeTab({ projectId, contractors, isArchived }: Prop
   const [deleteRevision, setDeleteRevision] = useState<Revision | null>(null);
   const [verificationNote, setVerificationNote] = useState("");
   const [pdfRevision, setPdfRevision] = useState<Revision | null>(null);
+  const [floorPlanOpen, setFloorPlanOpen] = useState(false);
   const [localImport, setLocalImport] = useState<{ fileName: string; startedAt: string } | null>(null);
   const [technicalLotsRetrying, setTechnicalLotsRetrying] = useState(false);
   const importing = localImport != null;
@@ -211,6 +213,16 @@ export function PlanningEnvelopeTab({ projectId, contractors, isArchived }: Prop
           <Button variant="ghost" size="sm" disabled={isFetching} onClick={() => void refetch()} data-testid="planning-envelope-refresh-status">
             <RefreshCw size={13} className={isFetching ? "animate-spin" : ""} /> Refresh status
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!floorPlan}
+            title={floorPlan ? "Keep the floor plan beside the line review workspace" : "No floor plan is attached to this project"}
+            onClick={() => setFloorPlanOpen(true)}
+            data-testid={`planning-envelope-open-floor-plan-${projectId}`}
+          >
+            <Map size={13} /> Floor plan
+          </Button>
           <Button variant="outline" size="sm" disabled={isArchived || importing} onClick={() => fileRef.current?.click()} data-testid="planning-envelope-import">
             {importing ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />} {importing ? "Processing PDF…" : "Import PDF"}
           </Button>
@@ -304,6 +316,17 @@ export function PlanningEnvelopeTab({ projectId, contractors, isArchived }: Prop
           downloadUrl={`/api/planning-revisions/${pdfRevision.revision.id}/pdf?download=1`}
           downloadName={pdfRevision.source?.fileName ?? `planning-revision-${pdfRevision.revision.id}.pdf`}
           onClose={() => setPdfRevision(null)}
+        />
+      )}
+      {floorPlanOpen && floorPlan && (
+        <PdfPopoutViewer
+          viewerId={`floor-plan-${projectId}`}
+          viewerKind="floor-plan"
+          devisCode={floorPlan.fileName}
+          pdfUrl={floorPlan.previewUrl}
+          downloadUrl={floorPlan.downloadUrl}
+          downloadName={floorPlan.fileName}
+          onClose={() => setFloorPlanOpen(false)}
         />
       )}
     </div>

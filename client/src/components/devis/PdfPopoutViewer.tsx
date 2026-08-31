@@ -10,6 +10,7 @@ import {
   RefreshCw,
   AlertTriangle,
   Keyboard,
+  Map,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -42,6 +43,8 @@ interface PdfPopoutViewerProps {
   downloadName?: string;
   /** Stable ID used for the window's test IDs when no devis ID exists. */
   viewerId?: string;
+  /** Gives non-quotation documents their own persisted window and visual identity. */
+  viewerKind?: "source-pdf" | "floor-plan";
   onClose: () => void;
 }
 
@@ -62,12 +65,28 @@ const COLLAPSED_H = 40;
 const NUDGE_STEP = 16;
 const NUDGE_STEP_LARGE = 64;
 
-function loadFrame(): StoredFrame {
+function constrainFrame(frame: StoredFrame): StoredFrame {
+  if (typeof window === "undefined") return frame;
+  const viewportW = Math.max(MIN_W, window.innerWidth);
+  const viewportH = Math.max(MIN_H, window.innerHeight);
+  const w = Math.min(viewportW, Math.max(MIN_W, frame.w));
+  const h = Math.min(viewportH, Math.max(MIN_H, frame.h));
+  const renderHeight = frame.minimized ? COLLAPSED_H : h;
+  return {
+    ...frame,
+    x: Math.min(Math.max(0, viewportW - w), Math.max(0, frame.x)),
+    y: Math.min(Math.max(0, viewportH - renderHeight), Math.max(0, frame.y)),
+    w,
+    h,
+  };
+}
+
+function loadFrame(storageKey = STORAGE_KEY, viewerKind: "source-pdf" | "floor-plan" = "source-pdf"): StoredFrame {
   if (typeof window === "undefined") {
     return { x: 80, y: 80, w: 900, h: 700, minimized: false };
   }
   try {
-    const raw = window.sessionStorage.getItem(STORAGE_KEY);
+    const raw = window.sessionStorage.getItem(storageKey);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<StoredFrame>;
       if (
@@ -76,32 +95,38 @@ function loadFrame(): StoredFrame {
         typeof parsed.w === "number" &&
         typeof parsed.h === "number"
       ) {
-        return {
-          x: Math.max(0, parsed.x),
-          y: Math.max(0, parsed.y),
+        return constrainFrame({
+          x: parsed.x,
+          y: parsed.y,
           w: Math.max(MIN_W, parsed.w),
           h: Math.max(MIN_H, parsed.h),
           minimized: !!parsed.minimized,
-        };
+        });
       }
     }
   } catch {
     // ignore parse errors and fall through to default
   }
-  const defaultW = Math.min(960, Math.max(MIN_W, window.innerWidth - 160));
-  const defaultH = Math.min(760, Math.max(MIN_H, window.innerHeight - 120));
+  const defaultW = viewerKind === "floor-plan"
+    ? Math.min(640, Math.max(MIN_W, Math.floor(window.innerWidth * 0.42)))
+    : Math.min(960, Math.max(MIN_W, window.innerWidth - 160));
+  const defaultH = viewerKind === "floor-plan"
+    ? Math.min(680, Math.max(MIN_H, window.innerHeight - 220))
+    : Math.min(760, Math.max(MIN_H, window.innerHeight - 120));
   return {
-    x: Math.max(20, Math.floor((window.innerWidth - defaultW) / 2)),
-    y: Math.max(20, Math.floor((window.innerHeight - defaultH) / 2)),
+    x: viewerKind === "floor-plan"
+      ? 28
+      : Math.max(20, Math.floor((window.innerWidth - defaultW) / 2)),
+    y: viewerKind === "floor-plan" ? 72 : Math.max(20, Math.floor((window.innerHeight - defaultH) / 2)),
     w: defaultW,
     h: defaultH,
     minimized: false,
   };
 }
 
-function saveFrame(frame: StoredFrame) {
+function saveFrame(frame: StoredFrame, storageKey = STORAGE_KEY) {
   try {
-    window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(frame));
+    window.sessionStorage.setItem(storageKey, JSON.stringify(frame));
   } catch {
     // sessionStorage may be unavailable (private mode etc.) — non-fatal
   }
@@ -116,7 +141,7 @@ type LoadState =
   | { kind: "ok" }
   | { kind: "error"; message: string };
 
-export function PdfPopoutViewer({
+function PdfPopoutViewerWindow({
   devisId,
   devisCode,
   hasOriginal = true,
@@ -124,10 +149,15 @@ export function PdfPopoutViewer({
   downloadUrl,
   downloadName,
   viewerId,
+  viewerKind = "source-pdf",
   onClose,
 }: PdfPopoutViewerProps) {
   const isDevisPdf = typeof devisId === "number";
   const idForTest = viewerId ?? String(devisId ?? "document");
+  const frameStorageKey = viewerKind === "floor-plan"
+    ? `architrak.floorPlanPopout.frame.${idForTest}`
+    : STORAGE_KEY;
+  const isFloorPlan = viewerKind === "floor-plan";
   const { data: translation } = useQuery<TranslationStatusResponse>({
     queryKey: isDevisPdf
       ? ["/api/devis", devisId, "translation"]
@@ -171,7 +201,7 @@ export function PdfPopoutViewer({
     setVariant(v as PdfVariant);
   };
 
-  const [frame, setFrame] = useState<StoredFrame>(() => loadFrame());
+  const [frame, setFrame] = useState<StoredFrame>(() => loadFrame(frameStorageKey, viewerKind));
   const [reloadToken, setReloadToken] = useState(0);
   const [loadState, setLoadState] = useState<LoadState>({ kind: "loading" });
   const dragRef = useRef<{
@@ -185,8 +215,14 @@ export function PdfPopoutViewer({
   const openerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
-    saveFrame(frame);
-  }, [frame]);
+    saveFrame(frame, frameStorageKey);
+  }, [frame, frameStorageKey]);
+
+  useEffect(() => {
+    const keepFrameUsable = () => setFrame((current) => constrainFrame(current));
+    window.addEventListener("resize", keepFrameUsable);
+    return () => window.removeEventListener("resize", keepFrameUsable);
+  }, []);
 
   // Probe the PDF endpoint with HEAD before letting the iframe show; native
   // <iframe> never fires `onerror` for HTTP failures, so we can't surface a
@@ -259,11 +295,11 @@ export function PdfPopoutViewer({
         y: Math.min(maxY, Math.max(0, d.startFrame.y + dy)),
       });
     } else {
-      setFrame({
+      setFrame(constrainFrame({
         ...d.startFrame,
         w: Math.max(MIN_W, d.startFrame.w + dx),
         h: Math.max(MIN_H, d.startFrame.h + dy),
-      });
+      }));
     }
   };
 
@@ -393,11 +429,11 @@ export function PdfPopoutViewer({
       ref={containerRef}
       role="dialog"
       aria-modal="false"
-      aria-label={`PDF viewer for ${devisCode}`}
+      aria-label={`${isFloorPlan ? "Floor plan" : "PDF"} viewer for ${devisCode}`}
       tabIndex={-1}
       data-testid={`dialog-pdf-popout-${idForTest}`}
       data-minimized={isMinimized ? "true" : "false"}
-      className="fixed z-[60] flex flex-col bg-white dark:bg-neutral-900 border border-[#0B2545]/30 dark:border-neutral-700 rounded-lg shadow-2xl overflow-hidden focus:outline-none"
+      className={`fixed z-[60] flex flex-col bg-white dark:bg-neutral-900 border rounded-lg shadow-2xl overflow-hidden focus:outline-none ${isFloorPlan ? "border-[#32656a]/40 dark:border-[#5d9698]/40" : "border-[#0B2545]/30 dark:border-neutral-700"}`}
       style={{
         left: frame.x,
         top: frame.y,
@@ -408,17 +444,17 @@ export function PdfPopoutViewer({
       onPointerUp={onPointerUp}
     >
       <div
-        className="flex items-center gap-2 px-3 py-2 bg-[#0B2545] text-white cursor-move select-none"
+        className={`flex items-center gap-2 px-3 py-2 text-white cursor-move select-none ${isFloorPlan ? "bg-[#24565c]" : "bg-[#0B2545]"}`}
         onPointerDown={onPointerDownDrag}
         data-testid={`pdf-popout-handle-${idForTest}`}
       >
         <GripHorizontal size={14} className="opacity-70" />
-        <FileText size={14} />
+        {isFloorPlan ? <Map size={14} /> : <FileText size={14} />}
         <span
           className="text-[12px] font-semibold tracking-tight truncate"
           data-testid={`pdf-popout-title-${idForTest}`}
         >
-          {devisCode}
+          {isFloorPlan ? `Floor plan · ${devisCode}` : devisCode}
         </span>
         <div
           className="ml-auto flex items-center gap-2"
@@ -528,7 +564,7 @@ export function PdfPopoutViewer({
               setFrame((f) => ({ ...f, minimized: !f.minimized }))
             }
             data-testid={`button-pdf-popout-minimize-${idForTest}`}
-            aria-label={isMinimized ? "Restore PDF viewer" : "Minimize PDF viewer"}
+            aria-label={isMinimized ? `Restore ${isFloorPlan ? "floor plan" : "PDF"} viewer` : `Minimize ${isFloorPlan ? "floor plan" : "PDF"} viewer`}
           >
             {isMinimized ? <Maximize2 size={14} /> : <Minus size={14} />}
           </Button>
@@ -539,7 +575,7 @@ export function PdfPopoutViewer({
             className="h-7 w-7 text-white hover:bg-white/15"
             onClick={onClose}
             data-testid={`button-pdf-popout-close-${idForTest}`}
-            aria-label="Close PDF viewer"
+            aria-label={`Close ${isFloorPlan ? "floor plan" : "PDF"} viewer`}
           >
             <X size={14} />
           </Button>
@@ -580,7 +616,7 @@ export function PdfPopoutViewer({
               ref={iframeRef}
               key={`${pdfUrl}#${reloadToken}`}
               src={pdfUrl}
-              title={`PDF — ${devisCode} (${variant})`}
+              title={`${isFloorPlan ? "Floor plan" : "PDF"} — ${devisCode}${isFloorPlan ? "" : ` (${variant})`}`}
               className="w-full h-full border-0"
               data-testid={`pdf-popout-iframe-${idForTest}`}
               onLoad={() => {
@@ -601,12 +637,12 @@ export function PdfPopoutViewer({
         // operable via arrow keys (Shift = larger step) for keyboard users.
         <button
           type="button"
-          className="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize bg-[#0B2545]/20 hover:bg-[#0B2545]/40 focus:bg-[#0B2545]/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0B2545]"
+          className={`absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize focus:outline-none focus-visible:ring-2 ${isFloorPlan ? "bg-[#24565c]/20 hover:bg-[#24565c]/40 focus:bg-[#24565c]/60 focus-visible:ring-[#24565c]" : "bg-[#0B2545]/20 hover:bg-[#0B2545]/40 focus:bg-[#0B2545]/60 focus-visible:ring-[#0B2545]"}`}
           onPointerDown={onPointerDownResize}
           onKeyDown={onResizeKeyDown}
           data-testid={`pdf-popout-resize-${idForTest}`}
           data-pdf-popout-resize="true"
-          aria-label="Resize PDF viewer (use arrow keys, Shift for larger step)"
+          aria-label={`Resize ${isFloorPlan ? "floor plan" : "PDF"} viewer (use arrow keys, Shift for larger step)`}
           style={{
             clipPath: "polygon(100% 0, 100% 100%, 0 100%)",
           }}
@@ -617,4 +653,14 @@ export function PdfPopoutViewer({
 
   if (typeof document === "undefined") return null;
   return createPortal(node, document.body);
+}
+
+export function PdfPopoutViewer(props: PdfPopoutViewerProps) {
+  const viewerIdentity = [
+    props.viewerKind ?? "source-pdf",
+    props.viewerId ?? props.devisId ?? "document",
+    props.pdfUrl ?? props.devisId ?? "",
+  ].join(":");
+
+  return <PdfPopoutViewerWindow key={viewerIdentity} {...props} />;
 }
