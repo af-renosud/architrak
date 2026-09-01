@@ -24,3 +24,15 @@ affected record-list queries when it sees a promotion/completion transition —
 and on its FIRST observation must compare against the cached lists (via
 `queryClient.getQueryData`) rather than assuming a baseline, or promotions
 that happened between visits stay invisible.
+
+The same rule applies to shared financial aggregates. Every mutation that can
+change the inclusion or amount of an issued financial record must invalidate
+the canonical aggregate query, not only the record-list query.
+
+**Why:** with infinite staleness, a successful certificate lifecycle change can
+otherwise leave certified and remaining figures materially wrong until a hard
+reload, even though the underlying list has refreshed.
+
+**How to apply:** when adding a create, issue/send, status, reissue/supersede,
+payment, or deposit-lifecycle action, identify every aggregate query derived
+from that record and invalidate it on success through its canonical query key.

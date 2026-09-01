@@ -16,7 +16,7 @@ import { CertificatDetailDialog } from "@/components/certificats/CertificatDetai
 import { Skeleton } from "@/components/ui/skeleton";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient, ApiError } from "@/lib/queryClient";
+import { apiRequest, queryClient, projectScopedKey, ApiError } from "@/lib/queryClient";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
@@ -338,9 +338,10 @@ export default function Certificats() {
       const res = await apiRequest("POST", `/api/projects/${data.projectId}/certificats`, data);
       return res.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "certificats"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "certificats", "next-ref"] });
+    onSuccess: (_created, data) => {
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(data.projectId, "certificats") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(data.projectId, "certificats", "next-ref") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(data.projectId, "financial-summary") });
       setDialogOpen(false);
       form.reset();
       toast({ title: "Certificat created successfully" });
@@ -368,6 +369,9 @@ export default function Certificats() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "certificats"] });
+      if (selectedProjectId) {
+        queryClient.invalidateQueries({ queryKey: projectScopedKey(selectedProjectId, "financial-summary") });
+      }
       toast({ title: "Status updated" });
     },
     onError: (error: Error) => {
@@ -386,6 +390,7 @@ export default function Certificats() {
     onSuccess: (draft) => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "certificats"] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "certificats", "next-ref"] });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(draft.projectId, "financial-summary") });
       toast({
         title: `Reissued as ${draft.certificateRef}`,
         description: "A new draft was created with the financials pre-filled; the original is now marked superseded.",

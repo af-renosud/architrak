@@ -61,6 +61,25 @@ import { Amount } from "@/components/ui/amount";
 import { formatCurrency as fmt } from "@/lib/utils";
 import { normalizeRef } from "@shared/intake-dedup";
 
+interface DevisFinancialSummary {
+  devisId: number;
+  originalHt: number;
+  originalTtc: number;
+  adjustedHt: number;
+  adjustedTtc: number;
+  certifiedHt: number;
+  certifiedTtc: number;
+  acompteCertifiedHt?: number;
+  acompteCertifiedTtc?: number;
+  resteARealiser: number;
+  resteARealiserTtc: number;
+  invoiceCount: number;
+}
+
+interface ProjectFinancialSummary {
+  devis: DevisFinancialSummary[];
+}
+
 export type LotCodeValue = {
   lotCatalogId: number | null;
   lotRefText: string;
@@ -726,6 +745,7 @@ function AcompteBadge({ devis }: { devis: Devis }) {
     onSuccess: (cert: { id?: number; certificateRef?: string }) => {
       queryClient.invalidateQueries({ queryKey: projectScopedKey(devis.projectId, "devis") });
       queryClient.invalidateQueries({ queryKey: projectScopedKey(devis.projectId, "certificats") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(devis.projectId, "financial-summary") });
       const certUrl = cert.id
         ? `/certificats?projectId=${devis.projectId}&certificatId=${cert.id}`
         : `/certificats?projectId=${devis.projectId}`;
@@ -753,6 +773,8 @@ function AcompteBadge({ devis }: { devis: Devis }) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: projectScopedKey(devis.projectId, "devis") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(devis.projectId, "certificats") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(devis.projectId, "financial-summary") });
       toast({ title: "Acompte marqué payé" });
     },
     onError: (err: Error) => {
@@ -5777,6 +5799,14 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
   const { data: avenants } = useQuery<Avenant[]>({
     queryKey: ["/api/devis", devis.id, "avenants"],
   });
+  const {
+    data: financialSummary,
+    isError: isFinancialSummaryError,
+    isFetching: isFinancialSummaryFetching,
+    refetch: refetchFinancialSummary,
+  } = useQuery<ProjectFinancialSummary>({
+    queryKey: projectScopedKey(projectId, "financial-summary"),
+  });
   const { data: lineItems } = useQuery<DevisLineItem[]>({
     queryKey: ["/api/devis", devis.id, "line-items"],
     enabled: devis.invoicingMode === "mode_b",
@@ -5785,20 +5815,10 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
     queryKey: ["/api/devis", devis.id, "line-items"],
   });
 
-  const originalHt = parseFloat(devis.amountHt);
-  const originalTtc = parseFloat(devis.amountTtc);
-  const approvedAvenants = (avenants ?? []).filter((a) => a.status === "approved");
-  const pvTotal = approvedAvenants.filter((a) => a.type === "pv").reduce((s, a) => s + parseFloat(a.amountHt), 0);
-  const mvTotal = approvedAvenants.filter((a) => a.type === "mv").reduce((s, a) => s + parseFloat(a.amountHt), 0);
-  const pvTotalTtc = approvedAvenants.filter((a) => a.type === "pv").reduce((s, a) => s + parseFloat(a.amountTtc), 0);
-  const mvTotalTtc = approvedAvenants.filter((a) => a.type === "mv").reduce((s, a) => s + parseFloat(a.amountTtc), 0);
-  const adjustedHt = originalHt + pvTotal - mvTotal;
-  const adjustedTtc = originalTtc + pvTotalTtc - mvTotalTtc;
-  const invoicedHt = (invoices ?? []).reduce((s, i) => s + parseFloat(i.amountHt), 0);
-  const invoicedTtc = (invoices ?? []).reduce((s, i) => s + parseFloat(i.amountTtc), 0);
-  const remainingHt = adjustedHt - invoicedHt;
-  const remainingTtc = adjustedTtc - invoicedTtc;
-  const progress = adjustedHt > 0 ? Math.min((invoicedHt / adjustedHt) * 100, 100) : 0;
+  const financial = financialSummary?.devis.find((summary) => summary.devisId === devis.id);
+  const progress = financial && financial.adjustedHt > 0
+    ? Math.min((financial.certifiedHt / financial.adjustedHt) * 100, 100)
+    : 0;
 
   const lineItemForm = useForm<z.infer<typeof lineItemFormSchema>>({
     resolver: zodResolver(lineItemFormSchema),
@@ -6386,38 +6406,77 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
 
       <DevisClosurePanel devis={devis} projectId={projectId} isArchived={isArchived} />
 
-      <div className="grid grid-cols-4 gap-3">
-        <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-          <TechnicalLabel>Original Contracted</TechnicalLabel>
-          <p className="text-[13px] font-semibold text-foreground mt-1"><Amount value={originalTtc} denomination="TTC" /></p>
-          <p className="text-[10px] text-muted-foreground"><Amount value={originalHt} denomination="HT" /></p>
+      {financial ? (
+        <div className="space-y-2" data-testid={`card-devis-detail-financial-${devis.id}`}>
+          <div className="grid grid-cols-4 gap-3">
+            <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
+              <TechnicalLabel>Original Contracted</TechnicalLabel>
+              <p className="text-[13px] font-semibold text-foreground mt-1"><Amount value={financial.originalTtc} denomination="TTC" /></p>
+              <p className="text-[10px] text-muted-foreground"><Amount value={financial.originalHt} denomination="HT" /></p>
+            </div>
+            <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
+              <TechnicalLabel>Adjusted (+ PV/MV)</TechnicalLabel>
+              <p className="text-[13px] font-semibold text-foreground mt-1"><Amount value={financial.adjustedTtc} denomination="TTC" /></p>
+              <p className="text-[10px] text-muted-foreground"><Amount value={financial.adjustedHt} denomination="HT" /></p>
+            </div>
+            <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
+              <TechnicalLabel>Certified</TechnicalLabel>
+              <p className="text-[13px] font-semibold text-emerald-600 mt-1" data-testid={`text-devis-detail-certified-${devis.id}`}>
+                <Amount value={financial.certifiedTtc} denomination="TTC" />
+              </p>
+              <p className="text-[10px] text-muted-foreground"><Amount value={financial.certifiedHt} denomination="HT" /></p>
+              {(financial.acompteCertifiedHt ?? 0) > 0 && (
+                <p className="text-[9px] text-emerald-700 dark:text-emerald-400 mt-1" data-testid={`text-devis-detail-acompte-${devis.id}`}>
+                  Includes opening deposit: <Amount value={financial.acompteCertifiedTtc ?? 0} denomination="TTC" />
+                  {" · "}<Amount value={financial.acompteCertifiedHt ?? 0} denomination="HT" />
+                </p>
+              )}
+              <p className="text-[9px] text-muted-foreground mt-1">
+                {financial.invoiceCount} supplier invoice{financial.invoiceCount !== 1 ? "s" : ""}
+              </p>
+            </div>
+            <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
+              <TechnicalLabel>Reste à Réaliser</TechnicalLabel>
+              <p
+                className={`text-[13px] font-semibold mt-1 ${financial.resteARealiser < 0 ? "text-red-600" : "text-amber-600"}`}
+                data-testid={`text-devis-detail-remaining-${devis.id}`}
+              >
+                <Amount value={financial.resteARealiserTtc} denomination="TTC" />
+              </p>
+              <p className="text-[10px] text-muted-foreground"><Amount value={financial.resteARealiser} denomination="HT" /></p>
+            </div>
+          </div>
+          <TvaDerivedHint
+            amountHt={financial.adjustedHt}
+            amountTtc={financial.adjustedTtc}
+            testId={`text-devis-detail-tva-derived-${devis.id}`}
+          />
+          <div className="h-1.5 w-full rounded-full bg-slate-100">
+            <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} />
+          </div>
         </div>
-        <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-          <TechnicalLabel>Adjusted (+ PV/MV)</TechnicalLabel>
-          <p className="text-[13px] font-semibold text-foreground mt-1"><Amount value={adjustedTtc} denomination="TTC" /></p>
-          <p className="text-[10px] text-muted-foreground"><Amount value={adjustedHt} denomination="HT" /></p>
+      ) : isFinancialSummaryError ? (
+        <div
+          className="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-3"
+          data-testid={`error-devis-detail-financial-${devis.id}`}
+        >
+          <p className="text-[11px] text-amber-900">Financial summary could not be loaded.</p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 text-[10px]"
+            disabled={isFinancialSummaryFetching}
+            onClick={() => void refetchFinancialSummary()}
+          >
+            {isFinancialSummaryFetching ? "Retrying…" : "Retry"}
+          </Button>
         </div>
-        <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-          <TechnicalLabel>Invoiced</TechnicalLabel>
-          <p className="text-[13px] font-semibold text-emerald-600 mt-1"><Amount value={invoicedTtc} denomination="TTC" /></p>
-          <p className="text-[10px] text-muted-foreground"><Amount value={invoicedHt} denomination="HT" /></p>
+      ) : (
+        <div className="grid grid-cols-4 gap-3" data-testid={`skeleton-devis-detail-financial-${devis.id}`}>
+          {[0, 1, 2, 3].map((index) => <Skeleton key={index} className="h-20 rounded-xl" />)}
         </div>
-        <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-          <TechnicalLabel>Reste à Réaliser</TechnicalLabel>
-          <p className={`text-[13px] font-semibold mt-1 ${remainingHt < 0 ? "text-red-600" : "text-amber-600"}`}>
-            <Amount value={remainingTtc} denomination="TTC" />
-          </p>
-          <p className="text-[10px] text-muted-foreground"><Amount value={remainingHt} denomination="HT" /></p>
-        </div>
-      </div>
-      <TvaDerivedHint
-        amountHt={adjustedHt}
-        amountTtc={adjustedTtc}
-        testId={`text-devis-detail-tva-derived-${devis.id}`}
-      />
-      <div className="h-1.5 w-full rounded-full bg-slate-100">
-        <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} />
-      </div>
+      )}
 
       <DevisDetailTabs
         devis={devis}

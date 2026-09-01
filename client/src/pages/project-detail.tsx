@@ -710,6 +710,7 @@ export default function ProjectDetail() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "certificats") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "financial-summary") });
       setCertDialogOpen(false);
       certForm.reset();
       toast({ title: "Certificat created successfully" });
@@ -726,6 +727,7 @@ export default function ProjectDetail() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "certificats") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "financial-summary") });
       toast({ title: "Status updated" });
     },
     onError: (error: Error) => {
@@ -828,6 +830,7 @@ export default function ProjectDetail() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "communications") });
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "certificats") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "financial-summary") });
       toast({ title: "Certificat sent" });
     },
     onError: (error: Error) => {
