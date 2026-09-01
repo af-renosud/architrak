@@ -4,7 +4,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { Mail, FileText, RefreshCw, ExternalLink, Search, Filter, Eye, RotateCcw, Trash2 } from "lucide-react";
+import { Mail, FileText, RefreshCw, ExternalLink, Search, Filter, Eye, RotateCcw, Trash2, ChevronRight } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -67,7 +67,7 @@ export default function EmailDocuments() {
   // so the queue opens pre-filtered to reviewed-but-unassigned documents.
   const [statusFilter, setStatusFilter] = useState<string>(() => {
     const param = new URLSearchParams(window.location.search).get("filter");
-    return param === "needs_project" ? "needs_project" : "all";
+    return param === "needs_project" || param === "needs_attention" ? param : "all";
   });
   const [typeFilter, setTypeFilterState] = useState<string>("all");
   const [searchQuery, setSearchQueryState] = useState("");
@@ -169,6 +169,15 @@ export default function EmailDocuments() {
   const setStatusFilterAndClear = (v: string) => { setSelectedIds(new Set()); setStatusFilter(v); };
   const setTypeFilter = (v: string) => { setSelectedIds(new Set()); setTypeFilterState(v); };
   const setSearchQuery = (v: string) => { setSelectedIds(new Set()); setSearchQueryState(v); };
+  const showDocumentsNeedingAttention = () => {
+    setSelectedIds(new Set());
+    setStatusFilter("needs_attention");
+    setTypeFilterState("all");
+    setSearchQueryState("");
+    const url = new URL(window.location.href);
+    url.searchParams.set("filter", "needs_attention");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  };
 
   // Task #550 — bulk dismissal in ONE server call; per-document refusals
   // (already promoted into a devis/facture) come back in the results and
@@ -225,7 +234,9 @@ export default function EmailDocuments() {
   projects?.forEach(p => projectMap.set(p.id, p));
 
   const filtered = emailDocs?.filter(doc => {
-    if (statusFilter === "needs_project") {
+    if (statusFilter === "needs_attention") {
+      if (doc.extractionStatus !== "pending" && doc.extractionStatus !== "needs_review") return false;
+    } else if (statusFilter === "needs_project") {
       if (doc.extractionStatus !== "needs_review" || doc.projectId != null) return false;
     } else if (statusFilter === "all") {
       // Task #424 — removed (skipped) docs are hidden from the default view;
@@ -321,14 +332,22 @@ export default function EmailDocuments() {
         )}
 
         {pendingCount > 0 && (
-          <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-xl px-4 py-3 flex items-center gap-3">
+          <button
+            type="button"
+            onClick={showDocumentsNeedingAttention}
+            className="w-full bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-xl px-4 py-3 flex items-center gap-3 text-left transition-colors hover:bg-amber-100/70 dark:hover:bg-amber-900/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2"
+            data-testid="button-show-pending-documents"
+            aria-label={`Show ${pendingCount} document${pendingCount > 1 ? "s" : ""} needing attention`}
+          >
             <div className="w-8 h-8 rounded-full bg-amber-100 dark:bg-amber-900 flex items-center justify-center">
               <FileText size={14} className="text-amber-600" />
             </div>
-            <span className="text-sm font-medium text-amber-800 dark:text-amber-200" data-testid="text-pending-count">
+            <span className="flex-1 text-sm font-medium text-amber-800 dark:text-amber-200" data-testid="text-pending-count">
               {pendingCount} document{pendingCount > 1 ? "s" : ""} pending review or processing
+              <span className="ml-2 text-xs font-normal text-amber-700/80 dark:text-amber-300/80">Click to view</span>
             </span>
-          </div>
+            <ChevronRight size={16} className="text-amber-600" aria-hidden="true" />
+          </button>
         )}
 
         <div className="flex items-center gap-3 flex-wrap">
@@ -353,6 +372,7 @@ export default function EmailDocuments() {
               <SelectItem value="processing">Processing</SelectItem>
               <SelectItem value="completed">Completed</SelectItem>
               <SelectItem value="needs_review">Needs Review</SelectItem>
+              <SelectItem value="needs_attention">Needs Attention</SelectItem>
               <SelectItem value="needs_project">Needs Project</SelectItem>
               <SelectItem value="failed">Failed</SelectItem>
               <SelectItem value="unmatched_sender">Unmatched Sender</SelectItem>
