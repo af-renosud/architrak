@@ -2666,7 +2666,7 @@ type ProjectIdentityResolution =
  * match. The union of all labelled evidence must contain one candidate, which
  * makes duplicate master data and contradictory labels fail closed.
  */
-function resolveLabelledProjectIdentity(
+export function resolveLabelledProjectIdentity(
   parsed: ParsedDocument,
   projects: Project[],
 ): ProjectIdentityResolution {

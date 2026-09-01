@@ -59,7 +59,7 @@ import {
   type Devis, type InsertDevis,
   type DevisLineItem, type InsertDevisLineItem,
   type Avenant, type InsertAvenant,
-  type Invoice, type InsertInvoice,
+  type Invoice, type InsertInvoice, type ServerInsertInvoice,
   type Situation, type InsertSituation,
   type SituationLine, type InsertSituationLine,
   marcheDocuments,
@@ -360,7 +360,14 @@ export interface IStorage {
 
   getInvoicesByProject(projectId: number): Promise<Invoice[]>;
 
-  createInvoice(data: InsertInvoice): Promise<Invoice>;
+  getInvoiceBySourceIntakeDocumentId(intakeDocumentId: number): Promise<Invoice | undefined>;
+
+  createInvoice(data: ServerInsertInvoice): Promise<Invoice>;
+
+  createIntakeInvoiceWithProjectDocument(
+    invoice: ServerInsertInvoice & { sourceIntakeDocumentId: number },
+    projectDocument: InsertProjectDocument,
+  ): Promise<{ invoice: Invoice; created: boolean }>;
 
   updateInvoice(id: number, data: Partial<InsertInvoice>): Promise<Invoice | undefined>;
 
@@ -1879,9 +1886,57 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(invoices).where(eq(invoices.projectId, projectId)).orderBy(desc(invoices.createdAt));
   }
 
-  async createInvoice(data: InsertInvoice): Promise<Invoice> {
-    const [invoice] = await db.insert(invoices).values(data).returning();
+  async getInvoiceBySourceIntakeDocumentId(intakeDocumentId: number): Promise<Invoice | undefined> {
+    const [invoice] = await db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.sourceIntakeDocumentId, intakeDocumentId));
     return invoice;
+  }
+
+  async createInvoice(data: ServerInsertInvoice): Promise<Invoice> {
+    if (data.sourceIntakeDocumentId == null) {
+      const [invoice] = await db.insert(invoices).values(data).returning();
+      return invoice;
+    }
+    const [invoice] = await db
+      .insert(invoices)
+      .values(data)
+      .onConflictDoNothing({
+        target: invoices.sourceIntakeDocumentId,
+        where: isNotNull(invoices.sourceIntakeDocumentId),
+      })
+      .returning();
+    if (invoice) return invoice;
+    const existing = await this.getInvoiceBySourceIntakeDocumentId(data.sourceIntakeDocumentId);
+    if (existing) return existing;
+    throw new Error("invoice source insert conflicted but no existing invoice was found");
+  }
+
+  async createIntakeInvoiceWithProjectDocument(
+    invoiceData: ServerInsertInvoice & { sourceIntakeDocumentId: number },
+    projectDocumentData: InsertProjectDocument,
+  ): Promise<{ invoice: Invoice; created: boolean }> {
+    return db.transaction(async (tx) => {
+      const [invoice] = await tx
+        .insert(invoices)
+        .values(invoiceData)
+        .onConflictDoNothing({
+          target: invoices.sourceIntakeDocumentId,
+          where: isNotNull(invoices.sourceIntakeDocumentId),
+        })
+        .returning();
+      if (!invoice) {
+        const [existing] = await tx
+          .select()
+          .from(invoices)
+          .where(eq(invoices.sourceIntakeDocumentId, invoiceData.sourceIntakeDocumentId));
+        if (!existing) throw new Error("invoice source insert conflicted but no existing invoice was found");
+        return { invoice: existing, created: false };
+      }
+      await tx.insert(projectDocuments).values(projectDocumentData);
+      return { invoice, created: true };
+    });
   }
 
   async updateInvoice(id: number, data: Partial<InsertInvoice>): Promise<Invoice | undefined> {

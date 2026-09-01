@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { Upload, FileText, Download, Mail, HardDriveUpload, Inbox, ArrowRight, RotateCw, Trash2, Eye, EyeOff, Paperclip, BadgeCheck } from "lucide-react";
+import { Upload, FileText, Download, Mail, HardDriveUpload, Inbox, ArrowRight, RotateCw, Trash2, Eye, EyeOff, Paperclip, BadgeCheck, FolderCheck } from "lucide-react";
 import { Link } from "wouter";
 import {
   AlertDialog,
@@ -127,7 +127,104 @@ function openingAcompteResolution(doc: ProjectIntakeDocument): OpeningAcompteRes
   return value as OpeningAcompteResolution;
 }
 
+function needsProjectIdentityConfirmation(doc: ProjectIntakeDocument): boolean {
+  if (
+    doc.routingState !== "parked"
+    || doc.promotedId != null
+    || !doc.contentFingerprint
+    || openingAcompteResolution(doc)
+  ) {
+    return false;
+  }
+  const extracted = doc.extractedData as {
+    projectName?: unknown;
+    projectReference?: unknown;
+    projectIdentityResolution?: unknown;
+  } | null;
+  const hasLabel =
+    (typeof extracted?.projectName === "string" && extracted.projectName.trim() !== "")
+    || (typeof extracted?.projectReference === "string" && extracted.projectReference.trim() !== "");
+  return hasLabel
+    && !extracted?.projectIdentityResolution
+    && (doc.notes ?? "").includes("labelled project identity");
+}
+
 const eurFormatter = new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" });
+
+function ConfirmProjectIdentityDialog({
+  projectId,
+  doc,
+  onClose,
+}: {
+  projectId: string;
+  doc: ProjectIntakeDocument;
+  onClose: () => void;
+}) {
+  const { toast } = useToast();
+  const { data: project } = useQuery<{ id: number; name: string; code: string }>({
+    queryKey: ["/api/projects", String(projectId)],
+  });
+  const extracted = doc.extractedData as { projectName?: string; projectReference?: string } | null;
+  const mutation = useMutation({
+    mutationFn: () =>
+      apiRequest("POST", `/api/intake-documents/${doc.id}/confirm-project-identity`, {
+        confirmed: true,
+        expectedFingerprint: doc.contentFingerprint,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "intake"] });
+      toast({
+        title: "Project identity confirmed",
+        description: "The decision was recorded against this exact PDF and routing is retrying.",
+      });
+      onClose();
+    },
+    onError: (error: Error) => {
+      toast({ title: "Project confirmation failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <AlertDialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <AlertDialogContent data-testid="dialog-confirm-intake-project">
+        <AlertDialogHeader>
+          <AlertDialogTitle>Confirm this project?</AlertDialogTitle>
+          <AlertDialogDescription className="space-y-3">
+            <span className="block">
+              Automatic matching could not reconcile the project label printed on this PDF with the project record.
+            </span>
+            <span className="block rounded-md border bg-muted/40 p-3 text-foreground">
+              <span className="block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">PDF label</span>
+              <span className="block mt-1" data-testid="text-intake-project-label">
+                {extracted?.projectName ?? extracted?.projectReference ?? "Unknown"}
+              </span>
+              <span className="block mt-3 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Confirm as</span>
+              <span className="block mt-1 font-semibold" data-testid="text-intake-project-target">
+                {project ? `${project.name} (${project.code})` : `Current project #${projectId}`}
+              </span>
+            </span>
+            <span className="block">
+              This records a human decision tied to the exact PDF. It does not confirm any payment; if a paid opening deposit is detected, that will require a separate confirmation next.
+            </span>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={mutation.isPending}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={(event) => {
+              event.preventDefault();
+              mutation.mutate();
+            }}
+            disabled={mutation.isPending}
+            data-testid="button-confirm-intake-project-submit"
+          >
+            {mutation.isPending ? "Confirming…" : "Confirm project"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
 
 function ConfirmOpeningAcompteDialog({
   projectId,
@@ -344,6 +441,7 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
   const [showVoid, setShowVoid] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [acompteTarget, setAcompteTarget] = useState<ProjectIntakeDocument | null>(null);
+  const [projectIdentityTarget, setProjectIdentityTarget] = useState<ProjectIntakeDocument | null>(null);
   const dragDepth = useRef(0);
 
   const { data: intakeDocs, isLoading } = useQuery<IntakeListItem[]>({
@@ -625,6 +723,7 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
             const canRetry =
               !isArchived && (doc.analysisState === "failed" || doc.routingState === "failed" || doc.routingState === "parked");
             const acompteResolution = openingAcompteResolution(doc);
+            const projectIdentityConfirmationNeeded = needsProjectIdentityConfirmation(doc);
             const extractedIdentity = doc.extractedData as { projectName?: string; projectReference?: string } | null;
             return (
               <LuxuryCard key={doc.id} className="p-4" data-testid={`card-intake-doc-${doc.id}`}>
@@ -718,6 +817,18 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
                         <span className="text-[9px] font-bold uppercase tracking-widest">Confirm deposit</span>
                       </Button>
                     )}
+                    {!isArchived && projectIdentityConfirmationNeeded && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8"
+                        onClick={() => setProjectIdentityTarget(doc)}
+                        data-testid={`button-confirm-intake-project-${doc.id}`}
+                      >
+                        <FolderCheck size={12} />
+                        <span className="text-[9px] font-bold uppercase tracking-widest">Confirm project</span>
+                      </Button>
+                    )}
                     {canRetry && (
                       <Button
                         variant="ghost"
@@ -780,6 +891,13 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
           doc={acompteTarget}
           resolution={openingAcompteResolution(acompteTarget)!}
           onClose={() => setAcompteTarget(null)}
+        />
+      )}
+      {projectIdentityTarget && (
+        <ConfirmProjectIdentityDialog
+          projectId={projectId}
+          doc={projectIdentityTarget}
+          onClose={() => setProjectIdentityTarget(null)}
         />
       )}
 

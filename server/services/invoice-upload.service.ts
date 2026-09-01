@@ -17,7 +17,12 @@ interface UploadedFile {
   mimetype: string;
 }
 
-export async function processInvoiceUpload(devisId: number, file: UploadedFile, preParsed?: ParsedDocument) {
+export async function processInvoiceUpload(
+  devisId: number,
+  file: UploadedFile,
+  preParsed?: ParsedDocument,
+  opts: { sourceIntakeDocumentId?: number } = {},
+) {
   assertPdfMagic(file.buffer);
   const devis = await storage.getDevis(devisId);
   if (!devis) {
@@ -70,16 +75,18 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile, 
     };
   }
 
-  const storageKey = await uploadDocument(devis.projectId, file.originalname, file.buffer, file.mimetype);
+  if (opts.sourceIntakeDocumentId != null) {
+    const existing = await storage.getInvoiceBySourceIntakeDocumentId(opts.sourceIntakeDocumentId);
+    if (existing) {
+      return {
+        success: true,
+        status: 200,
+        data: { invoice: existing, extraction: parsed, storageKey: existing.pdfPath, fileName: file.originalname },
+      };
+    }
+  }
 
-  await storage.createProjectDocument({
-    projectId: devis.projectId,
-    fileName: file.originalname,
-    storageKey,
-    documentType: "invoice",
-    uploadedBy: "manual",
-    description: `Invoice PDF upload for devis ${devis.devisCode}: ${file.originalname}`,
-  });
+  const storageKey = await uploadDocument(devis.projectId, file.originalname, file.buffer, file.mimetype);
 
   const effectiveHt = validation.correctedValues.amountHt ?? parsed.amountHt;
   const effectiveTtc = validation.correctedValues.amountTtc ?? parsed.amountTtc;
@@ -111,9 +118,11 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile, 
   const amountHt = String(htNum);
   const amountTtc = String(ttcNum);
   const tvaAmount = String(deriveTvaAmount(htNum, ttcNum));
-  const invoice = await storage.createInvoice({
+  const created = opts.sourceIntakeDocumentId != null
+    ? await storage.createIntakeInvoiceWithProjectDocument({
     devisId,
     projectId: devis.projectId,
+    sourceIntakeDocumentId: opts.sourceIntakeDocumentId ?? null,
     contractorId: devis.contractorId,
     invoiceNumber: parsed.invoiceNumber || parsed.reference || file.originalname.replace(/\.pdf$/i, ""),
     amountHt,
@@ -130,7 +139,57 @@ export async function processInvoiceUpload(devisId: number, file: UploadedFile, 
     // Task #225 — Anti-fraud banking capture (NULL when invalid/missing).
     extractedIban: safeExtractIban(parsed.iban),
     extractedBic: safeExtractBic(parsed.bic),
-  });
+  }, {
+    projectId: devis.projectId,
+    fileName: file.originalname,
+    storageKey,
+    documentType: "invoice",
+    uploadedBy: "manual",
+    description: `Invoice PDF upload for devis ${devis.devisCode}: ${file.originalname}`,
+  })
+    : {
+      invoice: await storage.createInvoice({
+        devisId,
+        projectId: devis.projectId,
+        contractorId: devis.contractorId,
+        invoiceNumber: parsed.invoiceNumber || parsed.reference || file.originalname.replace(/\.pdf$/i, ""),
+        amountHt,
+        tvaAmount,
+        amountTtc,
+        status: "draft",
+        dateIssued: parsed.date || null,
+        datePaid: null,
+        pdfPath: storageKey,
+        notes: null,
+        validationWarnings: enrichedWarnings,
+        aiExtractedData: parsed,
+        aiConfidence: validation.confidenceScore,
+        extractedIban: safeExtractIban(parsed.iban),
+        extractedBic: safeExtractBic(parsed.bic),
+      }),
+      created: true,
+    };
+  const invoice = created.invoice;
+
+  // A concurrent loser receives the committed invoice+project-document winner.
+  if (!created.created) {
+    return {
+      success: true,
+      status: 200,
+      data: { invoice, extraction: parsed, storageKey: invoice.pdfPath, fileName: file.originalname },
+    };
+  }
+
+  if (opts.sourceIntakeDocumentId == null) {
+    await storage.createProjectDocument({
+      projectId: devis.projectId,
+      fileName: file.originalname,
+      storageKey,
+      documentType: "invoice",
+      uploadedBy: "manual",
+      description: `Invoice PDF upload for devis ${devis.devisCode}: ${file.originalname}`,
+    });
+  }
 
   try {
     await reconcileAdvisories({ invoiceId: invoice.id }, enrichedWarnings, "extractor");

@@ -41,6 +41,7 @@ import { assertPdfMagic } from "../../middleware/upload";
 import { processDevisUpload } from "../devis-upload.service";
 import { processInvoiceUpload } from "../invoice-upload.service";
 import { getOpeningAcompteResolutionSuggestion } from "../acompte.service";
+import { getConfirmedIntakeProjectIdentity } from "./project-identity-resolution.service";
 import { enqueueReconciliation } from "../reconciliation/reconciliation-queue.service";
 import type { ParsedDocument } from "../../gmail/document-parser";
 import { acompteNoInvoicePayments, projectIntakeDocuments, type InsertMarcheDocument, type ProjectIntakeDocument } from "@shared/schema";
@@ -532,7 +533,12 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
         const allProjects = await storage.getProjects({ includeArchived: true });
         const allContractors = await storage.getContractors();
         const match = await matchToProject(parsed, allProjects, allContractors);
-        if ((parsed.projectName || parsed.projectReference) && match.projectId !== doc.projectId) {
+        const confirmedIdentity = await getConfirmedIntakeProjectIdentity(doc.id, fingerprint);
+        if (
+          (parsed.projectName || parsed.projectReference)
+          && match.projectId !== doc.projectId
+          && confirmedIdentity?.projectId !== doc.projectId
+        ) {
           await park(
             doc,
             fingerprint,
@@ -561,7 +567,9 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
           console.log(`[intake-queue] Intake document ${doc.id} was deleted mid-analysis — skipping invoice routing`);
           return;
         }
-        const result = await processInvoiceUpload(candidates[0].id, file, parsed);
+        const result = await processInvoiceUpload(candidates[0].id, file, parsed, {
+          sourceIntakeDocumentId: doc.id,
+        });
         if (result.success) {
           const invoiceId = (result.data as { invoice: { id: number } }).invoice.id;
           await storage.updateProjectIntakeDocument(doc.id, {

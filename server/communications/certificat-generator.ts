@@ -2329,6 +2329,7 @@ export async function buildCertificatPreviewHtml(opts?: { isAcompte?: boolean })
     devisId: -1,
     contractorId: -1,
     projectId: -1,
+    sourceIntakeDocumentId: null,
     invoiceNumber: "FAC-2026-038",
     amountHt: "12000.00",
     tvaAmount: "2400.00",

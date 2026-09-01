@@ -6,6 +6,11 @@ import { storage } from "../storage";
 import { intakeUpload } from "../middleware/upload";
 import { uploadDocument, getDocumentStream, deleteDocument } from "../storage/object-storage";
 import { validateRequest } from "../middleware/validate";
+import { requireAuth } from "../auth/middleware";
+import {
+  confirmIntakeProjectIdentity,
+  getConfirmedIntakeProjectIdentity,
+} from "../services/intake/project-identity-resolution.service";
 
 /**
  * Unified document intake (Task #229) — the single "front door".
@@ -27,6 +32,10 @@ const intakeUploadBodySchema = z.object({
   uploadedBy: z.string().optional(),
   notes: z.string().optional(),
 });
+const confirmProjectIdentityBodySchema = z.object({
+  confirmed: z.literal(true),
+  expectedFingerprint: z.string().trim().regex(/^[a-f0-9]{64}$/i),
+}).strict();
 
 router.get(
   "/api/projects/:projectId/intake",
@@ -110,6 +119,41 @@ router.post(
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ message: `Re-analysis failed: ${message}` });
+    }
+  },
+);
+
+router.post(
+  "/api/intake-documents/:id/confirm-project-identity",
+  requireAuth,
+  validateRequest({ params: intakeIdParams, body: confirmProjectIdentityBodySchema }),
+  async (req, res, next) => {
+    try {
+      const body = req.body as z.infer<typeof confirmProjectIdentityBodySchema>;
+      const result = await confirmIntakeProjectIdentity({
+        intakeDocumentId: Number(req.params.id),
+        expectedFingerprint: body.expectedFingerprint,
+        confirmedByUserId: Number(req.session.userId),
+      });
+      if (result.outcome === "not_found") {
+        return res.status(404).json({ message: "Document not found" });
+      }
+      if (result.outcome === "invalid") {
+        const status = result.code === "project_resolution_no_label"
+          || result.code === "project_resolution_not_needed"
+          ? 422
+          : 409;
+        return res.status(status).json({ message: result.message, code: result.code });
+      }
+      const { requeueIntakeDocument } = await import("../services/intake/ingest-queue.service");
+      await requeueIntakeDocument(Number(req.params.id));
+      return res.status(result.replayed ? 200 : 201).json({
+        projectId: result.projectId,
+        replayed: result.replayed,
+        routingRetryTriggered: true,
+      });
+    } catch (err) {
+      next(err);
     }
   },
 );
@@ -267,6 +311,14 @@ router.delete(
       if (await storage.getAcompteNoInvoicePaymentBySource(id)) {
         return res.status(409).json({
           message: "This document is immutable evidence for a confirmed deposit payment and cannot be deleted.",
+        });
+      }
+      if (
+        doc.contentFingerprint
+        && await getConfirmedIntakeProjectIdentity(doc.id, doc.contentFingerprint)
+      ) {
+        return res.status(409).json({
+          message: "This document is immutable evidence for a confirmed project identity and cannot be deleted.",
         });
       }
 

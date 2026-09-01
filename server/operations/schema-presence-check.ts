@@ -159,6 +159,8 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0086_certificat_tva_rate_source", artifact: { kind: "column", table: "certificats", column: "tva_rate_source" } },
   { tag: "0087_acompte_certificat_no_invoice", artifact: { kind: "column", table: "certificats", column: "acompte_devis_id" } },
   { tag: "0120_acompte_no_invoice_payment_audit", artifact: { kind: "table", table: "acompte_no_invoice_payments" } },
+  { tag: "0121_intake_project_identity_resolution", artifact: { kind: "table", table: "intake_project_identity_resolutions" } },
+  { tag: "0122_invoice_intake_source_unique", artifact: { kind: "column", table: "invoices", column: "source_intake_document_id" } },
   { tag: "0088_gmail_processed_messages", artifact: { kind: "table", table: "gmail_processed_messages" } },
   { tag: "0089_gmail_message_failures", artifact: { kind: "table", table: "gmail_message_failures" } },
   { tag: "0090_contractor_receipt_suggestions", artifact: { kind: "column", table: "certificat_payment_suggestions", column: "kind" } },

@@ -676,6 +676,14 @@ export const invoices = pgTable("invoices", {
   devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
   contractorId: integer("contractor_id").notNull().references(() => contractors.id),
   projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  // Server-authored provenance for invoices created by the intake router.
+  // One source document can produce at most one invoice, even when retries
+  // race across application instances.
+  // The RESTRICT FK is installed by migration 0122. It is intentionally not
+  // expressed here because project_intake_documents already reaches invoices
+  // through email_documents, and a Drizzle-level reference creates a circular
+  // table-initializer type dependency.
+  sourceIntakeDocumentId: integer("source_intake_document_id"),
   // Task #451 — the old loose-text `certificate_number` column was dropped;
   // certificat linkage is now the FK-grounded `certificat_sources` junction.
   invoiceNumber: text("invoice_number").notNull(),
@@ -704,6 +712,9 @@ export const invoices = pgTable("invoices", {
   index("invoices_project_id_idx").on(table.projectId),
   index("invoices_devis_id_idx").on(table.devisId),
   index("invoices_contractor_id_idx").on(table.contractorId),
+  uniqueIndex("invoices_source_intake_document_id_unique")
+    .on(table.sourceIntakeDocumentId)
+    .where(sql`${table.sourceIntakeDocumentId} IS NOT NULL`),
   check("invoices_amount_ht_nonneg", sql`${table.amountHt} >= 0`),
   check("invoices_amount_ttc_nonneg", sql`${table.amountTtc} >= 0`),
   check("invoices_tva_amount_nonneg", sql`${table.tvaAmount} >= 0`),
@@ -1740,6 +1751,31 @@ export const projectIntakeDocuments = pgTable("project_intake_documents", {
   uniqueIndex("project_intake_documents_source_email_doc_idx").on(table.sourceEmailDocumentId),
 ]);
 
+// Task #688 — immutable human resolution of a labelled project identity that
+// automatic exact matching correctly refused to guess. The decision is bound
+// to the exact source bytes; a replacement/revised PDF needs fresh review.
+export const intakeProjectIdentityResolutions = pgTable("intake_project_identity_resolutions", {
+  id: serial("id").primaryKey(),
+  intakeDocumentId: integer("intake_document_id").notNull().references(() => projectIntakeDocuments.id, { onDelete: "restrict" }),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "restrict" }),
+  sourceStorageKey: text("source_storage_key").notNull(),
+  sourceFileName: text("source_file_name").notNull(),
+  sourceContentFingerprint: text("source_content_fingerprint").notNull(),
+  labelledProjectName: text("labelled_project_name"),
+  labelledProjectReference: text("labelled_project_reference"),
+  confirmedByUserId: integer("confirmed_by_user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  confirmedAt: timestamp("confirmed_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  uniqueIndex("intake_project_identity_resolutions_document_fingerprint_unique")
+    .on(table.intakeDocumentId, table.sourceContentFingerprint),
+  index("intake_project_identity_resolutions_project_id_idx").on(table.projectId),
+  index("intake_project_identity_resolutions_confirmed_by_user_id_idx").on(table.confirmedByUserId),
+  check(
+    "intake_project_identity_resolutions_label_check",
+    sql`${table.labelledProjectName} IS NOT NULL OR ${table.labelledProjectReference} IS NOT NULL`,
+  ),
+]);
+
 // Task #686 — an audited supplier opening deposit which was paid without a
 // supplier invoice. This is deliberately separate from certificat_payments:
 // that ledger records client payments to the architect, whereas this records
@@ -2512,6 +2548,7 @@ export const insertAvenantSchema = createInsertSchema(avenants).omit({
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   id: true,
   createdAt: true,
+  sourceIntakeDocumentId: true,
 });
 
 export const insertSituationSchema = createInsertSchema(situations).omit({
@@ -2599,6 +2636,7 @@ export type Avenant = typeof avenants.$inferSelect;
 export type InsertAvenant = z.infer<typeof insertAvenantSchema>;
 export type Invoice = typeof invoices.$inferSelect;
 export type InsertInvoice = z.infer<typeof insertInvoiceSchema>;
+export type ServerInsertInvoice = InsertInvoice & { sourceIntakeDocumentId?: number | null };
 export type Situation = typeof situations.$inferSelect;
 export type InsertSituation = z.infer<typeof insertSituationSchema>;
 export type SituationLine = typeof situationLines.$inferSelect;
@@ -2779,6 +2817,7 @@ export type ProjectDocument = typeof projectDocuments.$inferSelect;
 export type InsertProjectDocument = z.infer<typeof insertProjectDocumentSchema>;
 export type ProjectIntakeDocument = typeof projectIntakeDocuments.$inferSelect;
 export type InsertProjectIntakeDocument = z.infer<typeof insertProjectIntakeDocumentSchema>;
+export type IntakeProjectIdentityResolution = typeof intakeProjectIdentityResolutions.$inferSelect;
 export type AcompteNoInvoicePayment = typeof acompteNoInvoicePayments.$inferSelect;
 export type ProjectCommunication = typeof projectCommunications.$inferSelect;
 export type InsertProjectCommunication = z.infer<typeof insertProjectCommunicationSchema>;

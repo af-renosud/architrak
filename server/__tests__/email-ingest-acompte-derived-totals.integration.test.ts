@@ -41,7 +41,9 @@ const { storageSpy } = vi.hoisted(() => ({
     getDevisByProjectAndContractor: vi.fn(),
     // processInvoiceUpload persistence
     getDevis: vi.fn(),
+    getInvoiceBySourceIntakeDocumentId: vi.fn(async () => undefined),
     createProjectDocument: vi.fn(async () => ({ id: 1 })),
+    createIntakeInvoiceWithProjectDocument: vi.fn(),
     createInvoice: vi.fn(async (row: Record<string, unknown>) => ({
       id: 911,
       invoiceNumber: row.invoiceNumber,
@@ -146,6 +148,10 @@ beforeEach(() => {
   storageSpy.getProjectIntakeDocument.mockResolvedValue(INTAKE_DOC);
   storageSpy.getDevisByProjectAndContractor.mockResolvedValue([DEVIS]);
   storageSpy.getDevis.mockResolvedValue(DEVIS);
+  storageSpy.createIntakeInvoiceWithProjectDocument.mockImplementation(async (row) => ({
+    invoice: await storageSpy.createInvoice(row),
+    created: true,
+  }));
 });
 
 describe("email-ingest path — derived-totals warning reaches the persisted acompte (Task #344)", () => {
