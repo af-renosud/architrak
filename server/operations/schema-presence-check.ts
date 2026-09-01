@@ -162,6 +162,8 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   { tag: "0121_intake_project_identity_resolution", artifact: { kind: "table", table: "intake_project_identity_resolutions" } },
   { tag: "0122_invoice_intake_source_unique", artifact: { kind: "column", table: "invoices", column: "source_intake_document_id" } },
   { tag: "0123_invoice_acompte_application", artifact: { kind: "table", table: "invoice_acompte_applications" } },
+  { tag: "0124_refire_invoice_acompte_application_backfill", artifact: { kind: "data_only", reason: "guarded re-fire of the 0123 invoice opening-deposit application backfill; resolves only arithmetic-proven false netAPayer warnings/advisories", rerunnable: true } },
+  { tag: "0125_invoice_acompte_invoice_seal", artifact: { kind: "trigger", table: "invoices", trigger: "invoice_acompte_invoice_seal_trg" } },
   { tag: "0088_gmail_processed_messages", artifact: { kind: "table", table: "gmail_processed_messages" } },
   { tag: "0089_gmail_message_failures", artifact: { kind: "table", table: "gmail_message_failures" } },
   { tag: "0090_contractor_receipt_suggestions", artifact: { kind: "column", table: "certificat_payment_suggestions", column: "kind" } },

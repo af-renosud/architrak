@@ -869,6 +869,20 @@
       "when": 1788271200000,
       "tag": "0123_invoice_acompte_application",
       "breakpoints": true
+    },
+    {
+      "idx": 124,
+      "version": "7",
+      "when": 1788274800000,
+      "tag": "0124_refire_invoice_acompte_application_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 125,
+      "version": "7",
+      "when": 1788278400000,
+      "tag": "0125_invoice_acompte_invoice_seal",
+      "breakpoints": true
     }
   ]
 }

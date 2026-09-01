@@ -28,7 +28,7 @@
  * compared at 2 decimals only at evaluation time.
  */
 import type { Devis } from "@shared/schema";
-import { acompteNoInvoicePayments, certificats, devis as devisTable, projectIntakeDocuments, projects } from "@shared/schema";
+import { acompteNoInvoicePayments, certificats, devis as devisTable, emailDocuments, invoices, projectIntakeDocuments, projects } from "@shared/schema";
 import { deriveTvaAmount, roundCurrency } from "@shared/financial-utils";
 import { db } from "../db";
 import { and, eq, ne, sql } from "drizzle-orm";
@@ -178,10 +178,12 @@ export function nextAcompteState(
 export async function linkAcompteInvoiceTx(input: {
   devisId: number;
   invoiceId: number;
-  invoiceDatePaid: string | null;
+  // Kept optional for existing upload callers. Payment status is always read
+  // from the locked invoice row, never from this caller-supplied value.
+  invoiceDatePaid?: string | null;
 }): Promise<
   | { ok: true; devis: Devis }
-  | { ok: false; code: "devis_not_found" | "acompte_invalid_transition"; currentState?: string }
+  | { ok: false; code: "devis_not_found" | "invoice_not_found" | "acompte_invoice_mismatch" | "acompte_invalid_transition"; currentState?: string }
   | { ok: false; code: "acompte_certificat_exists"; certificatId: number; certificateRef: string }
 > {
   return db.transaction(async (tx) => {
@@ -204,21 +206,60 @@ export async function linkAcompteInvoiceTx(input: {
         certificateRef: liveAcompteCert.certificateRef,
       };
     }
+    const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update");
+    // Do not trust an earlier route/upload lookup: the invoice can be
+    // reassigned while this request waits for the devis lock.
+    if (!invoice) return { ok: false as const, code: "invoice_not_found" as const };
+    if (
+      invoice.devisId !== locked.id
+      || invoice.projectId !== locked.projectId
+      || invoice.contractorId !== locked.contractorId
+    ) {
+      return { ok: false as const, code: "acompte_invoice_mismatch" as const };
+    }
     const target = nextAcompteState(locked.acompteState, "link_invoice");
     if (!target) {
       return { ok: false as const, code: "acompte_invalid_transition" as const, currentState: locked.acompteState };
     }
-    const finalState = input.invoiceDatePaid ? "paid" : target;
+    const finalState = invoice.datePaid ? "paid" : target;
     const [updated] = await tx
       .update(devisTable)
       .set({
         acompteInvoiceId: input.invoiceId,
         acompteState: finalState,
-        acomptePaidAt: input.invoiceDatePaid ? new Date(input.invoiceDatePaid) : null,
-        acomptePaidVia: input.invoiceDatePaid ? "invoice" : null,
+        acomptePaidAt: invoice.datePaid ? new Date(`${invoice.datePaid}T12:00:00.000Z`) : null,
+        acomptePaidVia: invoice.datePaid ? "invoice" : null,
       })
       .where(eq(devisTable.id, input.devisId))
       .returning();
+    return { ok: true as const, devis: updated };
+  });
+}
+
+/** Mark an invoice-linked deposit paid only from the invoice's recorded payment evidence. */
+export async function markAcompteInvoicePaidTx(devisId: number): Promise<
+  | { ok: true; devis: Devis }
+  | { ok: false; code: "devis_not_found" | "acompte_invalid_transition" | "acompte_invoice_missing" | "acompte_invoice_mismatch" | "acompte_invoice_unpaid"; currentState?: string }
+> {
+  return db.transaction(async (tx) => {
+    const [locked] = await tx.select().from(devisTable).where(eq(devisTable.id, devisId)).for("update");
+    if (!locked) return { ok: false as const, code: "devis_not_found" as const };
+    if (locked.acompteState !== "invoiced") {
+      return { ok: false as const, code: "acompte_invalid_transition" as const, currentState: locked.acompteState };
+    }
+    if (locked.acompteInvoiceId == null) return { ok: false as const, code: "acompte_invoice_missing" as const };
+    const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, locked.acompteInvoiceId)).for("update");
+    if (!invoice) return { ok: false as const, code: "acompte_invoice_missing" as const };
+    if (invoice.devisId !== locked.id || invoice.projectId !== locked.projectId || invoice.contractorId !== locked.contractorId) {
+      return { ok: false as const, code: "acompte_invoice_mismatch" as const };
+    }
+    if (!invoice.datePaid) return { ok: false as const, code: "acompte_invoice_unpaid" as const };
+    const [updated] = await tx.update(devisTable).set({
+      acompteState: "paid",
+      acomptePaidAt: new Date(`${invoice.datePaid}T12:00:00.000Z`),
+      acomptePaidVia: "invoice",
+      updatedAt: sql`now()`,
+    }).where(eq(devisTable.id, locked.id)).returning();
     return { ok: true as const, devis: updated };
   });
 }
@@ -380,6 +421,62 @@ export async function confirmNoInvoiceAcomptePayment(input: {
       return { outcome: "invalid" as const, code: "acompte_source_unfingerprinted", message: "Source evidence has no verified content fingerprint." };
     }
     const extracted = source.extractedData as Record<string, unknown> | null;
+    // A no-invoice confirmation can use an invoice that is still awaiting
+    // promotion, but never a quotation/certificate/unknown source. Do not
+    // require promotion: doing so would recreate the intake gate circularity.
+    if (extracted?.documentType !== "invoice" || (source.promotedKind != null && source.promotedKind !== "invoice")) {
+      return { outcome: "invalid" as const, code: "acompte_source_not_invoice", message: "Source evidence must be an invoice document." };
+    }
+    const exactId = (value: unknown): number | null =>
+      typeof value === "number" && Number.isInteger(value) ? value
+        : typeof value === "string" && /^\d+$/.test(value) ? Number(value) : null;
+    const conflictsWithExactId = (key: string, expected: number): boolean =>
+      Object.prototype.hasOwnProperty.call(extracted, key)
+      && exactId(extracted?.[key]) !== expected;
+    const hasPromotionMetadata = source.promotedKind != null || source.promotedId != null;
+    if (
+      (hasPromotionMetadata && (source.promotedKind !== "invoice" || source.promotedId == null))
+      || conflictsWithExactId("projectId", locked.projectId)
+      || conflictsWithExactId("contractorId", locked.contractorId)
+      || conflictsWithExactId("devisId", locked.id)
+      || (typeof extracted?.devisCode === "string" && extracted.devisCode.trim() !== locked.devisCode)
+      || (Object.prototype.hasOwnProperty.call(extracted, "devisCode") && typeof extracted?.devisCode !== "string")
+    ) {
+      return { outcome: "invalid" as const, code: "acompte_source_identity_mismatch", message: "Source evidence identifies a different project, contractor, or devis." };
+    }
+    if (source.promotedKind === "invoice" && source.promotedId != null) {
+      const [promotedInvoice] = await tx.select().from(invoices).where(eq(invoices.id, source.promotedId)).for("update");
+      if (
+        !promotedInvoice
+        || promotedInvoice.projectId !== locked.projectId
+        || promotedInvoice.contractorId !== locked.contractorId
+        || promotedInvoice.devisId !== locked.id
+      ) {
+        return { outcome: "invalid" as const, code: "acompte_source_identity_mismatch", message: "Promoted source invoice identifies a different project, contractor, or devis." };
+      }
+    }
+    if (source.sourceEmailDocumentId != null) {
+      const [email] = await tx.select().from(emailDocuments).where(eq(emailDocuments.id, source.sourceEmailDocumentId)).for("update");
+      if (
+        !email
+        || (email.projectId != null && email.projectId !== locked.projectId)
+        || (email.contractorId != null && email.contractorId !== locked.contractorId)
+        || (email.devisId != null && email.devisId !== locked.id)
+      ) {
+        return { outcome: "invalid" as const, code: "acompte_source_identity_mismatch", message: "Source email provenance identifies a different project, contractor, or devis." };
+      }
+      if (email.invoiceId != null) {
+        const [emailInvoice] = await tx.select().from(invoices).where(eq(invoices.id, email.invoiceId)).for("update");
+        if (
+          !emailInvoice
+          || emailInvoice.projectId !== locked.projectId
+          || emailInvoice.contractorId !== locked.contractorId
+          || emailInvoice.devisId !== locked.id
+        ) {
+          return { outcome: "invalid" as const, code: "acompte_source_identity_mismatch", message: "Source email's linked invoice identifies a different project, contractor, or devis." };
+        }
+      }
+    }
     const extractedAmount = extracted?.acomptePaidAmountTtc;
     const evidenceAmount = typeof extractedAmount === "number" ? extractedAmount : Number(extractedAmount);
     if (

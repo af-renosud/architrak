@@ -1,10 +1,19 @@
 import { Router } from "express";
 import { z } from "zod";
 import { storage } from "../storage";
+import { db } from "../db";
 import { requireAuth } from "../auth/middleware";
 import { validateRequest } from "../middleware/validate";
 import { matchToProject, type ParsedDocument } from "../gmail/document-parser";
-import type { Invoice, Project, Contractor } from "@shared/schema";
+import {
+  invoiceAcompteApplications,
+  invoiceRefEdits,
+  invoices,
+  type Invoice,
+  type Project,
+  type Contractor,
+} from "@shared/schema";
+import { eq } from "drizzle-orm";
 
 const router = Router();
 
@@ -119,60 +128,60 @@ router.post(
     const skipped: Array<{ invoiceId: number; reason: string }> = [];
 
     for (const invoiceId of idSet) {
-      const invoice = await storage.getInvoice(invoiceId);
-      if (!invoice) {
-        skipped.push({ invoiceId, reason: "Invoice not found" });
-        continue;
-      }
-      const aiData = invoice.aiExtractedData as ParsedDocument | null;
-      if (!aiData || typeof aiData !== "object") {
-        skipped.push({ invoiceId, reason: "No stored extraction data" });
-        continue;
-      }
-      const match = await matchToProject(aiData, projects, contractors);
-      if (match.contractorId == null) {
-        skipped.push({ invoiceId, reason: "Re-match returned no contractor" });
-        continue;
-      }
-      if (match.contractorId === invoice.contractorId) {
-        skipped.push({ invoiceId, reason: "Contractor already correct" });
-        continue;
-      }
-      if (invoice.status === "void") {
-        skipped.push({ invoiceId, reason: "Invoice is void" });
-        continue;
-      }
-      const project = projectById.get(invoice.projectId);
-      if (project?.archivedAt) {
-        skipped.push({ invoiceId, reason: "Project is archived" });
-        continue;
-      }
-      const target = contractorById.get(match.contractorId);
-      if (!target) {
-        skipped.push({ invoiceId, reason: "Suggested contractor not found" });
-        continue;
-      }
-      if (target.archidocOrphanedAt) {
-        skipped.push({ invoiceId, reason: "Suggested contractor was removed from ArchiDoc" });
-        continue;
-      }
+      const result = await db.transaction(async (tx) => {
+        // Lock before reading either provenance or application state. This
+        // serialises rematching with application creation and the DB seal is
+        // the final guard for every non-route write path.
+        const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).for("update");
+        if (!invoice) return { outcome: "skipped" as const, reason: "Invoice not found" };
 
-      const previousContractorId = invoice.contractorId;
-      const previousContractor = contractorById.get(previousContractorId) ?? null;
-      const updated = await storage.updateInvoice(invoiceId, { contractorId: target.id });
-      if (!updated) {
-        skipped.push({ invoiceId, reason: "Update failed" });
-        continue;
-      }
-      await storage.createInvoiceRefEdit({
-        invoiceId,
-        field: "contractorId",
-        previousValue: `${previousContractorId}:${previousContractor?.name ?? `#${previousContractorId}`}`,
-        newValue: `${target.id}:${target.name}`,
-        editedByUserId: user.id,
-        editedByEmail: user.email,
+        const [application] = await tx
+          .select({ id: invoiceAcompteApplications.id })
+          .from(invoiceAcompteApplications)
+          .where(eq(invoiceAcompteApplications.invoiceId, invoice.id))
+          .limit(1);
+        if (application) {
+          return {
+            outcome: "skipped" as const,
+            reason: "Invoice has an applied opening-deposit snapshot and cannot be re-matched",
+          };
+        }
+
+        const aiData = invoice.aiExtractedData as ParsedDocument | null;
+        if (!aiData || typeof aiData !== "object") return { outcome: "skipped" as const, reason: "No stored extraction data" };
+        const match = await matchToProject(aiData, projects, contractors);
+        if (match.contractorId == null) return { outcome: "skipped" as const, reason: "Re-match returned no contractor" };
+        if (match.contractorId === invoice.contractorId) return { outcome: "skipped" as const, reason: "Contractor already correct" };
+        if (invoice.status === "void") return { outcome: "skipped" as const, reason: "Invoice is void" };
+        const project = projectById.get(invoice.projectId);
+        if (project?.archivedAt) return { outcome: "skipped" as const, reason: "Project is archived" };
+        const target = contractorById.get(match.contractorId);
+        if (!target) return { outcome: "skipped" as const, reason: "Suggested contractor not found" };
+        if (target.archidocOrphanedAt) return { outcome: "skipped" as const, reason: "Suggested contractor was removed from ArchiDoc" };
+
+        const previousContractorId = invoice.contractorId;
+        const previousContractor = contractorById.get(previousContractorId) ?? null;
+        const [updated] = await tx
+          .update(invoices)
+          .set({ contractorId: target.id })
+          .where(eq(invoices.id, invoice.id))
+          .returning();
+        if (!updated) return { outcome: "skipped" as const, reason: "Update failed" };
+        await tx.insert(invoiceRefEdits).values({
+          invoiceId: invoice.id,
+          field: "contractorId",
+          previousValue: `${previousContractorId}:${previousContractor?.name ?? `#${previousContractorId}`}`,
+          newValue: `${target.id}:${target.name}`,
+          editedByUserId: user.id,
+          editedByEmail: user.email,
+        });
+        return { outcome: "applied" as const, previousContractorId, newContractorId: target.id };
       });
-      applied.push({ invoiceId, previousContractorId, newContractorId: target.id });
+      if (result.outcome === "skipped") {
+        skipped.push({ invoiceId, reason: result.reason });
+      } else {
+        applied.push({ invoiceId, previousContractorId: result.previousContractorId, newContractorId: result.newContractorId });
+      }
     }
 
     res.json({ applied, skipped });

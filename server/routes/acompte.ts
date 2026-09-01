@@ -13,7 +13,7 @@ import { z } from "zod";
 import { storage } from "../storage";
 import { requireAuth } from "../auth/middleware";
 import { validateRequest } from "../middleware/validate";
-import { nextAcompteState, resolveAcompteAmounts, linkAcompteInvoiceTx, confirmNoInvoiceAcomptePayment } from "../services/acompte.service";
+import { resolveAcompteAmounts, linkAcompteInvoiceTx, markAcompteInvoicePaidTx, confirmNoInvoiceAcomptePayment } from "../services/acompte.service";
 import { db } from "../db";
 import { certificats, devis as devisTable } from "@shared/schema";
 import { eq, sql } from "drizzle-orm";
@@ -52,9 +52,11 @@ router.post(
     if (invoice.devisId !== devisId) {
       return res.status(409).json({ message: "Invoice does not belong to this devis", code: "acompte_invoice_mismatch" });
     }
-    const result = await linkAcompteInvoiceTx({ devisId, invoiceId, invoiceDatePaid: invoice.datePaid ?? null });
+    const result = await linkAcompteInvoiceTx({ devisId, invoiceId });
     if (!result.ok) {
       if (result.code === "devis_not_found") return res.status(404).json({ message: "Devis not found" });
+      if (result.code === "invoice_not_found") return res.status(404).json({ message: "Invoice not found" });
+      if (result.code === "acompte_invoice_mismatch") return res.status(409).json({ message: "Invoice does not belong to this devis", code: result.code });
       if (result.code === "acompte_certificat_exists") {
         return res.status(409).json({
           message: `An acompte certificat (${result.certificateRef}) already covers this deposit — no facture d'acompte can be linked.`,
@@ -72,10 +74,8 @@ router.post(
   },
 );
 
-// Operators may supply the bank-transfer date when marking the deposit
-// paid (e.g. backfilling a payment that landed yesterday). Defaults to
-// "now" when omitted. The date must be an ISO-8601 string and not in
-// the future.
+// Retained for request compatibility only. A supplied date is never payment
+// evidence: invoice-linked payment comes exclusively from invoice.datePaid.
 const markPaidBodySchema = z
   .object({
     datePaid: z.string().datetime({ offset: true }).optional(),
@@ -126,44 +126,16 @@ router.post(
   requireAuth,
   validateRequest({ params: idParams, body: markPaidBodySchema }),
   async (req, res) => {
-    const devisId = Number(req.params.id);
-    const devis = await storage.getDevis(devisId);
-    if (!devis) return res.status(404).json({ message: "Devis not found" });
-    if (!devis.acompteRequired) {
-      return res.status(409).json({ message: "Devis n'a pas d'acompte requis", code: "acompte_not_required" });
-    }
-    // Task #491 — no-invoice path: a devis whose deposit was raised via an
-    // ACOMPTE CERTIFICAT never gets a facture d'acompte. When the state is
-    // still 'pending' AND a live acompte certificat exists, allow
-    // pending → paid directly with explicit provenance.
-    let target = nextAcompteState(devis.acompteState, "mark_paid");
-    let paidVia: "invoice" | "certificat_no_invoice" = "invoice";
-    if (!target && devis.acompteState === "pending") {
-      const certs = await storage.getCertificatsByProjectAndContractor(devis.projectId, devis.contractorId);
-      const acompteCert = certs.find((c) => c.acompteDevisId === devisId && c.status !== "superseded");
-      if (acompteCert) {
-        target = nextAcompteState(devis.acompteState, "mark_paid_no_invoice");
-        paidVia = "certificat_no_invoice";
-      }
-    }
-    if (!target) {
-      return res.status(409).json({
-        message: `Cannot mark the acompte as paid from state "${devis.acompteState}". Link the facture d'acompte first (or generate the acompte certificat).`,
-        code: "acompte_invalid_transition",
-        currentState: devis.acompteState,
-      });
-    }
-    const supplied = (req.body as { datePaid?: string }).datePaid;
-    const paidAt = supplied ? new Date(supplied) : new Date();
-    if (Number.isNaN(paidAt.getTime()) || paidAt.getTime() > Date.now() + 60_000) {
-      return res.status(400).json({ message: "Invalid datePaid (must be ISO-8601 and not in the future)" });
-    }
-    const updated = await storage.updateDevis(devisId, {
-      acompteState: target,
-      acomptePaidAt: paidAt,
-      acomptePaidVia: paidVia,
+    const result = await markAcompteInvoicePaidTx(Number(req.params.id));
+    if (result.ok) return res.json(result.devis);
+    if (result.code === "devis_not_found") return res.status(404).json({ message: "Devis not found" });
+    return res.status(409).json({
+      message: result.code === "acompte_invoice_unpaid"
+        ? "The linked supplier invoice has no recorded payment date."
+        : "Cannot mark the acompte as paid without linked invoice payment evidence.",
+      code: result.code,
+      currentState: result.currentState,
     });
-    res.json(updated);
   },
 );
 

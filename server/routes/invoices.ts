@@ -1,9 +1,16 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { z } from "zod";
 import { storage } from "../storage";
+import { db } from "../db";
 import { requireAuth } from "../auth/middleware";
 import { parsePagination } from "../lib/pagination";
-import { insertInvoiceSchema, type InsertInvoice } from "@shared/schema";
+import {
+  insertInvoiceSchema,
+  invoiceAcompteApplications,
+  invoices as invoicesTable,
+  type InsertInvoice,
+} from "@shared/schema";
+import { eq } from "drizzle-orm";
 import { upload } from "../middleware/upload";
 import { processInvoiceUpload } from "../services/invoice-upload.service";
 import { PdfPasswordProtectedError } from "../gmail/document-parser";
@@ -25,6 +32,10 @@ import {
 } from "../services/advisory-reconciler";
 import { validateRequest } from "../middleware/validate";
 import { evaluateAcompteGate, gateInputsFromDevis } from "../services/acompte.service";
+import {
+  applyInvoiceAcompteDeduction,
+  invoiceAcompteProtectedSnapshot,
+} from "../services/invoice-acompte-application.service";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
@@ -43,6 +54,33 @@ const invoiceConfirmSchema = z.object({
   dateIssued: z.string().optional(),
 }).strict();
 type InvoiceConfirmInput = z.infer<typeof invoiceConfirmSchema>;
+
+// An application is an immutable accounting snapshot of both the invoice
+// gross totals and its source/devis relationship.  The generic invoice
+// endpoints must not let those live values diverge after that snapshot exists.
+const applicationProtectedInvoiceFields = new Set([
+  "amountHt",
+  "tvaAmount",
+  "amountTtc",
+  "devisId",
+  "projectId",
+  "contractorId",
+  "sourceIntakeDocumentId",
+  "pdfPath",
+  "aiExtractedData",
+]);
+
+function changesApplicationProtectedInvoiceField(data: Record<string, unknown>): boolean {
+  return Object.keys(data).some((key) => applicationProtectedInvoiceFields.has(key));
+}
+
+function immutableApplicationResponse(res: Response) {
+  return res.status(409).json({
+    code: "invoice_acompte_application_immutable",
+    message:
+      "This invoice has an applied opening-deposit snapshot. Its totals and source relationship can no longer be changed or deleted.",
+  });
+}
 
 router.get("/api/devis/:devisId/invoices", async (req, res) => {
   const invoices = await storage.getInvoicesByDevis(Number(req.params.devisId));
@@ -165,8 +203,34 @@ router.patch(
   "/api/invoices/:id",
   validateRequest({ params: idParams, body: updateInvoiceSchema }),
   async (req, res) => {
-    const invoice = await storage.updateInvoice(Number(req.params.id), req.body);
-    if (!invoice) return res.status(404).json({ message: "Invoice not found" });
+    const invoiceId = Number(req.params.id);
+    const result = await db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select()
+        .from(invoicesTable)
+        .where(eq(invoicesTable.id, invoiceId))
+        .for("update");
+      if (!existing) return { outcome: "not_found" as const };
+
+      if (changesApplicationProtectedInvoiceField(req.body)) {
+        const [application] = await tx
+          .select({ id: invoiceAcompteApplications.id })
+          .from(invoiceAcompteApplications)
+          .where(eq(invoiceAcompteApplications.invoiceId, invoiceId))
+          .limit(1);
+        if (application) return { outcome: "immutable" as const };
+      }
+
+      const [invoice] = await tx
+        .update(invoicesTable)
+        .set(req.body)
+        .where(eq(invoicesTable.id, invoiceId))
+        .returning();
+      return { outcome: "updated" as const, invoice };
+    });
+    if (result.outcome === "not_found") return res.status(404).json({ message: "Invoice not found" });
+    if (result.outcome === "immutable") return immutableApplicationResponse(res);
+    const invoice = result.invoice;
     await storage.revokeDevisCheckTokenIfFullyInvoiced(invoice.devisId);
     res.json(invoice);
   },
@@ -211,45 +275,151 @@ router.post(
   validateRequest({ params: idParams, body: invoiceConfirmSchema }),
   async (req, res) => {
     try {
-      const invoice = await storage.getInvoice(Number(req.params.id));
-      if (!invoice) return res.status(404).json({ message: "Invoice not found" });
-      if (invoice.status !== "draft") return res.status(400).json({ message: "Only draft invoices can be confirmed" });
-
+      const invoiceId = Number(req.params.id);
       const corrections = req.body;
-      const updates: Record<string, unknown> = { status: "pending" };
+      const preparation = await db.transaction(async (tx) => {
+        // The application service takes this same row lock before creating its
+        // snapshot. This serialises corrections against application creation:
+        // either the correction lands first and is snapshotted, or the
+        // application lands first and the correction is refused.
+        const [invoice] = await tx
+          .select()
+          .from(invoicesTable)
+          .where(eq(invoicesTable.id, invoiceId))
+          .for("update");
+        if (!invoice) return { outcome: "not_found" as const };
+        if (invoice.status !== "draft") return { outcome: "not_draft" as const };
 
-      // TVA-neutral: HT and TTC come from the invoice; tvaAmount = TTC − HT.
-      // Both are persisted as confirmed; we re-derive tvaAmount whenever
-      // either changes so the row stays internally consistent.
-      if (corrections.amountHt != null) updates.amountHt = String(roundCurrency(corrections.amountHt));
-      if (corrections.amountTtc != null) updates.amountTtc = String(roundCurrency(corrections.amountTtc));
-      if (corrections.amountHt != null || corrections.amountTtc != null) {
-        const newHt = corrections.amountHt != null ? roundCurrency(corrections.amountHt) : roundCurrency(Number(invoice.amountHt));
-        const newTtc = corrections.amountTtc != null ? roundCurrency(corrections.amountTtc) : roundCurrency(Number(invoice.amountTtc));
-        updates.tvaAmount = String(deriveTvaAmount(newHt, newTtc));
-      }
-      if (corrections.invoiceNumber != null) updates.invoiceNumber = corrections.invoiceNumber;
-      if (corrections.dateIssued != null) updates.dateIssued = corrections.dateIssued;
+        if (changesApplicationProtectedInvoiceField(corrections)) {
+          const [application] = await tx
+            .select({ id: invoiceAcompteApplications.id })
+            .from(invoiceAcompteApplications)
+            .where(eq(invoiceAcompteApplications.invoiceId, invoice.id))
+            .limit(1);
+          if (application) return { outcome: "immutable" as const };
+        }
 
-      let nextWarnings = (invoice.validationWarnings as ValidationWarning[] | null) ?? [];
-      if (Object.keys(corrections).length > 0) {
+        const updates: Record<string, unknown> = {};
+        const finalHt = corrections.amountHt != null
+          ? roundCurrency(corrections.amountHt)
+          : roundCurrency(Number(invoice.amountHt));
+        const finalTtc = corrections.amountTtc != null
+          ? roundCurrency(corrections.amountTtc)
+          : roundCurrency(Number(invoice.amountTtc));
+
+        if (corrections.amountHt != null) updates.amountHt = String(finalHt);
+        if (corrections.amountTtc != null) updates.amountTtc = String(finalTtc);
+        if (corrections.amountHt != null || corrections.amountTtc != null) {
+          updates.tvaAmount = String(deriveTvaAmount(finalHt, finalTtc));
+        }
+        if (corrections.invoiceNumber != null) updates.invoiceNumber = corrections.invoiceNumber;
+        if (corrections.dateIssued != null) updates.dateIssued = corrections.dateIssued;
+
+        // Revalidate the stored document on every confirm, including an empty
+        // corrections body. AI output remains evidence; final invoice values
+        // are authoritative.
         const aiData = (invoice.aiExtractedData as Record<string, unknown> | null) ?? {};
-        const correctedParsed = { ...aiData, ...corrections } as ParsedDocument;
-        const revalidation = validateExtraction(correctedParsed);
-        nextWarnings = revalidation.warnings;
-        updates.validationWarnings = revalidation.warnings;
+        const canonicalParsed = {
+          ...aiData,
+          amountHt: finalHt,
+          amountTtc: finalTtc,
+          tvaAmount: deriveTvaAmount(finalHt, finalTtc),
+          invoiceNumber: corrections.invoiceNumber ?? invoice.invoiceNumber,
+          date: corrections.dateIssued ?? invoice.dateIssued ?? undefined,
+        } as ParsedDocument;
+        const revalidation = validateExtraction(canonicalParsed);
+        const warnings: ValidationWarning[] = revalidation.warnings;
+        updates.validationWarnings = warnings;
         updates.aiConfidence = revalidation.confidenceScore;
+
+        const [revalidated] = await tx
+          .update(invoicesTable)
+          .set(updates as Partial<typeof invoicesTable.$inferInsert>)
+          .where(eq(invoicesTable.id, invoice.id))
+          .returning();
+        return { outcome: "prepared" as const, invoice: revalidated, warnings };
+      });
+
+      if (preparation.outcome === "not_found") {
+        return res.status(404).json({ message: "Invoice not found" });
+      }
+      if (preparation.outcome === "not_draft") {
+        return res.status(400).json({ message: "Only draft invoices can be confirmed" });
+      }
+      if (preparation.outcome === "immutable") return immutableApplicationResponse(res);
+
+      const { invoice: revalidated, warnings: nextWarnings } = preparation;
+      try {
+        await reconcileAdvisories({ invoiceId }, nextWarnings);
+      } catch (advErr) {
+        const message = advErr instanceof Error ? advErr.message : String(advErr);
+        console.error("[Invoice Confirm] Advisory reconciliation failed:", message);
+        return res.status(503).json({
+          code: "invoice_advisory_reconciliation_failed",
+          message: "Invoice validation was saved, but its review advisories could not be reconciled. The invoice remains a draft; retry confirmation.",
+          reviewRequired: true,
+          invoice: revalidated,
+        });
       }
 
-      const updated = await storage.updateInvoice(Number(req.params.id), updates);
-      if (updated) {
-        await storage.revokeDevisCheckTokenIfFullyInvoiced(updated.devisId);
+      const blockingWarnings = nextWarnings.filter((warning) => warning.severity === "error");
+      if (blockingWarnings.length > 0) {
+        return res.status(422).json({
+          code: "invoice_validation_failed",
+          message: "Invoice validation found blocking errors. Review or correct them before confirming.",
+          reviewRequired: true,
+          warnings: blockingWarnings,
+          invoice: revalidated,
+        });
       }
-      try {
-        await reconcileAdvisories({ invoiceId: Number(req.params.id) }, nextWarnings);
-      } catch (advErr) {
-        console.warn("[Invoice Confirm] Advisory reconciliation failed:", advErr);
+
+      const preparedProtectedSnapshot = invoiceAcompteProtectedSnapshot(revalidated);
+      const acompteApplication = await applyInvoiceAcompteDeduction(
+        revalidated.id,
+        preparedProtectedSnapshot,
+      );
+      if (acompteApplication.outcome === "needs_review") {
+        return res.status(409).json({
+          code: acompteApplication.code,
+          message: acompteApplication.message,
+          reviewRequired: true,
+          invoice: revalidated,
+        });
       }
+
+      // Advisory reconciliation and acompte application happen outside the
+      // preparation transaction. Re-lock and compare the exact protected facts
+      // before draft→pending so a concurrent edit cannot confirm stale input.
+      const pendingTransition = await db.transaction(async (tx) => {
+        const [current] = await tx
+          .select()
+          .from(invoicesTable)
+          .where(eq(invoicesTable.id, revalidated.id))
+          .for("update");
+        if (!current) return { outcome: "not_found" as const };
+        if (current.status !== "draft") return { outcome: "changed" as const };
+        if (
+          JSON.stringify(invoiceAcompteProtectedSnapshot(current))
+          !== JSON.stringify(preparedProtectedSnapshot)
+        ) {
+          return { outcome: "changed" as const };
+        }
+        const [invoice] = await tx
+          .update(invoicesTable)
+          .set({ status: "pending" })
+          .where(eq(invoicesTable.id, current.id))
+          .returning();
+        return { outcome: "updated" as const, invoice };
+      });
+      if (pendingTransition.outcome !== "updated") {
+        return res.status(409).json({
+          code: "invoice_confirmation_input_changed",
+          message: "The invoice changed while confirmation was in progress. Review it and confirm again.",
+          reviewRequired: true,
+        });
+      }
+      const updated = pendingTransition.invoice;
+      if (updated) await storage.revokeDevisCheckTokenIfFullyInvoiced(updated.devisId);
       res.json(updated);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -263,15 +433,36 @@ router.delete(
   validateRequest({ params: idParams }),
   async (req, res) => {
     try {
-      const invoice = await storage.getInvoice(Number(req.params.id));
-      if (!invoice) return res.status(404).json({ message: "Invoice not found" });
-      if (invoice.status !== "draft") return res.status(400).json({ message: "Only draft invoices can be deleted" });
-      await storage.deleteInvoice(Number(req.params.id));
+      const invoiceId = Number(req.params.id);
+      const deletion = await db.transaction(async (tx) => {
+        const [invoice] = await tx
+          .select()
+          .from(invoicesTable)
+          .where(eq(invoicesTable.id, invoiceId))
+          .for("update");
+        if (!invoice) return { outcome: "not_found" as const };
+        if (invoice.status !== "draft") return { outcome: "not_draft" as const };
+
+        const [application] = await tx
+          .select({ id: invoiceAcompteApplications.id })
+          .from(invoiceAcompteApplications)
+          .where(eq(invoiceAcompteApplications.invoiceId, invoice.id))
+          .limit(1);
+        if (application) return { outcome: "immutable" as const };
+
+        await tx.delete(invoicesTable).where(eq(invoicesTable.id, invoice.id));
+        return { outcome: "deleted" as const, devisId: invoice.devisId };
+      });
+      if (deletion.outcome === "not_found") return res.status(404).json({ message: "Invoice not found" });
+      if (deletion.outcome === "not_draft") {
+        return res.status(400).json({ message: "Only draft invoices can be deleted" });
+      }
+      if (deletion.outcome === "immutable") return immutableApplicationResponse(res);
       // A delete can only DECREASE the invoiced total, so no token can flip
       // from active-and-not-yet-fully-invoiced to fully-invoiced as a result.
       // We still call the revoke helper for symmetry: it's a single SQL
       // no-op when the predicate doesn't hold.
-      await storage.revokeDevisCheckTokenIfFullyInvoiced(invoice.devisId);
+      await storage.revokeDevisCheckTokenIfFullyInvoiced(deletion.devisId);
       res.json({ message: "Invoice deleted" });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);

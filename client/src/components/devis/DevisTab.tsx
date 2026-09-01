@@ -694,8 +694,8 @@ interface DevisRowProps {
 /**
  * Task #215 — compact "Acompte" status pill rendered inline on the
  * devis row when the deposit gate is active. Shows the lifecycle
- * state and exposes a one-click "Mark paid" action while the gate is
- * still blocking (pending or invoiced). The full spec/override edit
+ * state and exposes a one-click "Mark paid" action for an invoice-linked
+ * deposit. The full spec/override edit
  * lives in EditDevisRefsDialog; this badge is the at-a-glance signal
  * + the most common ops action.
  */
@@ -703,15 +703,12 @@ function AcompteBadge({ devis }: { devis: Devis }) {
   const { toast } = useToast();
   const state = devis.acompteState ?? "none";
   const blocking = state === "pending" || state === "invoiced";
-  // Strict state machine: mark-paid is legal from 'invoiced' (facture
-  // d'acompte linked) or — Task #491 — from 'pending' once an acompte
-  // certificat exists for the devis (no-invoice path). We only render the
-  // button when that certificat is actually visible in the project's
-  // certificat list (shared query, cached across badges); the server
-  // re-verifies regardless.
+  // A C1 is not proof of payment. The broad action is invoice-only; deposits
+  // without a supplier invoice use the explicit audited confirmation flow or
+  // certificat-ledger reconciliation.
   // Query runs for every state where a live acompte certificat may exist
   // (pending: cert just created, paid/applied: deposit marked paid via cert).
-  // The pending-only guards on canGenerateCert / canMarkPaid are separate.
+  // Generation is pending-only; mark-paid is invoice-linked only.
   const { data: projectCerts } = useQuery<Array<{ id: number; acompteDevisId?: number | null; status?: string; certificateRef?: string }>>({
     queryKey: projectScopedKey(devis.projectId, "certificats"),
     enabled: state === "pending" || state === "paid" || state === "applied",
@@ -720,7 +717,7 @@ function AcompteBadge({ devis }: { devis: Devis }) {
     (c) => c.acompteDevisId === devis.id && c.status !== "superseded",
   );
   const hasLiveAcompteCert = !!liveAcompteCert;
-  const canMarkPaid = state === "invoiced" || (state === "pending" && hasLiveAcompteCert);
+  const canMarkPaid = state === "invoiced";
   // Task #491 — one-click acompte certificat, only on a client-signed devis
   // whose deposit is still pending.
   const canGenerateCert = state === "pending" && devis.signOffStage === "client_signed_off";
@@ -752,8 +749,8 @@ function AcompteBadge({ devis }: { devis: Devis }) {
       toast({
         title: "Certificat d'acompte créé",
         description: cert.certificateRef
-          ? `${cert.certificateRef} — brouillon, sans facture fournisseur. Marquez l'acompte payé une fois le virement effectué.`
-          : "Certificat d'acompte créé sans facture fournisseur.",
+          ? `${cert.certificateRef} — brouillon, sans facture fournisseur. Le paiement sera rapproché du registre du certificat ou confirmé avec une preuve auditable.`
+          : "Certificat d'acompte créé sans facture fournisseur. Le certificat seul ne prouve pas le paiement.",
         action: (
           <ToastAction altText="Voir le certificat" onClick={() => { window.location.href = certUrl; }}>
             Voir →
@@ -818,7 +815,7 @@ function AcompteBadge({ devis }: { devis: Devis }) {
           className="rounded bg-white/60 px-1 text-[10px] font-bold hover:bg-white"
           onClick={(e) => { e.stopPropagation(); markPaid.mutate(); }}
           disabled={markPaid.isPending}
-          title="Marquer l'acompte comme payé"
+          title="Marquer payé depuis la date de paiement enregistrée sur la facture d'acompte liée"
           data-testid={`button-acompte-mark-paid-${devis.id}`}
         >
           {markPaid.isPending ? "…" : "Payé"}
@@ -2425,8 +2422,8 @@ function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDev
                 </div>
                 <p className="text-[10px] text-muted-foreground">
                   Statut acompte : <strong>{devis.acompteState ?? "none"}</strong>.
-                  Le déblocage se fait via la facture d'acompte ou « Marquer payé »
-                  sur la ligne devis.
+                  Le déblocage se fait via la date de paiement de la facture d'acompte liée,
+                  ou par rapprochement/confirmation auditable sans facture.
                 </p>
               </>
             )}

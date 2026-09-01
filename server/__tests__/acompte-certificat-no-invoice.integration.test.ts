@@ -3,7 +3,7 @@ import http from "http";
 import express from "express";
 import type { AddressInfo } from "net";
 import { db } from "../db";
-import { acompteNoInvoicePayments, certificats, projects, contractors, marches, devis, invoices, projectIntakeDocuments, users } from "@shared/schema";
+import { acompteNoInvoicePayments, certificats, projects, contractors, marches, devis, emailDocuments, invoices, projectIntakeDocuments, users } from "@shared/schema";
 import { eq, sql } from "drizzle-orm";
 import certificatsRouter from "../routes/certificats";
 import acompteRouter from "../routes/acompte";
@@ -48,6 +48,7 @@ import { sealCertificat } from "../services/certificat-seal.service";
 let projectId: number;
 let contractorId: number;
 let devisId: number;
+let lifecycleSourceId: number;
 let server: http.Server;
 let base: string;
 
@@ -99,11 +100,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await new Promise<void>((r) => server.close(() => r()));
+  if (server) await new Promise<void>((r) => server.close(() => r()));
   await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT set_config('app.allow_acompte_audit_delete', 'true', true)`);
     await tx.delete(acompteNoInvoicePayments).where(eq(acompteNoInvoicePayments.devisId, devisId));
   });
+  if (lifecycleSourceId) await db.delete(projectIntakeDocuments).where(eq(projectIntakeDocuments.id, lifecycleSourceId));
   await db.delete(certificats).where(eq(certificats.projectId, projectId));
   await db.delete(devis).where(eq(devis.projectId, projectId));
   await db.delete(marches).where(eq(marches.projectId, projectId));
@@ -152,9 +154,22 @@ describe("acompte certificat without invoice — full lifecycle", () => {
     expect(body.certificateRef).toBeTruthy();
   });
 
-  it("marks the acompte paid from 'pending' with no-invoice provenance", async () => {
-    const res = await post(`/api/devis/${devisId}/acompte/mark-paid`);
-    expect(res.status).toBe(200);
+  it("retires broad pending+C1 mark-paid; audited no-invoice confirmation remains available", async () => {
+    const rejected = await post(`/api/devis/${devisId}/acompte/mark-paid`, { datePaid: "2025-01-15T10:00:00.000Z" });
+    expect(rejected.status).toBe(409);
+    expect((await rejected.json()).code).toBe("acompte_invalid_transition");
+    await db.insert(users).values({ id: 1, googleId: "t691-operator", email: "operator-691@renosud.com" }).onConflictDoNothing();
+    const [source] = await db.insert(projectIntakeDocuments).values({
+      projectId, fileName: "c1-payment-proof.pdf", storageKey: "tests/c1-payment-proof.pdf",
+      contentFingerprint: "c".repeat(64),
+      extractedData: { documentType: "invoice", acomptePaidAmountTtc: 3600, acomptePaidEvidenceText: "Acompte versé 3 600 €" },
+    }).returning();
+    lifecycleSourceId = source.id;
+    const confirmed = await post(`/api/devis/${devisId}/acompte/confirm-paid-no-invoice`, {
+      confirmed: true, sourceIntakeDocumentId: source.id, paymentReference: "VIR-T491",
+      paidAt: "2025-01-15T10:00:00.000Z",
+    });
+    expect(confirmed.status).toBe(201);
     const [d] = await db.select().from(devis).where(eq(devis.id, devisId));
     expect(d.acompteState).toBe("paid");
     expect(d.acomptePaidVia).toBe("certificat_no_invoice");
@@ -386,6 +401,86 @@ describe("acompte certificat without invoice — full lifecycle", () => {
       await db.delete(certificats).where(eq(certificats.acompteDevisId, d.id));
       await db.delete(projectIntakeDocuments).where(eq(projectIntakeDocuments.id, source.id));
       await db.delete(devis).where(eq(devis.id, d.id));
+    }
+  });
+
+  it("rejects non-invoice evidence and contradictory email contractor/devis provenance", async () => {
+    const [otherContractor] = await db.insert(contractors).values({ name: `T691 mismatch ${Date.now()}` }).returning();
+    const [target] = await db.insert(devis).values({
+      projectId, contractorId, devisCode: "T691.source-target", descriptionFr: "Source target",
+      amountHt: "1000.00", amountTtc: "1200.00", acompteRequired: true,
+      acompteAmountHt: "200.00", acompteState: "pending", signOffStage: "client_signed_off",
+    }).returning();
+    const [otherDevis] = await db.insert(devis).values({
+      projectId, contractorId: otherContractor.id, devisCode: "T691.other", descriptionFr: "Contradictory source",
+      amountHt: "1000.00", amountTtc: "1200.00",
+    }).returning();
+    const [nonInvoice] = await db.insert(projectIntakeDocuments).values({
+      projectId, fileName: "quotation.pdf", storageKey: "tests/quotation.pdf", contentFingerprint: "d".repeat(64),
+      extractedData: { documentType: "quotation", acomptePaidAmountTtc: 240, acomptePaidEvidenceText: "Acompte versé 240 €" },
+    }).returning();
+    const [email] = await db.insert(emailDocuments).values({
+      projectId, emailMessageId: `t691-mismatch-${Date.now()}`, documentType: "invoice",
+      contractorId: otherContractor.id, devisId: otherDevis.id,
+    }).returning();
+    const [contradictory] = await db.insert(projectIntakeDocuments).values({
+      projectId, fileName: "wrong-supplier.pdf", storageKey: "tests/wrong-supplier.pdf",
+      contentFingerprint: "e".repeat(64), sourceEmailDocumentId: email.id,
+      extractedData: { documentType: "invoice", acomptePaidAmountTtc: 240, acomptePaidEvidenceText: "Acompte versé 240 €" },
+    }).returning();
+    const confirm = (sourceIntakeDocumentId: number) => post(`/api/devis/${target.id}/acompte/confirm-paid-no-invoice`, {
+      confirmed: true, sourceIntakeDocumentId, paymentReference: "VIR-T691",
+      paidAt: "2025-01-15T10:00:00.000Z",
+    });
+    try {
+      const nonInvoiceRes = await confirm(nonInvoice.id);
+      expect(nonInvoiceRes.status).toBe(409);
+      expect((await nonInvoiceRes.json()).code).toBe("acompte_source_not_invoice");
+      const contradictoryRes = await confirm(contradictory.id);
+      expect(contradictoryRes.status).toBe(409);
+      expect((await contradictoryRes.json()).code).toBe("acompte_source_identity_mismatch");
+    } finally {
+      await db.delete(projectIntakeDocuments).where(eq(projectIntakeDocuments.id, contradictory.id));
+      await db.delete(projectIntakeDocuments).where(eq(projectIntakeDocuments.id, nonInvoice.id));
+      await db.delete(emailDocuments).where(eq(emailDocuments.id, email.id));
+      await db.delete(devis).where(eq(devis.id, otherDevis.id));
+      await db.delete(devis).where(eq(devis.id, target.id));
+      await db.delete(contractors).where(eq(contractors.id, otherContractor.id));
+    }
+  });
+
+  it("invoice mark-paid requires the locked exact linked invoice identity and datePaid", async () => {
+    const [otherContractor] = await db.insert(contractors).values({ name: `T691 invoice mismatch ${Date.now()}` }).returning();
+    const [target] = await db.insert(devis).values({
+      projectId, contractorId, devisCode: "T691.invoice-paid", descriptionFr: "Invoice-linked deposit",
+      amountHt: "1000.00", amountTtc: "1200.00", acompteRequired: true,
+      acompteAmountHt: "200.00", acompteState: "pending", signOffStage: "client_signed_off",
+    }).returning();
+    const [invoice] = await db.insert(invoices).values({
+      projectId, contractorId, devisId: target.id, invoiceNumber: `T691-INV-${Date.now()}`,
+      amountHt: "200.00", tvaAmount: "40.00", amountTtc: "240.00",
+    }).returning();
+    try {
+      expect((await post(`/api/devis/${target.id}/acompte/link-invoice`, { invoiceId: invoice.id })).status).toBe(200);
+      const missingDate = await post(`/api/devis/${target.id}/acompte/mark-paid`, { datePaid: "2025-01-15T10:00:00.000Z" });
+      expect(missingDate.status).toBe(409);
+      expect((await missingDate.json()).code).toBe("acompte_invoice_unpaid");
+
+      await db.update(invoices).set({ contractorId: otherContractor.id, datePaid: "2025-01-16" }).where(eq(invoices.id, invoice.id));
+      const mismatch = await post(`/api/devis/${target.id}/acompte/mark-paid`);
+      expect(mismatch.status).toBe(409);
+      expect((await mismatch.json()).code).toBe("acompte_invoice_mismatch");
+
+      await db.update(invoices).set({ contractorId, datePaid: "2025-01-17" }).where(eq(invoices.id, invoice.id));
+      const paid = await post(`/api/devis/${target.id}/acompte/mark-paid`);
+      expect(paid.status).toBe(200);
+      const [after] = await db.select().from(devis).where(eq(devis.id, target.id));
+      expect(after.acompteState).toBe("paid");
+      expect(after.acomptePaidAt?.toISOString()).toBe("2025-01-17T12:00:00.000Z");
+    } finally {
+      await db.delete(invoices).where(eq(invoices.id, invoice.id));
+      await db.delete(devis).where(eq(devis.id, target.id));
+      await db.delete(contractors).where(eq(contractors.id, otherContractor.id));
     }
   });
 
