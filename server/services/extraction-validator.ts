@@ -281,14 +281,15 @@ export function validateExtraction(parsed: ParsedDocument): ValidationResult {
   if (parsed.netAPayer != null && ttc != null) {
     checksRun++;
     const rg = parsed.retenueDeGarantie ?? 0;
-    const expectedNet = roundCurrency(ttc - rg);
+    const acomptePaid = parsed.acomptePaidAmountTtc ?? 0;
+    const expectedNet = roundCurrency(ttc - rg - acomptePaid);
     const actualNet = roundCurrency(parsed.netAPayer);
     if (Math.abs(actualNet - expectedNet) > 0.01) {
       warnings.push({
         field: "netAPayer",
         expected: expectedNet,
         actual: actualNet,
-        message: `Net à payer (${actualNet}) differs from TTC(${ttc}) - RG(${rg}) = ${expectedNet}`,
+        message: `Net à payer (${actualNet}) differs from TTC(${ttc}) - RG(${rg}) - acompte(${acomptePaid}) = ${expectedNet}`,
         severity: "warning",
       });
     } else {

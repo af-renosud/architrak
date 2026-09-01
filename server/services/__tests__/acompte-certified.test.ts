@@ -110,6 +110,16 @@ describe("computeAcompteCertifiedByDevis", () => {
     expect(out.get(26)).toBeUndefined();
   });
 
+  it("an immutable invoice application suppresses a stale devis workflow state", () => {
+    const out = computeAcompteCertifiedByDevis(
+      [acompteCert()],
+      [{ id: 26, acompteState: "pending" }],
+      [],
+      [26],
+    );
+    expect(out.get(26)).toBeUndefined();
+  });
+
   it("recoupment from another contractor does not touch this acompte", () => {
     const out = computeAcompteCertifiedByDevis(
       [acompteCert(), progressCert({ contractorId: 99, cumulativeAcompteRecoupment: "1240.00" })],

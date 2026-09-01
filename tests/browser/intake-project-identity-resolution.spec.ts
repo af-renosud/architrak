@@ -68,7 +68,7 @@ test("human project confirmation unlocks deposit review and routes the invoice e
     contractorId = contractorResult.rows[0].id;
     await db.query(
       `INSERT INTO marches (project_id, contractor_id, total_ht, total_ttc, retenue_garantie_percent)
-       VALUES ($1, $2, '10000.00', '12000.00', '5.00')`,
+       VALUES ($1, $2, '2075.00', '2490.00', '5.00')`,
       [projectId, contractorId],
     );
     const devisResult = await db.query<{ id: number }>(
@@ -76,7 +76,7 @@ test("human project confirmation unlocks deposit review and routes the invoice e
          (project_id, contractor_id, devis_code, devis_number, description_fr,
           amount_ht, amount_ttc, acompte_required, acompte_amount_ht, acompte_state,
           sign_off_stage, accounting_state)
-       VALUES ($1, $2, $3, $3, 'Opening deposit test', '10000.00', '12000.00',
+        VALUES ($1, $2, $3, $3, 'Opening deposit test', '2075.00', '2490.00',
                true, '1240.00', 'pending', 'client_signed_off', 'active')
        RETURNING id`,
       [projectId, contractorId, devisCode],
@@ -191,7 +191,7 @@ test("human project confirmation unlocks deposit review and routes the invoice e
       "SELECT acompte_state FROM devis WHERE id = $1",
       [devisId],
     );
-    expect(state.rows[0].acompte_state).toBe("paid");
+    expect(state.rows[0].acompte_state).toBe("applied");
     const evidence = await db.query<{ certificat_id: number; count: string }>(
       `SELECT min(certificat_id)::integer AS certificat_id, count(*)::text AS count
        FROM acompte_no_invoice_payments WHERE devis_id = $1`,
@@ -199,6 +199,29 @@ test("human project confirmation unlocks deposit review and routes the invoice e
     );
     expect(Number(evidence.rows[0].count)).toBe(1);
     expect(evidence.rows[0].certificat_id).toBe(certificatId);
+    const application = await db.query<{
+      count: string;
+      applied_ttc: string;
+      invoice_gross_ttc: string;
+      invoice_net_payable_ttc: string;
+    }>(
+      `SELECT count(*)::text AS count,
+              min(applied_ttc)::text AS applied_ttc,
+              min(invoice_gross_ttc)::text AS invoice_gross_ttc,
+              min(invoice_net_payable_ttc)::text AS invoice_net_payable_ttc
+       FROM invoice_acompte_applications WHERE devis_id = $1`,
+      [devisId],
+    );
+    expect(Number(application.rows[0].count)).toBe(1);
+    expect(Number(application.rows[0].applied_ttc)).toBe(1488);
+    expect(Number(application.rows[0].invoice_gross_ttc)).toBe(2490);
+    expect(Number(application.rows[0].invoice_net_payable_ttc)).toBe(1002);
+
+    await page.getByTestId("tab-resume").click();
+    await expect(page.getByTestId("text-total-certified")).toContainText("2");
+    await expect(page.getByTestId("text-total-reste")).toContainText("0");
+    await expect(page.getByTestId(`text-acompte-applied-${devisId}`)).toContainText("1");
+    await expect(page.getByTestId(`text-current-invoice-balance-${devisId}`)).toContainText("1");
     const resolutions = await db.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM intake_project_identity_resolutions WHERE intake_document_id = $1",
       [docId],
@@ -208,6 +231,8 @@ test("human project confirmation unlocks deposit review and routes the invoice e
     try {
       if (devisId) {
         await db.query("BEGIN");
+        await db.query("SELECT set_config('app.allow_acompte_application_delete', 'true', true)");
+        await db.query("DELETE FROM invoice_acompte_applications WHERE devis_id = $1", [devisId]);
         await db.query("SELECT set_config('app.allow_acompte_audit_delete', 'true', true)");
         await db.query("DELETE FROM acompte_no_invoice_payments WHERE devis_id = $1", [devisId]);
         await db.query("COMMIT");

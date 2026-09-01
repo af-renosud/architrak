@@ -862,6 +862,13 @@
       "when": 1788269890000,
       "tag": "0122_invoice_intake_source_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 123,
+      "version": "7",
+      "when": 1788271200000,
+      "tag": "0123_invoice_acompte_application",
+      "breakpoints": true
     }
   ]
 }

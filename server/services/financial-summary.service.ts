@@ -49,10 +49,12 @@ export function computeAcompteCertifiedByDevis(
   certificats: ReadonlyArray<AcompteCertificatLike>,
   devisList: ReadonlyArray<AcompteDevisLike>,
   treatAsIssuedCertificatIds: ReadonlyArray<number> = [],
+  appliedThroughInvoiceDevisIds: ReadonlyArray<number> = [],
 ): Map<number, { ht: number; ttc: number }> {
   const ISSUED = new Set(["ready", "sent", "paid"]);
   const treatAsIssued = new Set(treatAsIssuedCertificatIds);
   const acompteStateByDevis = new Map(devisList.map(d => [d.id, d.acompteState]));
+  const appliedThroughInvoice = new Set(appliedThroughInvoiceDevisIds);
 
   const acompteCerts = certificats.filter(
     c =>
@@ -100,7 +102,7 @@ export function computeAcompteCertifiedByDevis(
       const devisId = cert.acompteDevisId!;
       const worksHt = parseFloat(cert.totalWorksHt) || 0;
       let outstandingHt: number;
-      if (acompteStateByDevis.get(devisId) === "applied") {
+      if (acompteStateByDevis.get(devisId) === "applied" || appliedThroughInvoice.has(devisId)) {
         // Deposit fully recovered through the invoice deduction path.
         outstandingHt = 0;
       } else {
@@ -133,10 +135,12 @@ export async function getProjectFinancialSummary(
   const devisList = await storage.getDevisByProject(projectId);
   const projectInvoices = await storage.getInvoicesByProject(projectId);
   const projectCertificats = await storage.getCertificatsByProject(projectId);
+  const acompteApplications = await storage.getInvoiceAcompteApplicationsByProject(projectId);
   const acompteByDevis = computeAcompteCertifiedByDevis(
     projectCertificats,
     devisList,
     opts?.treatAsIssuedCertificatIds ?? [],
+    acompteApplications.map((application) => application.devisId),
   );
 
   const devisSummaries = await Promise.all(
@@ -159,6 +163,7 @@ export async function getProjectFinancialSummary(
       // Task #546 — certified = factures + outstanding acompte (see
       // computeAcompteCertifiedByDevis above).
       const acompte = acompteByDevis.get(d.id) ?? { ht: 0, ttc: 0 };
+      const appliedAcompte = acompteApplications.find((application) => application.devisId === d.id);
       const certifiedHt = roundCurrency(
         devisInvoices.reduce((sum, inv) => sum + parseFloat(inv.amountHt), 0) + acompte.ht,
       );
@@ -189,6 +194,10 @@ export async function getProjectFinancialSummary(
         certifiedTtc,
         acompteCertifiedHt: acompte.ht,
         acompteCertifiedTtc: acompte.ttc,
+        acompteAppliedHt: appliedAcompte ? parseFloat(appliedAcompte.appliedHt) : 0,
+        acompteAppliedTtc: appliedAcompte ? parseFloat(appliedAcompte.appliedTtc) : 0,
+        currentInvoiceBalanceTtc: appliedAcompte ? parseFloat(appliedAcompte.invoiceNetPayableTtc) : null,
+        acomptePaymentConflict: appliedAcompte?.paymentConflict ?? false,
         resteARealiser,
         resteARealiserTtc,
         invoiceCount: devisInvoices.length,

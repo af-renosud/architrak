@@ -24,7 +24,7 @@ import {
   type BankingMismatchOverride, type InsertBankingMismatchOverride,
   archidocProjects, archidocContractors, archidocTrades, archidocProposalFees, archidocSyncLog, archidocSiretIssues,
   archidocSupplierPaymentReadiness, archidocSupplierPaymentAssignments,
-  emailDocuments, gmailProcessedMessages, gmailMessageFailures, projectDocuments, projectIntakeDocuments, projectCommunications, paymentReminders, clientPaymentEvidence, acompteNoInvoicePayments,
+  emailDocuments, gmailProcessedMessages, gmailMessageFailures, projectDocuments, projectIntakeDocuments, projectCommunications, paymentReminders, clientPaymentEvidence, acompteNoInvoicePayments, invoiceAcompteApplications,
   aiModelSettings, appSettings, templateAssets, users, devisTranslations, wishListItems,
   benchmarkDocuments, benchmarkItems, benchmarkTags, benchmarkItemTags,
   devisChecks, devisCheckMessages, devisCheckTokens,
@@ -77,7 +77,7 @@ import {
   type ArchidocProject, type ArchidocContractor, type ArchidocTrade, type ArchidocProposalFee, type ArchidocSyncLogEntry, type ArchidocSiretIssue,
   type EmailDocument, type InsertEmailDocument,
   type ProjectDocument, type InsertProjectDocument,
-  type ProjectIntakeDocument, type InsertProjectIntakeDocument, type AcompteNoInvoicePayment,
+  type ProjectIntakeDocument, type InsertProjectIntakeDocument, type AcompteNoInvoicePayment, type InvoiceAcompteApplication,
   intakeJobs, type IntakeJob, type InsertIntakeJob,
   documentEmbeddings, type DocumentEmbedding, type InsertDocumentEmbedding,
   overlapCases, type OverlapCase, type OverlapCaseStatus,
@@ -361,6 +361,8 @@ export interface IStorage {
   getInvoicesByProject(projectId: number): Promise<Invoice[]>;
 
   getInvoiceBySourceIntakeDocumentId(intakeDocumentId: number): Promise<Invoice | undefined>;
+
+  getInvoiceAcompteApplicationsByProject(projectId: number): Promise<InvoiceAcompteApplication[]>;
 
   createInvoice(data: ServerInsertInvoice): Promise<Invoice>;
 
@@ -1892,6 +1894,15 @@ export class DatabaseStorage implements IStorage {
       .from(invoices)
       .where(eq(invoices.sourceIntakeDocumentId, intakeDocumentId));
     return invoice;
+  }
+
+  async getInvoiceAcompteApplicationsByProject(projectId: number): Promise<InvoiceAcompteApplication[]> {
+    return db
+      .select({ application: invoiceAcompteApplications })
+      .from(invoiceAcompteApplications)
+      .innerJoin(invoices, eq(invoiceAcompteApplications.invoiceId, invoices.id))
+      .where(eq(invoices.projectId, projectId))
+      .then((rows) => rows.map((row) => row.application));
   }
 
   async createInvoice(data: ServerInsertInvoice): Promise<Invoice> {

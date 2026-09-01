@@ -1803,6 +1803,43 @@ export const acompteNoInvoicePayments = pgTable("acompte_no_invoice_payments", {
   check("acompte_no_invoice_payments_amounts_nonnegative", sql`${table.amountHt} > 0 AND ${table.amountTtc} > 0`),
 ]);
 
+// Immutable reconciliation between a gross supplier invoice and the exact
+// opening-deposit deduction printed on that invoice. Keeping this separate
+// preserves the documentary gross invoice while proving why the deposit must
+// no longer be added to certified totals.
+export const invoiceAcompteApplications = pgTable("invoice_acompte_applications", {
+  id: serial("id").primaryKey(),
+  invoiceId: integer("invoice_id").notNull().references(() => invoices.id, { onDelete: "restrict" }),
+  devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "restrict" }),
+  certificatId: integer("certificat_id").notNull().references(() => certificats.id, { onDelete: "restrict" }),
+  sourceIntakeDocumentId: integer("source_intake_document_id").notNull().references(() => projectIntakeDocuments.id, { onDelete: "restrict" }),
+  noInvoicePaymentId: integer("no_invoice_payment_id").references(() => acompteNoInvoicePayments.id, { onDelete: "restrict" }),
+  sourceStorageKey: text("source_storage_key").notNull(),
+  sourceFileName: text("source_file_name").notNull(),
+  sourceContentFingerprint: text("source_content_fingerprint").notNull(),
+  appliedHt: numeric("applied_ht", { precision: 12, scale: 2 }).notNull(),
+  appliedTtc: numeric("applied_ttc", { precision: 12, scale: 2 }).notNull(),
+  invoiceGrossHt: numeric("invoice_gross_ht", { precision: 12, scale: 2 }).notNull(),
+  invoiceGrossTtc: numeric("invoice_gross_ttc", { precision: 12, scale: 2 }).notNull(),
+  invoiceNetPayableTtc: numeric("invoice_net_payable_ttc", { precision: 12, scale: 2 }).notNull(),
+  paymentLedgerPaidAt: date("payment_ledger_paid_at"),
+  paymentAuditPaidAt: timestamp("payment_audit_paid_at", { withTimezone: true }),
+  paymentLedgerReferences: text("payment_ledger_references"),
+  paymentAuditReference: text("payment_audit_reference"),
+  paymentConflict: boolean("payment_conflict").notNull().default(false),
+  evidenceText: text("evidence_text").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  uniqueIndex("invoice_acompte_applications_invoice_unique").on(table.invoiceId),
+  uniqueIndex("invoice_acompte_applications_devis_unique").on(table.devisId),
+  index("invoice_acompte_applications_certificat_id_idx").on(table.certificatId),
+  index("invoice_acompte_applications_source_intake_document_id_idx").on(table.sourceIntakeDocumentId),
+  check(
+    "invoice_acompte_applications_amounts_positive",
+    sql`${table.appliedHt} > 0 AND ${table.appliedTtc} > 0 AND ${table.invoiceGrossHt} > 0 AND ${table.invoiceGrossTtc} > 0 AND ${table.invoiceNetPayableTtc} >= 0`,
+  ),
+]);
+
 // ---------------------------------------------------------------------
 // Background ingest & auto-routing (Task #230)
 // ---------------------------------------------------------------------
@@ -2819,6 +2856,7 @@ export type ProjectIntakeDocument = typeof projectIntakeDocuments.$inferSelect;
 export type InsertProjectIntakeDocument = z.infer<typeof insertProjectIntakeDocumentSchema>;
 export type IntakeProjectIdentityResolution = typeof intakeProjectIdentityResolutions.$inferSelect;
 export type AcompteNoInvoicePayment = typeof acompteNoInvoicePayments.$inferSelect;
+export type InvoiceAcompteApplication = typeof invoiceAcompteApplications.$inferSelect;
 export type ProjectCommunication = typeof projectCommunications.$inferSelect;
 export type InsertProjectCommunication = z.infer<typeof insertProjectCommunicationSchema>;
 export type PaymentReminder = typeof paymentReminders.$inferSelect;

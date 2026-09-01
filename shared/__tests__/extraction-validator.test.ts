@@ -299,6 +299,17 @@ describe("extraction-validator (TVA-neutral)", () => {
       const warning = result.warnings.find(w => w.field === "netAPayer");
       expect(warning).toBeUndefined();
     });
+
+    it("accepts an exact paid-deposit deduction from gross TTC", () => {
+      const result = validateExtraction(doc({
+        amountHt: 2075,
+        amountTtc: 2490,
+        acomptePaidAmountTtc: 1488,
+        netAPayer: 1002,
+      }));
+      const warning = result.warnings.find(w => w.field === "netAPayer");
+      expect(warning).toBeUndefined();
+    });
   });
 
   describe("derived totals from line items (Task #338)", () => {

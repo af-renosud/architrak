@@ -588,7 +588,12 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
             `invoice routing transient: ${(result.data as { message?: string }).message ?? "unknown"}`,
           );
         }
-        const openingAcompteResolution = getOpeningAcompteResolutionSuggestion(candidates[0], parsed);
+        // processInvoiceUpload may have reconciled a fully-paid acompte
+        // certificat while evaluating the gate. Re-read before suggesting a
+        // manual confirmation so stale `pending` state never asks the team to
+        // confirm the same payment again.
+        const refreshedDevis = await storage.getDevis(candidates[0].id) ?? candidates[0];
+        const openingAcompteResolution = getOpeningAcompteResolutionSuggestion(refreshedDevis, parsed);
         if (openingAcompteResolution) {
           await storage.updateProjectIntakeDocument(doc.id, {
             extractedData: {

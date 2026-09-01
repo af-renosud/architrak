@@ -88,6 +88,10 @@ interface DevisSummary {
   certifiedTtc: number;
   acompteCertifiedHt?: number;
   acompteCertifiedTtc?: number;
+  acompteAppliedHt?: number;
+  acompteAppliedTtc?: number;
+  currentInvoiceBalanceTtc?: number | null;
+  acomptePaymentConflict?: boolean;
   resteARealiser: number;
   resteARealiserTtc: number;
   invoiceCount: number;
@@ -1485,6 +1489,21 @@ export default function ProjectDetail() {
                               {(ds.acompteCertifiedHt ?? 0) > 0 && (
                                 <span className="text-[10px] text-emerald-600 dark:text-emerald-400" data-testid={`text-acompte-certified-${ds.devisId}`}>
                                   incl. acompte {<Amount value={ds.acompteCertifiedHt ?? 0} denomination="HT" />}
+                                </span>
+                              )}
+                              {(ds.acompteAppliedTtc ?? 0) > 0 && (
+                                <span className="text-[10px] text-blue-600 dark:text-blue-400" data-testid={`text-acompte-applied-${ds.devisId}`}>
+                                  Opening deposit applied: <Amount value={ds.acompteAppliedTtc ?? 0} denomination="TTC" />
+                                </span>
+                              )}
+                              {ds.currentInvoiceBalanceTtc != null && (
+                                <span className="text-[10px] text-muted-foreground" data-testid={`text-current-invoice-balance-${ds.devisId}`}>
+                                  Current invoice balance: <Amount value={ds.currentInvoiceBalanceTtc} denomination="TTC" />
+                                </span>
+                              )}
+                              {ds.acomptePaymentConflict && (
+                                <span className="text-[10px] text-amber-700 dark:text-amber-300" data-testid={`text-acompte-payment-conflict-${ds.devisId}`}>
+                                  Payment evidence dates or references conflict — review preserved records.
                                 </span>
                               )}
                             </div>

@@ -8,6 +8,10 @@ import { enqueueDriveUpload } from "./drive/upload-queue.service";
 import { assertPdfMagic } from "../middleware/upload";
 import { INVOICE_UPLOAD_ERROR_CODES } from "../../shared/invoice-upload-errors";
 import { evaluateAcompteGate, gateInputsFromDevis, linkAcompteInvoiceTx } from "./acompte.service";
+import {
+  applyInvoiceAcompteDeduction,
+  reconcilePaidAcompteFromCertificatLedger,
+} from "./invoice-acompte-application.service";
 import { safeExtractIban, safeExtractBic } from "../../shared/iban";
 import type { ParsedDocument } from "../gmail/document-parser";
 
@@ -24,7 +28,7 @@ export async function processInvoiceUpload(
   opts: { sourceIntakeDocumentId?: number } = {},
 ) {
   assertPdfMagic(file.buffer);
-  const devis = await storage.getDevis(devisId);
+  let devis = await storage.getDevis(devisId);
   if (!devis) {
     return {
       success: false,
@@ -44,6 +48,10 @@ export async function processInvoiceUpload(
   const parsed = preParsed ?? await parseDocument(file.buffer, file.originalname);
 
   const isAcompteInvoice = parsed.documentType === "acompte";
+  if (!isAcompteInvoice && devis.acompteState === "pending") {
+    await reconcilePaidAcompteFromCertificatLedger(devis.id);
+    devis = await storage.getDevis(devisId) ?? devis;
+  }
   const gateDecision = evaluateAcompteGate(gateInputsFromDevis(devis), { isAcompteInvoice });
   if (gateDecision.blocked) {
     return {
@@ -78,6 +86,18 @@ export async function processInvoiceUpload(
   if (opts.sourceIntakeDocumentId != null) {
     const existing = await storage.getInvoiceBySourceIntakeDocumentId(opts.sourceIntakeDocumentId);
     if (existing) {
+      const acompteApplication = await applyInvoiceAcompteDeduction(existing.id);
+      if (acompteApplication.outcome === "needs_review") {
+        return {
+          success: false,
+          status: 409,
+          data: {
+            message: `Opening-deposit deduction requires review: ${acompteApplication.message}`,
+            code: acompteApplication.code,
+            invoiceId: existing.id,
+          },
+        };
+      }
       return {
         success: true,
         status: 200,
@@ -173,6 +193,18 @@ export async function processInvoiceUpload(
 
   // A concurrent loser receives the committed invoice+project-document winner.
   if (!created.created) {
+    const acompteApplication = await applyInvoiceAcompteDeduction(invoice.id);
+    if (acompteApplication.outcome === "needs_review") {
+      return {
+        success: false,
+        status: 409,
+        data: {
+          message: `Opening-deposit deduction requires review: ${acompteApplication.message}`,
+          code: acompteApplication.code,
+          invoiceId: invoice.id,
+        },
+      };
+    }
     return {
       success: true,
       status: 200,
@@ -195,6 +227,19 @@ export async function processInvoiceUpload(
     await reconcileAdvisories({ invoiceId: invoice.id }, enrichedWarnings, "extractor");
   } catch (advErr) {
     console.warn(`[Invoice Upload] Failed to persist advisories:`, advErr);
+  }
+
+  const acompteApplication = await applyInvoiceAcompteDeduction(invoice.id);
+  if (acompteApplication.outcome === "needs_review") {
+    return {
+      success: false,
+      status: 409,
+      data: {
+        message: `Opening-deposit deduction requires review: ${acompteApplication.message}`,
+        code: acompteApplication.code,
+        invoiceId: invoice.id,
+      },
+    };
   }
 
   // Task #215 — when the upload IS the facture d'acompte and the
