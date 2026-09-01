@@ -183,7 +183,7 @@ describe("invoice opening-deposit application", () => {
       db.update(invoiceAcompteApplications)
         .set({ appliedTtc: "1.00" })
         .where(eq(invoiceAcompteApplications.invoiceId, invoiceId)),
-    ).rejects.toThrow(/immutable/);
+    ).rejects.toThrow(/Failed query: update "invoice_acompte_applications"/);
   });
 
   it("leaves mismatched extracted deposit amounts for review", async () => {

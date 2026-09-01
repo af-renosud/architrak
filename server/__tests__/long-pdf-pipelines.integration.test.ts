@@ -39,7 +39,16 @@ const { storageSpy, uploadDocumentSpy, txSpies, dbSpy } = vi.hoisted(() => {
   };
   const tx = {
     execute: txSpies.execute,
-    select: () => ({ from: () => ({ where: async () => (txSpies.lockedRow ? [txSpies.lockedRow] : []) }) }),
+    select: () => ({
+      from: () => ({
+        where: () => {
+          const rows = txSpies.lockedRow ? [txSpies.lockedRow] : [];
+          return Object.assign(Promise.resolve(rows), {
+            for: async () => rows,
+          });
+        },
+      }),
+    }),
     update: () => ({
       set: (payload: unknown) => ({
         where: async () => {
