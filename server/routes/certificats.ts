@@ -182,6 +182,7 @@ const serverDerivedDeductionFields = {
 // `superseded` is terminal and written ONLY by the atomic reissue
 // transaction, never accepted from a request body.
 const clientSettableStatus = z.enum(["draft", "ready", "sent", "paid"]);
+const clientCreatableStatus = z.enum(["draft", "ready", "paid"]);
 
 // Task #464 — map the resolver's typed solde-precondition errors onto
 // friendly HTTP responses (shared by create + PATCH).
@@ -216,16 +217,14 @@ function supplierHandoffFailureBody(error: SupplierPaymentReadinessError) {
 
 const createCertificatBodySchema = insertCertificatSchema
   .omit({ projectId: true, certificateRef: true, ...serverDerivedDeductionFields })
-  .extend({ ...deductionOverrideShape, status: clientSettableStatus.default("draft") });
+  .extend({ ...deductionOverrideShape, status: clientCreatableStatus.default("draft") });
 const updateCertificatSchema = insertCertificatSchema
   .omit(serverDerivedDeductionFields)
   .partial()
   .extend({ ...deductionOverrideShape, status: clientSettableStatus.optional() });
 
-// Task #539 — cross-project list of ready-but-unsent certificats feeding the
-// dashboard "Awaiting certificat send" alert and the per-devis certificat
-// section. "Unsent" is defined ONCE server-side (storage), never inferred
-// client-side.
+// Cross-project list of sendable certificats lacking delivery evidence.
+// Legacy status='sent' rows remain recoverable when no successful email exists.
 router.get("/api/certificats/unsent", async (_req, res) => {
   const rows = await storage.getUnsentReadyCertificats();
   res.json(rows);
@@ -610,6 +609,16 @@ router.patch(
       return res.status(409).json({
         code: "CERTIFICAT_SUPERSEDED",
         message: `Certificat ${existing.certificateRef} was superseded by a reissue and can no longer change status.`,
+      });
+    }
+
+    // "Sent" is delivery evidence, not an operator-entered workflow state.
+    // The dispatch transaction owns this transition after Gmail succeeds.
+    if (body.status === "sent" && existing.status !== "sent") {
+      return res.status(409).json({
+        code: "CERTIFICAT_SENT_BY_EMAIL_ONLY",
+        message:
+          "A certificat is marked sent only after its email is delivered. Use “Send to client” instead.",
       });
     }
 

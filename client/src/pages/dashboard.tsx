@@ -328,6 +328,7 @@ function GmailStatusBar({
 interface UnsentCertificat {
   certificatId: number;
   certificateRef: string;
+  certificateStatus: string;
   netToPayTtc: string;
   isSolde: boolean;
   projectId: number;
@@ -385,7 +386,7 @@ function UnsentCertificatsAlert() {
                 <Award size={14} className="text-amber-500" />
               </div>
               <span className="text-[12px] text-foreground">
-                Awaiting certificat send — {unsent.length} certificat{unsent.length === 1 ? "" : "s"} ready but not sent
+                Awaiting certificat email — {unsent.length} certificat{unsent.length === 1 ? "" : "s"} not emailed
               </span>
             </div>
             <span
@@ -401,9 +402,9 @@ function UnsentCertificatsAlert() {
       <Dialog open={open} onOpenChange={(v) => { if (!v) setOpen(false); }}>
         <DialogContent className="max-w-lg" data-testid="dialog-unsent-certificats">
           <DialogHeader>
-            <DialogTitle>Certificats awaiting send</DialogTitle>
+            <DialogTitle>Certificats awaiting email</DialogTitle>
             <DialogDescription>
-              These certificats de paiement are ready but have never been sent to the client.
+              These certificats de paiement do not have a successful client email on record.
               Send them here, or open the project for the full context.
             </DialogDescription>
           </DialogHeader>
@@ -424,6 +425,14 @@ function UnsentCertificatsAlert() {
                   <p className="text-[10px] text-muted-foreground mt-0.5 truncate">
                     {cert.contractorName} · <Amount value={parseFloat(cert.netToPayTtc)} denomination="TTC" />
                   </p>
+                  {cert.certificateStatus === "sent" && (
+                    <p
+                      className="mt-0.5 text-[9px] font-bold uppercase tracking-widest text-amber-700 dark:text-amber-300"
+                      data-testid={`label-false-sent-certificat-${cert.certificatId}`}
+                    >
+                      Marked sent · not emailed
+                    </p>
+                  )}
                 </div>
                 <Button
                   variant="outline"

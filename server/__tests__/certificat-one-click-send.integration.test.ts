@@ -46,9 +46,11 @@ vi.mock("../services/drive/upload-queue.service", () => ({
 }));
 
 import { db } from "../db";
+import { storage } from "../storage";
 import { projectCommunications, certificats, projects, contractors } from "@shared/schema";
 import { eq, inArray } from "drizzle-orm";
 import certificatsRouter from "../routes/certificats";
+import { errorHandler } from "../middleware/error-handler";
 
 let server: http.Server;
 let base: string;
@@ -56,7 +58,7 @@ let projectId: number;
 let contractorId: number;
 const madeCertIds: number[] = [];
 
-async function makeReadyCert(): Promise<number> {
+async function makeReadyCert(status = "ready"): Promise<number> {
   const storageKey = `test/t543-${Date.now()}-${Math.floor(Math.random() * 1e6)}.pdf`;
   const [cert] = await db
     .insert(certificats)
@@ -64,7 +66,7 @@ async function makeReadyCert(): Promise<number> {
       projectId,
       contractorId,
       certificateRef: `T543-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
-      status: "ready",
+      status,
       totalWorksHt: "1000.00",
       netToPayHt: "1000.00",
       netToPayTtc: "1200.00",
@@ -104,6 +106,7 @@ beforeAll(async () => {
     next();
   });
   app.use(certificatsRouter);
+  app.use(errorHandler);
   server = http.createServer(app);
   await new Promise<void>((resolve) => server.listen(0, resolve));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -124,6 +127,56 @@ async function commsForCert(certId: number) {
 }
 
 describe("POST /api/projects/:projectId/certificats/:certId/send — one-click dispatch", () => {
+  it("rejects creating a certificat directly in sent status", async () => {
+    const before = await db.select().from(certificats).where(eq(certificats.projectId, projectId));
+    const res = await fetch(`${base}/api/projects/${projectId}/certificats`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        contractorId,
+        totalWorksHt: "1000.00",
+        netToPayHt: "1000.00",
+        netToPayTtc: "1200.00",
+        tvaAmount: "200.00",
+        status: "sent",
+      }),
+    });
+    expect(res.status).toBe(400);
+    const after = await db.select().from(certificats).where(eq(certificats.projectId, projectId));
+    expect(after).toHaveLength(before.length);
+  });
+
+  it("sends a legacy false-sent certificat without changing its sealed financials", async () => {
+    const certId = await makeReadyCert("sent");
+    fakeSend.mockClear();
+    const before = await db.select().from(certificats).where(eq(certificats.id, certId));
+
+    const res = await fetch(`${base}/api/projects/${projectId}/certificats/${certId}/send`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(200);
+
+    const after = await db.select().from(certificats).where(eq(certificats.id, certId));
+    expect(after[0].pdfStorageKey).toBe(before[0].pdfStorageKey);
+    expect(after[0].totalWorksHt).toBe(before[0].totalWorksHt);
+    expect(after[0].netToPayTtc).toBe(before[0].netToPayTtc);
+    const sentEvidence = await storage.getCertificatSentComms([certId]);
+    expect(sentEvidence.has(certId)).toBe(true);
+  });
+
+  it("rejects a manual transition into sent and leaves the certificat ready", async () => {
+    const certId = await makeReadyCert();
+    const res = await fetch(`${base}/api/certificats/${certId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "sent" }),
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("CERTIFICAT_SENT_BY_EMAIL_ONLY");
+    const [cert] = await db.select().from(certificats).where(eq(certificats.id, certId));
+    expect(cert.status).toBe("ready");
+  });
+
   it("sends the client email immediately and chains the contractor notice — nothing left queued", async () => {
     const certId = await makeReadyCert();
     fakeSend.mockClear();

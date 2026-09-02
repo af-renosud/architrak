@@ -37,6 +37,12 @@ import { AccountingStatusBadge } from "@/components/reconciliation/AccountingSta
 import { Receipt, Inbox } from "lucide-react";
 import { z } from "zod";
 import { apiRequest, queryClient, ApiError, projectScopedKey } from "@/lib/queryClient";
+import {
+  canSendCertificat,
+  hasCertificatDeliveryEvidence,
+  isFalseSentCertificat,
+  type CertificatWithDelivery,
+} from "@/lib/certificat-delivery";
 import { PvReceptionBadge, PvReceptionDialog } from "@/components/marche/PvReceptionDialog";
 import { CertificatDetailDialog } from "@/components/certificats/CertificatDetailDialog";
 import { PlanningEnvelopeTab } from "@/components/projects/PlanningEnvelopeTab";
@@ -425,7 +431,7 @@ export default function ProjectDetail() {
   const { toast } = useToast();
 
   const [certDialogOpen, setCertDialogOpen] = useState(false);
-  const [viewingCert, setViewingCert] = useState<Certificat | null>(null);
+  const [viewingCert, setViewingCert] = useState<CertificatWithDelivery | null>(null);
   const [feeDialogOpen, setFeeDialogOpen] = useState(false);
   const [entryDialogOpen, setEntryDialogOpen] = useState(false);
   const [editingEntryId, setEditingEntryId] = useState<number | null>(null);
@@ -474,7 +480,7 @@ export default function ProjectDetail() {
     [paidByCert],
   );
 
-  const { data: certificatsList } = useQuery<Certificat[]>({
+  const { data: certificatsList } = useQuery<CertificatWithDelivery[]>({
     queryKey: projectScopedKey(projectId, "certificats"),
     enabled: !!project,
   });
@@ -835,6 +841,7 @@ export default function ProjectDetail() {
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "communications") });
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "certificats") });
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "financial-summary") });
+      queryClient.invalidateQueries({ queryKey: ["/api/certificats/unsent"] });
       toast({ title: "Certificat sent" });
     },
     onError: (error: Error) => {
@@ -1083,8 +1090,8 @@ export default function ProjectDetail() {
 
   const isArchived = !!project?.archivedAt;
 
-  const getNextCertStatus = (s: string) => ({ draft: "ready", ready: "sent", sent: "paid" }[s] ?? null);
-  const getNextCertLabel = (s: string) => ({ draft: "Mark Ready", ready: "Mark Sent", sent: "Mark Paid" }[s] ?? null);
+  const getNextCertStatus = (s: string) => ({ draft: "ready", sent: "paid" }[s] ?? null);
+  const getNextCertLabel = (s: string) => ({ draft: "Mark Ready", sent: "Mark Paid" }[s] ?? null);
 
   if (isLoading) {
     return (
@@ -1969,6 +1976,9 @@ export default function ProjectDetail() {
               {certificatsList && certificatsList.length > 0 ? (
                 <div className="space-y-3">
                   {certificatsList.map((c) => {
+                    const delivered = hasCertificatDeliveryEvidence(c);
+                    const falseSent = isFalseSentCertificat(c);
+                    const canSend = canSendCertificat(c);
                     const nextStatus = getNextCertStatus(c.status);
                     const nextLabel = getNextCertLabel(c.status);
                     return (
@@ -2015,6 +2025,38 @@ export default function ProjectDetail() {
                               </span>
                             )}
                             <StatusBadge status={c.status} />
+                            {falseSent && (
+                              <span
+                                className="text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+                                data-testid={`badge-cert-not-emailed-tab-${c.id}`}
+                              >
+                                Not emailed
+                              </span>
+                            )}
+                            {delivered && (
+                              <span
+                                className="text-[9px] text-muted-foreground"
+                                data-testid={`text-cert-sent-info-tab-${c.id}`}
+                              >
+                                Envoyé à <span className="font-semibold text-foreground">{c.sentToEmail}</span>{" "}
+                                le {new Date(c.sentAt!).toLocaleDateString("fr-FR")}
+                              </span>
+                            )}
+                            {canSend && (
+                              <Button
+                                variant="outline"
+                                onClick={() => sendCertMutation.mutate(c.id)}
+                                disabled={sendCertMutation.isPending || isArchived}
+                                data-testid={`button-send-cert-tab-${c.id}`}
+                              >
+                                {sendCertMutation.isPending ? (
+                                  <Loader2 size={12} className="animate-spin" />
+                                ) : (
+                                  <Send size={12} />
+                                )}
+                                <span className="text-[8px] font-bold uppercase tracking-widest">Send to client</span>
+                              </Button>
+                            )}
                             {/* Task #465 — sealed certificats flip to paid via
                                 the payment ledger (Certificats page), never a
                                 manual status shortcut. */}
@@ -2632,9 +2674,9 @@ export default function ProjectDetail() {
                   </div>
                 </div>
                 <div className="flex gap-2">
-                  {certificatsList && certificatsList.filter(c => c.status === "ready").length > 0 && (
+                  {certificatsList && certificatsList.filter(canSendCertificat).length > 0 && (
                     <div className="flex gap-1">
-                      {certificatsList.filter(c => c.status === "ready").map(cert => (
+                      {certificatsList.filter(canSendCertificat).map(cert => (
                         <Button
                           key={cert.id}
                           variant="outline"

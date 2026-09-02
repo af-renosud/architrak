@@ -6,12 +6,12 @@ import { Client } from "pg";
  * certificat section.
  *
  * Verifies:
- *   1. Dashboard shows the amber "Awaiting certificat send" card with count
- *      when a ready-but-unsent certificat exists.
- *   2. Clicking the card opens the dialog listing the certificat with
+ *   1. A direct ready → sent PATCH is rejected.
+ *   2. Dashboard shows the amber awaiting-email card for a legacy false-sent
+ *      certificat and identifies it as not emailed.
+ *   3. Clicking the card opens the dialog listing the certificat with
  *      project name, ref, contractor and a per-row Send button.
- *   3. Inside the devis (signed-off stage), the certificat panel renders the
- *      ready certificat with a Send button.
+ *   4. The project and devis surfaces both offer the recovery Send action.
  *
  * The actual send action reuses the long-standing send endpoint (already
  * covered elsewhere) and requires the PDF seal pipeline, so it is not
@@ -124,6 +124,16 @@ test.describe("Unsent certificats — dashboard alert + devis panel (task #539)"
       );
       s = { projectId: project.id, contractorId: contractor.id, devisId: devis.id, certId: cert.id, lotId: lot.id };
 
+      const rejected = await api.patch(`/api/certificats/${cert.id}`, {
+        data: { status: "sent" },
+      });
+      expect(rejected.status()).toBe(409);
+      expect((await rejected.json()).code).toBe("CERTIFICAT_SENT_BY_EMAIL_ONLY");
+
+      // Simulate the historical state that existed before direct transitions
+      // were blocked: status says sent, but no certificat_sent evidence exists.
+      await db.query(`UPDATE certificats SET status = 'sent' WHERE id = $1`, [cert.id]);
+
       const page = await context.newPage();
 
       // ── 1+2. Dashboard card and dialog ──────────────────────────────────
@@ -135,15 +145,31 @@ test.describe("Unsent certificats — dashboard alert + devis panel (task #539)"
       await expect(row).toBeVisible();
       await expect(row).toContainText(`UnsentCert ${uniq}`);
       await expect(row).toContainText(`UnsentCert Co ${uniq}`);
+      await expect(page.getByTestId(`label-false-sent-certificat-${cert.id}`)).toHaveText(
+        "Marked sent · not emailed",
+      );
       await expect(page.getByTestId(`button-send-unsent-certificat-${cert.id}`)).toBeVisible();
       await page.keyboard.press("Escape");
 
-      // ── 3. Devis certificat section ─────────────────────────────────────
+      // ── 3. Project certificat tab + detail recovery ─────────────────────
       await page.goto(`/projets/${project.id}`);
+      await page.getByTestId("tab-certificats").click();
+      const certCard = page.getByTestId(`card-certificat-tab-${cert.id}`);
+      await expect(certCard.getByTestId(`badge-cert-not-emailed-tab-${cert.id}`)).toBeVisible();
+      await expect(certCard.getByTestId(`button-send-cert-tab-${cert.id}`)).toBeVisible();
+      await certCard.getByTestId(`button-view-cert-tab-${cert.id}`).click();
+      await expect(page.getByTestId(`notice-cert-detail-awaiting-email-${cert.id}`)).toContainText(
+        "marked Sent",
+      );
+      await expect(page.getByTestId(`button-send-cert-detail-${cert.id}`)).toBeVisible();
+      await page.keyboard.press("Escape");
+
+      // ── 4. Devis certificat section ─────────────────────────────────────
       await page.getByTestId("tab-devis").click();
       await page.getByTestId(`row-devis-toggle-${devis.id}`).click();
       await expect(page.getByTestId(`panel-certificat-${devis.id}`)).toBeVisible();
       await expect(page.getByTestId(`row-devis-certificat-${cert.id}`)).toBeVisible();
+      await expect(page.getByTestId(`badge-devis-cert-not-emailed-${cert.id}`)).toBeVisible();
       await expect(page.getByTestId(`button-devis-send-cert-${cert.id}`)).toBeVisible();
     } finally {
       await cleanup(db, s);

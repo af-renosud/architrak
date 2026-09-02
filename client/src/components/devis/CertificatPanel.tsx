@@ -9,9 +9,14 @@ import { Award, Send, Loader2, ExternalLink } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient, projectScopedKey, ApiError } from "@/lib/queryClient";
 import type { Devis, Certificat } from "@shared/schema";
+import {
+  canSendCertificat,
+  hasCertificatDeliveryEvidence,
+  isFalseSentCertificat,
+  type CertificatWithDelivery,
+} from "@/lib/certificat-delivery";
 
-// Task #556 — server enriches "sent" certificats with the email evidence.
-type CertificatWithSentInfo = Certificat & { sentAt?: string; sentToEmail?: string };
+type CertificatWithSentInfo = CertificatWithDelivery;
 
 /**
  * Task #539 — per-devis certificat section, rendered immediately below the
@@ -150,6 +155,9 @@ export function CertificatPanel({
       ) : (
         <div className="space-y-1.5">
           {certs.map((cert) => {
+            const delivered = hasCertificatDeliveryEvidence(cert);
+            const falseSent = isFalseSentCertificat(cert);
+            const canSend = canSendCertificat(cert);
             const badge = STATUS_LABEL[cert.status] ?? {
               label: cert.status,
               className: "bg-muted text-muted-foreground",
@@ -171,14 +179,21 @@ export function CertificatPanel({
                     {cert.isSolde && (
                       <Badge variant="outline" className="text-[9px]">Solde</Badge>
                     )}
+                    {falseSent && (
+                      <Badge
+                        className="text-[9px] bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+                        data-testid={`badge-devis-cert-not-emailed-${cert.id}`}
+                      >
+                        Not emailed
+                      </Badge>
+                    )}
                   </div>
-                  {/* Task #556 — send evidence for sent/paid certificats */}
-                  {(cert.status === "sent" || cert.status === "paid") && cert.sentAt && cert.sentToEmail && (
+                  {delivered && (
                     <span
                       className="text-[9px] text-muted-foreground"
                       data-testid={`text-devis-cert-sent-info-${cert.id}`}
                     >
-                      Envoyé à {cert.sentToEmail} le {new Date(cert.sentAt).toLocaleDateString("fr-FR")}
+                      Envoyé à {cert.sentToEmail} le {new Date(cert.sentAt!).toLocaleDateString("fr-FR")}
                     </span>
                   )}
                 </div>
@@ -186,7 +201,7 @@ export function CertificatPanel({
                   <span className="text-[11px] font-semibold text-foreground whitespace-nowrap">
                     {formatEur(cert.netToPayTtc)} <span className="text-[9px] text-muted-foreground font-normal">TTC</span>
                   </span>
-                  {cert.status === "ready" && (
+                  {canSend && (
                     <Button
                       variant="outline"
                       size="sm"
@@ -199,7 +214,7 @@ export function CertificatPanel({
                       ) : (
                         <Send size={12} />
                       )}
-                      <span className="text-[9px] font-bold uppercase tracking-widest">Send</span>
+                      <span className="text-[9px] font-bold uppercase tracking-widest">Send to client</span>
                     </Button>
                   )}
                 </div>

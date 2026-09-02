@@ -10,10 +10,11 @@ import { eq, inArray } from "drizzle-orm";
  * definition feeding the dashboard alert and the per-devis section:
  *
  *  - ready + no certificat_sent communication  → LISTED;
+ *  - legacy sent + no successful email evidence → LISTED;
  *  - ready + queued/sent certificat_sent       → excluded;
  *  - ready + FAILED certificat_sent only       → LISTED (a failed send is
  *    still unsent);
- *  - draft / sent / paid / superseded statuses → excluded regardless;
+ *  - draft / paid / superseded statuses → excluded regardless;
  *  - a non-certificat_sent communication (e.g. contractor notice) does NOT
  *    hide a ready certificat.
  */
@@ -49,6 +50,7 @@ async function makeComm(certId: number, type: string, status: string) {
     subject: "T539",
     body: "T539",
     status,
+    sentAt: status === "sent" ? new Date() : null,
     relatedCertificatId: certId,
     dedupeKey: `t539:${certId}:${type}:${status}:${Math.random()}`,
   });
@@ -85,7 +87,9 @@ describe("getUnsentReadyCertificats (real DB)", () => {
     const readyNoticeOnly = await makeCert("ready");
     await makeComm(readyNoticeOnly, "certificat_contractor_notice", "sent");
     const draft = await makeCert("draft");
-    const sent = await makeCert("sent");
+    const falseSent = await makeCert("sent");
+    const deliveredSent = await makeCert("sent");
+    await makeComm(deliveredSent, "certificat_sent", "sent");
     const paid = await makeCert("paid");
     const superseded = await makeCert("superseded");
 
@@ -98,7 +102,8 @@ describe("getUnsentReadyCertificats (real DB)", () => {
     expect(ids.has(readyQueued)).toBe(false);
     expect(ids.has(readySent)).toBe(false);
     expect(ids.has(draft)).toBe(false);
-    expect(ids.has(sent)).toBe(false);
+    expect(ids.has(falseSent)).toBe(true);
+    expect(ids.has(deliveredSent)).toBe(false);
     expect(ids.has(paid)).toBe(false);
     expect(ids.has(superseded)).toBe(false);
 
@@ -107,6 +112,7 @@ describe("getUnsentReadyCertificats (real DB)", () => {
     expect(row.projectName).toBe("Unsent certs test");
     expect(row.contractorId).toBe(contractorId);
     expect(row.netToPayTtc).toBe("1200.00");
+    expect(row.certificateStatus).toBe("ready");
   });
 
   it("excludes certificats on archived projects", async () => {

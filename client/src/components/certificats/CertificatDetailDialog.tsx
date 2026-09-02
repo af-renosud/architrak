@@ -13,11 +13,17 @@ import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ExternalLink, AlertTriangle, Plus, Copy } from "lucide-react";
+import { ExternalLink, AlertTriangle, Plus, Copy, Send, Loader2 } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, invalidateCertificatPaymentData } from "@/lib/queryClient";
+import { apiRequest, invalidateCertificatPaymentData, projectScopedKey, queryClient } from "@/lib/queryClient";
 import type { Certificat, Contractor, CertificatPayment, CertificatPaymentSuggestion } from "@shared/schema";
+import {
+  canSendCertificat,
+  hasCertificatDeliveryEvidence,
+  isFalseSentCertificat,
+  type CertificatWithDelivery,
+} from "@/lib/certificat-delivery";
 
 import { Amount } from "@/components/ui/amount";
 import { formatCurrency as fmt } from "@/lib/utils";
@@ -40,11 +46,7 @@ interface CertificatSource {
     amountTtc: string;
   } | null;
 }
-type CertificatWithSupplierPresentation = Certificat & {
-  supplierPresentation?: {
-    supplier: { name: string };
-  } | null;
-};
+type CertificatWithSupplierPresentation = CertificatWithDelivery;
 
 // Task #466 — a single draft suggestion (client "paid" reply).
 function PaymentSuggestionCard({ suggestion, onDone }: { suggestion: CertificatPaymentSuggestion; onDone: () => void }) {
@@ -348,10 +350,40 @@ export function CertificatPaymentsSection({ cert }: { cert: Certificat }) {
 
 export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: CertificatWithSupplierPresentation; contractor?: Contractor; onClose: () => void }) {
   const { toast } = useToast();
+  const [sentEvidence, setSentEvidence] = useState({
+    sentAt: cert.sentAt ?? null,
+    sentToEmail: cert.sentToEmail ?? null,
+  });
+  const deliveryCert = { ...cert, ...sentEvidence };
+  const delivered = hasCertificatDeliveryEvidence(deliveryCert);
+  const falseSent = isFalseSentCertificat(deliveryCert);
+  const canSend = canSendCertificat(deliveryCert);
   const isSupplier = cert.certificateTrack === "supplier_direct_payment";
   const { data: sources, isLoading: sourcesLoading, error: sourcesError } = useQuery<CertificatSource[]>({
     queryKey: ["/api/certificats", String(cert.id), "sources"],
     enabled: isSupplier,
+  });
+  const sendMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest(
+        "POST",
+        `/api/projects/${cert.projectId}/certificats/${cert.id}/send`,
+      );
+      return res.json() as Promise<{ sentAt?: string | null; recipientEmail?: string | null }>;
+    },
+    onSuccess: (communication) => {
+      setSentEvidence({
+        sentAt: communication.sentAt ?? new Date().toISOString(),
+        sentToEmail: communication.recipientEmail ?? null,
+      });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(cert.projectId, "certificats") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(cert.projectId, "communications") });
+      queryClient.invalidateQueries({ queryKey: ["/api/certificats/unsent"] });
+      toast({ title: "Certificat sent", description: cert.certificateRef });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Send failed", description: error.message, variant: "destructive" });
+    },
   });
   return (
     <Dialog open onOpenChange={onClose}>
@@ -371,6 +403,14 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <StatusBadge status={cert.status} />
+            {falseSent && (
+              <span
+                className="rounded-full bg-amber-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+                data-testid={`badge-cert-detail-not-emailed-${cert.id}`}
+              >
+                Not emailed
+              </span>
+            )}
             {isSupplier && <span className="rounded-full border border-emerald-700/30 bg-emerald-700/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-emerald-800" data-testid={`badge-certificate-track-${cert.id}`}>Paiement direct fournisseur</span>}
             <div className="flex items-center gap-3">
               {cert.driveWebViewLink && (
@@ -392,6 +432,41 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
               )}
             </div>
           </div>
+
+          {delivered && (
+            <div
+              className="rounded-md border border-emerald-300/70 bg-emerald-50/70 px-3 py-2 text-[11px] text-emerald-900 dark:border-emerald-700/40 dark:bg-emerald-950/20 dark:text-emerald-200"
+              data-testid={`notice-cert-detail-delivered-${cert.id}`}
+            >
+              Sent to <span className="font-semibold">{deliveryCert.sentToEmail}</span> on{" "}
+              {new Date(deliveryCert.sentAt!).toLocaleString("fr-FR")}.
+            </div>
+          )}
+
+          {canSend && (
+            <div
+              className="flex items-center justify-between gap-3 rounded-md border border-amber-300/70 bg-amber-50/70 px-3 py-2 dark:border-amber-500/30 dark:bg-amber-950/20"
+              data-testid={`notice-cert-detail-awaiting-email-${cert.id}`}
+            >
+              <div className="flex items-start gap-2">
+                <AlertTriangle size={13} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                <p className="text-[11px] leading-snug text-amber-800 dark:text-amber-300">
+                  {falseSent
+                    ? "This certificat was marked Sent, but no delivered email exists. Its sealed figures are unchanged and it can be sent now."
+                    : "This certificat has not been emailed to the client yet."}
+                </p>
+              </div>
+              <Button
+                size="sm"
+                onClick={() => sendMutation.mutate()}
+                disabled={sendMutation.isPending}
+                data-testid={`button-send-cert-detail-${cert.id}`}
+              >
+                {sendMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+                <span className="text-[8px] font-bold uppercase tracking-widest">Send</span>
+              </Button>
+            </div>
+          )}
 
           {cert.status === "draft" && !cert.driveWebViewLink && (
             <div

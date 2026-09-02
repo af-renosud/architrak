@@ -162,6 +162,8 @@ test.describe("Certificat — status flips to Sent end-to-end (task #555)", () =
 
         // StatusBadge renders data-testid="status-badge-sent" inside the card.
         await expect(certCard.getByTestId("status-badge-sent")).toBeVisible();
+        await expect(certCard.getByTestId(`button-send-cert-${cert.id}`)).not.toBeVisible();
+        await expect(certCard.getByTestId(`badge-cert-not-emailed-${cert.id}`)).not.toBeVisible();
 
         // "Mark Sent" advance button must be gone (cert is past ready).
         // After sending the status is "sent", so next action is "Mark Paid" —
@@ -177,6 +179,14 @@ test.describe("Certificat — status flips to Sent end-to-end (task #555)", () =
         const tabCard = page.getByTestId(`card-certificat-tab-${cert.id}`);
         await expect(tabCard).toBeVisible();
         await expect(tabCard.getByTestId("status-badge-sent")).toBeVisible();
+        await expect(tabCard.getByTestId(`button-send-cert-tab-${cert.id}`)).not.toBeVisible();
+        await expect(tabCard.getByTestId(`badge-cert-not-emailed-tab-${cert.id}`)).not.toBeVisible();
+        await tabCard.getByTestId(`button-view-cert-tab-${cert.id}`).click();
+        await expect(page.getByTestId(`notice-cert-detail-delivered-${cert.id}`)).toContainText(
+          `client-${uniq}@example.com`,
+        );
+        await expect(page.getByTestId(`button-send-cert-detail-${cert.id}`)).not.toBeVisible();
+        await page.keyboard.press("Escape");
 
         // "Mark Sent" button must be absent on the project tab too.
         await expect(

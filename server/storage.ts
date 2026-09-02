@@ -441,14 +441,14 @@ export interface IStorage {
     Map<number, { sentAt: Date; recipientEmail: string }>
   >;
 
-  // Task #539 — cross-project list of ready-but-unsent certificats for the
-  // dashboard "Awaiting certificat send" alert. Single authoritative
-  // definition of "unsent": status='ready' AND no certificat_sent
-  // communication in queued/sent for the certificat.
+  // Cross-project list of sendable-but-not-delivered certificats for the
+  // dashboard alert. Includes legacy rows manually marked sent when no
+  // successful certificat email exists.
   getUnsentReadyCertificats(): Promise<
     Array<{
       certificatId: number;
       certificateRef: string;
+      certificateStatus: string;
       netToPayTtc: string;
       isSolde: boolean;
       projectId: number;
@@ -2298,13 +2298,15 @@ export class DatabaseStorage implements IStorage {
     return out;
   }
 
-  // Task #539 — see interface note: "unsent" = status='ready' with no
-  // certificat_sent communication in queued/sent. Superseded/draft/sent/paid
-  // rows never appear here.
+  // "Unsent" is based on delivery evidence, not the editable certificat
+  // status. A legacy status='sent' row without successful email evidence is
+  // intentionally recoverable here. Active queued/sending work is excluded
+  // to keep the shared dispatch claim single-writer.
   async getUnsentReadyCertificats(): Promise<
     Array<{
       certificatId: number;
       certificateRef: string;
+      certificateStatus: string;
       netToPayTtc: string;
       isSolde: boolean;
       projectId: number;
@@ -2317,6 +2319,7 @@ export class DatabaseStorage implements IStorage {
       .select({
         certificatId: certificats.id,
         certificateRef: certificats.certificateRef,
+        certificateStatus: certificats.status,
         netToPayTtc: certificats.netToPayTtc,
         isSolde: certificats.isSolde,
         projectId: certificats.projectId,
@@ -2329,7 +2332,7 @@ export class DatabaseStorage implements IStorage {
       .innerJoin(contractors, eq(certificats.contractorId, contractors.id))
       .where(
         and(
-          eq(certificats.status, "ready"),
+          inArray(certificats.status, ["ready", "sent"]),
           // Archived projects never surface in the alert — sending payment
           // instructions from an archived project is blocked UI-side and at
           // the send endpoint.
@@ -2338,7 +2341,14 @@ export class DatabaseStorage implements IStorage {
             SELECT 1 FROM ${projectCommunications}
             WHERE ${projectCommunications.relatedCertificatId} = ${certificats.id}
               AND ${projectCommunications.type} = 'certificat_sent'
-              AND ${projectCommunications.status} IN ('queued', 'sent')
+              AND (
+                ${projectCommunications.status} IN ('queued', 'sending')
+                OR (
+                  ${projectCommunications.status} = 'sent'
+                  AND ${projectCommunications.sentAt} IS NOT NULL
+                  AND ${projectCommunications.recipientEmail} IS NOT NULL
+                )
+              )
           )`,
         ),
       )

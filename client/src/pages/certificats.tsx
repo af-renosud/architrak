@@ -5,7 +5,7 @@ import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { CertificateRefBadge } from "@/components/ui/certificate-ref-badge";
-import { FileCheck, Plus, Eye, ChevronRight, ExternalLink, RefreshCw, Download, AlertTriangle } from "lucide-react";
+import { FileCheck, Plus, Eye, ChevronRight, ExternalLink, RefreshCw, Download, AlertTriangle, Send, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -22,15 +22,14 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { insertCertificatSchema } from "@shared/schema";
 import type { Project, Contractor, Certificat, CertificatPayment, Invoice, Marche, Devis } from "@shared/schema";
+import {
+  canSendCertificat,
+  hasCertificatDeliveryEvidence,
+  isFalseSentCertificat,
+  type CertificatWithDelivery,
+} from "@/lib/certificat-delivery";
 
-// Task #556 — server enriches "sent" certificats with the email evidence.
-type CertificatWithSentInfo = Certificat & {
-  sentAt?: string;
-  sentToEmail?: string;
-  supplierPresentation?: {
-    supplier: { name: string };
-  } | null;
-};
+type CertificatWithSentInfo = CertificatWithDelivery;
 import { computeCertificatDeductions, computeEffectiveTvaRatePercent } from "@shared/financial-utils";
 import { z } from "zod";
 
@@ -379,6 +378,26 @@ export default function Certificats() {
     },
   });
 
+  const sendMutation = useMutation({
+    mutationFn: async (cert: CertificatWithSentInfo) => {
+      const res = await apiRequest(
+        "POST",
+        `/api/projects/${cert.projectId}/certificats/${cert.id}/send`,
+      );
+      return res.json();
+    },
+    onSuccess: (_communication, cert) => {
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(cert.projectId, "certificats") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(cert.projectId, "communications") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(cert.projectId, "financial-summary") });
+      queryClient.invalidateQueries({ queryKey: ["/api/certificats/unsent"] });
+      toast({ title: "Certificat sent", description: cert.certificateRef });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Send failed", description: error.message, variant: "destructive" });
+    },
+  });
+
   // Task #457 — one-click reissue of a sealed certificat. The server clones
   // it into a new draft (next ref, financials pre-filled) and marks the
   // original superseded; both remain visible and downloadable.
@@ -443,12 +462,12 @@ export default function Certificats() {
   };
 
   const getNextStatus = (current: string): string | null => {
-    const flow: Record<string, string> = { draft: "ready", ready: "sent", sent: "paid" };
+    const flow: Record<string, string> = { draft: "ready", sent: "paid" };
     return flow[current] ?? null;
   };
 
   const getNextStatusLabel = (current: string): string | null => {
-    const labels: Record<string, string> = { draft: "Mark Ready", ready: "Mark Sent", sent: "Mark Paid" };
+    const labels: Record<string, string> = { draft: "Mark Ready", sent: "Mark Paid" };
     return labels[current] ?? null;
   };
 
@@ -507,6 +526,9 @@ export default function Certificats() {
         ) : allCertificats && allCertificats.length > 0 ? (
           <div className="space-y-3">
             {allCertificats.map((cert) => {
+              const delivered = hasCertificatDeliveryEvidence(cert);
+              const falseSent = isFalseSentCertificat(cert);
+              const canSend = canSendCertificat(cert);
               const nextStatus = getNextStatus(cert.status);
               const nextLabel = getNextStatusLabel(cert.status);
               // Task #465 — sealed certificats flip to paid via the payment
@@ -591,15 +613,22 @@ export default function Certificats() {
                         </span>
                       )}
                       <StatusBadge status={cert.status} />
-                      {/* Task #556 — show send evidence for "sent" and "paid" certificats */}
-                      {(cert.status === "sent" || cert.status === "paid") && cert.sentAt && cert.sentToEmail && (
+                      {falseSent && (
+                        <span
+                          className="text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+                          data-testid={`badge-cert-not-emailed-${cert.id}`}
+                        >
+                          Not emailed
+                        </span>
+                      )}
+                      {delivered && (
                         <span
                           className="text-[9px] text-muted-foreground"
                           data-testid={`text-cert-sent-info-${cert.id}`}
                           title={`Envoyé à ${cert.sentToEmail}`}
                         >
                           Envoyé à <span className="font-semibold text-foreground">{cert.sentToEmail}</span>{" "}
-                          le {new Date(cert.sentAt).toLocaleDateString("fr-FR")}
+                          le {new Date(cert.sentAt!).toLocaleDateString("fr-FR")}
                         </span>
                       )}
                       {cert.driveWebViewLink && (
@@ -638,6 +667,21 @@ export default function Certificats() {
                         >
                           <RefreshCw size={12} />
                           <span className="text-[8px] font-bold uppercase tracking-widest">Reissue</span>
+                        </Button>
+                      )}
+                      {canSend && (
+                        <Button
+                          variant="outline"
+                          onClick={() => sendMutation.mutate(cert)}
+                          disabled={sendMutation.isPending}
+                          data-testid={`button-send-cert-${cert.id}`}
+                        >
+                          {sendMutation.isPending ? (
+                            <Loader2 size={12} className="animate-spin" />
+                          ) : (
+                            <Send size={12} />
+                          )}
+                          <span className="text-[8px] font-bold uppercase tracking-widest">Send to client</span>
                         </Button>
                       )}
                       {nextStatus && nextLabel && (

@@ -50,3 +50,4 @@
 - [No-invoice deposit evidence](no-invoice-deposit-evidence.md) — confirmation is a locked, append-only financial event; freeze source identity, reject archived projects, and delete DB rows before object bytes.
 - [Reviewed intake identity](reviewed-intake-identity.md) — human project confirmation is only for unresolved labels; bind it to the source fingerprint, and atomically promote one typed record per intake.
 - [Production certificate verification](production-certificate-verification.md) — live preview checks need an authenticated operator session; keep verification read-only and never bypass production auth.
+- [Certificate email delivery state](certificate-email-delivery-state.md) — successful certificat_sent evidence, never the editable status alone, proves client delivery; legacy false-sent rows stay recoverable.
