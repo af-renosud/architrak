@@ -14,6 +14,7 @@ import {
   certificats as certificatsTable,
   certificatSources,
   invoices as invoicesTable,
+  invoiceAcompteApplications,
   devis as devisTable,
   contractors as contractorsTable,
   type Certificat,
@@ -56,6 +57,8 @@ interface MultiInvoiceCertDerivationBase {
   totalWorksHt: string;
   previousPayments: string;
   priorCertificateRef: string | null;
+  appliedAcompteHt: number;
+  preserveAppliedInvoiceBalance: boolean;
 }
 
 export type MultiInvoiceCertDerivation =
@@ -361,6 +364,8 @@ export async function deriveCertificatFromInvoices(
         totalWorksHt: totals.totalWorksHt.toFixed(2),
         previousPayments: "0.00",
         priorCertificateRef: null,
+        appliedAcompteHt: 0,
+        preserveAppliedInvoiceBalance: false,
         supplierDirectPayment: {
           readiness,
           tvaRatePercent: totals.effectiveTvaRatePercent.toFixed(2),
@@ -462,9 +467,28 @@ export async function deriveCertificatFromInvoices(
   const totalWorksHt = (prior ? parseFloat(prior.totalWorksHt) : 0) + periodClaimHt;
   // Cumulative prior net = the prior certificat's own previousPayments + its
   // period net (previousPayments is cumulative net certified BEFORE it).
-  const previousPayments = prior
+  const priorPayments = prior
     ? parseFloat(prior.previousPayments ?? "0") + parseFloat(prior.netToPayHt ?? "0")
     : 0;
+  // An immutable invoice application proves that an opening deposit was
+  // already paid and deducted on this exact source invoice. Preserve the
+  // invoice's documentary gross in totalWorksHt, but add the applied HT to
+  // previous payments on the certificat that first certifies that invoice.
+  // Later certificats inherit it through the prior chain, so it is counted
+  // exactly once even for grouped selections.
+  const appliedAcomptes = await db
+    .select({ appliedHt: invoiceAcompteApplications.appliedHt })
+    .from(invoiceAcompteApplications)
+    .where(inArray(invoiceAcompteApplications.invoiceId, uniqueIds));
+  const appliedAcompteHt = appliedAcomptes.reduce(
+    (sum, application) => sum + (parseFloat(application.appliedHt) || 0),
+    0,
+  );
+  const contractorMarches = await storage.getMarchesByProject(first.projectId);
+  const preserveAppliedInvoiceBalance =
+    appliedAcompteHt > 0 &&
+    !contractorMarches.some((marche) => marche.contractorId === first.contractorId);
+  const previousPayments = Math.round((priorPayments + appliedAcompteHt) * 100) / 100;
 
   return {
     ok: true,
@@ -477,6 +501,8 @@ export async function deriveCertificatFromInvoices(
       totalWorksHt: totalWorksHt.toFixed(2),
       previousPayments: previousPayments.toFixed(2),
       priorCertificateRef: prior?.certificateRef ?? null,
+      appliedAcompteHt,
+      preserveAppliedInvoiceBalance,
       supplierDirectPayment: null,
     },
   };
@@ -630,6 +656,11 @@ export async function createCertificatFromInvoices(
             totalWorksHt: d.totalWorksHt,
             pvMvAdjustment: "0.00",
             previousPayments: d.previousPayments,
+            // A no-marché invoice application freezes an exact documentary
+            // balance (gross invoice minus the proven opening payment). Keep
+            // that source-specific zero retenue without changing the global
+            // 5% fallback for unrelated no-marché certificates.
+            retenueOverride: d.preserveAppliedInvoiceBalance ? "0.00" : undefined,
             // Documentary TVA must reflect the certified documents only.
             documentaryBasisInvoices: d.invoices.map((r) => ({
               amountHt: r.amountHt,
@@ -677,4 +708,29 @@ export async function createCertificatFromInvoices(
     }
     return created;
   });
+}
+
+/** Whether a source-bound draft/reissue must retain its exact applied-invoice balance. */
+export async function shouldPreserveAppliedInvoiceBalance(
+  certificatId: number,
+): Promise<boolean> {
+  const certificat = await storage.getCertificat(certificatId);
+  if (!certificat || certificat.certificateTrack !== "contractor_works") return false;
+  const sources = await storage.getCertificatSources(certificatId);
+  const invoiceIds = Array.from(new Set(
+    sources
+      .map((source) => source.invoiceId)
+      .filter((invoiceId): invoiceId is number => invoiceId != null),
+  ));
+  if (invoiceIds.length === 0) return false;
+  const [application] = await db
+    .select({ id: invoiceAcompteApplications.id })
+    .from(invoiceAcompteApplications)
+    .where(inArray(invoiceAcompteApplications.invoiceId, invoiceIds))
+    .limit(1);
+  if (!application) return false;
+  // Creation records the documentary decision in the certificate's own
+  // retenue value. From then on this stored zero is stable provenance: a
+  // marché added later must not rewrite the already-proven invoice balance.
+  return Math.abs(parseFloat(certificat.retenueGarantie ?? "0")) < 0.005;
 }

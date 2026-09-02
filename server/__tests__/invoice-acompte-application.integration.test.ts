@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import http from "http";
 import express from "express";
 import type { AddressInfo } from "net";
@@ -15,6 +15,7 @@ import {
   documentAdvisories,
   invoiceAcompteApplications,
   invoices,
+  marches,
   projectIntakeDocuments,
   projects,
   users,
@@ -23,8 +24,32 @@ import {
   applyInvoiceAcompteDeduction,
   reconcilePaidAcompteFromCertificatLedger,
 } from "../services/invoice-acompte-application.service";
+import {
+  createCertificatFromInvoices,
+  deriveCertificatFromInvoices,
+} from "../services/certificat-from-invoices.service";
 import { getProjectFinancialSummary } from "../services/financial-summary.service";
 import invoicesRouter from "../routes/invoices";
+import certificatsRouter from "../routes/certificats";
+
+vi.mock("../communications/certificat-generator", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../communications/certificat-generator")>();
+  return {
+    ...actual,
+    generateCertificatPdf: vi.fn(async (certificatId: number) => ({
+      storageKey: `test/applied-invoice-seal-${certificatId}.pdf`,
+      pdfBuffer: Buffer.from("%PDF"),
+      fileName: `CERT-${certificatId}.pdf`,
+      sourceInvoiceIds: [],
+      driveSeed: null,
+    })),
+  };
+});
+vi.mock("../services/drive/upload-queue.service", () => ({
+  enqueueDriveUpload: vi.fn().mockResolvedValue(undefined),
+}));
+
+import { sealCertificat } from "../services/certificat-seal.service";
 
 const refireBackfillStatements = fs.readFileSync(
   path.resolve(process.cwd(), "migrations/0124_refire_invoice_acompte_application_backfill.sql"),
@@ -148,6 +173,7 @@ beforeAll(async () => {
   const app = express();
   app.use(express.json());
   app.use(invoicesRouter);
+  app.use(certificatsRouter);
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(400).json({ message: err instanceof Error ? err.message : "Validation failed" });
   });
@@ -379,6 +405,120 @@ describe("invoice opening-deposit application", () => {
         .set({ appliedTtc: "1.00" })
         .where(eq(invoiceAcompteApplications.invoiceId, invoiceId)),
     ).rejects.toThrow(/Failed query: update "invoice_acompte_applications"/);
+  });
+
+  it("carries a no-invoice opening deposit into certificate arithmetic exactly once", async () => {
+    const previewResponse = await fetch(`${base}/api/invoices/${invoiceId}/certificat-preview`);
+    expect(previewResponse.status).toBe(200);
+    const preview = await previewResponse.json();
+    expect(preview.derivation.periodClaimHt).toBe(2075);
+    expect(preview.derivation.totalWorksHt).toBe("2075.00");
+    expect(preview.derivation.previousPayments).toBe("1240.00");
+    expect(preview.deductions.retenueGarantie).toBe("0.00");
+    expect(preview.deductions.netToPayHt).toBe("835.00");
+    expect(preview.deductions.tvaAmount).toBe("167.00");
+    expect(preview.deductions.netToPayTtc).toBe("1002.00");
+
+    const result = await deriveCertificatFromInvoices([invoiceId]);
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.derivation.certificateTrack !== "contractor_works") {
+      throw new Error("Expected contractor certificate derivation");
+    }
+    expect(result.derivation.appliedAcompteHt).toBe(1240);
+    expect(result.derivation.preserveAppliedInvoiceBalance).toBe(true);
+
+    const [priorProgress] = await db.insert(certificats).values({
+      projectId,
+      contractorId,
+      certificateRef: `C-IAA-PROGRESS-${Date.now()}`,
+      dateIssued: "2026-09-01",
+      totalWorksHt: "2075.00",
+      pvMvAdjustment: "0.00",
+      previousPayments: "1240.00",
+      retenueGarantie: "0.00",
+      cumulativeProrataDeduction: "0.00",
+      periodProrataDeduction: "0.00",
+      cumulativeAcompteRecoupment: "0.00",
+      periodAcompteRecoupment: "0.00",
+      tvaRatePercent: "20.00",
+      tvaAutoliquidation: false,
+      tvaRateSource: "documentary",
+      netToPayHt: "835.00",
+      tvaAmount: "167.00",
+      netToPayTtc: "1002.00",
+      status: "draft",
+    }).returning();
+    const [nextInvoice] = await db.insert(invoices).values({
+      projectId,
+      contractorId,
+      devisId,
+      invoiceNumber: `IAA-NEXT-${Date.now()}`,
+      amountHt: "100.00",
+      tvaAmount: "20.00",
+      amountTtc: "120.00",
+      status: "pending",
+    }).returning();
+    try {
+      const next = await deriveCertificatFromInvoices([nextInvoice.id]);
+      expect(next.ok).toBe(true);
+      if (!next.ok) throw new Error("Expected subsequent certificate derivation");
+      // 1240 deposit + 835 first-period net = 2075 paid to date. The
+      // application is not selected again and therefore is not double-counted.
+      expect(next.derivation.previousPayments).toBe("2075.00");
+      expect(next.derivation.appliedAcompteHt).toBe(0);
+    } finally {
+      await db.delete(invoices).where(eq(invoices.id, nextInvoice.id));
+      await db.delete(certificats).where(eq(certificats.id, priorProgress.id));
+    }
+  });
+
+  it("keeps the source-bound invoice balance stable if a marché is added later", async () => {
+    const created = await createCertificatFromInvoices([invoiceId], {
+      projectId,
+      contractorId,
+    });
+    expect(created.retenueGarantie).toBe("0.00");
+    expect(created.netToPayTtc).toBe("1002.00");
+
+    const [marche] = await db.insert(marches).values({
+      projectId,
+      contractorId,
+      marcheNumber: `M-IAA-${Date.now()}`,
+      totalHt: "2075.00",
+      totalTtc: "2490.00",
+      retenueGarantiePercent: "5.00",
+    }).returning();
+    let replacementId: number | null = null;
+    try {
+      const patchResponse = await fetch(`${base}/api/certificats/${created.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ totalWorksHt: "2075.00" }),
+      });
+      expect(patchResponse.status).toBe(200);
+      const patched = await patchResponse.json();
+      expect(patched.retenueGarantie).toBe("0.00");
+      expect(patched.netToPayTtc).toBe("1002.00");
+
+      const { certificat: sealed } = await sealCertificat(created.id);
+      expect(sealed.retenueGarantie).toBe("0.00");
+      expect(sealed.netToPayTtc).toBe("1002.00");
+
+      const reissueResponse = await fetch(`${base}/api/certificats/${created.id}/reissue`, {
+        method: "POST",
+      });
+      expect(reissueResponse.status).toBe(201);
+      const replacement = await reissueResponse.json();
+      replacementId = replacement.id;
+      expect(replacement.retenueGarantie).toBe("0.00");
+      expect(replacement.netToPayTtc).toBe("1002.00");
+    } finally {
+      if (replacementId != null) {
+        await db.delete(certificats).where(eq(certificats.id, replacementId));
+      }
+      await db.delete(certificats).where(eq(certificats.id, created.id));
+      await db.delete(marches).where(eq(marches.id, marche.id));
+    }
   });
 
   it("leaves mismatched extracted deposit amounts for review", async () => {

@@ -32,6 +32,7 @@ import {
   InvoiceStateChangedError,
   DerivationRefusedError,
   SupplierCertificateSourceError,
+  shouldPreserveAppliedInvoiceBalance,
 } from "../services/certificat-from-invoices.service";
 import {
   assertSupplierPaymentReadiness,
@@ -466,6 +467,9 @@ router.post(
           totalWorksHt: existing.totalWorksHt,
           pvMvAdjustment: existing.pvMvAdjustment,
           previousPayments: existing.previousPayments,
+          retenueOverride: await shouldPreserveAppliedInvoiceBalance(existing.id)
+            ? existing.retenueGarantie
+            : undefined,
           isSolde: existing.isSolde,
           releaseRetenue: existing.retenueReleased,
           // Task #566 — the clone inherits the original's recorded PV-gate
@@ -727,13 +731,18 @@ router.patch(
     if (touchesFinancials) {
       let deductions;
       try {
+        const preserveAppliedBalance =
+          retenueOverride === undefined &&
+          await shouldPreserveAppliedInvoiceBalance(existing.id);
         deductions = await resolveCertificatDeductions({
           projectId: existing.projectId,
           contractorId: body.contractorId ?? existing.contractorId,
           totalWorksHt: body.totalWorksHt ?? existing.totalWorksHt,
           pvMvAdjustment: body.pvMvAdjustment ?? existing.pvMvAdjustment,
           previousPayments: body.previousPayments ?? existing.previousPayments,
-          retenueOverride,
+          retenueOverride: preserveAppliedBalance
+            ? existing.retenueGarantie
+            : retenueOverride,
           prorataOverride,
           tvaRateOverride,
           isSolde: effectiveIsSolde,
@@ -1043,6 +1052,7 @@ async function buildPreviewPayload(
         totalWorksHt: d.totalWorksHt,
         pvMvAdjustment: "0.00",
         previousPayments: d.previousPayments,
+        retenueOverride: d.preserveAppliedInvoiceBalance ? "0.00" : undefined,
         documentaryBasisInvoices: d.invoices.map((r) => ({
           amountHt: r.amountHt,
           amountTtc: r.amountTtc,
