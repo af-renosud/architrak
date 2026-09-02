@@ -3,8 +3,19 @@ import http from "http";
 import express from "express";
 import type { AddressInfo } from "net";
 import { db } from "../db";
-import { certificats, certificatSources, projects, contractors, marches, devis, invoices, situations } from "@shared/schema";
-import { eq, inArray } from "drizzle-orm";
+import {
+  certificats,
+  certificatSources,
+  projects,
+  contractors,
+  marches,
+  devis,
+  invoices,
+  invoiceAcompteApplications,
+  projectIntakeDocuments,
+  situations,
+} from "@shared/schema";
+import { eq, inArray, sql } from "drizzle-orm";
 import certificatsRouter from "../routes/certificats";
 
 /**
@@ -125,6 +136,134 @@ describe("Task #496 — one-click certificat from invoice", () => {
   it("404s on an unknown invoice", async () => {
     const r = await get(`/api/invoices/999999999/certificat-preview`);
     expect(r.status).toBe(404);
+  });
+
+  it("previews the TRÜTKEN no-marché balance without persisting a certificat or source link", async () => {
+    const suffix = Date.now();
+    const [project] = await db.insert(projects).values({
+      code: `T696-${suffix}`,
+      name: "No-marché invoice balance regression",
+      clientName: "Test Client",
+      status: "active",
+    }).returning();
+    const [contractor] = await db.insert(contractors).values({
+      name: `T696 Contractor ${suffix}`,
+    }).returning();
+    const [devisRow] = await db.insert(devis).values({
+      projectId: project.id,
+      contractorId: contractor.id,
+      devisCode: `T696.${suffix}`,
+      descriptionFr: "TRÜTKEN-style invoice balance",
+      amountHt: "2075.00",
+      amountTtc: "2490.00",
+      acompteRequired: true,
+      acompteAmountHt: "1240.00",
+      acompteState: "applied",
+      signOffStage: "client_signed_off",
+      accountingState: "active",
+      status: "confirmed",
+    }).returning();
+    const [acompteCertificat] = await db.insert(certificats).values({
+      projectId: project.id,
+      contractorId: contractor.id,
+      certificateRef: `T696-AC-${suffix}`,
+      dateIssued: "2026-08-16",
+      totalWorksHt: "1240.00",
+      pvMvAdjustment: "0.00",
+      previousPayments: "0.00",
+      retenueGarantie: "0.00",
+      cumulativeProrataDeduction: "0.00",
+      periodProrataDeduction: "0.00",
+      cumulativeAcompteRecoupment: "0.00",
+      periodAcompteRecoupment: "0.00",
+      tvaRatePercent: "20.00",
+      tvaAutoliquidation: false,
+      tvaRateSource: "documentary",
+      netToPayHt: "1240.00",
+      tvaAmount: "248.00",
+      netToPayTtc: "1488.00",
+      acompteDevisId: devisRow.id,
+      status: "paid",
+    }).returning();
+    const [source] = await db.insert(projectIntakeDocuments).values({
+      projectId: project.id,
+      fileName: "FR25.26-0144.pdf",
+      storageKey: `tests/certificat-preview/${suffix}.pdf`,
+      contentFingerprint: suffix.toString().padStart(64, "0"),
+      extractedData: {
+        documentType: "invoice",
+        amountHt: 2075,
+        amountTtc: 2490,
+        netAPayer: 1002,
+        acomptePaidAmountTtc: 1488,
+      },
+    }).returning();
+    const [invoice] = await db.insert(invoices).values({
+      projectId: project.id,
+      contractorId: contractor.id,
+      devisId: devisRow.id,
+      sourceIntakeDocumentId: source.id,
+      invoiceNumber: `T696-${suffix}`,
+      amountHt: "2075.00",
+      tvaAmount: "415.00",
+      amountTtc: "2490.00",
+      status: "pending",
+    }).returning();
+    await db.insert(invoiceAcompteApplications).values({
+      invoiceId: invoice.id,
+      devisId: devisRow.id,
+      certificatId: acompteCertificat.id,
+      sourceIntakeDocumentId: source.id,
+      sourceStorageKey: source.storageKey,
+      sourceFileName: source.fileName,
+      sourceContentFingerprint: source.contentFingerprint,
+      appliedHt: "1240.00",
+      appliedTtc: "1488.00",
+      invoiceGrossHt: "2075.00",
+      invoiceGrossTtc: "2490.00",
+      invoiceNetPayableTtc: "1002.00",
+      evidenceText: "Acompte versé 1 488,00 €",
+    });
+
+    try {
+      const certsBefore = await db.select({ id: certificats.id })
+        .from(certificats)
+        .where(eq(certificats.projectId, project.id));
+      const linksBefore = await db.select({ id: certificatSources.id })
+        .from(certificatSources)
+        .where(eq(certificatSources.invoiceId, invoice.id));
+
+      const preview = await get(`/api/invoices/${invoice.id}/certificat-preview`);
+
+      expect(preview.status).toBe(200);
+      expect(preview.body.derivation.totalWorksHt).toBe("2075.00");
+      expect(preview.body.derivation.previousPayments).toBe("1240.00");
+      expect(preview.body.deductions.retenueGarantie).toBe("0.00");
+      expect(preview.body.deductions.netToPayHt).toBe("835.00");
+      expect(preview.body.deductions.tvaAmount).toBe("167.00");
+      expect(preview.body.deductions.netToPayTtc).toBe("1002.00");
+
+      const certsAfter = await db.select({ id: certificats.id })
+        .from(certificats)
+        .where(eq(certificats.projectId, project.id));
+      const linksAfter = await db.select({ id: certificatSources.id })
+        .from(certificatSources)
+        .where(eq(certificatSources.invoiceId, invoice.id));
+      expect(certsAfter).toEqual(certsBefore);
+      expect(linksBefore).toHaveLength(0);
+      expect(linksAfter).toHaveLength(0);
+    } finally {
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT set_config('app.allow_acompte_application_delete', 'true', true)`);
+        await tx.delete(invoiceAcompteApplications).where(eq(invoiceAcompteApplications.invoiceId, invoice.id));
+      });
+      await db.delete(invoices).where(eq(invoices.id, invoice.id));
+      await db.delete(projectIntakeDocuments).where(eq(projectIntakeDocuments.id, source.id));
+      await db.delete(certificats).where(eq(certificats.id, acompteCertificat.id));
+      await db.delete(devis).where(eq(devis.id, devisRow.id));
+      await db.delete(contractors).where(eq(contractors.id, contractor.id));
+      await db.delete(projects).where(eq(projects.id, project.id));
+    }
   });
 
   it("Mode A: derives cumulative from invoice HT, creates a linked draft, then refuses double-certification", async () => {
