@@ -4,7 +4,7 @@ import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
-import { Mail, FileText, RefreshCw, ExternalLink, Search, Filter, Eye, RotateCcw, Trash2, ChevronRight } from "lucide-react";
+import { Mail, FileText, RefreshCw, ExternalLink, Search, Filter, Eye, RotateCcw, Trash2, ChevronRight, TriangleAlert } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -60,6 +60,18 @@ const typeLabels: Record<string, string> = {
   other: "Other",
   unknown: "Unknown",
 };
+
+function getExtractionFailure(doc: EmailDocument): string | null {
+  const extracted = doc.extractedData as Record<string, unknown> | null;
+  const rawText = typeof extracted?.rawText === "string" ? extracted.rawText : "";
+  const match = rawText.match(/^Parse failed(?:\s*\(transient\))?:\s*([\s\S]+)$/);
+  if (match?.[1]?.trim()) return match[1].trim();
+  if (doc.extractionStatus === "failed" && doc.notes?.trim()) return doc.notes.trim();
+  if (doc.extractionStatus === "pending" && doc.notes?.startsWith("Erreur transitoire")) {
+    return doc.notes.trim();
+  }
+  return null;
+}
 
 export default function EmailDocuments() {
   const { toast } = useToast();
@@ -462,6 +474,7 @@ export default function EmailDocuments() {
           ) : (
             filtered.map(doc => {
               const project = doc.projectId ? projectMap.get(doc.projectId) : null;
+              const extractionFailure = getExtractionFailure(doc);
               return (
                 <LuxuryCard key={doc.id} className="p-4" data-testid={`card-email-doc-${doc.id}`}>
                   <div className="flex items-start justify-between gap-4">
@@ -502,6 +515,24 @@ export default function EmailDocuments() {
                         <div className="text-xs text-muted-foreground mt-0.5 truncate">
                           {doc.emailSubject || "No subject"}
                         </div>
+                        {extractionFailure && (
+                          <div
+                            className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100"
+                            data-testid={`alert-extraction-failed-${doc.id}`}
+                          >
+                            <div className="flex items-start gap-2">
+                              <TriangleAlert size={14} className="mt-0.5 shrink-0 text-amber-600" aria-hidden="true" />
+                              <div className="min-w-0">
+                                <p className="font-semibold">
+                                  Gmail capture succeeded{project ? ` and the document was matched to ${project.name}` : ""}, but PDF extraction failed.
+                                </p>
+                                <p className="mt-0.5 break-words text-amber-800/80 dark:text-amber-200/80" title={extractionFailure}>
+                                  {extractionFailure}
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                         {PARKED_STATUSES.has(doc.extractionStatus) && doc.notes && (
                           <div className="text-xs text-muted-foreground mt-1 italic" data-testid={`text-park-reason-${doc.id}`}>
                             {doc.notes}
@@ -549,12 +580,12 @@ export default function EmailDocuments() {
                           </Button>
                         </a>
                       )}
-                      {(doc.extractionStatus === "failed" || doc.extractionStatus === "pending" || PARKED_STATUSES.has(doc.extractionStatus)) && (
+                      {(doc.extractionStatus === "failed" || doc.extractionStatus === "pending" || PARKED_STATUSES.has(doc.extractionStatus) || extractionFailure != null) && (
                         <Button
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8"
-                          title={PARKED_STATUSES.has(doc.extractionStatus) ? "Force AI analysis (bypass relevance pre-filter)" : "Re-process"}
+                          title={PARKED_STATUSES.has(doc.extractionStatus) ? "Force AI analysis (bypass relevance pre-filter)" : "Re-process PDF extraction"}
                           onClick={() => processMutation.mutate({ id: doc.id, force: PARKED_STATUSES.has(doc.extractionStatus) })}
                           disabled={processMutation.isPending}
                           data-testid={`button-reprocess-${doc.id}`}

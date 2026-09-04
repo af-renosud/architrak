@@ -39,6 +39,7 @@ const state = vi.hoisted(() => ({
   // Simulated wall-clock advance (ms) applied on every "timeout*" behavior,
   // consumed by tests that fake Date.now to exercise the total raster budget.
   clockAdvanceOnTimeoutMs: 0,
+  clockAdvanceAfterCallMs: new Map<string, number>(),
   fakeNowMs: 0,
 }));
 
@@ -123,6 +124,7 @@ vi.mock("child_process", () => {
 
     // Exact tag@dpi behaviour wins; plain tag applies at every DPI.
     const behavior = state.behaviors.get(key) ?? state.behaviors.get(tag) ?? "fail";
+    state.fakeNowMs += state.clockAdvanceAfterCallMs.get(key) ?? state.clockAdvanceAfterCallMs.get(tag) ?? 0;
 
     switch (behavior) {
       case "ok":
@@ -184,6 +186,7 @@ describe("pdfToImages — rasteriser fallback chain", () => {
     state.behaviors = new Map();
     state.calls = [];
     state.clockAdvanceOnTimeoutMs = 0;
+    state.clockAdvanceAfterCallMs = new Map();
     state.fakeNowMs = 0;
     vi.restoreAllMocks();
   });
@@ -247,12 +250,44 @@ describe("pdfToImages — rasteriser fallback chain", () => {
     expect(state.calls).not.toContain("pdftocairo@200");
   });
 
-  it("descends through the full DPI ladder and throws when every rung times out", async () => {
+  it("descends through the full DPI ladder, tries an independent lowest-DPI backend, then throws", async () => {
     setBehaviors({ pdftoppm: "timeout" });
     await expect(pdfToImages(fakePdf)).rejects.toThrow(/timed out after/);
     expect(state.calls).toContain("pdftoppm@200");
     expect(state.calls).toContain("pdftoppm@100");
     expect(state.calls).toContain("pdftoppm@72");
+    expect(state.calls).toContain("pdftocairo@72");
+  });
+
+  it("recovers when pdftoppm times out at every DPI but pdftocairo succeeds at the lowest rung", async () => {
+    setBehaviors({
+      pdftoppm: "timeout",
+      "pdftocairo@72": "ok",
+    });
+
+    const imgs = await pdfToImages(fakePdf);
+
+    expect(imgs).toHaveLength(1);
+    expect(state.calls).toContain("pdftoppm@200");
+    expect(state.calls).toContain("pdftoppm@100");
+    expect(state.calls).toContain("pdftoppm@72");
+    expect(state.calls).toContain("pdftocairo@72");
+    expect(state.calls).not.toContain("repair-pdfwrite");
+  });
+
+  it("stops after the single independent lowest-DPI fallback hard-fails", async () => {
+    setBehaviors({
+      pdftoppm: "timeout",
+      "pdftocairo@72": "fail",
+      "repair-pdfwrite": "ok",
+      "repair-render": "ok",
+    });
+
+    await expect(pdfToImages(fakePdf)).rejects.toThrow(/stderr-pdftocairo/);
+
+    expect(state.calls).toContain("pdftocairo@72");
+    expect(state.calls).not.toContain("repair-pdfwrite");
+    expect(state.calls).not.toContain("render@72");
   });
 
   it("treats corrupt PNG output from a non-timed-out strategy as failure and tries the next backend at the same DPI", async () => {
@@ -312,6 +347,7 @@ describe("pdfToImages — rasteriser fallback chain", () => {
     // (lowest rung) it still fails and the whole run throws.
     await expect(pdfToImages(fakePdf)).rejects.toThrow(/coverage may be partial/);
     expect(state.calls).toContain("pdftoppm@72");
+    expect(state.calls).toContain("pdftocairo@72");
   });
 
   it("aborts with diagnostics when the total raster wall-clock budget is exhausted", async () => {
@@ -325,6 +361,21 @@ describe("pdfToImages — rasteriser fallback chain", () => {
     expect(state.calls).toContain("pdftoppm@200");
     expect(state.calls).toContain("pdftoppm@100");
     expect(state.calls).not.toContain("pdftoppm@72");
+  });
+
+  it("caps a composite Ghostscript repair to the remaining strategy deadline", async () => {
+    state.clockAdvanceAfterCallMs.set("repair-pdfwrite", 120_001);
+    vi.spyOn(Date, "now").mockImplementation(() => state.fakeNowMs);
+    setBehaviors({
+      pdftoppm: "fail",
+      pdftocairo: "fail",
+      "repair-pdfwrite": "ok",
+      "repair-render": "ok",
+    });
+
+    await expect(pdfToImages(fakePdf)).rejects.toThrow(/PDF rasterisation failed/);
+    expect(state.calls).toContain("repair-pdfwrite");
+    expect(state.calls).not.toContain("repair-render@200");
   });
 
   it("re-renders at a lower DPI when pages exceed Gemini's image limits", async () => {

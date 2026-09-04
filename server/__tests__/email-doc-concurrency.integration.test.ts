@@ -18,11 +18,12 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { EmailDocument, ProjectDocument } from "@shared/schema";
+import type { ParsedDocument } from "../gmail/document-parser";
 
 // Deterministic extraction result returned by the stubbed OpenAI SDK.
 // clientName/projectAddress line up with the seeded project so
 // matchToProject clears the confidence>=30 bar and files the attachment.
-const PARSED_FIXTURE = {
+const PARSED_FIXTURE: ParsedDocument = {
   documentType: "quotation",
   contractorName: "AT PISCINES",
   clientName: "Famille Smith",
@@ -34,6 +35,7 @@ const PARSED_FIXTURE = {
   tvaAmount: 200.0,
   tvaRate: 20,
 };
+const DEFAULT_PARSED_FIXTURE = { ...PARSED_FIXTURE };
 
 vi.mock("openai", () => ({
   default: class {
@@ -173,6 +175,7 @@ function seedEmailDoc(overrides: Partial<EmailDocument> = {}): void {
 }
 
 beforeEach(() => {
+  Object.assign(PARSED_FIXTURE, DEFAULT_PARSED_FIXTURE);
   state.emailDocs.clear();
   state.projectDocs.length = 0;
   state.retryWrites.length = 0;
@@ -210,10 +213,20 @@ describe("processEmailDocument — double-filing guards (Task #312)", () => {
     expect(doc.projectId).toBe(7);
   }, 120_000);
 
-  it("skips re-filing on a crash-retry when the attachment was already filed", async () => {
+  it("retries a filed parse-failure row without duplicating files or clearing its assignments", async () => {
     // Simulate a crash AFTER the project-document insert but BEFORE the
     // final status write: the filing exists, the doc is back on "pending".
-    seedEmailDoc();
+    seedEmailDoc({
+      extractionStatus: "needs_review",
+      projectId: 7,
+      contractorId: 42,
+      extractedData: {
+        documentType: "unknown",
+        rawText: "Parse failed: PDF rasterisation failed for all strategies",
+      },
+    });
+    PARSED_FIXTURE.contractorName = undefined;
+    PARSED_FIXTURE.siret = undefined;
     state.projectDocs.push({
       id: state.nextProjectDocId++,
       projectId: 7,
@@ -235,6 +248,8 @@ describe("processEmailDocument — double-filing guards (Task #312)", () => {
     // The retry still refreshed the extraction result and terminal status.
     const doc = state.emailDocs.get(1)!;
     expect(["completed", "needs_review"]).toContain(doc.extractionStatus);
+    expect(doc.projectId).toBe(7);
+    expect(doc.contractorId).toBe(42);
   }, 120_000);
 
   it("refuses to process a dumped ('skipped') document — even manually (Task #322)", async () => {

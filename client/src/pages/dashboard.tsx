@@ -165,13 +165,14 @@ function GmailStatusBar({
   // two months in production).
   const { data: gmailStatus } = useQuery<{
     pollHealth?: { level: string; ageMs: number | null; message: string | null };
+    needsAttentionCount?: number;
     needsProjectCount?: number;
     persistentFailureCount?: number;
   }>({
     queryKey: ["/api/gmail/status"],
   });
   const pollHealth = gmailStatus?.pollHealth;
-  const needsProjectCount = gmailStatus?.needsProjectCount ?? 0;
+  const needsAttentionCount = gmailStatus?.needsAttentionCount ?? gmailStatus?.needsProjectCount ?? 0;
   // Task #506 — messages stuck failing on every poll pass.
   const persistentFailureCount = gmailStatus?.persistentFailureCount ?? 0;
   const [showStuckDialog, setShowStuckDialog] = useState(false);
@@ -271,19 +272,19 @@ function GmailStatusBar({
         </span>
       )}
 
-      {needsProjectCount > 0 && (
+      {needsAttentionCount > 0 && (
         <Link
-          href="/documents?filter=needs_project"
+          href="/documents?filter=needs_attention"
           className="flex items-center gap-1.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300 underline ml-1 hover:no-underline"
-          data-testid="link-email-docs-need-project"
+          data-testid="link-email-docs-need-attention"
         >
           <span
             className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold no-underline"
-            data-testid="badge-email-docs-need-project"
+            data-testid="badge-email-docs-need-attention"
           >
-            {needsProjectCount}
+            {needsAttentionCount}
           </span>
-          emailed document{needsProjectCount === 1 ? "" : "s"} need{needsProjectCount === 1 ? "s" : ""} a project →
+          emailed document{needsAttentionCount === 1 ? "" : "s"} need{needsAttentionCount === 1 ? "s" : ""} review →
         </Link>
       )}
 

@@ -32,7 +32,7 @@ export function isTransientGeminiError(err: unknown): boolean {
     return TRANSIENT_HTTP_STATUSES.has(Number(bracketed[1]));
   }
   // No HTTP status in the message — fall back to network/transient keywords.
-  return /service unavailable|currently experiencing high demand|rate limit|too many requests|temporarily unavailable|deadline exceeded|fetch failed|network error|ECONNRESET|ETIMEDOUT|ENOTFOUND/i.test(msg);
+  return /service unavailable|currently experiencing high demand|rate limit|too many requests|temporarily unavailable|deadline exceeded|timed out|time budget .* exhausted|not valid JSON|unexpected token .*JSON|fetch failed|network error|ECONNRESET|ETIMEDOUT|ENOTFOUND/i.test(msg);
 }
 
 function getOpenAIClient() {
@@ -712,12 +712,13 @@ function computeFitDpi(images: Buffer[], currentDpi: number): number | null {
 function runRasterCommand(
   cmd: string,
   args: string[],
+  timeoutMs: number = PDF_RASTER_TIMEOUT_MS,
 ): Promise<{ ok: boolean; timedOut: boolean; detail: string }> {
   return new Promise((resolve) => {
     execFile(
       cmd,
       args,
-      { timeout: PDF_RASTER_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 },
+      { timeout: Math.max(1, Math.min(timeoutMs, PDF_RASTER_TIMEOUT_MS)), maxBuffer: 16 * 1024 * 1024 },
       (err, _stdout, stderr) => {
         // execFile sets killed=true when it SIGTERMs the child at the
         // timeout. A timed-out rasteriser may have written partial output,
@@ -1027,14 +1028,17 @@ export async function pdfToImagesWithCoverage(
     // and its stderr is captured so a genuine dead-end is diagnosable
     // instead of surfacing an opaque "Command failed".
     //
-    // Two failure modes get a DPI downgrade instead of a backend switch:
+    // Two failure modes normally get a DPI downgrade before a backend switch:
     //  - a strategy TIMED OUT (the page is too heavy to render at this DPI —
     //    every other backend would burn its own 120s on the same content), or
     //  - the rendered pages exceed Gemini's inline-image limits.
     // In both cases we drop to the next rung of PDF_RASTER_DPI_LADDER and
-    // re-run the chain. Hard failures (crash / no output) at a given DPI stay
-    // at that DPI and try the next backend; if the whole chain hard-fails,
-    // lowering the DPI cannot help and we throw with the diagnostics.
+    // re-run the chain. At the lowest practical rung, however, one independent
+    // backend gets a bounded chance: production has shown that pdftoppm itself
+    // can wedge on an otherwise healthy, quick-to-render PDF. A second timeout
+    // at that rung stops the chain so alternate backends cannot each burn the
+    // full cap. Hard failures (crash / no output) at a given DPI stay at that
+    // DPI and try the next backend.
     //
     // A strategy only counts as successful when every collected page is a
     // COMPLETE PNG (signature + IEND). A rasteriser killed at the time cap
@@ -1048,35 +1052,52 @@ export async function pdfToImagesWithCoverage(
 
     const buildStrategies = (
       dpi: number,
-    ): Array<{ name: string; run: () => Promise<{ ok: boolean; timedOut: boolean; detail: string }> }> => [
+    ): Array<{ name: string; run: (timeoutMs: number) => Promise<{ ok: boolean; timedOut: boolean; detail: string }> }> => [
       {
         name: "pdftoppm",
-        run: () =>
-          runRasterCommand("pdftoppm", ["-png", "-r", String(dpi), "-l", String(renderLimit), pdfToProcess, outputPrefix]),
+        run: (timeoutMs) =>
+          runRasterCommand("pdftoppm", ["-png", "-r", String(dpi), "-l", String(renderLimit), pdfToProcess, outputPrefix], timeoutMs),
       },
       {
         name: "pdftocairo",
-        run: () =>
-          runRasterCommand("pdftocairo", ["-png", "-r", String(dpi), "-l", String(renderLimit), pdfToProcess, outputPrefix]),
+        run: (timeoutMs) =>
+          runRasterCommand("pdftocairo", ["-png", "-r", String(dpi), "-l", String(renderLimit), pdfToProcess, outputPrefix], timeoutMs),
       },
       {
         name: "ghostscript-repair",
-        run: async () => {
-          const repair = await runRasterCommand("gs", ["-q", "-o", repairedPath, "-sDEVICE=pdfwrite", pdfToProcess]);
+        run: async (timeoutMs) => {
+          const startedAt = Date.now();
+          const repair = await runRasterCommand(
+            "gs",
+            ["-q", "-o", repairedPath, "-sDEVICE=pdfwrite", pdfToProcess],
+            timeoutMs,
+          );
           if (!repair.ok) return repair;
-          return runRasterCommand("pdftoppm", ["-png", "-r", String(dpi), "-l", String(renderLimit), repairedPath, outputPrefix]);
+          const remainingMs = timeoutMs - (Date.now() - startedAt);
+          if (remainingMs <= 0) {
+            return {
+              ok: false,
+              timedOut: true,
+              detail: `ghostscript repair exhausted its ${timeoutMs}ms strategy deadline before re-render`,
+            };
+          }
+          return runRasterCommand(
+            "pdftoppm",
+            ["-png", "-r", String(dpi), "-l", String(renderLimit), repairedPath, outputPrefix],
+            remainingMs,
+          );
         },
       },
       {
         name: "ghostscript-render",
-        run: () =>
+        run: (timeoutMs) =>
           runRasterCommand("gs", [
             "-q", "-dNOPAUSE", "-dBATCH", "-dSAFER",
             "-sDEVICE=png16m", `-r${dpi}`,
             "-dFirstPage=1", `-dLastPage=${renderLimit}`,
             `-sOutputFile=${gsOutputPattern}`,
             pdfToProcess,
-          ]),
+          ], timeoutMs),
       },
     ];
 
@@ -1088,20 +1109,35 @@ export async function pdfToImagesWithCoverage(
     // MAX_EXTRA_FIT_RUNGS). Oversized images are never returned.
     const ladder: number[] = [...PDF_RASTER_DPI_LADDER];
     let extraFitRungs = 0;
-    for (let rung = 0; rung < ladder.length; rung++) {
+    rasterRungs: for (let rung = 0; rung < ladder.length; rung++) {
       const dpi = ladder[rung];
       let descendDpi = false;
+      let independentFallbackAfterLowestTimeoutUsed = false;
+      let independentFallbackIsNext = false;
+      const mayTryIndependentBackendAfterTimeout = (): boolean => {
+        const lowestStaticDpi = PDF_RASTER_DPI_LADDER[PDF_RASTER_DPI_LADDER.length - 1];
+        if (dpi > lowestStaticDpi || independentFallbackAfterLowestTimeoutUsed) return false;
+        independentFallbackAfterLowestTimeoutUsed = true;
+        diagnostics.push(
+          `lowest-DPI timeout: trying one independent raster backend before abandoning ${dpi}dpi`,
+        );
+        return true;
+      };
 
       for (const strategy of buildStrategies(dpi)) {
-        if (Date.now() - rasterStartedAt > PDF_RASTER_TOTAL_BUDGET_MS) {
+        const isIndependentFallbackAttempt = independentFallbackIsNext;
+        independentFallbackIsNext = false;
+        const remainingBudgetMs = PDF_RASTER_TOTAL_BUDGET_MS - (Date.now() - rasterStartedAt);
+        if (remainingBudgetMs <= 0) {
           diagnostics.push(
             `raster time budget of ${PDF_RASTER_TOTAL_BUDGET_MS}ms exhausted before "${strategy.name}"@${dpi}dpi`,
           );
           throw new Error(`PDF rasterisation failed for all strategies — ${diagnostics.join(" | ")}`);
         }
+        const strategyTimeoutMs = Math.min(PDF_RASTER_TIMEOUT_MS, remainingBudgetMs);
 
         await clearPngPages(tempDir);
-        const { ok, detail, timedOut } = await strategy.run();
+        const { ok, detail, timedOut } = await strategy.run(strategyTimeoutMs);
         const images = await collectPngPages(tempDir, renderLimit);
         let allComplete = images.length > 0 && images.every(isCompletePng);
 
@@ -1116,9 +1152,15 @@ export async function pdfToImagesWithCoverage(
           );
           allComplete = false;
           if (timedOut) {
+            if (isIndependentFallbackAttempt) break rasterRungs;
+            if (mayTryIndependentBackendAfterTimeout()) {
+              independentFallbackIsNext = true;
+              continue;
+            }
             descendDpi = true;
             break;
           }
+          if (isIndependentFallbackAttempt) break rasterRungs;
           continue;
         }
 
@@ -1128,8 +1170,13 @@ export async function pdfToImagesWithCoverage(
           // Timed-out output is never accepted; re-render at a lower DPI (or,
           // past the last rung, fail with diagnostics).
           diagnostics.push(
-            `${strategy.name}@${dpi}dpi: timed out after ${PDF_RASTER_TIMEOUT_MS}ms with ${images.length} complete page(s) — coverage may be partial, discarded`,
+            `${strategy.name}@${dpi}dpi: timed out after ${strategyTimeoutMs}ms with ${images.length} complete page(s) — coverage may be partial, discarded`,
           );
+          if (isIndependentFallbackAttempt) break rasterRungs;
+          if (mayTryIndependentBackendAfterTimeout()) {
+            independentFallbackIsNext = true;
+            continue;
+          }
           descendDpi = true;
           break;
         }
@@ -1142,6 +1189,7 @@ export async function pdfToImagesWithCoverage(
           diagnostics.push(
             `${strategy.name}@${dpi}dpi: exited non-zero with ${images.length} complete page(s) on disk — output discarded (${detail.slice(0, 300) || "no stderr"})`,
           );
+          if (isIndependentFallbackAttempt) break rasterRungs;
           continue;
         }
 
@@ -1169,15 +1217,20 @@ export async function pdfToImagesWithCoverage(
 
         if (images.length > 0) {
           diagnostics.push(
-            `${strategy.name}@${dpi}dpi: produced truncated/corrupt PNG output${timedOut ? ` after ${PDF_RASTER_TIMEOUT_MS}ms timeout` : ""} — discarded`,
+            `${strategy.name}@${dpi}dpi: produced truncated/corrupt PNG output${timedOut ? ` after ${strategyTimeoutMs}ms timeout` : ""} — discarded`,
           );
         } else {
           diagnostics.push(
-            `${strategy.name}@${dpi}dpi: ${timedOut ? `timed out after ${PDF_RASTER_TIMEOUT_MS}ms` : detail.slice(0, 300) || "no output"}`,
+            `${strategy.name}@${dpi}dpi: ${timedOut ? `timed out after ${strategyTimeoutMs}ms` : detail.slice(0, 300) || "no output"}`,
           );
         }
 
+        if (isIndependentFallbackAttempt) break rasterRungs;
         if (timedOut) {
+          if (mayTryIndependentBackendAfterTimeout()) {
+            independentFallbackIsNext = true;
+            continue;
+          }
           descendDpi = true;
           break;
         }
@@ -2154,6 +2207,10 @@ function hasOpenAIKey(): boolean {
   return Boolean(env.AI_INTEGRATIONS_OPENAI_API_KEY);
 }
 
+function hasGeminiKey(): boolean {
+  return Boolean(env.GEMINI_API_KEY);
+}
+
 async function getOpenAIFallbackModelId(): Promise<string> {
   // Prefer an explicit fallback task setting if the operator configured one,
   // then any OpenAI-provider document_parsing setting (covers the case where
@@ -2311,6 +2368,8 @@ export interface ParseDocumentDeps {
   getOpenAIFallbackModelId?: () => Promise<string>;
   getDenseCompletenessFallbackModelId?: () => Promise<string | null>;
   hasOpenAIKey?: () => boolean;
+  hasGeminiKey?: () => boolean;
+  getGeminiFallbackModelId?: () => string;
 }
 
 export async function parseDocument(
@@ -2326,6 +2385,10 @@ export async function parseDocument(
     deps.getDenseCompletenessFallbackModelId
     ?? getDenseCompletenessFallbackModelId;
   const _hasOpenAIKey = deps.hasOpenAIKey ?? hasOpenAIKey;
+  const _hasGeminiKey = deps.hasGeminiKey ?? hasGeminiKey;
+  const _getGeminiFallbackModelId =
+    deps.getGeminiFallbackModelId
+    ?? (() => "gemini-2.5-flash");
   const _pdfToImagesWithCoverage: (buf: Buffer) => Promise<{ images: Buffer[]; pdfPageCount: number | null }> =
     deps.pdfToImagesWithCoverage
       ?? (deps.pdfToImages
@@ -2342,8 +2405,13 @@ export async function parseDocument(
     console.log(`[DocumentParser] Converting PDF "${fileName}" to images...`);
     ({ images, pdfPageCount } = await _pdfToImagesWithCoverage(pdfBuffer));
   } catch (err: any) {
-    console.error("[DocumentParser] PDF conversion error:", err.message);
-    return { documentType: "unknown", rawText: `Parse failed: ${err.message}` };
+    const message = err instanceof Error ? err.message : String(err);
+    const transient = isTransientGeminiError(err);
+    console.error("[DocumentParser] PDF conversion error:", message);
+    return {
+      documentType: "unknown",
+      rawText: `Parse failed${transient ? " (transient)" : ""}: ${message}`,
+    };
   }
   if (images.length === 0) {
     return { documentType: "unknown", rawText: "PDF conversion produced no images" };
@@ -2418,6 +2486,23 @@ export async function parseDocument(
         finalErr = err;
         finalErrTransient = isTransientGeminiError(err);
         console.error(`[DocumentParser] OpenAI parse error (transient=${finalErrTransient}):`, err.message);
+        if (finalErrTransient && _hasGeminiKey()) {
+          const fallbackModelId = _getGeminiFallbackModelId();
+          console.warn(`[DocumentParser] Falling back to Gemini/${fallbackModelId} after OpenAI transient/invalid response`);
+          try {
+            parsed = await _parseWithGemini(
+              chunkImages,
+              fallbackModelId,
+              chunkPageTexts,
+            );
+            finalErr = null;
+            finalErrTransient = false;
+          } catch (fallbackErr: any) {
+            finalErr = fallbackErr;
+            finalErrTransient = isTransientGeminiError(fallbackErr);
+            console.error(`[DocumentParser] Gemini fallback also failed (transient=${finalErrTransient}):`, fallbackErr.message);
+          }
+        }
       }
     }
     return { parsed, err: finalErr, transient: finalErrTransient };
@@ -2745,6 +2830,7 @@ export async function matchToProject(
   let bestProjectId: number | null = null;
   let bestContractorId: number | null = null;
   let bestScore = 0;
+  let bestProjectScore = 0;
   const matchedFields: Record<string, string> = {};
   const warnings: ValidationWarning[] = [];
 
@@ -2867,6 +2953,7 @@ export async function matchToProject(
   const identity = resolveLabelledProjectIdentity(parsed, projects);
   if (identity.kind === "matched") {
     bestProjectId = identity.project.id;
+    bestProjectScore = 100;
     bestScore = Math.max(bestScore, 100);
     matchedFields.projectIdentity = identity.evidence;
     if (parsed.projectName?.trim()) {
@@ -2910,16 +2997,21 @@ export async function matchToProject(
       }
     }
 
-    if (projectScore > 0 && projectScore >= bestScore - (bestContractorId ? 40 : 0)) {
+    if (projectScore > bestProjectScore) {
       bestProjectId = project.id;
-      bestScore = projectScore + (bestContractorId ? 40 : 0);
+      bestProjectScore = projectScore;
+      bestScore = Math.max(bestScore, projectScore + (bestContractorId ? 40 : 0));
     }
   }
 
   const confidence = Math.min(bestScore, 100);
 
   return {
-    projectId: confidence >= 30 ? bestProjectId : null,
+    // Contractor confidence must not raise the bar for otherwise-valid project
+    // evidence. Keep the project threshold scoped to client/address evidence;
+    // the old shared score required the theoretical 60/60 maximum whenever a
+    // SIRET matched, rejecting strong partial-client + exact-address cases.
+    projectId: bestProjectScore >= 30 ? bestProjectId : null,
     contractorId: bestContractorId,
     confidence,
     matchedFields,
@@ -3013,6 +3105,14 @@ export async function processEmailDocument(
 
     const buffer = await getDocumentBuffer(emailDoc.storageKey);
     const parsed = await parseDocument(buffer, emailDoc.attachmentFileName || "document.pdf");
+    const noExtractedSignal =
+      parsed.documentType === "unknown"
+      && !parsed.amountHt
+      && !parsed.contractorName
+      && !parsed.lineItems?.length;
+    if (noExtractedSignal && isTransientParseFailure(parsed)) {
+      throw new Error(getParseFailureMessage(parsed) ?? "Transient document extraction failure");
+    }
 
     // Task #425 — deterministic firm-identity gate. Rewrites documentType in
     // place (confirms/downgrades architect_fee_invoice, rescues firm-issued
@@ -3078,7 +3178,31 @@ export async function processEmailDocument(
         match.projectId = evidence.projectId;
         match.matchedFields.projectEvidence = evidence.reason;
         console.log(`[DocumentParser] Document ${emailDocumentId} project auto-assigned from capture evidence: ${evidence.reason}`);
+      } else if (
+        emailDoc.projectId != null
+        && !parsed.projectName?.trim()
+        && !parsed.projectReference?.trim()
+        && projects.some((project) => project.id === emailDoc.projectId && project.archivedAt == null)
+      ) {
+        // A retry must not erase an existing live assignment merely because
+        // the fresh extraction had too little identity evidence. The operator
+        // can still change that assignment explicitly from the review queue.
+        match.projectId = emailDoc.projectId;
+        match.matchedFields.existingProjectAssignment = "Preserved existing live project assignment during reprocessing";
       }
+    }
+    const extractedContractorIdentity =
+      Boolean(parsed.contractorName?.trim())
+      || normalizeSiret(parsed.siret).length > 0
+      || extractSirenFromTva(parsed.tvaIntracom).length > 0;
+    if (
+      match.contractorId == null
+      && emailDoc.contractorId != null
+      && !extractedContractorIdentity
+      && contractors.some((contractor) => contractor.id === emailDoc.contractorId)
+    ) {
+      match.contractorId = emailDoc.contractorId;
+      match.matchedFields.existingContractorAssignment = "Preserved existing contractor assignment because reprocessing extracted no contractor identity";
     }
 
     const validation = validateExtraction(parsed);

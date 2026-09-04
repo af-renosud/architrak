@@ -312,6 +312,41 @@ describe("matchToProject — labelled project identity", () => {
   });
 });
 
+describe("matchToProject — combined contractor and project evidence", () => {
+  it("does not let an exact contractor SIRET suppress partial client plus exact address evidence", async () => {
+    const result = await matchToProject(
+      {
+        documentType: "quotation",
+        contractorName: "SOLEA BTP",
+        siret: "51849138600034",
+        clientName: "M Heinz",
+        projectAddress: "406 chemin de la grange - Verfeuil",
+      },
+      [
+        makeProject({
+          id: 1358,
+          name: "TRÜTKEN (VERFEUIL) 1358",
+          code: "1358",
+          clientName: "Heinz Hermann Trütken",
+          siteAddress: "406 chemin de la grange 30630 Verfeuil",
+        }),
+      ],
+      [
+        makeContractor({
+          id: 54,
+          name: "SOLEA BTP",
+          siret: "51849138600034",
+        }),
+      ],
+    );
+
+    expect(result.contractorId).toBe(54);
+    expect(result.projectId).toBe(1358);
+    expect(result.matchedFields.clientName).toContain("Heinz Hermann Trütken");
+    expect(result.matchedFields.address).toContain("406 chemin de la grange");
+  });
+});
+
 describe("deterministic text-layer intake evidence", () => {
   it("extracts an accented labelled project identity without relying on AI", () => {
     expect(

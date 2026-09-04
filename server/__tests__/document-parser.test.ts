@@ -39,7 +39,7 @@ describe("isTransientGeminiError", () => {
     expect(isTransientGeminiError(new Error("[400 Bad Request] Invalid prompt"))).toBe(false);
     expect(isTransientGeminiError(new Error("[401 Unauthorized] API key invalid"))).toBe(false);
     expect(isTransientGeminiError(new Error("[404 Not Found]"))).toBe(false);
-    expect(isTransientGeminiError(new Error("Unexpected token in JSON"))).toBe(false);
+    expect(isTransientGeminiError(new Error("Unexpected token in JSON"))).toBe(true);
   });
 
   it("trusts explicit 4xx status over transient-sounding keywords", () => {
@@ -80,6 +80,17 @@ describe("isTransientParseFailure / getParseFailureMessage", () => {
 
   it("does not flag successful extractions", () => {
     expect(isTransientParseFailure({ documentType: "quotation", amountHt: 1000 })).toBe(false);
+  });
+
+  it("marks rasterisation timeouts as transient parse failures", async () => {
+    const parsed = await parseDocument(Buffer.from("pdf"), "supplier.pdf", {
+      pdfToImagesWithCoverage: async () => {
+        throw new Error("PDF rasterisation failed for all strategies — pdftoppm@72dpi: timed out after 120000ms");
+      },
+    });
+
+    expect(parsed.rawText).toContain("Parse failed (transient)");
+    expect(isTransientParseFailure(parsed)).toBe(true);
   });
 });
 
@@ -252,6 +263,54 @@ describe("parseDocument retry & fallback", () => {
 
     expect(parseWithOpenAI).not.toHaveBeenCalled();
     expect(result.rawText).toBe("Parse failed (transient): [503 Service Unavailable] Gemini");
+    expect(isTransientParseFailure(result)).toBe(true);
+  });
+
+  it("falls back to Gemini when OpenAI returns a transient malformed-JSON response", async () => {
+    const successDoc: ParsedDocument = {
+      documentType: "quotation",
+      contractorName: "SOLEA BTP",
+      amountHt: 5800,
+    };
+    const parseWithOpenAI = vi
+      .fn<(images: Buffer[], modelId: string) => Promise<ParsedDocument>>()
+      .mockRejectedValue(new SyntaxError("Unexpected token 'I', \"I'm sorry,\" is not valid JSON"));
+    const parseWithGemini = vi
+      .fn<(images: Buffer[], modelId: string) => Promise<ParsedDocument>>()
+      .mockResolvedValue(successDoc);
+
+    const result = await parseDocument(Buffer.from("pdf"), "solea.pdf", {
+      ...baseDeps,
+      getActiveModel: vi.fn(async () => ({ provider: "openai", modelId: "gpt-4o" })),
+      parseWithOpenAI,
+      parseWithGemini,
+      hasGeminiKey: vi.fn(() => true),
+      getGeminiFallbackModelId: vi.fn(() => "gemini-2.5-flash"),
+    });
+
+    expect(parseWithOpenAI).toHaveBeenCalledTimes(1);
+    expect(parseWithGemini).toHaveBeenCalledWith(
+      fakeImages,
+      "gemini-2.5-flash",
+      [null],
+    );
+    expect(result).toEqual(successDoc);
+  });
+
+  it("keeps malformed OpenAI JSON transient when Gemini fallback is unavailable", async () => {
+    const parseWithOpenAI = vi
+      .fn<(images: Buffer[], modelId: string) => Promise<ParsedDocument>>()
+      .mockRejectedValue(new SyntaxError("Unexpected token 'I', \"I'm sorry,\" is not valid JSON"));
+
+    const result = await parseDocument(Buffer.from("pdf"), "solea.pdf", {
+      ...baseDeps,
+      getActiveModel: vi.fn(async () => ({ provider: "openai", modelId: "gpt-4o" })),
+      parseWithOpenAI,
+      parseWithGemini: vi.fn(),
+      hasGeminiKey: vi.fn(() => false),
+    });
+
+    expect(result.rawText).toContain("Parse failed (transient)");
     expect(isTransientParseFailure(result)).toBe(true);
   });
 });
