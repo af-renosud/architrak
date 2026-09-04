@@ -602,6 +602,14 @@ export const devis = pgTable("devis", {
   // through promoted_devis_id). A partial UNIQUE index in the migration
   // enforces one devis per promoted revision.
   sourcePlanningRevisionId: integer("source_planning_revision_id"),
+  // Server-owned provenance for a devis draft promoted from unified intake.
+  // The FK + partial unique index live in migration 0126 because intake also
+  // records a polymorphic promoted devis id, which would otherwise create a
+  // circular Drizzle declaration.
+  sourceIntakeDocumentId: integer("source_intake_document_id"),
+  manualIntakeReviewRequired: boolean("manual_intake_review_required").notNull().default(false),
+  manualIntakeReviewedAt: timestamp("manual_intake_reviewed_at", { withTimezone: true }),
+  manualIntakeReviewedByUserId: integer("manual_intake_reviewed_by_user_id").references(() => users.id, { onDelete: "restrict" }),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
@@ -684,6 +692,9 @@ export const invoices = pgTable("invoices", {
   // through email_documents, and a Drizzle-level reference creates a circular
   // table-initializer type dependency.
   sourceIntakeDocumentId: integer("source_intake_document_id"),
+  manualIntakeReviewRequired: boolean("manual_intake_review_required").notNull().default(false),
+  manualIntakeReviewedAt: timestamp("manual_intake_reviewed_at", { withTimezone: true }),
+  manualIntakeReviewedByUserId: integer("manual_intake_reviewed_by_user_id").references(() => users.id, { onDelete: "restrict" }),
   // Task #451 — the old loose-text `certificate_number` column was dropped;
   // certificat linkage is now the FK-grounded `certificat_sources` junction.
   invoiceNumber: text("invoice_number").notNull(),
@@ -1776,6 +1787,38 @@ export const intakeProjectIdentityResolutions = pgTable("intake_project_identity
   ),
 ]);
 
+// Immutable audit of the explicit human escape hatch that promotes a parked
+// source PDF into an incomplete financial draft. One source may be promoted
+// once only; the polymorphic result id is paired with promotedKind.
+export const intakeManualPromotions = pgTable("intake_manual_promotions", {
+  id: serial("id").primaryKey(),
+  intakeDocumentId: integer("intake_document_id").notNull().references(() => projectIntakeDocuments.id, { onDelete: "restrict" }),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "restrict" }),
+  sourceStorageKey: text("source_storage_key").notNull(),
+  sourceFileName: text("source_file_name").notNull(),
+  sourceContentFingerprint: text("source_content_fingerprint").notNull(),
+  priorAnalysisState: text("prior_analysis_state").notNull(),
+  priorRoutingState: text("prior_routing_state").notNull(),
+  priorParkReason: text("prior_park_reason").notNull(),
+  promotedKind: text("promoted_kind").notNull(),
+  promotedId: integer("promoted_id").notNull(),
+  contractorId: integer("contractor_id").notNull().references(() => contractors.id, { onDelete: "restrict" }),
+  targetDevisId: integer("target_devis_id").references(() => devis.id, { onDelete: "restrict" }),
+  operatorNote: text("operator_note").notNull(),
+  confirmedByUserId: integer("confirmed_by_user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  confirmedAt: timestamp("confirmed_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  uniqueIndex("intake_manual_promotions_intake_document_unique").on(table.intakeDocumentId),
+  index("intake_manual_promotions_project_id_idx").on(table.projectId),
+  index("intake_manual_promotions_confirmed_by_user_id_idx").on(table.confirmedByUserId),
+  check("intake_manual_promotions_kind_check", sql`${table.promotedKind} IN ('devis', 'invoice')`),
+  check(
+    "intake_manual_promotions_target_check",
+    sql`(${table.promotedKind} = 'devis' AND ${table.targetDevisId} IS NULL) OR (${table.promotedKind} = 'invoice' AND ${table.targetDevisId} IS NOT NULL)`,
+  ),
+  check("intake_manual_promotions_note_check", sql`length(btrim(${table.operatorNote})) >= 10`),
+]);
+
 // Task #686 — an audited supplier opening deposit which was paid without a
 // supplier invoice. This is deliberately separate from certificat_payments:
 // that ledger records client payments to the architect, whereas this records
@@ -2560,6 +2603,10 @@ export const insertDevisSchema = createInsertSchema(devis).omit({
   closureProjectId: true,
   closureContractorId: true,
   closureReceptionDate: true,
+  sourceIntakeDocumentId: true,
+  manualIntakeReviewRequired: true,
+  manualIntakeReviewedAt: true,
+  manualIntakeReviewedByUserId: true,
 });
 
 export const insertDevisLineItemSchema = createInsertSchema(devisLineItems, {
@@ -2586,6 +2633,9 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   id: true,
   createdAt: true,
   sourceIntakeDocumentId: true,
+  manualIntakeReviewRequired: true,
+  manualIntakeReviewedAt: true,
+  manualIntakeReviewedByUserId: true,
 });
 
 export const insertSituationSchema = createInsertSchema(situations).omit({
@@ -2667,6 +2717,7 @@ export type Marche = typeof marches.$inferSelect;
 export type InsertMarche = z.infer<typeof insertMarcheSchema>;
 export type Devis = typeof devis.$inferSelect;
 export type InsertDevis = z.infer<typeof insertDevisSchema>;
+export type ServerInsertDevis = InsertDevis & { sourceIntakeDocumentId?: number | null };
 export type DevisLineItem = typeof devisLineItems.$inferSelect;
 export type InsertDevisLineItem = z.infer<typeof insertDevisLineItemSchema>;
 export type Avenant = typeof avenants.$inferSelect;
@@ -2854,6 +2905,7 @@ export type ProjectDocument = typeof projectDocuments.$inferSelect;
 export type InsertProjectDocument = z.infer<typeof insertProjectDocumentSchema>;
 export type ProjectIntakeDocument = typeof projectIntakeDocuments.$inferSelect;
 export type InsertProjectIntakeDocument = z.infer<typeof insertProjectIntakeDocumentSchema>;
+export type IntakeManualPromotion = typeof intakeManualPromotions.$inferSelect;
 export type IntakeProjectIdentityResolution = typeof intakeProjectIdentityResolutions.$inferSelect;
 export type AcompteNoInvoicePayment = typeof acompteNoInvoicePayments.$inferSelect;
 export type InvoiceAcompteApplication = typeof invoiceAcompteApplications.$inferSelect;

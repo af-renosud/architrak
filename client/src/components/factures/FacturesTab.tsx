@@ -3,6 +3,7 @@ import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
@@ -928,6 +929,7 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
   const [editAmountTtc, setEditAmountTtc] = useState(invoice.amountTtc);
   const [editInvoiceNumber, setEditInvoiceNumber] = useState(String(invoice.invoiceNumber));
   const [editDateIssued, setEditDateIssued] = useState(invoice.dateIssued ?? "");
+  const [manualReviewConfirmed, setManualReviewConfirmed] = useState(false);
 
   const fieldWarnings = (field: string) => warnings.filter(w => w.field === field);
 
@@ -938,6 +940,7 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
       if (editAmountTtc !== invoice.amountTtc) corrections.amountTtc = editAmountTtc;
       if (editInvoiceNumber !== String(invoice.invoiceNumber)) corrections.invoiceNumber = editInvoiceNumber;
       if (editDateIssued !== (invoice.dateIssued ?? "")) corrections.dateIssued = editDateIssued || null;
+      if (invoice.manualIntakeReviewRequired) corrections.manualReviewConfirmed = manualReviewConfirmed;
 
       const res = await apiRequest("POST", `/api/invoices/${invoice.id}/confirm`, corrections);
       return res.json();
@@ -992,6 +995,16 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
             </div>
           ))}
         </div>
+      )}
+      {invoice.manualIntakeReviewRequired && (
+        <label className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
+          <Checkbox
+            checked={manualReviewConfirmed}
+            onCheckedChange={(value) => setManualReviewConfirmed(value === true)}
+            data-testid={`checkbox-manual-invoice-review-${invoice.id}`}
+          />
+          <span>I reviewed this manually submitted PDF and verified the invoice number, target devis, HT, and TTC values.</span>
+        </label>
       )}
 
       <div className="space-y-1.5">
@@ -1077,7 +1090,7 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
           size="sm"
           className="gap-1.5"
           onClick={() => confirmMutation.mutate()}
-          disabled={confirmMutation.isPending || discardMutation.isPending || isArchived}
+          disabled={confirmMutation.isPending || discardMutation.isPending || isArchived || (invoice.manualIntakeReviewRequired && !manualReviewConfirmed)}
           data-testid={`button-confirm-draft-${invoice.id}`}
         >
           {confirmMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}

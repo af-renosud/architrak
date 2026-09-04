@@ -45,13 +45,14 @@ const advisoryAckParams = z.object({
   advisoryId: z.coerce.number().int().positive(),
 });
 const createInvoiceBodySchema = insertInvoiceSchema.omit({ devisId: true });
-const updateInvoiceSchema = insertInvoiceSchema.partial();
+const updateInvoiceSchema = insertInvoiceSchema.omit({ status: true }).partial().strict();
 
 const invoiceConfirmSchema = z.object({
   amountHt: z.coerce.number().nonnegative().optional(),
   amountTtc: z.coerce.number().nonnegative().optional(),
   invoiceNumber: z.string().min(1).optional(),
   dateIssued: z.string().optional(),
+  manualReviewConfirmed: z.literal(true).optional(),
 }).strict();
 type InvoiceConfirmInput = z.infer<typeof invoiceConfirmSchema>;
 
@@ -201,6 +202,7 @@ router.get(
 
 router.patch(
   "/api/invoices/:id",
+  requireAuth,
   validateRequest({ params: idParams, body: updateInvoiceSchema }),
   async (req, res) => {
     const invoiceId = Number(req.params.id);
@@ -257,6 +259,7 @@ router.post(
 
 router.post(
   "/api/invoices/:id/approve",
+  requireAuth,
   validateRequest({ params: idParams }),
   async (req, res) => {
     try {
@@ -272,11 +275,14 @@ router.post(
 
 router.post(
   "/api/invoices/:id/confirm",
+  requireAuth,
   validateRequest({ params: idParams, body: invoiceConfirmSchema }),
   async (req, res) => {
     try {
       const invoiceId = Number(req.params.id);
-      const corrections = req.body;
+      const corrections = { ...req.body };
+      const manualReviewConfirmed = corrections.manualReviewConfirmed === true;
+      delete corrections.manualReviewConfirmed;
       const preparation = await db.transaction(async (tx) => {
         // The application service takes this same row lock before creating its
         // snapshot. This serialises corrections against application creation:
@@ -289,6 +295,9 @@ router.post(
           .for("update");
         if (!invoice) return { outcome: "not_found" as const };
         if (invoice.status !== "draft") return { outcome: "not_draft" as const };
+        if (invoice.manualIntakeReviewRequired && !manualReviewConfirmed) {
+          return { outcome: "manual_review_required" as const };
+        }
 
         if (changesApplicationProtectedInvoiceField(corrections)) {
           const [application] = await tx
@@ -306,6 +315,12 @@ router.post(
         const finalTtc = corrections.amountTtc != null
           ? roundCurrency(corrections.amountTtc)
           : roundCurrency(Number(invoice.amountTtc));
+        if (
+          invoice.manualIntakeReviewRequired
+          && (finalHt <= 0 || finalTtc <= 0 || finalTtc < finalHt)
+        ) {
+          return { outcome: "manual_review_incomplete" as const };
+        }
 
         if (corrections.amountHt != null) updates.amountHt = String(finalHt);
         if (corrections.amountTtc != null) updates.amountTtc = String(finalTtc);
@@ -345,6 +360,18 @@ router.post(
       }
       if (preparation.outcome === "not_draft") {
         return res.status(400).json({ message: "Only draft invoices can be confirmed" });
+      }
+      if (preparation.outcome === "manual_review_required") {
+        return res.status(409).json({
+          code: "manual_intake_review_required",
+          message: "Explicitly confirm that you reviewed this manually submitted PDF before continuing.",
+        });
+      }
+      if (preparation.outcome === "manual_review_incomplete") {
+        return res.status(422).json({
+          code: "manual_intake_review_incomplete",
+          message: "Enter and verify positive HT and TTC amounts before confirming this manually submitted invoice.",
+        });
       }
       if (preparation.outcome === "immutable") return immutableApplicationResponse(res);
 
@@ -406,7 +433,16 @@ router.post(
         }
         const [invoice] = await tx
           .update(invoicesTable)
-          .set({ status: "pending" })
+          .set({
+            status: "pending",
+            ...(current.manualIntakeReviewRequired
+              ? {
+                  manualIntakeReviewRequired: false,
+                  manualIntakeReviewedAt: new Date(),
+                  manualIntakeReviewedByUserId: Number(req.session.userId),
+                }
+              : {}),
+          })
           .where(eq(invoicesTable.id, current.id))
           .returning();
         return { outcome: "updated" as const, invoice };

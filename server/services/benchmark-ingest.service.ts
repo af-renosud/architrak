@@ -1,11 +1,22 @@
 import { storage } from "../storage";
 import { db } from "../db";
 import { devis as devisTable, benchmarkDocuments, benchmarkItems, benchmarkItemTags } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { uploadDocument } from "../storage/object-storage";
 import { parseDocument, type ParsedDocument, isTransientParseFailure, getParseFailureMessage } from "../gmail/document-parser";
 import { BENCHMARK_UPLOAD_ERROR_CODES } from "../../shared/benchmark-upload-errors";
 import { validateExtraction } from "./extraction-validator";
+export class DevisConfirmGuardError extends Error {
+  constructor(
+    readonly status: 409 | 422,
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "DevisConfirmGuardError";
+  }
+}
+
 import { findBlockingCompletenessWarnings } from "./extraction-completeness";
 import { roundCurrency } from "../../shared/financial-utils";
 import { normalizeUnit } from "./benchmark-tags";
@@ -340,6 +351,7 @@ export async function processStandaloneBenchmarkUpload(file: UploadedFile, input
 export async function confirmDevisAndMirror(
   devisId: number,
   devisUpdates: Record<string, unknown>,
+  options: { manualReviewConfirmedByUserId?: number | null } = {},
 ): Promise<{
   devis: typeof devisTable.$inferSelect | undefined;
   benchmarkDocId: number | null;
@@ -356,10 +368,43 @@ export async function confirmDevisAndMirror(
   }
 
   return await db.transaction(async (tx) => {
+    const [current] = await tx
+      .select()
+      .from(devisTable)
+      .where(eq(devisTable.id, devisId))
+      .for("update");
+    if (!current || current.status !== "draft") {
+      return { devis: undefined, benchmarkDocId: null, inserted: [], parsed: null };
+    }
+    if (current.manualIntakeReviewRequired) {
+      if (!options.manualReviewConfirmedByUserId) {
+        throw new DevisConfirmGuardError(
+          409,
+          "manual_intake_review_required",
+          "Explicitly confirm that you reviewed this manually submitted PDF before continuing.",
+        );
+      }
+      const finalHt = roundCurrency(
+        devisUpdates.amountHt != null ? Number(devisUpdates.amountHt) : Number(current.amountHt),
+      );
+      const finalTtc = roundCurrency(
+        devisUpdates.amountTtc != null ? Number(devisUpdates.amountTtc) : Number(current.amountTtc),
+      );
+      if (finalHt <= 0 || finalTtc <= 0 || finalTtc < finalHt) {
+        throw new DevisConfirmGuardError(
+          422,
+          "manual_intake_review_incomplete",
+          "Enter and verify positive HT and TTC amounts before confirming this manually submitted devis.",
+        );
+      }
+      devisUpdates.manualIntakeReviewRequired = false;
+      devisUpdates.manualIntakeReviewedAt = new Date();
+      devisUpdates.manualIntakeReviewedByUserId = options.manualReviewConfirmedByUserId;
+    }
     const [updatedDevis] = await tx
       .update(devisTable)
       .set(devisUpdates)
-      .where(eq(devisTable.id, devisId))
+      .where(and(eq(devisTable.id, devisId), eq(devisTable.status, "draft")))
       .returning();
 
     if (!updatedDevis) {

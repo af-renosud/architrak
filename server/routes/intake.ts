@@ -11,6 +11,10 @@ import {
   confirmIntakeProjectIdentity,
   getConfirmedIntakeProjectIdentity,
 } from "../services/intake/project-identity-resolution.service";
+import {
+  ManualPromotionError,
+  promoteParkedFinancialDocument,
+} from "../services/intake/manual-promotion.service";
 
 /**
  * Unified document intake (Task #229) — the single "front door".
@@ -35,6 +39,14 @@ const intakeUploadBodySchema = z.object({
 const confirmProjectIdentityBodySchema = z.object({
   confirmed: z.literal(true),
   expectedFingerprint: z.string().trim().regex(/^[a-f0-9]{64}$/i),
+}).strict();
+const manualPromotionBodySchema = z.object({
+  confirmed: z.literal(true),
+  expectedFingerprint: z.string().trim().regex(/^[a-f0-9]{64}$/i).optional(),
+  kind: z.enum(["devis", "invoice"]),
+  contractorId: z.number().int().positive().optional(),
+  devisId: z.number().int().positive().optional(),
+  note: z.string().trim().min(10).max(2000),
 }).strict();
 
 router.get(
@@ -119,6 +131,32 @@ router.post(
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ message: `Re-analysis failed: ${message}` });
+    }
+  },
+);
+
+router.post(
+  "/api/intake-documents/:id/manual-promote",
+  requireAuth,
+  validateRequest({ params: intakeIdParams, body: manualPromotionBodySchema }),
+  async (req, res, next) => {
+    try {
+      const body = req.body as z.infer<typeof manualPromotionBodySchema>;
+      const result = await promoteParkedFinancialDocument({
+        intakeDocumentId: Number(req.params.id),
+        expectedFingerprint: body.expectedFingerprint,
+        kind: body.kind,
+        contractorId: body.contractorId,
+        devisId: body.devisId,
+        note: body.note,
+        confirmedByUserId: Number(req.session.userId),
+      });
+      res.status(result.replayed ? 200 : 201).json(result);
+    } catch (error) {
+      if (error instanceof ManualPromotionError) {
+        return res.status(error.status).json({ message: error.message, code: error.code });
+      }
+      next(error);
     }
   },
 );

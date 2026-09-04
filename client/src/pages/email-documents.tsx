@@ -25,6 +25,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { EmailDocument, Project } from "@shared/schema";
+import { ManualPromotionDialog, type ManualPromotionSource } from "@/components/intake/ManualPromotionDialog";
 
 function formatDate(date: string | Date | null): string {
   if (!date) return "—";
@@ -88,6 +89,7 @@ export default function EmailDocuments() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [confirmDismissIds, setConfirmDismissIds] = useState<number[] | null>(null);
   const [isDismissing, setIsDismissing] = useState(false);
+  const [manualPromotionTarget, setManualPromotionTarget] = useState<ManualPromotionSource | null>(null);
 
   const { data: emailDocs, isLoading } = useQuery<EmailDocument[]>({
     queryKey: ["/api/email-documents"],
@@ -593,6 +595,24 @@ export default function EmailDocuments() {
                           <RotateCcw size={14} />
                         </Button>
                       )}
+                      {doc.projectId != null && (doc.extractionStatus === "needs_review" || doc.extractionStatus === "failed" || PARKED_STATUSES.has(doc.extractionStatus)) && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 border-amber-300 px-2 text-amber-800 hover:bg-amber-50"
+                          onClick={() => setManualPromotionTarget({
+                            id: doc.id,
+                            projectId: doc.projectId!,
+                            fileName: doc.attachmentFileName || "Unknown file",
+                            fingerprint: (doc as EmailDocument & { contentFingerprint?: string | null }).contentFingerprint,
+                            reason: extractionFailure || doc.notes || (PARKED_STATUSES.has(doc.extractionStatus) ? "Automatic pre-filter parked this document." : "This document needs manual review."),
+                            endpoint: "email",
+                          })}
+                          data-testid={`button-manual-promote-email-${doc.id}`}
+                        >
+                          <span className="text-[9px] font-bold uppercase tracking-widest">Submit anyway</span>
+                        </Button>
+                      )}
                       {doc.extractionStatus !== "skipped" && (
                         <Button
                           variant="ghost"
@@ -739,6 +759,9 @@ export default function EmailDocuments() {
             )}
           </DialogContent>
         </Dialog>
+        {manualPromotionTarget && (
+          <ManualPromotionDialog source={manualPromotionTarget} onClose={() => setManualPromotionTarget(null)} />
+        )}
       </div>
     </AppLayout>
   );

@@ -3,6 +3,7 @@ import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -2748,6 +2749,7 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
   })();
   const [lotCode, setLotCode] = useState<LotCodeValue>(initialLotCode);
   const [forcedNextLotSequence, setForcedNextLotSequence] = useState<number | null>(null);
+  const [manualReviewConfirmed, setManualReviewConfirmed] = useState(false);
 
   const fieldWarnings = (field: string) => warnings.filter(w => w.field === field);
 
@@ -2813,6 +2815,7 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
         lotDescription: lotCode.lotDescription.trim(),
       },
     };
+    if (devis.manualIntakeReviewRequired) corrections.manualReviewConfirmed = manualReviewConfirmed;
     if (editValues.amountHt !== (devis.amountHt ?? "")) corrections.amountHt = editValues.amountHt;
     if (editValues.amountTtc !== (devis.amountTtc ?? "")) corrections.amountTtc = editValues.amountTtc;
     if (editValues.devisNumber !== (devis.devisNumber ?? "")) corrections.devisNumber = editValues.devisNumber;
@@ -2868,6 +2871,16 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
         </DialogHeader>
 
         <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
+          {devis.manualIntakeReviewRequired && (
+            <label className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
+              <Checkbox
+                checked={manualReviewConfirmed}
+                onCheckedChange={(value) => setManualReviewConfirmed(value === true)}
+                data-testid={`checkbox-manual-devis-review-${devis.id}`}
+              />
+              <span>I reviewed this manually submitted PDF and verified its contractor, code, description, HT, and TTC values.</span>
+            </label>
+          )}
           {lotRefWarnings.length > 0 && (
             <LotReferenceWarningBanner
               warnings={lotRefWarnings}
@@ -3059,7 +3072,7 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
             <Button
               size="sm"
               onClick={handleConfirm}
-              disabled={confirmMutation.isPending || discardMutation.isPending || isArchived || !isLotCodeValueComplete(lotCode)}
+              disabled={confirmMutation.isPending || discardMutation.isPending || isArchived || !isLotCodeValueComplete(lotCode) || (devis.manualIntakeReviewRequired && !manualReviewConfirmed)}
               data-testid="button-confirm-draft"
             >
               <Check size={12} />

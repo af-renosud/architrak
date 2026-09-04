@@ -167,6 +167,7 @@ const { state, storageSpy, dbSpy } = vi.hoisted(() => {
     const b: Record<string, unknown> = {};
     b.from = (t: object) => { table = t; return b; };
     b.where = (_f: unknown) => b;
+    b.for = (_mode: string) => b;
     b.limit = (n: number) => { limitN = n; return b; };
     b.then = (resolve: (v: unknown) => void, reject: (e: unknown) => void) => {
       try {
@@ -279,6 +280,10 @@ let baseUrl: string;
 beforeAll(async () => {
   const app = express();
   app.use(express.json());
+  app.use((req, _res, next) => {
+    (req as express.Request & { session: { userId: number } }).session = { userId: 1 };
+    next();
+  });
   app.use(devisRouter);
   app.use(lotCatalogRouter);
   app.use(errorHandler);

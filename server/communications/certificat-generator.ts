@@ -2320,6 +2320,10 @@ export async function buildCertificatPreviewHtml(opts?: { isAcompte?: boolean })
     extractedIban: null,
     extractedBic: null,
     sourcePlanningRevisionId: null,
+    sourceIntakeDocumentId: null,
+    manualIntakeReviewRequired: false,
+    manualIntakeReviewedAt: null,
+    manualIntakeReviewedByUserId: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -2348,6 +2352,9 @@ export async function buildCertificatPreviewHtml(opts?: { isAcompte?: boolean })
     driveUploadedAt: null,
     extractedIban: null,
     extractedBic: null,
+    manualIntakeReviewRequired: false,
+    manualIntakeReviewedAt: null,
+    manualIntakeReviewedByUserId: null,
     createdAt: now,
   };
 

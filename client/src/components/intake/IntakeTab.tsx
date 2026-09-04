@@ -35,6 +35,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { ManualPromotionDialog, type ManualPromotionSource } from "@/components/intake/ManualPromotionDialog";
 import type { Devis, ProjectIntakeDocument, Situation } from "@shared/schema";
 
 type IntakeListItem = ProjectIntakeDocument & { isVoid?: boolean };
@@ -442,6 +443,7 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const [acompteTarget, setAcompteTarget] = useState<ProjectIntakeDocument | null>(null);
   const [projectIdentityTarget, setProjectIdentityTarget] = useState<ProjectIntakeDocument | null>(null);
+  const [manualPromotionTarget, setManualPromotionTarget] = useState<ManualPromotionSource | null>(null);
   const dragDepth = useRef(0);
 
   const { data: intakeDocs, isLoading } = useQuery<IntakeListItem[]>({
@@ -724,6 +726,8 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
               !isArchived && (doc.analysisState === "failed" || doc.routingState === "failed" || doc.routingState === "parked");
             const acompteResolution = openingAcompteResolution(doc);
             const projectIdentityConfirmationNeeded = needsProjectIdentityConfirmation(doc);
+            const canManualPromote = !isArchived && !doc.promotedId &&
+              (doc.routingState === "parked" || doc.routingState === "failed" || doc.analysisState === "failed");
             const extractedIdentity = doc.extractedData as { projectName?: string; projectReference?: string } | null;
             return (
               <LuxuryCard key={doc.id} className="p-4" data-testid={`card-intake-doc-${doc.id}`}>
@@ -829,6 +833,24 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
                         <span className="text-[9px] font-bold uppercase tracking-widest">Confirm project</span>
                       </Button>
                     )}
+                    {canManualPromote && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 border-amber-300 text-amber-800 hover:bg-amber-50"
+                        onClick={() => setManualPromotionTarget({
+                          id: doc.id,
+                          projectId: Number(projectId),
+                          fileName: doc.fileName,
+                          fingerprint: doc.contentFingerprint,
+                          reason: doc.notes || (doc.routingState === "failed" || doc.analysisState === "failed" ? "Automatic analysis or routing failed." : "Automatic routing parked this document."),
+                          endpoint: "intake",
+                        })}
+                        data-testid={`button-manual-promote-intake-${doc.id}`}
+                      >
+                        <span className="text-[9px] font-bold uppercase tracking-widest">Submit anyway</span>
+                      </Button>
+                    )}
                     {canRetry && (
                       <Button
                         variant="ghost"
@@ -899,6 +921,9 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
           doc={projectIdentityTarget}
           onClose={() => setProjectIdentityTarget(null)}
         />
+      )}
+      {manualPromotionTarget && (
+        <ManualPromotionDialog source={manualPromotionTarget} onClose={() => setManualPromotionTarget(null)} />
       )}
 
       <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>

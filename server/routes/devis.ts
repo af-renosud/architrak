@@ -15,7 +15,7 @@ import { processDevisUpload } from "../services/devis-upload.service";
 import { enqueueReconciliation } from "../services/reconciliation/reconciliation-queue.service";
 import { rescrapeDevis } from "../services/devis-rescrape.service";
 import { reopenDevisDraft } from "../services/draft-reopen.service";
-import { confirmDevisAndMirror, assignTagsForInsertedItems } from "../services/benchmark-ingest.service";
+import { confirmDevisAndMirror, assignTagsForInsertedItems, DevisConfirmGuardError } from "../services/benchmark-ingest.service";
 import { PdfPasswordProtectedError } from "../gmail/document-parser";
 import { DEVIS_UPLOAD_ERROR_CODES } from "../../shared/devis-upload-errors";
 import { getDocumentStream } from "../storage/object-storage";
@@ -138,6 +138,7 @@ const devisConfirmSchema = z.object({
   // charge a commission on — e.g. professional services, in-kind, etc.).
   feePercentageOverride: z.union([z.coerce.number().min(0).max(100), z.null()]).optional(),
   lotCode: lotCodePartsSchema,
+  manualReviewConfirmed: z.literal(true).optional(),
 }).strict();
 type DevisConfirmInput = z.infer<typeof devisConfirmSchema>;
 
@@ -886,6 +887,27 @@ router.patch(
     const before = await storage.getDevis(id);
     if (!before) return res.status(404).json({ message: "Devis not found" });
 
+    if (Object.prototype.hasOwnProperty.call(req.body, "status")) {
+      const nextStatus = String(req.body.status);
+      const allowedLifecycleEdit =
+        (before.status === "draft" && nextStatus === "void")
+        || (
+          before.status === "void"
+          && nextStatus === "pending"
+          && !before.manualIntakeReviewRequired
+        );
+      if (!allowedLifecycleEdit) {
+        return res.status(409).json({
+          code: before.manualIntakeReviewRequired
+            ? "manual_intake_review_required"
+            : "devis_lifecycle_transition_forbidden",
+          message: before.manualIntakeReviewRequired
+            ? "This manually submitted devis must be confirmed through the explicit review flow."
+            : "Use the dedicated confirmation or signing flow to change this devis status.",
+        });
+      }
+    }
+
     // CHECKING gate: cannot advance sign-off to 'sent_to_client' or beyond
     // while there are unresolved contractor checks. Lifts automatically once
     // all checks are resolved or dropped.
@@ -1271,6 +1293,7 @@ router.patch(
 
 router.post(
   "/api/devis/:id/confirm",
+  requireAuth,
   validateRequest({ params: idParams, body: devisConfirmSchema }),
   async (req, res) => {
     try {
@@ -1278,7 +1301,23 @@ router.post(
       if (!devis) return res.status(404).json({ message: "Devis not found" });
       if (devis.status !== "draft") return res.status(400).json({ message: "Only draft devis can be confirmed" });
 
-      const corrections = req.body;
+      const corrections = { ...req.body };
+      const manualReviewConfirmed = corrections.manualReviewConfirmed === true;
+      delete corrections.manualReviewConfirmed;
+      if (devis.manualIntakeReviewRequired && !manualReviewConfirmed) {
+        return res.status(409).json({
+          code: "manual_intake_review_required",
+          message: "Explicitly confirm that you reviewed this manually submitted PDF before continuing.",
+        });
+      }
+      const reviewedHt = roundCurrency(corrections.amountHt != null ? corrections.amountHt : Number(devis.amountHt));
+      const reviewedTtc = roundCurrency(corrections.amountTtc != null ? corrections.amountTtc : Number(devis.amountTtc));
+      if (devis.manualIntakeReviewRequired && (reviewedHt <= 0 || reviewedTtc <= 0 || reviewedTtc < reviewedHt)) {
+        return res.status(422).json({
+          code: "manual_intake_review_incomplete",
+          message: "Enter and verify positive HT and TTC amounts before confirming this manually submitted devis.",
+        });
+      }
       const updates: Record<string, unknown> = { status: "pending" };
 
       // TVA-neutral: HT and TTC are independent values from the document.
@@ -1342,7 +1381,17 @@ router.post(
       // as a hard guard.
       delete (updates as Record<string, unknown>).lotId;
 
-      const { devis: updated, inserted } = await confirmDevisAndMirror(Number(req.params.id), updates);
+      const { devis: updated, inserted } = await confirmDevisAndMirror(
+        Number(req.params.id),
+        updates,
+        { manualReviewConfirmedByUserId: manualReviewConfirmed ? Number(req.session.userId) : null },
+      );
+      if (!updated) {
+        return res.status(409).json({
+          code: "devis_confirmation_input_changed",
+          message: "This devis changed before confirmation. Refresh and review it again.",
+        });
+      }
       if (updated) {
         // Confirm may have written a corrected amountHt; re-evaluate the
         // fully-invoiced predicate.
@@ -1361,6 +1410,9 @@ router.post(
       }
       res.json(updated);
     } catch (err: unknown) {
+      if (err instanceof DevisConfirmGuardError) {
+        return res.status(err.status).json({ message: err.message, code: err.code });
+      }
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ message: `Confirm failed: ${message}` });
     }

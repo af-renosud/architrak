@@ -172,6 +172,10 @@ beforeAll(async () => {
 
   const app = express();
   app.use(express.json());
+  app.use((req, _res, next) => {
+    (req as express.Request & { session: { userId: number } }).session = { userId: 1 };
+    next();
+  });
   app.use(invoicesRouter);
   app.use(certificatsRouter);
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -700,5 +704,36 @@ describe("invoice opening-deposit application", () => {
     )).toBe(true);
     expect(await db.select().from(invoiceAcompteApplications)
       .where(eq(invoiceAcompteApplications.invoiceId, invalidInvoice.id))).toHaveLength(0);
+  });
+
+  it("refuses to bypass manual review by PATCHing an invoice lifecycle status", async () => {
+    const [manualDraft] = await db.insert(invoices).values({
+      projectId,
+      contractorId,
+      devisId,
+      invoiceNumber: `IAA-MANUAL-${Date.now()}`,
+      amountHt: "100.00",
+      tvaAmount: "20.00",
+      amountTtc: "120.00",
+      status: "draft",
+      manualIntakeReviewRequired: true,
+    }).returning();
+    try {
+      const response = await fetch(`${base}/api/invoices/${manualDraft.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "approved" }),
+      });
+      expect(response.status).toBe(400);
+      const [stored] = await db.select().from(invoices).where(eq(invoices.id, manualDraft.id));
+      expect(stored).toMatchObject({
+        status: "draft",
+        manualIntakeReviewRequired: true,
+        manualIntakeReviewedAt: null,
+        manualIntakeReviewedByUserId: null,
+      });
+    } finally {
+      await db.delete(invoices).where(eq(invoices.id, manualDraft.id));
+    }
   });
 });

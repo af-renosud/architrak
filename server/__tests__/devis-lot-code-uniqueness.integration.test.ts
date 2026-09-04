@@ -136,7 +136,13 @@ vi.mock("../lib/devis-code", async () => {
 // are not exercised by the 409 collision branch (which short-circuits
 // before confirmDevisAndMirror), but importing the route pulls them in.
 vi.mock("../services/benchmark-ingest.service", () => ({
-  confirmDevisAndMirror: vi.fn(async () => ({ devis: undefined, inserted: [] })),
+  confirmDevisAndMirror: vi.fn(async (id: number, updates: Record<string, unknown>) => {
+    const row = state.devis.find((candidate) => candidate.id === id);
+    if (!row) return { devis: undefined, inserted: [] };
+    Object.assign(row, updates);
+    return { devis: { ...row }, inserted: [] };
+  }),
+  DevisConfirmGuardError: class DevisConfirmGuardError extends Error {},
   assignTagsForInsertedItems: vi.fn(async () => undefined),
 }));
 vi.mock("../services/extraction-validator", async () => {
@@ -181,6 +187,10 @@ let baseUrl: string;
 beforeAll(async () => {
   const app = express();
   app.use(express.json());
+  app.use((req, _res, next) => {
+    (req as express.Request & { session: { userId: number } }).session = { userId: 1 };
+    next();
+  });
   app.use(devisRouter);
   app.use(errorHandler);
   await new Promise<void>((resolve) => {
@@ -282,6 +292,34 @@ describe("structured devis-code uniqueness — confirm route", () => {
 });
 
 describe("structured devis-code uniqueness — edit route (PATCH /api/devis/:id)", () => {
+  it("cannot restore a cancelled manual-intake draft without completing review", async () => {
+    const draft = seedDraftDevis() as FakeDevisRow & Record<string, unknown>;
+    draft.manualIntakeReviewRequired = true;
+    draft.manualIntakeReviewedAt = null;
+    draft.manualIntakeReviewedByUserId = null;
+
+    const cancelled = await fetch(`${baseUrl}/api/devis/${draft.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "void", voidReason: "Operator cancelled manual draft" }),
+    });
+    expect(cancelled.status).toBe(200);
+
+    const bypass = await fetch(`${baseUrl}/api/devis/${draft.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "pending", voidReason: null }),
+    });
+    expect(bypass.status).toBe(409);
+    expect(await bypass.json()).toMatchObject({ code: "manual_intake_review_required" });
+    expect(draft).toMatchObject({
+      status: "void",
+      manualIntakeReviewRequired: true,
+      manualIntakeReviewedAt: null,
+      manualIntakeReviewedByUserId: null,
+    });
+  });
+
   it("collision against another devis returns 409 with a fresh nextLotSequence", async () => {
     state.devis.push({ id: 300, projectId: 1, lotRefText: "ELEC", lotSequence: 1 });
     const editing = seedDraftDevis();

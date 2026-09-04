@@ -534,4 +534,20 @@ describe.skipIf(skipModule !== null)("schema-presence check (Task #136)", () => 
     // No duplicates.
     expect(new Set(covered).size).toBe(covered.length);
   });
+
+  it("0126 recovery probes every durable manual-review provenance artifact", () => {
+    const entry = MIGRATION_ARTIFACTS.find((migration) => migration.tag === "0126_intake_manual_promotion");
+    expect(entry?.artifact.kind).toBe("all");
+    if (!entry || entry.artifact.kind !== "all") return;
+    expect(entry.artifact.artifacts).toEqual(expect.arrayContaining([
+      { kind: "column", table: "devis", column: "manual_intake_review_required" },
+      { kind: "column", table: "devis", column: "manual_intake_reviewed_at" },
+      { kind: "column", table: "devis", column: "manual_intake_reviewed_by_user_id" },
+      { kind: "constraint", table: "devis", constraint: "devis_manual_intake_reviewed_by_user_id_users_id_fk" },
+      { kind: "column", table: "invoices", column: "manual_intake_review_required" },
+      { kind: "column", table: "invoices", column: "manual_intake_reviewed_at" },
+      { kind: "column", table: "invoices", column: "manual_intake_reviewed_by_user_id" },
+      { kind: "constraint", table: "invoices", constraint: "invoices_manual_intake_reviewed_by_user_id_users_id_fk" },
+    ]));
+  });
 });

@@ -883,6 +883,13 @@
       "when": 1788278400000,
       "tag": "0125_invoice_acompte_invoice_seal",
       "breakpoints": true
+    },
+    {
+      "idx": 126,
+      "version": "7",
+      "when": 1788526800000,
+      "tag": "0126_intake_manual_promotion",
+      "breakpoints": true
     }
   ]
 }

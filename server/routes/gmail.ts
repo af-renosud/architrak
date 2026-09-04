@@ -8,6 +8,11 @@ import { classifyGmailPollHealth, type GmailPollHealth } from "@shared/gmail-pol
 import { validateRequest } from "../middleware/validate";
 import { dismissEmailDocument, purgeSkippedEmailDocument, DismissRefusedError } from "../services/email-document-dismiss.service";
 import { EMAIL_PURGE_DAYS_KEY, EMAIL_PURGE_DAYS_DEFAULT } from "../services/email-document-processor.service";
+import { requireAuth } from "../auth/middleware";
+import {
+  ManualPromotionError,
+  promoteParkedFinancialDocument,
+} from "../services/intake/manual-promotion.service";
 
 /** Task #506 — messages failing this many consecutive polls are surfaced in the dashboard. */
 export const PERSISTENT_FAILURE_THRESHOLD = 5;
@@ -25,6 +30,14 @@ const emailDocsQuerySchema = z.object({
   status: z.string().optional(),
   documentType: z.string().optional(),
 });
+const manualPromotionBodySchema = z.object({
+  confirmed: z.literal(true),
+  expectedFingerprint: z.string().trim().regex(/^[a-f0-9]{64}$/i).optional(),
+  kind: z.enum(["devis", "invoice"]),
+  contractorId: z.number().int().positive().optional(),
+  devisId: z.number().int().positive().optional(),
+  note: z.string().trim().min(10).max(2000),
+}).strict();
 
 router.get("/api/gmail/status", async (_req, res) => {
   // Poll-health is classified from the PERSISTED per-user poll columns
@@ -178,6 +191,42 @@ router.get("/api/email-documents/:id", validateRequest({ params: idParams }), as
   if (!doc) return res.status(404).json({ message: "Document not found" });
   res.json(doc);
 });
+
+router.post(
+  "/api/email-documents/:id/manual-promote",
+  requireAuth,
+  validateRequest({ params: idParams, body: manualPromotionBodySchema }),
+  async (req, res, next) => {
+    try {
+      const emailDocumentId = Number(req.params.id);
+      const emailDoc = await storage.getEmailDocument(emailDocumentId);
+      if (!emailDoc) return res.status(404).json({ message: "Document not found", code: "not_found" });
+      const intakeDoc = await storage.getProjectIntakeDocumentByEmailDocumentId(emailDocumentId);
+      if (!intakeDoc) {
+        return res.status(409).json({
+          message: "This email attachment has no unified intake source. Assign it to a project and refresh first.",
+          code: "intake_mirror_missing",
+        });
+      }
+      const body = req.body as z.infer<typeof manualPromotionBodySchema>;
+      const result = await promoteParkedFinancialDocument({
+        intakeDocumentId: intakeDoc.id,
+        expectedFingerprint: body.expectedFingerprint ?? emailDoc.contentFingerprint ?? undefined,
+        kind: body.kind,
+        contractorId: body.contractorId,
+        devisId: body.devisId,
+        note: body.note,
+        confirmedByUserId: Number(req.session.userId),
+      });
+      res.status(result.replayed ? 200 : 201).json(result);
+    } catch (error) {
+      if (error instanceof ManualPromotionError) {
+        return res.status(error.status).json({ message: error.message, code: error.code });
+      }
+      next(error);
+    }
+  },
+);
 
 // Task #550 — bulk "not relevant" dismissal in ONE call. Reuses the atomic
 // per-document dismissal (promoted docs refused, storage-key safety),

@@ -22,6 +22,16 @@ export async function approveInvoice(invoiceId: number) {
           : { message: `Invoice is already ${locked.status}, cannot approve` },
       };
     }
+    if (locked.manualIntakeReviewRequired) {
+      return {
+        success: false,
+        status: 409,
+        data: {
+          code: "manual_intake_review_required",
+          message: "This manually submitted invoice must be reviewed before approval.",
+        },
+      };
+    }
 
     const project = await storage.getProject(locked.projectId);
     if (!project) {
