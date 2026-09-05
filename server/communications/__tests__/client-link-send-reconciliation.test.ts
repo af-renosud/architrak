@@ -51,6 +51,7 @@ const { state, storageSpy, gmailSpy } = vi.hoisted(() => {
   return { state, storageSpy, gmailSpy };
 });
 
+
 vi.mock("../../storage", () => ({ storage: storageSpy }));
 vi.mock("../../gmail/client", () => ({
   isGmailConfigured: () => true,
@@ -118,10 +119,50 @@ describe("client-link Gmail reconciliation", () => {
     });
   });
 
+  it("reconciles by the unique portal token when Gmail rewrites Message-ID", async () => {
+    await expect(sendCommunication(501, { sentByUserId: 7 }))
+      .rejects.toThrow("database timeout after Gmail accepted");
+    gmailSpy.list
+      .mockResolvedValueOnce({ data: { messages: [] } })
+      .mockResolvedValueOnce({
+        data: { messages: [{ id: "gmail-501", threadId: "thread-501" }] },
+      });
+
+    await sendCommunication(501, { sentByUserId: 7 });
+
+    expect(gmailSpy.send).toHaveBeenCalledTimes(1);
+    expect(gmailSpy.list).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        q: 'in:sent "raw-token"',
+      }),
+    );
+    expect(state.communication).toMatchObject({
+      status: "sent",
+      emailMessageId: "gmail-501",
+      emailThreadId: "thread-501",
+    });
+  });
+
   it("uses a deterministic RFC Message-ID for all attempts of one communication", () => {
     const first = communicationProviderMessageId(state.communication as any);
     const second = communicationProviderMessageId({ ...state.communication } as any);
     expect(first).toBe(second);
     expect(first).toMatch(/^<architrak-[a-f0-9]{32}@mail\.architrak\.app>$/);
+  });
+
+  it("does not require Gmail read scope before a fresh client-link send", async () => {
+    gmailSpy.list.mockRejectedValueOnce(new Error("insufficientPermissions"));
+
+    await expect(sendCommunication(501)).rejects.toThrow(
+      "database timeout after Gmail accepted",
+    );
+
+    expect(gmailSpy.list).not.toHaveBeenCalled();
+    expect(gmailSpy.send).toHaveBeenCalledTimes(1);
+    expect(state.communication).toMatchObject({
+      status: "sending",
+      sentViaUserId: null,
+    });
   });
 });

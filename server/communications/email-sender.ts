@@ -601,15 +601,34 @@ export function communicationProviderMessageId(
 
 async function findAcceptedClientLinkMessage(
   gmail: GmailClient,
-  communication: Pick<InsertProjectCommunication, "dedupeKey"> & { id: number },
+  communication: Pick<InsertProjectCommunication, "dedupeKey" | "body"> & { id: number },
 ): Promise<{ id: string; threadId?: string; sentAt: Date } | null> {
   const rfcMessageId = communicationProviderMessageId(communication).slice(1, -1);
-  const listed = await gmail.users.messages.list({
+  const byMessageId = await gmail.users.messages.list({
     userId: "me",
     q: `in:sent rfc822msgid:${rfcMessageId}`,
     maxResults: 1,
   });
-  const hit = listed.data.messages?.[0];
+  let hit = byMessageId.data.messages?.[0];
+
+  // Gmail's raw-message send API may replace a caller-supplied Message-ID
+  // even when it accepts the message. The client portal token is random,
+  // unique to this persisted delivery, present in the already-sent body, and
+  // indexed by Gmail search. Use it as the live-provider fallback so an
+  // accepted message can still be reconciled without another send.
+  if (!hit) {
+    const portalToken = communication.body?.match(
+      /\/p\/client\/([A-Za-z0-9_-]+)/,
+    )?.[1];
+    if (portalToken) {
+      const byPortalToken = await gmail.users.messages.list({
+        userId: "me",
+        q: `in:sent "${portalToken}"`,
+        maxResults: 1,
+      });
+      hit = byPortalToken.data.messages?.[0];
+    }
+  }
   if (!hit?.id) return null;
   const metadata = await gmail.users.messages.get({
     userId: "me",
@@ -873,7 +892,13 @@ export async function sendCommunication(
       const recorded = await storage.updateProjectCommunication(communicationId, { sentViaUserId });
       if (!recorded) throw new Error("Could not record the Gmail sender before dispatch");
       comm.sentViaUserId = sentViaUserId;
-      if (await reconcileAcceptedClientLinkCommunication(comm, gmail)) return;
+      // A provider-accepted / DB-uncertain client-link send remains in
+      // `sending`, so its retry is reconciled in the failed-claim branch
+      // above. Reaching this claimed branch means the row was queued, failed,
+      // or draft and therefore still needs a provider dispatch. In
+      // particular, do not search the shared connector here: that connector
+      // can send mail but has no Gmail read scope, so a speculative Sent
+      // search would reject a perfectly valid first-time fallback send.
     }
 
     const attachments: Array<{ filename: string; content: string; contentType: string }> = [];
