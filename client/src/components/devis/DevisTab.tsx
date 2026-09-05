@@ -3866,7 +3866,6 @@ type ClientLinkDelivery = {
   sentAt: string | Date | null;
   recipientEmail: string;
   recipientName: string | null;
-  portalUrl?: string | null;
 };
 
 export function ClientPortalPanel({
@@ -4030,16 +4029,6 @@ export function ClientPortalPanel({
     issueMutation.mutate({ clientEmail: email, clientName: name || undefined, message: messageDraft.trim() });
   }
 
-  async function copyActiveLink() {
-    if (!delivery?.portalUrl) return;
-    try {
-      await navigator.clipboard.writeText(delivery.portalUrl);
-      toast({ title: "Client link copied", description: "The active quotation link is in your clipboard." });
-    } catch {
-      toast({ title: "Could not copy the client link", variant: "destructive" });
-    }
-  }
-
   return (
     <div
       className="rounded-lg border border-slate-200 bg-white p-2.5 space-y-2"
@@ -4084,19 +4073,6 @@ export function ClientPortalPanel({
               <Send size={10} />
               {issueMutation.isPending ? "…" : "Send to client"}
             </Button>
-            {token && !isRevoked && !isExpired && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-6 text-[9px] font-bold uppercase tracking-widest gap-1"
-                onClick={copyActiveLink}
-                disabled={!delivery?.portalUrl}
-                data-testid={`button-copy-client-token-${devisId}`}
-              >
-                <Copy size={10} />
-                Copy link
-              </Button>
-            )}
             {token && !isRevoked && !isExpired && (
               <Button
                 variant="outline"

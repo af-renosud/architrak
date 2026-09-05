@@ -248,9 +248,6 @@ function serializeClientLinkDelivery(
   statusOverride?: "awaiting_confirmation",
 ) {
   if (!delivery) return null;
-  const portalUrl = delivery.type === "devis_client_link"
-    ? delivery.body?.match(/https?:\/\/[^\s]+\/p\/client\/[A-Za-z0-9_-]+/)?.[0] ?? null
-    : null;
   return {
     communicationId: delivery.id,
     status: statusOverride
@@ -262,7 +259,6 @@ function serializeClientLinkDelivery(
     sentAt: delivery.sentAt,
     recipientEmail: delivery.recipientEmail,
     recipientName: delivery.recipientName,
-    portalUrl,
   };
 }
 

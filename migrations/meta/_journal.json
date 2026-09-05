@@ -890,6 +890,13 @@
       "when": 1788526800000,
       "tag": "0126_intake_manual_promotion",
       "breakpoints": true
+    },
+    {
+      "idx": 127,
+      "version": "7",
+      "when": 1788613200000,
+      "tag": "0127_protect_client_link_communications",
+      "breakpoints": true
     }
   ]
 }

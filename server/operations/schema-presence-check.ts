@@ -337,6 +337,16 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
       trigger: "planning_line_review_promotion_guard_trg",
     },
   },
+  {
+    tag: "0127_protect_client_link_communications",
+    artifact: {
+      kind: "all",
+      artifacts: [
+        { kind: "column", table: "project_communications", column: "encrypted_body" },
+        { kind: "constraint", table: "project_communications", constraint: "project_communications_client_link_protected_chk" },
+      ],
+    },
+  },
 ];
 
 interface JournalFile {

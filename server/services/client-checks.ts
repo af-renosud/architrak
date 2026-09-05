@@ -5,6 +5,7 @@ import type { ClientCheckToken } from "@shared/schema";
 import { clientCheckTokens, projectCommunications } from "@shared/schema";
 import { db } from "../db";
 import { and, eq, isNull, sql } from "drizzle-orm";
+import { encryptCommunicationBody, redactClientLink } from "./communication-body-crypto";
 
 /**
  * Token plumbing for the AT2 client review portal — mirror of the
@@ -163,7 +164,8 @@ export async function issueClientCheckTokenEmail(opts: {
         recipientEmail: opts.clientEmail,
         recipientName: opts.clientName,
         subject: email.subject,
-        body: email.body,
+        body: redactClientLink(email.body),
+        encryptedBody: encryptCommunicationBody(email.body),
         status: "queued",
         dedupeKey: clientLinkDeliveryDedupeKey(record.id),
       })

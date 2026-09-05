@@ -77,7 +77,6 @@ beforeEach(() => {
       sentAt: "2026-09-05T09:01:00.000Z",
       recipientEmail: "marie@example.test",
       recipientName: "Marie Dupont",
-      portalUrl: "https://architrak.test/p/client/secret-token_123",
     },
   }));
 });
@@ -139,7 +138,6 @@ describe("ClientPortalPanel quotation-link email", () => {
         sentAt: null,
         recipientEmail: "marie@example.test",
         recipientName: "Marie Dupont",
-        portalUrl: "https://architrak.test/p/client/secret-token_123",
       },
     });
     expect(screen.getByTestId("client-link-delivery-failed-42")).toHaveTextContent("Delivery failed");
@@ -164,10 +162,10 @@ describe("ClientPortalPanel quotation-link email", () => {
         sentAt: "2026-09-05T09:01:00.000Z",
         recipientEmail: "marie@example.test",
         recipientName: "Marie Dupont",
-        portalUrl: "https://architrak.test/p/client/secret-token_123",
       },
     });
     expect(screen.getByTestId("client-link-delivery-sent-42")).toHaveTextContent("marie@example.test");
     expect(screen.getByTestId("client-link-delivery-sent-42")).toHaveTextContent("05/09/2026");
+    expect(screen.queryByTestId("button-copy-client-token-42")).not.toBeInTheDocument();
   });
 });

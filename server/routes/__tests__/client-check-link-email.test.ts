@@ -301,7 +301,7 @@ describe("per-devis client link email", () => {
     expect(serviceMock.issueClientCheckTokenEmail).toHaveBeenCalledTimes(1);
   });
 
-  it("reads the exact delivery record and exposes its successful sent date", async () => {
+  it("exposes delivery provenance without the bearer link or encrypted body", async () => {
     storageMock.getProjectCommunicationByDedupeKey.mockResolvedValue({
       ...queuedCommunication,
       body: "Please review:\nhttps://architrak.test/p/client/secret-token_123\nRegards",
@@ -316,8 +316,9 @@ describe("per-devis client link email", () => {
       status: "sent",
       sentAt: "2026-09-05T09:01:00.000Z",
       recipientEmail: "marie@example.test",
-      portalUrl: "https://architrak.test/p/client/secret-token_123",
     });
+    expect(body.delivery.portalUrl).toBeUndefined();
+    expect(body.delivery.encryptedBody).toBeUndefined();
   });
 
   it("keeps the Gmail confirmation state visible when the panel refreshes", async () => {

@@ -18,7 +18,12 @@ const idParams = z.object({ id: z.coerce.number().int().positive() });
 const projectIdParams = z.object({ projectId: z.coerce.number().int().positive() });
 const certIdParams = z.object({ certId: z.coerce.number().int().positive() });
 
-const createCommBodySchema = insertProjectCommunicationSchema.omit({ projectId: true });
+const createCommBodySchema = insertProjectCommunicationSchema
+  .omit({ projectId: true })
+  .refine((body) => body.type !== "devis_client_link", {
+    message: "Client quotation links must be issued through the protected delivery endpoint",
+    path: ["type"],
+  });
 const updateReminderSchema = insertPaymentReminderSchema.partial();
 const scheduleRemindersBodySchema = z.object({
   recipientEmail: z.string().email().optional().or(z.literal("")),
@@ -28,10 +33,17 @@ const scheduleRemindersBodySchema = z.object({
 // archived|all exposes the rest. Archive is a visibility flag only.
 const viewQuerySchema = z.object({ view: z.enum(["active", "archived", "all"]).optional() });
 
+function serializeCommunication<T extends { encryptedBody?: string | null }>(
+  row: T,
+): Omit<T, "encryptedBody"> {
+  const { encryptedBody: _serverOnly, ...publicRow } = row;
+  return publicRow;
+}
+
 router.get("/api/communications", validateRequest({ query: viewQuerySchema }), async (req, res) => {
   const view = (req.query.view as "active" | "archived" | "all" | undefined) ?? "active";
   const comms = await storage.getAllCommunications(view);
-  res.json(comms);
+  res.json(comms.map(serializeCommunication));
 });
 
 router.post(
@@ -44,7 +56,7 @@ router.post(
       if (!exists) return res.status(404).json({ message: "Communication introuvable" });
       return res.status(409).json({ code: "COMMUNICATION_QUEUED", message: "Un envoi en attente ne peut pas être archivé." });
     }
-    res.json(row);
+    res.json(serializeCommunication(row));
   },
 );
 
@@ -54,7 +66,7 @@ router.post(
   async (req, res) => {
     const row = await storage.setCommunicationArchived(Number(req.params.id), false);
     if (!row) return res.status(404).json({ message: "Communication introuvable" });
-    res.json(row);
+    res.json(serializeCommunication(row));
   },
 );
 
@@ -106,7 +118,7 @@ router.get("/api/failed-contractor-notices", async (_req, res) => {
 
 router.get("/api/projects/:projectId/communications", async (req, res) => {
   const comms = await storage.getProjectCommunications(Number(req.params.projectId));
-  res.json(comms);
+  res.json(comms.map(serializeCommunication));
 });
 
 router.post(
@@ -117,7 +129,7 @@ router.post(
       ...req.body,
       projectId: Number(req.params.projectId),
     });
-    res.status(201).json(comm);
+    res.status(201).json(serializeCommunication(comm));
   },
 );
 
@@ -129,7 +141,7 @@ router.post(
     // client replies can be scanned for payment confirmations.
     await sendCommunication(Number(req.params.id), { sentByUserId: req.session.userId ?? null });
     const updated = await storage.getProjectCommunication(Number(req.params.id));
-    res.json(updated);
+    res.json(updated ? serializeCommunication(updated) : updated);
   },
 );
 

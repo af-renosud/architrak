@@ -27,6 +27,7 @@ import { errorHandler } from "./middleware/error-handler";
 import { runMigrations } from "./migrate";
 import { reportMigrationDrift } from "./migration-drift";
 import { startHealthzWatchdog } from "./operations/healthz-watchdog";
+import { protectLegacyClientLinkCommunications } from "./services/communication-body-crypto";
 
 const app = express();
 const httpServer = createServer(app);
@@ -157,6 +158,13 @@ app.use((req, res, next) => {
     } catch (err) {
       console.error("[migrate] failed to apply migrations:", err);
       throw err;
+    }
+  }
+
+  if (!env.SMOKE_BOOT) {
+    const protectedCount = await protectLegacyClientLinkCommunications();
+    if (protectedCount > 0) {
+      console.log(`[security] protected ${protectedCount} legacy client-link communication bodies`);
     }
   }
 

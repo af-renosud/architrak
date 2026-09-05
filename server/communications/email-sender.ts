@@ -12,7 +12,8 @@ import {
 import { sealCertificat } from "../services/certificat-seal.service";
 import { getDocumentBuffer, uploadDocument } from "../storage/object-storage";
 import { env } from "../env";
-import type { InsertProjectCommunication } from "@shared/schema";
+import type { InsertProjectCommunication, ProjectCommunication } from "@shared/schema";
+import { decryptCommunicationBody } from "../services/communication-body-crypto";
 import { CLIENT_NO_PAYMENT_NOTICE } from "@shared/signature-message-template";
 import type { Certificat } from "@shared/schema";
 import type { SupplierPaymentReadinessSnapshot } from "@shared/supplier-payment-readiness";
@@ -609,7 +610,7 @@ export function communicationProviderMessageId(
 
 async function findAcceptedClientLinkMessage(
   gmail: GmailClient,
-  communication: Pick<InsertProjectCommunication, "dedupeKey" | "body"> & { id: number },
+  communication: Pick<ProjectCommunication, "id" | "dedupeKey" | "encryptedBody">,
 ): Promise<{ id: string; threadId?: string; sentAt: Date } | null> {
   const rfcMessageId = communicationProviderMessageId(communication).slice(1, -1);
   const byMessageId = await gmail.users.messages.list({
@@ -625,7 +626,10 @@ async function findAcceptedClientLinkMessage(
   // indexed by Gmail search. Use it as the live-provider fallback so an
   // accepted message can still be reconciled without another send.
   if (!hit) {
-    const portalToken = communication.body?.match(
+    const protectedBody = communication.encryptedBody
+      ? decryptCommunicationBody(communication.encryptedBody)
+      : null;
+    const portalToken = protectedBody?.match(
       /\/p\/client\/([A-Za-z0-9_-]+)/,
     )?.[1];
     if (portalToken) {
@@ -728,6 +732,20 @@ export async function sendCommunication(
     throw new Error(
       `Communication ${communicationId} is not in a sendable state (status: ${current.status})`,
     );
+  }
+
+  let outboundBody = comm.body || "";
+  if (comm.type === "devis_client_link") {
+    if (!comm.encryptedBody) {
+      await storage.updateProjectCommunication(communicationId, { status: "failed" });
+      throw new Error("Protected client link email body is unavailable");
+    }
+    const decrypted = decryptCommunicationBody(comm.encryptedBody);
+    if (!decrypted) {
+      await storage.updateProjectCommunication(communicationId, { status: "failed" });
+      throw new Error("Protected client link email body could not be decrypted");
+    }
+    outboundBody = decrypted;
   }
 
   let requiredSupplierAttachmentKeys: [string, string] | null = null;
@@ -997,7 +1015,7 @@ export async function sendCommunication(
       rawEmail.push(`--${boundary}`);
       rawEmail.push(`Content-Type: text/plain; charset="UTF-8"`);
       rawEmail.push("");
-      rawEmail.push(comm.body || "");
+      rawEmail.push(outboundBody);
 
       for (const att of attachments) {
         rawEmail.push(`--${boundary}`);
@@ -1011,7 +1029,7 @@ export async function sendCommunication(
     } else {
       rawEmail.push(`Content-Type: text/plain; charset="UTF-8"`);
       rawEmail.push("");
-      rawEmail.push(comm.body || "");
+      rawEmail.push(outboundBody);
     }
 
     const encodedMessage = Buffer.from(rawEmail.join("\r\n")).toString("base64url");

@@ -51,7 +51,6 @@ const { state, storageSpy, gmailSpy } = vi.hoisted(() => {
   return { state, storageSpy, gmailSpy };
 });
 
-
 vi.mock("../../storage", () => ({ storage: storageSpy }));
 vi.mock("../../gmail/client", () => ({
   isGmailConfigured: () => true,
@@ -70,7 +69,7 @@ vi.mock("../certificat-generator", () => ({
   buildCertificatEmailBody: vi.fn(),
 }));
 vi.mock("../../env", () => ({
-  env: { PUBLIC_BASE_URL: "https://architrak.test" },
+  env: { PUBLIC_BASE_URL: "https://architrak.test", SESSION_SECRET: "test-session-secret" },
 }));
 
 import {
@@ -78,6 +77,10 @@ import {
   communicationProviderMessageId,
   sendCommunication,
 } from "../email-sender";
+import {
+  encryptCommunicationBody,
+  PROTECTED_CLIENT_LINK_LABEL,
+} from "../../services/communication-body-crypto";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -91,7 +94,10 @@ beforeEach(() => {
     recipientEmail: "marie@example.test",
     recipientName: "Marie",
     subject: "Devis D-100 — Maison",
-    body: "Please review\nhttps://architrak.test/p/client/raw-token",
+    body: `Please review\n${PROTECTED_CLIENT_LINK_LABEL}`,
+    encryptedBody: encryptCommunicationBody(
+      "Please review\nhttps://architrak.test/p/client/raw-token",
+    ),
     status: "queued",
     sentAt: null,
     sentViaUserId: null,
@@ -106,6 +112,11 @@ describe("client-link Gmail reconciliation", () => {
     await expect(sendCommunication(501, { sentByUserId: 7 }))
       .rejects.toThrow("database timeout after Gmail accepted");
     expect(gmailSpy.send).toHaveBeenCalledTimes(1);
+    const firstSend = gmailSpy.send.mock.calls[0]?.[0] as {
+      requestBody: { raw: string };
+    };
+    expect(Buffer.from(firstSend.requestBody.raw, "base64url").toString("utf8"))
+      .toContain("https://architrak.test/p/client/raw-token");
     expect(state.communication?.status).toBe("sending");
     expect(state.communication?.sentViaUserId).toBe(7);
 
