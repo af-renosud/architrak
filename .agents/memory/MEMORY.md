@@ -53,3 +53,4 @@
 - [Certificate email delivery state](certificate-email-delivery-state.md) — successful certificat_sent evidence, never the editable status alone, proves client delivery; legacy false-sent rows stay recoverable.
 - [Gmail accepted-send reconciliation](gmail-accepted-send-reconciliation.md) — retryable bearer-link emails use immutable RFC Message-IDs; provider-accepted/DB-uncertain sends stay in-flight and reconcile Sent before retry.
 - [Client-facing language](client-facing-language.md) — all outbound client email copy must be English; French is reserved for internal operator-facing records and audit text.
+- [Publish diff and unvalidated checks](publish-diff-unvalidated-checks.md) — Publish may emit malformed CHECK DDL from a dev constraint marked NOT VALID; if rows comply, validate it in dev and recompute the diff.
