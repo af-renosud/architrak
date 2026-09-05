@@ -3,14 +3,15 @@ import { z } from "zod";
 import { storage } from "../storage";
 import { validateRequest } from "../middleware/validate";
 import {
-  issueClientCheckToken,
-  buildClientPortalUrl,
+  issueClientCheckTokenEmail,
+  clientLinkDeliveryDedupeKey,
   computeTokenExpiry,
   isTokenExpired,
 } from "../services/client-checks";
 import { env } from "../env";
 import { buildClientPortalPayload, renderClientPortalShell, streamCombinedPackagePdf } from "./public-client-checks";
 import { getDocumentStream } from "../storage/object-storage";
+import { isValidRecipientEmail, sendCommunication, CommunicationSendInProgressError } from "../communications/email-sender";
 
 const router = Router();
 
@@ -19,7 +20,8 @@ const checkIdParams = z.object({ checkId: z.coerce.number().int().positive() });
 
 const sendToClientSchema = z.object({
   clientEmail: z.string().email(),
-  clientName: z.string().max(200).optional(),
+  clientName: z.string().trim().max(200).optional(),
+  message: z.string().trim().min(10).max(2000),
 }).strict();
 
 const architectReplySchema = z.object({
@@ -223,6 +225,36 @@ function describeUser(user: { firstName?: string | null; lastName?: string | nul
   return name || user.email;
 }
 
+function serializeClientToken(t: Awaited<ReturnType<typeof storage.getLatestClientCheckToken>>) {
+  if (!t) return null;
+  return {
+    id: t.id,
+    clientEmail: t.clientEmail,
+    clientName: t.clientName,
+    createdAt: t.createdAt,
+    lastUsedAt: t.lastUsedAt,
+    expiresAt: t.expiresAt,
+    revokedAt: t.revokedAt,
+  };
+}
+
+function serializeClientLinkDelivery(
+  delivery: Awaited<ReturnType<typeof storage.getProjectCommunication>>,
+) {
+  if (!delivery) return null;
+  const portalUrl = delivery.type === "devis_client_link"
+    ? delivery.body?.match(/https?:\/\/[^\s]+\/p\/client\/[A-Za-z0-9_-]+/)?.[0] ?? null
+    : null;
+  return {
+    communicationId: delivery.id,
+    status: delivery.status,
+    sentAt: delivery.sentAt,
+    recipientEmail: delivery.recipientEmail,
+    recipientName: delivery.recipientName,
+    portalUrl,
+  };
+}
+
 /** Current token state for the devis (latest token, active or revoked). */
 router.get(
   "/api/devis/:devisId/client-check-token",
@@ -231,28 +263,18 @@ router.get(
     const devisId = Number(req.params.devisId);
     const t = await storage.getLatestClientCheckToken(devisId);
     if (!t) return res.json({ token: null });
+    const delivery = await storage.getProjectCommunicationByDedupeKey(clientLinkDeliveryDedupeKey(t.id));
     res.json({
-      token: {
-        id: t.id,
-        clientEmail: t.clientEmail,
-        clientName: t.clientName,
-        createdAt: t.createdAt,
-        lastUsedAt: t.lastUsedAt,
-        expiresAt: t.expiresAt,
-        revokedAt: t.revokedAt,
-      },
+      token: serializeClientToken(t),
+      delivery: serializeClientLinkDelivery(delivery),
     });
   },
 );
 
 /**
- * "Send to client" — issues (or rotates) the client portal token and returns
- * the share URL so the architect can copy it into their preferred channel
- * (email / WhatsApp / SMS). v1 intentionally does NOT auto-send an email —
- * AT5 (outbound webhook) is out of scope for this task.
- *
- * Always rotates the token because raw values aren't recoverable from the
- * hash. The frontend gates this behind a confirm dialog.
+ * Issues a fresh client portal token, durably queues its email, then dispatches
+ * through the initiating architect's Gmail connection. The token and queued
+ * communication are created in one transaction.
  */
 router.post(
   "/api/devis/:devisId/client-check-token/issue",
@@ -260,27 +282,112 @@ router.post(
   async (req, res) => {
     const devisId = Number(req.params.devisId);
     const userId = req.session?.userId ?? null;
+    if (!userId) return res.status(401).json({ message: "Authentication required" });
     const devis = await storage.getDevis(devisId);
     if (!devis) return res.status(404).json({ message: "Devis not found" });
+    const project = await storage.getProject(devis.projectId);
+    if (!project) return res.status(404).json({ message: "Project not found" });
+    if (project.archivedAt) return res.status(409).json({ message: "Archived projects are read-only" });
+    if (devis.status === "void" || devis.accountingState === "superseded") {
+      return res.status(409).json({ message: "This devis cannot be shared with the client" });
+    }
+    if (!isValidRecipientEmail(req.body.clientEmail)) {
+      return res.status(400).json({ message: "Invalid client email address" });
+    }
     if (!env.PUBLIC_BASE_URL) {
       return res.status(500).json({ message: "PUBLIC_BASE_URL is not configured" });
     }
-    const issued = await issueClientCheckToken({
+    const clientName = req.body.clientName || null;
+    const issued = await issueClientCheckTokenEmail({
       devisId,
+      projectId: devis.projectId,
+      projectName: project.name,
+      devisRef: devis.devisNumber || devis.devisCode,
       clientEmail: req.body.clientEmail,
-      clientName: req.body.clientName ?? null,
+      clientName,
+      message: req.body.message,
       createdByUserId: userId,
+      baseUrl: env.PUBLIC_BASE_URL,
     });
-    const portalUrl = buildClientPortalUrl(env.PUBLIC_BASE_URL, issued.raw);
     const user = (userId ? await storage.getUser(Number(userId)) : null) ?? null;
-    const recipient = req.body.clientName
-      ? `${req.body.clientName} <${req.body.clientEmail}>`
+    const recipient = clientName
+      ? `${clientName} <${req.body.clientEmail}>`
       : req.body.clientEmail;
-    await auditClientTokenAction(
-      devisId,
-      `Lien client émis pour ${recipient} par ${describeUser(user)}.`,
-    );
-    res.json({ portalUrl, clientEmail: req.body.clientEmail, clientName: req.body.clientName ?? null });
+    if (issued.reused) {
+      return res.status(409).json({
+        message: issued.communication.status === "failed"
+          ? "A failed delivery already exists for this active link. Use Retry to send the same link and message safely."
+          : "This client link email is already being sent",
+      });
+    }
+    try {
+      await sendCommunication(issued.communication.id, { sentByUserId: userId });
+    } catch (error) {
+      if (error instanceof CommunicationSendInProgressError) {
+        return res.status(409).json({ message: "This client link email is already being sent" });
+      }
+      await auditClientTokenAction(devisId, `Échec de l’envoi du lien client à ${recipient} par ${describeUser(user)}.`);
+      const failed = await storage.getProjectCommunication(issued.communication.id);
+      return res.status(502).json({
+        message: error instanceof Error ? error.message : "Client link email failed",
+        token: serializeClientToken(issued.record),
+        delivery: serializeClientLinkDelivery(failed),
+      });
+    }
+    await auditClientTokenAction(devisId, `Lien client envoyé à ${recipient} par ${describeUser(user)}.`);
+    const sent = await storage.getProjectCommunication(issued.communication.id);
+    res.json({
+      token: serializeClientToken(issued.record),
+      delivery: serializeClientLinkDelivery(sent),
+    });
+  },
+);
+
+router.post(
+  "/api/devis/:devisId/client-check-token/resend",
+  validateRequest({ params: devisIdParams }),
+  async (req, res) => {
+    const devisId = Number(req.params.devisId);
+    const userId = req.session?.userId ?? null;
+    if (!userId) return res.status(401).json({ message: "Authentication required" });
+    const devis = await storage.getDevis(devisId);
+    if (!devis) return res.status(404).json({ message: "Devis not found" });
+    const project = await storage.getProject(devis.projectId);
+    if (!project) return res.status(404).json({ message: "Project not found" });
+    if (project.archivedAt) return res.status(409).json({ message: "Archived projects are read-only" });
+    if (devis.status === "void" || devis.accountingState === "superseded") {
+      return res.status(409).json({ message: "This devis cannot be shared with the client" });
+    }
+    const token = await storage.getActiveClientCheckToken(devisId);
+    if (!token) return res.status(404).json({ message: "No active client link found" });
+    if (isTokenExpired(token)) return res.status(409).json({ message: "The client link has expired; issue a new link instead" });
+    const communication = await storage.getProjectCommunicationByDedupeKey(clientLinkDeliveryDedupeKey(token.id));
+    if (!communication) return res.status(404).json({ message: "No client link email found" });
+    if (communication.status === "sent") {
+      return res.json({
+        token: serializeClientToken(token),
+        delivery: serializeClientLinkDelivery(communication),
+      });
+    }
+    try {
+      await sendCommunication(communication.id, { sentByUserId: userId });
+    } catch (error) {
+      if (error instanceof CommunicationSendInProgressError) {
+        return res.status(409).json({ message: "This client link email is already being sent" });
+      }
+      const failed = await storage.getProjectCommunication(communication.id);
+      return res.status(502).json({
+        message: error instanceof Error ? error.message : "Client link email failed",
+        token: serializeClientToken(token),
+        delivery: serializeClientLinkDelivery(failed),
+      });
+    }
+    const sent = await storage.getProjectCommunication(communication.id);
+    await auditClientTokenAction(devisId, `Envoi du lien client relancé avec succès vers ${communication.recipientEmail}.`);
+    res.json({
+      token: serializeClientToken(token),
+      delivery: serializeClientLinkDelivery(sent),
+    });
   },
 );
 

@@ -2,6 +2,9 @@ import { createHash, randomBytes } from "node:crypto";
 import { storage } from "../storage";
 import { env } from "../env";
 import type { ClientCheckToken } from "@shared/schema";
+import { clientCheckTokens, projectCommunications } from "@shared/schema";
+import { db } from "../db";
+import { and, eq, isNull, sql } from "drizzle-orm";
 
 /**
  * Token plumbing for the AT2 client review portal — mirror of the
@@ -49,6 +52,33 @@ export interface IssuedClientToken {
   record: ClientCheckToken;
 }
 
+export function clientLinkDeliveryDedupeKey(tokenId: number): string {
+  return `devis-client-link:${tokenId}`;
+}
+
+export function canReuseClientLinkDelivery(
+  token: Pick<ClientCheckToken, "revokedAt" | "expiresAt">,
+  now: Date = new Date(),
+): boolean {
+  return !token.revokedAt && (!token.expiresAt || token.expiresAt.getTime() > now.getTime());
+}
+
+export function buildClientLinkEmail(opts: {
+  projectName: string;
+  devisRef: string;
+  clientName: string | null;
+  message: string;
+  portalUrl: string;
+}): { subject: string; body: string } {
+  const safeRef = opts.devisRef.replace(/[\r\n]+/g, " ").trim();
+  const safeProjectName = opts.projectName.replace(/[\r\n]+/g, " ").trim();
+  const greeting = opts.clientName ? `Bonjour ${opts.clientName},` : "Bonjour,";
+  return {
+    subject: `Devis ${safeRef} — ${safeProjectName}`,
+    body: `${greeting}\n\n${opts.message.trim()}\n\nVous pouvez consulter le devis et transmettre vos remarques via ce lien sécurisé :\n${opts.portalUrl}\n\nCordialement,\nL'équipe Renosud\n`,
+  };
+}
+
 export async function issueClientCheckToken(opts: {
   devisId: number;
   clientEmail: string;
@@ -66,6 +96,80 @@ export async function issueClientCheckToken(opts: {
     expiresAt: computeTokenExpiry(),
   });
   return { raw, record };
+}
+
+export async function issueClientCheckTokenEmail(opts: {
+  devisId: number;
+  projectId: number;
+  projectName: string;
+  devisRef: string;
+  clientEmail: string;
+  clientName: string | null;
+  message: string;
+  createdByUserId: number;
+  baseUrl: string;
+}): Promise<{
+  record: ClientCheckToken;
+  communication: typeof projectCommunications.$inferSelect;
+  reused: boolean;
+}> {
+  const raw = generateRawToken();
+  const tokenHash = hashToken(raw);
+  const expiresAt = computeTokenExpiry();
+
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${opts.devisId}::bigint)`);
+    const [active] = await tx
+      .select()
+      .from(clientCheckTokens)
+      .where(and(eq(clientCheckTokens.devisId, opts.devisId), isNull(clientCheckTokens.revokedAt)))
+      .limit(1);
+    if (active && canReuseClientLinkDelivery(active)) {
+      const [existingDelivery] = await tx
+        .select()
+        .from(projectCommunications)
+        .where(eq(projectCommunications.dedupeKey, clientLinkDeliveryDedupeKey(active.id)))
+        .limit(1);
+      if (existingDelivery) {
+        if (["queued", "sending", "failed"].includes(existingDelivery.status)) {
+          return { record: active, communication: existingDelivery, reused: true };
+        }
+      }
+    }
+
+    await tx
+      .update(clientCheckTokens)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(clientCheckTokens.devisId, opts.devisId), isNull(clientCheckTokens.revokedAt)));
+    const [record] = await tx
+      .insert(clientCheckTokens)
+      .values({
+        devisId: opts.devisId,
+        tokenHash,
+        clientEmail: opts.clientEmail,
+        clientName: opts.clientName ?? undefined,
+        createdByUserId: opts.createdByUserId,
+        expiresAt,
+      })
+      .returning();
+    const portalUrl = buildClientPortalUrl(opts.baseUrl, raw);
+    const email = buildClientLinkEmail({ ...opts, portalUrl });
+    const [communication] = await tx
+      .insert(projectCommunications)
+      .values({
+        projectId: opts.projectId,
+        type: "devis_client_link",
+        recipientType: "client",
+        recipientEmail: opts.clientEmail,
+        recipientName: opts.clientName,
+        subject: email.subject,
+        body: email.body,
+        status: "queued",
+        dedupeKey: clientLinkDeliveryDedupeKey(record.id),
+      })
+      .returning();
+    return { record, communication, reused: false };
+  });
 }
 
 export type ClientTokenLookup =

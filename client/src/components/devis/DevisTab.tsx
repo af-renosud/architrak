@@ -3839,9 +3839,9 @@ function TokenPanel({ devisId, projectId, isArchived }: { devisId: number; proje
 /**
  * AT2 client review portal panel — counterpart to TokenPanel for the
  * client side. The architect uses this to issue/rotate the client portal
- * token and obtain a shareable URL (copied to the clipboard) that they can
- * forward to the client by their preferred channel. v1 deliberately does
- * NOT auto-send an email; outbound webhooks are AT5 scope.
+ * token and deliver its secure URL directly to the client's inbox. The
+ * compose flow makes the recipient and contextual note explicit before any
+ * existing access link is rotated.
  */
 type ClientCheckTokenInfo = {
   id: number;
@@ -3860,7 +3860,16 @@ type ProjectClientContact = {
   clientContactEmail: string | null;
 };
 
-function ClientPortalPanel({
+type ClientLinkDelivery = {
+  communicationId: number;
+  status: "sent" | "failed" | string;
+  sentAt: string | Date | null;
+  recipientEmail: string;
+  recipientName: string | null;
+  portalUrl?: string | null;
+};
+
+export function ClientPortalPanel({
   devisId,
   projectId,
   isArchived,
@@ -3873,11 +3882,15 @@ function ClientPortalPanel({
   const [issueOpen, setIssueOpen] = useState(false);
   const [emailDraft, setEmailDraft] = useState("");
   const [nameDraft, setNameDraft] = useState("");
+  const [messageDraft, setMessageDraft] = useState("");
+  const [dialogStep, setDialogStep] = useState<"compose" | "review">("compose");
   const [emailErr, setEmailErr] = useState<string | null>(null);
+  const [messageErr, setMessageErr] = useState<string | null>(null);
 
-  const { data, isLoading } = useQuery<{ token: ClientCheckTokenInfo | null }>({
+  const { data, isLoading } = useQuery<{ token: ClientCheckTokenInfo | null; delivery: ClientLinkDelivery | null }>({
     queryKey: ["/api/devis", devisId, "client-check-token"],
   });
+  const { data: devis } = useQuery<Devis>({ queryKey: ["/api/devis", devisId] });
 
   // Project lookup just to seed the dialog defaults from the AT1 sign-off
   // contact fields. Cached centrally so this doesn't fan out per-devis on
@@ -3892,32 +3905,47 @@ function ClientPortalPanel({
   };
 
   const issueMutation = useMutation({
-    mutationFn: async (payload: { clientEmail: string; clientName?: string }) => {
+    mutationFn: async (payload: { clientEmail: string; clientName?: string; message: string }) => {
       const res = await apiRequest(
         "POST",
         `/api/devis/${devisId}/client-check-token/issue`,
         payload,
       );
-      return res.json() as Promise<{ portalUrl: string; clientEmail: string; clientName: string | null }>;
+      return res.json() as Promise<{ token: ClientCheckTokenInfo; delivery: ClientLinkDelivery }>;
     },
-    onSuccess: async (resp) => {
-      try {
-        await navigator.clipboard.writeText(resp.portalUrl);
-        toast({
-          title: "Client link copied",
-          description: `The link for ${resp.clientName ? resp.clientName + " " : ""}<${resp.clientEmail}> is in your clipboard.`,
-        });
-      } catch {
-        toast({
-          title: "Client link generated (copy manually)",
-          description: resp.portalUrl,
-        });
-      }
+    onSuccess: (resp) => {
+      toast({
+        title: "Link sent to client",
+        description: `The quotation link was sent to ${resp.delivery.recipientEmail}.`,
+      });
       invalidate();
       setIssueOpen(false);
+      setDialogStep("compose");
+      setMessageDraft("");
     },
     onError: (error: Error) => {
+      invalidate();
       toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const resendMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/devis/${devisId}/client-check-token/resend`, {});
+      return res.json() as Promise<{ token: ClientCheckTokenInfo; delivery: ClientLinkDelivery }>;
+    },
+    onSuccess: (resp) => {
+      invalidate();
+      toast({
+        title: "Delivery retried",
+        description: resp.delivery.status === "sent"
+          ? `The quotation link was sent to ${resp.delivery.recipientEmail}.`
+          : "The delivery was retried. Check the delivery status before taking further action.",
+      });
+    },
+    onError: (error: Error) => {
+      invalidate();
+      toast({ title: "Could not retry delivery", description: error.message, variant: "destructive" });
     },
   });
 
@@ -3941,6 +3969,7 @@ function ClientPortalPanel({
 
   if (isLoading) return null;
   const token = data?.token ?? null;
+  const delivery = data?.delivery ?? null;
   const isRevoked = !!token?.revokedAt;
   const isExpired = !!(token?.expiresAt && new Date(token.expiresAt).getTime() <= Date.now());
   const hasActiveLink = !!token && !isRevoked && !isExpired;
@@ -3959,18 +3988,49 @@ function ClientPortalPanel({
     setEmailDraft(token?.clientEmail ?? project?.clientContactEmail ?? "");
     setNameDraft(token?.clientName ?? project?.clientContactName ?? project?.clientName ?? "");
     setEmailErr(null);
+    setMessageErr(null);
+    setMessageDraft("");
+    setDialogStep("compose");
     setIssueOpen(true);
   }
 
-  function submitIssue() {
+  function validateCompose() {
     const email = emailDraft.trim();
-    const name = nameDraft.trim();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
       setEmailErr("Invalid email address");
-      return;
+      return false;
+    }
+    if (messageDraft.trim().length < 10) {
+      setMessageErr("Write a message of at least 10 characters.");
+      return false;
     }
     setEmailErr(null);
-    issueMutation.mutate({ clientEmail: email, clientName: name || undefined });
+    setMessageErr(null);
+    return true;
+  }
+
+  function continueToReview() {
+    if (validateCompose()) setDialogStep("review");
+  }
+
+  function submitIssue() {
+    if (!validateCompose()) {
+      setDialogStep("compose");
+      return;
+    }
+    const email = emailDraft.trim();
+    const name = nameDraft.trim();
+    issueMutation.mutate({ clientEmail: email, clientName: name || undefined, message: messageDraft.trim() });
+  }
+
+  async function copyActiveLink() {
+    if (!delivery?.portalUrl) return;
+    try {
+      await navigator.clipboard.writeText(delivery.portalUrl);
+      toast({ title: "Client link copied", description: "The active quotation link is in your clipboard." });
+    } catch {
+      toast({ title: "Could not copy the client link", variant: "destructive" });
+    }
   }
 
   return (
@@ -4017,6 +4077,19 @@ function ClientPortalPanel({
               <Send size={10} />
               {issueMutation.isPending ? "…" : "Send to client"}
             </Button>
+            {token && !isRevoked && !isExpired && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 text-[9px] font-bold uppercase tracking-widest gap-1"
+                onClick={copyActiveLink}
+                disabled={!delivery?.portalUrl}
+                data-testid={`button-copy-client-token-${devisId}`}
+              >
+                <Copy size={10} />
+                Copy link
+              </Button>
+            )}
             {token && !isRevoked && !isExpired && (
               <Button
                 variant="outline"
@@ -4071,25 +4144,58 @@ function ClientPortalPanel({
           </div>
         </div>
       )}
+      {delivery?.status === "sent" && (
+        <div className="flex items-start gap-2 rounded-md border border-emerald-200 bg-emerald-50/70 px-2.5 py-2 text-[10px] text-emerald-900" data-testid={`client-link-delivery-sent-${devisId}`}>
+          <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <p>
+            Sent to <span className="font-semibold">{delivery.recipientName ? `${delivery.recipientName} · ` : ""}{delivery.recipientEmail}</span>
+            {delivery.sentAt ? ` on ${formatDateTime(delivery.sentAt)}.` : "."}
+          </p>
+        </div>
+      )}
+      {delivery && delivery.status !== "sent" && (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-2 text-[10px] text-amber-950" data-testid={`client-link-delivery-failed-${devisId}`}>
+          <div className="flex gap-2">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <p>
+              <span className="font-semibold">
+                {delivery.status === "failed" ? "Delivery failed." : "Delivery pending."}
+              </span>{" "}
+              The link remains available, but {delivery.recipientEmail} has not yet received a confirmed email.
+            </p>
+          </div>
+          {!isArchived && (
+            <Button variant="outline" size="sm" className="h-6 shrink-0 px-2 text-[9px] font-bold uppercase tracking-widest" onClick={() => resendMutation.mutate()} disabled={resendMutation.isPending} data-testid={`button-retry-client-link-delivery-${devisId}`}>
+              {resendMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+              <span className="ml-1">{resendMutation.isPending ? "Retrying" : "Retry"}</span>
+            </Button>
+          )}
+        </div>
+      )}
       {!token && (
         <p className="text-[10px] text-slate-500" data-testid={`text-no-client-token-${devisId}`}>
-          No client link has been issued for this devis yet. Click "Send to client" to generate a link to share (email / WhatsApp / SMS).
+          No client link has been issued for this devis yet. Send a secure review link directly from this quotation.
         </p>
       )}
 
-      <Dialog open={issueOpen} onOpenChange={(o) => { if (!issueMutation.isPending) setIssueOpen(o); }}>
-        <DialogContent data-testid={`dialog-send-to-client-${devisId}`}>
+      <Dialog open={issueOpen} onOpenChange={(o) => { if (!issueMutation.isPending) { setIssueOpen(o); if (!o) setDialogStep("compose"); } }}>
+        <DialogContent className="max-w-lg" data-testid={`dialog-send-to-client-${devisId}`}>
           <DialogHeader>
-            <DialogTitle>
-              {hasActiveLink ? "Regenerate and copy the client link" : "Issue a link for the client"}
-            </DialogTitle>
+            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
+              <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#0B2545] text-white">1</span>
+              <span className={dialogStep === "review" ? "text-slate-400" : "text-[#0B2545]"}>Compose</span>
+              <span className="h-px w-6 bg-slate-200" />
+              <span className={`flex h-5 w-5 items-center justify-center rounded-full ${dialogStep === "review" ? "bg-[#0B2545] text-white" : "bg-slate-100 text-slate-500"}`}>2</span>
+              <span className={dialogStep === "review" ? "text-[#0B2545]" : "text-slate-400"}>Review</span>
+            </div>
+            <DialogTitle>{dialogStep === "compose" ? "Send quotation link" : "Review email before sending"}</DialogTitle>
             <DialogDescription>
-              {hasActiveLink
-                ? "A new link will be generated and copied to your clipboard. The current active link will stop working immediately."
-                : "Enter the client's email address. The link will be copied to your clipboard — you can share it via your preferred channel (email, WhatsApp, SMS)."}
+              {dialogStep === "compose"
+                ? "Confirm the recipient and write the note that will accompany their secure quotation link."
+                : "The recipient will receive this exact message and a secure link to review this quotation."}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">
+          {dialogStep === "compose" ? <div className="space-y-3">
             <div className="space-y-1">
               <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
                 Client email address
@@ -4097,7 +4203,7 @@ function ClientPortalPanel({
               <Input
                 type="email"
                 value={emailDraft}
-                onChange={(e) => setEmailDraft(e.target.value)}
+                onChange={(e) => { setEmailDraft(e.target.value); if (emailErr) setEmailErr(null); }}
                 placeholder="client@example.com"
                 data-testid={`input-client-email-${devisId}`}
                 disabled={issueMutation.isPending}
@@ -4121,8 +4227,24 @@ function ClientPortalPanel({
                 disabled={issueMutation.isPending}
               />
             </div>
-          </div>
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">Message to client</label>
+                <span className="text-[10px] text-slate-400">{messageDraft.length}/2000</span>
+              </div>
+              <Textarea value={messageDraft} onChange={(e) => { setMessageDraft(e.target.value.slice(0, 2000)); if (messageErr) setMessageErr(null); }} placeholder="Explain what you would like the client to review." rows={6} maxLength={2000} disabled={issueMutation.isPending} data-testid={`textarea-client-link-message-${devisId}`} />
+              {messageErr && <p className="text-[10px] text-rose-700" data-testid={`text-client-message-error-${devisId}`}>{messageErr}</p>}
+            </div>
+          </div> : <div className="space-y-4" data-testid={`review-client-link-email-${devisId}`}>
+            <div className="grid gap-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-[11px]">
+              <div><span className="font-semibold text-slate-500">To</span><p className="mt-0.5 text-slate-800">{nameDraft.trim() || "Client"} &lt;{emailDraft.trim()}&gt;</p></div>
+              <div><span className="font-semibold text-slate-500">Quotation</span><p className="mt-0.5 text-slate-800">{devis?.devisNumber || devis?.devisCode || `Devis #${devisId}`}</p></div>
+              <div><span className="font-semibold text-slate-500">Access & expiry</span><p className="mt-0.5 text-slate-800">A secure link will be issued for this quotation. {hasActiveLink ? "The current active link will stop working immediately; the new link remains available until its recorded expiry." : "Client access ends at the link’s recorded expiry and can be extended or revoked from this panel."}</p></div>
+            </div>
+            <div><p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600">Message</p><p className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md border border-slate-200 bg-white p-3 text-[12px] leading-relaxed text-slate-800">{messageDraft.trim()}</p></div>
+          </div>}
           <div className="flex justify-end gap-2 pt-2">
+            {dialogStep === "review" && <Button variant="outline" onClick={() => setDialogStep("compose")} disabled={issueMutation.isPending} data-testid={`button-back-send-to-client-${devisId}`}>Back to edit</Button>}
             <Button
               variant="outline"
               onClick={() => setIssueOpen(false)}
@@ -4132,15 +4254,13 @@ function ClientPortalPanel({
               Cancel
             </Button>
             <Button
-              onClick={submitIssue}
+              onClick={dialogStep === "compose" ? continueToReview : submitIssue}
               disabled={issueMutation.isPending}
               data-testid={`button-confirm-send-to-client-${devisId}`}
             >
               {issueMutation.isPending
-                ? "Generating…"
-                : hasActiveLink
-                  ? "Regenerate and copy"
-                  : "Issue and copy"}
+                ? <><Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />Sending…</>
+                : dialogStep === "compose" ? "Review email" : "Send to client"}
             </Button>
           </div>
         </DialogContent>

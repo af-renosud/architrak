@@ -585,6 +585,81 @@ export class CommunicationSendInProgressError extends Error {
   }
 }
 
+type GmailClient = Awaited<ReturnType<typeof getUncachableGmailClient>>;
+
+export function communicationProviderMessageId(
+  communication: Pick<InsertProjectCommunication, "dedupeKey"> & { id: number },
+): string {
+  const digest = createHash("sha256")
+    // Only immutable persisted identity belongs here. Deployment URLs can
+    // change between a provider-accepted send and a later reconciliation.
+    .update(`${communication.id}:${communication.dedupeKey ?? ""}`)
+    .digest("hex")
+    .slice(0, 32);
+  return `<architrak-${digest}@mail.architrak.app>`;
+}
+
+async function findAcceptedClientLinkMessage(
+  gmail: GmailClient,
+  communication: Pick<InsertProjectCommunication, "dedupeKey"> & { id: number },
+): Promise<{ id: string; threadId?: string; sentAt: Date } | null> {
+  const rfcMessageId = communicationProviderMessageId(communication).slice(1, -1);
+  const listed = await gmail.users.messages.list({
+    userId: "me",
+    q: `in:sent rfc822msgid:${rfcMessageId}`,
+    maxResults: 1,
+  });
+  const hit = listed.data.messages?.[0];
+  if (!hit?.id) return null;
+  const metadata = await gmail.users.messages.get({
+    userId: "me",
+    id: hit.id,
+    format: "metadata",
+    metadataHeaders: ["Message-ID", "Date"],
+  });
+  const internalDate = metadata.data.internalDate
+    ? new Date(Number(metadata.data.internalDate))
+    : new Date();
+  return {
+    id: hit.id,
+    threadId: hit.threadId ?? metadata.data.threadId ?? undefined,
+    sentAt: Number.isNaN(internalDate.getTime()) ? new Date() : internalDate,
+  };
+}
+
+async function getGmailClientForRecordedSender(
+  sentViaUserId: number | null,
+): Promise<GmailClient> {
+  if (sentViaUserId) {
+    const sender = await storage.getUser(sentViaUserId);
+    if (!sender?.gmailRefreshToken) {
+      throw new Error("The Gmail account used for this client link is no longer connected");
+    }
+    return getGmailClientForUser(sender);
+  }
+  if (!isGmailConfigured()) {
+    throw new Error("The shared Gmail connector used for this client link is not configured");
+  }
+  return getUncachableGmailClient();
+}
+
+async function reconcileAcceptedClientLinkCommunication(
+  communication: NonNullable<Awaited<ReturnType<typeof storage.getProjectCommunication>>>,
+  gmail?: GmailClient,
+): Promise<boolean> {
+  if (communication.type !== "devis_client_link" || isFakeGmailMode()) return false;
+  const client = gmail ?? await getGmailClientForRecordedSender(communication.sentViaUserId);
+  const accepted = await findAcceptedClientLinkMessage(client, communication);
+  if (!accepted) return false;
+  await storage.markProjectCommunicationSent(communication.id, {
+    sentAt: accepted.sentAt,
+    emailMessageId: accepted.id,
+    emailThreadId: accepted.threadId,
+    sentViaUserId: communication.sentViaUserId,
+  });
+  return true;
+}
+
 export async function sendCommunication(
   communicationId: number,
   opts?: { threadId?: string | null; inReplyToMessageId?: string | null; sentByUserId?: number | null },
@@ -605,6 +680,7 @@ export async function sendCommunication(
       throw new Error(`Communication is already sent`);
     }
     if (current.status === "sending") {
+      if (await reconcileAcceptedClientLinkCommunication(current)) return;
       throw new CommunicationSendInProgressError(communicationId);
     }
     throw new Error(
@@ -761,6 +837,7 @@ export async function sendCommunication(
     );
   }
 
+  let providerAccepted = false;
   try {
     // Task #466 — send through the INITIATING architect's linked Gmail
     // client when they have one (gmail.modify scope includes send). Sending
@@ -791,6 +868,12 @@ export async function sendCommunication(
         throw new Error("Gmail not configured: no linked mailbox for the sender and the shared Gmail connector is not set up");
       }
       gmail = await getUncachableGmailClient();
+    }
+    if (comm.type === "devis_client_link" && !isFakeGmailMode()) {
+      const recorded = await storage.updateProjectCommunication(communicationId, { sentViaUserId });
+      if (!recorded) throw new Error("Could not record the Gmail sender before dispatch");
+      comm.sentViaUserId = sentViaUserId;
+      if (await reconcileAcceptedClientLinkCommunication(comm, gmail)) return;
     }
 
     const attachments: Array<{ filename: string; content: string; contentType: string }> = [];
@@ -846,6 +929,9 @@ export async function sendCommunication(
       `From: me`,
       `To: ${comm.recipientEmail || ""}`,
       `Subject: ${comm.subject}`,
+      ...(comm.type === "devis_client_link"
+        ? [`Message-ID: ${communicationProviderMessageId(comm)}`]
+        : []),
       `MIME-Version: 1.0`,
     ];
     // Thread-reuse headers for follow-up bundled sends. Gmail also needs the
@@ -888,6 +974,7 @@ export async function sendCommunication(
       userId: "me",
       requestBody,
     });
+    providerAccepted = true;
 
     // Task #554 — the success update also advances the linked certificat to
     // 'sent' in the SAME transaction (only for the client-facing
@@ -907,9 +994,14 @@ export async function sendCommunication(
 
     console.log(`[EmailSender] Sent communication ${communicationId}: ${comm.subject}`);
   } catch (err: unknown) {
-    await storage.updateProjectCommunication(communicationId, {
-      status: "failed",
-    });
+    // For client links, a provider-accepted message has a deterministic
+    // Message-ID and remains `sending` if the success write fails. A retry
+    // reconciles Gmail's Sent mailbox instead of transmitting it again.
+    if (!providerAccepted || comm.type !== "devis_client_link") {
+      await storage.updateProjectCommunication(communicationId, {
+        status: "failed",
+      });
+    }
     throw err;
   }
 
