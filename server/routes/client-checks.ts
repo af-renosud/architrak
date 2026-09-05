@@ -11,7 +11,12 @@ import {
 import { env } from "../env";
 import { buildClientPortalPayload, renderClientPortalShell, streamCombinedPackagePdf } from "./public-client-checks";
 import { getDocumentStream } from "../storage/object-storage";
-import { isValidRecipientEmail, sendCommunication, CommunicationSendInProgressError } from "../communications/email-sender";
+import {
+  isValidRecipientEmail,
+  sendCommunication,
+  CommunicationDeliveryAwaitingConfirmationError,
+  CommunicationSendInProgressError,
+} from "../communications/email-sender";
 
 const router = Router();
 
@@ -240,6 +245,7 @@ function serializeClientToken(t: Awaited<ReturnType<typeof storage.getLatestClie
 
 function serializeClientLinkDelivery(
   delivery: Awaited<ReturnType<typeof storage.getProjectCommunication>>,
+  statusOverride?: "awaiting_confirmation",
 ) {
   if (!delivery) return null;
   const portalUrl = delivery.type === "devis_client_link"
@@ -247,12 +253,30 @@ function serializeClientLinkDelivery(
     : null;
   return {
     communicationId: delivery.id,
-    status: delivery.status,
+    status: statusOverride
+      ?? (delivery.type === "devis_client_link"
+        && delivery.status === "sending"
+        && delivery.emailMessageId
+        ? "awaiting_confirmation"
+        : delivery.status),
     sentAt: delivery.sentAt,
     recipientEmail: delivery.recipientEmail,
     recipientName: delivery.recipientName,
     portalUrl,
   };
+}
+
+function sendAwaitingConfirmation(
+  res: Parameters<Parameters<typeof router.post>[1]>[1],
+  token: Awaited<ReturnType<typeof storage.getLatestClientCheckToken>>,
+  delivery: Awaited<ReturnType<typeof storage.getProjectCommunication>>,
+) {
+  return res.status(202).json({
+    message: "Gmail is confirming delivery. Check again or retry safely in a short while.",
+    token: serializeClientToken(token),
+    delivery: serializeClientLinkDelivery(delivery, "awaiting_confirmation"),
+    retryAfterSeconds: 15,
+  });
 }
 
 /** Current token state for the devis (latest token, active or revoked). */
@@ -314,6 +338,22 @@ router.post(
       ? `${clientName} <${req.body.clientEmail}>`
       : req.body.clientEmail;
     if (issued.reused) {
+      if (issued.communication.status === "sending") {
+        try {
+          await sendCommunication(issued.communication.id, { sentByUserId: userId });
+          const sent = await storage.getProjectCommunication(issued.communication.id);
+          return res.json({
+            token: serializeClientToken(issued.record),
+            delivery: serializeClientLinkDelivery(sent),
+          });
+        } catch (error) {
+          if (error instanceof CommunicationDeliveryAwaitingConfirmationError) {
+            const confirming = await storage.getProjectCommunication(issued.communication.id);
+            return sendAwaitingConfirmation(res, issued.record, confirming);
+          }
+          if (!(error instanceof CommunicationSendInProgressError)) throw error;
+        }
+      }
       return res.status(409).json({
         message: issued.communication.status === "failed"
           ? "A failed delivery already exists for this active link. Use Retry to send the same link and message safely."
@@ -323,6 +363,10 @@ router.post(
     try {
       await sendCommunication(issued.communication.id, { sentByUserId: userId });
     } catch (error) {
+      if (error instanceof CommunicationDeliveryAwaitingConfirmationError) {
+        const confirming = await storage.getProjectCommunication(issued.communication.id);
+        return sendAwaitingConfirmation(res, issued.record, confirming);
+      }
       if (error instanceof CommunicationSendInProgressError) {
         return res.status(409).json({ message: "This client link email is already being sent" });
       }
@@ -372,6 +416,10 @@ router.post(
     try {
       await sendCommunication(communication.id, { sentByUserId: userId });
     } catch (error) {
+      if (error instanceof CommunicationDeliveryAwaitingConfirmationError) {
+        const confirming = await storage.getProjectCommunication(communication.id);
+        return sendAwaitingConfirmation(res, token, confirming);
+      }
       if (error instanceof CommunicationSendInProgressError) {
         return res.status(409).json({ message: "This client link email is already being sent" });
       }

@@ -3862,7 +3862,7 @@ type ProjectClientContact = {
 
 type ClientLinkDelivery = {
   communicationId: number;
-  status: "sent" | "failed" | string;
+  status: "sent" | "failed" | "awaiting_confirmation" | string;
   sentAt: string | Date | null;
   recipientEmail: string;
   recipientName: string | null;
@@ -3914,9 +3914,12 @@ export function ClientPortalPanel({
       return res.json() as Promise<{ token: ClientCheckTokenInfo; delivery: ClientLinkDelivery }>;
     },
     onSuccess: (resp) => {
+      const awaitingConfirmation = resp.delivery.status === "awaiting_confirmation";
       toast({
-        title: "Link sent to client",
-        description: `The quotation link was sent to ${resp.delivery.recipientEmail}.`,
+        title: awaitingConfirmation ? "Gmail is confirming delivery" : "Link sent to client",
+        description: awaitingConfirmation
+          ? "Gmail accepted the email. Check again or retry safely in a short while."
+          : `The quotation link was sent to ${resp.delivery.recipientEmail}.`,
       });
       invalidate();
       setIssueOpen(false);
@@ -3937,9 +3940,13 @@ export function ClientPortalPanel({
     onSuccess: (resp) => {
       invalidate();
       toast({
-        title: "Delivery retried",
+        title: resp.delivery.status === "awaiting_confirmation"
+          ? "Gmail is confirming delivery"
+          : "Delivery retried",
         description: resp.delivery.status === "sent"
           ? `The quotation link was sent to ${resp.delivery.recipientEmail}.`
+          : resp.delivery.status === "awaiting_confirmation"
+            ? "Gmail accepted the email. Check again or retry safely in a short while."
           : "The delivery was retried. Check the delivery status before taking further action.",
       });
     },
@@ -4153,7 +4160,24 @@ export function ClientPortalPanel({
           </p>
         </div>
       )}
-      {delivery && delivery.status !== "sent" && (
+      {delivery?.status === "awaiting_confirmation" && (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-2 text-[10px] text-sky-950" data-testid={`client-link-delivery-confirming-${devisId}`}>
+          <div className="flex gap-2">
+            <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
+            <p>
+              <span className="font-semibold">Gmail is confirming delivery.</span>{" "}
+              The email was accepted for {delivery.recipientEmail}; check again or retry safely in a short while.
+            </p>
+          </div>
+          {!isArchived && (
+            <Button variant="outline" size="sm" className="h-6 shrink-0 px-2 text-[9px] font-bold uppercase tracking-widest" onClick={() => resendMutation.mutate()} disabled={resendMutation.isPending} data-testid={`button-confirm-client-link-delivery-${devisId}`}>
+              {resendMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+              <span className="ml-1">{resendMutation.isPending ? "Checking" : "Check again"}</span>
+            </Button>
+          )}
+        </div>
+      )}
+      {delivery && delivery.status !== "sent" && delivery.status !== "awaiting_confirmation" && (
         <div className="flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-2 text-[10px] text-amber-950" data-testid={`client-link-delivery-failed-${devisId}`}>
           <div className="flex gap-2">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />

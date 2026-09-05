@@ -38,11 +38,13 @@ vi.mock("../../services/client-checks", () => ({
 
 vi.mock("../../communications/email-sender", () => {
   class CommunicationSendInProgressError extends Error {}
+  class CommunicationDeliveryAwaitingConfirmationError extends CommunicationSendInProgressError {}
   return {
     isValidRecipientEmail: (email: string) =>
       /^[^\s@,;<>"()[\]\\]+@[^\s@,;<>"()[\]\\]+\.[A-Za-z0-9-]{2,}$/.test(email),
     sendCommunication: emailMock.sendCommunication,
     CommunicationSendInProgressError,
+    CommunicationDeliveryAwaitingConfirmationError,
   };
 });
 
@@ -241,18 +243,50 @@ describe("per-devis client link email", () => {
     expect(emailMock.sendCommunication).toHaveBeenCalledWith(501, { sentByUserId: 1 });
   });
 
+  it("reports Gmail indexing delay as awaiting confirmation instead of a stuck send", async () => {
+    const { CommunicationDeliveryAwaitingConfirmationError } = await import("../../communications/email-sender");
+    storageMock.getProjectCommunicationByDedupeKey.mockResolvedValue({
+      ...queuedCommunication,
+      status: "sending",
+      emailMessageId: "gmail-501",
+    });
+    storageMock.getProjectCommunication.mockResolvedValue({
+      ...queuedCommunication,
+      status: "sending",
+      emailMessageId: "gmail-501",
+    });
+    emailMock.sendCommunication.mockRejectedValueOnce(
+      new CommunicationDeliveryAwaitingConfirmationError(),
+    );
+
+    const res = await post("/api/devis/100/client-check-token/resend");
+
+    expect(res.status).toBe(202);
+    expect(await res.json()).toMatchObject({
+      message: expect.stringContaining("Gmail is confirming delivery"),
+      retryAfterSeconds: 15,
+      delivery: {
+        communicationId: 501,
+        status: "awaiting_confirmation",
+        sentAt: null,
+      },
+    });
+  });
+
   it("refuses duplicate in-flight issue requests and archived projects", async () => {
+    const { CommunicationSendInProgressError } = await import("../../communications/email-sender");
     serviceMock.issueClientCheckTokenEmail.mockResolvedValueOnce({
       record: token,
       communication: { ...queuedCommunication, status: "sending" },
       reused: true,
     });
+    emailMock.sendCommunication.mockRejectedValueOnce(new CommunicationSendInProgressError());
     const duplicate = await post("/api/devis/100/client-check-token/issue", {
       clientEmail: "marie@example.test",
       message: "Please review this quotation.",
     });
     expect(duplicate.status).toBe(409);
-    expect(emailMock.sendCommunication).not.toHaveBeenCalled();
+    expect(emailMock.sendCommunication).toHaveBeenCalledWith(501, { sentByUserId: 1 });
 
     storageMock.getProject.mockResolvedValueOnce({
       id: 9,
@@ -283,6 +317,44 @@ describe("per-devis client link email", () => {
       sentAt: "2026-09-05T09:01:00.000Z",
       recipientEmail: "marie@example.test",
       portalUrl: "https://architrak.test/p/client/secret-token_123",
+    });
+  });
+
+  it("keeps the Gmail confirmation state visible when the panel refreshes", async () => {
+    storageMock.getProjectCommunicationByDedupeKey.mockResolvedValue({
+      ...queuedCommunication,
+      status: "sending",
+      emailMessageId: "gmail-501",
+    });
+
+    const res = await fetch(`${baseUrl}/api/devis/100/client-check-token`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      delivery: {
+        communicationId: 501,
+        status: "awaiting_confirmation",
+        sentAt: null,
+      },
+    });
+  });
+
+  it("does not claim Gmail acceptance for an abandoned pre-send claim", async () => {
+    storageMock.getProjectCommunicationByDedupeKey.mockResolvedValue({
+      ...queuedCommunication,
+      status: "sending",
+      emailMessageId: null,
+    });
+
+    const res = await fetch(`${baseUrl}/api/devis/100/client-check-token`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      delivery: {
+        communicationId: 501,
+        status: "sending",
+        sentAt: null,
+      },
     });
   });
 });

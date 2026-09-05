@@ -585,6 +585,14 @@ export class CommunicationSendInProgressError extends Error {
   }
 }
 
+export class CommunicationDeliveryAwaitingConfirmationError extends CommunicationSendInProgressError {
+  constructor(communicationId: number) {
+    super(communicationId);
+    this.message = "Gmail accepted this email and delivery is awaiting confirmation";
+    this.name = "CommunicationDeliveryAwaitingConfirmationError";
+  }
+}
+
 type GmailClient = Awaited<ReturnType<typeof getUncachableGmailClient>>;
 
 export function communicationProviderMessageId(
@@ -699,6 +707,21 @@ export async function sendCommunication(
       throw new Error(`Communication is already sent`);
     }
     if (current.status === "sending") {
+      if (
+        current.type === "devis_client_link"
+        && !isFakeGmailMode()
+        && current.emailMessageId
+      ) {
+        try {
+          if (await reconcileAcceptedClientLinkCommunication(current)) return;
+        } catch (error) {
+          console.warn(
+            `[EmailSender] Gmail has accepted client-link communication ${communicationId}, but confirmation lookup failed:`,
+            error,
+          );
+        }
+        throw new CommunicationDeliveryAwaitingConfirmationError(communicationId);
+      }
       if (await reconcileAcceptedClientLinkCommunication(current)) return;
       throw new CommunicationSendInProgressError(communicationId);
     }
@@ -1000,6 +1023,18 @@ export async function sendCommunication(
       requestBody,
     });
     providerAccepted = true;
+    if (comm.type === "devis_client_link" && sendResult.data.id) {
+      // Record provider acceptance separately from the final sent transition.
+      // A later database failure can then be distinguished from a request that
+      // merely holds the pre-send claim, without ever transmitting a duplicate.
+      const accepted = await storage.updateProjectCommunication(communicationId, {
+        emailMessageId: sendResult.data.id,
+        emailThreadId: sendResult.data.threadId || undefined,
+      });
+      if (!accepted) throw new Error("Could not record Gmail acceptance");
+      comm.emailMessageId = sendResult.data.id;
+      comm.emailThreadId = sendResult.data.threadId ?? null;
+    }
 
     // Task #554 — the success update also advances the linked certificat to
     // 'sent' in the SAME transaction (only for the client-facing

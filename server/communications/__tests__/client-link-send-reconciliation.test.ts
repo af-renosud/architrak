@@ -73,7 +73,11 @@ vi.mock("../../env", () => ({
   env: { PUBLIC_BASE_URL: "https://architrak.test" },
 }));
 
-import { communicationProviderMessageId, sendCommunication } from "../email-sender";
+import {
+  CommunicationDeliveryAwaitingConfirmationError,
+  communicationProviderMessageId,
+  sendCommunication,
+} from "../email-sender";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -142,6 +146,47 @@ describe("client-link Gmail reconciliation", () => {
       emailMessageId: "gmail-501",
       emailThreadId: "thread-501",
     });
+  });
+
+  it("reports an accepted send as awaiting confirmation while Gmail is still indexing it", async () => {
+    state.communication!.status = "sending";
+    state.communication!.sentViaUserId = 7;
+    state.communication!.emailMessageId = "gmail-501";
+    state.providerAccepted = false;
+
+    await expect(sendCommunication(501, { sentByUserId: 7 }))
+      .rejects.toBeInstanceOf(CommunicationDeliveryAwaitingConfirmationError);
+
+    expect(gmailSpy.send).not.toHaveBeenCalled();
+    expect(gmailSpy.list).toHaveBeenCalledTimes(2);
+    expect(state.communication?.status).toBe("sending");
+  });
+
+  it("keeps provider-accepted evidence awaiting confirmation when lookup is temporarily unavailable", async () => {
+    state.communication!.status = "sending";
+    state.communication!.sentViaUserId = 7;
+    state.communication!.emailMessageId = "gmail-501";
+    gmailSpy.list.mockRejectedValueOnce(new Error("Gmail search unavailable"));
+
+    await expect(sendCommunication(501, { sentByUserId: 7 }))
+      .rejects.toBeInstanceOf(CommunicationDeliveryAwaitingConfirmationError);
+
+    expect(gmailSpy.send).not.toHaveBeenCalled();
+    expect(state.communication?.status).toBe("sending");
+  });
+
+  it("keeps a pre-send or abandoned claim as ordinary in-progress work", async () => {
+    state.communication!.status = "sending";
+    state.communication!.sentViaUserId = 7;
+    state.communication!.emailMessageId = null;
+    state.providerAccepted = false;
+
+    await expect(sendCommunication(501, { sentByUserId: 7 }))
+      .rejects.toMatchObject({ name: "CommunicationSendInProgressError" });
+
+    expect(gmailSpy.send).not.toHaveBeenCalled();
+    expect(gmailSpy.list).toHaveBeenCalledTimes(2);
+    expect(state.communication?.status).toBe("sending");
   });
 
   it("uses a deterministic RFC Message-ID for all attempts of one communication", () => {
