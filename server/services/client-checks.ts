@@ -72,10 +72,10 @@ export function buildClientLinkEmail(opts: {
 }): { subject: string; body: string } {
   const safeRef = opts.devisRef.replace(/[\r\n]+/g, " ").trim();
   const safeProjectName = opts.projectName.replace(/[\r\n]+/g, " ").trim();
-  const greeting = opts.clientName ? `Bonjour ${opts.clientName},` : "Bonjour,";
+  const greeting = opts.clientName ? `Hello ${opts.clientName},` : "Hello,";
   return {
-    subject: `Devis ${safeRef} — ${safeProjectName}`,
-    body: `${greeting}\n\n${opts.message.trim()}\n\nVous pouvez consulter le devis et transmettre vos remarques via ce lien sécurisé :\n${opts.portalUrl}\n\nCordialement,\nL'équipe Renosud\n`,
+    subject: `Quotation ${safeRef} — ${safeProjectName}`,
+    body: `${greeting}\n\n${opts.message.trim()}\n\nYou can review the quotation and send us your comments using this secure link:\n${opts.portalUrl}\n\nKind regards,\nThe Renosud team\n`,
   };
 }
 

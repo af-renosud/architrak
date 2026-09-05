@@ -38,9 +38,13 @@ describe("client link email helpers", () => {
       message: "  Please review this quotation.  ",
       portalUrl: "https://architrak.test/p/client/secret",
     });
-    expect(email.subject).toBe("Devis D-1 X-Bad: yes — Maison Bcc: attacker@example.test");
+    expect(email.subject).toBe("Quotation D-1 X-Bad: yes — Maison Bcc: attacker@example.test");
     expect(email.subject).not.toMatch(/[\r\n]/);
+    expect(email.body).toContain("Hello Marie,");
     expect(email.body).toContain("Please review this quotation.");
+    expect(email.body).toContain("You can review the quotation and send us your comments using this secure link:");
+    expect(email.body).toContain("Kind regards,\nThe Renosud team");
     expect(email.body).toContain("https://architrak.test/p/client/secret");
+    expect(email.body).not.toMatch(/\b(Bonjour|Vous pouvez|Cordialement|Devis)\b/);
   });
 });
