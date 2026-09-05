@@ -2,7 +2,13 @@ import fs from "fs";
 import path from "path";
 import { createHash } from "crypto";
 import { fileURLToPath } from "url";
-import { getUncachableGmailClient, isGmailConfigured, isFakeGmailMode } from "../gmail/client";
+import {
+  findSharedGmailAcceptedSend,
+  getUncachableGmailClient,
+  isGmailConfigured,
+  isFakeGmailMode,
+  rememberSharedGmailAcceptedSend,
+} from "../gmail/client";
 import { getGmailClientForUser } from "../gmail/user-client";
 import { storage } from "../storage";
 import {
@@ -679,6 +685,20 @@ async function reconcileAcceptedClientLinkCommunication(
   gmail?: GmailClient,
 ): Promise<boolean> {
   if (communication.type !== "devis_client_link" || isFakeGmailMode()) return false;
+  if (!communication.sentViaUserId) {
+    const accepted = findSharedGmailAcceptedSend(
+      communicationProviderMessageId(communication),
+    );
+    if (accepted) {
+      await storage.markProjectCommunicationSent(communication.id, {
+        sentAt: accepted.sentAt,
+        emailMessageId: accepted.id,
+        emailThreadId: accepted.threadId,
+        sentViaUserId: null,
+      });
+      return true;
+    }
+  }
   const client = gmail ?? await getGmailClientForRecordedSender(communication.sentViaUserId);
   const accepted = await findAcceptedClientLinkMessage(client, communication);
   if (!accepted) return false;
@@ -1041,6 +1061,18 @@ export async function sendCommunication(
       requestBody,
     });
     providerAccepted = true;
+    const acceptedAt = new Date();
+    if (
+      comm.type === "devis_client_link" &&
+      !sentViaUserId &&
+      sendResult.data.id
+    ) {
+      rememberSharedGmailAcceptedSend(communicationProviderMessageId(comm), {
+        id: sendResult.data.id,
+        threadId: sendResult.data.threadId || undefined,
+        sentAt: acceptedAt,
+      });
+    }
     if (comm.type === "devis_client_link" && sendResult.data.id) {
       // Record provider acceptance separately from the final sent transition.
       // A later database failure can then be distinguished from a request that
@@ -1062,7 +1094,7 @@ export async function sendCommunication(
     await storage.markProjectCommunicationSent(
       communicationId,
       {
-        sentAt: new Date(),
+        sentAt: acceptedAt,
         emailMessageId: sendResult.data.id || undefined,
         emailThreadId: sendResult.data.threadId || undefined,
         sentViaUserId,

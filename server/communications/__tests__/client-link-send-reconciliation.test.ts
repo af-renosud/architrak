@@ -1,10 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { state, storageSpy, gmailSpy } = vi.hoisted(() => {
+const { state, storageSpy, gmailSpy, sharedReceiptSpy } = vi.hoisted(() => {
   const state = {
     communication: null as null | Record<string, any>,
     providerAccepted: false,
     failFirstSuccessWrite: true,
+    sharedReceipt: null as null | {
+      id: string;
+      threadId?: string;
+      sentAt: Date;
+    },
+  };
+  const sharedReceiptSpy = {
+    remember: vi.fn((_messageId: string, accepted: typeof state.sharedReceipt) => {
+      state.sharedReceipt = accepted;
+    }),
+    find: vi.fn(() => state.sharedReceipt),
   };
   const gmailSpy = {
     send: vi.fn(async () => {
@@ -48,7 +59,7 @@ const { state, storageSpy, gmailSpy } = vi.hoisted(() => {
       return state.communication;
     }),
   };
-  return { state, storageSpy, gmailSpy };
+  return { state, storageSpy, gmailSpy, sharedReceiptSpy };
 });
 
 vi.mock("../../storage", () => ({ storage: storageSpy }));
@@ -56,6 +67,8 @@ vi.mock("../../gmail/client", () => ({
   isGmailConfigured: () => true,
   isFakeGmailMode: () => false,
   getUncachableGmailClient: vi.fn(async () => ({ users: { messages: gmailSpy } })),
+  rememberSharedGmailAcceptedSend: sharedReceiptSpy.remember,
+  findSharedGmailAcceptedSend: sharedReceiptSpy.find,
 }));
 vi.mock("../../gmail/user-client", () => ({
   getGmailClientForUser: vi.fn(async () => ({ users: { messages: gmailSpy } })),
@@ -86,6 +99,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.providerAccepted = false;
   state.failFirstSuccessWrite = true;
+  state.sharedReceipt = null;
   state.communication = {
     id: 501,
     projectId: 9,
@@ -198,6 +212,34 @@ describe("client-link Gmail reconciliation", () => {
     expect(gmailSpy.send).not.toHaveBeenCalled();
     expect(gmailSpy.list).toHaveBeenCalledTimes(2);
     expect(state.communication?.status).toBe("sending");
+  });
+
+  it("reconciles a shared-connector acceptance without Sent-folder read access", async () => {
+    gmailSpy.list.mockRejectedValue(new Error("insufficientPermissions"));
+
+    await expect(sendCommunication(501))
+      .rejects.toThrow("database timeout after Gmail accepted");
+
+    expect(gmailSpy.send).toHaveBeenCalledTimes(1);
+    expect(sharedReceiptSpy.remember).toHaveBeenCalledWith(
+      communicationProviderMessageId(state.communication as any),
+      expect.objectContaining({
+        id: "gmail-501",
+        threadId: "thread-501",
+      }),
+    );
+
+    await sendCommunication(501);
+
+    expect(gmailSpy.send).toHaveBeenCalledTimes(1);
+    expect(gmailSpy.list).not.toHaveBeenCalled();
+    expect(state.communication).toMatchObject({
+      status: "sent",
+      emailMessageId: "gmail-501",
+      emailThreadId: "thread-501",
+      sentAt: expect.any(Date),
+      sentViaUserId: null,
+    });
   });
 
   it("uses a deterministic RFC Message-ID for all attempts of one communication", () => {

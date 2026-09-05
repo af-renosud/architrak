@@ -3,6 +3,47 @@ import { env } from '../env';
 
 let connectionSettings: any;
 
+export interface SharedGmailAcceptedSend {
+  id: string;
+  threadId?: string;
+  sentAt: Date;
+}
+
+const SHARED_ACCEPTED_SEND_TTL_MS = 24 * 60 * 60 * 1000;
+const SHARED_ACCEPTED_SEND_MAX_ENTRIES = 1000;
+const sharedAcceptedSends = new Map<string, SharedGmailAcceptedSend>();
+
+function pruneSharedAcceptedSends(now: number): void {
+  sharedAcceptedSends.forEach((accepted, messageId) => {
+    if (now - accepted.sentAt.getTime() > SHARED_ACCEPTED_SEND_TTL_MS) {
+      sharedAcceptedSends.delete(messageId);
+    }
+  });
+  while (sharedAcceptedSends.size > SHARED_ACCEPTED_SEND_MAX_ENTRIES) {
+    const oldest = sharedAcceptedSends.keys().next().value;
+    if (oldest === undefined) break;
+    sharedAcceptedSends.delete(oldest);
+  }
+}
+
+export function rememberSharedGmailAcceptedSend(
+  messageId: string,
+  accepted: SharedGmailAcceptedSend,
+): void {
+  const now = Date.now();
+  pruneSharedAcceptedSends(now);
+  sharedAcceptedSends.delete(messageId);
+  sharedAcceptedSends.set(messageId, accepted);
+  pruneSharedAcceptedSends(now);
+}
+
+export function findSharedGmailAcceptedSend(
+  messageId: string,
+): SharedGmailAcceptedSend | null {
+  pruneSharedAcceptedSends(Date.now());
+  return sharedAcceptedSends.get(messageId) ?? null;
+}
+
 async function getAccessToken() {
   if (connectionSettings && connectionSettings.settings.expires_at && new Date(connectionSettings.settings.expires_at).getTime() > Date.now()) {
     return connectionSettings.settings.access_token;
