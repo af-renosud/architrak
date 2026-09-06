@@ -340,11 +340,13 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
   {
     tag: "0127_protect_client_link_communications",
     artifact: {
-      kind: "all",
-      artifacts: [
-        { kind: "column", table: "project_communications", column: "encrypted_body" },
-        { kind: "constraint", table: "project_communications", constraint: "project_communications_client_link_protected_chk" },
-      ],
+      // Expand phase: production must receive and backfill the nullable
+      // encrypted-body column before its two legacy client-link rows can
+      // satisfy the strict CHECK constraint. Restore the constraint artifact
+      // requirement in the contract phase after that production backfill.
+      kind: "column",
+      table: "project_communications",
+      column: "encrypted_body",
     },
   },
 ];

@@ -2225,10 +2225,6 @@ export const projectCommunications = pgTable("project_communications", {
 }, (table) => [
   index("project_communications_project_id_idx").on(table.projectId),
   uniqueIndex("project_communications_dedupe_key_idx").on(table.dedupeKey),
-  check(
-    "project_communications_client_link_protected_chk",
-    sql`${table.type} <> 'devis_client_link' OR (${table.encryptedBody} IS NOT NULL AND ${table.body} IS NOT NULL AND ${table.body} NOT LIKE '%/p/client/%')`,
-  ),
 ]);
 
 export const paymentReminders = pgTable("payment_reminders", {

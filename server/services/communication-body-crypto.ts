@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { projectCommunications } from "@shared/schema";
 import { db } from "../db";
 import { env } from "../env";
@@ -75,9 +75,5 @@ export async function protectLegacyClientLinkCommunications(): Promise<number> {
       .returning({ id: projectCommunications.id });
     protectedCount += updated.length;
   }
-  await db.execute(sql`
-    ALTER TABLE project_communications
-    VALIDATE CONSTRAINT project_communications_client_link_protected_chk
-  `);
   return protectedCount;
 }
