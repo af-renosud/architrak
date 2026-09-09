@@ -1,14 +1,14 @@
-import { useMemo } from "react";
-import { Link } from "wouter";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Award, Send, Loader2, ExternalLink } from "lucide-react";
+import { Award, Send, Loader2, FileCheck2, LockKeyhole } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient, projectScopedKey, ApiError } from "@/lib/queryClient";
-import type { Devis, Certificat } from "@shared/schema";
+import type { Devis, Certificat, Contractor, Invoice } from "@shared/schema";
+import { CreateMultiCertificatDialog } from "@/components/factures/FacturesTab";
 import {
   canSendCertificat,
   hasCertificatDeliveryEvidence,
@@ -59,15 +59,31 @@ export function CertificatPanel({
   devisId,
   projectId,
   isArchived,
+  onCreateManual,
 }: {
   devisId: number;
   projectId: number | string;
   isArchived: boolean;
+  onCreateManual?: (context: { contractorId: number; devisId: number }) => void;
 }) {
   const { toast } = useToast();
 
   const devisQuery = useQuery<Devis>({ queryKey: ["/api/devis", devisId] });
   const d = devisQuery.data;
+  const [sourceDialogOpen, setSourceDialogOpen] = useState(false);
+  const [isRoutingCreation, setIsRoutingCreation] = useState(false);
+  const invoicesQuery = useQuery<Invoice[]>({
+    queryKey: projectScopedKey(projectId, "invoices"),
+    enabled: Boolean(d),
+  });
+  const linksQuery = useQuery<Array<{ invoiceId: number }>>({
+    queryKey: projectScopedKey(projectId, "certificat-invoice-links"),
+    enabled: Boolean(d),
+  });
+  const contractorQuery = useQuery<Contractor[]>({
+    queryKey: ["/api/contractors"],
+    enabled: Boolean(d),
+  });
 
   const certsQuery = useQuery<CertificatWithSentInfo[]>({
     queryKey: projectScopedKey(projectId, "certificats"),
@@ -114,6 +130,23 @@ export function CertificatPanel({
       toast({ title: "Send failed", description: error.message, variant: "destructive" });
     },
   });
+  const eligibleInvoices = useMemo(() => {
+    const linked = new Set((linksQuery.data ?? []).map((l) => l.invoiceId));
+    return (invoicesQuery.data ?? []).filter((invoice) =>
+      invoice.devisId === devisId &&
+      invoice.contractorId === d?.contractorId &&
+      invoice.id !== d?.acompteInvoiceId &&
+      invoice.status === "approved" &&
+      !invoice.datePaid &&
+      !linked.has(invoice.id),
+    );
+  }, [
+    invoicesQuery.data,
+    linksQuery.data,
+    devisId,
+    d?.contractorId,
+    d?.acompteInvoiceId,
+  ]);
 
   const certs = useMemo<CertificatWithSentInfo[]>(() => {
     if (!d || !certsQuery.data) return [];
@@ -129,12 +162,126 @@ export function CertificatPanel({
   const isSignedOff = stage === "client_signed_off";
   // Nothing to say before sign-off if no certificat exists yet.
   if (certs.length === 0 && !isSignedOff) return null;
+  const contractor = contractorQuery.data?.find((c) => c.id === d.contractorId);
+  const isSupplier = contractor?.archidocPartnerType === "supplier";
+  const contextIsLoading =
+    contractorQuery.isLoading ||
+    contractorQuery.isFetching ||
+    invoicesQuery.isLoading ||
+    invoicesQuery.isFetching ||
+    linksQuery.isLoading ||
+    linksQuery.isFetching ||
+    isRoutingCreation;
+  const hasInvoiceSources = eligibleInvoices.length > 0;
+  const openCreate = () => {
+    void (async () => {
+      setIsRoutingCreation(true);
+      try {
+        // Project queries cache forever. Force a fresh read before choosing
+        // sourced creation versus manual fallback.
+        const [invoiceResult, linkResult, contractorResult] = await Promise.all([
+          invoicesQuery.refetch(),
+          linksQuery.refetch(),
+          contractorQuery.refetch(),
+        ]);
+        const failed = [invoiceResult, linkResult, contractorResult].find(
+          (result) => result.isError,
+        );
+        if (failed?.error) throw failed.error;
+
+        const freshLinked = new Set(
+          (linkResult.data ?? []).map((link) => link.invoiceId),
+        );
+        const freshEligible = (invoiceResult.data ?? []).filter(
+          (invoice) =>
+            invoice.devisId === devisId &&
+            invoice.contractorId === d.contractorId &&
+            invoice.id !== d.acompteInvoiceId &&
+            invoice.status === "approved" &&
+            invoice.datePaid == null &&
+            !freshLinked.has(invoice.id),
+        );
+        if (freshEligible.length > 0) {
+          setSourceDialogOpen(true);
+          return;
+        }
+
+        const freshContractor = contractorResult.data?.find(
+          (candidate) => candidate.id === d.contractorId,
+        );
+        if (freshContractor?.archidocPartnerType === "supplier") {
+          toast({
+            title: "Facture approuvée requise",
+            description:
+              "Ajoutez et approuvez une facture fournisseur avant de créer le certificat de paiement direct.",
+            variant: "destructive",
+          });
+          return;
+        }
+        if (!freshContractor) {
+          toast({
+            title: "Entreprise introuvable",
+            description: "Actualisez le projet puis réessayez.",
+            variant: "destructive",
+          });
+          return;
+        }
+        onCreateManual?.({ contractorId: d.contractorId, devisId });
+      } catch (error) {
+        toast({
+          title: "Impossible de préparer le certificat",
+          description:
+            error instanceof Error
+              ? error.message
+              : "Actualisez le projet puis réessayez.",
+          variant: "destructive",
+        });
+      } finally {
+        setIsRoutingCreation(false);
+      }
+    })();
+  };
+  const createLabel = hasInvoiceSources
+    ? eligibleInvoices.length === 1
+      ? "Review invoice source"
+      : `Review ${eligibleInvoices.length} invoice sources`
+    : isSupplier
+      ? "No eligible invoices"
+      : "Create in project";
 
   return (
     <LuxuryCard className="p-3 space-y-2" data-testid={`panel-certificat-${devisId}`}>
-      <div className="flex items-center gap-2">
-        <Award className="h-4 w-4 text-[#0B2545]" />
-        <TechnicalLabel className="text-sm">Certificat de paiement</TechnicalLabel>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Award className="h-4 w-4 text-[#0B2545]" />
+          <TechnicalLabel className="text-sm">Certificat de paiement</TechnicalLabel>
+        </div>
+        {isSignedOff && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={
+              isArchived ||
+              contextIsLoading ||
+              !contractor ||
+              (isSupplier && !hasInvoiceSources) ||
+              (!hasInvoiceSources && !onCreateManual)
+            }
+            onClick={openCreate}
+            data-testid={`button-create-certificat-${devisId}`}
+          >
+            {contextIsLoading ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : hasInvoiceSources ? (
+              <FileCheck2 size={12} />
+            ) : (
+              <LockKeyhole size={12} />
+            )}
+            <span className="text-[9px] font-bold uppercase tracking-widest">
+              {createLabel}
+            </span>
+          </Button>
+        )}
       </div>
 
       {certs.length === 0 ? (
@@ -143,14 +290,10 @@ export function CertificatPanel({
           data-testid={`empty-certificat-${devisId}`}
         >
           <p className="text-[11px] text-amber-900 dark:text-amber-200">
-            The devis is signed but no certificat de paiement exists yet for this contractor.
+            {isSupplier && !hasInvoiceSources
+              ? "This supplier has no approved, unpaid invoice available for a payment certificate."
+              : "The devis is signed but no certificat de paiement exists yet for this contractor."}
           </p>
-          <Link href="/certificats">
-            <Button variant="outline" size="sm" data-testid={`link-create-certificat-${devisId}`}>
-              <ExternalLink size={12} />
-              <span className="text-[9px] font-bold uppercase tracking-widest">Create certificat</span>
-            </Button>
-          </Link>
         </div>
       ) : (
         <div className="space-y-1.5">
@@ -222,6 +365,31 @@ export function CertificatPanel({
             );
           })}
         </div>
+      )}
+      {sourceDialogOpen && contractor && (
+        <CreateMultiCertificatDialog
+          invoices={eligibleInvoices}
+          contractorName={contractor.name}
+          contractorIban={contractor.iban}
+          projectId={String(projectId)}
+          context={{
+            projectLabel: `Projet #${projectId}`,
+            devisLabel: d.devisCode || `Devis #${devisId}`,
+          }}
+          onClose={() => setSourceDialogOpen(false)}
+          onCreated={() => {
+            for (const segment of [
+              "certificats",
+              "financial-summary",
+              "invoices",
+              "certificat-invoice-links",
+            ]) {
+              queryClient.invalidateQueries({
+                queryKey: projectScopedKey(projectId, segment),
+              });
+            }
+          }}
+        />
       )}
     </LuxuryCard>
   );

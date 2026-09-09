@@ -173,6 +173,31 @@ export async function deriveCertificatFromInvoices(
     });
   }
 
+  // A certificat is a payment authorization, regardless of whether the
+  // counterparty is a contractor or a direct-payment supplier. Preview and
+  // create must both reject invoices that have not been approved or were
+  // already paid; the UI's filtering is never the authority boundary.
+  for (const invoice of loaded) {
+    if (invoice.status !== "approved" || invoice.datePaid != null) {
+      const isSupplier = partner.archidocPartnerType === "supplier";
+      return refuse(409, {
+        code:
+          invoice.datePaid != null
+            ? isSupplier
+              ? "SUPPLIER_INVOICE_PAID"
+              : "INVOICE_PAID"
+            : isSupplier
+              ? "SUPPLIER_INVOICE_NOT_APPROVED"
+              : "INVOICE_NOT_APPROVED",
+        message:
+          invoice.datePaid != null
+            ? `La facture #${invoice.invoiceNumber} est déjà payée.`
+            : `La facture #${invoice.invoiceNumber} doit être approuvée avant de pouvoir être certifiée.`,
+        invoiceId: invoice.id,
+      });
+    }
+  }
+
   if (partner.archidocPartnerType === "supplier") {
     // Operator-only canary/kill-switch. It is deliberately checked before the
     // on-demand handoff, is never surfaced in UI, and is bypassed only for
@@ -221,16 +246,6 @@ export async function deriveCertificatFromInvoices(
     }
     const supplierRows: MultiInvoiceCertDerivationBase["invoices"] = [];
     for (const invoice of loaded) {
-      if (invoice.status !== "approved" || invoice.datePaid != null) {
-        return refuse(409, {
-          code: invoice.datePaid != null ? "SUPPLIER_INVOICE_PAID" : "SUPPLIER_INVOICE_NOT_APPROVED",
-          message:
-            invoice.datePaid != null
-              ? `La facture #${invoice.invoiceNumber} est déjà payée.`
-              : `La facture #${invoice.invoiceNumber} doit être approuvée avant de pouvoir être certifiée pour paiement direct.`,
-          invoiceId: invoice.id,
-        });
-      }
       const devis = await storage.getDevis(invoice.devisId);
       if (!devis) {
         return refuse(404, { code: "DEVIS_NOT_FOUND", message: "Devis parent introuvable." });
@@ -583,8 +598,8 @@ export async function createCertificatFromInvoices(
     for (const inv of lockedInvoices) {
       if (
         inv.status === "void" ||
-        (expectedTrack === "supplier_direct_payment" &&
-          (inv.status !== "approved" || inv.datePaid != null))
+        inv.status !== "approved" ||
+        inv.datePaid != null
       ) {
         throw new InvoiceStateChangedError();
       }

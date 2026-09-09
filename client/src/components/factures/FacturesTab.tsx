@@ -262,11 +262,12 @@ function CreateCertificatDialog({
 // Multi-facture certificats — grouped confirmation dialog: one certificat
 // covering a SELECTION of factures from the same contractor. Same read-only
 // server-derived preview as the single dialog, plus the per-facture claims.
-function CreateMultiCertificatDialog({
+export function CreateMultiCertificatDialog({
   invoices,
   contractorName,
   contractorIban,
   projectId,
+  context,
   onClose,
   onCreated,
 }: {
@@ -274,11 +275,16 @@ function CreateMultiCertificatDialog({
   contractorName: string;
   contractorIban: string | null;
   projectId: string;
+  context?: {
+    projectLabel: string;
+    devisLabel: string;
+  };
   onClose: () => void;
   onCreated: () => void;
 }) {
   const { toast } = useToast();
   const invoiceIds = invoices.map((i) => i.id);
+  const invoiceCountLabel = `${invoices.length} facture${invoices.length === 1 ? "" : "s"}`;
 
   const { data: preview, isLoading, error } = useQuery<CertificatPreview & {
     derivation: CertificatPreview["derivation"] & {
@@ -305,7 +311,7 @@ function CreateMultiCertificatDialog({
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "certificat-invoice-links") });
       toast({
         title: `Certificat ${cert.certificateRef} créé`,
-        description: `Brouillon créé couvrant ${invoices.length} factures — retrouvez-le sur la page Certificats.`,
+        description: `Brouillon créé couvrant ${invoiceCountLabel} — retrouvez-le sur la page Certificats.`,
       });
       onCreated();
       onClose();
@@ -339,12 +345,30 @@ function CreateMultiCertificatDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Award size={18} className="text-[#c1a27b]" />
-            {isSupplier ? `Paiement direct fournisseur groupé — ${invoices.length} factures` : `Certificat groupé — ${invoices.length} factures`}
+            {isSupplier
+              ? `Paiement direct fournisseur — ${invoiceCountLabel}`
+              : `Certificat — ${invoiceCountLabel}`}
           </DialogTitle>
           <DialogDescription>
             {isSupplier ? `Autorisation unique de paiement direct au fournisseur ${contractorName}, sur les factures sélectionnées.` : `Un seul certificat couvrant les factures sélectionnées de ${contractorName}. Montants dérivés automatiquement — vérifiez puis confirmez.`}
           </DialogDescription>
         </DialogHeader>
+
+        {context && (
+          <div
+            className="grid grid-cols-1 gap-2 rounded-lg border border-[#0B2545]/15 bg-[#0B2545]/5 px-3 py-2 sm:grid-cols-2"
+            data-testid="context-certificat-source"
+          >
+            <div>
+              <p className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">Projet verrouillé</p>
+              <p className="text-[12px] font-semibold text-[#0B2545]">{context.projectLabel}</p>
+            </div>
+            <div>
+              <p className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">Devis verrouillé</p>
+              <p className="text-[12px] font-semibold text-[#0B2545]">{context.devisLabel}</p>
+            </div>
+          </div>
+        )}
 
         {isLoading ? (
           <div className="space-y-2">
@@ -454,7 +478,9 @@ function CreateMultiCertificatDialog({
             )}
             {isSupplier
               ? "Confirmer le paiement direct fournisseur"
-              : "Créer le certificat groupé"}
+              : invoices.length === 1
+                ? "Créer le certificat"
+                : "Créer le certificat groupé"}
           </Button>
         </div>
       </DialogContent>
@@ -645,7 +671,11 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
             const contractor = contractors.find((c) => c.id === inv.contractorId);
             const isSupplier = contractor?.archidocPartnerType === "supplier";
             const isEligibleForCert =
-              !certLinkByInvoice.get(inv.id) && dv?.acompteInvoiceId !== inv.id && inv.status !== "void" && !isArchived;
+              !certLinkByInvoice.get(inv.id) &&
+              dv?.acompteInvoiceId !== inv.id &&
+              inv.status === "approved" &&
+              inv.datePaid == null &&
+              !isArchived;
             const selectionContractorId = selectedForCert.size > 0
               ? (invoices ?? []).find((i) => selectedForCert.has(i.id))?.contractorId ?? null
               : null;
@@ -706,7 +736,11 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                             </Link>
                           );
                         }
-                        if (isAcompteInvoice || inv.status === "void") return null;
+                        if (
+                          isAcompteInvoice ||
+                          inv.status !== "approved" ||
+                          inv.datePaid != null
+                        ) return null;
                         return (
                           <Button
                             size="sm"

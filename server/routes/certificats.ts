@@ -24,8 +24,14 @@ import { PvReceptionRequiredError, isPvReceptionApproved } from "../services/pv-
 import { getDocumentBuffer } from "../storage/object-storage";
 import { reconcilePayments } from "../services/certificat-payments.service";
 import { db } from "../db";
-import { certificats as certificatsTable, certificatSources } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import {
+  certificats as certificatsTable,
+  certificatSources,
+  contractors as contractorsTable,
+  devis as devisTable,
+  invoices as invoicesTable,
+} from "@shared/schema";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import {
   deriveCertificatFromInvoices,
   createCertificatFromInvoices,
@@ -217,7 +223,12 @@ function supplierHandoffFailureBody(error: SupplierPaymentReadinessError) {
 
 const createCertificatBodySchema = insertCertificatSchema
   .omit({ projectId: true, certificateRef: true, ...serverDerivedDeductionFields })
-  .extend({ ...deductionOverrideShape, status: clientCreatableStatus.default("draft") });
+  .extend({
+    contractorId: z.number().int().positive("Sélectionnez une entreprise."),
+    contextDevisId: z.number().int().positive().optional(),
+    ...deductionOverrideShape,
+    status: clientCreatableStatus.default("draft"),
+  });
 const updateCertificatSchema = insertCertificatSchema
   .omit(serverDerivedDeductionFields)
   .partial()
@@ -254,8 +265,9 @@ router.post(
   validateRequest({ params: projectIdParams, body: createCertificatBodySchema }),
   async (req, res) => {
     const projectId = Number(req.params.projectId);
-    const { retenueOverride, prorataOverride, tvaRateOverride, releaseRetenue, releaseReason, isSolde, pvOverrideReason, ...body } = req.body as
+    const { contextDevisId, retenueOverride, prorataOverride, tvaRateOverride, releaseRetenue, releaseReason, isSolde, pvOverrideReason, ...body } = req.body as
       Omit<InsertCertificat, "projectId" | "certificateRef"> & {
+        contextDevisId?: number;
         retenueOverride?: string;
         prorataOverride?: string;
         tvaRateOverride?: string;
@@ -273,13 +285,231 @@ router.post(
       });
     }
 
+    // When the operator entered through a quotation, the server—not the
+    // disabled Select—owns the quotation/contractor/source decision. The
+    // transaction shares the progress-chain advisory lock used by
+    // invoice-backed creation, then locks the quotation and all of its
+    // invoices before deciding whether a manual fallback is still legal.
+    if (contextDevisId != null) {
+      const initialDevis = await storage.getDevis(contextDevisId);
+      if (!initialDevis || initialDevis.projectId !== projectId) {
+        return res.status(404).json({
+          code: "DEVIS_NOT_FOUND",
+          message: "Le devis sélectionné est introuvable dans ce projet.",
+        });
+      }
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const result = await db.transaction(async (tx) => {
+            await tx.execute(
+              sql`select pg_advisory_xact_lock(${projectId}, ${initialDevis.contractorId})`,
+            );
+
+            const [lockedDevis] = await tx
+              .select()
+              .from(devisTable)
+              .where(eq(devisTable.id, contextDevisId))
+              .for("update");
+            if (
+              !lockedDevis ||
+              lockedDevis.projectId !== projectId ||
+              lockedDevis.contractorId !== initialDevis.contractorId
+            ) {
+              return { kind: "context_changed" as const };
+            }
+            if (
+              lockedDevis.status === "void" ||
+              lockedDevis.signOffStage !== "client_signed_off"
+            ) {
+              return { kind: "devis_not_signed" as const };
+            }
+            if (body.contractorId !== lockedDevis.contractorId) {
+              return { kind: "contractor_mismatch" as const };
+            }
+
+            const [lockedPartner] = await tx
+              .select()
+              .from(contractorsTable)
+              .where(eq(contractorsTable.id, lockedDevis.contractorId))
+              .for("update");
+            if (!lockedPartner) {
+              return { kind: "contractor_not_found" as const };
+            }
+            if (lockedPartner.archidocPartnerType === "supplier") {
+              return { kind: "supplier_manual_forbidden" as const };
+            }
+
+            // Lock all rows, including pending/paid ones, so a concurrent
+            // status transition cannot cross the source-required decision.
+            const lockedInvoices = await tx
+              .select({
+                id: invoicesTable.id,
+                status: invoicesTable.status,
+                datePaid: invoicesTable.datePaid,
+              })
+              .from(invoicesTable)
+              .where(eq(invoicesTable.devisId, contextDevisId))
+              .orderBy(invoicesTable.id)
+              .for("update");
+            const approvedUnpaidIds = lockedInvoices
+              .filter(
+                (invoice) =>
+                  invoice.id !== lockedDevis.acompteInvoiceId &&
+                  invoice.status === "approved" &&
+                  invoice.datePaid == null,
+              )
+              .map((invoice) => invoice.id);
+
+            if (approvedUnpaidIds.length > 0) {
+              const liveLinks = await tx
+                .select({ invoiceId: certificatSources.invoiceId })
+                .from(certificatSources)
+                .innerJoin(
+                  certificatsTable,
+                  eq(certificatSources.certificatId, certificatsTable.id),
+                )
+                .where(
+                  and(
+                    inArray(certificatSources.invoiceId, approvedUnpaidIds),
+                    ne(certificatsTable.status, "superseded"),
+                  ),
+                );
+              const liveLinkedIds = new Set(
+                liveLinks
+                  .map((link) => link.invoiceId)
+                  .filter((invoiceId): invoiceId is number => invoiceId != null),
+              );
+              const sourceRequiredIds = approvedUnpaidIds.filter(
+                (invoiceId) => !liveLinkedIds.has(invoiceId),
+              );
+              if (sourceRequiredIds.length > 0) {
+                return {
+                  kind: "invoice_sources_required" as const,
+                  invoiceIds: sourceRequiredIds,
+                };
+              }
+            }
+
+            const deductions = await resolveCertificatDeductions({
+              projectId,
+              contractorId: lockedDevis.contractorId,
+              totalWorksHt: body.totalWorksHt,
+              pvMvAdjustment: body.pvMvAdjustment,
+              previousPayments: body.previousPayments,
+              retenueOverride,
+              prorataOverride,
+              tvaRateOverride,
+              isSolde,
+              releaseRetenue,
+              pvOverride: pvOverrideReason != null,
+            });
+            const pvAudit = deductions.isSolde && pvOverrideReason
+              ? {
+                  pvOverrideReason,
+                  pvOverrideByUserId: req.session.userId ?? null,
+                  pvOverrideAt: new Date(),
+                }
+              : {
+                  pvOverrideReason: null,
+                  pvOverrideByUserId: null,
+                  pvOverrideAt: null,
+                };
+            const releaseAudit = deductions.retenueReleased
+              ? {
+                  retenueReleaseReason: releaseReason ?? null,
+                  retenueReleaseDate: new Date().toISOString().split("T")[0],
+                }
+              : {
+                  retenueReleaseReason: null,
+                  retenueReleaseDate: null,
+                };
+            const nextRef = await storage.getNextCertificateRef(projectId);
+            const [cert] = await tx
+              .insert(certificatsTable)
+              .values({
+                ...body,
+                contractorId: lockedDevis.contractorId,
+                ...deductions,
+                ...releaseAudit,
+                ...pvAudit,
+                projectId,
+                certificateRef: nextRef,
+              })
+              .returning();
+            return { kind: "created" as const, cert };
+          });
+
+          if (result.kind === "context_changed") {
+            return res.status(409).json({
+              code: "DEVIS_CONTEXT_CHANGED",
+              message: "Le contexte du devis a changé. Actualisez le projet puis réessayez.",
+            });
+          }
+          if (result.kind === "devis_not_signed") {
+            return res.status(409).json({
+              code: "DEVIS_NOT_SIGNED_OFF",
+              message: "Le devis doit être signé par le client avant de créer un certificat.",
+            });
+          }
+          if (result.kind === "contractor_mismatch") {
+            return res.status(409).json({
+              code: "DEVIS_CONTRACTOR_MISMATCH",
+              message: "L’entreprise sélectionnée ne correspond plus au devis.",
+            });
+          }
+          if (result.kind === "contractor_not_found") {
+            return res.status(404).json({
+              code: "CONTRACTOR_NOT_FOUND",
+              message: "Sélectionnez une entreprise valide avant de créer le certificat.",
+            });
+          }
+          if (result.kind === "supplier_manual_forbidden") {
+            return res.status(409).json({
+              code: "SUPPLIER_CERTIFICATE_REQUIRES_INVOICE_SOURCES",
+              message:
+                "Un paiement direct fournisseur doit être créé depuis une ou plusieurs factures approuvées. La création manuelle sans sources est interdite.",
+            });
+          }
+          if (result.kind === "invoice_sources_required") {
+            return res.status(409).json({
+              code: "ELIGIBLE_INVOICE_SOURCES_REQUIRED",
+              message:
+                "Des factures approuvées et impayées sont disponibles pour ce devis. Créez le certificat depuis ces factures.",
+              invoiceIds: result.invoiceIds,
+            });
+          }
+          return res.status(201).json(publicCertificatDto(result.cert));
+        } catch (err) {
+          const mapped = mapSoldeError(err);
+          if (mapped) return res.status(mapped.status).json(mapped.body);
+          const { code, constraint } = pgErrorInfo(err);
+          if (code === "23505" && constraint === "certificats_solde_unique") {
+            return res.status(409).json({
+              code: "SOLDE_ALREADY_EXISTS",
+              message:
+                "Un certificat de solde existe déjà pour cette entreprise — un seul certificat de solde par marché.",
+            });
+          }
+          if (code === "23505" && attempt < 2) continue;
+          throw err;
+        }
+      }
+    }
+
     // Task #243 — the server is authoritative for deduction money math.
     // Recompute Retenue de Garantie + Compte Prorata cumulatively from the
     // contract, overriding whatever the FE sent for the derived fields.
     let deductions;
     try {
       const partner = await storage.getContractor(body.contractorId);
-      if (partner?.archidocPartnerType === "supplier") {
+      if (!partner) {
+        return res.status(404).json({
+          code: "CONTRACTOR_NOT_FOUND",
+          message: "Sélectionnez une entreprise valide avant de créer le certificat.",
+        });
+      }
+      if (partner.archidocPartnerType === "supplier") {
         return res.status(409).json({
           code: "SUPPLIER_CERTIFICATE_REQUIRES_INVOICE_SOURCES",
           message:

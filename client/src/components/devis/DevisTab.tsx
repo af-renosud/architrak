@@ -688,6 +688,7 @@ interface DevisRowProps {
   onEditRefs: (d: Devis) => void;
   onReviewDraft: (d: Devis) => void;
   onGoToIntake: () => void;
+  onCreateCertificat?: (context: { contractorId: number; devisId: number }) => void;
   /** Task #593 — another non-void, non-superseded devis in the project sharing this devis' normalized reference. */
   sameRefPeer?: Devis | null;
 }
@@ -1029,7 +1030,7 @@ function ReadinessStrip({ d, r }: { d: Devis; r: DevisReadiness }) {
   );
 }
 
-function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openChecks, readiness, onToggle, onEditRefs, onReviewDraft, onGoToIntake, sameRefPeer }: DevisRowProps) {
+function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openChecks, readiness, onToggle, onEditRefs, onReviewDraft, onGoToIntake, onCreateCertificat, sameRefPeer }: DevisRowProps) {
   const { toast } = useToast();
   const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [avenantOpen, setAvenantOpen] = useState(false);
@@ -1378,6 +1379,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
             if (hasPdf) setPdfPopoutOpen(true);
           }}
           hasPdf={hasPdf}
+           onCreateCertificat={onCreateCertificat}
         />
       )}
 
@@ -1452,6 +1454,7 @@ interface DevisTabProps {
   initialExpandedDevisId?: number | null;
   initialFocusedCheckId?: number | null;
   onGoToIntake: () => void;
+  onCreateCertificat?: (context: { contractorId: number; devisId: number }) => void;
 }
 
 export function DevisTab({
@@ -1462,6 +1465,7 @@ export function DevisTab({
   initialExpandedDevisId = null,
   initialFocusedCheckId = null,
   onGoToIntake,
+  onCreateCertificat,
 }: DevisTabProps) {
   const { toast } = useToast();
   const [expandedDevis, setExpandedDevis] = useState<number | null>(initialExpandedDevisId);
@@ -1899,6 +1903,7 @@ export function DevisTab({
               onToggle={() => setExpandedDevis(expandedDevis === d.id ? null : d.id)}
               onEditRefs={setEditRefsFor}
               onGoToIntake={onGoToIntake}
+              onCreateCertificat={onCreateCertificat}
               onReviewDraft={(dev) => setDraftReviewData({
                 devisId: dev.id,
                 extraction: {
@@ -5075,12 +5080,14 @@ function ChecksPanel({
   isArchived,
   contractorEmail,
   lineItems,
+  onCreateCertificat,
 }: {
   devisId: number;
   projectId: string;
   isArchived: boolean;
   contractorEmail: string | null;
   lineItems: DevisLineItem[];
+  onCreateCertificat?: (context: { contractorId: number; devisId: number }) => void;
 }) {
   const { toast } = useToast();
   const [replyDrafts, setReplyDrafts] = useState<Record<number, string>>({});
@@ -5222,7 +5229,7 @@ function ChecksPanel({
       <ProjectSharePublishControl projectId={projectId} devisId={devisId} isArchived={isArchived} />
       <InsurancePanel devisId={devisId} isArchived={isArchived} />
       <SigningPanel devisId={devisId} isArchived={isArchived} />
-      <CertificatPanel devisId={devisId} projectId={projectId} isArchived={isArchived} />
+      <CertificatPanel devisId={devisId} projectId={projectId} isArchived={isArchived} onCreateManual={onCreateCertificat} />
 
       {/* Bottom mirror — variant B "Inline composer + bottom mirror".
           Navy-bordered card showing the architect exactly what will be
@@ -5882,7 +5889,7 @@ function DevisDetailTabs({
   );
 }
 
-function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = false, onOpenInvoiceUpload, onOpenAvenantDialog, onOpenPdfPopout, hasPdf }: { devis: Devis; projectId: string; contractors: Contractor[]; lots: Lot[]; isArchived?: boolean; onOpenInvoiceUpload: () => void; onOpenAvenantDialog: () => void; onOpenPdfPopout: () => void; hasPdf: boolean }) {
+function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = false, onOpenInvoiceUpload, onOpenAvenantDialog, onOpenPdfPopout, hasPdf, onCreateCertificat }: { devis: Devis; projectId: string; contractors: Contractor[]; lots: Lot[]; isArchived?: boolean; onOpenInvoiceUpload: () => void; onOpenAvenantDialog: () => void; onOpenPdfPopout: () => void; hasPdf: boolean; onCreateCertificat?: (context: { contractorId: number; devisId: number }) => void }) {
   const { toast } = useToast();
   const [lineItemDialogOpen, setLineItemDialogOpen] = useState(false);
   const [addingNewLot, setAddingNewLot] = useState(false);
@@ -6637,6 +6644,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
           isArchived={isArchived}
           contractorEmail={contractors.find((c) => c.id === devis.contractorId)?.email ?? null}
           lineItems={lineItems ?? []}
+          onCreateCertificat={onCreateCertificat}
         />
       )}
 

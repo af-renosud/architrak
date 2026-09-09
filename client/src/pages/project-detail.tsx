@@ -197,6 +197,7 @@ function ProrataInput({ projectId, initialValue }: { projectId: number; initialV
 }
 
 const certFormSchema = insertCertificatSchema.extend({
+  contractorId: z.number().int().positive("Select a contractor"),
   certificateRef: z.string().min(1, "Reference is required"),
   totalWorksHt: z.string().min(1, "Required"),
   netToPayHt: z.string().min(1, "Required"),
@@ -431,6 +432,10 @@ export default function ProjectDetail() {
   const { toast } = useToast();
 
   const [certDialogOpen, setCertDialogOpen] = useState(false);
+  const [lockedCertContext, setLockedCertContext] = useState<{
+    contractorId: number;
+    devisId: number;
+  } | null>(null);
   const [viewingCert, setViewingCert] = useState<CertificatWithDelivery | null>(null);
   const [feeDialogOpen, setFeeDialogOpen] = useState(false);
   const [entryDialogOpen, setEntryDialogOpen] = useState(false);
@@ -715,13 +720,23 @@ export default function ProjectDetail() {
 
   const createCertMutation = useMutation({
     mutationFn: async (data: CertFormValues) => {
-      const res = await apiRequest("POST", `/api/projects/${projectId}/certificats`, data);
+      const payload = lockedCertContext
+        ? {
+            ...data,
+            contractorId: lockedCertContext.contractorId,
+            contextDevisId: lockedCertContext.devisId,
+          }
+        : data;
+      const res = await apiRequest("POST", `/api/projects/${projectId}/certificats`, payload);
       return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "certificats") });
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "financial-summary") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "invoices") });
+      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "certificat-invoice-links") });
       setCertDialogOpen(false);
+      setLockedCertContext(null);
       certForm.reset();
       toast({ title: "Certificat created successfully" });
     },
@@ -1044,15 +1059,19 @@ export default function ProjectDetail() {
     }
   };
 
-  const openCreateCert = () => {
+  const openCreateCert = (context?: { contractorId: number; devisId: number }) => {
+    const contextualDevis = context
+      ? devisList?.find((devis) => devis.id === context.devisId)
+      : undefined;
     const totalInvHt = (projectInvoices ?? []).reduce((s, i) => s + parseFloat(i.amountHt), 0);
     certForm.reset({
-      projectId: parseInt(projectId!), contractorId: 0, certificateRef: "",
-      dateIssued: null, totalWorksHt: totalInvHt.toFixed(2), pvMvAdjustment: "0.00",
+      projectId: parseInt(projectId!), contractorId: context?.contractorId ?? 0, certificateRef: "",
+      dateIssued: null, totalWorksHt: contextualDevis?.amountHt ?? totalInvHt.toFixed(2), pvMvAdjustment: "0.00",
       previousPayments: "0.00", retenueGarantie: "0.00",
-      netToPayHt: totalInvHt.toFixed(2), tvaAmount: "0.00",
-      netToPayTtc: totalInvHt.toFixed(2), status: "draft", notes: null,
+      netToPayHt: contextualDevis?.amountHt ?? totalInvHt.toFixed(2), tvaAmount: "0.00",
+      netToPayTtc: contextualDevis?.amountTtc ?? totalInvHt.toFixed(2), status: "draft", notes: null,
     });
+    setLockedCertContext(context ?? null);
     setCertDialogOpen(true);
   };
 
@@ -1557,6 +1576,10 @@ export default function ProjectDetail() {
               initialExpandedDevisId={deepLinkDevisId}
               initialFocusedCheckId={deepLinkCheckId}
               onGoToIntake={() => setActiveTab("intake")}
+              onCreateCertificat={(context) => {
+                setActiveTab("certificats");
+                openCreateCert(context);
+              }}
             />
           </TabsContent>
 
@@ -1968,7 +1991,7 @@ export default function ProjectDetail() {
           <TabsContent value="certificats">
             <div className="space-y-4">
               <div className="flex items-center justify-end">
-                <Button onClick={openCreateCert} disabled={isArchived} data-testid="button-new-cert-tab">
+                 <Button onClick={() => openCreateCert()} disabled={isArchived} data-testid="button-new-cert-tab">
                   <Plus size={14} />
                   <span className="text-[9px] font-bold uppercase tracking-widest">New Certificat</span>
                 </Button>
@@ -2132,20 +2155,50 @@ export default function ProjectDetail() {
               />
             )}
 
-            <Dialog open={certDialogOpen} onOpenChange={setCertDialogOpen}>
+            <Dialog open={certDialogOpen} onOpenChange={(open) => {
+              if (!open) setLockedCertContext(null);
+              setCertDialogOpen(open);
+            }}>
               <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
                 <DialogHeader>
                   <DialogTitle className="text-[16px] font-black uppercase tracking-tight">New Certificat</DialogTitle>
+                  <DialogDescription>
+                    {lockedCertContext
+                      ? "The project, quotation and contractor are fixed from the quotation you selected."
+                      : "This certificate will be created inside the current project."}
+                  </DialogDescription>
                 </DialogHeader>
                 <Form {...certForm}>
                   <form onSubmit={certForm.handleSubmit((d) => createCertMutation.mutate(d))} className="space-y-4">
+                    {lockedCertContext && (
+                      <div
+                        className="grid grid-cols-1 gap-2 rounded-lg border border-[#0B2545]/15 bg-[#0B2545]/5 px-3 py-2 sm:grid-cols-2"
+                        data-testid="context-certificat-manual"
+                      >
+                        <div>
+                          <TechnicalLabel>Projet verrouillé</TechnicalLabel>
+                          <p className="text-[12px] font-semibold text-[#0B2545]">
+                            {project?.name ?? `Projet #${projectId}`}
+                          </p>
+                        </div>
+                        <div>
+                          <TechnicalLabel>Devis verrouillé</TechnicalLabel>
+                          <p className="text-[12px] font-semibold text-[#0B2545]">
+                            {devisList?.find((devis) => devis.id === lockedCertContext.devisId)?.devisCode ??
+                              `Devis #${lockedCertContext.devisId}`}
+                          </p>
+                        </div>
+                      </div>
+                    )}
                     <FormField control={certForm.control} name="contractorId" render={({ field }) => (
                       <FormItem>
                         <FormLabel><TechnicalLabel>Contractor</TechnicalLabel></FormLabel>
-                        <Select onValueChange={(v) => field.onChange(parseInt(v))} value={field.value ? String(field.value) : ""}>
+                        <Select disabled={lockedCertContext !== null} onValueChange={(v) => field.onChange(parseInt(v))} value={field.value ? String(field.value) : ""}>
                           <FormControl><SelectTrigger data-testid="select-cert-contractor-tab"><SelectValue placeholder="Select" /></SelectTrigger></FormControl>
                           <SelectContent>
-                            {(contractors ?? []).filter((c) => !c.archidocOrphanedAt).map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                            {(contractors ?? [])
+                              .filter((c) => !c.archidocOrphanedAt && c.archidocPartnerType !== "supplier")
+                              .map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
                           </SelectContent>
                         </Select>
                         <FormMessage />

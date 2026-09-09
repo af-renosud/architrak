@@ -17,6 +17,7 @@ import {
 } from "@shared/schema";
 import { eq, inArray, sql } from "drizzle-orm";
 import certificatsRouter from "../routes/certificats";
+import { errorHandler } from "../middleware/error-handler";
 
 /**
  * Task #496 — one-click certificat from a contractor invoice:
@@ -58,7 +59,7 @@ async function get(path: string) {
 async function insertInvoice(devisId: number, num: string, ht: string, ttc: string) {
   const [inv] = await db
     .insert(invoices)
-    .values({ devisId, contractorId, projectId, invoiceNumber: num, amountHt: ht, tvaAmount: "0.00", amountTtc: ttc, status: "pending" })
+    .values({ devisId, contractorId, projectId, invoiceNumber: num, amountHt: ht, tvaAmount: "0.00", amountTtc: ttc, status: "approved" })
     .returning();
   return inv;
 }
@@ -112,6 +113,7 @@ beforeAll(async () => {
   const app = express();
   app.use(express.json());
   app.use(certificatsRouter);
+  app.use(errorHandler);
   server = http.createServer(app);
   await new Promise<void>((resolve) => server.listen(0, resolve));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -133,9 +135,192 @@ afterAll(async () => {
 });
 
 describe("Task #496 — one-click certificat from invoice", () => {
+  const manualCertificateBody = (manualContractorId: number) => ({
+    contractorId: manualContractorId,
+    dateIssued: "2026-09-09",
+    totalWorksHt: "4600.00",
+    pvMvAdjustment: "0.00",
+    previousPayments: "0.00",
+    retenueGarantie: "0.00",
+    netToPayHt: "4600.00",
+    tvaAmount: "920.00",
+    netToPayTtc: "5520.00",
+    status: "draft",
+    notes: "Manual certificate validation regression",
+  });
+
+  it("rejects the unselected contractor placeholder before any database insert", async () => {
+    const response = await post(
+      `/api/projects/${projectId}/certificats`,
+      manualCertificateBody(0),
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe("VALIDATION_ERROR");
+    expect(response.body.issues).toContainEqual({
+      path: "contractorId",
+      message: "Sélectionnez une entreprise.",
+    });
+  });
+
+  it("returns a clear 404 for a contractor that does not exist", async () => {
+    const response = await post(
+      `/api/projects/${projectId}/certificats`,
+      manualCertificateBody(999_999_999),
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.body.code).toBe("CONTRACTOR_NOT_FOUND");
+    expect(response.body.message).toContain("entreprise valide");
+  });
+
+  it("creates a manual certificate only when the signed quotation has no eligible invoice source", async () => {
+    const response = await post(
+      `/api/projects/${projectId}/certificats`,
+      {
+        ...manualCertificateBody(contractorId),
+        contextDevisId: devisAId,
+      },
+    );
+
+    expect(response.status).toBe(201);
+    expect(response.body.contractorId).toBe(contractorId);
+    await db.delete(certificats).where(eq(certificats.id, response.body.id));
+  });
+
+  it("refuses the manual fallback when an approved unpaid source is available", async () => {
+    const invoice = await insertInvoice(
+      devisAId,
+      `SOURCE-GUARD-${Date.now()}`,
+      "300.00",
+      "360.00",
+    );
+    const response = await post(
+      `/api/projects/${projectId}/certificats`,
+      {
+        ...manualCertificateBody(contractorId),
+        contextDevisId: devisAId,
+      },
+    );
+
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe("ELIGIBLE_INVOICE_SOURCES_REQUIRED");
+    expect(response.body.invoiceIds).toEqual([invoice.id]);
+    await db.delete(invoices).where(eq(invoices.id, invoice.id));
+  });
+
+  it("allows manual fallback when the only approved unpaid invoice is the deposit invoice", async () => {
+    const deposit = await insertInvoice(
+      devisAId,
+      `DEPOSIT-ONLY-${Date.now()}`,
+      "300.00",
+      "360.00",
+    );
+    await db
+      .update(devis)
+      .set({ acompteInvoiceId: deposit.id })
+      .where(eq(devis.id, devisAId));
+
+    try {
+      const response = await post(
+        `/api/projects/${projectId}/certificats`,
+        {
+          ...manualCertificateBody(contractorId),
+          contextDevisId: devisAId,
+        },
+      );
+
+      expect(response.status).toBe(201);
+      const sourceRows = await db
+        .select()
+        .from(certificatSources)
+        .where(eq(certificatSources.certificatId, response.body.id));
+      expect(sourceRows).toHaveLength(0);
+      await db.delete(certificats).where(eq(certificats.id, response.body.id));
+    } finally {
+      await db
+        .update(devis)
+        .set({ acompteInvoiceId: null })
+        .where(eq(devis.id, devisAId));
+      await db.delete(invoices).where(eq(invoices.id, deposit.id));
+    }
+  });
+
+  it("requires and certifies only the progress invoice when a deposit invoice also exists", async () => {
+    const deposit = await insertInvoice(
+      devisAId,
+      `DEPOSIT-MIXED-${Date.now()}`,
+      "300.00",
+      "360.00",
+    );
+    const progress = await insertInvoice(
+      devisAId,
+      `PROGRESS-MIXED-${Date.now()}`,
+      "500.00",
+      "600.00",
+    );
+    await db
+      .update(devis)
+      .set({ acompteInvoiceId: deposit.id })
+      .where(eq(devis.id, devisAId));
+
+    try {
+      const manualResponse = await post(
+        `/api/projects/${projectId}/certificats`,
+        {
+          ...manualCertificateBody(contractorId),
+          contextDevisId: devisAId,
+        },
+      );
+      expect(manualResponse.status).toBe(409);
+      expect(manualResponse.body.code).toBe("ELIGIBLE_INVOICE_SOURCES_REQUIRED");
+      expect(manualResponse.body.invoiceIds).toEqual([progress.id]);
+
+      const createResponse = await post(
+        `/api/invoices/${progress.id}/create-certificat`,
+      );
+      expect(createResponse.status).toBe(201);
+      const sourceRows = await db
+        .select()
+        .from(certificatSources)
+        .where(eq(certificatSources.certificatId, createResponse.body.id));
+      expect(sourceRows.map((source) => source.invoiceId)).toEqual([progress.id]);
+      await db
+        .delete(certificatSources)
+        .where(eq(certificatSources.certificatId, createResponse.body.id));
+      await db.delete(certificats).where(eq(certificats.id, createResponse.body.id));
+    } finally {
+      await db
+        .update(devis)
+        .set({ acompteInvoiceId: null })
+        .where(eq(devis.id, devisAId));
+      await db
+        .delete(invoices)
+        .where(inArray(invoices.id, [deposit.id, progress.id]));
+    }
+  });
+
   it("404s on an unknown invoice", async () => {
     const r = await get(`/api/invoices/999999999/certificat-preview`);
     expect(r.status).toBe(404);
+  });
+
+  it("refuses to preview a contractor invoice before it is approved", async () => {
+    const invoice = await insertInvoice(
+      devisAId,
+      `PENDING-${Date.now()}`,
+      "300.00",
+      "360.00",
+    );
+    await db
+      .update(invoices)
+      .set({ status: "pending" })
+      .where(eq(invoices.id, invoice.id));
+
+    const response = await get(`/api/invoices/${invoice.id}/certificat-preview`);
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe("INVOICE_NOT_APPROVED");
+    await db.delete(invoices).where(eq(invoices.id, invoice.id));
   });
 
   it("previews the TRÜTKEN no-marché balance without persisting a certificat or source link", async () => {
@@ -207,7 +392,7 @@ describe("Task #496 — one-click certificat from invoice", () => {
       amountHt: "2075.00",
       tvaAmount: "415.00",
       amountTtc: "2490.00",
-      status: "pending",
+      status: "approved",
     }).returning();
     await db.insert(invoiceAcompteApplications).values({
       invoiceId: invoice.id,
