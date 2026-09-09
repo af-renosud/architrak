@@ -765,6 +765,16 @@ export async function generateCertificatPdf(
   pdfBuffer: Buffer;
   fileName: string;
   sourceInvoiceIds: number[];
+  sourceInvoiceSnapshot: Array<{
+    invoiceId: number;
+    projectId: number;
+    contractorId: number;
+    amountHt: string;
+    tvaAmount: string;
+    amountTtc: string;
+    status: string;
+    datePaid: string | null;
+  }>;
   /** Task #627 — bank-transfer reference derived from the certified invoices. */
   transferRef: string;
   /** Present only in issue mode — inputs for the winner-only Drive enqueue. */
@@ -1066,6 +1076,21 @@ export async function generateCertificatPdf(
 
   const pdfBuffer = await convertHtmlToPdf(html, docName);
   const sourceInvoiceIds = devisDetails.flatMap((dd) => dd.invoices.map((inv) => inv.id));
+  // Captured from the exact invoice objects used to render the HTML, before
+  // PDF conversion/upload. The seal transaction validates this snapshot so
+  // bytes rendered from stale invoice economics can never be pinned.
+  const sourceInvoiceSnapshot = devisDetails.flatMap((dd) =>
+    dd.invoices.map((invoice) => ({
+      invoiceId: invoice.id,
+      projectId: invoice.projectId,
+      contractorId: invoice.contractorId,
+      amountHt: invoice.amountHt,
+      tvaAmount: invoice.tvaAmount,
+      amountTtc: invoice.amountTtc,
+      status: invoice.status,
+      datePaid: invoice.datePaid,
+    })),
+  );
 
   // Task #451 — previews are ephemeral: return the bytes and persist nothing.
   if (opts.mode !== "issue") {
@@ -1074,6 +1099,7 @@ export async function generateCertificatPdf(
       pdfBuffer,
       fileName,
       sourceInvoiceIds,
+      sourceInvoiceSnapshot,
       transferRef,
       supplierPresentation,
     };
@@ -1100,6 +1126,7 @@ export async function generateCertificatPdf(
     pdfBuffer,
     fileName,
     sourceInvoiceIds,
+    sourceInvoiceSnapshot,
     transferRef,
     driveSeed,
     supplierPresentation,
@@ -2371,6 +2398,7 @@ export async function buildCertificatPreviewHtml(opts?: { isAcompte?: boolean })
     cumulativeAcompteRecoupment: "0.00",
     periodAcompteRecoupment: "0.00",
     tvaRateSource: "default",
+    tvaEvidenceKind: "legacy",
     certificateRef: "CP-2026-007",
     dateIssued: sampleDate.toISOString().slice(0, 10),
     totalWorksHt: "24500.00",

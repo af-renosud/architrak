@@ -40,6 +40,42 @@ export function computeEffectiveTvaRatePercent(sumHt: number, sumTtc: number): n
   return Math.round((rate + Number.EPSILON) * 100) / 100;
 }
 
+export type CertificatAmountBasis = "ht" | "ttc";
+
+/**
+ * Convert the one cumulative progress amount entered by the operator into the
+ * HT value persisted on a certificat and its read-only TTC counterpart.
+ *
+ * The applied TVA rate is always resolved by the server before this helper is
+ * called. Rounding both sides to currency precision keeps the preview and the
+ * final persisted values identical for reduced and blended documentary rates.
+ */
+export function deriveCertificatWorksAmounts(
+  enteredAmount: number,
+  basis: CertificatAmountBasis,
+  tvaRatePercent: number,
+): { amountHt: number; amountTtc: number } {
+  if (
+    !Number.isFinite(enteredAmount) ||
+    enteredAmount < 0 ||
+    !Number.isFinite(tvaRatePercent) ||
+    tvaRatePercent < 0
+  ) {
+    throw new Error("Invalid certificat amount or TVA rate");
+  }
+  const multiplier = 1 + tvaRatePercent / 100;
+  if (basis === "ttc") {
+    const amountTtc = roundCurrency(enteredAmount);
+    const amountHt = roundCurrency(amountTtc / multiplier);
+    return { amountHt, amountTtc };
+  }
+  const amountHt = roundCurrency(enteredAmount);
+  return {
+    amountHt,
+    amountTtc: roundCurrency(amountHt * multiplier),
+  };
+}
+
 /**
  * Multi-facture certificats — TVA compatibility of an invoice selection.
  *

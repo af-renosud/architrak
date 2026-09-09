@@ -20,7 +20,6 @@ import { apiRequest, queryClient, projectScopedKey, ApiError } from "@/lib/query
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { insertCertificatSchema } from "@shared/schema";
 import type { Project, Contractor, Certificat, CertificatPayment, Invoice, Marche, Devis } from "@shared/schema";
 import {
   canSendCertificat,
@@ -30,24 +29,35 @@ import {
 } from "@/lib/certificat-delivery";
 
 type CertificatWithSentInfo = CertificatWithDelivery;
-import { computeCertificatDeductions, computeEffectiveTvaRatePercent } from "@shared/financial-utils";
 import { z } from "zod";
+import {
+  AutomaticTvaFields,
+  type ManualCertificatPreview,
+} from "@/components/certificats/AutomaticTvaFields";
+import {
+  manualCertificatPreviewKey,
+  manualCertificatPreviewQueryOptions,
+} from "@/lib/manual-certificat-preview";
 
 import { Amount } from "@/components/ui/amount";
 import { formatCurrency as fmt } from "@/lib/utils";
 
-const certificatFormSchema = insertCertificatSchema.omit({ certificateRef: true }).extend({
-  totalWorksHt: z.string().min(1, "Works HT amount is required"),
-  netToPayHt: z.string().min(1, "Net to pay HT is required"),
-  tvaAmount: z.string().min(1, "TVA amount is required"),
-  netToPayTtc: z.string().min(1, "Net to pay TTC is required"),
+const certificatFormSchema = z.object({
+  projectId: z.number().int().positive(),
+  contractorId: z.number().int().positive("Select a contractor"),
+  contextDevisId: z.number().int().positive("Select a signed quotation"),
+  dateIssued: z.string().nullable(),
+  totalWorksAmount: z.string().min(1, "Works amount is required"),
+  totalWorksAmountBasis: z.enum(["ht", "ttc"]),
+  pvMvAdjustment: z.string().default("0.00"),
+  previousPayments: z.string().default("0.00"),
+  status: z.enum(["draft", "ready", "paid"]).default("draft"),
+  notes: z.string().nullable(),
   // Task #243 — optional architect overrides of the auto-computed cumulative
   // deductions. Sent to the server, never persisted as columns.
   retenueOverride: z.string().optional(),
   prorataOverride: z.string().optional(),
-  // Task #463 — draft-only override of the applied TVA rate (%). Ignored by
-  // the server on autoliquidation contracts.
-  tvaRateOverride: z.string().optional(),
+  isSolde: z.boolean().optional(),
   // Task #464 — solde designation + explicit retenue de garantie release.
   // `releaseRetenue`/`releaseReason` are request fields (the server derives
   // the released state, amount and date authoritatively).
@@ -127,21 +137,16 @@ export default function Certificats() {
     defaultValues: {
       projectId: 0,
       contractorId: 0,
+      contextDevisId: 0,
       dateIssued: null,
-      totalWorksHt: "0.00",
+      totalWorksAmount: "0.00",
+      totalWorksAmountBasis: "ht",
       pvMvAdjustment: "0.00",
       previousPayments: "0.00",
-      retenueGarantie: "0.00",
-      cumulativeProrataDeduction: "0.00",
-      periodProrataDeduction: "0.00",
-      netToPayHt: "0.00",
-      tvaAmount: "0.00",
-      netToPayTtc: "0.00",
       status: "draft",
       notes: null,
       retenueOverride: undefined,
       prorataOverride: undefined,
-      tvaRateOverride: undefined,
     },
   });
 
@@ -163,78 +168,25 @@ export default function Certificats() {
   }, [deepLinkCertId, allCertificats]);
 
   const watchContractorId = form.watch("contractorId");
-  const watchTotalWorks = form.watch("totalWorksHt");
+  const watchContextDevisId = form.watch("contextDevisId");
+  const watchTotalWorksAmount = form.watch("totalWorksAmount");
+  const watchTotalWorksAmountBasis = form.watch("totalWorksAmountBasis");
   const watchPvMv = form.watch("pvMvAdjustment");
   const watchPrevious = form.watch("previousPayments");
   const watchRetenueOverride = form.watch("retenueOverride");
   const watchProrataOverride = form.watch("prorataOverride");
-  const watchTvaRateOverride = form.watch("tvaRateOverride");
   // Task #464 — solde designation + explicit retenue release (live preview).
   const watchIsSolde = form.watch("isSolde");
   const watchReleaseRetenue = form.watch("releaseRetenue");
 
-  // Task #243 — the contractor's marché carries the Retenue de Garantie rate,
-  // the bank-guarantee bypass and the prorata-manager exemption; the project
-  // carries the Compte Prorata rate. We feed them to the SAME shared math the
-  // server uses, so this live breakdown matches the authoritative figures.
   const selectedMarche = useMemo(
     () => marches?.find((m) => m.contractorId === watchContractorId) ?? null,
     [marches, watchContractorId],
   );
-  const retenuePercent = selectedMarche?.retenueGarantiePercent != null
-    ? parseFloat(selectedMarche.retenueGarantiePercent) : 5;
-  const prorataPercent = parseFloat(selectedProject?.prorataPercentage ?? "0") || 0;
-  const hasBankGuarantee = selectedMarche?.hasBankGuarantee ?? false;
-  const isProrataManager = selectedMarche?.isProrataManager ?? false;
-
-  // Task #463 — mirror the server's TVA regime resolution: marché rate →
-  // contractor default → 20%; autoliquidation forces 0% and no override.
   const selectedContractor = useMemo(
     () => contractors?.find((c) => c.id === watchContractorId) ?? null,
     [contractors, watchContractorId],
   );
-  const tvaAutoliquidation = selectedMarche?.tvaAutoliquidation
-    ? true
-    : selectedMarche?.tvaRatePercent != null
-      ? false
-      : selectedContractor?.defaultTvaAutoliquidation ?? false;
-  // Task #479 — documentary effective rate mirror: same invoice set as the
-  // server resolver (all invoices of the contractor's non-void devis), rate
-  // = (ΣTTC − ΣHT) / ΣHT via the shared helper. Handles mixed-rate invoices
-  // (10% + 20%) that no single configured rate can reproduce.
-  const documentaryTvaRatePercent = useMemo(() => {
-    if (!watchContractorId) return null;
-    const contractorDevisIds = new Set(
-      (projectDevis ?? [])
-        .filter((d) => d.contractorId === watchContractorId && d.status !== "void" && d.signOffStage !== "void")
-        .map((d) => d.id),
-    );
-    let sumHt = 0;
-    let sumTtc = 0;
-    for (const inv of projectInvoices ?? []) {
-      if (!contractorDevisIds.has(inv.devisId)) continue;
-      sumHt += parseFloat(inv.amountHt) || 0;
-      sumTtc += parseFloat(inv.amountTtc) || 0;
-    }
-    return computeEffectiveTvaRatePercent(sumHt, sumTtc);
-  }, [projectInvoices, projectDevis, watchContractorId]);
-
-  const overrideRate = watchTvaRateOverride ? parseFloat(watchTvaRateOverride) : NaN;
-  // Mirrors the server precedence: autoliquidation → override → documentary
-  // effective rate → marché rate → contractor default → 20%.
-  const appliedTvaRatePercent = tvaAutoliquidation
-    ? 0
-    : Number.isFinite(overrideRate)
-      ? overrideRate
-      : documentaryTvaRatePercent != null
-        ? documentaryTvaRatePercent
-        : selectedMarche?.tvaRatePercent != null
-          ? parseFloat(selectedMarche.tvaRatePercent)
-          : selectedContractor?.defaultTvaRatePercent != null
-            ? parseFloat(selectedContractor.defaultTvaRatePercent)
-            : 20;
-  const previewTvaIsDocumentary =
-    !tvaAutoliquidation && !Number.isFinite(overrideRate) && documentaryTvaRatePercent != null;
 
   // Task #457 — superseded certificats were replaced by a reissue; their
   // cumulative figures must not feed the live preview (mirrors the server
@@ -280,51 +232,52 @@ export default function Certificats() {
     [priorCerts],
   );
 
-  const latestPrior = useMemo(
-    () =>
-      priorCerts
-        .slice()
-        .sort((a, b) => {
-          const da = a.dateIssued ?? "";
-          const db = b.dateIssued ?? "";
-          if (da !== db) return da < db ? -1 : 1;
-          return a.id - b.id;
-        })
-        .at(-1) ?? null,
-    [priorCerts],
-  );
-
-  const breakdown = useMemo(() => computeCertificatDeductions({
-    totalWorksHt: parseFloat(watchTotalWorks || "0") || 0,
-    pvMvAdjustment: parseFloat(watchPvMv || "0") || 0,
-    previousPayments: parseFloat(watchPrevious || "0") || 0,
-    retenuePercent,
-    hasBankGuarantee,
-    prorataPercent,
-    isProrataManager,
-    priorCumulativeRetenue: latestPrior ? parseFloat(latestPrior.retenueGarantie ?? "0") : 0,
-    priorCumulativeProrata: latestPrior ? parseFloat(latestPrior.cumulativeProrataDeduction ?? "0") : 0,
-    retenueOverride: watchRetenueOverride ? parseFloat(watchRetenueOverride) : null,
-    prorataOverride: watchProrataOverride ? parseFloat(watchProrataOverride) : null,
-    paidAcompteAmount,
-    priorCumulativeAcompteRecoupment: latestPrior ? parseFloat(latestPrior.cumulativeAcompteRecoupment ?? "0") : 0,
-    acompteRecoupmentRule: (selectedMarche?.acompteRecoupmentRule as "asap" | "percent" | "progress_threshold" | undefined) ?? "asap",
-    acompteRecoupmentPercent: selectedMarche?.acompteRecoupmentPercent != null ? parseFloat(selectedMarche.acompteRecoupmentPercent) : null,
-    acompteRecoupmentThresholdPercent: selectedMarche?.acompteRecoupmentThresholdPercent != null ? parseFloat(selectedMarche.acompteRecoupmentThresholdPercent) : null,
-    contractTotalHt: selectedMarche?.totalHt != null ? parseFloat(selectedMarche.totalHt) : null,
-    tvaRate: appliedTvaRatePercent / 100,
-    isSolde: watchIsSolde === true,
-    releaseRetenue: watchReleaseRetenue === true,
-  }), [watchTotalWorks, watchPvMv, watchPrevious, retenuePercent, hasBankGuarantee, prorataPercent, isProrataManager, latestPrior, watchRetenueOverride, watchProrataOverride, paidAcompteAmount, selectedMarche, appliedTvaRatePercent, watchIsSolde, watchReleaseRetenue]);
-
-  useEffect(() => {
-    form.setValue("retenueGarantie", breakdown.cumulativeRetenue.toFixed(2));
-    form.setValue("cumulativeProrataDeduction", breakdown.cumulativeProrata.toFixed(2));
-    form.setValue("periodProrataDeduction", breakdown.periodProrata.toFixed(2));
-    form.setValue("netToPayHt", breakdown.netToPayHt.toFixed(2));
-    form.setValue("tvaAmount", breakdown.tvaAmount.toFixed(2));
-    form.setValue("netToPayTtc", breakdown.netToPayTtc.toFixed(2));
-  }, [breakdown, form]);
+  const manualPreviewQuery = useQuery<ManualCertificatPreview>({
+    queryKey: manualCertificatPreviewKey(
+      selectedProjectId ?? "",
+      watchContextDevisId,
+      watchContractorId,
+      watchTotalWorksAmount,
+      watchTotalWorksAmountBasis,
+      watchPvMv,
+      watchPrevious,
+      watchRetenueOverride,
+      watchProrataOverride,
+      watchIsSolde,
+      watchReleaseRetenue,
+      form.watch("pvOverrideReason"),
+    ),
+    queryFn: async () => {
+      const response = await apiRequest(
+        "POST",
+        `/api/projects/${selectedProjectId}/certificats/manual-preview`,
+        {
+          contractorId: watchContractorId,
+          contextDevisId: watchContextDevisId,
+          totalWorksAmount: watchTotalWorksAmount,
+          totalWorksAmountBasis: watchTotalWorksAmountBasis,
+          pvMvAdjustment: watchPvMv,
+          previousPayments: watchPrevious,
+          retenueOverride: watchRetenueOverride || undefined,
+          prorataOverride: watchProrataOverride || undefined,
+          isSolde: watchIsSolde,
+          releaseRetenue: watchReleaseRetenue,
+          pvOverrideReason: form.getValues("pvOverrideReason") || undefined,
+        },
+      );
+      return response.json();
+    },
+    enabled:
+      dialogOpen &&
+      !!selectedProjectId &&
+      watchContractorId > 0 &&
+      watchContextDevisId > 0 &&
+      watchTotalWorksAmount !== "" &&
+      Number.isFinite(Number(watchTotalWorksAmount)),
+    retry: false,
+    ...manualCertificatPreviewQueryOptions,
+  });
+  const breakdown = manualPreviewQuery.data?.deductions;
 
   const createMutation = useMutation({
     mutationFn: async (data: CertificatFormValues) => {
@@ -430,21 +383,16 @@ export default function Certificats() {
     form.reset({
       projectId: parseInt(selectedProjectId),
       contractorId: 0,
+      contextDevisId: 0,
       dateIssued: null,
-      totalWorksHt: totalInvoicesHt.toFixed(2),
+      totalWorksAmount: totalInvoicesHt.toFixed(2),
+      totalWorksAmountBasis: "ht",
       pvMvAdjustment: "0.00",
       previousPayments: "0.00",
-      retenueGarantie: "0.00",
-      cumulativeProrataDeduction: "0.00",
-      periodProrataDeduction: "0.00",
-      netToPayHt: totalInvoicesHt.toFixed(2),
-      tvaAmount: (totalInvoicesHt * 0.2).toFixed(2),
-      netToPayTtc: (totalInvoicesHt * 1.2).toFixed(2),
       status: "draft",
       notes: null,
       retenueOverride: undefined,
       prorataOverride: undefined,
-      tvaRateOverride: undefined,
       isSolde: false,
       releaseRetenue: false,
       releaseReason: undefined,
@@ -751,7 +699,10 @@ export default function Certificats() {
                         <TechnicalLabel>Contractor</TechnicalLabel>
                       </FormLabel>
                       <Select
-                        onValueChange={(val) => field.onChange(parseInt(val))}
+                        onValueChange={(val) => {
+                          field.onChange(parseInt(val));
+                          form.setValue("contextDevisId", 0);
+                        }}
                         value={field.value ? String(field.value) : ""}
                       >
                         <FormControl>
@@ -765,6 +716,55 @@ export default function Certificats() {
                               {c.name}
                             </SelectItem>
                           ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="contextDevisId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        <TechnicalLabel>Signed Quotation</TechnicalLabel>
+                      </FormLabel>
+                      <Select
+                        onValueChange={(value) => {
+                          const devisId = parseInt(value);
+                          field.onChange(devisId);
+                          const devis = projectDevis?.find(
+                            (candidate) => candidate.id === devisId,
+                          );
+                          if (devis) {
+                            form.setValue("contractorId", devis.contractorId);
+                            form.setValue("totalWorksAmountBasis", "ht");
+                            form.setValue("totalWorksAmount", devis.amountHt);
+                          }
+                        }}
+                        value={field.value ? String(field.value) : ""}
+                      >
+                        <FormControl>
+                          <SelectTrigger data-testid="select-cert-devis">
+                            <SelectValue placeholder="Select a signed quotation" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {(projectDevis ?? [])
+                            .filter(
+                              (devis) =>
+                                devis.contractorId === watchContractorId &&
+                                devis.status !== "void" &&
+                                devis.signOffStage === "client_signed_off",
+                            )
+                            .map((devis) => (
+                              <SelectItem key={devis.id} value={String(devis.id)}>
+                                {devis.devisNumber ?? `Devis #${devis.id}`} —{" "}
+                                {fmt(parseFloat(devis.amountHt))} HT /{" "}
+                                {fmt(parseFloat(devis.amountTtc))} TTC
+                              </SelectItem>
+                            ))}
                         </SelectContent>
                       </Select>
                       <FormMessage />
@@ -821,27 +821,24 @@ export default function Certificats() {
                     </FormItem>
                   )}
                 />
+                <AutomaticTvaFields
+                  enteredAmount={watchTotalWorksAmount}
+                  basis={watchTotalWorksAmountBasis}
+                  preview={manualPreviewQuery.data}
+                  isLoading={manualPreviewQuery.isFetching}
+                  error={manualPreviewQuery.error}
+                  onEdit={(basis, value) => {
+                    form.setValue("totalWorksAmountBasis", basis, {
+                      shouldValidate: true,
+                    });
+                    form.setValue("totalWorksAmount", value, {
+                      shouldDirty: true,
+                      shouldValidate: true,
+                    });
+                  }}
+                  testIdPrefix="input-cert-total-works"
+                />
                 <div className="grid grid-cols-2 gap-4">
-                  <FormField
-                    control={form.control}
-                    name="totalWorksHt"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>
-                          <TechnicalLabel>Total Works HT (Cumulative)</TechnicalLabel>
-                        </FormLabel>
-                        <FormControl>
-                          <Input
-                            {...field}
-                            type="number"
-                            step="0.01"
-                            data-testid="input-cert-total-works"
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
                   <FormField
                     control={form.control}
                     name="pvMvAdjustment"
@@ -929,33 +926,6 @@ export default function Certificats() {
                             step="0.01"
                             placeholder="Auto"
                             data-testid="input-cert-prorata-override"
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  {/* Task #463 — draft-only TVA rate override. Disabled on
-                      autoliquidation contracts (rate is legally 0%). */}
-                  <FormField
-                    control={form.control}
-                    name="tvaRateOverride"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>
-                          <TechnicalLabel>TVA Rate Override % (optional)</TechnicalLabel>
-                        </FormLabel>
-                        <FormControl>
-                          <Input
-                            {...field}
-                            value={field.value ?? ""}
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            max="100"
-                            placeholder={tvaAutoliquidation ? "Autoliquidation — 0%" : "Auto"}
-                            disabled={tvaAutoliquidation}
-                            data-testid="input-cert-tva-rate-override"
                           />
                         </FormControl>
                         <FormMessage />
@@ -1091,43 +1061,33 @@ export default function Certificats() {
                   )}
                 </div>
 
+                {breakdown && (
                 <div className="p-4 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] space-y-2">
                   <TechnicalLabel>Deduction Breakdown (Cumulative)</TechnicalLabel>
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-muted-foreground">Montant Brut Cumulé HT</span>
+                    <span className="text-[11px] text-muted-foreground">Total Works HT</span>
                     <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-gross">
-                      <Amount value={breakdown.grossCumulativeHt} denomination="HT" />
+                      <Amount value={parseFloat(manualPreviewQuery.data!.works.amountHt)} denomination="HT" />
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-muted-foreground">
-                      − Retenue de Garantie HT{hasBankGuarantee ? " (bypass — caution bancaire)" : ` (${retenuePercent}%)`}
-                    </span>
+                    <span className="text-[11px] text-muted-foreground">− Retenue de Garantie HT</span>
                     <span className="text-[13px] font-semibold text-red-600 dark:text-red-400" data-testid="text-calc-retenue">
-                      −<Amount value={breakdown.cumulativeRetenue} denomination="HT" />
+                      −<Amount value={parseFloat(breakdown.retenueGarantie)} denomination="HT" />
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-muted-foreground">
-                      − Compte Prorata HT{isProrataManager ? " (exempt — gestionnaire)" : ` (${prorataPercent}%)`}
-                    </span>
+                    <span className="text-[11px] text-muted-foreground">− Compte Prorata HT</span>
                     <span className="text-[13px] font-semibold text-red-600 dark:text-red-400" data-testid="text-calc-prorata">
-                      −<Amount value={breakdown.cumulativeProrata} denomination="HT" />
+                      −<Amount value={parseFloat(breakdown.cumulativeProrataDeduction)} denomination="HT" />
                     </span>
                   </div>
-                  <div className="flex items-center justify-between gap-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
-                    <span className="text-[11px] text-foreground">Montant Net Cumulé Autorisé HT</span>
-                    <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-net-cumul">
-                      <Amount value={breakdown.grossCumulativeHt - breakdown.cumulativeRetenue - breakdown.cumulativeProrata} denomination="HT" />
-                    </span>
-                  </div>
-                  {(breakdown.periodAcompteRecoupment > 0 || breakdown.cumulativeAcompteRecoupment > 0) && (
+                  {(parseFloat(breakdown.periodAcompteRecoupment) > 0 ||
+                    parseFloat(breakdown.cumulativeAcompteRecoupment) > 0) && (
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] text-muted-foreground">
-                        − Remboursement d'Acompte HT (période{breakdown.cumulativeAcompteRecoupment > 0 ? ` — cumul ${fmt(breakdown.cumulativeAcompteRecoupment)} / ${fmt(paidAcompteAmount)} HT` : ""})
-                      </span>
+                      <span className="text-[11px] text-muted-foreground">− Remboursement d&apos;Acompte HT</span>
                       <span className="text-[13px] font-semibold text-red-600 dark:text-red-400" data-testid="text-calc-acompte-recoupment">
-                        −<Amount value={breakdown.periodAcompteRecoupment} denomination="HT" />
+                        −<Amount value={parseFloat(breakdown.periodAcompteRecoupment)} denomination="HT" />
                       </span>
                     </div>
                   )}
@@ -1137,36 +1097,34 @@ export default function Certificats() {
                       −<Amount value={parseFloat(watchPrevious || "0") || 0} denomination="HT" />
                     </span>
                   </div>
-                  {watchIsSolde === true && breakdown.retenueReleaseAmount > 0 && (
+                  {watchIsSolde === true && parseFloat(breakdown.retenueReleaseAmount) > 0 && (
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[11px] text-muted-foreground">+ Libération Retenue de Garantie HT (solde)</span>
                       <span className="text-[13px] font-semibold text-green-700 dark:text-green-500" data-testid="text-calc-retenue-release">
-                        +<Amount value={breakdown.retenueReleaseAmount} denomination="HT" />
+                        +<Amount value={parseFloat(breakdown.retenueReleaseAmount)} denomination="HT" />
                       </span>
                     </div>
                   )}
-                  {watchIsSolde === true && watchReleaseRetenue !== true && breakdown.cumulativeRetenue > 0 && (
+                  {watchIsSolde === true && watchReleaseRetenue !== true && parseFloat(breakdown.retenueGarantie) > 0 && (
                     <div className="text-[10px] text-muted-foreground italic" data-testid="text-calc-retenue-withheld">
-                      Solde — Retenue de Garantie de <Amount value={breakdown.cumulativeRetenue} denomination="HT" /> conservée
+                      Solde — Retenue de Garantie de <Amount value={parseFloat(breakdown.retenueGarantie)} denomination="HT" /> conservée
                     </div>
                   )}
                   <div className="flex items-center justify-between gap-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                     <span className="text-[11px] text-muted-foreground">Net to Pay HT</span>
                     <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-net-ht">
-                      <Amount value={breakdown.netToPayHt} denomination="HT" />
+                      <Amount value={parseFloat(breakdown.netToPayHt)} denomination="HT" />
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[11px] text-muted-foreground">
-                      {previewTvaIsDocumentary
-                        ? `TVA (taux effectif ${appliedTvaRatePercent}% — d'après les factures)`
-                        : `TVA (${appliedTvaRatePercent}%${tvaAutoliquidation ? " — autoliquidation" : ""})`}
+                      TVA ({Number(manualPreviewQuery.data!.tva.ratePercent).toLocaleString("fr-FR", { maximumFractionDigits: 2 })}%)
                     </span>
                     <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-tva">
-                      <Amount value={breakdown.tvaAmount} denomination="TVA" />
+                      <Amount value={parseFloat(breakdown.tvaAmount)} denomination="TVA" />
                     </span>
                   </div>
-                  {tvaAutoliquidation && (
+                  {manualPreviewQuery.data!.tva.autoliquidation && (
                     <div className="text-[10px] text-muted-foreground italic" data-testid="text-calc-autoliquidation">
                       Autoliquidation — TVA due par le preneur (art. 283 CGI)
                     </div>
@@ -1174,10 +1132,11 @@ export default function Certificats() {
                   <div className="flex items-center justify-between gap-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                     <span className="text-[11px] font-black uppercase tracking-widest text-foreground">Net to Pay TTC</span>
                     <span className="text-[16px] font-bold text-foreground" data-testid="text-calc-net-ttc">
-                      <Amount value={breakdown.netToPayTtc} denomination="TTC" />
+                      <Amount value={parseFloat(breakdown.netToPayTtc)} denomination="TTC" />
                     </span>
                   </div>
                 </div>
+                )}
 
                 <FormField
                   control={form.control}
@@ -1201,7 +1160,16 @@ export default function Certificats() {
                   )}
                 />
 
-                <Button type="submit" className="w-full" disabled={createMutation.isPending} data-testid="button-submit-certificat">
+                <Button
+                  type="submit"
+                  className="w-full"
+                  disabled={
+                    createMutation.isPending ||
+                    manualPreviewQuery.isFetching ||
+                    !manualPreviewQuery.data
+                  }
+                  data-testid="button-submit-certificat"
+                >
                   <span className="text-[9px] font-bold uppercase tracking-widest">
                     {createMutation.isPending ? "Creating..." : "Create Certificat"}
                   </span>

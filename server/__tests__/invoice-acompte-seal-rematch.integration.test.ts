@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
+  certificatSources,
   certificats,
   contractors,
   devis,
@@ -19,9 +20,11 @@ import {
   invoiceAcompteProtectedSnapshot,
 } from "../services/invoice-acompte-application.service";
 import rematchRouter from "../routes/admin-invoice-rematch";
+import invoicesRouter from "../routes/invoices";
 
 let invoiceId: number;
 let raceInvoiceId: number;
+let certificateSourceInvoiceId: number;
 let projectId: number;
 let contractorId: number;
 let base: string;
@@ -77,6 +80,22 @@ beforeAll(async () => {
     amountHt: "100.00", tvaAmount: "20.00", amountTtc: "120.00",
   }).returning();
   raceInvoiceId = raceInvoice.id;
+  const [certificateSourceInvoice] = await db.insert(invoices).values({
+    projectId: project.id,
+    contractorId: contractor.id,
+    devisId: devisRow.id,
+    invoiceNumber: `CERT-SOURCE-I-${nonce}`,
+    amountHt: "50.00",
+    tvaAmount: "10.00",
+    amountTtc: "60.00",
+    status: "draft",
+    aiExtractedData: { documentType: "invoice" },
+  }).returning();
+  certificateSourceInvoiceId = certificateSourceInvoice.id;
+  await db.insert(certificatSources).values({
+    certificatId: certificat.id,
+    invoiceId: certificateSourceInvoice.id,
+  });
 
   const app = express();
   app.use(express.json());
@@ -85,6 +104,7 @@ beforeAll(async () => {
     next();
   });
   app.use(rematchRouter);
+  app.use(invoicesRouter);
   server = await new Promise<http.Server>((resolve) => {
     const value = app.listen(0, () => resolve(value));
   });
@@ -128,6 +148,42 @@ describe("applied invoice seal and rematch", () => {
       applied: [],
       skipped: [{ invoiceId, reason: expect.stringContaining("applied opening-deposit") }],
     });
+  });
+
+  it("skips certificate source evidence in admin rematch", async () => {
+    const response = await fetch(`${base}/api/admin/invoice-rematch/apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ invoiceIds: [certificateSourceInvoiceId] }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      applied: [],
+      skipped: [
+        {
+          invoiceId: certificateSourceInvoiceId,
+          reason: expect.stringContaining("active payment certificate"),
+        },
+      ],
+    });
+  });
+
+  it("refuses confirmation corrections once an invoice is certificate evidence", async () => {
+    const response = await fetch(`${base}/api/invoices/${certificateSourceInvoiceId}/confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amountHt: 55, amountTtc: 66 }),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: "invoice_certificate_source_immutable",
+    });
+    const [invoice] = await db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.id, certificateSourceInvoiceId));
+    expect(invoice.amountHt).toBe("50.00");
+    expect(invoice.amountTtc).toBe("60.00");
   });
 
   it("enforces applied invoice economic and provenance immutability in the database", async () => {

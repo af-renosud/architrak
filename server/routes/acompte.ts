@@ -14,10 +14,12 @@ import { allocateCertificateRef, storage } from "../storage";
 import { requireAuth } from "../auth/middleware";
 import { validateRequest } from "../middleware/validate";
 import { rejectClientCertificateReference } from "../middleware/certificate-reference";
-import { resolveAcompteAmounts, linkAcompteInvoiceTx, markAcompteInvoicePaidTx, confirmNoInvoiceAcomptePayment } from "../services/acompte.service";
+import { rejectClientCertificateTva } from "../middleware/certificate-tva";
+import { confirmNoInvoiceAcomptePayment, linkAcompteInvoiceTx, markAcompteInvoicePaidTx, resolveAcompteAmounts, resolveAutomaticAcompteCertificateAmountsTx } from "../services/acompte.service";
 import { db } from "../db";
 import { certificats, devis as devisTable } from "@shared/schema";
 import { eq, sql } from "drizzle-orm";
+import { TvaEvidenceRequiredError } from "../services/certificat-deductions.service";
 
 // Unwrap pg error info (drizzle wraps the driver error in `cause`).
 function pgErrorInfo(err: unknown): { code?: string; constraint?: string } {
@@ -97,6 +99,7 @@ router.post(
   "/api/devis/:id/acompte/confirm-paid-no-invoice",
   requireAuth,
   rejectClientCertificateReference,
+  rejectClientCertificateTva,
   validateRequest({ params: idParams, body: confirmNoInvoiceBodySchema }),
   async (req, res, next) => {
     try {
@@ -118,6 +121,9 @@ router.post(
         routingRetryTriggered: true,
       });
     } catch (err) {
+      if (err instanceof TvaEvidenceRequiredError) {
+        return res.status(422).json({ code: err.code, message: err.message });
+      }
       next(err);
     }
   },
@@ -157,6 +163,7 @@ router.post(
   "/api/devis/:id/acompte/generate-certificat",
   requireAuth,
   rejectClientCertificateReference,
+  rejectClientCertificateTva,
   validateRequest({ params: idParams, body: z.object({}).strict().optional() }),
   async (req, res) => {
     const devisId = Number(req.params.id);
@@ -240,14 +247,12 @@ router.post(
           // Authoritative money: derived from the LOCKED row, not the
           // pre-lock read — a concurrent spec edit is either committed
           // before our lock (we see it) or blocked until we commit.
-          const amounts = resolveAcompteAmounts(locked);
+          const amounts = await resolveAutomaticAcompteCertificateAmountsTx(tx, locked);
           if (!amounts) {
             const e = new Error("acompte_amount_missing");
             (e as Error & { acompteAmountMissing?: boolean }).acompteAmountMissing = true;
             throw e;
           }
-          const tvaAmount = Math.round((amounts.amountTtc - amounts.amountHt) * 100) / 100;
-          const impliedRate = amounts.amountHt > 0 ? Math.round((tvaAmount / amounts.amountHt) * 10000) / 100 : 0;
           const [created] = await tx
             .insert(certificats)
             .values({
@@ -264,11 +269,15 @@ router.post(
               periodProrataDeduction: "0.00",
               cumulativeAcompteRecoupment: "0.00",
               periodAcompteRecoupment: "0.00",
-              tvaRatePercent: impliedRate.toFixed(2),
-              tvaAutoliquidation: false,
-              tvaRateSource: "documentary",
+              tvaRatePercent: amounts.tvaDecision.ratePercent.toFixed(2),
+              tvaAutoliquidation: amounts.tvaDecision.autoliquidation,
+              tvaRateSource: amounts.tvaDecision.source,
+              tvaEvidenceKind:
+                amounts.tvaDecision.source === "documentary"
+                  ? "signed_quotation"
+                  : "configuration",
               netToPayHt: amounts.amountHt.toFixed(2),
-              tvaAmount: tvaAmount.toFixed(2),
+              tvaAmount: amounts.tvaAmount.toFixed(2),
               netToPayTtc: amounts.amountTtc.toFixed(2),
               notes: `Acompte (opening/deposit) on devis ${locked.devisCode} — no supplier invoice; recovered in full on the next certificat.`,
               acompteDevisId: devisId,
@@ -296,6 +305,9 @@ router.post(
           message: "No acompte amount configured on the devis (set a % or an HT amount first).",
           code: "acompte_amount_missing",
         });
+      }
+      if (err instanceof TvaEvidenceRequiredError) {
+        return res.status(422).json({ code: err.code, message: err.message });
       }
       const { code, constraint } = pgErrorInfo(err);
       if (code === "23505" && constraint === "certificats_acompte_devis_unique") {

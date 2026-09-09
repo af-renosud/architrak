@@ -145,14 +145,12 @@ afterAll(async () => {
 describe("Task #496 — one-click certificat from invoice", () => {
   const manualCertificateBody = (manualContractorId: number) => ({
     contractorId: manualContractorId,
+    contextDevisId: devisAId,
     dateIssued: "2026-09-09",
-    totalWorksHt: "4600.00",
+    totalWorksAmount: "4600.00",
+    totalWorksAmountBasis: "ht",
     pvMvAdjustment: "0.00",
     previousPayments: "0.00",
-    retenueGarantie: "0.00",
-    netToPayHt: "4600.00",
-    tvaAmount: "920.00",
-    netToPayTtc: "5520.00",
     status: "draft",
     notes: "Manual certificate validation regression",
   });

@@ -1,6 +1,7 @@
 import { storage } from "../storage";
 import { computeCertificatDeductions, computeEffectiveTvaRatePercent } from "@shared/financial-utils";
 import { assertPvReceptionForSolde } from "./pv-reception.service";
+import type { Contractor, Devis, Marche } from "@shared/schema";
 
 /**
  * Task #243 — Server-side authoritative resolver for a certificat's deductions.
@@ -28,13 +29,6 @@ export interface ResolveCertificatDeductionsInput {
   retenueOverride?: string | null;
   /** Explicit architect override of the cumulative Compte Prorata. */
   prorataOverride?: string | null;
-  /**
-   * Task #463 — explicit architect override of the applied TVA rate (%).
-   * Draft-only (routes reject financial changes on sealed certificats).
-   * Ignored when the resolved regime is autoliquidation: the 0% rate is a
-   * legal consequence of art. 283 CGI, not an architect preference.
-   */
-  tvaRateOverride?: string | null;
   /** When recomputing an existing certificat, exclude it from the prior set. */
   excludeCertificatId?: number;
   /** Task #464 — designate this certificat as the solde (final) for its marché. */
@@ -58,6 +52,30 @@ export interface ResolveCertificatDeductionsInput {
    * the resolver keeps the historical whole-contractor scan.
    */
   documentaryBasisInvoices?: ReadonlyArray<{ amountHt: string; amountTtc: string }>;
+  /**
+   * Manual quotation fallback — the signed quotation whose scraped HT/TTC
+   * values establish the documentary effective rate.
+   */
+  documentaryBasisDevis?: Pick<Devis, "amountHt" | "amountTtc">;
+  /**
+   * A previously resolved decision can be supplied by a route that locked the
+   * underlying quotation/configuration before computing the final write.
+   */
+  resolvedTvaDecision?: ResolvedCertificatTvaDecision;
+  /**
+   * Historical draft compatibility only. Older drafts may carry the removed
+   * architect override source; sealing preserves that recorded decision rather
+   * than silently rewriting history. Public create/PATCH routes never set it.
+   */
+  legacyTvaDecision?: {
+    ratePercent: string;
+    source: Exclude<TvaRateSource, "autoliquidation">;
+  };
+  /** Optional locked tax context supplied by a final creation transaction. */
+  lockedTvaContext?: {
+    marche: Marche | null;
+    contractor: Contractor | null;
+  };
 }
 
 /** Task #464 — a non-superseded solde certificat already exists for the pair. */
@@ -106,10 +124,139 @@ export type TvaRateSource =
   | "contractor"
   | "default";
 
+export interface ResolvedCertificatTvaDecision {
+  ratePercent: number;
+  autoliquidation: boolean;
+  source: TvaRateSource;
+}
+
+export class TvaEvidenceRequiredError extends Error {
+  readonly code = "TVA_EVIDENCE_REQUIRED";
+
+  constructor() {
+    super(
+      "Aucun traitement de TVA fiable n’a pu être établi. Vérifiez les montants HT/TTC du devis signé ou configurez le taux de TVA du marché ou de l’entreprise.",
+    );
+    this.name = "TvaEvidenceRequiredError";
+  }
+}
+
 function toNumberOrNull(value: string | null | undefined): number | null {
   if (value == null || value === "") return null;
   const parsed = parseFloat(value);
   return Number.isNaN(parsed) ? null : parsed;
+}
+
+export async function resolveCertificatTvaDecision(
+  input: Pick<
+    ResolveCertificatDeductionsInput,
+    | "projectId"
+    | "contractorId"
+    | "documentaryBasisInvoices"
+    | "documentaryBasisDevis"
+    | "legacyTvaDecision"
+    | "lockedTvaContext"
+  >,
+): Promise<ResolvedCertificatTvaDecision> {
+  const marches = input.lockedTvaContext
+    ? input.lockedTvaContext.marche
+      ? [input.lockedTvaContext.marche]
+      : []
+    : await storage.getMarchesByProject(input.projectId);
+  const marche =
+    marches.find((candidate) => candidate.contractorId === input.contractorId) ??
+    null;
+  const contractor = input.lockedTvaContext
+    ? input.lockedTvaContext.contractor
+    : await storage.getContractor(input.contractorId);
+
+  const tvaAutoliquidation = marche?.tvaAutoliquidation
+    ? true
+    : marche?.tvaRatePercent != null
+      ? false
+      : contractor?.defaultTvaAutoliquidation ?? false;
+  if (tvaAutoliquidation) {
+    return {
+      ratePercent: 0,
+      autoliquidation: true,
+      source: "autoliquidation",
+    };
+  }
+
+  // Historical/source-less decisions are not part of automatic creation.
+  // Internal seal/reissue/PATCH callers use them only when no exact persisted
+  // invoice source exists. Autoliquidation still wins above, but unrelated
+  // invoices or later configuration must not rewrite the recorded decision.
+  if (input.legacyTvaDecision) {
+    const legacyRate = toNumberOrNull(input.legacyTvaDecision.ratePercent);
+    if (legacyRate != null) {
+      return {
+        ratePercent: legacyRate,
+        autoliquidation: false,
+        source: input.legacyTvaDecision.source,
+      };
+    }
+  }
+
+  let documentaryTvaRatePercent: number | null = null;
+  if (input.documentaryBasisInvoices !== undefined) {
+    let sumHt = 0;
+    let sumTtc = 0;
+    for (const invoice of input.documentaryBasisInvoices) {
+      sumHt += parseFloat(invoice.amountHt) || 0;
+      sumTtc += parseFloat(invoice.amountTtc) || 0;
+    }
+    documentaryTvaRatePercent = computeEffectiveTvaRatePercent(sumHt, sumTtc);
+  } else if (input.documentaryBasisDevis) {
+    documentaryTvaRatePercent = computeEffectiveTvaRatePercent(
+      parseFloat(input.documentaryBasisDevis.amountHt),
+      parseFloat(input.documentaryBasisDevis.amountTtc),
+    );
+  } else {
+    // Legacy/global manual path: documentary evidence may come from existing
+    // contractor invoices. Source-backed creation always passes its exact set.
+    const devisList = await storage.getDevisByProject(input.projectId);
+    let sumHt = 0;
+    let sumTtc = 0;
+    for (const devis of devisList) {
+      if (devis.contractorId !== input.contractorId) continue;
+      if (devis.status === "void" || devis.signOffStage === "void") continue;
+      const invoices = await storage.getInvoicesByDevis(devis.id);
+      for (const invoice of invoices) {
+        sumHt += parseFloat(invoice.amountHt) || 0;
+        sumTtc += parseFloat(invoice.amountTtc) || 0;
+      }
+    }
+    documentaryTvaRatePercent = computeEffectiveTvaRatePercent(sumHt, sumTtc);
+  }
+
+  if (documentaryTvaRatePercent != null) {
+    return {
+      ratePercent: documentaryTvaRatePercent,
+      autoliquidation: false,
+      source: "documentary",
+    };
+  }
+
+  const marcheRate = toNumberOrNull(marche?.tvaRatePercent);
+  if (marcheRate != null) {
+    return {
+      ratePercent: marcheRate,
+      autoliquidation: false,
+      source: "marche",
+    };
+  }
+
+  const contractorRate = toNumberOrNull(contractor?.defaultTvaRatePercent);
+  if (contractorRate != null) {
+    return {
+      ratePercent: contractorRate,
+      autoliquidation: false,
+      source: "contractor",
+    };
+  }
+
+  throw new TvaEvidenceRequiredError();
 }
 
 export async function resolveCertificatDeductions(
@@ -198,87 +345,12 @@ export async function resolveCertificatDeductions(
     )
     .reduce((sum, d) => sum + (parseFloat(d.acompteAmountHt ?? "0") || 0), 0);
 
-  // Task #463 — TVA regime resolution: marché-specific rate → contractor
-  // default → standard 20%. Autoliquidation (art. 283 CGI — sous-traitance
-  // BTP) forces 0%: the TVA is due by the client/main contractor, and no
-  // architect override may reinstate a rate on an autoliquidation contract.
-  // The marché flag is NOT NULL (default false), so a bare `??` chain would
-  // never reach the contractor default. Rule: an explicit marché autoliq flag
-  // or an explicit marché rate is a contract-level decision that wins; only a
-  // marché with NO explicit regime (or no marché at all) falls back to the
-  // contractor default.
-  const contractor = await storage.getContractor(input.contractorId);
-  const tvaAutoliquidation = marche?.tvaAutoliquidation
-    ? true
-    : marche?.tvaRatePercent != null
-      ? false
-      : contractor?.defaultTvaAutoliquidation ?? false;
-
-  // Task #479 — documentary effective rate. Contractors routinely issue
-  // mixed-rate invoices (10% rénovation + 20% supplies, sometimes 5.5%);
-  // a single configured/statutory rate then misstates the tax the client
-  // owes. The invoices' HT/TTC (source of truth since Task #78) encode the
-  // real blended rate: (ΣTTC − ΣHT) / ΣHT over the same invoice set the
-  // certificat annexe renders (all invoices of the contractor's non-void
-  // devis). Null when there is no usable evidence — see the shared helper.
-  // The rate is applied to the post-deduction net HT, so partial-progress
-  // certificats automatically pro-rate the documentary rate to the
-  // certified base.
-  let documentaryTvaRatePercent: number | null = null;
-  if (!tvaAutoliquidation) {
-    let sumHt = 0;
-    let sumTtc = 0;
-    if (input.documentaryBasisInvoices) {
-      // Selection-scoped basis: rate derived from the certified documents only.
-      for (const inv of input.documentaryBasisInvoices) {
-        sumHt += parseFloat(inv.amountHt) || 0;
-        sumTtc += parseFloat(inv.amountTtc) || 0;
-      }
-    } else {
-      for (const d of devisList) {
-        if (d.contractorId !== input.contractorId) continue;
-        if (d.status === "void" || d.signOffStage === "void") continue;
-        const invoices = await storage.getInvoicesByDevis(d.id);
-        for (const inv of invoices) {
-          sumHt += parseFloat(inv.amountHt) || 0;
-          sumTtc += parseFloat(inv.amountTtc) || 0;
-        }
-      }
-    }
-    documentaryTvaRatePercent = computeEffectiveTvaRatePercent(sumHt, sumTtc);
-  }
-
-  // Task #463/#479 — precedence: autoliquidation (art. 283 CGI, legal) →
-  // architect draft override → documentary effective rate (real invoice
-  // evidence beats configured expectations) → marché rate → contractor
-  // default → statutory 20% as documented last resort.
-  const overrideRate = toNumberOrNull(input.tvaRateOverride);
-  const marcheRate = toNumberOrNull(marche?.tvaRatePercent);
-  const contractorRate = toNumberOrNull(contractor?.defaultTvaRatePercent);
-  let resolvedTvaRatePercent: number;
-  let tvaRateSource: TvaRateSource;
-  if (tvaAutoliquidation) {
-    resolvedTvaRatePercent = 0;
-    tvaRateSource = "autoliquidation";
-  } else if (overrideRate != null) {
-    resolvedTvaRatePercent = overrideRate;
-    tvaRateSource = "override";
-  } else if (documentaryTvaRatePercent != null) {
-    resolvedTvaRatePercent = documentaryTvaRatePercent;
-    tvaRateSource = "documentary";
-  } else if (marcheRate != null) {
-    resolvedTvaRatePercent = marcheRate;
-    tvaRateSource = "marche";
-  } else if (contractorRate != null) {
-    resolvedTvaRatePercent = contractorRate;
-    tvaRateSource = "contractor";
-  } else {
-    resolvedTvaRatePercent = 20;
-    tvaRateSource = "default";
-  }
+  const tvaDecision =
+    input.resolvedTvaDecision ??
+    (await resolveCertificatTvaDecision(input));
 
   const result = computeCertificatDeductions({
-    tvaRate: resolvedTvaRatePercent / 100,
+    tvaRate: tvaDecision.ratePercent / 100,
     totalWorksHt: parseFloat(input.totalWorksHt || "0"),
     pvMvAdjustment: parseFloat(input.pvMvAdjustment ?? "0") || 0,
     previousPayments: parseFloat(input.previousPayments ?? "0") || 0,
@@ -308,9 +380,9 @@ export async function resolveCertificatDeductions(
     periodProrataDeduction: result.periodProrata.toFixed(2),
     cumulativeAcompteRecoupment: result.cumulativeAcompteRecoupment.toFixed(2),
     periodAcompteRecoupment: result.periodAcompteRecoupment.toFixed(2),
-    tvaRatePercent: resolvedTvaRatePercent.toFixed(2),
-    tvaAutoliquidation,
-    tvaRateSource,
+    tvaRatePercent: tvaDecision.ratePercent.toFixed(2),
+    tvaAutoliquidation: tvaDecision.autoliquidation,
+    tvaRateSource: tvaDecision.source,
     isSolde,
     retenueReleased: isSolde && releaseRetenue,
     retenueReleaseAmount: result.retenueReleaseAmount.toFixed(2),

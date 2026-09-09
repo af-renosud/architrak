@@ -1,9 +1,14 @@
 import {
   storage,
   SupplierDirectPaymentSealConflictError,
+  type ContractorTvaAuthoritySealGuard,
 } from "../storage";
 import { generateCertificatPdf } from "../communications/certificat-generator";
-import { resolveCertificatDeductions } from "./certificat-deductions.service";
+import {
+  resolveCertificatDeductions,
+  resolveCertificatTvaDecision,
+  type TvaRateSource,
+} from "./certificat-deductions.service";
 import { enqueueDriveUpload } from "./drive/upload-queue.service";
 import type { Certificat, InsertCertificatSource } from "@shared/schema";
 import {
@@ -103,6 +108,7 @@ export async function sealCertificat(certificatId: number): Promise<{
       | null = null;
 
     let freshDeductions;
+    let contractorExactInvoiceIds: number[] = [];
     if (certificateTrack === "supplier_direct_payment") {
       const project = await storage.getProject(existing.projectId);
       if (
@@ -214,6 +220,34 @@ export async function sealCertificat(certificatId: number): Promise<{
         pvOverrideAt: null,
       };
     } else {
+      const existingSources = await storage.getCertificatSources(certificatId);
+      const exactInvoiceIds = Array.from(
+        new Set(
+          existingSources
+            .map((source) => source.invoiceId)
+            .filter((invoiceId): invoiceId is number => invoiceId != null),
+        ),
+      );
+      contractorExactInvoiceIds = exactInvoiceIds;
+      const exactInvoices = await Promise.all(
+        exactInvoiceIds.map(async (invoiceId) => {
+          const invoice = await storage.getInvoice(invoiceId);
+          if (!invoice) {
+            throw new Error(
+              `Certificat ${certificatId} TVA source invoice ${invoiceId} not found`,
+            );
+          }
+          return {
+            amountHt: invoice.amountHt,
+            amountTtc: invoice.amountTtc,
+          };
+        }),
+      );
+      const hasExactInvoiceAuthority =
+        existing.tvaEvidenceKind === "exact_invoices";
+      const preservesHistoricalDecision =
+        existing.tvaEvidenceKind === "signed_quotation" ||
+        existing.tvaEvidenceKind === "legacy";
       freshDeductions = existing.acompteDevisId != null ? null : await resolveCertificatDeductions({
       projectId: existing.projectId,
       contractorId: existing.contractorId,
@@ -227,16 +261,36 @@ export async function sealCertificat(certificatId: number): Promise<{
       // never silently reverts an override to the standard rate math.
       retenueOverride: existing.retenueGarantie,
       prorataOverride: existing.cumulativeProrataDeduction,
-      // Task #463/#479 — the applied TVA rate is passed back as an override
-      // ONLY when it actually WAS an architect override (provenance says
-      // so); the override itself is not persisted, so this preserves it
-      // through the seal recompute. For documentary/marché/contractor/
-      // default provenance the resolver must re-derive freely — sealing is
-      // when money leaves, so invoice evidence added since the draft must
-      // refresh the effective rate, and the provenance must not be
-      // relabelled 'override'. Autoliquidation still wins inside the
-      // resolver (forces 0%).
-      tvaRateOverride: existing.tvaRateSource === "override" ? existing.tvaRatePercent : null,
+      // Exact invoice-backed certificats must stay bound to their persisted
+      // source set; unrelated contractor invoices may never dilute that rate.
+      // Source-less documentary rows are manual quotation drafts, so preserve
+      // the already server-resolved decision through issuance.
+      documentaryBasisInvoices:
+        hasExactInvoiceAuthority
+          ? exactInvoices
+          : preservesHistoricalDecision &&
+              existing.tvaRateSource !== "autoliquidation"
+            ? undefined
+            : [],
+      legacyTvaDecision:
+        preservesHistoricalDecision &&
+        existing.tvaRateSource !== "autoliquidation"
+          ? {
+              ratePercent: existing.tvaRatePercent,
+              source: existing.tvaRateSource as Exclude<
+                TvaRateSource,
+                "autoliquidation"
+              >,
+            }
+          : undefined,
+      // Keep the persisted server decision stable while refreshing the other
+      // deductions. After rendering, the exact rendered source set and current
+      // configuration are re-resolved and transactionally validated at seal.
+      resolvedTvaDecision: {
+        ratePercent: Number(existing.tvaRatePercent),
+        autoliquidation: existing.tvaAutoliquidation,
+        source: existing.tvaRateSource as TvaRateSource,
+      },
       // Task #464 — the seal FREEZES the solde designation and the retenue
       // release state as recorded on the draft; changing either after
       // issuance requires the reissue flow.
@@ -255,7 +309,11 @@ export async function sealCertificat(certificatId: number): Promise<{
         >
       ).some(([key, value]) => existing[key] !== value);
       if (drifted) {
-        await storage.updateCertificat(certificatId, freshDeductions);
+        await storage.updateCertificatUnsealed(
+          certificatId,
+          freshDeductions,
+          existing.version,
+        );
         continue;
       }
     }
@@ -298,6 +356,160 @@ export async function sealCertificat(certificatId: number): Promise<{
           "Le PDF fournisseur rendu ne contient pas exactement l'ensemble de factures verrouillé par le certificat.",
         );
       }
+    }
+
+    let contractorTvaAuthorityGuard:
+      | ContractorTvaAuthoritySealGuard
+      | undefined;
+    if (
+      certificateTrack === "contractor_works" &&
+      existing.acompteDevisId == null
+    ) {
+      const renderedInvoiceIds = Array.from(
+        new Set(rendered.sourceInvoiceIds),
+      ).sort((a, b) => a - b);
+      const renderedInvoices = [...rendered.sourceInvoiceSnapshot].sort(
+        (a, b) => a.invoiceId - b.invoiceId,
+      );
+      if (
+        renderedInvoices.length !== renderedInvoiceIds.length ||
+        renderedInvoices.some(
+          (invoice, index) =>
+            invoice.invoiceId !== renderedInvoiceIds[index] ||
+            invoice.projectId !== existing.projectId ||
+            invoice.contractorId !== existing.contractorId,
+        )
+      ) {
+        throw new Error(
+          `Certificat ${certificatId} render did not return its exact invoice authority snapshot`,
+        );
+      }
+      const contractor = await storage.getContractor(existing.contractorId);
+      if (!contractor) {
+        throw new Error(
+          `Certificat ${certificatId} contractor ${existing.contractorId} not found`,
+        );
+      }
+      const marche =
+        (await storage.getMarchesByProject(existing.projectId))
+          .filter((row) => row.contractorId === existing.contractorId)
+          .sort((a, b) => a.id - b.id)[0] ?? null;
+      const hasExactPersistedSources =
+        existing.tvaEvidenceKind === "exact_invoices";
+      if (
+        hasExactPersistedSources &&
+        (contractorExactInvoiceIds.length === 0 ||
+          contractorExactInvoiceIds.length !== renderedInvoiceIds.length ||
+          [...contractorExactInvoiceIds]
+            .sort((a, b) => a - b)
+            .some(
+              (invoiceId, index) => invoiceId !== renderedInvoiceIds[index],
+            ))
+      ) {
+        throw new Error(
+          `Certificat ${certificatId} rendered sources differ from its persisted source set`,
+        );
+      }
+      const documentaryBasisInvoices = hasExactPersistedSources
+        ? renderedInvoices.map((invoice) => ({
+            amountHt: invoice.amountHt,
+            amountTtc: invoice.amountTtc,
+          }))
+        : undefined;
+      const legacySource =
+        (existing.tvaEvidenceKind === "signed_quotation" ||
+          existing.tvaEvidenceKind === "legacy") &&
+        existing.tvaRateSource !== "autoliquidation"
+          ? (existing.tvaRateSource as Exclude<
+              TvaRateSource,
+              "autoliquidation"
+            >)
+          : null;
+      const explicitDocumentaryBasisInvoices = hasExactPersistedSources
+        ? documentaryBasisInvoices
+        : legacySource
+          ? undefined
+          : [];
+      const renderedTvaDecision = await resolveCertificatTvaDecision({
+        projectId: existing.projectId,
+        contractorId: existing.contractorId,
+        documentaryBasisInvoices: explicitDocumentaryBasisInvoices,
+        legacyTvaDecision: legacySource
+          ? {
+              ratePercent: existing.tvaRatePercent,
+              source: legacySource,
+            }
+          : undefined,
+        lockedTvaContext: {
+          contractor,
+          marche,
+        },
+      });
+      const renderedTvaDrifted =
+        existing.tvaRatePercent !==
+          renderedTvaDecision.ratePercent.toFixed(2) ||
+        existing.tvaAutoliquidation !==
+          renderedTvaDecision.autoliquidation ||
+        existing.tvaRateSource !== renderedTvaDecision.source;
+      if (renderedTvaDrifted) {
+        const renderedDeductions = await resolveCertificatDeductions({
+          projectId: existing.projectId,
+          contractorId: existing.contractorId,
+          totalWorksHt: existing.totalWorksHt,
+          pvMvAdjustment: existing.pvMvAdjustment,
+          previousPayments: existing.previousPayments,
+          retenueOverride: existing.retenueGarantie,
+          prorataOverride: existing.cumulativeProrataDeduction,
+          documentaryBasisInvoices: explicitDocumentaryBasisInvoices,
+          legacyTvaDecision: legacySource
+            ? {
+                ratePercent: existing.tvaRatePercent,
+                source: legacySource,
+              }
+            : undefined,
+          resolvedTvaDecision: renderedTvaDecision,
+          isSolde: existing.isSolde,
+          releaseRetenue: existing.retenueReleased,
+          pvOverride: existing.pvOverrideReason != null,
+          excludeCertificatId: certificatId,
+        });
+        await storage.updateCertificatUnsealed(
+          certificatId,
+          renderedDeductions,
+          existing.version,
+        );
+        continue;
+      }
+      contractorTvaAuthorityGuard = {
+        decision: {
+          ratePercent: renderedTvaDecision.ratePercent.toFixed(2),
+          autoliquidation: renderedTvaDecision.autoliquidation,
+          source: renderedTvaDecision.source,
+        },
+        contractor: {
+          id: contractor.id,
+          defaultTvaRatePercent: contractor.defaultTvaRatePercent,
+          defaultTvaAutoliquidation:
+            contractor.defaultTvaAutoliquidation,
+        },
+        marche: marche
+          ? {
+              id: marche.id,
+              tvaRatePercent: marche.tvaRatePercent,
+              tvaAutoliquidation: marche.tvaAutoliquidation,
+            }
+          : null,
+        invoices: renderedInvoices.map((invoice) => ({
+          invoiceId: invoice.invoiceId,
+          projectId: invoice.projectId,
+          contractorId: invoice.contractorId,
+          amountHt: invoice.amountHt,
+          tvaAmount: invoice.tvaAmount,
+          amountTtc: invoice.amountTtc,
+          status: invoice.status,
+          datePaid: invoice.datePaid,
+        })),
+      };
     }
 
     // Junction rows are computed BEFORE the seal write so the conditional
@@ -347,6 +559,7 @@ export async function sealCertificat(certificatId: number): Promise<{
       tvaRatePercent: existing.tvaRatePercent,
       tvaAutoliquidation: existing.tvaAutoliquidation,
       tvaRateSource: existing.tvaRateSource,
+      tvaEvidenceKind: existing.tvaEvidenceKind,
       isSolde: existing.isSolde,
       retenueReleased: existing.retenueReleased,
       retenueReleaseAmount: existing.retenueReleaseAmount,
@@ -391,6 +604,7 @@ export async function sealCertificat(certificatId: number): Promise<{
         // a facture a grouped certificat already certifies.
         projectId: existing.projectId,
         contractorId: existing.contractorId,
+        contractorTvaAuthorityGuard,
         supplierDirectPaymentGuard:
           certificateTrack === "supplier_direct_payment" &&
           supplierReadinessSnapshot &&

@@ -17,11 +17,12 @@ import {
   invoiceAcompteApplications,
   devis as devisTable,
   contractors as contractorsTable,
+  marches as marchesTable,
   type Certificat,
   type Invoice,
 } from "@shared/schema";
-import { eq, inArray, sql } from "drizzle-orm";
-import { resolveCertificatDeductions } from "./certificat-deductions.service";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { resolveCertificatDeductions, resolveCertificatTvaDecision } from "./certificat-deductions.service";
 import {
   checkInvoiceSetTvaCompatibility,
   computeSupplierDirectPaymentTotals,
@@ -575,7 +576,7 @@ export async function createCertificatFromInvoices(
     const nextRef = await allocateCertificateRef(tx, identity.projectId);
     await tx.execute(sql`select pg_advisory_xact_lock(${identity.projectId}, ${identity.contractorId})`);
     const [lockedPartner] = await tx
-      .select({ archidocPartnerType: contractorsTable.archidocPartnerType })
+      .select()
       .from(contractorsTable)
       .where(eq(contractorsTable.id, identity.contractorId))
       .for("update");
@@ -614,6 +615,18 @@ export async function createCertificatFromInvoices(
     // blocks until we finish (or is already visible to the re-derivation below).
     const devisIds = Array.from(new Set(lockedInvoices.map((i) => i.devisId))).sort((a, b) => a - b);
     await tx.select({ id: devisTable.id }).from(devisTable).where(inArray(devisTable.id, devisIds)).orderBy(devisTable.id).for("update");
+    const [lockedMarche] = await tx
+      .select()
+      .from(marchesTable)
+      .where(
+        and(
+          eq(marchesTable.projectId, identity.projectId),
+          eq(marchesTable.contractorId, identity.contractorId),
+        ),
+      )
+      .orderBy(marchesTable.id)
+      .limit(1)
+      .for("update");
 
     // TX-SCOPED already-certified re-check: the derivation below reads via
     // the global pool (committed state — sufficient for competitors holding
@@ -648,6 +661,21 @@ export async function createCertificatFromInvoices(
     if (d.certificateTrack !== expectedTrack) {
       throw new InvoiceStateChangedError();
     }
+    const lockedTvaDecision =
+      d.certificateTrack === "contractor_works"
+        ? await resolveCertificatTvaDecision({
+            projectId: d.projectId,
+            contractorId: d.contractorId,
+            documentaryBasisInvoices: d.invoices.map((row) => ({
+              amountHt: row.amountHt,
+              amountTtc: row.amountTtc,
+            })),
+            lockedTvaContext: {
+              contractor: lockedPartner,
+              marche: lockedMarche ?? null,
+            },
+          })
+        : null;
     const deductions =
       d.certificateTrack === "supplier_direct_payment"
         ? {
@@ -682,6 +710,7 @@ export async function createCertificatFromInvoices(
               amountHt: r.amountHt,
               amountTtc: r.amountTtc,
             })),
+            resolvedTvaDecision: lockedTvaDecision ?? undefined,
           });
 
     const invoiceNumbers = d.invoices.map((r) => `#${r.invoiceNumber}`).join(", ");
@@ -691,6 +720,7 @@ export async function createCertificatFromInvoices(
         projectId: d.projectId,
         contractorId: d.contractorId,
         certificateTrack: d.certificateTrack,
+        tvaEvidenceKind: "exact_invoices",
         certificateRef: nextRef,
         dateIssued:
           identity.issueDate ?? new Date().toISOString().split("T")[0],

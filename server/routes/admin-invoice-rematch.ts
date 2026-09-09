@@ -14,6 +14,7 @@ import {
   type Contractor,
 } from "@shared/schema";
 import { eq } from "drizzle-orm";
+import { hasLiveCertificateSource } from "../services/invoice-certificate-source-guard.service";
 
 const router = Router();
 
@@ -134,6 +135,13 @@ router.post(
         // the final guard for every non-route write path.
         const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).for("update");
         if (!invoice) return { outcome: "skipped" as const, reason: "Invoice not found" };
+        if (await hasLiveCertificateSource(tx, invoice.id)) {
+          return {
+            outcome: "skipped" as const,
+            reason:
+              "Invoice is evidence for an active payment certificate and cannot be re-matched",
+          };
+        }
 
         const [application] = await tx
           .select({ id: invoiceAcompteApplications.id })

@@ -28,11 +28,12 @@
  * compared at 2 decimals only at evaluation time.
  */
 import type { Devis } from "@shared/schema";
-import { acompteNoInvoicePayments, certificats, devis as devisTable, emailDocuments, invoices, projectIntakeDocuments, projects } from "@shared/schema";
-import { deriveTvaAmount, roundCurrency } from "@shared/financial-utils";
+import { acompteNoInvoicePayments, certificats, contractors as contractorsTable, devis as devisTable, emailDocuments, invoices, marches as marchesTable, projectIntakeDocuments, projects } from "@shared/schema";
+import { deriveCertificatWorksAmounts, deriveTvaAmount, roundCurrency } from "@shared/financial-utils";
 import { db } from "../db";
 import { allocateCertificateRef } from "../storage";
 import { and, eq, ne, sql } from "drizzle-orm";
+import { resolveCertificatTvaDecision } from "./certificat-deductions.service";
 
 export type AcompteState = "none" | "pending" | "invoiced" | "paid" | "applied";
 
@@ -286,6 +287,63 @@ export function resolveAcompteAmounts(d: {
   return null;
 }
 
+type AcompteTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * The single locked authority for no-invoice deposit certificate money.
+ * The deposit specification establishes HT; the certificate TVA resolver
+ * derives TTC, including autoliquidation, from the same evidence as every
+ * other certificate path.
+ */
+export async function resolveAutomaticAcompteCertificateAmountsTx(
+  tx: AcompteTransaction,
+  locked: Devis,
+) {
+  const configured = resolveAcompteAmounts(locked);
+  if (!configured) return null;
+
+  const [lockedContractor] = await tx
+    .select()
+    .from(contractorsTable)
+    .where(eq(contractorsTable.id, locked.contractorId))
+    .for("update");
+  const [lockedMarche] = await tx
+    .select()
+    .from(marchesTable)
+    .where(
+      and(
+        eq(marchesTable.projectId, locked.projectId),
+        eq(marchesTable.contractorId, locked.contractorId),
+      ),
+    )
+    .orderBy(marchesTable.id)
+    .limit(1)
+    .for("update");
+  const tvaDecision = await resolveCertificatTvaDecision({
+    projectId: locked.projectId,
+    contractorId: locked.contractorId,
+    documentaryBasisDevis: {
+      amountHt: locked.amountHt,
+      amountTtc: locked.amountTtc,
+    },
+    lockedTvaContext: {
+      marche: lockedMarche ?? null,
+      contractor: lockedContractor ?? null,
+    },
+  });
+  const taxAmounts = deriveCertificatWorksAmounts(
+    configured.amountHt,
+    "ht",
+    tvaDecision.ratePercent,
+  );
+  return {
+    amountHt: taxAmounts.amountHt,
+    amountTtc: taxAmounts.amountTtc,
+    tvaAmount: roundCurrency(taxAmounts.amountTtc - taxAmounts.amountHt),
+    tvaDecision,
+  };
+}
+
 export interface OpeningAcompteResolutionSuggestion {
   devisId: number;
   devisCode: string;
@@ -419,7 +477,7 @@ export async function confirmNoInvoiceAcomptePayment(input: {
     if (locked.acompteInvoiceId != null) {
       return { outcome: "invalid" as const, code: "acompte_invoice_linked", message: "A supplier invoice is already linked." };
     }
-    const amounts = resolveAcompteAmounts(locked);
+    const amounts = await resolveAutomaticAcompteCertificateAmountsTx(tx, locked);
     if (!amounts) {
       return { outcome: "invalid" as const, code: "acompte_amount_missing", message: "No positive acompte amount is configured." };
     }
@@ -511,16 +569,22 @@ export async function confirmNoInvoiceAcomptePayment(input: {
         return { outcome: "invalid" as const, code: "acompte_certificat_amount_mismatch", message: "Existing acompte certificat does not match the devis amount." };
       }
     } else {
-      const tvaAmount = deriveTvaAmount(amounts.amountHt, amounts.amountTtc);
-      const rate = amounts.amountHt > 0 ? roundCurrency((tvaAmount / amounts.amountHt) * 100) : 0;
       [cert] = await tx.insert(certificats).values({
         projectId: locked.projectId, contractorId: locked.contractorId, certificateRef,
         dateIssued: input.paidAt.toISOString().slice(0, 10), totalWorksHt: amounts.amountHt.toFixed(2),
         pvMvAdjustment: "0.00", previousPayments: "0.00", retenueGarantie: "0.00",
         cumulativeProrataDeduction: "0.00", periodProrataDeduction: "0.00",
         cumulativeAcompteRecoupment: "0.00", periodAcompteRecoupment: "0.00",
-        tvaRatePercent: rate.toFixed(2), tvaAutoliquidation: false, tvaRateSource: "documentary",
-        netToPayHt: amounts.amountHt.toFixed(2), tvaAmount: tvaAmount.toFixed(2), netToPayTtc: amounts.amountTtc.toFixed(2),
+        tvaRatePercent: amounts.tvaDecision.ratePercent.toFixed(2),
+        tvaAutoliquidation: amounts.tvaDecision.autoliquidation,
+        tvaRateSource: amounts.tvaDecision.source,
+        tvaEvidenceKind:
+          amounts.tvaDecision.source === "documentary"
+            ? "signed_quotation"
+            : "configuration",
+        netToPayHt: amounts.amountHt.toFixed(2),
+        tvaAmount: amounts.tvaAmount.toFixed(2),
+        netToPayTtc: amounts.amountTtc.toFixed(2),
         notes: `Acompte (opening/deposit) on devis ${locked.devisCode} — no supplier invoice.`,
         acompteDevisId: locked.id,
       }).returning();

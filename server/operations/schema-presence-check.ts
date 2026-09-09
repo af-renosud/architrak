@@ -349,6 +349,24 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
       column: "encrypted_body",
     },
   },
+  {
+    tag: "0128_certificat_tva_evidence_kind",
+    artifact: {
+      kind: "all",
+      artifacts: [
+        {
+          kind: "column",
+          table: "certificats",
+          column: "tva_evidence_kind",
+        },
+        {
+          kind: "constraint",
+          table: "certificats",
+          constraint: "certificats_tva_evidence_kind_chk",
+        },
+      ],
+    },
+  },
 ];
 
 interface JournalFile {

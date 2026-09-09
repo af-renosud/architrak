@@ -66,6 +66,7 @@ beforeAll(async () => {
     totalHt: "10000.00",
     totalTtc: "12000.00",
     retenueGarantiePercent: "5.00",
+    tvaRatePercent: "20.00",
   });
   const [d] = await db
     .insert(devis)
@@ -144,6 +145,163 @@ describe("acompte certificat without invoice — full lifecycle", () => {
     expect(cert.cumulativeAcompteRecoupment).toBe("0.00");
     expect(cert.previousPayments).toBe("0.00");
     expect(cert.acompteDevisId).toBe(devisId);
+  });
+
+  it("forces a new acompte certificat to 0% under autoliquidation", async () => {
+    const [autoliquidationDevis] = await db
+      .insert(devis)
+      .values({
+        projectId,
+        contractorId,
+        devisCode: `T491.AUTO.${Date.now()}`,
+        descriptionFr: "Devis acompte autoliquidation",
+        amountHt: "1000.00",
+        amountTtc: "1200.00",
+        acompteRequired: true,
+        acomptePercent: "30.00",
+        acompteState: "pending",
+        signOffStage: "client_signed_off",
+      })
+      .returning();
+    const [source] = await db.insert(projectIntakeDocuments).values({
+      projectId,
+      fileName: "autoliquidation-payment-proof.pdf",
+      storageKey: `tests/autoliquidation-payment-proof-${Date.now()}.pdf`,
+      contentFingerprint: "e".repeat(64),
+      extractedData: {
+        documentType: "invoice",
+        acomptePaidAmountTtc: 300,
+        acomptePaidEvidenceText: "Acompte déjà payé 300 €",
+      },
+    }).returning();
+    await db.insert(users).values({
+      id: 1,
+      googleId: "t491-auto-operator",
+      email: "t491-auto-operator@test.invalid",
+    }).onConflictDoNothing();
+    await db
+      .update(marches)
+      .set({ tvaAutoliquidation: true })
+      .where(eq(marches.contractorId, contractorId));
+    try {
+      const res = await post(
+        `/api/devis/${autoliquidationDevis.id}/acompte/generate-certificat`,
+      );
+      expect(res.status).toBe(201);
+      const generated = await res.json();
+      expect(generated).toMatchObject({
+        totalWorksHt: "300.00",
+        netToPayHt: "300.00",
+        tvaRatePercent: "0.00",
+        tvaAutoliquidation: true,
+        tvaRateSource: "autoliquidation",
+        tvaAmount: "0.00",
+        netToPayTtc: "300.00",
+      });
+      const confirmation = await post(
+        `/api/devis/${autoliquidationDevis.id}/acompte/confirm-paid-no-invoice`,
+        {
+          confirmed: true,
+          sourceIntakeDocumentId: source.id,
+          paymentReference: "VIR-T491-AUTO-GENERATED",
+          paidAt: "2025-01-16T10:00:00.000Z",
+        },
+      );
+      expect(confirmation.status).toBe(201);
+      const [audit] = await db
+        .select()
+        .from(acompteNoInvoicePayments)
+        .where(eq(acompteNoInvoicePayments.devisId, autoliquidationDevis.id));
+      expect(audit.amountHt).toBe("300.00");
+      expect(audit.amountTtc).toBe("300.00");
+      expect(audit.certificatId).toBe(generated.id);
+    } finally {
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT set_config('app.allow_acompte_audit_delete', 'true', true)`);
+        await tx.delete(acompteNoInvoicePayments)
+          .where(eq(acompteNoInvoicePayments.devisId, autoliquidationDevis.id));
+      });
+      await db
+        .update(marches)
+        .set({ tvaAutoliquidation: false })
+        .where(eq(marches.contractorId, contractorId));
+      await db
+        .delete(certificats)
+        .where(eq(certificats.acompteDevisId, autoliquidationDevis.id));
+      await db.delete(projectIntakeDocuments).where(eq(projectIntakeDocuments.id, source.id));
+      await db.delete(devis).where(eq(devis.id, autoliquidationDevis.id));
+    }
+  });
+
+  it("creates the same 0% deposit certificate when autoliquidation is confirmed first", async () => {
+    const [d] = await db.insert(devis).values({
+      projectId,
+      contractorId,
+      devisCode: `T491.AUTO.DIRECT.${Date.now()}`,
+      descriptionFr: "Direct confirmation under autoliquidation",
+      amountHt: "1000.00",
+      amountTtc: "1200.00",
+      acompteRequired: true,
+      acomptePercent: "30.00",
+      acompteState: "pending",
+      signOffStage: "client_signed_off",
+    }).returning();
+    const [source] = await db.insert(projectIntakeDocuments).values({
+      projectId,
+      fileName: "autoliquidation-direct-proof.pdf",
+      storageKey: `tests/autoliquidation-direct-proof-${Date.now()}.pdf`,
+      contentFingerprint: "f".repeat(64),
+      extractedData: {
+        documentType: "invoice",
+        acomptePaidAmountTtc: 300,
+        acomptePaidEvidenceText: "Acompte versé 300 €",
+      },
+    }).returning();
+    await db.update(marches)
+      .set({ tvaAutoliquidation: true })
+      .where(eq(marches.contractorId, contractorId));
+    try {
+      const confirmation = await post(
+        `/api/devis/${d.id}/acompte/confirm-paid-no-invoice`,
+        {
+          confirmed: true,
+          sourceIntakeDocumentId: source.id,
+          paymentReference: "VIR-T491-AUTO-DIRECT",
+          paidAt: "2025-01-16T11:00:00.000Z",
+        },
+      );
+      expect(confirmation.status).toBe(201);
+      const [cert] = await db
+        .select()
+        .from(certificats)
+        .where(eq(certificats.acompteDevisId, d.id));
+      expect(cert).toMatchObject({
+        totalWorksHt: "300.00",
+        netToPayHt: "300.00",
+        tvaRatePercent: "0.00",
+        tvaAutoliquidation: true,
+        tvaRateSource: "autoliquidation",
+        tvaAmount: "0.00",
+        netToPayTtc: "300.00",
+      });
+      const [audit] = await db
+        .select()
+        .from(acompteNoInvoicePayments)
+        .where(eq(acompteNoInvoicePayments.devisId, d.id));
+      expect(audit.amountTtc).toBe("300.00");
+    } finally {
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT set_config('app.allow_acompte_audit_delete', 'true', true)`);
+        await tx.delete(acompteNoInvoicePayments)
+          .where(eq(acompteNoInvoicePayments.devisId, d.id));
+      });
+      await db.update(marches)
+        .set({ tvaAutoliquidation: false })
+        .where(eq(marches.contractorId, contractorId));
+      await db.delete(certificats).where(eq(certificats.acompteDevisId, d.id));
+      await db.delete(projectIntakeDocuments).where(eq(projectIntakeDocuments.id, source.id));
+      await db.delete(devis).where(eq(devis.id, d.id));
+    }
   });
 
   it("refuses a second generation (live acompte certificat already exists)", async () => {
@@ -488,6 +646,7 @@ describe("acompte certificat without invoice — full lifecycle", () => {
     await db.insert(users).values({ id: 1, googleId: "t686-operator", email: "operator@renosud.com" }).onConflictDoNothing();
     const [freshContractor] = await db.insert(contractors).values({
       name: `T686 percent contractor ${Date.now()}`,
+      defaultTvaRatePercent: "20.00",
     }).returning();
     const [d] = await db.insert(devis).values({
       projectId,

@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { db } from "../db";
-import { storage, CertificatSourceConflictError } from "../storage";
+import {
+  storage,
+  CertificatReissueInputChangedError,
+  CertificatSourceConflictError,
+} from "../storage";
 import {
   certificats,
   certificatSources,
@@ -56,7 +60,7 @@ async function insertInvoice(num: string, ht: string, ttc: string) {
       amountHt: ht,
       tvaAmount: "0.00",
       amountTtc: ttc,
-      status: "pending",
+      status: "approved",
     })
     .returning();
   return inv;
@@ -255,5 +259,206 @@ describe("Task #605 — manual seal cannot double-certify a facture (integration
       expect(manualReloaded!.pdfStorageKey).toBeNull();
       expect(manualReloaded!.issuanceSnapshot).toBeNull();
     }
+  });
+
+  it("refuses to pin rendered bytes when an exact invoice changes before the final TVA authority lock", async () => {
+    const inv = await insertInvoice("T605-TVA-GUARD", "1000.00", "1200.00");
+    const manual = await makeManualCert("T605-M5");
+    const [contractor] = await db
+      .select()
+      .from(contractors)
+      .where(eq(contractors.id, contractorId));
+    const [marche] = await db
+      .select()
+      .from(marches)
+      .where(
+        and(
+          eq(marches.projectId, projectId),
+          eq(marches.contractorId, contractorId),
+        ),
+      );
+    const authorityGuard = {
+      decision: {
+        ratePercent: manual.tvaRatePercent,
+        autoliquidation: manual.tvaAutoliquidation,
+        source: manual.tvaRateSource,
+      },
+      contractor: {
+        id: contractor.id,
+        defaultTvaRatePercent: contractor.defaultTvaRatePercent,
+        defaultTvaAutoliquidation:
+          contractor.defaultTvaAutoliquidation,
+      },
+      marche: {
+        id: marche.id,
+        tvaRatePercent: marche.tvaRatePercent,
+        tvaAutoliquidation: marche.tvaAutoliquidation,
+      },
+      invoices: [
+        {
+          invoiceId: inv.id,
+          projectId: inv.projectId,
+          contractorId: inv.contractorId,
+          amountHt: inv.amountHt,
+          tvaAmount: inv.tvaAmount,
+          amountTtc: inv.amountTtc,
+          status: inv.status,
+          datePaid: inv.datePaid,
+        },
+      ],
+    };
+    await db
+      .update(invoices)
+      .set({ tvaAmount: "200.00", amountTtc: "1200.00" })
+      .where(eq(invoices.id, inv.id));
+
+    const sealed = await storage.sealCertificat(manual.id, {
+      ...sealArgs("m5-stale.pdf", manual.version, [
+        { certificatId: manual.id, invoiceId: inv.id, situationId: null },
+      ]),
+      contractorTvaAuthorityGuard: authorityGuard,
+    });
+    expect(sealed).toBeNull();
+    const reloaded = await storage.getCertificat(manual.id);
+    expect(reloaded!.pdfStorageKey).toBeNull();
+    expect(await liveSourcesForInvoice(inv.id)).toHaveLength(0);
+  });
+
+  it("includes contractor autoliquidation in the final authority guard", async () => {
+    const manual = await makeManualCert("T605-M5-AUTO");
+    const [contractor] = await db
+      .select()
+      .from(contractors)
+      .where(eq(contractors.id, contractorId));
+    const [marche] = await db
+      .select()
+      .from(marches)
+      .where(
+        and(
+          eq(marches.projectId, projectId),
+          eq(marches.contractorId, contractorId),
+        ),
+      );
+    await db
+      .update(contractors)
+      .set({ defaultTvaAutoliquidation: true })
+      .where(eq(contractors.id, contractorId));
+    try {
+      const sealed = await storage.sealCertificat(manual.id, {
+        ...sealArgs("m5-auto-stale.pdf", manual.version, []),
+        contractorTvaAuthorityGuard: {
+          decision: {
+            ratePercent: manual.tvaRatePercent,
+            autoliquidation: manual.tvaAutoliquidation,
+            source: manual.tvaRateSource,
+          },
+          contractor: {
+            id: contractor.id,
+            defaultTvaRatePercent: contractor.defaultTvaRatePercent,
+            defaultTvaAutoliquidation:
+              contractor.defaultTvaAutoliquidation,
+          },
+          marche: {
+            id: marche.id,
+            tvaRatePercent: marche.tvaRatePercent,
+            tvaAutoliquidation: marche.tvaAutoliquidation,
+          },
+          invoices: [],
+        },
+      });
+      expect(sealed).toBeNull();
+      expect((await storage.getCertificat(manual.id))!.pdfStorageKey).toBeNull();
+    } finally {
+      await db
+        .update(contractors)
+        .set({ defaultTvaAutoliquidation: false })
+        .where(eq(contractors.id, contractorId));
+    }
+  });
+
+  it("keeps reissue atomic when a source changes after derivation", async () => {
+    const inv = await insertInvoice(
+      "T605-REISSUE-GUARD",
+      "1000.00",
+      "1200.00",
+    );
+    const original = await makeManualCert("T605-M6");
+    const sealed = await storage.sealCertificat(
+      original.id,
+      sealArgs("m6.pdf", original.version, [
+        { certificatId: original.id, invoiceId: inv.id, situationId: null },
+      ]),
+    );
+    expect(sealed).not.toBeNull();
+    const [contractor] = await db
+      .select()
+      .from(contractors)
+      .where(eq(contractors.id, contractorId));
+    const [marche] = await db
+      .select()
+      .from(marches)
+      .where(
+        and(
+          eq(marches.projectId, projectId),
+          eq(marches.contractorId, contractorId),
+        ),
+      );
+    const authorityGuard = {
+      decision: {
+        ratePercent: sealed!.tvaRatePercent,
+        autoliquidation: sealed!.tvaAutoliquidation,
+        source: sealed!.tvaRateSource,
+      },
+      contractor: {
+        id: contractor.id,
+        defaultTvaRatePercent: contractor.defaultTvaRatePercent,
+        defaultTvaAutoliquidation:
+          contractor.defaultTvaAutoliquidation,
+      },
+      marche: {
+        id: marche.id,
+        tvaRatePercent: marche.tvaRatePercent,
+        tvaAutoliquidation: marche.tvaAutoliquidation,
+      },
+      invoices: [
+        {
+          invoiceId: inv.id,
+          projectId: inv.projectId,
+          contractorId: inv.contractorId,
+          amountHt: inv.amountHt,
+          tvaAmount: inv.tvaAmount,
+          amountTtc: inv.amountTtc,
+          status: inv.status,
+          datePaid: inv.datePaid,
+        },
+      ],
+    };
+    const draft = {
+      ...sealed!,
+      dateIssued: null,
+      pdfStorageKey: null,
+      pdfFileName: null,
+      issuanceSnapshot: null,
+      status: "draft",
+      reissuedFromCertificatId: sealed!.id,
+      version: 1,
+    } as any;
+    delete draft.id;
+    delete draft.certificateRef;
+
+    await db
+      .update(invoices)
+      .set({ amountHt: "900.00", amountTtc: "1080.00" })
+      .where(eq(invoices.id, inv.id));
+    await expect(
+      storage.reissueCertificat(original.id, draft, {
+        expectedVersion: sealed!.version,
+        contractorTvaAuthorityGuard: authorityGuard,
+      }),
+    ).rejects.toBeInstanceOf(CertificatReissueInputChangedError);
+
+    const originalReloaded = await storage.getCertificat(original.id);
+    expect(originalReloaded!.status).not.toBe("superseded");
+    expect(await storage.getCertificatReissues([original.id])).toHaveLength(0);
   });
 });

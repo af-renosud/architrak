@@ -1,11 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { resolveCertificatDeductions } from "../certificat-deductions.service";
+import {
+  resolveCertificatDeductions,
+  TvaEvidenceRequiredError,
+} from "../certificat-deductions.service";
 import { storage } from "../../storage";
 
 /**
  * Task #463 — TVA regime resolution pins for the server-authoritative
- * deductions resolver: marché rate → contractor default → standard 20%,
- * autoliquidation forcing 0% (art. 283 CGI) and beating any override.
+ * deductions resolver: documentary evidence → marché rate → contractor
+ * default, with autoliquidation forcing 0% (art. 283 CGI). Missing evidence
+ * or configuration is an explicit refusal, never an invented 20%.
  */
 
 vi.mock("../../storage", () => ({
@@ -70,13 +74,11 @@ const input = {
 describe("resolveCertificatDeductions — TVA regime (Task #463)", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("defaults to 20% with no marché regime and no contractor default", async () => {
+  it("refuses when no documentary or configured TVA evidence exists", async () => {
     setup({ marche: {}, contractor: null });
-    const r = await resolveCertificatDeductions(input);
-    expect(r.tvaRatePercent).toBe("20.00");
-    expect(r.tvaAutoliquidation).toBe(false);
-    expect(r.tvaAmount).toBe("200.00");
-    expect(r.netToPayTtc).toBe("1200.00");
+    await expect(resolveCertificatDeductions(input)).rejects.toBeInstanceOf(
+      TvaEvidenceRequiredError,
+    );
   });
 
   it.each([
@@ -121,36 +123,43 @@ describe("resolveCertificatDeductions — TVA regime (Task #463)", () => {
     expect(r.tvaRatePercent).toBe("20.00");
   });
 
-  it("a draft override beats the marché/contractor rate", async () => {
+  it("preserves a grandfathered historical override only for internal callers", async () => {
     setup({ marche: { tvaRatePercent: "20.00" } });
-    const r = await resolveCertificatDeductions({ ...input, tvaRateOverride: "5.50" });
+    const r = await resolveCertificatDeductions({
+      ...input,
+      legacyTvaDecision: { ratePercent: "5.50", source: "override" },
+    });
     expect(r.tvaRatePercent).toBe("5.50");
     expect(r.tvaAmount).toBe("55.00");
   });
 
-  it("autoliquidation ignores any override (rate is a legal consequence)", async () => {
+  it("autoliquidation beats a grandfathered historical override", async () => {
     setup({ marche: { tvaAutoliquidation: true } });
-    const r = await resolveCertificatDeductions({ ...input, tvaRateOverride: "20.00" });
+    const r = await resolveCertificatDeductions({
+      ...input,
+      legacyTvaDecision: { ratePercent: "20.00", source: "override" },
+    });
     expect(r.tvaAutoliquidation).toBe(true);
     expect(r.tvaRatePercent).toBe("0.00");
     expect(r.tvaAmount).toBe("0.00");
   });
 
-  it("no marché at all: contractor default, then 20%", async () => {
+  it("no marché at all: contractor default, then explicit refusal", async () => {
     setup({ marche: null, contractor: { defaultTvaRatePercent: "5.50", defaultTvaAutoliquidation: false } });
     const r = await resolveCertificatDeductions(input);
     expect(r.tvaRatePercent).toBe("5.50");
     setup({ marche: null, contractor: null });
-    const r2 = await resolveCertificatDeductions(input);
-    expect(r2.tvaRatePercent).toBe("20.00");
+    await expect(resolveCertificatDeductions(input)).rejects.toBeInstanceOf(
+      TvaEvidenceRequiredError,
+    );
   });
 });
 
 /**
  * Task #479 — documentary effective rate: mixed-rate invoices (10% + 20%)
  * drive the applied TVA rate via (ΣTTC − ΣHT) / ΣHT over the contractor's
- * non-void devis' invoices. Precedence: autoliquidation → override →
- * documentary → marché → contractor → 20%.
+ * non-void devis' invoices. Precedence: autoliquidation → documentary →
+ * marché → contractor → refusal.
  */
 describe("resolveCertificatDeductions — documentary TVA rate (Task #479)", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -195,11 +204,17 @@ describe("resolveCertificatDeductions — documentary TVA rate (Task #479)", () 
     expect(r.tvaRateSource).toBe("documentary");
   });
 
-  it("an architect draft override still beats the documentary rate", async () => {
+  it("signed quotation documentary evidence is accepted directly", async () => {
     setupWithInvoices({ 7: [{ amountHt: "1000.00", amountTtc: "1100.00" }] });
-    const r = await resolveCertificatDeductions({ ...input, tvaRateOverride: "5.50" });
+    const r = await resolveCertificatDeductions({
+      ...input,
+      documentaryBasisDevis: {
+        amountHt: "1000.00",
+        amountTtc: "1055.00",
+      },
+    });
     expect(r.tvaRatePercent).toBe("5.50");
-    expect(r.tvaRateSource).toBe("override");
+    expect(r.tvaRateSource).toBe("documentary");
   });
 
   it("autoliquidation ignores documentary evidence (rate is legally 0)", async () => {
@@ -249,14 +264,12 @@ describe("resolveCertificatDeductions — documentary TVA rate (Task #479)", () 
 
   it("TTC below HT (bad data) is rejected as documentary evidence", async () => {
     setupWithInvoices({ 7: [{ amountHt: "1000.00", amountTtc: "900.00" }] });
-    const r = await resolveCertificatDeductions(input);
-    expect(r.tvaRatePercent).toBe("20.00");
-    expect(r.tvaRateSource).toBe("default");
+    await expect(resolveCertificatDeductions(input)).rejects.toBeInstanceOf(
+      TvaEvidenceRequiredError,
+    );
   });
 
   it("provenance is reported for every non-documentary source", async () => {
-    setup({ marche: {}, contractor: null });
-    expect((await resolveCertificatDeductions(input)).tvaRateSource).toBe("default");
     setup({ marche: { tvaRatePercent: "10.00" } });
     expect((await resolveCertificatDeductions(input)).tvaRateSource).toBe("marche");
     setup({ marche: {}, contractor: { defaultTvaRatePercent: "10.00", defaultTvaAutoliquidation: false } });

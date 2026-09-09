@@ -20,7 +20,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { insertCertificatSchema, insertFeeSchema, insertFeeEntrySchema, insertLotSchema, insertMarcheSchema } from "@shared/schema";
+import { insertFeeSchema, insertFeeEntrySchema, insertLotSchema, insertMarcheSchema } from "@shared/schema";
 import type { Project, Devis, Lot, Marche, Certificat, CertificatPayment, Fee, FeeEntry, Contractor, Invoice, ProjectDocument, ProjectCommunication, PaymentReminder } from "@shared/schema";
 import {
   ContextEmailResendButton,
@@ -46,6 +46,14 @@ import {
 } from "@/lib/certificat-delivery";
 import { PvReceptionBadge, PvReceptionDialog } from "@/components/marche/PvReceptionDialog";
 import { CertificatDetailDialog } from "@/components/certificats/CertificatDetailDialog";
+import {
+  AutomaticTvaFields,
+  type ManualCertificatPreview,
+} from "@/components/certificats/AutomaticTvaFields";
+import {
+  manualCertificatPreviewKey,
+  manualCertificatPreviewQueryOptions,
+} from "@/lib/manual-certificat-preview";
 import { PlanningEnvelopeTab } from "@/components/projects/PlanningEnvelopeTab";
 
 import { Amount } from "@/components/ui/amount";
@@ -197,15 +205,18 @@ function ProrataInput({ projectId, initialValue }: { projectId: number; initialV
   );
 }
 
-const certFormSchema = insertCertificatSchema
-  .omit({ certificateRef: true })
-  .extend({
-    contractorId: z.number().int().positive("Select a contractor"),
-    totalWorksHt: z.string().min(1, "Required"),
-    netToPayHt: z.string().min(1, "Required"),
-    tvaAmount: z.string().min(1, "Required"),
-    netToPayTtc: z.string().min(1, "Required"),
-  });
+const certFormSchema = z.object({
+  projectId: z.number().int().positive(),
+  contractorId: z.number().int().positive("Select a contractor"),
+  dateIssued: z.string().nullable(),
+  totalWorksAmount: z.string().min(1, "Required"),
+  totalWorksAmountBasis: z.enum(["ht", "ttc"]),
+  pvMvAdjustment: z.string().default("0.00"),
+  previousPayments: z.string().default("0.00"),
+  retenueOverride: z.string().optional(),
+  status: z.enum(["draft", "ready", "paid"]).default("draft"),
+  notes: z.string().nullable(),
+});
 type CertFormValues = z.infer<typeof certFormSchema>;
 
 const feeFormSchema = insertFeeSchema.extend({
@@ -593,10 +604,53 @@ export default function ProjectDetail() {
     resolver: zodResolver(certFormSchema),
     defaultValues: {
       projectId: 0, contractorId: 0, dateIssued: null,
-      totalWorksHt: "0.00", pvMvAdjustment: "0.00", previousPayments: "0.00",
-      retenueGarantie: "0.00", netToPayHt: "0.00", tvaAmount: "0.00",
-      netToPayTtc: "0.00", status: "draft", notes: null,
+      totalWorksAmount: "0.00", totalWorksAmountBasis: "ht",
+      pvMvAdjustment: "0.00", previousPayments: "0.00",
+      retenueOverride: undefined, status: "draft", notes: null,
     },
+  });
+
+  const certTotalWorksAmount = certForm.watch("totalWorksAmount");
+  const certTotalWorksAmountBasis = certForm.watch("totalWorksAmountBasis");
+  const certContractorId = certForm.watch("contractorId");
+  const certPvMvAdjustment = certForm.watch("pvMvAdjustment");
+  const certPreviousPayments = certForm.watch("previousPayments");
+  const certRetenueOverride = certForm.watch("retenueOverride");
+  const certPreviewQuery = useQuery<ManualCertificatPreview>({
+    queryKey: manualCertificatPreviewKey(
+      projectId ?? "",
+      lockedCertContext?.devisId,
+      certContractorId,
+      certTotalWorksAmount,
+      certTotalWorksAmountBasis,
+      certPvMvAdjustment,
+      certPreviousPayments,
+      certRetenueOverride,
+    ),
+    queryFn: async () => {
+      const response = await apiRequest(
+        "POST",
+        `/api/projects/${projectId}/certificats/manual-preview`,
+        {
+          contractorId: lockedCertContext!.contractorId,
+          contextDevisId: lockedCertContext!.devisId,
+          totalWorksAmount: certTotalWorksAmount,
+          totalWorksAmountBasis: certTotalWorksAmountBasis,
+          pvMvAdjustment: certPvMvAdjustment,
+          previousPayments: certPreviousPayments,
+          retenueOverride: certRetenueOverride || undefined,
+        },
+      );
+      return response.json();
+    },
+    enabled:
+      certDialogOpen &&
+      lockedCertContext != null &&
+      certContractorId > 0 &&
+      certTotalWorksAmount !== "" &&
+      Number.isFinite(Number(certTotalWorksAmount)),
+    retry: false,
+    ...manualCertificatPreviewQueryOptions,
   });
 
   const feeForm = useForm<FeeFormValues>({
@@ -726,6 +780,13 @@ export default function ProjectDetail() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "marches") });
+      queryClient.invalidateQueries({
+        queryKey: projectScopedKey(
+          projectId,
+          "certificats",
+          "manual-preview",
+        ),
+      });
       setMarcheDialogOpen(false);
       marcheForm.reset();
       toast({ title: "Marché created successfully" });
@@ -1009,18 +1070,6 @@ export default function ProjectDetail() {
 
   const getContractorName = (id: number) => contractors?.find((c) => c.id === id)?.name ?? `#${id}`;
 
-  const recalcCert = () => {
-    const totalWorks = parseFloat(certForm.watch("totalWorksHt") || "0");
-    const pvMv = parseFloat(certForm.watch("pvMvAdjustment") || "0");
-    const previous = parseFloat(certForm.watch("previousPayments") || "0");
-    const retenue = parseFloat(certForm.watch("retenueGarantie") || "0");
-    const netHt = totalWorks + pvMv - previous - retenue;
-    // TVA-neutral: HT and TTC are independent inputs; TVA = TTC − HT.
-    const tva = parseFloat(certForm.watch("tvaAmount") || "0");
-    certForm.setValue("netToPayHt", netHt.toFixed(2));
-    certForm.setValue("netToPayTtc", (netHt + tva).toFixed(2));
-  };
-
   const recalcFee = () => {
     const base = parseFloat(feeForm.watch("baseAmountHt") || "0");
     const rate = parseFloat(feeForm.watch("feeRate") || "0");
@@ -1083,10 +1132,11 @@ export default function ProjectDetail() {
     const totalInvHt = (projectInvoices ?? []).reduce((s, i) => s + parseFloat(i.amountHt), 0);
     certForm.reset({
       projectId: parseInt(projectId!), contractorId: context?.contractorId ?? 0,
-      dateIssued: null, totalWorksHt: contextualDevis?.amountHt ?? totalInvHt.toFixed(2), pvMvAdjustment: "0.00",
-      previousPayments: "0.00", retenueGarantie: "0.00",
-      netToPayHt: contextualDevis?.amountHt ?? totalInvHt.toFixed(2), tvaAmount: "0.00",
-      netToPayTtc: contextualDevis?.amountTtc ?? totalInvHt.toFixed(2), status: "draft", notes: null,
+      dateIssued: null,
+      totalWorksAmount: contextualDevis?.amountHt ?? totalInvHt.toFixed(2),
+      totalWorksAmountBasis: "ht",
+      pvMvAdjustment: "0.00", previousPayments: "0.00",
+      retenueOverride: undefined, status: "draft", notes: null,
     });
     setLockedCertContext(context ?? null);
     setCertDialogOpen(true);
@@ -1977,9 +2027,9 @@ export default function ProjectDetail() {
                           </FormItem>
                         )} />
                       )}
-                      {/* Task #463 — TVA regime for this contract's certificats.
-                          "Contractor default" leaves the rate NULL (falls back to
-                          the contractor's default, then the standard 20%). */}
+                      {/* TVA regime for this contract's certificats. Leaving the
+                          rate to the contractor requires an explicit contractor
+                          TVA configuration; no standard rate is invented. */}
                       <FormItem>
                         <FormLabel><TechnicalLabel>Régime de TVA</TechnicalLabel></FormLabel>
                         <Select
@@ -2396,41 +2446,42 @@ export default function ProjectDetail() {
                         <FormMessage />
                       </FormItem>
                     )} />
+                    <AutomaticTvaFields
+                      enteredAmount={certTotalWorksAmount}
+                      basis={certTotalWorksAmountBasis}
+                      preview={certPreviewQuery.data}
+                      isLoading={certPreviewQuery.isFetching}
+                      error={certPreviewQuery.error}
+                      onEdit={(basis, value) => {
+                        certForm.setValue("totalWorksAmountBasis", basis, {
+                          shouldValidate: true,
+                        });
+                        certForm.setValue("totalWorksAmount", value, {
+                          shouldDirty: true,
+                          shouldValidate: true,
+                        });
+                      }}
+                      testIdPrefix="input-cert-works-tab"
+                    />
                     <div className="grid grid-cols-2 gap-4">
-                      <FormField control={certForm.control} name="totalWorksHt" render={({ field }) => (
-                        <FormItem>
-                          <FormLabel><TechnicalLabel>Total Works HT</TechnicalLabel></FormLabel>
-                          <FormControl><Input {...field} type="number" step="0.01" onBlur={() => recalcCert()} data-testid="input-cert-works-tab" /></FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )} />
                       <FormField control={certForm.control} name="pvMvAdjustment" render={({ field }) => (
                         <FormItem>
                           <FormLabel><TechnicalLabel>PV/MV</TechnicalLabel></FormLabel>
-                          <FormControl><Input {...field} value={field.value ?? "0.00"} type="number" step="0.01" onBlur={() => recalcCert()} data-testid="input-cert-pvmv-tab" /></FormControl>
+                          <FormControl><Input {...field} value={field.value ?? "0.00"} type="number" step="0.01" data-testid="input-cert-pvmv-tab" /></FormControl>
                           <FormMessage />
                         </FormItem>
                       )} />
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
                       <FormField control={certForm.control} name="previousPayments" render={({ field }) => (
                         <FormItem>
                           <FormLabel><TechnicalLabel>Previous Payments</TechnicalLabel></FormLabel>
-                          <FormControl><Input {...field} value={field.value ?? "0.00"} type="number" step="0.01" onBlur={() => recalcCert()} data-testid="input-cert-prev-tab" /></FormControl>
+                          <FormControl><Input {...field} value={field.value ?? "0.00"} type="number" step="0.01" data-testid="input-cert-prev-tab" /></FormControl>
                           <FormMessage />
                         </FormItem>
                       )} />
-                      <FormField control={certForm.control} name="tvaAmount" render={({ field }) => (
+                      <FormField control={certForm.control} name="retenueOverride" render={({ field }) => (
                         <FormItem>
-                          <FormLabel><TechnicalLabel>TVA Amount</TechnicalLabel></FormLabel>
-                          <FormControl><Input {...field} value={field.value ?? "0.00"} type="number" step="0.01" onBlur={() => recalcCert()} data-testid="input-cert-tva-tab" /></FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )} />
-                      <FormField control={certForm.control} name="retenueGarantie" render={({ field }) => (
-                        <FormItem>
-                          <FormLabel><TechnicalLabel>Retenue de Garantie</TechnicalLabel></FormLabel>
-                          <FormControl><Input {...field} value={field.value ?? "0.00"} type="number" step="0.01" onBlur={() => recalcCert()} data-testid="input-cert-retenue-tab" /></FormControl>
+                          <FormLabel><TechnicalLabel>Retenue Override (optional)</TechnicalLabel></FormLabel>
+                          <FormControl><Input {...field} value={field.value ?? ""} type="number" step="0.01" placeholder="Auto" data-testid="input-cert-retenue-tab" /></FormControl>
                           <FormMessage />
                         </FormItem>
                       )} />
@@ -2439,15 +2490,15 @@ export default function ProjectDetail() {
                       <TechnicalLabel>Summary</TechnicalLabel>
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-[11px] text-muted-foreground">Net HT</span>
-                         <span className="text-[13px] font-semibold text-foreground"><Amount value={parseFloat(certForm.watch("netToPayHt") || "0")} denomination="HT" /></span>
+                         <span className="text-[13px] font-semibold text-foreground"><Amount value={parseFloat(certPreviewQuery.data?.deductions.netToPayHt ?? "0")} denomination="HT" /></span>
                       </div>
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-[11px] text-muted-foreground">TVA</span>
-                         <span className="text-[13px] font-semibold text-foreground"><Amount value={parseFloat(certForm.watch("tvaAmount") || "0")} denomination="TVA" /></span>
+                         <span className="text-[13px] font-semibold text-foreground"><Amount value={parseFloat(certPreviewQuery.data?.deductions.tvaAmount ?? "0")} denomination="TVA" /></span>
                       </div>
                       <div className="flex items-center justify-between gap-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                         <span className="text-[11px] font-black uppercase tracking-widest">Net TTC</span>
-                         <span className="text-[16px] font-bold text-foreground"><Amount value={parseFloat(certForm.watch("netToPayTtc") || "0")} denomination="TTC" /></span>
+                         <span className="text-[16px] font-bold text-foreground"><Amount value={parseFloat(certPreviewQuery.data?.deductions.netToPayTtc ?? "0")} denomination="TTC" /></span>
                       </div>
                     </div>
                     <FormField control={certForm.control} name="notes" render={({ field }) => (
@@ -2457,7 +2508,16 @@ export default function ProjectDetail() {
                         <FormMessage />
                       </FormItem>
                     )} />
-                    <Button type="submit" className="w-full" disabled={createCertMutation.isPending} data-testid="button-submit-cert-tab">
+                    <Button
+                      type="submit"
+                      className="w-full"
+                      disabled={
+                        createCertMutation.isPending ||
+                        certPreviewQuery.isFetching ||
+                        !certPreviewQuery.data
+                      }
+                      data-testid="button-submit-cert-tab"
+                    >
                       <span className="text-[9px] font-bold uppercase tracking-widest">
                         {createCertMutation.isPending ? "Creating..." : "Create Certificat"}
                       </span>

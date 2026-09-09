@@ -1,6 +1,11 @@
 import { Router } from "express";
 import { z } from "zod";
-import { allocateCertificateRef, storage, CertificatSourceConflictError } from "../storage";
+import {
+  allocateCertificateRef,
+  storage,
+  CertificatSourceConflictError,
+  type ContractorTvaAuthoritySealGuard,
+} from "../storage";
 import {
   insertCertificatSchema,
   type Certificat,
@@ -16,10 +21,15 @@ import {
 import { sendCertificat, sendCommunication, CommunicationSendInProgressError } from "../communications/email-sender";
 import { validateRequest } from "../middleware/validate";
 import { rejectClientCertificateReference } from "../middleware/certificate-reference";
+import { rejectClientCertificateTva } from "../middleware/certificate-tva";
 import {
   resolveCertificatDeductions,
+  resolveCertificatTvaDecision,
   SoldeConflictError,
   ReleaseRequiresSoldeError,
+  TvaEvidenceRequiredError,
+  type ResolvedCertificatTvaDecision,
+  type TvaRateSource,
 } from "../services/certificat-deductions.service";
 import { PvReceptionRequiredError, isPvReceptionApproved } from "../services/pv-reception.service";
 import { getDocumentBuffer } from "../storage/object-storage";
@@ -31,6 +41,7 @@ import {
   contractors as contractorsTable,
   devis as devisTable,
   invoices as invoicesTable,
+  marches as marchesTable,
 } from "@shared/schema";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import {
@@ -54,6 +65,10 @@ import {
   isSupplierDirectPaymentAllowedForProject,
   SUPPLIER_DIRECT_PAYMENT_ROLLOUT_BLOCKED,
 } from "../services/supplier-certificate-rollout.service";
+import {
+  deriveCertificatWorksAmounts,
+  type CertificatAmountBasis,
+} from "@shared/financial-utils";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
@@ -118,19 +133,68 @@ function publicCertificatDto(cert: Certificat) {
   return { ...publicFields, supplierPresentation: publicSupplierPresentation };
 }
 
+async function getExistingCertificatTvaEvidence(
+  certificatId: number,
+  existing: Pick<
+    Certificat,
+    "tvaRatePercent" | "tvaRateSource" | "tvaEvidenceKind"
+  >,
+) {
+  const sources = await storage.getCertificatSources(certificatId);
+  const invoiceIds = Array.from(
+    new Set(
+      sources
+        .map((source) => source.invoiceId)
+        .filter((invoiceId): invoiceId is number => invoiceId != null),
+    ),
+  );
+  const sourceInvoices = await Promise.all(
+    invoiceIds.map(async (invoiceId) => {
+      const invoice = await storage.getInvoice(invoiceId);
+      if (!invoice) {
+        throw new Error(
+          `Certificat ${certificatId} TVA source invoice ${invoiceId} not found`,
+        );
+      }
+      return invoice;
+    }),
+  );
+  const exactInvoices = sourceInvoices.map((invoice) => ({
+    amountHt: invoice.amountHt,
+    amountTtc: invoice.amountTtc,
+  }));
+  const hasExactInvoiceAuthority =
+    existing.tvaEvidenceKind === "exact_invoices";
+  const preservesHistoricalDecision =
+    existing.tvaEvidenceKind === "signed_quotation" ||
+    existing.tvaEvidenceKind === "legacy";
+  const legacySource: Exclude<TvaRateSource, "autoliquidation"> | null =
+    preservesHistoricalDecision &&
+    existing.tvaRateSource !== "autoliquidation"
+      ? (existing.tvaRateSource as Exclude<
+          TvaRateSource,
+          "autoliquidation"
+        >)
+      : null;
+  return {
+    documentaryBasisInvoices: hasExactInvoiceAuthority
+      ? exactInvoices
+      : legacySource
+        ? undefined
+        : [],
+    sourceInvoices,
+    legacyTvaDecision: legacySource
+      ? {
+          ratePercent: existing.tvaRatePercent,
+          source: legacySource,
+        }
+      : undefined,
+  };
+}
+
 const deductionOverrideShape = {
   retenueOverride: z.string().optional(),
   prorataOverride: z.string().optional(),
-  // Task #463 — draft-only override of the applied TVA rate (%). Strict
-  // scale-2 decimal 0–100; ignored by the resolver on autoliquidation
-  // contracts (the 0% rate is a legal consequence, not a preference).
-  tvaRateOverride: z
-    .string()
-    .regex(/^\d{1,3}(\.\d{1,2})?$/, "TVA rate must be a decimal with at most 2 decimal places")
-    .refine((v) => { const n = parseFloat(v); return n >= 0 && n <= 100; }, {
-      message: "TVA rate must be between 0 and 100",
-    })
-    .optional(),
   // Task #464 — explicit retenue de garantie release on the solde
   // certificat. NOT columns: the handler feeds `releaseRetenue` to the
   // resolver (which derives the released state + amount) and stamps the
@@ -159,8 +223,8 @@ const serverDerivedDeductionFields = {
   cumulativeAcompteRecoupment: true,
   periodAcompteRecoupment: true,
   // Task #463 — the applied TVA rate + autoliquidation flag are resolved
-  // from the marché/contractor regime (or the validated tvaRateOverride);
-  // the raw columns are never client-settable.
+  // from documentary/configuration evidence; the raw columns are never
+  // client-settable.
   tvaRatePercent: true,
   tvaAutoliquidation: true,
   // Task #479 — the rate's provenance is derived alongside the rate itself.
@@ -207,6 +271,12 @@ function mapSoldeError(err: unknown): { status: number; body: Record<string, unk
       body: { code: "PV_RECEPTION_REQUIRED", message: err.message, marcheId: err.marcheId, pvStatus: err.pvStatus },
     };
   }
+  if (err instanceof TvaEvidenceRequiredError) {
+    return {
+      status: 422,
+      body: { code: err.code, message: err.message },
+    };
+  }
   return null;
 }
 
@@ -222,18 +292,100 @@ function supplierHandoffFailureBody(error: SupplierPaymentReadinessError) {
   };
 }
 
+const certificatAmount = z
+  .string()
+  .regex(/^\d{1,10}(\.\d{1,2})?$/, "Le montant doit avoir au plus deux décimales.");
+const signedCertificatAmount = z
+  .string()
+  .regex(/^-?\d{1,10}(\.\d{1,2})?$/, "Le montant doit avoir au plus deux décimales.");
+const automaticWorksAmountShape = {
+  totalWorksAmount: certificatAmount.optional(),
+  totalWorksAmountBasis: z.enum(["ht", "ttc"]).optional(),
+};
 const createCertificatBodySchema = insertCertificatSchema
-  .omit({ projectId: true, certificateRef: true, ...serverDerivedDeductionFields })
+  .omit({
+    projectId: true,
+    certificateRef: true,
+    totalWorksHt: true,
+    ...serverDerivedDeductionFields,
+  })
   .extend({
     contractorId: z.number().int().positive("Sélectionnez une entreprise."),
     contextDevisId: z.number().int().positive().optional(),
+    // Legacy API callers may still send totalWorksHt. New UIs send exactly one
+    // entered amount plus its HT/TTC basis.
+    totalWorksHt: certificatAmount.optional(),
+    ...automaticWorksAmountShape,
     ...deductionOverrideShape,
     status: clientCreatableStatus.default("draft"),
+  })
+  .superRefine((value, ctx) => {
+    const hasLegacyHt = value.totalWorksHt !== undefined;
+    const hasAutomaticAmount =
+      value.totalWorksAmount !== undefined ||
+      value.totalWorksAmountBasis !== undefined;
+    if (hasLegacyHt === hasAutomaticAmount) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["totalWorksAmount"],
+        message:
+          "Saisissez un seul montant d’avancement avec sa base HT/TTC.",
+      });
+    }
+    if (
+      hasAutomaticAmount &&
+      (value.totalWorksAmount === undefined ||
+        value.totalWorksAmountBasis === undefined)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["totalWorksAmountBasis"],
+        message: "La base HT/TTC du montant est requise.",
+      });
+    }
   });
 const updateCertificatSchema = insertCertificatSchema
   .omit({ certificateRef: true, ...serverDerivedDeductionFields })
   .partial()
   .extend({ ...deductionOverrideShape, status: clientSettableStatus.optional() });
+
+interface AutomaticWorksAmountRequest {
+  totalWorksHt?: string;
+  totalWorksAmount?: string;
+  totalWorksAmountBasis?: CertificatAmountBasis;
+}
+
+function resolveWorksAmounts(
+  request: AutomaticWorksAmountRequest,
+  tvaDecision: ResolvedCertificatTvaDecision,
+) {
+  const enteredAmount = parseFloat(
+    request.totalWorksAmount ?? request.totalWorksHt ?? "0",
+  );
+  const enteredBasis: CertificatAmountBasis =
+    request.totalWorksAmountBasis ?? "ht";
+  return {
+    enteredAmount: enteredAmount.toFixed(2),
+    enteredBasis,
+    ...deriveCertificatWorksAmounts(
+      enteredAmount,
+      enteredBasis,
+      tvaDecision.ratePercent,
+    ),
+  };
+}
+
+const manualPreviewBodySchema = z
+  .object({
+    contractorId: z.number().int().positive("Sélectionnez une entreprise."),
+    contextDevisId: z.number().int().positive().optional(),
+    totalWorksAmount: certificatAmount,
+    totalWorksAmountBasis: z.enum(["ht", "ttc"]),
+    pvMvAdjustment: signedCertificatAmount.optional().default("0.00"),
+    previousPayments: certificatAmount.optional().default("0.00"),
+    ...deductionOverrideShape,
+  })
+  .strict();
 
 // Cross-project list of sendable certificats lacking delivery evidence.
 // Legacy status='sent' rows remain recoverable when no successful email exists.
@@ -262,17 +414,156 @@ router.get("/api/projects/:projectId/certificats/next-ref", async (req, res) => 
 });
 
 router.post(
+  "/api/projects/:projectId/certificats/manual-preview",
+  rejectClientCertificateTva,
+  validateRequest({ params: projectIdParams, body: manualPreviewBodySchema }),
+  async (req, res) => {
+    const projectId = Number(req.params.projectId);
+    const {
+      contractorId,
+      contextDevisId,
+      totalWorksAmount,
+      totalWorksAmountBasis,
+      pvMvAdjustment,
+      previousPayments,
+      retenueOverride,
+      prorataOverride,
+      releaseRetenue,
+      isSolde,
+      pvOverrideReason,
+    } = req.body;
+
+    const contractor = await storage.getContractor(contractorId);
+    if (!contractor) {
+      return res.status(404).json({
+        code: "CONTRACTOR_NOT_FOUND",
+        message: "Sélectionnez une entreprise valide avant de créer le certificat.",
+      });
+    }
+    if (contractor.archidocPartnerType === "supplier") {
+      return res.status(409).json({
+        code: "SUPPLIER_CERTIFICATE_REQUIRES_INVOICE_SOURCES",
+        message:
+          "Un paiement direct fournisseur doit être créé depuis une ou plusieurs factures approuvées.",
+      });
+    }
+
+    let documentaryBasisDevis:
+      | Pick<NonNullable<Awaited<ReturnType<typeof storage.getDevis>>>, "amountHt" | "amountTtc">
+      | undefined;
+    if (contextDevisId != null) {
+      const contextDevis = await storage.getDevis(contextDevisId);
+      if (!contextDevis || contextDevis.projectId !== projectId) {
+        return res.status(404).json({
+          code: "DEVIS_NOT_FOUND",
+          message: "Le devis sélectionné est introuvable dans ce projet.",
+        });
+      }
+      if (contextDevis.contractorId !== contractorId) {
+        return res.status(409).json({
+          code: "DEVIS_CONTRACTOR_MISMATCH",
+          message: "L’entreprise sélectionnée ne correspond plus au devis.",
+        });
+      }
+      if (
+        contextDevis.status === "void" ||
+        contextDevis.signOffStage !== "client_signed_off"
+      ) {
+        return res.status(409).json({
+          code: "DEVIS_NOT_SIGNED_OFF",
+          message:
+            "Le devis doit être signé par le client avant de calculer le certificat.",
+        });
+      }
+      documentaryBasisDevis = {
+        amountHt: contextDevis.amountHt,
+        amountTtc: contextDevis.amountTtc,
+      };
+    }
+
+    try {
+      const tvaDecision = await resolveCertificatTvaDecision({
+        projectId,
+        contractorId,
+        documentaryBasisDevis,
+        documentaryBasisInvoices:
+          contextDevisId == null ? [] : undefined,
+      });
+      const works = resolveWorksAmounts(
+        { totalWorksAmount, totalWorksAmountBasis },
+        tvaDecision,
+      );
+      const deductions = await resolveCertificatDeductions({
+        projectId,
+        contractorId,
+        totalWorksHt: works.amountHt.toFixed(2),
+        pvMvAdjustment,
+        previousPayments,
+        retenueOverride,
+        prorataOverride,
+        isSolde,
+        releaseRetenue,
+        pvOverride: pvOverrideReason != null,
+        documentaryBasisDevis,
+          documentaryBasisInvoices:
+            contextDevisId == null ? [] : undefined,
+        resolvedTvaDecision: tvaDecision,
+      });
+      return res.json({
+        works: {
+          enteredAmount: works.enteredAmount,
+          enteredBasis: works.enteredBasis,
+          amountHt: works.amountHt.toFixed(2),
+          amountTtc: works.amountTtc.toFixed(2),
+        },
+        deductions,
+        tva: {
+          ratePercent: tvaDecision.ratePercent.toFixed(2),
+          autoliquidation: tvaDecision.autoliquidation,
+          source: tvaDecision.source,
+          evidenceKind:
+            contextDevisId != null
+              ? "signed_quotation"
+              : "configuration",
+        },
+      });
+    } catch (err) {
+      const mapped = mapSoldeError(err);
+      if (mapped) return res.status(mapped.status).json(mapped.body);
+      throw err;
+    }
+  },
+);
+
+router.post(
   "/api/projects/:projectId/certificats",
   rejectClientCertificateReference,
+  rejectClientCertificateTva,
   validateRequest({ params: projectIdParams, body: createCertificatBodySchema }),
   async (req, res) => {
     const projectId = Number(req.params.projectId);
-    const { contextDevisId, retenueOverride, prorataOverride, tvaRateOverride, releaseRetenue, releaseReason, isSolde, pvOverrideReason, ...body } = req.body as
-      Omit<InsertCertificat, "projectId" | "certificateRef"> & {
+    const {
+      contextDevisId,
+      totalWorksHt,
+      totalWorksAmount,
+      totalWorksAmountBasis,
+      retenueOverride,
+      prorataOverride,
+      releaseRetenue,
+      releaseReason,
+      isSolde,
+      pvOverrideReason,
+      ...body
+    } = req.body as Omit<
+      InsertCertificat,
+      "projectId" | "certificateRef" | "totalWorksHt"
+    > & {
         contextDevisId?: number;
+        totalWorksHt?: string;
+        totalWorksAmount?: string;
+        totalWorksAmountBasis?: CertificatAmountBasis;
         retenueOverride?: string;
         prorataOverride?: string;
-        tvaRateOverride?: string;
         releaseRetenue?: boolean;
         releaseReason?: string;
         isSolde?: boolean;
@@ -284,6 +575,17 @@ router.post(
       return res.status(400).json({
         code: "RELEASE_REASON_REQUIRED",
         message: "Une raison est requise pour libérer la retenue de garantie.",
+      });
+    }
+
+    // Friendly identity refusal before contextual mismatch checks. The
+    // transaction still reloads and locks the quotation's actual contractor
+    // before the write, so this read is not trusted as final authority.
+    const requestedPartner = await storage.getContractor(body.contractorId);
+    if (!requestedPartner) {
+      return res.status(404).json({
+        code: "CONTRACTOR_NOT_FOUND",
+        message: "Sélectionnez une entreprise valide avant de créer le certificat.",
       });
     }
 
@@ -341,6 +643,18 @@ router.post(
             if (lockedPartner.archidocPartnerType === "supplier") {
               return { kind: "supplier_manual_forbidden" as const };
             }
+            const [lockedMarche] = await tx
+              .select()
+              .from(marchesTable)
+              .where(
+                and(
+                  eq(marchesTable.projectId, projectId),
+                  eq(marchesTable.contractorId, lockedDevis.contractorId),
+                ),
+              )
+              .orderBy(marchesTable.id)
+              .limit(1)
+              .for("update");
 
             // Lock all rows, including pending/paid ones, so a concurrent
             // status transition cannot cross the source-required decision.
@@ -393,18 +707,40 @@ router.post(
               }
             }
 
+            const documentaryBasisDevis = {
+              amountHt: lockedDevis.amountHt,
+              amountTtc: lockedDevis.amountTtc,
+            };
+            const tvaDecision = await resolveCertificatTvaDecision({
+              projectId,
+              contractorId: lockedDevis.contractorId,
+              documentaryBasisDevis,
+              lockedTvaContext: {
+                marche: lockedMarche ?? null,
+                contractor: lockedPartner,
+              },
+            });
+            const works = resolveWorksAmounts(
+              {
+                totalWorksHt,
+                totalWorksAmount,
+                totalWorksAmountBasis,
+              },
+              tvaDecision,
+            );
             const deductions = await resolveCertificatDeductions({
               projectId,
               contractorId: lockedDevis.contractorId,
-              totalWorksHt: body.totalWorksHt,
+              totalWorksHt: works.amountHt.toFixed(2),
               pvMvAdjustment: body.pvMvAdjustment,
               previousPayments: body.previousPayments,
               retenueOverride,
               prorataOverride,
-              tvaRateOverride,
               isSolde,
               releaseRetenue,
               pvOverride: pvOverrideReason != null,
+              documentaryBasisDevis,
+              resolvedTvaDecision: tvaDecision,
             });
             const pvAudit = deductions.isSolde && pvOverrideReason
               ? {
@@ -431,7 +767,9 @@ router.post(
               .values({
                 ...body,
                 contractorId: lockedDevis.contractorId,
+                totalWorksHt: works.amountHt.toFixed(2),
                 ...deductions,
+                 tvaEvidenceKind: "signed_quotation",
                 ...releaseAudit,
                 ...pvAudit,
                 projectId,
@@ -499,15 +837,8 @@ router.post(
     // Task #243 — the server is authoritative for deduction money math.
     // Recompute Retenue de Garantie + Compte Prorata cumulatively from the
     // contract, overriding whatever the FE sent for the derived fields.
-    let deductions;
     try {
-      const partner = await storage.getContractor(body.contractorId);
-      if (!partner) {
-        return res.status(404).json({
-          code: "CONTRACTOR_NOT_FOUND",
-          message: "Sélectionnez une entreprise valide avant de créer le certificat.",
-        });
-      }
+      const partner = requestedPartner;
       if (partner.archidocPartnerType === "supplier") {
         return res.status(409).json({
           code: "SUPPLIER_CERTIFICATE_REQUIRES_INVOICE_SOURCES",
@@ -515,42 +846,86 @@ router.post(
             "Un paiement direct fournisseur doit être créé depuis une ou plusieurs factures approuvées. La création manuelle sans sources est interdite.",
         });
       }
-      deductions = await resolveCertificatDeductions({
-        projectId,
-        contractorId: body.contractorId,
-        totalWorksHt: body.totalWorksHt,
-        pvMvAdjustment: body.pvMvAdjustment,
-        previousPayments: body.previousPayments,
-        retenueOverride,
-        prorataOverride,
-        tvaRateOverride,
-        isSolde,
-        releaseRetenue,
-        // Task #566 — a motivated override reason satisfies the PV gate.
-        pvOverride: pvOverrideReason != null,
-      });
+      const marche =
+        (await storage.getMarchesByProject(projectId))
+          .filter((row) => row.contractorId === body.contractorId)
+          .sort((a, b) => a.id - b.id)[0] ?? null;
+        const tvaDecision = await resolveCertificatTvaDecision({
+          projectId,
+          contractorId: body.contractorId,
+          // The contextless fallback is configuration-only. Existing
+          // contractor invoices are not an exact, lockable source set.
+          documentaryBasisInvoices: [],
+          lockedTvaContext: {
+            contractor: partner,
+            marche,
+          },
+        });
+        const works = resolveWorksAmounts(
+          { totalWorksHt, totalWorksAmount, totalWorksAmountBasis },
+          tvaDecision,
+        );
+        const deductions = await resolveCertificatDeductions({
+          projectId,
+          contractorId: body.contractorId,
+          totalWorksHt: works.amountHt.toFixed(2),
+          pvMvAdjustment: body.pvMvAdjustment,
+          previousPayments: body.previousPayments,
+          retenueOverride,
+          prorataOverride,
+          isSolde,
+          releaseRetenue,
+          pvOverride: pvOverrideReason != null,
+          resolvedTvaDecision: tvaDecision,
+        });
+        const pvAudit = deductions.isSolde && pvOverrideReason
+          ? { pvOverrideReason, pvOverrideByUserId: req.session.userId ?? null, pvOverrideAt: new Date() }
+          : { pvOverrideReason: null, pvOverrideByUserId: null, pvOverrideAt: null };
+        const releaseAudit = deductions.retenueReleased
+          ? { retenueReleaseReason: releaseReason ?? null, retenueReleaseDate: new Date().toISOString().split("T")[0] }
+          : { retenueReleaseReason: null, retenueReleaseDate: null };
+        const created = await storage.createCertificat({
+          ...body,
+          totalWorksHt: works.amountHt.toFixed(2),
+          ...deductions,
+          tvaEvidenceKind: "configuration",
+          ...releaseAudit,
+          ...pvAudit,
+          projectId,
+        }, {
+          decision: {
+            ratePercent: tvaDecision.ratePercent.toFixed(2),
+            autoliquidation: tvaDecision.autoliquidation,
+            source: tvaDecision.source,
+          },
+          contractor: {
+            id: partner.id,
+            defaultTvaRatePercent: partner.defaultTvaRatePercent ?? null,
+            defaultTvaAutoliquidation:
+              partner.defaultTvaAutoliquidation ?? false,
+          },
+          marche: marche
+            ? {
+                id: marche.id,
+                tvaRatePercent: marche.tvaRatePercent,
+                tvaAutoliquidation: marche.tvaAutoliquidation,
+              }
+            : null,
+          invoices: [],
+        });
+      return res.status(201).json(publicCertificatDto(created));
     } catch (err) {
+      if (
+        (err as { code?: string }).code ===
+        "CERTIFICATE_TVA_AUTHORITY_CHANGED"
+      ) {
+        return res.status(409).json({
+          code: (err as { code: string }).code,
+          message: (err as Error).message,
+        });
+      }
       const mapped = mapSoldeError(err);
       if (mapped) return res.status(mapped.status).json(mapped.body);
-      throw err;
-    }
-
-    // Task #566 — PV-gate override audit trail: recorded only on a solde
-    // certificat with an architect-provided reason (who/when server-set).
-    const pvAudit = deductions.isSolde && pvOverrideReason
-      ? { pvOverrideReason, pvOverrideByUserId: req.session.userId ?? null, pvOverrideAt: new Date() }
-      : { pvOverrideReason: null, pvOverrideByUserId: null, pvOverrideAt: null };
-
-    // Task #464 — release audit trail (reason architect-provided, date
-    // server-stamped) recorded only when the resolver confirmed the release.
-    const releaseAudit = deductions.retenueReleased
-      ? { retenueReleaseReason: releaseReason ?? null, retenueReleaseDate: new Date().toISOString().split("T")[0] }
-      : { retenueReleaseReason: null, retenueReleaseDate: null };
-
-    try {
-      const cert = await storage.createCertificat({ ...body, ...deductions, ...releaseAudit, ...pvAudit, projectId });
-      return res.status(201).json(publicCertificatDto(cert));
-    } catch (err) {
       const { code, constraint } = pgErrorInfo(err);
       if (code === "23505" && constraint === "certificats_solde_unique") {
         return res.status(409).json({
@@ -572,6 +947,7 @@ router.post(
 router.post(
   "/api/certificats/:id/reissue",
   rejectClientCertificateReference,
+  rejectClientCertificateTva,
   validateRequest({ params: idParams }),
   async (req, res) => {
     const id = Number(req.params.id);
@@ -652,6 +1028,81 @@ router.post(
     const isFixedCert =
       isAcompteCert ||
       existing.certificateTrack === "supplier_direct_payment";
+    const tvaEvidence = isFixedCert
+      ? null
+      : await getExistingCertificatTvaEvidence(existing.id, existing);
+    let reissueTvaAuthorityGuard:
+      | ContractorTvaAuthoritySealGuard
+      | undefined;
+    let reissueTvaDecision: ResolvedCertificatTvaDecision | undefined;
+    if (!isFixedCert && tvaEvidence) {
+      const contractor = await storage.getContractor(existing.contractorId);
+      if (!contractor) {
+        return res.status(409).json({
+          code: "CERTIFICATE_CONTEXT_CHANGED",
+          message:
+            "L’entreprise du certificat a disparu pendant la réémission.",
+        });
+      }
+      if (
+        tvaEvidence.sourceInvoices.some(
+          (invoice) =>
+            invoice.projectId !== existing.projectId ||
+            invoice.contractorId !== existing.contractorId,
+        )
+      ) {
+        return res.status(409).json({
+          code: "CERTIFICATE_SOURCE_IDENTITY_MISMATCH",
+          message:
+            "Les factures sources ne correspondent plus au certificat.",
+        });
+      }
+      const marche =
+        (await storage.getMarchesByProject(existing.projectId))
+          .filter((row) => row.contractorId === existing.contractorId)
+          .sort((a, b) => a.id - b.id)[0] ?? null;
+      reissueTvaDecision = await resolveCertificatTvaDecision({
+        projectId: existing.projectId,
+        contractorId: existing.contractorId,
+        documentaryBasisInvoices:
+          tvaEvidence.documentaryBasisInvoices,
+        legacyTvaDecision: tvaEvidence.legacyTvaDecision,
+        lockedTvaContext: {
+          contractor,
+          marche,
+        },
+      });
+      reissueTvaAuthorityGuard = {
+        decision: {
+          ratePercent: existing.tvaRatePercent,
+          autoliquidation: existing.tvaAutoliquidation,
+          source: existing.tvaRateSource,
+        },
+        contractor: {
+          id: contractor.id,
+          defaultTvaRatePercent: contractor.defaultTvaRatePercent,
+          defaultTvaAutoliquidation:
+            contractor.defaultTvaAutoliquidation,
+        },
+        marche: marche
+          ? {
+              id: marche.id,
+              tvaRatePercent: marche.tvaRatePercent,
+              tvaAutoliquidation: marche.tvaAutoliquidation,
+            }
+          : null,
+        invoices: tvaEvidence.sourceInvoices.map((invoice) => ({
+          invoiceId: invoice.id,
+          projectId: invoice.projectId,
+          contractorId: invoice.contractorId,
+          amountHt: invoice.amountHt,
+          tvaAmount: invoice.tvaAmount,
+          amountTtc: invoice.amountTtc,
+          status: invoice.status,
+          datePaid: invoice.datePaid,
+        })),
+      };
+    }
     const deductions = isFixedCert
       ? {
           retenueGarantie: "0.00",
@@ -701,6 +1152,10 @@ router.post(
           // override so a legitimate legacy reissue is not re-blocked.
           pvOverride: existing.pvOverrideReason != null,
           excludeCertificatId: id,
+          documentaryBasisInvoices:
+            tvaEvidence?.documentaryBasisInvoices,
+          legacyTvaDecision: tvaEvidence?.legacyTvaDecision,
+          resolvedTvaDecision: reissueTvaDecision,
         });
 
     try {
@@ -712,6 +1167,7 @@ router.post(
           projectId: existing.projectId,
           contractorId: existing.contractorId,
           certificateTrack: existing.certificateTrack,
+          tvaEvidenceKind: existing.tvaEvidenceKind,
           dateIssued: null,
           totalWorksHt:
             supplierDerivation?.totalWorksHt ?? existing.totalWorksHt,
@@ -738,9 +1194,29 @@ router.post(
           acompteDevisId: existing.acompteDevisId,
         } as Omit<ServerInsertCertificat, "certificateRef"> & {
           reissuedFromCertificatId: number;
+        }, {
+          expectedVersion: existing.version,
+          contractorTvaAuthorityGuard: reissueTvaAuthorityGuard,
         });
       return res.status(201).json(draft);
     } catch (err) {
+      if (
+        (err as { code?: string }).code ===
+        "CERTIFICAT_REISSUE_INPUT_CHANGED"
+      ) {
+        const [winner] = await storage.getCertificatReissues([id]);
+        if (winner) {
+          return res.status(409).json({
+            code: "CERTIFICAT_ALREADY_REISSUED",
+            message: `Certificat ${existing.certificateRef} was already reissued as ${winner.certificateRef}.`,
+            reissueCertificatId: winner.id,
+          });
+        }
+        return res.status(409).json({
+          code: (err as { code: string }).code,
+          message: (err as Error).message,
+        });
+      }
       const { code, constraint } = pgErrorInfo(err);
       if (code === "23505" && constraint === "certificats_reissued_from_unique") {
         const [winner] = await storage.getCertificatReissues([id]);
@@ -770,14 +1246,14 @@ router.get("/api/certificats/:id", async (req, res) => {
 router.patch(
   "/api/certificats/:id",
   rejectClientCertificateReference,
+  rejectClientCertificateTva,
   validateRequest({ params: idParams, body: updateCertificatSchema }),
   async (req, res) => {
     const id = Number(req.params.id);
-    const { retenueOverride, prorataOverride, tvaRateOverride, releaseRetenue, releaseReason, isSolde, pvOverrideReason, ...body } = req.body as
+    const { retenueOverride, prorataOverride, releaseRetenue, releaseReason, isSolde, pvOverrideReason, ...body } = req.body as
       Partial<InsertCertificat> & {
         retenueOverride?: string;
         prorataOverride?: string;
-        tvaRateOverride?: string;
         releaseRetenue?: boolean;
         releaseReason?: string;
         isSolde?: boolean;
@@ -796,7 +1272,6 @@ router.patch(
         blocked.length > 0 ||
         retenueOverride !== undefined ||
         prorataOverride !== undefined ||
-        tvaRateOverride !== undefined ||
         releaseRetenue !== undefined ||
         releaseReason !== undefined ||
         isSolde !== undefined ||
@@ -811,18 +1286,12 @@ router.patch(
       }
     }
 
-    if (
-      body.contractorId != null &&
-      existing.certificateTrack === "contractor_works"
-    ) {
-      const newPartner = await storage.getContractor(body.contractorId);
-      if (newPartner?.archidocPartnerType === "supplier") {
-        return res.status(409).json({
-          code: "CERTIFICATE_TRACK_IMMUTABLE",
-          message:
-            "Un certificat de travaux ne peut pas être transformé en paiement direct fournisseur.",
-        });
-      }
+    if (body.contractorId != null && body.contractorId !== existing.contractorId) {
+      return res.status(409).json({
+        code: "CERTIFICATE_IDENTITY_IMMUTABLE",
+        message:
+          "L’entreprise d’un certificat de paiement ne peut pas être modifiée. Créez un nouveau certificat avec le bon contexte.",
+      });
     }
 
     // Task #457 — `superseded` is TERMINAL and server-set only (written
@@ -884,7 +1353,6 @@ router.patch(
         blocked.length > 0 ||
         retenueOverride !== undefined ||
         prorataOverride !== undefined ||
-        tvaRateOverride !== undefined ||
         releaseRetenue !== undefined ||
         releaseReason !== undefined ||
         isSolde !== undefined ||
@@ -911,7 +1379,6 @@ router.patch(
         blocked.length > 0 ||
         retenueOverride !== undefined ||
         prorataOverride !== undefined ||
-        tvaRateOverride !== undefined ||
         releaseRetenue !== undefined ||
         releaseReason !== undefined ||
         isSolde !== undefined ||
@@ -934,7 +1401,6 @@ router.patch(
       "contractorId" in body ||
       retenueOverride !== undefined ||
       prorataOverride !== undefined ||
-      tvaRateOverride !== undefined ||
       // Task #464 — solde/release changes move money (the release line) and
       // must run through the resolver's precondition checks.
       releaseRetenue !== undefined ||
@@ -960,64 +1426,260 @@ router.patch(
       });
     }
 
-    let patch: Partial<InsertCertificat> = body;
     if (touchesFinancials) {
-      let deductions;
       try {
-        const preserveAppliedBalance =
-          retenueOverride === undefined &&
-          await shouldPreserveAppliedInvoiceBalance(existing.id);
-        deductions = await resolveCertificatDeductions({
-          projectId: existing.projectId,
-          contractorId: body.contractorId ?? existing.contractorId,
-          totalWorksHt: body.totalWorksHt ?? existing.totalWorksHt,
-          pvMvAdjustment: body.pvMvAdjustment ?? existing.pvMvAdjustment,
-          previousPayments: body.previousPayments ?? existing.previousPayments,
-          retenueOverride: preserveAppliedBalance
-            ? existing.retenueGarantie
-            : retenueOverride,
-          prorataOverride,
-          tvaRateOverride,
-          isSolde: effectiveIsSolde,
-          releaseRetenue: effectiveRelease,
-          pvOverride: effectivePvOverrideReason != null,
-          excludeCertificatId: id,
+        const outcome = await db.transaction(async (tx) => {
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(${existing.projectId}, ${existing.contractorId})`,
+          );
+          const [locked] = await tx
+            .select()
+            .from(certificatsTable)
+            .where(eq(certificatsTable.id, id))
+            .for("update");
+          if (!locked) return { kind: "not_found" as const };
+          if (locked.pdfStorageKey) return { kind: "sealed" as const, cert: locked };
+          if (
+            locked.projectId !== existing.projectId ||
+            locked.contractorId !== existing.contractorId
+          ) {
+            return { kind: "edit_conflict" as const };
+          }
+          if (
+            body.contractorId != null &&
+            body.contractorId !== locked.contractorId
+          ) {
+            return { kind: "identity_immutable" as const };
+          }
+          if (
+            locked.acompteDevisId != null ||
+            locked.certificateTrack === "supplier_direct_payment"
+          ) {
+            return { kind: "fixed" as const, cert: locked };
+          }
+
+          const lockedSources = await tx
+            .select({ invoice: invoicesTable })
+            .from(certificatSources)
+            .innerJoin(
+              invoicesTable,
+              eq(certificatSources.invoiceId, invoicesTable.id),
+            )
+            .where(eq(certificatSources.certificatId, id))
+            .orderBy(invoicesTable.id)
+            .for("update");
+          if (
+            lockedSources.some(
+              ({ invoice }) =>
+                invoice.projectId !== locked.projectId ||
+                invoice.contractorId !== locked.contractorId,
+            )
+          ) {
+            return { kind: "source_identity_mismatch" as const };
+          }
+          const [lockedContractor] = await tx
+            .select()
+            .from(contractorsTable)
+            .where(eq(contractorsTable.id, locked.contractorId))
+            .for("update");
+          const [lockedMarche] = await tx
+            .select()
+            .from(marchesTable)
+            .where(
+              and(
+                eq(marchesTable.projectId, locked.projectId),
+                eq(marchesTable.contractorId, locked.contractorId),
+              ),
+            )
+            .orderBy(marchesTable.id)
+            .limit(1)
+            .for("update");
+          const exactInvoices = lockedSources.map(({ invoice }) => ({
+            amountHt: invoice.amountHt,
+            amountTtc: invoice.amountTtc,
+          }));
+          const hasExactInvoiceAuthority =
+            locked.tvaEvidenceKind === "exact_invoices";
+          const preservesHistoricalDecision =
+            locked.tvaEvidenceKind === "signed_quotation" ||
+            locked.tvaEvidenceKind === "legacy";
+          const legacySource =
+            preservesHistoricalDecision &&
+            locked.tvaRateSource !== "autoliquidation"
+              ? (locked.tvaRateSource as Exclude<
+                  TvaRateSource,
+                  "autoliquidation"
+                >)
+              : null;
+          const documentaryBasisInvoices = hasExactInvoiceAuthority
+            ? exactInvoices
+            : preservesHistoricalDecision &&
+                locked.tvaRateSource !== "autoliquidation"
+              ? undefined
+              : [];
+          const tvaDecision = await resolveCertificatTvaDecision({
+            projectId: locked.projectId,
+            contractorId: locked.contractorId,
+            documentaryBasisInvoices,
+            legacyTvaDecision: legacySource
+              ? {
+                  ratePercent: locked.tvaRatePercent,
+                  source: legacySource,
+                }
+              : undefined,
+            lockedTvaContext: {
+              contractor: lockedContractor ?? null,
+              marche: lockedMarche ?? null,
+            },
+          });
+          const lockedIsSolde = isSolde ?? locked.isSolde;
+          const lockedRelease = lockedIsSolde
+            ? releaseRetenue ?? locked.retenueReleased
+            : false;
+          const lockedPvOverrideReason = lockedIsSolde
+            ? pvOverrideReason ?? locked.pvOverrideReason
+            : null;
+          const preserveAppliedBalance =
+            retenueOverride === undefined &&
+            await shouldPreserveAppliedInvoiceBalance(locked.id);
+          const deductions = await resolveCertificatDeductions({
+            projectId: locked.projectId,
+            contractorId: locked.contractorId,
+            totalWorksHt: body.totalWorksHt ?? locked.totalWorksHt,
+            pvMvAdjustment:
+              body.pvMvAdjustment ?? locked.pvMvAdjustment,
+            previousPayments:
+              body.previousPayments ?? locked.previousPayments,
+            retenueOverride: preserveAppliedBalance
+              ? locked.retenueGarantie
+              : retenueOverride,
+            prorataOverride,
+            isSolde: lockedIsSolde,
+            releaseRetenue: lockedRelease,
+            pvOverride: lockedPvOverrideReason != null,
+            excludeCertificatId: id,
+            documentaryBasisInvoices,
+            legacyTvaDecision: legacySource
+              ? {
+                  ratePercent: locked.tvaRatePercent,
+                  source: legacySource,
+                }
+              : undefined,
+            resolvedTvaDecision: tvaDecision,
+          });
+          const releaseAudit = deductions.retenueReleased
+            ? {
+                retenueReleaseReason:
+                  releaseReason ?? locked.retenueReleaseReason,
+                retenueReleaseDate: locked.retenueReleased
+                  ? locked.retenueReleaseDate
+                  : new Date().toISOString().split("T")[0],
+              }
+            : {
+                retenueReleaseReason: null,
+                retenueReleaseDate: null,
+              };
+          const pvAudit = !deductions.isSolde
+            ? {
+                pvOverrideReason: null,
+                pvOverrideByUserId: null,
+                pvOverrideAt: null,
+              }
+            : pvOverrideReason != null &&
+                pvOverrideReason !== locked.pvOverrideReason
+              ? {
+                  pvOverrideReason,
+                  pvOverrideByUserId: req.session.userId ?? null,
+                  pvOverrideAt: new Date(),
+                }
+              : {};
+          const [updated] = await tx
+            .update(certificatsTable)
+            .set({
+              ...body,
+              ...deductions,
+              ...releaseAudit,
+              ...pvAudit,
+              version: sql`${certificatsTable.version} + 1`,
+            })
+            .where(
+              and(
+                eq(certificatsTable.id, id),
+                eq(certificatsTable.version, locked.version),
+                sql`${certificatsTable.pdfStorageKey} is null`,
+              ),
+            )
+            .returning();
+          return updated
+            ? { kind: "updated" as const, cert: updated }
+            : { kind: "edit_conflict" as const };
         });
+        if (outcome.kind === "not_found") {
+          return res.status(404).json({ message: "Certificat not found" });
+        }
+        if (outcome.kind === "sealed") {
+          return res.status(409).json({
+            code: "CERTIFICAT_SEALED",
+            message: `Certificat ${outcome.cert.certificateRef} has been issued and is sealed. Corrections require issuing a new certificat.`,
+          });
+        }
+        if (outcome.kind === "identity_immutable") {
+          return res.status(409).json({
+            code: "CERTIFICATE_IDENTITY_IMMUTABLE",
+            message:
+              "L’entreprise d’un certificat de paiement ne peut pas être modifiée.",
+          });
+        }
+        if (outcome.kind === "fixed") {
+          return res.status(409).json({
+            code:
+              outcome.cert.acompteDevisId != null
+                ? "CERTIFICAT_ACOMPTE_FIXED"
+                : "SUPPLIER_CERTIFICATE_FIXED",
+            message:
+              "Les montants de ce certificat sont fixes et doivent être corrigés par réémission.",
+          });
+        }
+        if (outcome.kind === "source_identity_mismatch") {
+          return res.status(409).json({
+            code: "CERTIFICATE_SOURCE_IDENTITY_MISMATCH",
+            message:
+              "Les factures sources ne correspondent plus au projet et à l’entreprise du certificat.",
+          });
+        }
+        if (outcome.kind === "edit_conflict") {
+          return res.status(409).json({
+            code: "CERTIFICAT_EDIT_CONFLICT",
+            message:
+              "Le certificat a été modifié pendant votre enregistrement. Actualisez les montants puis réessayez.",
+          });
+        }
+        return res.json(publicCertificatDto(outcome.cert));
       } catch (err) {
         const mapped = mapSoldeError(err);
         if (mapped) return res.status(mapped.status).json(mapped.body);
+        const { code, constraint } = pgErrorInfo(err);
+        if (code === "23505" && constraint === "certificats_solde_unique") {
+          return res.status(409).json({
+            code: "SOLDE_ALREADY_EXISTS",
+            message:
+              "Un certificat de solde existe déjà pour cette entreprise — un seul certificat de solde par marché.",
+          });
+        }
         throw err;
       }
-      // Release audit trail follows the resolved release state.
-      const releaseAudit = deductions.retenueReleased
-        ? {
-            retenueReleaseReason: releaseReason ?? existing.retenueReleaseReason,
-            retenueReleaseDate: existing.retenueReleased
-              ? existing.retenueReleaseDate
-              : new Date().toISOString().split("T")[0],
-          }
-        : { retenueReleaseReason: null, retenueReleaseDate: null };
-      // Task #566 — PV-gate override audit: a newly provided reason stamps
-      // who/when; an inherited one keeps its original stamps; a non-solde
-      // result clears all three.
-      const pvAudit = !deductions.isSolde
-        ? { pvOverrideReason: null, pvOverrideByUserId: null, pvOverrideAt: null }
-        : pvOverrideReason != null && pvOverrideReason !== existing.pvOverrideReason
-          ? { pvOverrideReason, pvOverrideByUserId: req.session.userId ?? null, pvOverrideAt: new Date() }
-          : {};
-      patch = { ...body, ...deductions, ...releaseAudit, ...pvAudit };
     }
 
     // Task #451 — status/notes-only patches remain allowed on sealed rows;
     // anything touching financial/source inputs goes through the GUARDED
     // update (WHERE pdf_storage_key IS NULL) so a PATCH authorized against
     // an unsealed row can never commit after a concurrent seal.
+    const patch: Partial<InsertCertificat> = body;
     const onlyLifecycleFields = Object.keys(patch).every((k) => k === "status" || k === "notes");
     if (
       onlyLifecycleFields &&
       retenueOverride === undefined &&
       prorataOverride === undefined &&
-      tvaRateOverride === undefined &&
       releaseRetenue === undefined &&
       isSolde === undefined &&
       pvOverrideReason === undefined
@@ -1028,7 +1690,7 @@ router.patch(
     }
     let cert;
     try {
-      cert = await storage.updateCertificatUnsealed(id, patch);
+      cert = await storage.updateCertificatUnsealed(id, patch, existing.version);
     } catch (err) {
       // Task #464 — single-solde race: two concurrent PATCHes can both pass
       // the resolver's friendly check; the partial unique index elects the
@@ -1045,7 +1707,14 @@ router.patch(
     if (!cert) {
       const current = await storage.getCertificat(id);
       if (!current) return res.status(404).json({ message: "Certificat not found" });
-      // Row exists but the guard missed: sealed between our read and the write.
+      if (!current.pdfStorageKey && current.version !== existing.version) {
+        return res.status(409).json({
+          code: "CERTIFICAT_EDIT_CONFLICT",
+          message:
+            "Le certificat a été modifié pendant votre enregistrement. Actualisez les montants puis réessayez.",
+        });
+      }
+      // Row exists but the seal guard missed: sealed between our read and the write.
       return res.status(409).json({
         code: "CERTIFICAT_SEALED",
         message: `Certificat ${current.certificateRef} has been issued and is sealed. Corrections require issuing a new certificat.`,
@@ -1407,6 +2076,7 @@ router.get(
 router.post(
   "/api/invoices/:id/create-certificat",
   rejectClientCertificateReference,
+  rejectClientCertificateTva,
   validateRequest({
     params: idParams,
     body: z.object({ issueDate: certificateIssueDate.optional() }).strict().optional(),
@@ -1447,6 +2117,7 @@ async function checkSelectionProject(invoiceIds: number[], projectId: number, re
 
 router.post(
   "/api/projects/:projectId/certificats/from-invoices/preview",
+  rejectClientCertificateTva,
   validateRequest({ params: projectIdParams, body: fromInvoicesBody }),
   async (req, res) => {
     const checked = await checkSelectionProject(req.body.invoiceIds, Number(req.params.projectId), res);
@@ -1458,6 +2129,7 @@ router.post(
 router.post(
   "/api/projects/:projectId/certificats/from-invoices",
   rejectClientCertificateReference,
+  rejectClientCertificateTva,
   validateRequest({ params: projectIdParams, body: fromInvoicesBody }),
   async (req, res) => {
     const checked = await checkSelectionProject(req.body.invoiceIds, Number(req.params.projectId), res);

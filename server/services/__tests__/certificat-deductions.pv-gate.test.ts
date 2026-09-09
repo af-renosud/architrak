@@ -36,7 +36,7 @@ const baseMarche = {
   acompteRecoupmentPercent: null,
   acompteRecoupmentThresholdPercent: null,
   totalHt: null,
-  tvaRatePercent: null,
+  tvaRatePercent: "20.00",
   tvaAutoliquidation: false,
   pvReceptionStatus: null as string | null,
   receptionDate: null as string | null,

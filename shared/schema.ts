@@ -30,6 +30,11 @@ import {
 } from "./supplier-payment-readiness";
 
 export { CERTIFICATE_TRACKS, type CertificateTrack };
+export type TvaEvidenceKind =
+  | "configuration"
+  | "signed_quotation"
+  | "exact_invoices"
+  | "legacy";
 
 // -----------------------------------------------------------------------------
 // Devis sign-off contract — shared enums and embedded-jsonb shapes (AT1)
@@ -894,6 +899,13 @@ export const certificats = pgTable("certificats", {
   // (last-resort statutory 20%). Server-derived on every create/PATCH;
   // frozen once sealed, like tvaRatePercent.
   tvaRateSource: text("tva_rate_source").notNull().default("default"),
+  // Server-owned lifecycle provenance. `certificat_sources` may include
+  // presentation/claim rows that did not establish TVA, so consumers must
+  // never infer tax authority from junction-row presence alone.
+  tvaEvidenceKind: text("tva_evidence_kind")
+    .$type<TvaEvidenceKind>()
+    .notNull()
+    .default("legacy"),
   // Task #464 — solde (final) certificat for its marché. At most ONE
   // non-superseded solde certificat may exist per (project, contractor):
   // enforced by the partial unique index below + a friendly resolver check.
@@ -2692,6 +2704,8 @@ export const insertCertificatSchema = createInsertSchema(certificats).omit({
   // Supplier certificate contract v1 — track is derived from the partner and
   // creation path; callers cannot choose or mutate it.
   certificateTrack: true,
+  // Server-owned TVA provenance survives presentation-source linking.
+  tvaEvidenceKind: true,
 });
 
 export const insertCertificatSourceSchema = createInsertSchema(certificatSources).omit({
@@ -2741,6 +2755,7 @@ export type InsertCertificat = z.infer<typeof insertCertificatSchema>;
  */
 export type ServerInsertCertificat = InsertCertificat & {
   certificateTrack?: CertificateTrack;
+  tvaEvidenceKind?: TvaEvidenceKind;
 };
 
 // Task #465 — payment-ledger request schema. Strict scale-2 amount, closed

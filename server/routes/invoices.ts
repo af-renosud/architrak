@@ -36,6 +36,7 @@ import {
   applyInvoiceAcompteDeduction,
   invoiceAcompteProtectedSnapshot,
 } from "../services/invoice-acompte-application.service";
+import { hasLiveCertificateSource } from "../services/invoice-certificate-source-guard.service";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
@@ -80,6 +81,14 @@ function immutableApplicationResponse(res: Response) {
     code: "invoice_acompte_application_immutable",
     message:
       "This invoice has an applied opening-deposit snapshot. Its totals and source relationship can no longer be changed or deleted.",
+  });
+}
+
+function immutableCertificateSourceResponse(res: Response) {
+  return res.status(409).json({
+    code: "invoice_certificate_source_immutable",
+    message:
+      "This invoice is evidence for an active payment certificate. Its totals and source relationship can no longer be changed or deleted.",
   });
 }
 
@@ -215,6 +224,9 @@ router.patch(
       if (!existing) return { outcome: "not_found" as const };
 
       if (changesApplicationProtectedInvoiceField(req.body)) {
+        if (await hasLiveCertificateSource(tx, invoiceId)) {
+          return { outcome: "certificate_immutable" as const };
+        }
         const [application] = await tx
           .select({ id: invoiceAcompteApplications.id })
           .from(invoiceAcompteApplications)
@@ -231,6 +243,9 @@ router.patch(
       return { outcome: "updated" as const, invoice };
     });
     if (result.outcome === "not_found") return res.status(404).json({ message: "Invoice not found" });
+    if (result.outcome === "certificate_immutable") {
+      return immutableCertificateSourceResponse(res);
+    }
     if (result.outcome === "immutable") return immutableApplicationResponse(res);
     const invoice = result.invoice;
     await storage.revokeDevisCheckTokenIfFullyInvoiced(invoice.devisId);
@@ -306,6 +321,9 @@ router.post(
             .where(eq(invoiceAcompteApplications.invoiceId, invoice.id))
             .limit(1);
           if (application) return { outcome: "immutable" as const };
+          if (await hasLiveCertificateSource(tx, invoice.id)) {
+            return { outcome: "certificate_source_immutable" as const };
+          }
         }
 
         const updates: Record<string, unknown> = {};
@@ -374,6 +392,9 @@ router.post(
         });
       }
       if (preparation.outcome === "immutable") return immutableApplicationResponse(res);
+      if (preparation.outcome === "certificate_source_immutable") {
+        return immutableCertificateSourceResponse(res);
+      }
 
       const { invoice: revalidated, warnings: nextWarnings } = preparation;
       try {
@@ -478,6 +499,9 @@ router.delete(
           .for("update");
         if (!invoice) return { outcome: "not_found" as const };
         if (invoice.status !== "draft") return { outcome: "not_draft" as const };
+        if (await hasLiveCertificateSource(tx, invoiceId)) {
+          return { outcome: "certificate_immutable" as const };
+        }
 
         const [application] = await tx
           .select({ id: invoiceAcompteApplications.id })
@@ -492,6 +516,9 @@ router.delete(
       if (deletion.outcome === "not_found") return res.status(404).json({ message: "Invoice not found" });
       if (deletion.outcome === "not_draft") {
         return res.status(400).json({ message: "Only draft invoices can be deleted" });
+      }
+      if (deletion.outcome === "certificate_immutable") {
+        return immutableCertificateSourceResponse(res);
       }
       if (deletion.outcome === "immutable") return immutableApplicationResponse(res);
       // A delete can only DECREASE the invoiced total, so no token can flip

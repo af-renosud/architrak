@@ -52,6 +52,12 @@ vi.mock("../../services/certificat-deductions.service", async () => {
   return {
     SoldeConflictError: actual.SoldeConflictError,
     ReleaseRequiresSoldeError: actual.ReleaseRequiresSoldeError,
+    TvaEvidenceRequiredError: actual.TvaEvidenceRequiredError,
+    resolveCertificatTvaDecision: vi.fn().mockResolvedValue({
+      ratePercent: 20,
+      autoliquidation: false,
+      source: "marche",
+    }),
     resolveCertificatDeductions: vi.fn(),
   };
 });
@@ -75,6 +81,8 @@ const baseMarche = {
   retenueGarantiePercent: "5.00",
   hasBankGuarantee: false,
   isProrataManager: false,
+  tvaRatePercent: "20.00",
+  tvaAutoliquidation: false,
   receptionDate: null as string | null,
   pvReceptionStatus: null as string | null,
   pvDocumentStorageKey: null,
@@ -118,6 +126,12 @@ afterAll(async () => {
 beforeEach(() => {
   vi.clearAllMocks();
   mocked.getUser.mockResolvedValue({ id: 42, email: "architect@renosud.com" });
+  mocked.getContractor.mockResolvedValue({
+    id: 2,
+    name: "Contractor",
+    defaultTvaRatePercent: "20.00",
+  });
+  mocked.getMarchesByProject.mockResolvedValue([{ ...baseMarche }]);
 });
 
 const json = (method: string, path: string, body?: unknown) =>

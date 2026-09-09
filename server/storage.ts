@@ -189,12 +189,62 @@ export interface SupplierDirectPaymentSealGuard {
   }>;
 }
 
+export interface ContractorTvaAuthoritySealGuard {
+  decision: {
+    ratePercent: string;
+    autoliquidation: boolean;
+    source: string;
+  };
+  contractor: {
+    id: number;
+    defaultTvaRatePercent: string | null;
+    defaultTvaAutoliquidation: boolean;
+  };
+  marche: {
+    id: number;
+    tvaRatePercent: string | null;
+    tvaAutoliquidation: boolean;
+  } | null;
+  invoices: Array<{
+    invoiceId: number;
+    projectId: number;
+    contractorId: number;
+    amountHt: string;
+    tvaAmount: string;
+    amountTtc: string;
+    status: string;
+    datePaid: string | null;
+  }>;
+}
+
 export class SupplierDirectPaymentSealConflictError extends Error {
   readonly code = "SUPPLIER_SEAL_INPUT_CHANGED";
 
   constructor(message: string) {
     super(message);
     this.name = "SupplierDirectPaymentSealConflictError";
+  }
+}
+
+export class CertificatReissueInputChangedError extends Error {
+  readonly code = "CERTIFICAT_REISSUE_INPUT_CHANGED";
+
+  constructor() {
+    super(
+      "Le certificat, sa TVA ou ses factures sources ont changé pendant la réémission.",
+    );
+    this.name = "CertificatReissueInputChangedError";
+  }
+}
+
+export class CertificateTvaAuthorityChangedError extends Error {
+  readonly code = "CERTIFICATE_TVA_AUTHORITY_CHANGED";
+
+  constructor() {
+    super(
+      "La configuration TVA a changé pendant l’opération. Actualisez puis réessayez.",
+    );
+    this.name = "CertificateTvaAuthorityChangedError";
   }
 }
 
@@ -524,7 +574,11 @@ export interface IStorage {
   // Task #451 — race-free edit lock: UPDATE guarded by pdf_storage_key IS
   // NULL. Returns null when the row is missing OR already sealed; callers
   // distinguish via a follow-up read.
-  updateCertificatUnsealed(id: number, data: Partial<InsertCertificat>): Promise<Certificat | null>;
+  updateCertificatUnsealed(
+    id: number,
+    data: Partial<InsertCertificat>,
+    expectedVersion?: number,
+  ): Promise<Certificat | null>;
   // Task #457 — reissue lineage lookups: certificats whose
   // reissuedFromCertificatId is one of the given ids.
   getCertificatReissues(certificatIds: number[]): Promise<Certificat[]>;
@@ -533,6 +587,10 @@ export interface IStorage {
   reissueCertificat(
     originalId: number,
     draft: Omit<ServerInsertCertificat, "certificateRef"> & { reissuedFromCertificatId: number },
+    guard?: {
+      expectedVersion: number;
+      contractorTvaAuthorityGuard?: ContractorTvaAuthoritySealGuard;
+    },
   ): Promise<Certificat>;
 
   getFeesByProject(projectId: number): Promise<Fee[]>;
@@ -1331,6 +1389,7 @@ export interface IStorage {
     projectId: number;
     contractorId: number;
     supplierDirectPaymentGuard?: SupplierDirectPaymentSealGuard;
+    contractorTvaAuthorityGuard?: ContractorTvaAuthoritySealGuard;
     /** Task #627 — frozen bank-transfer reference, written once at seal time. */
     paymentTransferRef?: string | null;
   }): Promise<Certificat | null>;
@@ -2393,25 +2452,91 @@ export class DatabaseStorage implements IStorage {
     return cert;
   }
 
-  async createCertificat(data: Omit<ServerInsertCertificat, "certificateRef">): Promise<Certificat> {
+  async createCertificat(
+    data: Omit<ServerInsertCertificat, "certificateRef">,
+    tvaGuard?: ContractorTvaAuthoritySealGuard,
+  ): Promise<Certificat> {
     return db.transaction(async (tx) => {
       const certificateRef = await allocateCertificateRef(tx, data.projectId);
+      if (tvaGuard) {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(${data.projectId}, ${data.contractorId})`,
+        );
+        const [lockedContractor] = await tx
+          .select({
+            id: contractors.id,
+            defaultTvaRatePercent: contractors.defaultTvaRatePercent,
+          defaultTvaAutoliquidation:
+            contractors.defaultTvaAutoliquidation,
+          })
+          .from(contractors)
+          .where(eq(contractors.id, data.contractorId))
+          .for("update");
+        const [lockedMarche] = await tx
+          .select({
+            id: marches.id,
+            tvaRatePercent: marches.tvaRatePercent,
+            tvaAutoliquidation: marches.tvaAutoliquidation,
+          })
+          .from(marches)
+          .where(
+            and(
+              eq(marches.projectId, data.projectId),
+              eq(marches.contractorId, data.contractorId),
+            ),
+          )
+          .orderBy(marches.id)
+          .limit(1)
+          .for("update");
+        if (
+          !lockedContractor ||
+          lockedContractor.id !== tvaGuard.contractor.id ||
+          lockedContractor.defaultTvaRatePercent !==
+            tvaGuard.contractor.defaultTvaRatePercent ||
+          lockedContractor.defaultTvaAutoliquidation !==
+            tvaGuard.contractor.defaultTvaAutoliquidation ||
+          (tvaGuard.marche == null) !== (lockedMarche == null) ||
+          (tvaGuard.marche != null &&
+            lockedMarche != null &&
+            (tvaGuard.marche.id !== lockedMarche.id ||
+              tvaGuard.marche.tvaRatePercent !==
+                lockedMarche.tvaRatePercent ||
+              tvaGuard.marche.tvaAutoliquidation !==
+                lockedMarche.tvaAutoliquidation)) ||
+          data.tvaRatePercent !== tvaGuard.decision.ratePercent ||
+          data.tvaAutoliquidation !== tvaGuard.decision.autoliquidation ||
+          data.tvaRateSource !== tvaGuard.decision.source
+        ) {
+          throw new CertificateTvaAuthorityChangedError();
+        }
+      }
       const [cert] = await tx.insert(certificats).values({ ...data, certificateRef }).returning();
       return cert;
     });
   }
 
-  async updateCertificatUnsealed(id: number, data: Partial<InsertCertificat>): Promise<Certificat | null> {
+  async updateCertificatUnsealed(
+    id: number,
+    data: Partial<InsertCertificat>,
+    expectedVersion?: number,
+  ): Promise<Certificat | null> {
     // Task #451 — the edit lock must be enforced IN the UPDATE itself, not by
     // a read-then-write in the route: a PATCH authorized against an unsealed
     // row could otherwise commit after a concurrent seal and desync the live
     // financial fields from the pinned PDF/snapshot. `pdf_storage_key IS
     // NULL` in the WHERE makes the lock race-free; a miss on an existing row
     // means "sealed meanwhile" (route answers 409 CERTIFICAT_SEALED).
+    const conditions = [
+      eq(certificats.id, id),
+      isNull(certificats.pdfStorageKey),
+      ...(expectedVersion == null
+        ? []
+        : [eq(certificats.version, expectedVersion)]),
+    ];
     const [cert] = await db
       .update(certificats)
       .set({ ...data, version: sql`${certificats.version} + 1` })
-      .where(and(eq(certificats.id, id), isNull(certificats.pdfStorageKey)))
+      .where(and(...conditions))
       .returning();
     return cert ?? null;
   }
@@ -2424,6 +2549,10 @@ export class DatabaseStorage implements IStorage {
   async reissueCertificat(
     originalId: number,
     draft: Omit<ServerInsertCertificat, "certificateRef"> & { reissuedFromCertificatId: number },
+    guard?: {
+      expectedVersion: number;
+      contractorTvaAuthorityGuard?: ContractorTvaAuthoritySealGuard;
+    },
   ): Promise<Certificat> {
     // Task #457 — the paired lifecycle transition (new draft + original →
     // superseded) must be all-or-nothing: a committed draft with a
@@ -2434,6 +2563,125 @@ export class DatabaseStorage implements IStorage {
     // its status update rolls back).
     return db.transaction(async (tx) => {
       const certificateRef = await allocateCertificateRef(tx, draft.projectId);
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(${draft.projectId}, ${draft.contractorId})`,
+      );
+      const [original] = await tx
+        .select({
+          id: certificats.id,
+          projectId: certificats.projectId,
+          contractorId: certificats.contractorId,
+          certificateTrack: certificats.certificateTrack,
+          status: certificats.status,
+          version: certificats.version,
+          pdfStorageKey: certificats.pdfStorageKey,
+          tvaRatePercent: certificats.tvaRatePercent,
+          tvaAutoliquidation: certificats.tvaAutoliquidation,
+          tvaRateSource: certificats.tvaRateSource,
+          contractorDefaultTvaRatePercent:
+            contractors.defaultTvaRatePercent,
+          contractorDefaultTvaAutoliquidation:
+            contractors.defaultTvaAutoliquidation,
+        })
+        .from(certificats)
+        .innerJoin(contractors, eq(certificats.contractorId, contractors.id))
+        .where(eq(certificats.id, originalId))
+        .for("update");
+      if (!original) {
+        throw new Error(`Certificat ${originalId} disappeared during reissue`);
+      }
+      if (
+        original.projectId !== draft.projectId ||
+        original.contractorId !== draft.contractorId ||
+        original.status === "superseded" ||
+        !original.pdfStorageKey ||
+        (guard && original.version !== guard.expectedVersion)
+      ) {
+        throw new CertificatReissueInputChangedError();
+      }
+      const tvaGuard = guard?.contractorTvaAuthorityGuard;
+      if (tvaGuard) {
+        if (
+          original.certificateTrack !== "contractor_works" ||
+          original.contractorDefaultTvaRatePercent !==
+            tvaGuard.contractor.defaultTvaRatePercent ||
+          original.contractorDefaultTvaAutoliquidation !==
+            tvaGuard.contractor.defaultTvaAutoliquidation ||
+          original.tvaRatePercent !== tvaGuard.decision.ratePercent ||
+          original.tvaAutoliquidation !==
+            tvaGuard.decision.autoliquidation ||
+          original.tvaRateSource !== tvaGuard.decision.source
+        ) {
+          throw new CertificatReissueInputChangedError();
+        }
+        const [lockedMarche] = await tx
+          .select({
+            id: marches.id,
+            tvaRatePercent: marches.tvaRatePercent,
+            tvaAutoliquidation: marches.tvaAutoliquidation,
+          })
+          .from(marches)
+          .where(
+            and(
+              eq(marches.projectId, draft.projectId),
+              eq(marches.contractorId, draft.contractorId),
+            ),
+          )
+          .orderBy(marches.id)
+          .limit(1)
+          .for("update");
+        if (
+          (tvaGuard.marche == null) !== (lockedMarche == null) ||
+          (tvaGuard.marche != null &&
+            lockedMarche != null &&
+            (tvaGuard.marche.id !== lockedMarche.id ||
+              tvaGuard.marche.tvaRatePercent !==
+                lockedMarche.tvaRatePercent ||
+              tvaGuard.marche.tvaAutoliquidation !==
+                lockedMarche.tvaAutoliquidation))
+        ) {
+          throw new CertificatReissueInputChangedError();
+        }
+        const expectedInvoices = [...tvaGuard.invoices].sort(
+          (a, b) => a.invoiceId - b.invoiceId,
+        );
+        const lockedInvoices =
+          expectedInvoices.length > 0
+            ? await tx
+                .select({
+                  invoiceId: invoices.id,
+                  projectId: invoices.projectId,
+                  contractorId: invoices.contractorId,
+                  amountHt: invoices.amountHt,
+                  tvaAmount: invoices.tvaAmount,
+                  amountTtc: invoices.amountTtc,
+                  status: invoices.status,
+                  datePaid: invoices.datePaid,
+                })
+                .from(invoices)
+                .where(
+                  inArray(
+                    invoices.id,
+                    expectedInvoices.map((invoice) => invoice.invoiceId),
+                  ),
+                )
+                .orderBy(invoices.id)
+                .for("update")
+            : [];
+        if (
+          lockedInvoices.length !== expectedInvoices.length ||
+          lockedInvoices.some((invoice, index) => {
+            const expected = expectedInvoices[index];
+            return Object.keys(expected).some(
+              (key) =>
+                invoice[key as keyof typeof invoice] !==
+                expected[key as keyof typeof expected],
+            );
+          })
+        ) {
+          throw new CertificatReissueInputChangedError();
+        }
+      }
       // Task #464 — supersede the original BEFORE inserting the clone: the
       // partial unique index certificats_solde_unique (one non-superseded
       // solde per project+contractor) is non-deferrable, so a solde reissue
@@ -2443,7 +2691,15 @@ export class DatabaseStorage implements IStorage {
       const [superseded] = await tx
         .update(certificats)
         .set({ status: "superseded", version: sql`${certificats.version} + 1` })
-        .where(eq(certificats.id, originalId))
+        .where(
+          and(
+            eq(certificats.id, originalId),
+            ne(certificats.status, "superseded"),
+            ...(guard
+              ? [eq(certificats.version, guard.expectedVersion)]
+              : []),
+          ),
+        )
         .returning();
       if (!superseded) throw new Error(`Certificat ${originalId} disappeared during reissue`);
       const replacementTrack = draft.certificateTrack ?? "contractor_works";
@@ -2904,6 +3160,7 @@ export class DatabaseStorage implements IStorage {
     projectId: number;
     contractorId: number;
     supplierDirectPaymentGuard?: SupplierDirectPaymentSealGuard;
+    contractorTvaAuthorityGuard?: ContractorTvaAuthoritySealGuard;
     /** Task #627 — frozen bank-transfer reference, written once at seal time. */
     paymentTransferRef?: string | null;
   }): Promise<Certificat | null> {
@@ -2929,7 +3186,14 @@ export class DatabaseStorage implements IStorage {
           certificateTrack: certificats.certificateTrack,
           supplierArchidocId: contractors.archidocId,
           supplierPartnerType: contractors.archidocPartnerType,
+          contractorDefaultTvaRatePercent:
+            contractors.defaultTvaRatePercent,
+          contractorDefaultTvaAutoliquidation:
+            contractors.defaultTvaAutoliquidation,
           projectArchidocId: projects.archidocId,
+          tvaRatePercent: certificats.tvaRatePercent,
+          tvaAutoliquidation: certificats.tvaAutoliquidation,
+          tvaRateSource: certificats.tvaRateSource,
         })
         .from(certificats)
         .innerJoin(contractors, eq(certificats.contractorId, contractors.id))
@@ -2950,6 +3214,95 @@ export class DatabaseStorage implements IStorage {
         throw new SupplierDirectPaymentSealConflictError(
           "Le projet ou le fournisseur du certificat a changé avant l'émission.",
         );
+      }
+      const contractorTvaGuard = seal.contractorTvaAuthorityGuard;
+      if (contractorTvaGuard) {
+        if (
+          current.certificateTrack !== "contractor_works" ||
+          contractorTvaGuard.contractor.id !== current.contractorId ||
+          contractorTvaGuard.contractor.defaultTvaRatePercent !==
+            current.contractorDefaultTvaRatePercent ||
+          contractorTvaGuard.contractor.defaultTvaAutoliquidation !==
+            current.contractorDefaultTvaAutoliquidation ||
+          contractorTvaGuard.decision.ratePercent !== current.tvaRatePercent ||
+          contractorTvaGuard.decision.autoliquidation !==
+            current.tvaAutoliquidation ||
+          contractorTvaGuard.decision.source !== current.tvaRateSource
+        ) {
+          return null;
+        }
+        const [lockedMarche] = await tx
+          .select({
+            id: marches.id,
+            tvaRatePercent: marches.tvaRatePercent,
+            tvaAutoliquidation: marches.tvaAutoliquidation,
+          })
+          .from(marches)
+          .where(
+            and(
+              eq(marches.projectId, seal.projectId),
+              eq(marches.contractorId, seal.contractorId),
+            ),
+          )
+          .orderBy(marches.id)
+          .limit(1)
+          .for("update");
+        const expectedMarche = contractorTvaGuard.marche;
+        if (
+          (expectedMarche == null) !== (lockedMarche == null) ||
+          (expectedMarche != null &&
+            lockedMarche != null &&
+            (expectedMarche.id !== lockedMarche.id ||
+              expectedMarche.tvaRatePercent !== lockedMarche.tvaRatePercent ||
+              expectedMarche.tvaAutoliquidation !==
+                lockedMarche.tvaAutoliquidation))
+        ) {
+          return null;
+        }
+        const expectedInvoices = [...contractorTvaGuard.invoices].sort(
+          (a, b) => a.invoiceId - b.invoiceId,
+        );
+        const lockedInvoices =
+          expectedInvoices.length > 0
+            ? await tx
+                .select({
+                  invoiceId: invoices.id,
+                  projectId: invoices.projectId,
+                  contractorId: invoices.contractorId,
+                  amountHt: invoices.amountHt,
+                  tvaAmount: invoices.tvaAmount,
+                  amountTtc: invoices.amountTtc,
+                  status: invoices.status,
+                  datePaid: invoices.datePaid,
+                })
+                .from(invoices)
+                .where(
+                  inArray(
+                    invoices.id,
+                    expectedInvoices.map((invoice) => invoice.invoiceId),
+                  ),
+                )
+                .orderBy(invoices.id)
+                .for("update")
+            : [];
+        if (
+          lockedInvoices.length !== expectedInvoices.length ||
+          lockedInvoices.some((invoice, index) => {
+            const expected = expectedInvoices[index];
+            return (
+              invoice.invoiceId !== expected.invoiceId ||
+              invoice.projectId !== expected.projectId ||
+              invoice.contractorId !== expected.contractorId ||
+              invoice.amountHt !== expected.amountHt ||
+              invoice.tvaAmount !== expected.tvaAmount ||
+              invoice.amountTtc !== expected.amountTtc ||
+              invoice.status !== expected.status ||
+              invoice.datePaid !== expected.datePaid
+            );
+          })
+        ) {
+          return null;
+        }
       }
       if (current.certificateTrack === "supplier_direct_payment") {
         const guard = seal.supplierDirectPaymentGuard;

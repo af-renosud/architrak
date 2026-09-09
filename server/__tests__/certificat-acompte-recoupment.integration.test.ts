@@ -28,6 +28,7 @@ vi.mock("../communications/certificat-generator", () => ({
     pdfBuffer: Buffer.from("%PDF"),
     fileName: `CERT-${certificatId}.pdf`,
     sourceInvoiceIds: [],
+    sourceInvoiceSnapshot: [],
     driveSeed: null,
   })),
 }));
@@ -61,6 +62,7 @@ beforeAll(async () => {
     totalHt: "10000.00",
     totalTtc: "12000.00",
     retenueGarantiePercent: "5.00",
+    tvaRatePercent: "20.00",
   });
   // Devis with a 200 € deposit, NOT yet paid.
   const [d] = await db
@@ -161,7 +163,13 @@ describe("paid-acompte recoupment through create + seal", () => {
   });
 
   it("recovers at create time when the deposit is already paid (fresh contractor)", async () => {
-    const [c2] = await db.insert(contractors).values({ name: `Acompte C2 ${Date.now()}` }).returning();
+    const [c2] = await db
+      .insert(contractors)
+      .values({
+        name: `Acompte C2 ${Date.now()}`,
+        defaultTvaRatePercent: "20.00",
+      })
+      .returning();
     try {
       await db.insert(devis).values({
         projectId,

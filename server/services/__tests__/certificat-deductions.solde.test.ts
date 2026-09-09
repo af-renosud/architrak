@@ -36,7 +36,7 @@ const baseMarche = {
   acompteRecoupmentPercent: null,
   acompteRecoupmentThresholdPercent: null,
   totalHt: null,
-  tvaRatePercent: null,
+  tvaRatePercent: "20.00",
   tvaAutoliquidation: false,
   // Task #566 — the solde path is gated on an approved PV de réception;
   // these fixtures test the solde/release math, so the gate is satisfied.

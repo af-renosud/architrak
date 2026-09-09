@@ -20,10 +20,14 @@ vi.mock("../../storage", async () => {
   return {
     storage: createStorageMock([
       "getCertificat",
+      "getCertificatSources",
       "sealCertificat",
       "getInvoice",
       "getSituationsByDevis",
       "updateCertificat",
+      "updateCertificatUnsealed",
+      "getContractor",
+      "getMarchesByProject",
     ]),
   };
 });
@@ -38,6 +42,7 @@ vi.mock("../drive/upload-queue.service", () => ({
 // stored figures so the no-drift path proceeds straight to sealing.
 vi.mock("../certificat-deductions.service", () => ({
   resolveCertificatDeductions: vi.fn(),
+  resolveCertificatTvaDecision: vi.fn(),
 }));
 
 import { sealCertificat } from "../certificat-seal.service";
@@ -45,14 +50,20 @@ import { storage } from "../../storage";
 import { generateCertificatPdf } from "../../communications/certificat-generator";
 import { enqueueDriveUpload } from "../drive/upload-queue.service";
 import { resolveCertificatDeductions } from "../certificat-deductions.service";
+import { resolveCertificatTvaDecision } from "../certificat-deductions.service";
 
 const getCertificat = storage.getCertificat as unknown as ReturnType<typeof vi.fn>;
+const getCertificatSources = storage.getCertificatSources as unknown as ReturnType<typeof vi.fn>;
 const sealCertificatStore = storage.sealCertificat as unknown as ReturnType<typeof vi.fn>;
 const resolveDeductions = resolveCertificatDeductions as unknown as ReturnType<typeof vi.fn>;
 const getInvoice = storage.getInvoice as unknown as ReturnType<typeof vi.fn>;
 const getSituationsByDevis = storage.getSituationsByDevis as unknown as ReturnType<typeof vi.fn>;
 const generate = generateCertificatPdf as unknown as ReturnType<typeof vi.fn>;
 const driveEnqueue = enqueueDriveUpload as unknown as ReturnType<typeof vi.fn>;
+const resolveTvaDecision = resolveCertificatTvaDecision as unknown as ReturnType<typeof vi.fn>;
+const updateCertificatUnsealed = storage.updateCertificatUnsealed as unknown as ReturnType<typeof vi.fn>;
+const getContractor = storage.getContractor as unknown as ReturnType<typeof vi.fn>;
+const getMarchesByProject = storage.getMarchesByProject as unknown as ReturnType<typeof vi.fn>;
 
 const draftCert = {
   id: 5,
@@ -68,12 +79,26 @@ const draftCert = {
   periodProrataDeduction: "0.00",
   cumulativeAcompteRecoupment: "0.00",
   periodAcompteRecoupment: "0.00",
+  tvaRatePercent: "20.00",
+  tvaAutoliquidation: false,
+  tvaRateSource: "documentary",
+  tvaEvidenceKind: "legacy",
   netToPayHt: "950.00",
   tvaAmount: "190.00",
   netToPayTtc: "1140.00",
   status: "draft",
   pdfStorageKey: null,
   version: 1,
+  certificateTrack: "contractor_works",
+  acompteDevisId: null,
+  isSolde: false,
+  retenueReleased: false,
+  retenueReleaseAmount: "0.00",
+  retenueReleaseReason: null,
+  retenueReleaseDate: null,
+  pvOverrideReason: null,
+  pvOverrideByUserId: null,
+  pvOverrideAt: null,
 };
 
 // Mirrors a certificat row's server-derived money fields back as the
@@ -84,9 +109,15 @@ const mirrorDeductions = (cert: typeof draftCert) => ({
   periodProrataDeduction: cert.periodProrataDeduction,
   cumulativeAcompteRecoupment: cert.cumulativeAcompteRecoupment,
   periodAcompteRecoupment: cert.periodAcompteRecoupment,
+  tvaRatePercent: cert.tvaRatePercent,
+  tvaAutoliquidation: cert.tvaAutoliquidation,
+  tvaRateSource: cert.tvaRateSource,
   netToPayHt: cert.netToPayHt,
   tvaAmount: cert.tvaAmount,
   netToPayTtc: cert.netToPayTtc,
+  isSolde: cert.isSolde,
+  retenueReleased: cert.retenueReleased,
+  retenueReleaseAmount: cert.retenueReleaseAmount,
 });
 
 const renderResult = (key: string, sourceInvoiceIds: number[] = []) => ({
@@ -94,11 +125,33 @@ const renderResult = (key: string, sourceInvoiceIds: number[] = []) => ({
   pdfBuffer: Buffer.from("%PDF"),
   fileName: "CERT.pdf",
   sourceInvoiceIds,
+  sourceInvoiceSnapshot: sourceInvoiceIds.map((invoiceId) => ({
+    invoiceId,
+    projectId: 1,
+    contractorId: 2,
+    amountHt: "500.00",
+    tvaAmount: "100.00",
+    amountTtc: "600.00",
+    status: "draft",
+    datePaid: null,
+  })),
   driveSeed: { projectId: 1, lotId: 4, displayName: "CERT.pdf", seedDevisCode: "DV1" },
 });
 
 beforeEach(() => {
   vi.clearAllMocks();
+  getCertificatSources.mockResolvedValue([]);
+  getContractor.mockResolvedValue({
+    id: 2,
+    defaultTvaRatePercent: "20.00",
+    defaultTvaAutoliquidation: false,
+  });
+  getMarchesByProject.mockResolvedValue([]);
+  resolveTvaDecision.mockResolvedValue({
+    ratePercent: 20,
+    autoliquidation: false,
+    source: "documentary",
+  });
   // Default: the authoritative recompute agrees with the stored row, so the
   // seal proceeds without a drift-repair loop. Tests that exercise drift
   // override this per-call.
@@ -120,7 +173,17 @@ describe("sealCertificat", () => {
     getCertificat.mockResolvedValue({ ...draftCert, version: 7 });
     generate.mockResolvedValue(renderResult("new-key.pdf", [11, 12]));
     sealCertificatStore.mockResolvedValue({ ...draftCert, pdfStorageKey: "new-key.pdf" });
-    getInvoice.mockImplementation(async (id: number) => ({ id, devisId: 99 }));
+    getInvoice.mockImplementation(async (id: number) => ({
+      id,
+      devisId: 99,
+      projectId: 1,
+      contractorId: 2,
+      amountHt: "500.00",
+      tvaAmount: "100.00",
+      amountTtc: "600.00",
+      status: "draft",
+      datePaid: null,
+    }));
     getSituationsByDevis.mockResolvedValue([
       { id: 31, invoiceId: 11 },
       { id: 32, invoiceId: null },
@@ -203,7 +266,7 @@ describe("sealCertificat", () => {
       .mockResolvedValueOnce({ ...draftCert, version: 1 }) // attempt 1: stale row
       .mockResolvedValueOnce({ ...repaired, version: 2 }); // attempt 2: repaired row
     resolveDeductions.mockResolvedValue(mirrorDeductions(repaired));
-    (storage.updateCertificat as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+    updateCertificatUnsealed.mockResolvedValue({
       ...repaired,
       version: 2,
     });
@@ -213,8 +276,12 @@ describe("sealCertificat", () => {
     const result = await sealCertificat(5);
     expect(result.pdfStorageKey).toBe("repaired.pdf");
     // Drift persisted exactly once, with the resolver's fresh figures.
-    expect(storage.updateCertificat).toHaveBeenCalledTimes(1);
-    expect(storage.updateCertificat).toHaveBeenCalledWith(5, mirrorDeductions(repaired));
+    expect(updateCertificatUnsealed).toHaveBeenCalledTimes(1);
+    expect(updateCertificatUnsealed).toHaveBeenCalledWith(
+      5,
+      mirrorDeductions(repaired),
+      1,
+    );
     // No render happened on the stale attempt — only after the repair.
     expect(generate).toHaveBeenCalledTimes(1);
     // The seal + snapshot reflect the repaired row (version 2, fresh nets).

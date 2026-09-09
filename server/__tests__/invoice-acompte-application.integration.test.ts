@@ -36,13 +36,32 @@ vi.mock("../communications/certificat-generator", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../communications/certificat-generator")>();
   return {
     ...actual,
-    generateCertificatPdf: vi.fn(async (certificatId: number) => ({
-      storageKey: `test/applied-invoice-seal-${certificatId}.pdf`,
-      pdfBuffer: Buffer.from("%PDF"),
-      fileName: `CERT-${certificatId}.pdf`,
-      sourceInvoiceIds: [],
-      driveSeed: null,
-    })),
+    generateCertificatPdf: vi.fn(async (certificatId: number) => {
+      const [invoice] = await db
+        .select()
+        .from(invoices)
+        .where(eq(invoices.id, invoiceId));
+      if (!invoice) throw new Error("Expected source invoice");
+      return {
+        storageKey: `test/applied-invoice-seal-${certificatId}.pdf`,
+        pdfBuffer: Buffer.from("%PDF"),
+        fileName: `CERT-${certificatId}.pdf`,
+        sourceInvoiceIds: [invoice.id],
+        sourceInvoiceSnapshot: [
+          {
+            invoiceId: invoice.id,
+            projectId: invoice.projectId,
+            contractorId: invoice.contractorId,
+            amountHt: invoice.amountHt,
+            tvaAmount: invoice.tvaAmount,
+            amountTtc: invoice.amountTtc,
+            status: invoice.status,
+            datePaid: invoice.datePaid,
+          },
+        ],
+        driveSeed: null,
+      };
+    }),
   };
 });
 vi.mock("../services/drive/upload-queue.service", () => ({
@@ -156,6 +175,7 @@ beforeAll(async () => {
     amountHt: "2075.00",
     tvaAmount: "415.00",
     amountTtc: "2490.00",
+    status: "approved",
     pdfPath: "tests/copied-invoice/FR25.26-0144.pdf",
     // Deliberately stale document total: empty confirm must replace this with
     // the authoritative stored TTC before checking net à payer.
@@ -460,7 +480,7 @@ describe("invoice opening-deposit application", () => {
       amountHt: "100.00",
       tvaAmount: "20.00",
       amountTtc: "120.00",
-      status: "pending",
+      status: "approved",
     }).returning();
     try {
       const next = await deriveCertificatFromInvoices([nextInvoice.id]);
