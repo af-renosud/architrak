@@ -2399,6 +2399,7 @@ export async function buildCertificatPreviewHtml(opts?: { isAcompte?: boolean })
     periodAcompteRecoupment: "0.00",
     tvaRateSource: "default",
     tvaEvidenceKind: "legacy",
+    tvaEvidenceDevisId: null,
     certificateRef: "CP-2026-007",
     dateIssued: sampleDate.toISOString().slice(0, 10),
     totalWorksHt: "24500.00",

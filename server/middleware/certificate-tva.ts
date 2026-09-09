@@ -5,6 +5,7 @@ const CLIENT_FORBIDDEN_TVA_FIELDS = new Set([
   "tvaRatePercent",
   "tvaRateSource",
   "tvaEvidenceKind",
+  "tvaEvidenceDevisId",
   "tvaAutoliquidation",
   "tvaAmount",
   "netToPayHt",

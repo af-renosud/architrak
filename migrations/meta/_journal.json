@@ -911,6 +911,13 @@
       "when": 1789051200000,
       "tag": "0129_invoice_certificate_source_seal",
       "breakpoints": true
+    },
+    {
+      "idx": 130,
+      "version": "7",
+      "when": 1789054800000,
+      "tag": "0130_certificat_tva_evidence_devis",
+      "breakpoints": true
     }
   ]
 }

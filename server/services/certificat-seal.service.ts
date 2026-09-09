@@ -109,6 +109,15 @@ export async function sealCertificat(certificatId: number): Promise<{
 
     let freshDeductions;
     let contractorExactInvoiceIds: number[] = [];
+    let contractorTvaEvidenceDevis:
+      | {
+          id: number;
+          projectId: number;
+          contractorId: number;
+          amountHt: string;
+          amountTtc: string;
+        }
+      | null = null;
     if (certificateTrack === "supplier_direct_payment") {
       const project = await storage.getProject(existing.projectId);
       if (
@@ -245,8 +254,35 @@ export async function sealCertificat(certificatId: number): Promise<{
       );
       const hasExactInvoiceAuthority =
         existing.tvaEvidenceKind === "exact_invoices";
+      let documentaryBasisDevis:
+        | { amountHt: string; amountTtc: string }
+        | undefined;
+      if (existing.tvaEvidenceDevisId != null) {
+        const sourceDevis = await storage.getDevis(existing.tvaEvidenceDevisId);
+        if (
+          !sourceDevis ||
+          sourceDevis.projectId !== existing.projectId ||
+          sourceDevis.contractorId !== existing.contractorId
+        ) {
+          throw new Error(
+            `Certificat ${certificatId} TVA source devis identity mismatch`,
+          );
+        }
+        documentaryBasisDevis = {
+          amountHt: sourceDevis.amountHt,
+          amountTtc: sourceDevis.amountTtc,
+        };
+        contractorTvaEvidenceDevis = {
+          id: sourceDevis.id,
+          projectId: sourceDevis.projectId,
+          contractorId: sourceDevis.contractorId,
+          amountHt: sourceDevis.amountHt,
+          amountTtc: sourceDevis.amountTtc,
+        };
+      }
       const preservesHistoricalDecision =
-        existing.tvaEvidenceKind === "signed_quotation" ||
+        (existing.tvaEvidenceKind === "signed_quotation" &&
+          documentaryBasisDevis == null) ||
         existing.tvaEvidenceKind === "legacy";
       freshDeductions = existing.acompteDevisId != null ? null : await resolveCertificatDeductions({
       projectId: existing.projectId,
@@ -271,7 +307,10 @@ export async function sealCertificat(certificatId: number): Promise<{
           : preservesHistoricalDecision &&
               existing.tvaRateSource !== "autoliquidation"
             ? undefined
-            : [],
+            : documentaryBasisDevis
+              ? undefined
+              : [],
+      documentaryBasisDevis,
       legacyTvaDecision:
         preservesHistoricalDecision &&
         existing.tvaRateSource !== "autoliquidation"
@@ -416,8 +455,35 @@ export async function sealCertificat(certificatId: number): Promise<{
             amountTtc: invoice.amountTtc,
           }))
         : undefined;
+      let documentaryBasisDevis:
+        | { amountHt: string; amountTtc: string }
+        | undefined;
+      if (existing.tvaEvidenceDevisId != null) {
+        const sourceDevis = await storage.getDevis(existing.tvaEvidenceDevisId);
+        if (
+          !sourceDevis ||
+          sourceDevis.projectId !== existing.projectId ||
+          sourceDevis.contractorId !== existing.contractorId
+        ) {
+          throw new Error(
+            `Certificat ${certificatId} TVA source devis identity mismatch`,
+          );
+        }
+        documentaryBasisDevis = {
+          amountHt: sourceDevis.amountHt,
+          amountTtc: sourceDevis.amountTtc,
+        };
+        contractorTvaEvidenceDevis = {
+          id: sourceDevis.id,
+          projectId: sourceDevis.projectId,
+          contractorId: sourceDevis.contractorId,
+          amountHt: sourceDevis.amountHt,
+          amountTtc: sourceDevis.amountTtc,
+        };
+      }
       const legacySource =
-        (existing.tvaEvidenceKind === "signed_quotation" ||
+        ((existing.tvaEvidenceKind === "signed_quotation" &&
+          documentaryBasisDevis == null) ||
           existing.tvaEvidenceKind === "legacy") &&
         existing.tvaRateSource !== "autoliquidation"
           ? (existing.tvaRateSource as Exclude<
@@ -429,11 +495,14 @@ export async function sealCertificat(certificatId: number): Promise<{
         ? documentaryBasisInvoices
         : legacySource
           ? undefined
-          : [];
+          : documentaryBasisDevis
+            ? undefined
+            : [];
       const renderedTvaDecision = await resolveCertificatTvaDecision({
         projectId: existing.projectId,
         contractorId: existing.contractorId,
         documentaryBasisInvoices: explicitDocumentaryBasisInvoices,
+        documentaryBasisDevis,
         legacyTvaDecision: legacySource
           ? {
               ratePercent: existing.tvaRatePercent,
@@ -461,6 +530,7 @@ export async function sealCertificat(certificatId: number): Promise<{
           retenueOverride: existing.retenueGarantie,
           prorataOverride: existing.cumulativeProrataDeduction,
           documentaryBasisInvoices: explicitDocumentaryBasisInvoices,
+          documentaryBasisDevis,
           legacyTvaDecision: legacySource
             ? {
                 ratePercent: existing.tvaRatePercent,
@@ -499,6 +569,7 @@ export async function sealCertificat(certificatId: number): Promise<{
               tvaAutoliquidation: marche.tvaAutoliquidation,
             }
           : null,
+        devis: contractorTvaEvidenceDevis,
         invoices: renderedInvoices.map((invoice) => ({
           invoiceId: invoice.invoiceId,
           projectId: invoice.projectId,
@@ -560,6 +631,7 @@ export async function sealCertificat(certificatId: number): Promise<{
       tvaAutoliquidation: existing.tvaAutoliquidation,
       tvaRateSource: existing.tvaRateSource,
       tvaEvidenceKind: existing.tvaEvidenceKind,
+      tvaEvidenceDevisId: existing.tvaEvidenceDevisId,
       isSolde: existing.isSolde,
       retenueReleased: existing.retenueReleased,
       retenueReleaseAmount: existing.retenueReleaseAmount,

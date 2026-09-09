@@ -302,10 +302,59 @@ describe("documentary TVA rate through the certificat routes", () => {
     expect(cert.totalWorksHt).toBe("1000.00");
     expect(cert.tvaRatePercent).toBe("15.00");
     expect(cert.tvaRateSource).toBe("documentary");
+    expect(cert.tvaEvidenceKind).toBe("signed_quotation");
+    expect(cert.tvaEvidenceDevisId).toBe(devisId);
     expect(cert.tvaAutoliquidation).toBe(false);
     expect(cert.tvaAmount).toBe("150.00");
     expect(cert.netToPayTtc).toBe("1150.00");
     await db.delete(certificats).where(eq(certificats.id, Number(cert.id)));
+  });
+
+  it("PATCH reloads the persisted quotation evidence instead of preserving a stale rate", async () => {
+    const cert = await createCert({});
+    expect(cert.tvaEvidenceDevisId).toBe(devisId);
+    await db.update(devis).set({ amountTtc: "11000.00" }).where(eq(devis.id, devisId));
+    try {
+      const patchedResponse = await fetch(`${base}/api/certificats/${cert.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ totalWorksHt: "1200.00" }),
+      });
+      expect(patchedResponse.status).toBe(200);
+      expect(await patchedResponse.json()).toMatchObject({
+        tvaRatePercent: "10.00",
+        tvaRateSource: "documentary",
+        tvaEvidenceKind: "signed_quotation",
+        tvaEvidenceDevisId: devisId,
+      });
+    } finally {
+      await db.update(devis).set({ amountTtc: "11500.00" }).where(eq(devis.id, devisId));
+      await db.delete(certificats).where(eq(certificats.id, Number(cert.id)));
+    }
+  });
+
+  it("seal independently reloads the persisted quotation evidence and audits its identity", async () => {
+    const cert = await createCert({});
+    await db.update(devis).set({ amountTtc: "11000.00" }).where(eq(devis.id, devisId));
+    try {
+      await sealCertificat(Number(cert.id));
+      const sealed = await storage.getCertificat(Number(cert.id));
+      expect(sealed).toMatchObject({
+        tvaRatePercent: "10.00",
+        tvaRateSource: "documentary",
+        tvaEvidenceKind: "signed_quotation",
+        tvaEvidenceDevisId: devisId,
+        tvaAmount: "100.00",
+      });
+      expect(sealed!.issuanceSnapshot).toMatchObject({
+        tvaRatePercent: "10.00",
+        tvaEvidenceKind: "signed_quotation",
+        tvaEvidenceDevisId: devisId,
+      });
+    } finally {
+      await db.update(devis).set({ amountTtc: "11500.00" }).where(eq(devis.id, devisId));
+      await db.delete(certificats).where(eq(certificats.id, Number(cert.id)));
+    }
   });
 
   it("keeps the contextless entry point configuration-only instead of scanning unrelated invoices", async () => {
@@ -480,13 +529,14 @@ describe("documentary TVA rate through the certificat routes", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         tvaRatePercent: "5.50",
+        tvaEvidenceDevisId: devisId,
         netToPayTtc: "1.00",
       }),
     });
     expect(forgedPatch.status).toBe(400);
     expect(await forgedPatch.json()).toMatchObject({
       code: "CERTIFICATE_TVA_SERVER_MANAGED",
-      blockedFields: ["tvaRatePercent", "netToPayTtc"],
+      blockedFields: ["tvaRatePercent", "tvaEvidenceDevisId", "netToPayTtc"],
     });
     await db.delete(certificats).where(eq(certificats.id, Number(cert.id)));
   });
@@ -544,8 +594,23 @@ describe("documentary TVA rate through the certificat routes", () => {
     }
   });
 
-  it("sealing keeps a source-less signed-quotation decision despite unrelated invoices", async () => {
-    const cert = await createCert({});
+  it("keeps a historical signed-quotation decision with no persisted link despite unrelated invoices", async () => {
+    const [cert] = await db
+      .insert(certificats)
+      .values({
+        projectId,
+        contractorId,
+        certificateRef: `C-HIST-${Date.now()}`,
+        totalWorksHt: "1000.00",
+        netToPayHt: "1000.00",
+        tvaRatePercent: "15.00",
+        tvaRateSource: "documentary",
+        tvaEvidenceKind: "signed_quotation",
+        tvaEvidenceDevisId: null,
+        tvaAmount: "150.00",
+        netToPayTtc: "1150.00",
+      })
+      .returning();
     expect(cert.tvaRateSource).toBe("documentary");
     expect(cert.tvaRatePercent).toBe("15.00");
     const [unrelated] = await db
@@ -566,6 +631,7 @@ describe("documentary TVA rate through the certificat routes", () => {
       const row = await storage.getCertificat(Number(cert.id));
       expect(row!.tvaRateSource).toBe("documentary");
       expect(row!.tvaRatePercent).toBe("15.00");
+      expect(row!.tvaEvidenceDevisId).toBeNull();
     } finally {
       await db.delete(certificats).where(eq(certificats.id, Number(cert.id)));
       await db.delete(invoices).where(eq(invoices.id, unrelated.id));
@@ -598,7 +664,16 @@ describe("documentary TVA rate through the certificat routes", () => {
       expect(firstSealed).toMatchObject({
         tvaRatePercent: "15.00",
         tvaEvidenceKind: "signed_quotation",
+        tvaEvidenceDevisId: devisId,
       });
+      expect(await storage.getDevis(devisId)).toMatchObject({
+        amountHt: "10000.00",
+        amountTtc: "11500.00",
+      });
+      await db
+        .update(devis)
+        .set({ amountTtc: "11000.00" })
+        .where(eq(devis.id, devisId));
 
       const reissueResponse = await fetch(
         `${base}/api/certificats/${cert.id}/reissue`,
@@ -612,9 +687,10 @@ describe("documentary TVA rate through the certificat routes", () => {
       const reissue = await reissueResponse.json();
       reissueId = Number(reissue.id);
       expect(reissue).toMatchObject({
-        tvaRatePercent: "15.00",
+        tvaRatePercent: "10.00",
         tvaRateSource: "documentary",
         tvaEvidenceKind: "signed_quotation",
+        tvaEvidenceDevisId: devisId,
       });
 
       const patchResponse = await fetch(
@@ -627,20 +703,25 @@ describe("documentary TVA rate through the certificat routes", () => {
       );
       expect(patchResponse.status).toBe(200);
       expect(await patchResponse.json()).toMatchObject({
-        tvaRatePercent: "15.00",
+        tvaRatePercent: "10.00",
         tvaEvidenceKind: "signed_quotation",
-        tvaAmount: "180.00",
+        tvaAmount: "120.00",
       });
 
       await sealCertificat(reissueId);
       const resealed = await storage.getCertificat(reissueId);
       expect(resealed).toMatchObject({
-        tvaRatePercent: "15.00",
+        tvaRatePercent: "10.00",
         tvaRateSource: "documentary",
         tvaEvidenceKind: "signed_quotation",
-        tvaAmount: "180.00",
+        tvaEvidenceDevisId: devisId,
+        tvaAmount: "120.00",
       });
     } finally {
+      await db
+        .update(devis)
+        .set({ amountTtc: "11500.00" })
+        .where(eq(devis.id, devisId));
       if (reissueId != null) {
         await db.delete(certificats).where(eq(certificats.id, reissueId));
       }
@@ -649,7 +730,7 @@ describe("documentary TVA rate through the certificat routes", () => {
     }
   });
 
-  it("uses configuration, not unrelated invoices, when autoliquidation is removed before reissue", async () => {
+  it("returns to the exact signed quotation, not unrelated invoices, when autoliquidation is removed before reissue", async () => {
     await db
       .update(marches)
       .set({ tvaAutoliquidation: true })
@@ -692,9 +773,10 @@ describe("documentary TVA rate through the certificat routes", () => {
       const reissue = await response.json();
       reissueId = Number(reissue.id);
       expect(reissue).toMatchObject({
-        tvaRatePercent: "20.00",
-        tvaRateSource: "marche",
+        tvaRatePercent: "15.00",
+        tvaRateSource: "documentary",
         tvaEvidenceKind: "signed_quotation",
+        tvaEvidenceDevisId: devisId,
       });
     } finally {
       await db

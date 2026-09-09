@@ -205,6 +205,13 @@ export interface ContractorTvaAuthoritySealGuard {
     tvaRatePercent: string | null;
     tvaAutoliquidation: boolean;
   } | null;
+  devis?: {
+    id: number;
+    projectId: number;
+    contractorId: number;
+    amountHt: string;
+    amountTtc: string;
+  } | null;
   invoices: Array<{
     invoiceId: number;
     projectId: number;
@@ -2578,6 +2585,7 @@ export class DatabaseStorage implements IStorage {
           tvaRatePercent: certificats.tvaRatePercent,
           tvaAutoliquidation: certificats.tvaAutoliquidation,
           tvaRateSource: certificats.tvaRateSource,
+          tvaEvidenceDevisId: certificats.tvaEvidenceDevisId,
           contractorDefaultTvaRatePercent:
             contractors.defaultTvaRatePercent,
           contractorDefaultTvaAutoliquidation:
@@ -2613,6 +2621,38 @@ export class DatabaseStorage implements IStorage {
           original.tvaRateSource !== tvaGuard.decision.source
         ) {
           throw new CertificatReissueInputChangedError();
+        }
+        const expectedDevis = tvaGuard.devis ?? null;
+        if (
+          (expectedDevis == null) !==
+          (original.tvaEvidenceDevisId == null) ||
+          (expectedDevis != null &&
+            expectedDevis.id !== original.tvaEvidenceDevisId)
+        ) {
+          throw new CertificatReissueInputChangedError();
+        }
+        if (expectedDevis) {
+          const [lockedDevis] = await tx
+            .select({
+              id: devis.id,
+              projectId: devis.projectId,
+              contractorId: devis.contractorId,
+              amountHt: devis.amountHt,
+              amountTtc: devis.amountTtc,
+            })
+            .from(devis)
+            .where(eq(devis.id, expectedDevis.id))
+            .for("update");
+          if (
+            !lockedDevis ||
+            Object.keys(expectedDevis).some(
+              (key) =>
+                lockedDevis[key as keyof typeof lockedDevis] !==
+                expectedDevis[key as keyof typeof expectedDevis],
+            )
+          ) {
+            throw new CertificatReissueInputChangedError();
+          }
         }
         const [lockedMarche] = await tx
           .select({
@@ -3194,6 +3234,7 @@ export class DatabaseStorage implements IStorage {
           tvaRatePercent: certificats.tvaRatePercent,
           tvaAutoliquidation: certificats.tvaAutoliquidation,
           tvaRateSource: certificats.tvaRateSource,
+          tvaEvidenceDevisId: certificats.tvaEvidenceDevisId,
         })
         .from(certificats)
         .innerJoin(contractors, eq(certificats.contractorId, contractors.id))
@@ -3230,6 +3271,38 @@ export class DatabaseStorage implements IStorage {
           contractorTvaGuard.decision.source !== current.tvaRateSource
         ) {
           return null;
+        }
+        const expectedDevis = contractorTvaGuard.devis ?? null;
+        if (
+          (expectedDevis == null) !==
+          (current.tvaEvidenceDevisId == null) ||
+          (expectedDevis != null &&
+            expectedDevis.id !== current.tvaEvidenceDevisId)
+        ) {
+          return null;
+        }
+        if (expectedDevis) {
+          const [lockedDevis] = await tx
+            .select({
+              id: devis.id,
+              projectId: devis.projectId,
+              contractorId: devis.contractorId,
+              amountHt: devis.amountHt,
+              amountTtc: devis.amountTtc,
+            })
+            .from(devis)
+            .where(eq(devis.id, expectedDevis.id))
+            .for("update");
+          if (
+            !lockedDevis ||
+            Object.keys(expectedDevis).some(
+              (key) =>
+                lockedDevis[key as keyof typeof lockedDevis] !==
+                expectedDevis[key as keyof typeof expectedDevis],
+            )
+          ) {
+            return null;
+          }
         }
         const [lockedMarche] = await tx
           .select({

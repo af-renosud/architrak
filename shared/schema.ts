@@ -909,6 +909,13 @@ export const certificats = pgTable("certificats", {
     .$type<TvaEvidenceKind>()
     .notNull()
     .default("legacy"),
+  // Exact signed quotation whose HT/TTC established a contextual manual
+  // certificate's documentary TVA rate. Nullable for historical and
+  // configuration/invoice-backed rows; server-owned and carried through
+  // reissue so later financial recomputes never scan by contractor.
+  tvaEvidenceDevisId: integer("tva_evidence_devis_id").references(() => devis.id, {
+    onDelete: "restrict",
+  }),
   // Task #464 — solde (final) certificat for its marché. At most ONE
   // non-superseded solde certificat may exist per (project, contractor):
   // enforced by the partial unique index below + a friendly resolver check.
@@ -2712,6 +2719,7 @@ export const insertCertificatSchema = createInsertSchema(certificats).omit({
   certificateTrack: true,
   // Server-owned TVA provenance survives presentation-source linking.
   tvaEvidenceKind: true,
+  tvaEvidenceDevisId: true,
 });
 
 export const insertCertificatSourceSchema = createInsertSchema(certificatSources).omit({
@@ -2762,6 +2770,7 @@ export type InsertCertificat = z.infer<typeof insertCertificatSchema>;
 export type ServerInsertCertificat = InsertCertificat & {
   certificateTrack?: CertificateTrack;
   tvaEvidenceKind?: TvaEvidenceKind;
+  tvaEvidenceDevisId?: number | null;
 };
 
 // Task #465 — payment-ledger request schema. Strict scale-2 amount, closed

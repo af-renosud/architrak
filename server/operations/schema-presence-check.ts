@@ -385,6 +385,24 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
       ],
     },
   },
+  {
+    tag: "0130_certificat_tva_evidence_devis",
+    artifact: {
+      kind: "all",
+      artifacts: [
+        {
+          kind: "column",
+          table: "certificats",
+          column: "tva_evidence_devis_id",
+        },
+        {
+          kind: "constraint",
+          table: "certificats",
+          constraint: "certificats_tva_evidence_devis_id_devis_id_fk",
+        },
+      ],
+    },
+  },
 ];
 
 interface JournalFile {

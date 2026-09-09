@@ -137,7 +137,12 @@ async function getExistingCertificatTvaEvidence(
   certificatId: number,
   existing: Pick<
     Certificat,
-    "tvaRatePercent" | "tvaRateSource" | "tvaEvidenceKind"
+    | "projectId"
+    | "contractorId"
+    | "tvaRatePercent"
+    | "tvaRateSource"
+    | "tvaEvidenceKind"
+    | "tvaEvidenceDevisId"
   >,
 ) {
   const sources = await storage.getCertificatSources(certificatId);
@@ -165,8 +170,36 @@ async function getExistingCertificatTvaEvidence(
   }));
   const hasExactInvoiceAuthority =
     existing.tvaEvidenceKind === "exact_invoices";
+  let documentaryBasisDevis:
+    | Pick<NonNullable<Awaited<ReturnType<typeof storage.getDevis>>>, "amountHt" | "amountTtc">
+    | undefined;
+  let sourceDevis:
+    | NonNullable<Awaited<ReturnType<typeof storage.getDevis>>>
+    | null = null;
+  if (existing.tvaEvidenceDevisId != null) {
+    sourceDevis =
+      (await storage.getDevis(existing.tvaEvidenceDevisId)) ?? null;
+    if (!sourceDevis) {
+      throw new Error(
+        `Certificat ${certificatId} TVA source devis ${existing.tvaEvidenceDevisId} not found`,
+      );
+    }
+    if (
+      sourceDevis.projectId !== existing.projectId ||
+      sourceDevis.contractorId !== existing.contractorId
+    ) {
+      throw new Error(
+        `Certificat ${certificatId} TVA source devis identity mismatch`,
+      );
+    }
+    documentaryBasisDevis = {
+      amountHt: sourceDevis.amountHt,
+      amountTtc: sourceDevis.amountTtc,
+    };
+  }
   const preservesHistoricalDecision =
-    existing.tvaEvidenceKind === "signed_quotation" ||
+    (existing.tvaEvidenceKind === "signed_quotation" &&
+      documentaryBasisDevis == null) ||
     existing.tvaEvidenceKind === "legacy";
   const legacySource: Exclude<TvaRateSource, "autoliquidation"> | null =
     preservesHistoricalDecision &&
@@ -181,7 +214,11 @@ async function getExistingCertificatTvaEvidence(
       ? exactInvoices
       : legacySource
         ? undefined
-        : [],
+        : documentaryBasisDevis
+          ? undefined
+          : [],
+    documentaryBasisDevis,
+    sourceDevis,
     sourceInvoices,
     legacyTvaDecision: legacySource
       ? {
@@ -770,6 +807,7 @@ router.post(
                 totalWorksHt: works.amountHt.toFixed(2),
                 ...deductions,
                  tvaEvidenceKind: "signed_quotation",
+                 tvaEvidenceDevisId: lockedDevis.id,
                 ...releaseAudit,
                 ...pvAudit,
                 projectId,
@@ -1066,6 +1104,7 @@ router.post(
         contractorId: existing.contractorId,
         documentaryBasisInvoices:
           tvaEvidence.documentaryBasisInvoices,
+        documentaryBasisDevis: tvaEvidence.documentaryBasisDevis,
         legacyTvaDecision: tvaEvidence.legacyTvaDecision,
         lockedTvaContext: {
           contractor,
@@ -1089,6 +1128,15 @@ router.post(
               id: marche.id,
               tvaRatePercent: marche.tvaRatePercent,
               tvaAutoliquidation: marche.tvaAutoliquidation,
+            }
+          : null,
+        devis: tvaEvidence.sourceDevis
+          ? {
+              id: tvaEvidence.sourceDevis.id,
+              projectId: tvaEvidence.sourceDevis.projectId,
+              contractorId: tvaEvidence.sourceDevis.contractorId,
+              amountHt: tvaEvidence.sourceDevis.amountHt,
+              amountTtc: tvaEvidence.sourceDevis.amountTtc,
             }
           : null,
         invoices: tvaEvidence.sourceInvoices.map((invoice) => ({
@@ -1154,6 +1202,7 @@ router.post(
           excludeCertificatId: id,
           documentaryBasisInvoices:
             tvaEvidence?.documentaryBasisInvoices,
+          documentaryBasisDevis: tvaEvidence?.documentaryBasisDevis,
           legacyTvaDecision: tvaEvidence?.legacyTvaDecision,
           resolvedTvaDecision: reissueTvaDecision,
         });
@@ -1168,6 +1217,7 @@ router.post(
           contractorId: existing.contractorId,
           certificateTrack: existing.certificateTrack,
           tvaEvidenceKind: existing.tvaEvidenceKind,
+          tvaEvidenceDevisId: existing.tvaEvidenceDevisId,
           dateIssued: null,
           totalWorksHt:
             supplierDerivation?.totalWorksHt ?? existing.totalWorksHt,
@@ -1500,8 +1550,30 @@ router.patch(
           }));
           const hasExactInvoiceAuthority =
             locked.tvaEvidenceKind === "exact_invoices";
+          let documentaryBasisDevis:
+            | { amountHt: string; amountTtc: string }
+            | undefined;
+          if (locked.tvaEvidenceDevisId != null) {
+            const [lockedDevis] = await tx
+              .select()
+              .from(devisTable)
+              .where(eq(devisTable.id, locked.tvaEvidenceDevisId))
+              .for("update");
+            if (
+              !lockedDevis ||
+              lockedDevis.projectId !== locked.projectId ||
+              lockedDevis.contractorId !== locked.contractorId
+            ) {
+              return { kind: "source_identity_mismatch" as const };
+            }
+            documentaryBasisDevis = {
+              amountHt: lockedDevis.amountHt,
+              amountTtc: lockedDevis.amountTtc,
+            };
+          }
           const preservesHistoricalDecision =
-            locked.tvaEvidenceKind === "signed_quotation" ||
+            (locked.tvaEvidenceKind === "signed_quotation" &&
+              documentaryBasisDevis == null) ||
             locked.tvaEvidenceKind === "legacy";
           const legacySource =
             preservesHistoricalDecision &&
@@ -1516,11 +1588,14 @@ router.patch(
             : preservesHistoricalDecision &&
                 locked.tvaRateSource !== "autoliquidation"
               ? undefined
-              : [];
+              : documentaryBasisDevis
+                ? undefined
+                : [];
           const tvaDecision = await resolveCertificatTvaDecision({
             projectId: locked.projectId,
             contractorId: locked.contractorId,
             documentaryBasisInvoices,
+            documentaryBasisDevis,
             legacyTvaDecision: legacySource
               ? {
                   ratePercent: locked.tvaRatePercent,
@@ -1559,6 +1634,7 @@ router.patch(
             pvOverride: lockedPvOverrideReason != null,
             excludeCertificatId: id,
             documentaryBasisInvoices,
+            documentaryBasisDevis,
             legacyTvaDecision: legacySource
               ? {
                   ratePercent: locked.tvaRatePercent,

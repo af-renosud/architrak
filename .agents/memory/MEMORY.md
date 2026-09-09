@@ -55,4 +55,4 @@
 - [Client-facing language](client-facing-language.md) — all outbound client email copy must be English; French is reserved for internal operator-facing records and audit text.
 - [Publish diff and unvalidated checks](publish-diff-unvalidated-checks.md) — Publish may emit malformed CHECK DDL from a dev constraint marked NOT VALID; if rows comply, validate it in dev and recompute the diff.
 - [Certificate reference authority](certificate-reference-authority.md) — C-numbers are server-owned and project-scoped; allocate in the insert tx before row locks, with uniqueness as the backstop.
-- [Certificate TVA authority](certificate-tva-authority.md) — one HT/TTC input; server resolves locked evidence, never defaults to 20%; claimed invoice evidence cannot drift.
+- [Certificate TVA authority](certificate-tva-authority.md) — server owns TVA; exact invoice/quotation evidence is pinned and revalidated; historical unlinked rows preserve recorded decisions.
