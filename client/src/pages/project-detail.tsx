@@ -31,7 +31,7 @@ import { IntakeTab } from "@/components/intake/IntakeTab";
 import { OutstandingFeesPanel } from "@/components/fees/OutstandingFeesPanel";
 import { OutstandingFeesBanner } from "@/components/fees/OutstandingFeesBanner";
 import { DesignContractCard } from "@/components/projects/DesignContractCard";
-import { FacturesTab } from "@/components/factures/FacturesTab";
+import { CreateMultiCertificatDialog, FacturesTab } from "@/components/factures/FacturesTab";
 import { NeedsReviewTab } from "@/components/reconciliation/NeedsReviewTab";
 import { AccountingStatusBadge } from "@/components/reconciliation/AccountingStatusBadge";
 import { Receipt, Inbox } from "lucide-react";
@@ -433,6 +433,13 @@ export default function ProjectDetail() {
   const { toast } = useToast();
 
   const [certDialogOpen, setCertDialogOpen] = useState(false);
+  const [certContextDialogOpen, setCertContextDialogOpen] = useState(false);
+  const [routingCertDevisId, setRoutingCertDevisId] = useState<number | null>(null);
+  const [sourceCertContext, setSourceCertContext] = useState<{
+    devis: Devis;
+    contractor: Contractor;
+    invoices: Invoice[];
+  } | null>(null);
   const [lockedCertContext, setLockedCertContext] = useState<{
     contractorId: number;
     devisId: number;
@@ -455,10 +462,11 @@ export default function ProjectDetail() {
     queryKey: projectScopedKey(projectId),
   });
 
-  const { data: devisList } = useQuery<Devis[]>({
+  const devisQuery = useQuery<Devis[]>({
     queryKey: projectScopedKey(projectId, "devis"),
     enabled: !!project,
   });
+  const devisList = devisQuery.data;
 
   const { data: lotsList } = useQuery<Lot[]>({
     queryKey: projectScopedKey(projectId, "lots"),
@@ -501,13 +509,20 @@ export default function ProjectDetail() {
     enabled: !!project,
   });
 
-  const { data: contractors } = useQuery<Contractor[]>({
+  const contractorsQuery = useQuery<Contractor[]>({
     queryKey: ["/api/contractors"],
     enabled: !!project,
   });
+  const contractors = contractorsQuery.data;
 
-  const { data: projectInvoices } = useQuery<Invoice[]>({
+  const projectInvoicesQuery = useQuery<Invoice[]>({
     queryKey: projectScopedKey(projectId, "invoices"),
+    enabled: !!project,
+  });
+  const projectInvoices = projectInvoicesQuery.data;
+
+  const certificatInvoiceLinksQuery = useQuery<Array<{ invoiceId: number }>>({
+    queryKey: projectScopedKey(projectId, "certificat-invoice-links"),
     enabled: !!project,
   });
 
@@ -1074,6 +1089,81 @@ export default function ProjectDetail() {
     });
     setLockedCertContext(context ?? null);
     setCertDialogOpen(true);
+  };
+
+  const routeProjectCertCreation = (devisId: number) => {
+    void (async () => {
+      setRoutingCertDevisId(devisId);
+      try {
+        const [devisResult, invoiceResult, linkResult, contractorResult] = await Promise.all([
+          devisQuery.refetch(),
+          projectInvoicesQuery.refetch(),
+          certificatInvoiceLinksQuery.refetch(),
+          contractorsQuery.refetch(),
+        ]);
+        const failed = [devisResult, invoiceResult, linkResult, contractorResult].find(
+          (result) => result.isError,
+        );
+        if (failed?.error) throw failed.error;
+
+        const devis = devisResult.data?.find((candidate) => candidate.id === devisId);
+        if (!devis || devis.status === "void" || devis.signOffStage !== "client_signed_off") {
+          toast({
+            title: "Devis signé requis",
+            description: "Ce devis n’est plus disponible pour créer un certificat.",
+            variant: "destructive",
+          });
+          return;
+        }
+        const contractor = contractorResult.data?.find(
+          (candidate) => candidate.id === devis.contractorId,
+        );
+        if (!contractor) {
+          toast({
+            title: "Entreprise introuvable",
+            description: "Actualisez le projet puis réessayez.",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        const linkedIds = new Set((linkResult.data ?? []).map((link) => link.invoiceId));
+        const eligibleInvoices = (invoiceResult.data ?? []).filter(
+          (invoice) =>
+            invoice.devisId === devis.id &&
+            invoice.contractorId === devis.contractorId &&
+            invoice.id !== devis.acompteInvoiceId &&
+            invoice.status === "approved" &&
+            invoice.datePaid == null &&
+            !linkedIds.has(invoice.id),
+        );
+
+        setCertContextDialogOpen(false);
+        if (eligibleInvoices.length > 0) {
+          setSourceCertContext({ devis, contractor, invoices: eligibleInvoices });
+          return;
+        }
+        if (contractor.archidocPartnerType === "supplier") {
+          toast({
+            title: "Facture approuvée requise",
+            description:
+              "Ajoutez et approuvez une facture fournisseur avant de créer le certificat de paiement direct.",
+            variant: "destructive",
+          });
+          return;
+        }
+        openCreateCert({ contractorId: devis.contractorId, devisId: devis.id });
+      } catch (error) {
+        toast({
+          title: "Impossible de préparer le certificat",
+          description:
+            error instanceof Error ? error.message : "Actualisez le projet puis réessayez.",
+          variant: "destructive",
+        });
+      } finally {
+        setRoutingCertDevisId(null);
+      }
+    })();
   };
 
   const openCreateFee = () => {
@@ -1992,7 +2082,7 @@ export default function ProjectDetail() {
           <TabsContent value="certificats">
             <div className="space-y-4">
               <div className="flex items-center justify-end">
-                 <Button onClick={() => openCreateCert()} disabled={isArchived} data-testid="button-new-cert-tab">
+                 <Button onClick={() => setCertContextDialogOpen(true)} disabled={isArchived} data-testid="button-new-cert-tab">
                   <Plus size={14} />
                   <span className="text-[9px] font-bold uppercase tracking-widest">New Certificat</span>
                 </Button>
@@ -2153,6 +2243,99 @@ export default function ProjectDetail() {
                 cert={viewingCert}
                 contractor={contractors?.find((c) => c.id === viewingCert.contractorId)}
                 onClose={() => setViewingCert(null)}
+              />
+            )}
+
+            <Dialog open={certContextDialogOpen} onOpenChange={setCertContextDialogOpen}>
+              <DialogContent className="max-w-lg">
+                <DialogHeader>
+                  <DialogTitle className="text-[16px] font-black uppercase tracking-tight">
+                    Choose a signed quotation
+                  </DialogTitle>
+                  <DialogDescription>
+                    Select the contract whose approved invoices should be certified.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-2" data-testid="list-certificat-contexts">
+                  {(devisList ?? [])
+                    .filter(
+                      (devis) =>
+                        devis.status !== "void" &&
+                        devis.signOffStage === "client_signed_off" &&
+                        contractors?.some((contractor) => contractor.id === devis.contractorId),
+                    )
+                    .map((devis) => {
+                      const contractor = contractors?.find(
+                        (candidate) => candidate.id === devis.contractorId,
+                      );
+                      const isRouting = routingCertDevisId === devis.id;
+                      return (
+                        <Button
+                          key={devis.id}
+                          variant="outline"
+                          className="h-auto w-full justify-between gap-3 px-3 py-3 text-left"
+                          disabled={routingCertDevisId !== null}
+                          onClick={() => routeProjectCertCreation(devis.id)}
+                          data-testid={`button-certificat-context-${devis.id}`}
+                        >
+                          <span className="min-w-0">
+                            <span className="block truncate text-[12px] font-semibold text-foreground">
+                              {devis.devisCode || `Devis #${devis.id}`}
+                            </span>
+                            <span className="block truncate text-[10px] text-muted-foreground">
+                              {contractor?.name}
+                              {contractor?.archidocPartnerType === "supplier" ? " · Supplier" : ""}
+                            </span>
+                          </span>
+                          {isRouting ? (
+                            <Loader2 size={14} className="shrink-0 animate-spin" />
+                          ) : (
+                            <ChevronRight size={14} className="shrink-0" />
+                          )}
+                        </Button>
+                      );
+                    })}
+                  {(devisList ?? []).filter(
+                    (devis) =>
+                      devis.status !== "void" &&
+                      devis.signOffStage === "client_signed_off" &&
+                      contractors?.some((contractor) => contractor.id === devis.contractorId),
+                  ).length === 0 && (
+                    <p
+                      className="rounded-lg border border-dashed px-3 py-6 text-center text-[12px] text-muted-foreground"
+                      data-testid="empty-certificat-contexts"
+                    >
+                      No signed quotation is available for certificate creation.
+                    </p>
+                  )}
+                </div>
+              </DialogContent>
+            </Dialog>
+
+            {sourceCertContext && (
+              <CreateMultiCertificatDialog
+                invoices={sourceCertContext.invoices}
+                contractorName={sourceCertContext.contractor.name}
+                contractorIban={sourceCertContext.contractor.iban}
+                projectId={String(projectId)}
+                context={{
+                  projectLabel: project?.name ?? `Projet #${projectId}`,
+                  devisLabel:
+                    sourceCertContext.devis.devisCode || `Devis #${sourceCertContext.devis.id}`,
+                }}
+                onClose={() => setSourceCertContext(null)}
+                onCreated={() => {
+                  for (const segment of [
+                    "certificats",
+                    "financial-summary",
+                    "invoices",
+                    "certificat-invoice-links",
+                  ]) {
+                    queryClient.invalidateQueries({
+                      queryKey: projectScopedKey(projectId, segment),
+                    });
+                  }
+                }}
               />
             )}
 
