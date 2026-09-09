@@ -111,11 +111,6 @@ export default function Certificats() {
     return map;
   }, [projectPayments]);
 
-  const { data: nextRefData } = useQuery<{ nextRef: string }>({
-    queryKey: ["/api/projects", String(selectedProjectId), "certificats", "next-ref"],
-    enabled: !!selectedProjectId,
-  });
-
   const { data: marches } = useQuery<Marche[]>({
     queryKey: ["/api/projects", String(selectedProjectId), "marches"],
     enabled: !!selectedProjectId,
@@ -334,15 +329,18 @@ export default function Certificats() {
   const createMutation = useMutation({
     mutationFn: async (data: CertificatFormValues) => {
       const res = await apiRequest("POST", `/api/projects/${data.projectId}/certificats`, data);
-      return res.json();
+      return res.json() as Promise<Certificat>;
     },
-    onSuccess: (_created, data) => {
+    onSuccess: (created, data) => {
       queryClient.invalidateQueries({ queryKey: projectScopedKey(data.projectId, "certificats") });
       queryClient.invalidateQueries({ queryKey: projectScopedKey(data.projectId, "certificats", "next-ref") });
       queryClient.invalidateQueries({ queryKey: projectScopedKey(data.projectId, "financial-summary") });
       setDialogOpen(false);
       form.reset();
-      toast({ title: "Certificat created successfully" });
+      toast({
+        title: `Certificat ${created.certificateRef} created successfully`,
+        description: "This reference was assigned by the server on creation.",
+      });
     },
     onError: (error: Error) => {
       // Task #566 — final-payment gate: solde refused without an approved PV
@@ -795,10 +793,12 @@ export default function Certificats() {
                 )}
                 <div className="p-3 rounded-md border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                   <TechnicalLabel>Certificate Reference</TechnicalLabel>
-                  <p className="text-[14px] font-semibold text-foreground mt-1" data-testid="text-next-cert-ref">
-                    {nextRefData?.nextRef ?? "..."}
+                  <p className="text-[14px] font-semibold text-foreground mt-1" data-testid="text-cert-ref-assignment">
+                    Assigned on creation
                   </p>
-                  <p className="text-[10px] text-muted-foreground mt-0.5">Auto-assigned sequentially per project</p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                    The server assigns the next available project reference when you create the certificat.
+                  </p>
                 </div>
                 <FormField
                   control={form.control}
