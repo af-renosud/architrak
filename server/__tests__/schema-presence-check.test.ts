@@ -172,6 +172,43 @@ describe.skipIf(skipModule !== null)("schema-presence check (Task #136)", () => 
     }
   }, 60_000);
 
+  it("probes both certificate source immutability triggers", async (t) => {
+    if (ctx.skipReason || !ctx.replayPool) {
+      t.skip();
+      return;
+    }
+    const triggers = [
+      {
+        table: "certificat_sources",
+        name: "certificat_sources_invoice_lock_trg",
+        create: `CREATE TRIGGER certificat_sources_invoice_lock_trg
+          BEFORE INSERT OR UPDATE OF invoice_id ON certificat_sources
+          FOR EACH ROW EXECUTE FUNCTION lock_certificate_source_invoice()`,
+      },
+      {
+        table: "invoices",
+        name: "invoice_certificate_source_seal_trg",
+        create: `CREATE TRIGGER invoice_certificate_source_seal_trg
+          BEFORE UPDATE OR DELETE ON invoices
+          FOR EACH ROW EXECUTE FUNCTION prevent_certificate_source_invoice_fact_mutation()`,
+      },
+    ];
+
+    for (const trigger of triggers) {
+      await ctx.replayPool.query(`DROP TRIGGER ${trigger.name} ON ${trigger.table}`);
+      try {
+        await expect(
+          assertSchemaMatchesTracker({
+            pool: ctx.replayPool,
+            migrationsFolder,
+          }),
+        ).rejects.toThrow(/0129_invoice_certificate_source_seal/);
+      } finally {
+        await ctx.replayPool.query(trigger.create);
+      }
+    }
+  }, 60_000);
+
   it("self-heals when artifact exists but the tracker has no row for it", async (t) => {
     if (ctx.skipReason || !ctx.replayPool) {
       t.skip();

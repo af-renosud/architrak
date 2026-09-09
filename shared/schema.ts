@@ -715,6 +715,9 @@ export const invoices = pgTable("invoices", {
   validationWarnings: jsonb("validation_warnings"),
   aiExtractedData: jsonb("ai_extracted_data"),
   aiConfidence: integer("ai_confidence"),
+  // The database freezes financial/source identity fields while this invoice
+  // is referenced by any non-superseded certificat_sources row. References
+  // belonging only to superseded certificates intentionally do not freeze it.
   // Task #198 — Drive copy of this invoice's PDF (see devis above).
   driveFileId: text("drive_file_id"),
   driveWebViewLink: text("drive_web_view_link"),
@@ -1186,6 +1189,9 @@ export const certificatSources = pgTable("certificat_sources", {
   id: serial("id").primaryKey(),
   certificatId: integer("certificat_id").notNull().references(() => certificats.id, { onDelete: "cascade" }),
   situationId: integer("situation_id").references(() => situations.id, { onDelete: "cascade" }),
+  // Active (non-superseded) invoice references freeze the invoice's financial
+  // and source identity facts at the database layer. Superseded-only references
+  // remain historical and do not block invoice maintenance.
   invoiceId: integer("invoice_id").references(() => invoices.id, { onDelete: "cascade" }),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [

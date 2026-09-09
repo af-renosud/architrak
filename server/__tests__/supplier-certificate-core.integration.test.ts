@@ -45,6 +45,7 @@ import {
   SupplierDirectPaymentSealConflictError,
 } from "../storage";
 import certificatsRouter from "../routes/certificats";
+import { isInvoiceCertificateSourceDatabaseRefusal } from "../services/invoice-certificate-source-guard.service";
 
 vi.mock("../auth/middleware", () => ({
   requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
@@ -554,54 +555,22 @@ describe("supplier direct-payment certificate core", () => {
     expect(response.body.code).toBe("SUPPLIER_INVOICE_PAID");
   });
 
-  it("refuses the final seal transaction when a supplier invoice changes after derivation", async () => {
+  it("refuses supplier invoice changes after certificate derivation", async () => {
     const invoice = await insertSupplierInvoice();
     const created = await request(
       "POST",
       `/api/invoices/${invoice.id}/create-certificat`,
     );
     expect(created.status).toBe(201);
-    const guardedReadiness = readinessSnapshot();
-    await db
-      .update(invoices)
-      .set({ amountHt: "999.00" })
-      .where(eq(invoices.id, invoice.id));
-
-    await expect(
-      storage.sealCertificat(created.body.id, {
-        pdfStorageKey: "tests/should-not-seal.pdf",
-        pdfFileName: "should-not-seal.pdf",
-        issuanceSnapshot: {},
-        dateIssued: "2026-08-24",
-        sourceRows: [
-          {
-            certificatId: created.body.id,
-            invoiceId: invoice.id,
-            situationId: null,
-          },
-        ],
-        expectedVersion: created.body.version,
-        projectId,
-        contractorId,
-        supplierDirectPaymentGuard: {
-          readiness: guardedReadiness,
-          invoices: [
-            {
-              invoiceId: invoice.id,
-              devisId,
-              invoiceNumber: invoice.invoiceNumber,
-              amountHt: "1000.00",
-              tvaAmount: "200.00",
-              amountTtc: "1200.00",
-              invoiceExtractedIban: null,
-              devisStatus: "confirmed",
-              devisAcompteInvoiceId: null,
-              devisExtractedIban: null,
-            },
-          ],
-        },
-      }),
-    ).rejects.toBeInstanceOf(SupplierDirectPaymentSealConflictError);
+    try {
+      await db
+        .update(invoices)
+        .set({ amountHt: "999.00" })
+        .where(eq(invoices.id, invoice.id));
+      throw new Error("Expected certificate source evidence mutation to fail");
+    } catch (error) {
+      expect(isInvoiceCertificateSourceDatabaseRefusal(error)).toBe(true);
+    }
 
     const [reloaded] = await db
       .select()

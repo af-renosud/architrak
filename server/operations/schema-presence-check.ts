@@ -367,6 +367,24 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
       ],
     },
   },
+  {
+    tag: "0129_invoice_certificate_source_seal",
+    artifact: {
+      kind: "all",
+      artifacts: [
+        {
+          kind: "trigger",
+          table: "certificat_sources",
+          trigger: "certificat_sources_invoice_lock_trg",
+        },
+        {
+          kind: "trigger",
+          table: "invoices",
+          trigger: "invoice_certificate_source_seal_trg",
+        },
+      ],
+    },
+  },
 ];
 
 interface JournalFile {

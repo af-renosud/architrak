@@ -25,6 +25,8 @@ import invoicesRouter from "../routes/invoices";
 let invoiceId: number;
 let raceInvoiceId: number;
 let certificateSourceInvoiceId: number;
+let supersededSourceInvoiceId: number;
+let certificateId: number;
 let projectId: number;
 let contractorId: number;
 let base: string;
@@ -52,6 +54,7 @@ beforeAll(async () => {
     periodAcompteRecoupment: "0.00", netToPayHt: "100.00", tvaAmount: "20.00",
     netToPayTtc: "120.00",
   }).returning();
+  certificateId = certificat.id;
   const [source] = await db.insert(projectIntakeDocuments).values({
     projectId: project.id, fileName: "seal.pdf", storageKey: `tests/seal-${nonce}.pdf`,
     contentFingerprint: "a".repeat(64), extractedData: { documentType: "invoice" },
@@ -96,6 +99,25 @@ beforeAll(async () => {
     certificatId: certificat.id,
     invoiceId: certificateSourceInvoice.id,
   });
+  const [supersededCertificat] = await db.insert(certificats).values({
+    projectId: project.id, contractorId: contractor.id,
+    certificateRef: `SEAL-SUPERSEDED-C-${nonce}`, dateIssued: "2026-01-01",
+    totalWorksHt: "25.00", pvMvAdjustment: "0.00", previousPayments: "0.00",
+    retenueGarantie: "0.00", cumulativeProrataDeduction: "0.00",
+    periodProrataDeduction: "0.00", cumulativeAcompteRecoupment: "0.00",
+    periodAcompteRecoupment: "0.00", netToPayHt: "25.00", tvaAmount: "5.00",
+    netToPayTtc: "30.00", status: "superseded",
+  }).returning();
+  const [supersededSourceInvoice] = await db.insert(invoices).values({
+    projectId: project.id, contractorId: contractor.id, devisId: devisRow.id,
+    invoiceNumber: `SUPERSEDED-SOURCE-I-${nonce}`, amountHt: "25.00",
+    tvaAmount: "5.00", amountTtc: "30.00", status: "draft",
+  }).returning();
+  supersededSourceInvoiceId = supersededSourceInvoice.id;
+  await db.insert(certificatSources).values({
+    certificatId: supersededCertificat.id,
+    invoiceId: supersededSourceInvoice.id,
+  });
 
   const app = express();
   app.use(express.json());
@@ -135,6 +157,21 @@ describe("applied invoice seal and rematch", () => {
         current = "cause" in current ? current.cause : null;
       }
       expect(messages.join("\n")).toContain("invoice_acompte_invoice_sealed");
+    }
+  }
+
+  async function expectCertificateSourceSeal(promise: Promise<unknown>): Promise<void> {
+    try {
+      await promise;
+      throw new Error("Expected the certificate source seal to reject the write");
+    } catch (error) {
+      const messages: string[] = [];
+      let current: unknown = error;
+      while (current && typeof current === "object") {
+        if ("message" in current && typeof current.message === "string") messages.push(current.message);
+        current = "cause" in current ? current.cause : null;
+      }
+      expect(messages.join("\n")).toContain("invoice_certificate_source_immutable");
     }
   }
 
@@ -193,6 +230,65 @@ describe("applied invoice seal and rematch", () => {
       await tx.execute(sql`SELECT set_config('app.allow_acompte_application_delete', 'true', true)`);
       await tx.update(invoices).set({ amountTtc: "121.00" }).where(eq(invoices.id, invoiceId));
     }));
+  });
+
+  it("enforces active certificate source immutability in the database", async () => {
+    await expectCertificateSourceSeal(
+      db.update(invoices).set({ amountHt: "51.00" }).where(eq(invoices.id, certificateSourceInvoiceId)),
+    );
+    await expectCertificateSourceSeal(
+      db.update(invoices).set({ contractorId: contractorId + 1 }).where(eq(invoices.id, certificateSourceInvoiceId)),
+    );
+    await expectCertificateSourceSeal(
+      db.delete(invoices).where(eq(invoices.id, certificateSourceInvoiceId)),
+    );
+  });
+
+  it("allows mutation when every certificate source reference is superseded", async () => {
+    await expect(
+      db.update(invoices)
+        .set({ amountHt: "26.00" })
+        .where(eq(invoices.id, supersededSourceInvoiceId))
+        .returning({ amountHt: invoices.amountHt }),
+    ).resolves.toEqual([{ amountHt: "26.00" }]);
+  });
+
+  it("serialises a source claim against a concurrent protected mutation", async () => {
+    const [raceTarget] = await db.insert(invoices).values({
+      projectId, contractorId, devisId: (await db.select({ id: devis.id }).from(devis)
+        .where(eq(devis.projectId, projectId)).limit(1))[0].id,
+      invoiceNumber: `SOURCE-RACE-${Date.now()}`, amountHt: "10.00",
+      tvaAmount: "2.00", amountTtc: "12.00",
+    }).returning();
+
+    let releaseClaim!: () => void;
+    const claimCanCommit = new Promise<void>((resolve) => { releaseClaim = resolve; });
+    let claimInserted!: () => void;
+    const inserted = new Promise<void>((resolve) => { claimInserted = resolve; });
+    const claim = db.transaction(async (tx) => {
+      await tx.insert(certificatSources).values({
+        certificatId: certificateId,
+        invoiceId: raceTarget.id,
+      });
+      claimInserted();
+      await claimCanCommit;
+    });
+    await inserted;
+
+    let mutationSettled = false;
+    const mutation = Promise.resolve(
+      db.update(invoices)
+        .set({ amountHt: "11.00" })
+        .where(eq(invoices.id, raceTarget.id)),
+    ).finally(() => {
+      mutationSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(mutationSettled).toBe(false);
+
+    releaseClaim();
+    await claim;
+    await expectCertificateSourceSeal(mutation);
   });
 
   it("refuses application when the prepared protected snapshot loses a race", async () => {

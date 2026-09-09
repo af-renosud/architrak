@@ -36,7 +36,10 @@ import {
   applyInvoiceAcompteDeduction,
   invoiceAcompteProtectedSnapshot,
 } from "../services/invoice-acompte-application.service";
-import { hasLiveCertificateSource } from "../services/invoice-certificate-source-guard.service";
+import {
+  hasLiveCertificateSource,
+  isInvoiceCertificateSourceDatabaseRefusal,
+} from "../services/invoice-certificate-source-guard.service";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
@@ -214,42 +217,50 @@ router.patch(
   requireAuth,
   validateRequest({ params: idParams, body: updateInvoiceSchema }),
   async (req, res) => {
-    const invoiceId = Number(req.params.id);
-    const result = await db.transaction(async (tx) => {
-      const [existing] = await tx
-        .select()
-        .from(invoicesTable)
-        .where(eq(invoicesTable.id, invoiceId))
-        .for("update");
-      if (!existing) return { outcome: "not_found" as const };
+    try {
+      const invoiceId = Number(req.params.id);
+      const result = await db.transaction(async (tx) => {
+        const [existing] = await tx
+          .select()
+          .from(invoicesTable)
+          .where(eq(invoicesTable.id, invoiceId))
+          .for("update");
+        if (!existing) return { outcome: "not_found" as const };
 
-      if (changesApplicationProtectedInvoiceField(req.body)) {
-        if (await hasLiveCertificateSource(tx, invoiceId)) {
-          return { outcome: "certificate_immutable" as const };
+        if (changesApplicationProtectedInvoiceField(req.body)) {
+          if (await hasLiveCertificateSource(tx, invoiceId)) {
+            return { outcome: "certificate_immutable" as const };
+          }
+          const [application] = await tx
+            .select({ id: invoiceAcompteApplications.id })
+            .from(invoiceAcompteApplications)
+            .where(eq(invoiceAcompteApplications.invoiceId, invoiceId))
+            .limit(1);
+          if (application) return { outcome: "immutable" as const };
         }
-        const [application] = await tx
-          .select({ id: invoiceAcompteApplications.id })
-          .from(invoiceAcompteApplications)
-          .where(eq(invoiceAcompteApplications.invoiceId, invoiceId))
-          .limit(1);
-        if (application) return { outcome: "immutable" as const };
-      }
 
-      const [invoice] = await tx
-        .update(invoicesTable)
-        .set(req.body)
-        .where(eq(invoicesTable.id, invoiceId))
-        .returning();
-      return { outcome: "updated" as const, invoice };
-    });
-    if (result.outcome === "not_found") return res.status(404).json({ message: "Invoice not found" });
-    if (result.outcome === "certificate_immutable") {
-      return immutableCertificateSourceResponse(res);
+        const [invoice] = await tx
+          .update(invoicesTable)
+          .set(req.body)
+          .where(eq(invoicesTable.id, invoiceId))
+          .returning();
+        return { outcome: "updated" as const, invoice };
+      });
+      if (result.outcome === "not_found") return res.status(404).json({ message: "Invoice not found" });
+      if (result.outcome === "certificate_immutable") {
+        return immutableCertificateSourceResponse(res);
+      }
+      if (result.outcome === "immutable") return immutableApplicationResponse(res);
+      const invoice = result.invoice;
+      await storage.revokeDevisCheckTokenIfFullyInvoiced(invoice.devisId);
+      res.json(invoice);
+    } catch (err: unknown) {
+      if (isInvoiceCertificateSourceDatabaseRefusal(err)) {
+        return immutableCertificateSourceResponse(res);
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ message: `Update failed: ${message}` });
     }
-    if (result.outcome === "immutable") return immutableApplicationResponse(res);
-    const invoice = result.invoice;
-    await storage.revokeDevisCheckTokenIfFullyInvoiced(invoice.devisId);
-    res.json(invoice);
   },
 );
 
@@ -479,6 +490,9 @@ router.post(
       if (updated) await storage.revokeDevisCheckTokenIfFullyInvoiced(updated.devisId);
       res.json(updated);
     } catch (err: unknown) {
+      if (isInvoiceCertificateSourceDatabaseRefusal(err)) {
+        return immutableCertificateSourceResponse(res);
+      }
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ message: `Confirm failed: ${message}` });
     }
@@ -528,6 +542,9 @@ router.delete(
       await storage.revokeDevisCheckTokenIfFullyInvoiced(deletion.devisId);
       res.json({ message: "Invoice deleted" });
     } catch (err: unknown) {
+      if (isInvoiceCertificateSourceDatabaseRefusal(err)) {
+        return immutableCertificateSourceResponse(res);
+      }
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ message: `Delete failed: ${message}` });
     }

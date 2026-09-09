@@ -2,7 +2,6 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { db } from "../db";
 import {
   storage,
-  CertificatReissueInputChangedError,
   CertificatSourceConflictError,
 } from "../storage";
 import {
@@ -19,6 +18,7 @@ import {
   createCertificatFromInvoices,
   DerivationRefusedError,
 } from "../services/certificat-from-invoices.service";
+import { isInvoiceCertificateSourceDatabaseRefusal } from "../services/invoice-certificate-source-guard.service";
 
 /**
  * Task #605 — one facture must never be authorized for payment by TWO live
@@ -376,7 +376,7 @@ describe("Task #605 — manual seal cannot double-certify a facture (integration
     }
   });
 
-  it("keeps reissue atomic when a source changes after derivation", async () => {
+  it("keeps reissue source evidence immutable after derivation", async () => {
     const inv = await insertInvoice(
       "T605-REISSUE-GUARD",
       "1000.00",
@@ -390,72 +390,16 @@ describe("Task #605 — manual seal cannot double-certify a facture (integration
       ]),
     );
     expect(sealed).not.toBeNull();
-    const [contractor] = await db
-      .select()
-      .from(contractors)
-      .where(eq(contractors.id, contractorId));
-    const [marche] = await db
-      .select()
-      .from(marches)
-      .where(
-        and(
-          eq(marches.projectId, projectId),
-          eq(marches.contractorId, contractorId),
-        ),
-      );
-    const authorityGuard = {
-      decision: {
-        ratePercent: sealed!.tvaRatePercent,
-        autoliquidation: sealed!.tvaAutoliquidation,
-        source: sealed!.tvaRateSource,
-      },
-      contractor: {
-        id: contractor.id,
-        defaultTvaRatePercent: contractor.defaultTvaRatePercent,
-        defaultTvaAutoliquidation:
-          contractor.defaultTvaAutoliquidation,
-      },
-      marche: {
-        id: marche.id,
-        tvaRatePercent: marche.tvaRatePercent,
-        tvaAutoliquidation: marche.tvaAutoliquidation,
-      },
-      invoices: [
-        {
-          invoiceId: inv.id,
-          projectId: inv.projectId,
-          contractorId: inv.contractorId,
-          amountHt: inv.amountHt,
-          tvaAmount: inv.tvaAmount,
-          amountTtc: inv.amountTtc,
-          status: inv.status,
-          datePaid: inv.datePaid,
-        },
-      ],
-    };
-    const draft = {
-      ...sealed!,
-      dateIssued: null,
-      pdfStorageKey: null,
-      pdfFileName: null,
-      issuanceSnapshot: null,
-      status: "draft",
-      reissuedFromCertificatId: sealed!.id,
-      version: 1,
-    } as any;
-    delete draft.id;
-    delete draft.certificateRef;
 
-    await db
-      .update(invoices)
-      .set({ amountHt: "900.00", amountTtc: "1080.00" })
-      .where(eq(invoices.id, inv.id));
-    await expect(
-      storage.reissueCertificat(original.id, draft, {
-        expectedVersion: sealed!.version,
-        contractorTvaAuthorityGuard: authorityGuard,
-      }),
-    ).rejects.toBeInstanceOf(CertificatReissueInputChangedError);
+    try {
+      await db
+        .update(invoices)
+        .set({ amountHt: "900.00", amountTtc: "1080.00" })
+        .where(eq(invoices.id, inv.id));
+      throw new Error("Expected certificate source evidence mutation to fail");
+    } catch (error) {
+      expect(isInvoiceCertificateSourceDatabaseRefusal(error)).toBe(true);
+    }
 
     const originalReloaded = await storage.getCertificat(original.id);
     expect(originalReloaded!.status).not.toBe("superseded");
