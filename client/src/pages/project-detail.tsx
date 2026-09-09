@@ -197,14 +197,15 @@ function ProrataInput({ projectId, initialValue }: { projectId: number; initialV
   );
 }
 
-const certFormSchema = insertCertificatSchema.extend({
-  contractorId: z.number().int().positive("Select a contractor"),
-  certificateRef: z.string().min(1, "Reference is required"),
-  totalWorksHt: z.string().min(1, "Required"),
-  netToPayHt: z.string().min(1, "Required"),
-  tvaAmount: z.string().min(1, "Required"),
-  netToPayTtc: z.string().min(1, "Required"),
-});
+const certFormSchema = insertCertificatSchema
+  .omit({ certificateRef: true })
+  .extend({
+    contractorId: z.number().int().positive("Select a contractor"),
+    totalWorksHt: z.string().min(1, "Required"),
+    netToPayHt: z.string().min(1, "Required"),
+    tvaAmount: z.string().min(1, "Required"),
+    netToPayTtc: z.string().min(1, "Required"),
+  });
 type CertFormValues = z.infer<typeof certFormSchema>;
 
 const feeFormSchema = insertFeeSchema.extend({
@@ -591,7 +592,7 @@ export default function ProjectDetail() {
   const certForm = useForm<CertFormValues>({
     resolver: zodResolver(certFormSchema),
     defaultValues: {
-      projectId: 0, contractorId: 0, certificateRef: "", dateIssued: null,
+      projectId: 0, contractorId: 0, dateIssued: null,
       totalWorksHt: "0.00", pvMvAdjustment: "0.00", previousPayments: "0.00",
       retenueGarantie: "0.00", netToPayHt: "0.00", tvaAmount: "0.00",
       netToPayTtc: "0.00", status: "draft", notes: null,
@@ -1081,7 +1082,7 @@ export default function ProjectDetail() {
       : undefined;
     const totalInvHt = (projectInvoices ?? []).reduce((s, i) => s + parseFloat(i.amountHt), 0);
     certForm.reset({
-      projectId: parseInt(projectId!), contractorId: context?.contractorId ?? 0, certificateRef: "",
+      projectId: parseInt(projectId!), contractorId: context?.contractorId ?? 0,
       dateIssued: null, totalWorksHt: contextualDevis?.amountHt ?? totalInvHt.toFixed(2), pvMvAdjustment: "0.00",
       previousPayments: "0.00", retenueGarantie: "0.00",
       netToPayHt: contextualDevis?.amountHt ?? totalInvHt.toFixed(2), tvaAmount: "0.00",
@@ -2385,13 +2386,6 @@ export default function ProjectDetail() {
                               .map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
                           </SelectContent>
                         </Select>
-                        <FormMessage />
-                      </FormItem>
-                    )} />
-                    <FormField control={certForm.control} name="certificateRef" render={({ field }) => (
-                      <FormItem>
-                        <FormLabel><TechnicalLabel>Reference</TechnicalLabel></FormLabel>
-                        <FormControl><Input {...field} placeholder="ex: C43" data-testid="input-cert-ref-tab" /></FormControl>
                         <FormMessage />
                       </FormItem>
                     )} />

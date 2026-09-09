@@ -36,7 +36,7 @@ import { z } from "zod";
 import { Amount } from "@/components/ui/amount";
 import { formatCurrency as fmt } from "@/lib/utils";
 
-const certificatFormSchema = insertCertificatSchema.extend({
+const certificatFormSchema = insertCertificatSchema.omit({ certificateRef: true }).extend({
   totalWorksHt: z.string().min(1, "Works HT amount is required"),
   netToPayHt: z.string().min(1, "Net to pay HT is required"),
   tvaAmount: z.string().min(1, "TVA amount is required"),
@@ -132,7 +132,6 @@ export default function Certificats() {
     defaultValues: {
       projectId: 0,
       contractorId: 0,
-      certificateRef: "",
       dateIssued: null,
       totalWorksHt: "0.00",
       pvMvAdjustment: "0.00",
@@ -433,7 +432,6 @@ export default function Certificats() {
     form.reset({
       projectId: parseInt(selectedProjectId),
       contractorId: 0,
-      certificateRef: nextRefData?.nextRef ?? "",
       dateIssued: null,
       totalWorksHt: totalInvoicesHt.toFixed(2),
       pvMvAdjustment: "0.00",

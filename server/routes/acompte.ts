@@ -13,6 +13,7 @@ import { z } from "zod";
 import { storage } from "../storage";
 import { requireAuth } from "../auth/middleware";
 import { validateRequest } from "../middleware/validate";
+import { rejectClientCertificateReference } from "../middleware/certificate-reference";
 import { resolveAcompteAmounts, linkAcompteInvoiceTx, markAcompteInvoicePaidTx, confirmNoInvoiceAcomptePayment } from "../services/acompte.service";
 import { db } from "../db";
 import { certificats, devis as devisTable } from "@shared/schema";
@@ -95,6 +96,7 @@ const confirmNoInvoiceBodySchema = z.object({
 router.post(
   "/api/devis/:id/acompte/confirm-paid-no-invoice",
   requireAuth,
+  rejectClientCertificateReference,
   validateRequest({ params: idParams, body: confirmNoInvoiceBodySchema }),
   async (req, res, next) => {
     try {
@@ -154,6 +156,7 @@ router.post(
 router.post(
   "/api/devis/:id/acompte/generate-certificat",
   requireAuth,
+  rejectClientCertificateReference,
   validateRequest({ params: idParams, body: z.object({}).strict().optional() }),
   async (req, res) => {
     const devisId = Number(req.params.id);

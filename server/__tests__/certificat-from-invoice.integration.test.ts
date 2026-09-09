@@ -55,6 +55,14 @@ async function get(path: string) {
   const res = await fetch(`${base}${path}`);
   return { status: res.status, body: await res.json().catch(() => ({})) };
 }
+async function patch(path: string, body: unknown) {
+  const res = await fetch(`${base}${path}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return { status: res.status, body: await res.json().catch(() => ({})) };
+}
 
 async function insertInvoice(devisId: number, num: string, ht: string, ttc: string) {
   const [inv] = await db
@@ -172,6 +180,45 @@ describe("Task #496 — one-click certificat from invoice", () => {
     expect(response.status).toBe(404);
     expect(response.body.code).toBe("CONTRACTOR_NOT_FOUND");
     expect(response.body.message).toContain("entreprise valide");
+  });
+
+  it("rejects a forged reference and preserves server-only sequential allocation", async () => {
+    const next = await get(`/api/projects/${projectId}/certificats/next-ref`);
+    expect(next.status).toBe(200);
+
+    const forged = await post(
+      `/api/projects/${projectId}/certificats`,
+      {
+        ...manualCertificateBody(contractorId),
+        certificateRef: "C999999",
+      },
+    );
+    expect(forged.status).toBe(400);
+    expect(forged.body.code).toBe("CERTIFICATE_REFERENCE_SERVER_MANAGED");
+
+    const created = await post(
+      `/api/projects/${projectId}/certificats`,
+      manualCertificateBody(contractorId),
+    );
+    expect(created.status).toBe(201);
+    expect(created.body.certificateRef).toBe(next.body.nextRef);
+
+    try {
+      const patched = await patch(
+        `/api/certificats/${created.body.id}`,
+        { certificateRef: "C999999" },
+      );
+      expect(patched.status).toBe(400);
+      expect(patched.body.code).toBe("CERTIFICATE_REFERENCE_SERVER_MANAGED");
+
+      const [stored] = await db
+        .select({ certificateRef: certificats.certificateRef })
+        .from(certificats)
+        .where(eq(certificats.id, created.body.id));
+      expect(stored.certificateRef).toBe(next.body.nextRef);
+    } finally {
+      await db.delete(certificats).where(eq(certificats.id, created.body.id));
+    }
   });
 
   it("creates a manual certificate only when the signed quotation has no eligible invoice source", async () => {
@@ -453,6 +500,13 @@ describe("Task #496 — one-click certificat from invoice", () => {
 
   it("Mode A: derives cumulative from invoice HT, creates a linked draft, then refuses double-certification", async () => {
     const inv = await insertInvoice(devisAId, "A-1", "4000.00", "4800.00");
+
+    const forged = await post(
+      `/api/invoices/${inv.id}/create-certificat`,
+      { certificateRef: "C999999" },
+    );
+    expect(forged.status).toBe(400);
+    expect(forged.body.code).toBe("CERTIFICATE_REFERENCE_SERVER_MANAGED");
 
     const preview = await get(`/api/invoices/${inv.id}/certificat-preview`);
     expect(preview.status).toBe(200);

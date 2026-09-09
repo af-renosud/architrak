@@ -15,6 +15,7 @@ import {
 } from "../communications/certificat-generator";
 import { sendCertificat, sendCommunication, CommunicationSendInProgressError } from "../communications/email-sender";
 import { validateRequest } from "../middleware/validate";
+import { rejectClientCertificateReference } from "../middleware/certificate-reference";
 import {
   resolveCertificatDeductions,
   SoldeConflictError,
@@ -230,7 +231,7 @@ const createCertificatBodySchema = insertCertificatSchema
     status: clientCreatableStatus.default("draft"),
   });
 const updateCertificatSchema = insertCertificatSchema
-  .omit(serverDerivedDeductionFields)
+  .omit({ certificateRef: true, ...serverDerivedDeductionFields })
   .partial()
   .extend({ ...deductionOverrideShape, status: clientSettableStatus.optional() });
 
@@ -262,6 +263,7 @@ router.get("/api/projects/:projectId/certificats/next-ref", async (req, res) => 
 
 router.post(
   "/api/projects/:projectId/certificats",
+  rejectClientCertificateReference,
   validateRequest({ params: projectIdParams, body: createCertificatBodySchema }),
   async (req, res) => {
     const projectId = Number(req.params.projectId);
@@ -576,6 +578,7 @@ router.post(
 // double-reissue race-free: a concurrent second click loses at INSERT time.
 router.post(
   "/api/certificats/:id/reissue",
+  rejectClientCertificateReference,
   validateRequest({ params: idParams }),
   async (req, res) => {
     const id = Number(req.params.id);
@@ -776,6 +779,7 @@ router.get("/api/certificats/:id", async (req, res) => {
 
 router.patch(
   "/api/certificats/:id",
+  rejectClientCertificateReference,
   validateRequest({ params: idParams, body: updateCertificatSchema }),
   async (req, res) => {
     const id = Number(req.params.id);
@@ -1416,6 +1420,7 @@ router.get(
 // empty — every figure is derived here, never accepted from the client.
 router.post(
   "/api/invoices/:id/create-certificat",
+  rejectClientCertificateReference,
   validateRequest({
     params: idParams,
     body: z.object({ issueDate: certificateIssueDate.optional() }).strict().optional(),
@@ -1466,6 +1471,7 @@ router.post(
 
 router.post(
   "/api/projects/:projectId/certificats/from-invoices",
+  rejectClientCertificateReference,
   validateRequest({ params: projectIdParams, body: fromInvoicesBody }),
   async (req, res) => {
     const checked = await checkSelectionProject(req.body.invoiceIds, Number(req.params.projectId), res);
