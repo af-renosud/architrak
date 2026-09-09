@@ -225,7 +225,32 @@ export type CertificatPaymentMutationResult =
   | { outcome: "superseded" | "draft" | "locked"; cert: Certificat }
   | { outcome: "ok"; cert: Certificat; state: CertificatPaymentState };
 
-type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Allocate the next project-scoped legal certificate reference.
+ *
+ * Callers must use the returned reference for an INSERT in this same
+ * transaction. The project advisory lock serializes every creation path;
+ * the (project_id, certificate_ref) unique constraint remains the final
+ * database backstop.
+ */
+export async function allocateCertificateRef(
+  tx: DbTransaction,
+  projectId: number,
+): Promise<string> {
+  await tx.execute(sql`select pg_advisory_xact_lock(${projectId})`);
+  const rows = await tx
+    .select({ certificateRef: certificats.certificateRef })
+    .from(certificats)
+    .where(eq(certificats.projectId, projectId));
+  let maxNum = 0;
+  for (const row of rows) {
+    const match = /^C(\d+)$/.exec(row.certificateRef);
+    if (match) maxNum = Math.max(maxNum, Number(match[1]));
+  }
+  return `C${maxNum + 1}`;
+}
 
 export interface IStorage {
   getProjects(options?: { includeArchived?: boolean; archivedOnly?: boolean }): Promise<Project[]>;
@@ -462,7 +487,7 @@ export interface IStorage {
 
   getCertificat(id: number): Promise<Certificat | undefined>;
 
-  createCertificat(data: ServerInsertCertificat): Promise<Certificat>;
+  createCertificat(data: Omit<ServerInsertCertificat, "certificateRef">): Promise<Certificat>;
 
   updateCertificat(id: number, data: Partial<InsertCertificat>): Promise<Certificat | undefined>;
   // Task #465 — client-payment ledger. All mutations are single atomic
@@ -505,7 +530,10 @@ export interface IStorage {
   getCertificatReissues(certificatIds: number[]): Promise<Certificat[]>;
   // Task #457 — atomic reissue: insert the replacement draft AND mark the
   // original superseded in ONE transaction; both roll back on any failure.
-  reissueCertificat(originalId: number, draft: ServerInsertCertificat & { reissuedFromCertificatId: number }): Promise<Certificat>;
+  reissueCertificat(
+    originalId: number,
+    draft: Omit<ServerInsertCertificat, "certificateRef"> & { reissuedFromCertificatId: number },
+  ): Promise<Certificat>;
 
   getFeesByProject(projectId: number): Promise<Fee[]>;
 
@@ -2365,9 +2393,12 @@ export class DatabaseStorage implements IStorage {
     return cert;
   }
 
-  async createCertificat(data: ServerInsertCertificat): Promise<Certificat> {
-    const [cert] = await db.insert(certificats).values(data).returning();
-    return cert;
+  async createCertificat(data: Omit<ServerInsertCertificat, "certificateRef">): Promise<Certificat> {
+    return db.transaction(async (tx) => {
+      const certificateRef = await allocateCertificateRef(tx, data.projectId);
+      const [cert] = await tx.insert(certificats).values({ ...data, certificateRef }).returning();
+      return cert;
+    });
   }
 
   async updateCertificatUnsealed(id: number, data: Partial<InsertCertificat>): Promise<Certificat | null> {
@@ -2392,7 +2423,7 @@ export class DatabaseStorage implements IStorage {
 
   async reissueCertificat(
     originalId: number,
-    draft: ServerInsertCertificat & { reissuedFromCertificatId: number },
+    draft: Omit<ServerInsertCertificat, "certificateRef"> & { reissuedFromCertificatId: number },
   ): Promise<Certificat> {
     // Task #457 — the paired lifecycle transition (new draft + original →
     // superseded) must be all-or-nothing: a committed draft with a
@@ -2402,6 +2433,7 @@ export class DatabaseStorage implements IStorage {
     // winner under concurrent reissues (the loser's INSERT throws 23505 and
     // its status update rolls back).
     return db.transaction(async (tx) => {
+      const certificateRef = await allocateCertificateRef(tx, draft.projectId);
       // Task #464 — supersede the original BEFORE inserting the clone: the
       // partial unique index certificats_solde_unique (one non-superseded
       // solde per project+contractor) is non-deferrable, so a solde reissue
@@ -2420,7 +2452,7 @@ export class DatabaseStorage implements IStorage {
           `Certificate track is immutable across reissue (${superseded.certificateTrack} -> ${replacementTrack})`,
         );
       }
-      const [created] = await tx.insert(certificats).values(draft).returning();
+      const [created] = await tx.insert(certificats).values({ ...draft, certificateRef }).returning();
       // Multi-facture certificats — the reissue REPLACES the original, so it
       // must certify the same source documents: copy the junction rows or the
       // replacement loses its invoice provenance (the generator would fall
@@ -5214,16 +5246,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getNextCertificateRef(projectId: number): Promise<string> {
-    const existing = await db.select().from(certificats).where(eq(certificats.projectId, projectId));
-    let maxNum = 0;
-    for (const cert of existing) {
-      const match = cert.certificateRef.match(/^C(\d+)$/);
-      if (match) {
-        const num = parseInt(match[1], 10);
-        if (num > maxNum) maxNum = num;
-      }
-    }
-    return `C${maxNum + 1}`;
+    return db.transaction((tx) => allocateCertificateRef(tx, projectId));
   }
 
   async getDevisByProjectAndContractor(projectId: number, contractorId: number): Promise<Devis[]> {

@@ -10,7 +10,7 @@
  */
 import { Router } from "express";
 import { z } from "zod";
-import { storage } from "../storage";
+import { allocateCertificateRef, storage } from "../storage";
 import { requireAuth } from "../auth/middleware";
 import { validateRequest } from "../middleware/validate";
 import { rejectClientCertificateReference } from "../middleware/certificate-reference";
@@ -204,16 +204,15 @@ router.post(
       });
     }
 
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const nextRef = await storage.getNextCertificateRef(devis.projectId);
-        // One transaction, devis row locked FOR UPDATE: the state re-check,
-        // the certificat INSERT and the resolved-amount persistence commit
-        // together, so a concurrent link-invoice / mark-paid / second click
-        // can neither slip between the guard and the insert nor leave a
-        // live deposit certificat whose amount the recoupment engine
-        // (which sums paid devis' acompteAmountHt) cannot see.
-        const cert = await db.transaction(async (tx) => {
+    try {
+      // One transaction, devis row locked FOR UPDATE: the state re-check,
+      // the certificat INSERT and the resolved-amount persistence commit
+      // together, so a concurrent link-invoice / mark-paid / second click
+      // can neither slip between the guard and the insert nor leave a
+      // live deposit certificat whose amount the recoupment engine
+      // (which sums paid devis' acompteAmountHt) cannot see.
+      const cert = await db.transaction(async (tx) => {
+          const nextRef = await allocateCertificateRef(tx, devis.projectId);
           const [locked] = await tx
             .select()
             .from(devisTable)
@@ -283,33 +282,30 @@ router.post(
               .where(eq(devisTable.id, devisId));
           }
           return created;
+      });
+      return res.status(201).json(cert);
+    } catch (err) {
+      if ((err as { acompteStateChanged?: boolean }).acompteStateChanged) {
+        return res.status(409).json({
+          message: "The devis changed while generating the acompte certificat — refresh and retry.",
+          code: "acompte_state_changed",
         });
-        return res.status(201).json(cert);
-      } catch (err) {
-        if ((err as { acompteStateChanged?: boolean }).acompteStateChanged) {
-          return res.status(409).json({
-            message: "The devis changed while generating the acompte certificat — refresh and retry.",
-            code: "acompte_state_changed",
-          });
-        }
-        if ((err as { acompteAmountMissing?: boolean }).acompteAmountMissing) {
-          return res.status(409).json({
-            message: "No acompte amount configured on the devis (set a % or an HT amount first).",
-            code: "acompte_amount_missing",
-          });
-        }
-        const { code, constraint } = pgErrorInfo(err);
-        if (code === "23505" && constraint === "certificats_acompte_devis_unique") {
-          return res.status(409).json({
-            message: "An acompte certificat already exists for this devis.",
-            code: "acompte_certificat_exists",
-          });
-        }
-        if (code === "23505" && attempt < 2) continue;
-        throw err;
       }
+      if ((err as { acompteAmountMissing?: boolean }).acompteAmountMissing) {
+        return res.status(409).json({
+          message: "No acompte amount configured on the devis (set a % or an HT amount first).",
+          code: "acompte_amount_missing",
+        });
+      }
+      const { code, constraint } = pgErrorInfo(err);
+      if (code === "23505" && constraint === "certificats_acompte_devis_unique") {
+        return res.status(409).json({
+          message: "An acompte certificat already exists for this devis.",
+          code: "acompte_certificat_exists",
+        });
+      }
+      throw err;
     }
-    return res.status(500).json({ message: "Could not allocate a certificate reference" });
   },
 );
 

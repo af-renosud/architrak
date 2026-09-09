@@ -31,6 +31,7 @@ import type { Devis } from "@shared/schema";
 import { acompteNoInvoicePayments, certificats, devis as devisTable, emailDocuments, invoices, projectIntakeDocuments, projects } from "@shared/schema";
 import { deriveTvaAmount, roundCurrency } from "@shared/financial-utils";
 import { db } from "../db";
+import { allocateCertificateRef } from "../storage";
 import { and, eq, ne, sql } from "drizzle-orm";
 
 export type AcompteState = "none" | "pending" | "invoiced" | "paid" | "applied";
@@ -363,9 +364,22 @@ export async function confirmNoInvoiceAcomptePayment(input: {
   if (input.paidAt.getTime() > Date.now()) {
     return { outcome: "invalid", code: "acompte_payment_date_future", message: "Payment date cannot be in the future." };
   }
+  const [initialDevis] = await db
+    .select({ projectId: devisTable.projectId })
+    .from(devisTable)
+    .where(eq(devisTable.id, input.devisId));
+  if (!initialDevis) return { outcome: "not_found" };
   return db.transaction(async (tx) => {
+    const certificateRef = await allocateCertificateRef(tx, initialDevis.projectId);
     const [locked] = await tx.select().from(devisTable).where(eq(devisTable.id, input.devisId)).for("update");
     if (!locked) return { outcome: "not_found" as const };
+    if (locked.projectId !== initialDevis.projectId) {
+      return {
+        outcome: "invalid" as const,
+        code: "acompte_context_changed",
+        message: "The devis changed project while confirming the deposit.",
+      };
+    }
     const [project] = await tx.select().from(projects).where(eq(projects.id, locked.projectId)).for("update");
     if (!project || project.archivedAt != null) {
       return { outcome: "invalid" as const, code: "acompte_project_archived", message: "Archived projects are read-only." };
@@ -497,15 +511,10 @@ export async function confirmNoInvoiceAcomptePayment(input: {
         return { outcome: "invalid" as const, code: "acompte_certificat_amount_mismatch", message: "Existing acompte certificat does not match the devis amount." };
       }
     } else {
-      // Serialize reference allocation per project; certificate_ref's unique
-      // constraint remains the final database backstop.
-      await tx.execute(sql`SELECT pg_advisory_xact_lock(${locked.projectId})`);
-      const rows = await tx.select({ ref: certificats.certificateRef }).from(certificats).where(eq(certificats.projectId, locked.projectId));
-      const next = rows.reduce((max, row) => Math.max(max, Number(/^C(\d+)$/.exec(row.ref)?.[1] ?? 0)), 0) + 1;
       const tvaAmount = deriveTvaAmount(amounts.amountHt, amounts.amountTtc);
       const rate = amounts.amountHt > 0 ? roundCurrency((tvaAmount / amounts.amountHt) * 100) : 0;
       [cert] = await tx.insert(certificats).values({
-        projectId: locked.projectId, contractorId: locked.contractorId, certificateRef: `C${next}`,
+        projectId: locked.projectId, contractorId: locked.contractorId, certificateRef,
         dateIssued: input.paidAt.toISOString().slice(0, 10), totalWorksHt: amounts.amountHt.toFixed(2),
         pvMvAdjustment: "0.00", previousPayments: "0.00", retenueGarantie: "0.00",
         cumulativeProrataDeduction: "0.00", periodProrataDeduction: "0.00",

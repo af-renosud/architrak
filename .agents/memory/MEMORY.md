@@ -54,4 +54,4 @@
 - [Gmail accepted-send reconciliation](gmail-accepted-send-reconciliation.md) — retryable bearer-link emails use immutable RFC Message-IDs; provider-accepted/DB-uncertain sends stay in-flight and reconcile Sent before retry.
 - [Client-facing language](client-facing-language.md) — all outbound client email copy must be English; French is reserved for internal operator-facing records and audit text.
 - [Publish diff and unvalidated checks](publish-diff-unvalidated-checks.md) — Publish may emit malformed CHECK DDL from a dev constraint marked NOT VALID; if rows comply, validate it in dev and recompute the diff.
-- [Certificate reference authority](certificate-reference-authority.md) — C-number references are project-sequential legal identifiers; clients may display returned values but never submit or mutate them.
+- [Certificate reference authority](certificate-reference-authority.md) — C-numbers are server-owned and project-scoped; allocate in the insert tx before row locks, with uniqueness as the backstop.

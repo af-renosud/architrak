@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { storage, CertificatSourceConflictError } from "../storage";
+import { allocateCertificateRef, storage, CertificatSourceConflictError } from "../storage";
 import {
   insertCertificatSchema,
   type Certificat,
@@ -301,9 +301,9 @@ router.post(
         });
       }
 
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const result = await db.transaction(async (tx) => {
+      try {
+        const result = await db.transaction(async (tx) => {
+            const nextRef = await allocateCertificateRef(tx, projectId);
             await tx.execute(
               sql`select pg_advisory_xact_lock(${projectId}, ${initialDevis.contractorId})`,
             );
@@ -426,7 +426,6 @@ router.post(
                   retenueReleaseReason: null,
                   retenueReleaseDate: null,
                 };
-            const nextRef = await storage.getNextCertificateRef(projectId);
             const [cert] = await tx
               .insert(certificatsTable)
               .values({
@@ -442,60 +441,58 @@ router.post(
             return { kind: "created" as const, cert };
           });
 
-          if (result.kind === "context_changed") {
-            return res.status(409).json({
-              code: "DEVIS_CONTEXT_CHANGED",
-              message: "Le contexte du devis a changé. Actualisez le projet puis réessayez.",
-            });
-          }
-          if (result.kind === "devis_not_signed") {
-            return res.status(409).json({
-              code: "DEVIS_NOT_SIGNED_OFF",
-              message: "Le devis doit être signé par le client avant de créer un certificat.",
-            });
-          }
-          if (result.kind === "contractor_mismatch") {
-            return res.status(409).json({
-              code: "DEVIS_CONTRACTOR_MISMATCH",
-              message: "L’entreprise sélectionnée ne correspond plus au devis.",
-            });
-          }
-          if (result.kind === "contractor_not_found") {
-            return res.status(404).json({
-              code: "CONTRACTOR_NOT_FOUND",
-              message: "Sélectionnez une entreprise valide avant de créer le certificat.",
-            });
-          }
-          if (result.kind === "supplier_manual_forbidden") {
-            return res.status(409).json({
-              code: "SUPPLIER_CERTIFICATE_REQUIRES_INVOICE_SOURCES",
-              message:
-                "Un paiement direct fournisseur doit être créé depuis une ou plusieurs factures approuvées. La création manuelle sans sources est interdite.",
-            });
-          }
-          if (result.kind === "invoice_sources_required") {
-            return res.status(409).json({
-              code: "ELIGIBLE_INVOICE_SOURCES_REQUIRED",
-              message:
-                "Des factures approuvées et impayées sont disponibles pour ce devis. Créez le certificat depuis ces factures.",
-              invoiceIds: result.invoiceIds,
-            });
-          }
-          return res.status(201).json(publicCertificatDto(result.cert));
-        } catch (err) {
-          const mapped = mapSoldeError(err);
-          if (mapped) return res.status(mapped.status).json(mapped.body);
-          const { code, constraint } = pgErrorInfo(err);
-          if (code === "23505" && constraint === "certificats_solde_unique") {
-            return res.status(409).json({
-              code: "SOLDE_ALREADY_EXISTS",
-              message:
-                "Un certificat de solde existe déjà pour cette entreprise — un seul certificat de solde par marché.",
-            });
-          }
-          if (code === "23505" && attempt < 2) continue;
-          throw err;
+        if (result.kind === "context_changed") {
+          return res.status(409).json({
+            code: "DEVIS_CONTEXT_CHANGED",
+            message: "Le contexte du devis a changé. Actualisez le projet puis réessayez.",
+          });
         }
+        if (result.kind === "devis_not_signed") {
+          return res.status(409).json({
+            code: "DEVIS_NOT_SIGNED_OFF",
+            message: "Le devis doit être signé par le client avant de créer un certificat.",
+          });
+        }
+        if (result.kind === "contractor_mismatch") {
+          return res.status(409).json({
+            code: "DEVIS_CONTRACTOR_MISMATCH",
+            message: "L’entreprise sélectionnée ne correspond plus au devis.",
+          });
+        }
+        if (result.kind === "contractor_not_found") {
+          return res.status(404).json({
+            code: "CONTRACTOR_NOT_FOUND",
+            message: "Sélectionnez une entreprise valide avant de créer le certificat.",
+          });
+        }
+        if (result.kind === "supplier_manual_forbidden") {
+          return res.status(409).json({
+            code: "SUPPLIER_CERTIFICATE_REQUIRES_INVOICE_SOURCES",
+            message:
+              "Un paiement direct fournisseur doit être créé depuis une ou plusieurs factures approuvées. La création manuelle sans sources est interdite.",
+          });
+        }
+        if (result.kind === "invoice_sources_required") {
+          return res.status(409).json({
+            code: "ELIGIBLE_INVOICE_SOURCES_REQUIRED",
+            message:
+              "Des factures approuvées et impayées sont disponibles pour ce devis. Créez le certificat depuis ces factures.",
+            invoiceIds: result.invoiceIds,
+          });
+        }
+        return res.status(201).json(publicCertificatDto(result.cert));
+      } catch (err) {
+        const mapped = mapSoldeError(err);
+        if (mapped) return res.status(mapped.status).json(mapped.body);
+        const { code, constraint } = pgErrorInfo(err);
+        if (code === "23505" && constraint === "certificats_solde_unique") {
+          return res.status(409).json({
+            code: "SOLDE_ALREADY_EXISTS",
+            message:
+              "Un certificat de solde existe déjà pour cette entreprise — un seul certificat de solde par marché.",
+          });
+        }
+        throw err;
       }
     }
 
@@ -550,22 +547,18 @@ router.post(
       ? { retenueReleaseReason: releaseReason ?? null, retenueReleaseDate: new Date().toISOString().split("T")[0] }
       : { retenueReleaseReason: null, retenueReleaseDate: null };
 
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const nextRef = await storage.getNextCertificateRef(projectId);
-        const cert = await storage.createCertificat({ ...body, ...deductions, ...releaseAudit, ...pvAudit, projectId, certificateRef: nextRef });
-        return res.status(201).json(publicCertificatDto(cert));
-      } catch (err) {
-        const { code, constraint } = pgErrorInfo(err);
-        if (code === "23505" && constraint === "certificats_solde_unique") {
-          return res.status(409).json({
-            code: "SOLDE_ALREADY_EXISTS",
-            message: "Un certificat de solde existe déjà pour cette entreprise — un seul certificat de solde par marché.",
-          });
-        }
-        if (code === "23505" && attempt < 2) continue;
-        throw err;
+    try {
+      const cert = await storage.createCertificat({ ...body, ...deductions, ...releaseAudit, ...pvAudit, projectId });
+      return res.status(201).json(publicCertificatDto(cert));
+    } catch (err) {
+      const { code, constraint } = pgErrorInfo(err);
+      if (code === "23505" && constraint === "certificats_solde_unique") {
+        return res.status(409).json({
+          code: "SOLDE_ALREADY_EXISTS",
+          message: "Un certificat de solde existe déjà pour cette entreprise — un seul certificat de solde par marché.",
+        });
       }
+      throw err;
     }
   },
 );
@@ -710,18 +703,15 @@ router.post(
           excludeCertificatId: id,
         });
 
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const nextRef = await storage.getNextCertificateRef(existing.projectId);
-        // Atomic paired transition: insert the draft AND mark the original
-        // superseded in one transaction (storage.reissueCertificat) — a
-        // failure on either write rolls back both, so the chain can never
-        // hold a committed replacement next to a still-active original.
-        const draft = await storage.reissueCertificat(id, {
+    try {
+      // Atomic paired transition: insert the draft AND mark the original
+      // superseded in one transaction (storage.reissueCertificat) — a
+      // failure on either write rolls back both, so the chain can never
+      // hold a committed replacement next to a still-active original.
+      const draft = await storage.reissueCertificat(id, {
           projectId: existing.projectId,
           contractorId: existing.contractorId,
           certificateTrack: existing.certificateTrack,
-          certificateRef: nextRef,
           dateIssued: null,
           totalWorksHt:
             supplierDerivation?.totalWorksHt ?? existing.totalWorksHt,
@@ -746,21 +736,21 @@ router.post(
           // Task #491 — preserve the acompte link so the clone stays outside
           // the waterfall (and the one-live-acompte-per-devis index holds).
           acompteDevisId: existing.acompteDevisId,
-        } as ServerInsertCertificat & { reissuedFromCertificatId: number });
-        return res.status(201).json(draft);
-      } catch (err) {
-        const { code, constraint } = pgErrorInfo(err);
-        if (code === "23505" && constraint === "certificats_reissued_from_unique") {
-          const [winner] = await storage.getCertificatReissues([id]);
-          return res.status(409).json({
-            code: "CERTIFICAT_ALREADY_REISSUED",
-            message: `Certificat ${existing.certificateRef} was already reissued${winner ? ` as ${winner.certificateRef}` : ""}.`,
-            reissueCertificatId: winner?.id,
-          });
-        }
-        if (code === "23505" && attempt < 2) continue; // ref collision — retry with a fresh ref
-        throw err;
+        } as Omit<ServerInsertCertificat, "certificateRef"> & {
+          reissuedFromCertificatId: number;
+        });
+      return res.status(201).json(draft);
+    } catch (err) {
+      const { code, constraint } = pgErrorInfo(err);
+      if (code === "23505" && constraint === "certificats_reissued_from_unique") {
+        const [winner] = await storage.getCertificatReissues([id]);
+        return res.status(409).json({
+          code: "CERTIFICAT_ALREADY_REISSUED",
+          message: `Certificat ${existing.certificateRef} was already reissued${winner ? ` as ${winner.certificateRef}` : ""}.`,
+          reissueCertificatId: winner?.id,
+        });
       }
+      throw err;
     }
   },
 );
@@ -1387,23 +1377,19 @@ async function handleCreateFromInvoices(
     });
   }
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const cert = await createCertificatFromInvoices(invoiceIds, identity);
-      return res.status(201).json(publicCertificatDto(cert));
-    } catch (err) {
-      if (err instanceof InvoiceStateChangedError) {
-        return res.status(409).json({ code: "INVOICE_STATE_CHANGED", message: "Une facture a changé pendant la création — actualisez et réessayez." });
-      }
-      if (err instanceof DerivationRefusedError) {
-        return res.status(err.refusal.status).json(err.refusal.body);
-      }
-      const mapped = mapSoldeError(err);
-      if (mapped) return res.status(mapped.status).json(mapped.body);
-      const { code } = pgErrorInfo(err);
-      if (code === "23505" && attempt < 2) continue; // ref collision (e.g. manual dialog racing) — full retry
-      throw err;
+  try {
+    const cert = await createCertificatFromInvoices(invoiceIds, identity);
+    return res.status(201).json(publicCertificatDto(cert));
+  } catch (err) {
+    if (err instanceof InvoiceStateChangedError) {
+      return res.status(409).json({ code: "INVOICE_STATE_CHANGED", message: "Une facture a changé pendant la création — actualisez et réessayez." });
     }
+    if (err instanceof DerivationRefusedError) {
+      return res.status(err.refusal.status).json(err.refusal.body);
+    }
+    const mapped = mapSoldeError(err);
+    if (mapped) return res.status(mapped.status).json(mapped.body);
+    throw err;
   }
 }
 

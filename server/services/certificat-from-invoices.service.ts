@@ -8,7 +8,7 @@
 // `certificat_sources` at creation (one row per facture). The single-invoice
 // endpoint is a thin wrapper around this service.
 
-import { storage } from "../storage";
+import { allocateCertificateRef, storage } from "../storage";
 import { db } from "../db";
 import {
   certificats as certificatsTable,
@@ -555,8 +555,8 @@ export class SupplierCertificateSourceError extends Error {
  * impossible.
  *
  * Throws InvoiceStateChangedError / DerivationRefusedError / resolver errors /
- * pg errors — the caller (route) maps them; 23505 ref collisions should be
- * retried by the caller.
+ * pg errors — the caller (route) maps them. Reference uniqueness violations
+ * are invariant failures because the shared project allocator serializes them.
  */
 export async function createCertificatFromInvoices(
   invoiceIds: number[],
@@ -572,6 +572,7 @@ export async function createCertificatFromInvoices(
   const uniqueIds = Array.from(new Set(invoiceIds)).sort((a, b) => a - b);
   const expectedTrack = identity.certificateTrack ?? "contractor_works";
   return db.transaction(async (tx) => {
+    const nextRef = await allocateCertificateRef(tx, identity.projectId);
     await tx.execute(sql`select pg_advisory_xact_lock(${identity.projectId}, ${identity.contractorId})`);
     const [lockedPartner] = await tx
       .select({ archidocPartnerType: contractorsTable.archidocPartnerType })
@@ -683,7 +684,6 @@ export async function createCertificatFromInvoices(
             })),
           });
 
-    const nextRef = await storage.getNextCertificateRef(d.projectId);
     const invoiceNumbers = d.invoices.map((r) => `#${r.invoiceNumber}`).join(", ");
     const [created] = await tx
       .insert(certificatsTable)
