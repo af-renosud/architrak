@@ -37,6 +37,7 @@ import { AccountingStatusBadge } from "@/components/reconciliation/AccountingSta
 import { Receipt, Inbox } from "lucide-react";
 import { z } from "zod";
 import { apiRequest, queryClient, ApiError, projectScopedKey } from "@/lib/queryClient";
+import { getManualCertificatCreationErrorToast } from "@/lib/certificat-creation-errors";
 import {
   canSendCertificat,
   hasCertificatDeliveryEvidence,
@@ -741,7 +742,7 @@ export default function ProjectDetail() {
       toast({ title: "Certificat created successfully" });
     },
     onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+      toast(getManualCertificatCreationErrorToast(error));
     },
   });
 
