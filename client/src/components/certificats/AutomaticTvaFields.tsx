@@ -2,6 +2,8 @@ import { AlertTriangle, Loader2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Amount } from "@/components/ui/amount";
+import { deriveTvaAmount } from "@shared/financial-utils";
+import type { CertificatDeductionExplanation } from "@shared/certificat-preview";
 
 export type ManualCertificatAmountBasis = "ht" | "ttc";
 
@@ -32,14 +34,25 @@ export interface ManualCertificatPreview {
     source: string;
     evidenceKind: string;
   };
+  explanation: CertificatDeductionExplanation;
 }
 
 function sourceLabel(preview: ManualCertificatPreview): string {
+  if (preview.tva.autoliquidation) return "Autoliquidation — art. 283 CGI";
+  if (preview.tva.source === "marche") return "Configuration fiscale du marché";
+  if (preview.tva.source === "contractor") return "Configuration fiscale de l’entreprise";
   switch (preview.tva.evidenceKind) {
     case "signed_quotation":
       return "Devis signé — montants HT/TTC extraits";
     case "invoices":
+    case "exact_invoices":
       return "Factures — montants HT/TTC extraits";
+    case "configuration":
+      return preview.tva.source === "marche"
+        ? "Configuration fiscale du marché"
+        : preview.tva.source === "contractor"
+          ? "Configuration fiscale de l’entreprise"
+          : "Justificatifs fiscaux";
     case "marche":
       return "Configuration fiscale du marché";
     case "contractor":
@@ -68,18 +81,22 @@ export function AutomaticTvaFields({
   onEdit: (basis: ManualCertificatAmountBasis, value: string) => void;
   testIdPrefix: string;
 }) {
+  // A same-key refetch retains old data. Never offer a stale conversion as an
+  // editable amount: switching basis would turn it into a new user input.
+  const currentPreview = !isLoading && !error ? preview : undefined;
   const htValue =
-    basis === "ht" ? enteredAmount : preview?.works.amountHt ?? "";
+    basis === "ht" ? enteredAmount : currentPreview?.works.amountHt ?? "";
   const ttcValue =
-    basis === "ttc" ? enteredAmount : preview?.works.amountTtc ?? "";
+    basis === "ttc" ? enteredAmount : currentPreview?.works.amountTtc ?? "";
 
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <TechnicalLabel>Total Works HT (Cumulative)</TechnicalLabel>
+          <TechnicalLabel>Gross Works HT (Cumulative)</TechnicalLabel>
           <Input
             value={htValue}
+            disabled={basis !== "ht" && isLoading}
             type="number"
             min="0"
             step="0.01"
@@ -91,9 +108,10 @@ export function AutomaticTvaFields({
           </p>
         </div>
         <div>
-          <TechnicalLabel>Total Works TTC (Cumulative)</TechnicalLabel>
+          <TechnicalLabel>Gross Works TTC (Cumulative)</TechnicalLabel>
           <Input
             value={ttcValue}
+            disabled={basis !== "ttc" && isLoading}
             type="number"
             min="0"
             step="0.01"
@@ -142,13 +160,14 @@ export function AutomaticTvaFields({
               </p>
             </div>
             <div className="text-right">
-              <TechnicalLabel>Calculated TVA</TechnicalLabel>
+               <TechnicalLabel>TVA on gross works</TechnicalLabel>
               <p className="mt-0.5 text-[12px] font-semibold">
                 <Amount
-                  value={parseFloat(preview.deductions.tvaAmount)}
+                   value={deriveTvaAmount(Number(preview.works.amountHt), Number(preview.works.amountTtc))}
                   denomination="TVA"
                 />
               </p>
+               <p className="text-[10px] text-muted-foreground">Before deductions; payable TVA is shown below.</p>
             </div>
           </div>
         ) : (

@@ -51,6 +51,10 @@ import {
   type ManualCertificatPreview,
 } from "@/components/certificats/AutomaticTvaFields";
 import {
+  ManualCertificateTotals,
+  RetentionReview,
+} from "@/components/certificats/ManualCertificateTotals";
+import {
   manualCertificatPreviewKey,
   manualCertificatPreviewQueryOptions,
 } from "@/lib/manual-certificat-preview";
@@ -822,6 +826,17 @@ export default function ProjectDetail() {
       toast(getManualCertificatCreationErrorToast(error));
     },
   });
+
+  const onCreateCertSubmit = (data: CertFormValues) => {
+    if (
+      certPreviewQuery.isFetching ||
+      certPreviewQuery.error ||
+      !certPreviewQuery.data
+    ) {
+      return;
+    }
+    createCertMutation.mutate(data);
+  };
 
   const updateCertStatusMutation = useMutation({
     mutationFn: async ({ id, status }: { id: number; status: string }) => {
@@ -2404,7 +2419,7 @@ export default function ProjectDetail() {
                   </DialogDescription>
                 </DialogHeader>
                 <Form {...certForm}>
-                  <form onSubmit={certForm.handleSubmit((d) => createCertMutation.mutate(d))} className="space-y-4">
+                  <form onSubmit={certForm.handleSubmit(onCreateCertSubmit)} className="space-y-4">
                     {lockedCertContext && (
                       <div
                         className="grid grid-cols-1 gap-2 rounded-lg border border-[#0B2545]/15 bg-[#0B2545]/5 px-3 py-2 sm:grid-cols-2"
@@ -2466,41 +2481,34 @@ export default function ProjectDetail() {
                     <div className="grid grid-cols-2 gap-4">
                       <FormField control={certForm.control} name="pvMvAdjustment" render={({ field }) => (
                         <FormItem>
-                          <FormLabel><TechnicalLabel>PV/MV</TechnicalLabel></FormLabel>
+                          <FormLabel><TechnicalLabel>PV/MV (HT)</TechnicalLabel></FormLabel>
                           <FormControl><Input {...field} value={field.value ?? "0.00"} type="number" step="0.01" data-testid="input-cert-pvmv-tab" /></FormControl>
                           <FormMessage />
                         </FormItem>
                       )} />
                       <FormField control={certForm.control} name="previousPayments" render={({ field }) => (
                         <FormItem>
-                          <FormLabel><TechnicalLabel>Previous Payments</TechnicalLabel></FormLabel>
+                          <FormLabel><TechnicalLabel>Previous net certified cumulative HT</TechnicalLabel></FormLabel>
                           <FormControl><Input {...field} value={field.value ?? "0.00"} type="number" step="0.01" data-testid="input-cert-prev-tab" /></FormControl>
                           <FormMessage />
                         </FormItem>
                       )} />
-                      <FormField control={certForm.control} name="retenueOverride" render={({ field }) => (
-                        <FormItem>
-                          <FormLabel><TechnicalLabel>Retenue Override (optional)</TechnicalLabel></FormLabel>
-                          <FormControl><Input {...field} value={field.value ?? ""} type="number" step="0.01" placeholder="Auto" data-testid="input-cert-retenue-tab" /></FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )} />
                     </div>
-                    <div className="p-4 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] space-y-2">
-                      <TechnicalLabel>Summary</TechnicalLabel>
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-[11px] text-muted-foreground">Net HT</span>
-                         <span className="text-[13px] font-semibold text-foreground"><Amount value={parseFloat(certPreviewQuery.data?.deductions.netToPayHt ?? "0")} denomination="HT" /></span>
-                      </div>
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-[11px] text-muted-foreground">TVA</span>
-                         <span className="text-[13px] font-semibold text-foreground"><Amount value={parseFloat(certPreviewQuery.data?.deductions.tvaAmount ?? "0")} denomination="TVA" /></span>
-                      </div>
-                      <div className="flex items-center justify-between gap-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
-                        <span className="text-[11px] font-black uppercase tracking-widest">Net TTC</span>
-                         <span className="text-[16px] font-bold text-foreground"><Amount value={parseFloat(certPreviewQuery.data?.deductions.netToPayTtc ?? "0")} denomination="TTC" /></span>
-                      </div>
-                    </div>
+                    <FormField control={certForm.control} name="retenueOverride" render={({ field }) => (
+                      <RetentionReview
+                        preview={certPreviewQuery.data}
+                        isLoading={certPreviewQuery.isFetching}
+                        error={certPreviewQuery.error}
+                        value={field.value}
+                        onChange={field.onChange}
+                        inputId="input-cert-retenue-tab"
+                      />
+                    )} />
+                    <ManualCertificateTotals
+                      preview={certPreviewQuery.data}
+                      isLoading={certPreviewQuery.isFetching}
+                      error={certPreviewQuery.error}
+                    />
                     <FormField control={certForm.control} name="notes" render={({ field }) => (
                       <FormItem>
                         <FormLabel><TechnicalLabel>Notes</TechnicalLabel></FormLabel>
@@ -2514,6 +2522,7 @@ export default function ProjectDetail() {
                       disabled={
                         createCertMutation.isPending ||
                         certPreviewQuery.isFetching ||
+                        !!certPreviewQuery.error ||
                         !certPreviewQuery.data
                       }
                       data-testid="button-submit-cert-tab"

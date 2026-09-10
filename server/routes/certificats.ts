@@ -24,6 +24,7 @@ import { rejectClientCertificateReference } from "../middleware/certificate-refe
 import { rejectClientCertificateTva } from "../middleware/certificate-tva";
 import {
   resolveCertificatDeductions,
+  resolveCertificatDeductionsWithExplanation,
   resolveCertificatTvaDecision,
   SoldeConflictError,
   ReleaseRequiresSoldeError,
@@ -552,22 +553,23 @@ router.post(
         { totalWorksAmount, totalWorksAmountBasis },
         tvaDecision,
       );
-      const deductions = await resolveCertificatDeductions({
-        projectId,
-        contractorId,
-        totalWorksHt: works.amountHt.toFixed(2),
-        pvMvAdjustment,
-        previousPayments,
-        retenueOverride,
-        prorataOverride,
-        isSolde,
-        releaseRetenue,
-        pvOverride: pvOverrideReason != null,
-        documentaryBasisDevis,
+      const { deductions, explanation } =
+        await resolveCertificatDeductionsWithExplanation({
+          projectId,
+          contractorId,
+          totalWorksHt: works.amountHt.toFixed(2),
+          pvMvAdjustment,
+          previousPayments,
+          retenueOverride,
+          prorataOverride,
+          isSolde,
+          releaseRetenue,
+          pvOverride: pvOverrideReason != null,
+          documentaryBasisDevis,
           documentaryBasisInvoices:
             contextDevisId == null ? [] : undefined,
-        resolvedTvaDecision: tvaDecision,
-      });
+          resolvedTvaDecision: tvaDecision,
+        });
       return res.json({
         works: {
           enteredAmount: works.enteredAmount,
@@ -576,6 +578,7 @@ router.post(
           amountTtc: works.amountTtc.toFixed(2),
         },
         deductions,
+        explanation,
         tva: {
           ratePercent: tvaDecision.ratePercent.toFixed(2),
           autoliquidation: tvaDecision.autoliquidation,

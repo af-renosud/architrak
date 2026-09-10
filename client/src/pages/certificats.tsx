@@ -35,6 +35,10 @@ import {
   type ManualCertificatPreview,
 } from "@/components/certificats/AutomaticTvaFields";
 import {
+  ManualCertificateTotals,
+  RetentionReview,
+} from "@/components/certificats/ManualCertificateTotals";
+import {
   manualCertificatPreviewKey,
   manualCertificatPreviewQueryOptions,
 } from "@/lib/manual-certificat-preview";
@@ -277,8 +281,6 @@ export default function Certificats() {
     retry: false,
     ...manualCertificatPreviewQueryOptions,
   });
-  const breakdown = manualPreviewQuery.data?.deductions;
-
   const createMutation = useMutation({
     mutationFn: async (data: CertificatFormValues) => {
       const res = await apiRequest("POST", `/api/projects/${data.projectId}/certificats`, data);
@@ -371,6 +373,13 @@ export default function Certificats() {
   });
 
   const onSubmit = (data: CertificatFormValues) => {
+    if (
+      manualPreviewQuery.isFetching ||
+      manualPreviewQuery.error ||
+      !manualPreviewQuery.data
+    ) {
+      return;
+    }
     createMutation.mutate(data);
   };
 
@@ -845,7 +854,7 @@ export default function Certificats() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>
-                          <TechnicalLabel>PV/MV Adjustment</TechnicalLabel>
+                          <TechnicalLabel>PV/MV Adjustment (HT)</TechnicalLabel>
                         </FormLabel>
                         <FormControl>
                           <Input
@@ -868,7 +877,7 @@ export default function Certificats() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>
-                          <TechnicalLabel>Previous Payments (Cumulative)</TechnicalLabel>
+                          <TechnicalLabel>Previous net certified cumulative HT</TechnicalLabel>
                         </FormLabel>
                         <FormControl>
                           <Input
@@ -885,31 +894,21 @@ export default function Certificats() {
                   />
                 </div>
 
-                {/* Task #243 — optional architect overrides of the auto-computed
-                    cumulative deductions. Leave blank to use the contractual rate. */}
+                <FormField
+                  control={form.control}
+                  name="retenueOverride"
+                  render={({ field }) => (
+                    <RetentionReview
+                      preview={manualPreviewQuery.data}
+                      isLoading={manualPreviewQuery.isFetching}
+                      error={manualPreviewQuery.error}
+                      value={field.value}
+                      onChange={field.onChange}
+                      inputId="input-cert-retenue-override"
+                    />
+                  )}
+                />
                 <div className="grid grid-cols-2 gap-4">
-                  <FormField
-                    control={form.control}
-                    name="retenueOverride"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>
-                          <TechnicalLabel>Retenue Override (optional)</TechnicalLabel>
-                        </FormLabel>
-                        <FormControl>
-                          <Input
-                            {...field}
-                            value={field.value ?? ""}
-                            type="number"
-                            step="0.01"
-                            placeholder="Auto"
-                            data-testid="input-cert-retenue-override"
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
                   <FormField
                     control={form.control}
                     name="prorataOverride"
@@ -1061,82 +1060,11 @@ export default function Certificats() {
                   )}
                 </div>
 
-                {breakdown && (
-                <div className="p-4 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] space-y-2">
-                  <TechnicalLabel>Deduction Breakdown (Cumulative)</TechnicalLabel>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-muted-foreground">Total Works HT</span>
-                    <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-gross">
-                      <Amount value={parseFloat(manualPreviewQuery.data!.works.amountHt)} denomination="HT" />
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-muted-foreground">− Retenue de Garantie HT</span>
-                    <span className="text-[13px] font-semibold text-red-600 dark:text-red-400" data-testid="text-calc-retenue">
-                      −<Amount value={parseFloat(breakdown.retenueGarantie)} denomination="HT" />
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-muted-foreground">− Compte Prorata HT</span>
-                    <span className="text-[13px] font-semibold text-red-600 dark:text-red-400" data-testid="text-calc-prorata">
-                      −<Amount value={parseFloat(breakdown.cumulativeProrataDeduction)} denomination="HT" />
-                    </span>
-                  </div>
-                  {(parseFloat(breakdown.periodAcompteRecoupment) > 0 ||
-                    parseFloat(breakdown.cumulativeAcompteRecoupment) > 0) && (
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] text-muted-foreground">− Remboursement d&apos;Acompte HT</span>
-                      <span className="text-[13px] font-semibold text-red-600 dark:text-red-400" data-testid="text-calc-acompte-recoupment">
-                        −<Amount value={parseFloat(breakdown.periodAcompteRecoupment)} denomination="HT" />
-                      </span>
-                    </div>
-                  )}
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-muted-foreground">− Previous Payments HT</span>
-                    <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-previous">
-                      −<Amount value={parseFloat(watchPrevious || "0") || 0} denomination="HT" />
-                    </span>
-                  </div>
-                  {watchIsSolde === true && parseFloat(breakdown.retenueReleaseAmount) > 0 && (
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] text-muted-foreground">+ Libération Retenue de Garantie HT (solde)</span>
-                      <span className="text-[13px] font-semibold text-green-700 dark:text-green-500" data-testid="text-calc-retenue-release">
-                        +<Amount value={parseFloat(breakdown.retenueReleaseAmount)} denomination="HT" />
-                      </span>
-                    </div>
-                  )}
-                  {watchIsSolde === true && watchReleaseRetenue !== true && parseFloat(breakdown.retenueGarantie) > 0 && (
-                    <div className="text-[10px] text-muted-foreground italic" data-testid="text-calc-retenue-withheld">
-                      Solde — Retenue de Garantie de <Amount value={parseFloat(breakdown.retenueGarantie)} denomination="HT" /> conservée
-                    </div>
-                  )}
-                  <div className="flex items-center justify-between gap-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
-                    <span className="text-[11px] text-muted-foreground">Net to Pay HT</span>
-                    <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-net-ht">
-                      <Amount value={parseFloat(breakdown.netToPayHt)} denomination="HT" />
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-muted-foreground">
-                      TVA ({Number(manualPreviewQuery.data!.tva.ratePercent).toLocaleString("fr-FR", { maximumFractionDigits: 2 })}%)
-                    </span>
-                    <span className="text-[13px] font-semibold text-foreground" data-testid="text-calc-tva">
-                      <Amount value={parseFloat(breakdown.tvaAmount)} denomination="TVA" />
-                    </span>
-                  </div>
-                  {manualPreviewQuery.data!.tva.autoliquidation && (
-                    <div className="text-[10px] text-muted-foreground italic" data-testid="text-calc-autoliquidation">
-                      Autoliquidation — TVA due par le preneur (art. 283 CGI)
-                    </div>
-                  )}
-                  <div className="flex items-center justify-between gap-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
-                    <span className="text-[11px] font-black uppercase tracking-widest text-foreground">Net to Pay TTC</span>
-                    <span className="text-[16px] font-bold text-foreground" data-testid="text-calc-net-ttc">
-                      <Amount value={parseFloat(breakdown.netToPayTtc)} denomination="TTC" />
-                    </span>
-                  </div>
-                </div>
-                )}
+                <ManualCertificateTotals
+                  preview={manualPreviewQuery.data}
+                  isLoading={manualPreviewQuery.isFetching}
+                  error={manualPreviewQuery.error}
+                />
 
                 <FormField
                   control={form.control}
@@ -1166,6 +1094,7 @@ export default function Certificats() {
                   disabled={
                     createMutation.isPending ||
                     manualPreviewQuery.isFetching ||
+                    !!manualPreviewQuery.error ||
                     !manualPreviewQuery.data
                   }
                   data-testid="button-submit-certificat"

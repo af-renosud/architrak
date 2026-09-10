@@ -250,6 +250,60 @@ describe("documentary TVA rate through the certificat routes", () => {
     expect(after).toHaveLength(before.length);
   });
 
+  it("explains retention from the same inputs used by preview and create", async () => {
+    await db
+      .update(marches)
+      .set({ retenueGarantiePercent: "5.00" })
+      .where(eq(marches.projectId, projectId));
+    try {
+      const previewResponse = await fetch(
+        `${base}/api/projects/${projectId}/certificats/manual-preview`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contractorId,
+            contextDevisId: devisId,
+            totalWorksAmount: "4600.00",
+            totalWorksAmountBasis: "ht",
+          }),
+        },
+      );
+      expect(previewResponse.status).toBe(200);
+      const preview = await previewResponse.json();
+      expect(preview.explanation).toEqual({
+        grossCumulativeHt: "4600.00",
+        pvMvAdjustment: "0.00",
+        previousPayments: "0.00",
+        retention: {
+          source: "marche",
+          ratePercent: "5.00",
+          rateSource: "marche",
+          baseHt: "4600.00",
+        },
+      });
+      expect(preview.deductions).toMatchObject({
+        retenueGarantie: "230.00",
+        netToPayHt: "4370.00",
+        tvaAmount: "655.50",
+        netToPayTtc: "5025.50",
+      });
+
+      const created = await createCert({
+        totalWorksAmount: "4600.00",
+        totalWorksAmountBasis: "ht",
+      });
+      expect(created).toMatchObject(preview.deductions);
+      expect(created).not.toHaveProperty("explanation");
+      await db.delete(certificats).where(eq(certificats.id, Number(created.id)));
+    } finally {
+      await db
+        .update(marches)
+        .set({ retenueGarantiePercent: "0.00" })
+        .where(eq(marches.projectId, projectId));
+    }
+  });
+
   it("keeps negative PV/MV adjustments valid and identical for HT and TTC entry", async () => {
     for (const entry of [
       { amount: "1000.00", basis: "ht" },

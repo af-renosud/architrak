@@ -2,6 +2,7 @@ import { storage } from "../storage";
 import { computeCertificatDeductions, computeEffectiveTvaRatePercent } from "@shared/financial-utils";
 import { assertPvReceptionForSolde } from "./pv-reception.service";
 import type { Contractor, Devis, Marche } from "@shared/schema";
+import type { CertificatDeductionExplanation } from "@shared/certificat-preview";
 
 /**
  * Task #243 — Server-side authoritative resolver for a certificat's deductions.
@@ -114,6 +115,11 @@ export interface ResolvedCertificatDeductions {
   netToPayHt: string;
   tvaAmount: string;
   netToPayTtc: string;
+}
+
+export interface ResolvedCertificatDeductionsWithExplanation {
+  deductions: ResolvedCertificatDeductions;
+  explanation: CertificatDeductionExplanation;
 }
 
 export type TvaRateSource =
@@ -259,9 +265,9 @@ export async function resolveCertificatTvaDecision(
   throw new TvaEvidenceRequiredError();
 }
 
-export async function resolveCertificatDeductions(
+async function resolveCertificatDeductionsInternal(
   input: ResolveCertificatDeductionsInput,
-): Promise<ResolvedCertificatDeductions> {
+): Promise<ResolvedCertificatDeductionsWithExplanation> {
   const project = await storage.getProject(input.projectId);
   if (!project) throw new Error(`Project ${input.projectId} not found`);
 
@@ -349,20 +355,26 @@ export async function resolveCertificatDeductions(
     input.resolvedTvaDecision ??
     (await resolveCertificatTvaDecision(input));
 
+  const retentionRateSource =
+    marche?.retenueGarantiePercent != null ? "marche" as const : "default" as const;
+  const retentionRatePercent = retentionRateSource === "marche"
+    ? parseFloat(marche!.retenueGarantiePercent!)
+    : DEFAULT_RETENUE_PERCENT;
+  const retentionOverride = toNumberOrNull(input.retenueOverride);
+  const pvMvAdjustment = parseFloat(input.pvMvAdjustment ?? "0") || 0;
+  const previousPayments = parseFloat(input.previousPayments ?? "0") || 0;
   const result = computeCertificatDeductions({
     tvaRate: tvaDecision.ratePercent / 100,
     totalWorksHt: parseFloat(input.totalWorksHt || "0"),
-    pvMvAdjustment: parseFloat(input.pvMvAdjustment ?? "0") || 0,
-    previousPayments: parseFloat(input.previousPayments ?? "0") || 0,
-    retenuePercent: marche?.retenueGarantiePercent != null
-      ? parseFloat(marche.retenueGarantiePercent)
-      : DEFAULT_RETENUE_PERCENT,
+    pvMvAdjustment,
+    previousPayments,
+    retenuePercent: retentionRatePercent,
     hasBankGuarantee: marche?.hasBankGuarantee ?? false,
     prorataPercent: parseFloat(project.prorataPercentage ?? "0") || 0,
     isProrataManager: marche?.isProrataManager ?? false,
     priorCumulativeRetenue,
     priorCumulativeProrata,
-    retenueOverride: toNumberOrNull(input.retenueOverride),
+    retenueOverride: retentionOverride,
     prorataOverride: toNumberOrNull(input.prorataOverride),
     paidAcompteAmount,
     priorCumulativeAcompteRecoupment,
@@ -375,19 +387,53 @@ export async function resolveCertificatDeductions(
   });
 
   return {
-    retenueGarantie: result.cumulativeRetenue.toFixed(2),
-    cumulativeProrataDeduction: result.cumulativeProrata.toFixed(2),
-    periodProrataDeduction: result.periodProrata.toFixed(2),
-    cumulativeAcompteRecoupment: result.cumulativeAcompteRecoupment.toFixed(2),
-    periodAcompteRecoupment: result.periodAcompteRecoupment.toFixed(2),
-    tvaRatePercent: tvaDecision.ratePercent.toFixed(2),
-    tvaAutoliquidation: tvaDecision.autoliquidation,
-    tvaRateSource: tvaDecision.source,
-    isSolde,
-    retenueReleased: isSolde && releaseRetenue,
-    retenueReleaseAmount: result.retenueReleaseAmount.toFixed(2),
-    netToPayHt: result.netToPayHt.toFixed(2),
-    tvaAmount: result.tvaAmount.toFixed(2),
-    netToPayTtc: result.netToPayTtc.toFixed(2),
+    deductions: {
+      retenueGarantie: result.cumulativeRetenue.toFixed(2),
+      cumulativeProrataDeduction: result.cumulativeProrata.toFixed(2),
+      periodProrataDeduction: result.periodProrata.toFixed(2),
+      cumulativeAcompteRecoupment: result.cumulativeAcompteRecoupment.toFixed(2),
+      periodAcompteRecoupment: result.periodAcompteRecoupment.toFixed(2),
+      tvaRatePercent: tvaDecision.ratePercent.toFixed(2),
+      tvaAutoliquidation: tvaDecision.autoliquidation,
+      tvaRateSource: tvaDecision.source,
+      isSolde,
+      retenueReleased: isSolde && releaseRetenue,
+      retenueReleaseAmount: result.retenueReleaseAmount.toFixed(2),
+      netToPayHt: result.netToPayHt.toFixed(2),
+      tvaAmount: result.tvaAmount.toFixed(2),
+      netToPayTtc: result.netToPayTtc.toFixed(2),
+    },
+    explanation: {
+      grossCumulativeHt: result.grossCumulativeHt.toFixed(2),
+      pvMvAdjustment: pvMvAdjustment.toFixed(2),
+      previousPayments: previousPayments.toFixed(2),
+      retention: {
+        source: retentionOverride != null
+          ? "override"
+          : marche?.hasBankGuarantee
+            ? "bank_guarantee"
+            : retentionRateSource,
+        ratePercent: retentionRatePercent.toFixed(2),
+        rateSource: retentionRateSource,
+        baseHt: result.grossCumulativeHt.toFixed(2),
+      },
+    },
   };
+}
+
+/**
+ * Persistence callers receive deductions only, so explanation metadata can
+ * never be accidentally spread into a certificat INSERT/PATCH.
+ */
+export async function resolveCertificatDeductions(
+  input: ResolveCertificatDeductionsInput,
+): Promise<ResolvedCertificatDeductions> {
+  return (await resolveCertificatDeductionsInternal(input)).deductions;
+}
+
+/** Read-only preview resolver exposing the rule provenance beside the totals. */
+export async function resolveCertificatDeductionsWithExplanation(
+  input: ResolveCertificatDeductionsInput,
+): Promise<ResolvedCertificatDeductionsWithExplanation> {
+  return resolveCertificatDeductionsInternal(input);
 }

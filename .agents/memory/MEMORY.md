@@ -56,3 +56,4 @@
 - [Publish diff and unvalidated checks](publish-diff-unvalidated-checks.md) — Publish may emit malformed CHECK DDL from a dev constraint marked NOT VALID; if rows comply, validate it in dev and recompute the diff.
 - [Certificate reference authority](certificate-reference-authority.md) — C-numbers are server-owned and project-scoped; allocate in the insert tx before row locks, with uniqueness as the backstop.
 - [Certificate TVA authority](certificate-tva-authority.md) — server owns TVA; exact invoice/quotation evidence is pinned and revalidated; historical unlinked rows preserve recorded decisions.
+- [Retention applicability](certificate-retention-applicability.md) — defaults do not prove agreed retention; keep professional-services exemptions operator-decided, not inferred from categories.
