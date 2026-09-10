@@ -17,7 +17,7 @@ import { ExternalLink, AlertTriangle, Plus, Copy, Send, Loader2 } from "lucide-r
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, invalidateCertificatPaymentData, projectScopedKey, queryClient } from "@/lib/queryClient";
-import type { Certificat, Contractor, CertificatPayment, CertificatPaymentSuggestion } from "@shared/schema";
+import type { Certificat, CertificatWithTvaEvidenceReference, Contractor, CertificatPayment, CertificatPaymentSuggestion } from "@shared/schema";
 import {
   canSendCertificat,
   hasCertificatDeliveryEvidence,
@@ -46,7 +46,8 @@ interface CertificatSource {
     amountTtc: string;
   } | null;
 }
-type CertificatWithSupplierPresentation = CertificatWithDelivery;
+type CertificatWithSupplierPresentation = CertificatWithDelivery &
+  CertificatWithTvaEvidenceReference;
 
 // Task #466 — a single draft suggestion (client "paid" reply).
 function PaymentSuggestionCard({ suggestion, onDone }: { suggestion: CertificatPaymentSuggestion; onDone: () => void }) {
@@ -613,6 +614,27 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
                   Autoliquidation — TVA due par le preneur (art. 283 CGI)
                 </div>
               )}
+              {cert.tvaEvidenceKind === "signed_quotation" && cert.tvaEvidenceDevisId != null && cert.tvaEvidenceDevisReference ? (
+                <div className="flex items-center justify-between gap-2 mt-1" data-testid="text-cert-detail-tva-evidence">
+                  <TechnicalLabel>Justificatif TVA</TechnicalLabel>
+                  <a
+                    href={`/projets/${cert.projectId}?tab=devis&devis=${cert.tvaEvidenceDevisId}`}
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary hover:underline"
+                    data-testid="link-cert-detail-tva-devis"
+                  >
+                    Devis signé {cert.tvaEvidenceDevisReference}
+                    <ExternalLink size={11} />
+                  </a>
+                </div>
+              ) : cert.tvaEvidenceKind === "legacy" ||
+                (cert.tvaEvidenceKind === "signed_quotation" && !cert.tvaEvidenceDevisReference) ? (
+                <div className="flex items-center justify-between gap-2 mt-1" data-testid="text-cert-detail-tva-evidence-legacy">
+                  <TechnicalLabel>Justificatif TVA</TechnicalLabel>
+                  <span className="text-[10px] italic text-muted-foreground">
+                    Preuve historique — devis non lié
+                  </span>
+                </div>
+              ) : null}
               <div className="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
                 <span className="text-[11px] font-black uppercase tracking-widest text-foreground">Net to Pay TTC</span>
                 <span className="text-[16px] font-bold text-foreground" data-testid="text-cert-detail-net-ttc">

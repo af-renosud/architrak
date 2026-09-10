@@ -133,6 +133,27 @@ function publicCertificatDto(cert: Certificat) {
   return { ...publicFields, supplierPresentation: publicSupplierPresentation };
 }
 
+async function publicCertificatDetailDto(cert: Certificat) {
+  const publicFields = publicCertificatDto(cert);
+  if (
+    cert.tvaEvidenceKind !== "signed_quotation" ||
+    cert.tvaEvidenceDevisId == null
+  ) {
+    return { ...publicFields, tvaEvidenceDevisReference: null };
+  }
+
+  const evidenceDevis = await storage.getDevis(cert.tvaEvidenceDevisId);
+  const sameProjectDevis =
+    evidenceDevis?.projectId === cert.projectId ? evidenceDevis : null;
+
+  return {
+    ...publicFields,
+    tvaEvidenceDevisReference: sameProjectDevis
+      ? sameProjectDevis.devisNumber || sameProjectDevis.devisCode
+      : null,
+  };
+}
+
 async function getExistingCertificatTvaEvidence(
   certificatId: number,
   existing: Pick<
@@ -436,12 +457,13 @@ router.get("/api/projects/:projectId/certificats", async (req, res) => {
   // Task #556 — enrich each certificat with its sent-email evidence so the UI
   // can display "Sent to <email> on <date>" without a separate request.
   const sentComms = await storage.getCertificatSentComms(certs.map((c) => c.id));
-  const enriched = certs.map((c) => {
+  const enriched = await Promise.all(certs.map(async (c) => {
     const sent = sentComms.get(c.id);
+    const publicCert = await publicCertificatDetailDto(c);
     return sent
-      ? { ...publicCertificatDto(c), sentAt: sent.sentAt.toISOString(), sentToEmail: sent.recipientEmail }
-      : publicCertificatDto(c);
-  });
+      ? { ...publicCert, sentAt: sent.sentAt.toISOString(), sentToEmail: sent.recipientEmail }
+      : publicCert;
+  }));
   res.json(enriched);
 });
 
@@ -1284,13 +1306,14 @@ router.post(
 router.get("/api/certificats/:id", async (req, res) => {
   const cert = await storage.getCertificat(Number(req.params.id));
   if (!cert) return res.status(404).json({ message: "Certificat not found" });
+  const publicCert = await publicCertificatDetailDto(cert);
   // Task #556 — include sent-email evidence on single-cert detail too.
   const sentComms = await storage.getCertificatSentComms([cert.id]);
   const sent = sentComms.get(cert.id);
   if (sent) {
-    return res.json({ ...publicCertificatDto(cert), sentAt: sent.sentAt.toISOString(), sentToEmail: sent.recipientEmail });
+    return res.json({ ...publicCert, sentAt: sent.sentAt.toISOString(), sentToEmail: sent.recipientEmail });
   }
-  res.json(publicCertificatDto(cert));
+  res.json(publicCert);
 });
 
 router.patch(

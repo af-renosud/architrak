@@ -2762,6 +2762,9 @@ export type SituationLine = typeof situationLines.$inferSelect;
 export type InsertSituationLine = z.infer<typeof insertSituationLineSchema>;
 export type Certificat = typeof certificats.$inferSelect;
 export type InsertCertificat = z.infer<typeof insertCertificatSchema>;
+export type CertificatWithTvaEvidenceReference = Certificat & {
+  tvaEvidenceDevisReference?: string | null;
+};
 /**
  * Internal write shape. HTTP callers only ever parse InsertCertificat, whose
  * Zod schema omits certificateTrack; trusted creation/reissue services use
