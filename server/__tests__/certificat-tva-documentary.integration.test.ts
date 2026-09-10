@@ -831,6 +831,110 @@ describe("documentary TVA rate through the certificat routes", () => {
     }
   });
 
+  it("re-renders instead of pinning stale quotation money when the exact signed quotation changes after capture", async () => {
+    const cert = await createCert({});
+    const beforeCalls = vi.mocked(generateCertificatPdf).mock.calls.length;
+    generatorControl.afterSnapshot = async () => {
+      await db
+        .update(devis)
+        .set({ amountTtc: "11000.00" })
+        .where(eq(devis.id, devisId));
+    };
+    try {
+      const result = await sealCertificat(Number(cert.id));
+      expect(result.alreadySealed).toBe(false);
+      expect(
+        vi.mocked(generateCertificatPdf).mock.calls.length - beforeCalls,
+      ).toBe(2);
+
+      const row = await storage.getCertificat(Number(cert.id));
+      expect(row).toMatchObject({
+        pdfStorageKey: `test/seal-${cert.id}.pdf`,
+        tvaRatePercent: "10.00",
+        tvaRateSource: "documentary",
+        tvaEvidenceKind: "signed_quotation",
+        tvaEvidenceDevisId: devisId,
+        tvaAmount: "100.00",
+        netToPayTtc: "1100.00",
+      });
+      expect(row!.issuanceSnapshot).toMatchObject({
+        tvaRatePercent: "10.00",
+        tvaEvidenceKind: "signed_quotation",
+        tvaEvidenceDevisId: devisId,
+        tvaAmount: "100.00",
+        netToPayTtc: "1100.00",
+      });
+      expect(await storage.getDevis(devisId)).toMatchObject({
+        id: devisId,
+        projectId,
+        contractorId,
+        amountHt: "10000.00",
+        amountTtc: "11000.00",
+      });
+    } finally {
+      generatorControl.afterSnapshot = null;
+      await db
+        .update(devis)
+        .set({ amountTtc: "11500.00" })
+        .where(eq(devis.id, devisId));
+      await db.delete(certificats).where(eq(certificats.id, Number(cert.id)));
+    }
+  });
+
+  it("keeps the original active and inserts no replacement when the exact signed quotation drifts during reissue", async () => {
+    const cert = await createCert({});
+    await sealCertificat(Number(cert.id));
+    const originalReissue = storage.reissueCertificat.bind(storage);
+    const reissueSpy = vi
+      .spyOn(storage, "reissueCertificat")
+      .mockImplementationOnce(async (...args) => {
+        await db
+          .update(devis)
+          .set({ amountTtc: "11000.00" })
+          .where(eq(devis.id, devisId));
+        return originalReissue(...args);
+      });
+    try {
+      const response = await fetch(
+        `${base}/api/certificats/${cert.id}/reissue`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        },
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        code: "CERTIFICAT_REISSUE_INPUT_CHANGED",
+      });
+
+      const original = await storage.getCertificat(Number(cert.id));
+      expect(original).toMatchObject({
+        status: cert.status,
+        tvaRatePercent: "15.00",
+        tvaRateSource: "documentary",
+        tvaEvidenceKind: "signed_quotation",
+        tvaEvidenceDevisId: devisId,
+      });
+      expect(original!.status).not.toBe("superseded");
+      expect(await storage.getCertificatReissues([Number(cert.id)])).toEqual([]);
+      expect(await storage.getDevis(devisId)).toMatchObject({
+        id: devisId,
+        projectId,
+        contractorId,
+        amountHt: "10000.00",
+        amountTtc: "11000.00",
+      });
+    } finally {
+      reissueSpy.mockRestore();
+      await db
+        .update(devis)
+        .set({ amountTtc: "11500.00" })
+        .where(eq(devis.id, devisId));
+      await db.delete(certificats).where(eq(certificats.id, Number(cert.id)));
+    }
+  });
+
   it("sealing and PATCH keep an invoice-backed rate bound to its exact source set", async () => {
     await db
       .update(invoices)
