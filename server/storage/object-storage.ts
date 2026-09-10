@@ -74,6 +74,17 @@ export function buildSignedDevisObjectName(projectId: number, devisId: number): 
   return `${privateDir}/projects/${projectId}/documents/devis-signed/${devisId}.pdf`;
 }
 
+/** Archisign copies are envelope-scoped so they can never alias a manual upload. */
+export function buildArchisignSignedDevisObjectName(
+  projectId: number,
+  devisId: number,
+  envelopeId: string,
+): string {
+  const privateDir = getPrivateDir();
+  const safeEnvelope = envelopeId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return `${privateDir}/projects/${projectId}/documents/devis-signed/${devisId}/archisign-${safeEnvelope}.pdf`;
+}
+
 /**
  * Deterministic object name for a Pennylane customer-invoice PDF
  * mirror (Task #214). ONE fee_entry → ONE PDF, regardless of how

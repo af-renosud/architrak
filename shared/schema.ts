@@ -435,6 +435,10 @@ export const devis = pgTable("devis", {
   // rolled back. The same PDF is also mirrored into the per-lot Drive
   // folder via the AT5-style drive_uploads queue (docKind=devis_signed).
   signedPdfStorageKey: text("signed_pdf_storage_key"),
+  // Envelope provenance for signedPdfStorageKey. Null means the object came
+  // from the manual-upload pathway and must never be used by an automatic
+  // Archisign contractor-copy notification.
+  signedPdfArchisignEnvelopeId: text("signed_pdf_archisign_envelope_id"),
   // Task #206 (retry) — durable async retry state for the signed-PDF
   // persistence job. The webhook handler always tries first (detached
   // setImmediate), but if that attempt fails the sweeper picks the
@@ -2242,6 +2246,7 @@ export const projectCommunications = pgTable("project_communications", {
   sentViaUserId: integer("sent_via_user_id").references(() => users.id, { onDelete: "set null" }),
   relatedCertificatId: integer("related_certificat_id").references(() => certificats.id),
   relatedInvoiceId: integer("related_invoice_id").references(() => invoices.id),
+  relatedDevisId: integer("related_devis_id").references(() => devis.id, { onDelete: "set null" }),
   // Task #529 — visibility-only archive flag. Archived rows drop out of the
   // hub's default view (and its counters) but are never deleted; the
   // Archives toggle shows them. Server-written only via the archive routes.
@@ -2401,6 +2406,32 @@ export const rateLimitBuckets = pgTable("rate_limit_buckets", {
   tokens: doublePrecision("tokens").notNull(),
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
 });
+
+/**
+ * Durable intent created by an eligible Archisign envelope.signed event.
+ * It deliberately precedes PDF persistence and is bound to the contractor
+ * and envelope observed at completion time. project_communications remains
+ * the actual mail outbox/history row.
+ */
+export const signedDevisCopyNotices = pgTable("signed_devis_copy_notices", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  archisignEnvelopeId: text("archisign_envelope_id").notNull(),
+  intendedContractorId: integer("intended_contractor_id").notNull().references(() => contractors.id),
+  signedAt: timestamp("signed_at", { withTimezone: true }).notNull(),
+  status: text("status").notNull().default("pending_pdf"),
+  communicationId: integer("communication_id").references(() => projectCommunications.id, { onDelete: "set null" }),
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+  lastError: text("last_error"),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  uniqueIndex("signed_devis_copy_notices_devis_envelope_uidx").on(table.devisId, table.archisignEnvelopeId),
+  index("signed_devis_copy_notices_due_idx").on(table.status, table.nextAttemptAt),
+]);
 
 export const templateAssets = pgTable("template_assets", {
   id: serial("id").primaryKey(),
@@ -2635,6 +2666,15 @@ export const insertDevisSchema = createInsertSchema(devis).omit({
   manualIntakeReviewRequired: true,
   manualIntakeReviewedAt: true,
   manualIntakeReviewedByUserId: true,
+  // Signed-PDF artifact/provenance/retry bookkeeping is written only by the
+  // authenticated Archisign completion and recovery services. Omitting all
+  // of it prevents a generic devis PATCH from swapping in unrelated bytes.
+  signedPdfStorageKey: true,
+  signedPdfArchisignEnvelopeId: true,
+  signedPdfFetchUrlSnapshot: true,
+  signedPdfRetryAttempts: true,
+  signedPdfNextAttemptAt: true,
+  signedPdfLastError: true,
 });
 
 export const insertDevisLineItemSchema = createInsertSchema(devisLineItems, {
@@ -2875,6 +2915,14 @@ export const insertProjectCommunicationSchema = createInsertSchema(projectCommun
   // Task #529 — archive flag is server-written only (archive routes);
   // a create payload must never smuggle it in.
   archivedAt: true,
+  // Bound only by trusted server workflows; generic communication creation
+  // must not forge a devis history association.
+  relatedDevisId: true,
+});
+export const insertSignedDevisCopyNoticeSchema = createInsertSchema(signedDevisCopyNotices).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
 });
 
 export const insertPaymentReminderSchema = createInsertSchema(paymentReminders).omit({
@@ -2949,6 +2997,8 @@ export type AcompteNoInvoicePayment = typeof acompteNoInvoicePayments.$inferSele
 export type InvoiceAcompteApplication = typeof invoiceAcompteApplications.$inferSelect;
 export type ProjectCommunication = typeof projectCommunications.$inferSelect;
 export type InsertProjectCommunication = z.infer<typeof insertProjectCommunicationSchema>;
+export type SignedDevisCopyNotice = typeof signedDevisCopyNotices.$inferSelect;
+export type InsertSignedDevisCopyNotice = z.infer<typeof insertSignedDevisCopyNoticeSchema>;
 export type PaymentReminder = typeof paymentReminders.$inferSelect;
 export type InsertPaymentReminder = z.infer<typeof insertPaymentReminderSchema>;
 export type ClientPaymentEvidence = typeof clientPaymentEvidence.$inferSelect;

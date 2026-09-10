@@ -9,8 +9,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Zap, Sparkles, Crown, Gauge, DollarSign, Brain, Check, Upload, Trash2, Image, Building2, Scale, Layers, Plus, Pencil, Wand2, Loader2, RefreshCw, Users, FileText, ExternalLink, Lightbulb, Bug } from "lucide-react";
+import { Zap, Sparkles, Crown, Gauge, DollarSign, Brain, Check, Upload, Trash2, Image, Building2, Scale, Layers, Plus, Pencil, Wand2, Loader2, RefreshCw, Users, FileText, ExternalLink, Lightbulb, Bug, MailCheck, AlertTriangle } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -258,6 +259,7 @@ export default function SettingsPage() {
           </LuxuryCard>
         </div>
 
+        <SignedDvCopiesSection />
         <TemplateAssetsSection />
         <TemplatesSection />
         <WishListSection />
@@ -268,6 +270,117 @@ export default function SettingsPage() {
         <ExtractionAuditSection />
         <FragmentRepairSection />
       </main>
+    </div>
+  );
+}
+
+type SignedDvCopiesSetting = {
+  enabled: boolean;
+  activatedAt: string | null;
+};
+
+function SignedDvCopiesSection() {
+  const { toast } = useToast();
+  const settingQuery = useQuery<SignedDvCopiesSetting>({
+    queryKey: ["/api/settings/signed-dv-copies"],
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      const res = await apiRequest("PUT", "/api/settings/signed-dv-copies", { enabled });
+      return res.json() as Promise<SignedDvCopiesSetting>;
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(["/api/settings/signed-dv-copies"], data);
+      queryClient.invalidateQueries({ queryKey: ["/api/settings/signed-dv-copies"] });
+      toast({
+        title: data.enabled ? "Automatic signed copies activated" : "Automatic signed copies deactivated",
+        description: data.enabled
+          ? "Newly signed devis will be sent to their contractor automatically."
+          : "No new automatic contractor copies will be scheduled.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Could not update automatic signed copies",
+        description: error.message,
+        variant: "destructive",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/settings/signed-dv-copies"] });
+    },
+  });
+
+  const enabled = settingQuery.data?.enabled ?? false;
+
+  return (
+    <div className="mt-10" data-testid="section-signed-dv-copies">
+      <div className="mb-4">
+        <h2
+          className="text-[16px] font-black uppercase tracking-tight mb-1"
+          style={{ color: "#0B2545" }}
+        >
+          Signed Devis — Contractor Copies
+        </h2>
+        <p className="text-[11px] text-muted-foreground">
+          Control whether the contractor automatically receives the final signed PDF.
+        </p>
+      </div>
+      <LuxuryCard>
+        <div className="flex items-start justify-between gap-5">
+          <div className="flex items-start gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-indigo-50 dark:bg-indigo-950/30 flex items-center justify-center shrink-0">
+              <MailCheck size={16} className="text-indigo-600" />
+            </div>
+            <div>
+              <h3 className="text-[12px] font-bold text-foreground">
+                Automatically email the signed copy to the contractor
+              </h3>
+              <p className="text-[10px] text-muted-foreground leading-relaxed mt-1 max-w-2xl">
+                When active, a devis signed from that point onward is queued for delivery to the
+                contractor attached to that devis. Delivery uses the contractor email recorded at
+                send time.
+              </p>
+              <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/70 p-2.5 text-[10px] text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+                <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                <span>
+                  This setting is off by default and is future-only. Activating it does not send
+                  copies for devis that were already signed, and it does not backfill historical
+                  communications.
+                </span>
+              </div>
+              {enabled && settingQuery.data?.activatedAt && (
+                <p className="text-[9px] text-muted-foreground mt-2" data-testid="text-signed-dv-copies-activated-at">
+                  Active since{" "}
+                  {new Date(settingQuery.data.activatedAt).toLocaleString("fr-FR", {
+                    day: "2-digit",
+                    month: "short",
+                    year: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </p>
+              )}
+              {settingQuery.isError && (
+                <p className="text-[10px] text-destructive mt-2" role="alert" data-testid="error-signed-dv-copies-setting">
+                  Could not load this setting: {(settingQuery.error as Error).message}
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-col items-end gap-1 shrink-0">
+            <Switch
+              checked={enabled}
+              onCheckedChange={(checked) => updateMutation.mutate(checked)}
+              disabled={settingQuery.isLoading || settingQuery.isError || updateMutation.isPending}
+              aria-label="Automatically send signed devis copies to contractors"
+              data-testid="switch-signed-dv-copies"
+            />
+            <span className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">
+              {settingQuery.isLoading ? "Loading…" : enabled ? "Active" : "Off"}
+            </span>
+          </div>
+        </div>
+      </LuxuryCard>
     </div>
   );
 }

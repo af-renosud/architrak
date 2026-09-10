@@ -99,6 +99,7 @@ import {
   invoiceRefEdits,
   type InvoiceRefEdit, type InsertInvoiceRefEdit,
 } from "@shared/schema";
+import { MAX_SIGNED_PDF_RETRY_ATTEMPTS } from "./services/signed-pdf-retry-policy";
 
 export interface BenchmarkSearchFilters {
   q?: string;
@@ -1337,10 +1338,21 @@ export interface IStorage {
   setDevisDriveLink(devisId: number, fileId: string, webViewLink: string): Promise<void>;
 
   setDevisSignedPdfStorageKey(devisId: number, storageKey: string): Promise<void>;
+  setDevisArchisignSignedPdf(
+    devisId: number,
+    envelopeId: string,
+    storageKey: string,
+  ): Promise<boolean>;
+  applyArchisignSignedTransition(
+    devisId: number,
+    envelopeId: string,
+    update: Record<string, unknown>,
+  ): Promise<boolean>;
 
   recordSignedPdfPersistFailure(devisId: number, errorMessage: string, nextAttemptAt: Date | null): Promise<void>;
 
   armSignedPdfPersistRetry(devisId: number, nextAttemptAt: Date): Promise<void>;
+  resetSignedPdfPersistRetry(devisId: number, envelopeId: string, nextAttemptAt: Date): Promise<boolean>;
 
   clearSignedPdfRetry(devisId: number): Promise<void>;
 
@@ -7112,6 +7124,29 @@ export class DatabaseStorage implements IStorage {
       );
   }
 
+  async resetSignedPdfPersistRetry(
+    devisId: number,
+    envelopeId: string,
+    nextAttemptAt: Date,
+  ): Promise<boolean> {
+    const [reset] = await db.update(devis).set({
+      signedPdfStorageKey: null,
+      signedPdfArchisignEnvelopeId: null,
+      signedPdfRetryAttempts: 0,
+      signedPdfNextAttemptAt: nextAttemptAt,
+      signedPdfLastError: null,
+    }).where(and(
+      eq(devis.id, devisId),
+      eq(devis.archisignEnvelopeId, envelopeId),
+      or(
+        isNull(devis.signedPdfStorageKey),
+        isNull(devis.signedPdfArchisignEnvelopeId),
+        ne(devis.signedPdfArchisignEnvelopeId, envelopeId),
+      ),
+    )).returning({ id: devis.id });
+    return Boolean(reset);
+  }
+
   async clearSignedPdfRetry(devisId: number): Promise<void> {
     await db
       .update(devis)
@@ -7143,7 +7178,7 @@ export class DatabaseStorage implements IStorage {
           isNotNull(devis.archisignEnvelopeId),
           isNotNull(devis.signedPdfNextAttemptAt),
           lte(devis.signedPdfNextAttemptAt, new Date()),
-          sql`${devis.signedPdfRetryAttempts} < 5`,
+          sql`${devis.signedPdfRetryAttempts} < ${MAX_SIGNED_PDF_RETRY_ATTEMPTS}`,
         ),
       )
       .limit(limit);
@@ -7230,6 +7265,41 @@ export class DatabaseStorage implements IStorage {
       .update(devis)
       .set({ signedPdfStorageKey: storageKey })
       .where(and(eq(devis.id, devisId), isNull(devis.signedPdfStorageKey)));
+  }
+
+  async setDevisArchisignSignedPdf(
+    devisId: number,
+    envelopeId: string,
+    storageKey: string,
+  ): Promise<boolean> {
+    // Envelope CAS prevents a delayed download from attaching bytes to a
+    // replacement envelope. Unlike the legacy one-shot setter this may
+    // replace a manual-upload key, but only with freshly downloaded,
+    // envelope-bound Archisign bytes.
+    const [updated] = await db.update(devis).set({
+      signedPdfStorageKey: storageKey,
+      signedPdfArchisignEnvelopeId: envelopeId,
+    }).where(and(
+      eq(devis.id, devisId),
+      eq(devis.archisignEnvelopeId, envelopeId),
+    )).returning({ id: devis.id });
+    return Boolean(updated);
+  }
+
+  async applyArchisignSignedTransition(
+    devisId: number,
+    envelopeId: string,
+    update: Record<string, unknown>,
+  ): Promise<boolean> {
+    const [transitioned] = await db.update(devis).set(update).where(and(
+      eq(devis.id, devisId),
+      eq(devis.archisignEnvelopeId, envelopeId),
+      or(
+        ne(devis.signOffStage, "client_signed_off"),
+        eq(devis.signedOffVia, "manual_upload"),
+      ),
+    )).returning({ id: devis.id });
+    return Boolean(transitioned);
   }
 
   async setInvoiceDriveLink(invoiceId: number, fileId: string, webViewLink: string): Promise<void> {

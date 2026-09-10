@@ -50,6 +50,7 @@ vi.mock("../../storage", async () => {
       "getContractor",
       "getLatestInsuranceOverrideForDevis",
       "armSignedPdfPersistRetry",
+      "applyArchisignSignedTransition",
     ]),
   };
 });
@@ -58,6 +59,9 @@ vi.mock("../../services/devis-signed-pdf.service", () => ({
 }));
 vi.mock("../../services/webhook-delivery", () => ({
   enqueueWebhookDelivery: deliveryMock.enqueueWebhookDelivery,
+}));
+vi.mock("../../services/signed-devis-contractor-copy.service", () => ({
+  recordEligibleSignedCopyIntent: vi.fn(async () => null),
 }));
 vi.mock("../../lib/uuidv7", () => ({ uuidv7: () => "00000000-0000-7000-8000-000000000000" }));
 
@@ -71,6 +75,7 @@ storageMock.getProject.mockImplementation(async () => ({ id: 7, archidocId: "ad_
 storageMock.getContractor.mockImplementation(async () => undefined);
 storageMock.getLatestInsuranceOverrideForDevis.mockImplementation(async () => undefined);
 storageMock.armSignedPdfPersistRetry.mockImplementation(async () => {});
+storageMock.applyArchisignSignedTransition.mockImplementation(async () => true);
 
 const baseDevis = {
   id: 42,

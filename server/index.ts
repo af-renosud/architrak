@@ -9,6 +9,7 @@ import { registerObjectStorageRoutes } from "./replit_integrations/object_storag
 import { startPolling } from "./gmail/monitor";
 import { startScheduler } from "./communications/payment-scheduler";
 import { startSignedPdfRetrySweeper } from "./services/devis-signed-pdf.service";
+import { startSignedCopyNoticeSweeper } from "./services/signed-devis-contractor-copy.service";
 import { startOutstandingFeesDigestScheduler } from "./communications/outstanding-fees-digest";
 import { startDevisCheckTokenCleanup } from "./services/devis-check-token-cleanup";
 import { startContractorAutoSyncScheduler } from "./archidoc/contractor-auto-sync";
@@ -296,6 +297,7 @@ app.use((req, res, next) => {
   // this sweeper picks up rows that failed and have a due
   // next_attempt_at, with exponential backoff up to 5 attempts.
   startSignedPdfRetrySweeper(5 * 60_000);
+  startSignedCopyNoticeSweeper(60_000);
   startOutstandingFeesDigestScheduler(60 * 60 * 1000);
   startContractorAutoSyncScheduler(60 * 60 * 1000);
   startDevisCheckTokenCleanup(6 * 60 * 60 * 1000);

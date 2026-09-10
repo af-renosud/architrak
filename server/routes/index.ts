@@ -54,6 +54,7 @@ import adminArchisignRenderingRouter from "./admin-archisign-rendering";
 import healthzRouter from "./healthz";
 import designContractsRouter from "./design-contracts";
 import reconciliationRouter from "./reconciliation";
+import signedDevisContractorCopiesRouter from "./signed-devis-contractor-copies";
 
 // IDOR / Tenancy assumption (single-tenant deployment):
 // ArchiTrak runs as a dedicated single-firm deployment for Renosud
@@ -147,6 +148,7 @@ export async function registerRoutes(
   app.use(designContractsRouter);
   app.use(reconciliationRouter);
   app.use(planningEnvelopeRouter);
+  app.use(signedDevisContractorCopiesRouter);
 
   return httpServer;
 }

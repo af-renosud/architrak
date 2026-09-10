@@ -20,10 +20,20 @@ const certIdParams = z.object({ certId: z.coerce.number().int().positive() });
 
 const createCommBodySchema = insertProjectCommunicationSchema
   .omit({ projectId: true })
-  .refine((body) => body.type !== "devis_client_link", {
-    message: "Client quotation links must be issued through the protected delivery endpoint",
+  .refine(
+    (body) => !["devis_client_link", "devis_signed_contractor_copy"].includes(body.type ?? ""),
+    {
+    message: "Protected devis communications must be issued through their dedicated delivery endpoint",
     path: ["type"],
-  });
+    },
+  )
+  .refine(
+    (body) => !body.dedupeKey?.startsWith("devis_signed_contractor_copy:"),
+    {
+      message: "This deduplication-key namespace is reserved for protected signed-copy delivery",
+      path: ["dedupeKey"],
+    },
+  );
 const updateReminderSchema = insertPaymentReminderSchema.partial();
 const scheduleRemindersBodySchema = z.object({
   recipientEmail: z.string().email().optional().or(z.literal("")),
@@ -137,6 +147,12 @@ router.post(
   "/api/communications/:id/send",
   validateRequest({ params: idParams }),
   async (req, res) => {
+    const communication = await storage.getProjectCommunication(Number(req.params.id));
+    if (communication?.type === "devis_signed_contractor_copy") {
+      return res.status(409).json({
+        message: "Automatic signed-copy communications are dispatched only by their protected worker",
+      });
+    }
     // Task #466 — send from the initiating architect's linked mailbox so
     // client replies can be scanned for payment confirmations.
     await sendCommunication(Number(req.params.id), { sentByUserId: req.session.userId ?? null });

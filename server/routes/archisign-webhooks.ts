@@ -38,6 +38,7 @@ import { uuidv7 } from "../lib/uuidv7";
 import { canonicalizeTimestamp } from "../lib/canonical-timestamp";
 import { enqueueWebhookDelivery } from "../services/webhook-delivery";
 import { persistSignedDevisPdf } from "../services/devis-signed-pdf.service";
+import { recordEligibleSignedCopyIntent } from "../services/signed-devis-contractor-copy.service";
 import type { OutboundEventType } from "../services/archidoc-webhook-client";
 
 const router = Router();
@@ -364,22 +365,40 @@ async function handleSigned(p: SignedPayload): Promise<HandlerResult> {
   const isManualUpgrade =
     d.signOffStage === "client_signed_off" && d.signedOffVia === "manual_upload";
   const isFreshTransition = d.signOffStage !== "client_signed_off" || isManualUpgrade;
+  let transitionWon = false;
   if (isFreshTransition) {
-    const update: Partial<InsertDevis> = {
+    const update = {
       signOffStage: "client_signed_off",
       signedOffVia: "archisign",
       archisignEnvelopeStatus: "signed",
       identityVerification: p.identityVerification,
       signedPdfFetchUrlSnapshot: p.signedPdfFetchUrl,
+      // A manual upload may occupy signedPdfStorageKey. Never let the
+      // Archisign upgrade treat it as the completed-envelope artifact.
+      ...(isManualUpgrade
+        ? { signedPdfStorageKey: null, signedPdfArchisignEnvelopeId: null }
+        : {}),
+    } as Partial<InsertDevis> & {
+      signedPdfFetchUrlSnapshot: string;
+      signedPdfStorageKey?: null;
+      signedPdfArchisignEnvelopeId?: null;
     };
-    await storage.updateDevis(d.id, update);
+    // CAS is required because a duplicate callback is deliberately allowed
+    // to enter this handler to recover the intent->transition crash gap.
+    // Only one concurrent handler may win the transition and emit the
+    // work_authorised side effect.
+    transitionWon = await storage.applyArchisignSignedTransition(
+      d.id,
+      p.envelopeId,
+      update,
+    );
   }
 
   // Enqueue the §5.3.1 work_authorised delivery. We only enqueue on
   // the fresh transition — a no-op duplicate would have its eventId
   // collide with the existing row anyway, but skipping the build path
   // saves an unnecessary lookup on every retry.
-  if (isFreshTransition) {
+  if (transitionWon) {
     const reloaded = await storage.getDevis(d.id);
     await enqueueWorkAuthorised(reloaded ?? d, p);
   }
@@ -692,6 +711,38 @@ router.post(
   }
   const { event, eventId } = baseParse.data;
 
+  // envelope.signed is special: its durable notification intent must exist
+  // BEFORE the event-id claim can permanently consume this delivery. The
+  // normal dedup table intentionally retains claims on handler 5xx, so doing
+  // this inside handleSigned could lose the intent forever. Tight-parse and
+  // idempotently persist it first. Duplicate signed callbacks also rerun the
+  // idempotent handler below, recovering a crash after intent creation but
+  // before the stage transition / PDF retry arm.
+  let preparsedSigned: SignedPayload | null = null;
+  if (event === "envelope.signed") {
+    const parsed = signedSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        message: "Malformed envelope.signed payload",
+        errors: parsed.error.flatten(),
+      });
+    }
+    preparsedSigned = parsed.data;
+    const signedDevis = await storage.getDevisByArchisignEnvelopeId(parsed.data.envelopeId);
+    if (signedDevis) {
+      try {
+        await recordEligibleSignedCopyIntent(
+          signedDevis,
+          parsed.data.envelopeId,
+          new Date(parsed.data.signedAt),
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return res.status(500).json({ message: `Could not persist signed-copy intent: ${message}` });
+      }
+    }
+  }
+
   // Dedup-first. Hash the raw body for the `payload_hash` column so we
   // can investigate any future "different payload, same eventId"
   // anomalies without storing the full body. The verifier stashed the
@@ -709,6 +760,15 @@ router.post(
   };
   const claimed = await storage.claimWebhookEventIn(dedupRow);
   if (!claimed) {
+    if (preparsedSigned) {
+      try {
+        const result = await handleSigned(preparsedSigned);
+        return res.status(result.status).json({ ...result.body, deduplicated: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return res.status(500).json({ message: `Signed-event recovery failed: ${message}` });
+      }
+    }
     return res.status(200).json({ deduplicated: true, eventId, event });
   }
 

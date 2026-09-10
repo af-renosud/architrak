@@ -120,7 +120,7 @@ router.post(
       // 2. Transition + provenance in one update. signedOffVia =
       //    "manual_upload" is the durable marker distinguishing this from
       //    a webhook-driven sign-off.
-      const update: Partial<InsertDevis> = {
+      const update = {
         signOffStage: "client_signed_off",
         signedOffVia: "manual_upload",
         manualSignoffAt: new Date(),
@@ -128,7 +128,8 @@ router.post(
         manualSignoffNote: note,
         manualSignoffExternalRef: externalReference || null,
         signedPdfStorageKey: storageKey,
-      };
+        signedPdfArchisignEnvelopeId: null,
+      } as Partial<InsertDevis> & { signedPdfArchisignEnvelopeId: null };
       await storage.updateDevis(devisId, update);
 
       // 3. Mirror to the per-lot Drive folder through the same idempotent

@@ -30,9 +30,12 @@ import {
   ArchisignConfigError,
   ArchisignRetentionBreachError,
 } from "./archisign.js";
-import { uploadDocumentAtKey, buildSignedDevisObjectName } from "../storage/object-storage";
+import { uploadDocumentAtKey, buildArchisignSignedDevisObjectName } from "../storage/object-storage";
 import { enqueueDriveUpload } from "./drive/upload-queue.service";
 import type { Devis } from "@shared/schema";
+import { materializeSignedCopyOutbox } from "./signed-devis-contractor-copy.service";
+import { MAX_SIGNED_PDF_RETRY_ATTEMPTS } from "./signed-pdf-retry-policy";
+export { MAX_SIGNED_PDF_RETRY_ATTEMPTS } from "./signed-pdf-retry-policy";
 
 const DOWNLOAD_TIMEOUT_MS = 30_000;
 
@@ -42,8 +45,6 @@ const DOWNLOAD_TIMEOUT_MS = 30_000;
  * NULL but `signed_pdf_retry_attempts` = MAX, surfacing it as a dead
  * letter for the operator.
  */
-export const MAX_SIGNED_PDF_RETRY_ATTEMPTS = 5;
-
 /**
  * Exponential backoff schedule (ms) keyed by the upcoming attempt
  * number (i.e. `attempts` BEFORE the increment). Entry [0] is the
@@ -159,7 +160,11 @@ export async function persistSignedDevisPdf(devisId: number): Promise<SignedPdfP
       return { persisted: false, failureKind: "other", error: "no archisignEnvelopeId" };
     }
 
-    let storageKey = d.signedPdfStorageKey ?? null;
+    // A key without matching envelope provenance may be a manual upload.
+    // It is never accepted as the Archisign artifact.
+    let storageKey = d.signedPdfArchisignEnvelopeId === d.archisignEnvelopeId
+      ? d.signedPdfStorageKey
+      : null;
 
     // 1. Download + persist locally (one-shot per devis).
     if (!storageKey) {
@@ -214,10 +219,21 @@ export async function persistSignedDevisPdf(devisId: number): Promise<SignedPdfP
       // replays / sweeper retries collapse onto a single physical object
       // (same path → idempotent overwrite with identical signed bytes),
       // so we cannot accumulate duplicate artifacts under racy delivery.
-      const objectName = buildSignedDevisObjectName(d.projectId, devisId);
+      const objectName = buildArchisignSignedDevisObjectName(
+        d.projectId,
+        devisId,
+        d.archisignEnvelopeId,
+      );
       try {
         storageKey = await uploadDocumentAtKey(objectName, bytes, "application/pdf");
-        await storage.setDevisSignedPdfStorageKey(devisId, storageKey);
+        const attached = await storage.setDevisArchisignSignedPdf(
+          devisId,
+          d.archisignEnvelopeId,
+          storageKey,
+        );
+        if (!attached) {
+          throw new Error("Archisign envelope changed while the signed PDF was being persisted");
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error(
@@ -238,6 +254,12 @@ export async function persistSignedDevisPdf(devisId: number): Promise<SignedPdfP
       // Clear retry bookkeeping on success.
       await storage.clearSignedPdfRetry(devisId).catch(() => {});
     }
+
+    // Outbox creation is after durable object+provenance storage and before
+    // independent Drive work. A failure here is recovered by its own sweeper.
+    await materializeSignedCopyOutbox(devisId).catch((error) => {
+      console.error(`[SignedDevisCopy] devis ${devisId}: outbox materialization failed`, error);
+    });
 
     // 2. Mirror to the per-lot Drive folder. enqueueDriveUpload is a
     //    no-op when the feature flag is off and idempotent on

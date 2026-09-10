@@ -410,6 +410,7 @@ const typeIcons: Record<string, typeof Send> = {
   certificat_supplier_notice: FileCheck,
   payment_chase: Clock,
   devis_signature_context: PenLine,
+  devis_signed_contractor_copy: FileCheck,
   devis_check_bundle: MessageSquare,
   general: MessageSquare,
 };
@@ -420,6 +421,7 @@ const typeLabels: Record<string, string> = {
   certificat_supplier_notice: "Supplier Direct-Payment Notice",
   payment_chase: "Payment Chase",
   devis_signature_context: "Devis Sent (Signature)",
+  devis_signed_contractor_copy: "Signed Devis — Contractor Copy",
   devis_check_bundle: "Devis Questions Bundle",
   general: "General",
 };
@@ -641,6 +643,7 @@ export default function Communications() {
               <SelectItem value="certificat_supplier_notice">Supplier Direct-Payment Notice</SelectItem>
               <SelectItem value="payment_chase">Payment Chase</SelectItem>
               <SelectItem value="devis_signature_context">Devis Sent (Signature)</SelectItem>
+              <SelectItem value="devis_signed_contractor_copy">Signed Devis — Contractor Copy</SelectItem>
               <SelectItem value="devis_check_bundle">Devis Questions Bundle</SelectItem>
               <SelectItem value="general">General</SelectItem>
             </SelectContent>
@@ -668,6 +671,7 @@ export default function Communications() {
             </LuxuryCard>
           ) : (
             filtered.map(comm => {
+              const communication = comm as ProjectCommunication & { relatedDevisId?: number | null };
               const project = projectMap.get(comm.projectId);
               const IconComp = typeIcons[comm.type] || MessageSquare;
               const isExpanded = expandedId === comm.id;
@@ -703,6 +707,19 @@ export default function Communications() {
                               <span className="mx-2">·</span>
                               <Link href={`/projets/${project.id}`}>
                                 <span className="text-blue-600 hover:underline cursor-pointer">{project.name}</span>
+                              </Link>
+                            </>
+                          )}
+                          {project && communication.relatedDevisId && (
+                            <>
+                              <span className="mx-2">·</span>
+                              <Link href={`/projets/${project.id}?devis=${communication.relatedDevisId}`}>
+                                <span
+                                  className="text-blue-600 hover:underline cursor-pointer"
+                                  data-testid={`link-comm-devis-${comm.id}`}
+                                >
+                                  Open devis
+                                </span>
                               </Link>
                             </>
                           )}

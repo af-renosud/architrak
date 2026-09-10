@@ -614,7 +614,7 @@ export function communicationProviderMessageId(
   return `<architrak-${digest}@mail.architrak.app>`;
 }
 
-async function findAcceptedClientLinkMessage(
+async function findAcceptedTrackedMessage(
   gmail: GmailClient,
   communication: Pick<ProjectCommunication, "id" | "dedupeKey" | "encryptedBody">,
 ): Promise<{ id: string; threadId?: string; sentAt: Date } | null> {
@@ -632,16 +632,17 @@ async function findAcceptedClientLinkMessage(
   // indexed by Gmail search. Use it as the live-provider fallback so an
   // accepted message can still be reconciled without another send.
   if (!hit) {
-    const protectedBody = communication.encryptedBody
+    const searchableBody = communication.encryptedBody
       ? decryptCommunicationBody(communication.encryptedBody)
-      : null;
-    const portalToken = protectedBody?.match(
-      /\/p\/client\/([A-Za-z0-9_-]+)/,
-    )?.[1];
-    if (portalToken) {
+      : (communication as ProjectCommunication).body;
+    const marker = searchableBody?.match(
+      /(?:\/p\/client\/([A-Za-z0-9_-]+)|Référence de remise\s*:\s*(AT-DV-[a-f0-9]+))/,
+    );
+    const immutableReference = marker?.[1] ?? marker?.[2];
+    if (immutableReference) {
       const byPortalToken = await gmail.users.messages.list({
         userId: "me",
-        q: `in:sent "${portalToken}"`,
+        q: `in:sent "${immutableReference}"`,
         maxResults: 1,
       });
       hit = byPortalToken.data.messages?.[0];
@@ -680,11 +681,14 @@ async function getGmailClientForRecordedSender(
   return getUncachableGmailClient();
 }
 
-async function reconcileAcceptedClientLinkCommunication(
+async function reconcileAcceptedTrackedCommunication(
   communication: NonNullable<Awaited<ReturnType<typeof storage.getProjectCommunication>>>,
   gmail?: GmailClient,
 ): Promise<boolean> {
-  if (communication.type !== "devis_client_link" || isFakeGmailMode()) return false;
+  if (
+    !["devis_client_link", "devis_signed_contractor_copy"].includes(communication.type)
+    || isFakeGmailMode()
+  ) return false;
   if (!communication.sentViaUserId) {
     const accepted = findSharedGmailAcceptedSend(
       communicationProviderMessageId(communication),
@@ -700,7 +704,7 @@ async function reconcileAcceptedClientLinkCommunication(
     }
   }
   const client = gmail ?? await getGmailClientForRecordedSender(communication.sentViaUserId);
-  const accepted = await findAcceptedClientLinkMessage(client, communication);
+  const accepted = await findAcceptedTrackedMessage(client, communication);
   if (!accepted) return false;
   await storage.markProjectCommunicationSent(communication.id, {
     sentAt: accepted.sentAt,
@@ -732,12 +736,12 @@ export async function sendCommunication(
     }
     if (current.status === "sending") {
       if (
-        current.type === "devis_client_link"
+        ["devis_client_link", "devis_signed_contractor_copy"].includes(current.type)
         && !isFakeGmailMode()
         && current.emailMessageId
       ) {
         try {
-          if (await reconcileAcceptedClientLinkCommunication(current)) return;
+          if (await reconcileAcceptedTrackedCommunication(current)) return;
         } catch (error) {
           console.warn(
             `[EmailSender] Gmail has accepted client-link communication ${communicationId}, but confirmation lookup failed:`,
@@ -746,7 +750,7 @@ export async function sendCommunication(
         }
         throw new CommunicationDeliveryAwaitingConfirmationError(communicationId);
       }
-      if (await reconcileAcceptedClientLinkCommunication(current)) return;
+      if (await reconcileAcceptedTrackedCommunication(current)) return;
       throw new CommunicationSendInProgressError(communicationId);
     }
     throw new Error(
@@ -769,6 +773,7 @@ export async function sendCommunication(
   }
 
   let requiredSupplierAttachmentKeys: [string, string] | null = null;
+  let requiredSignedCopyAttachmentKey: string | null = null;
   let relatedSupplierCert: Certificat | null = null;
 
   // Every supplier certificate communication path, including direct Hub
@@ -789,6 +794,25 @@ export async function sendCommunication(
         });
         throw error;
       }
+    }
+  }
+
+  if (comm.type === "devis_signed_contractor_copy") {
+    try {
+      const { assertSignedCopyDispatchValid } = await import(
+        "../services/signed-devis-contractor-copy.service"
+      );
+      const valid = await assertSignedCopyDispatchValid(communicationId);
+      requiredSignedCopyAttachmentKey = valid.storageKey;
+      if (comm.recipientEmail !== valid.recipientEmail) {
+        await storage.updateProjectCommunication(communicationId, {
+          recipientEmail: valid.recipientEmail,
+        });
+        comm.recipientEmail = valid.recipientEmail;
+      }
+    } catch (error) {
+      await storage.updateProjectCommunication(communicationId, { status: "failed" });
+      throw error;
     }
   }
 
@@ -918,6 +942,10 @@ export async function sendCommunication(
   }
 
   let providerAccepted = false;
+  // For signed-copy sends, an exception after entering the provider call is
+  // ambiguous (the provider may have accepted it before the connection
+  // failed). Keep the row in sending for reconciliation rather than resend.
+  let providerAttempted = false;
   try {
     // Task #466 — send through the INITIATING architect's linked Gmail
     // client when they have one (gmail.modify scope includes send). Sending
@@ -949,7 +977,10 @@ export async function sendCommunication(
       }
       gmail = await getUncachableGmailClient();
     }
-    if (comm.type === "devis_client_link" && !isFakeGmailMode()) {
+    if (
+      ["devis_client_link", "devis_signed_contractor_copy"].includes(comm.type)
+      && !isFakeGmailMode()
+    ) {
       const recorded = await storage.updateProjectCommunication(communicationId, { sentViaUserId });
       if (!recorded) throw new Error("Could not record the Gmail sender before dispatch");
       comm.sentViaUserId = sentViaUserId;
@@ -993,9 +1024,14 @@ export async function sendCommunication(
         });
       } catch (err) {
         console.error(`[EmailSender] Failed to load attachment ${key}:`, err);
-        if (requiredSupplierAttachmentKeys?.includes(key)) {
+        if (
+          requiredSupplierAttachmentKeys?.includes(key)
+          || requiredSignedCopyAttachmentKey === key
+        ) {
           throw new Error(
-            `Required supplier payment attachment unavailable: ${key}`,
+            requiredSignedCopyAttachmentKey === key
+              ? `Required signed devis attachment unavailable: ${key}`
+              : `Required supplier payment attachment unavailable: ${key}`,
             { cause: err },
           );
         }
@@ -1009,13 +1045,19 @@ export async function sendCommunication(
         "Required supplier payment attachments were not loaded completely",
       );
     }
+    if (
+      requiredSignedCopyAttachmentKey
+      && (attachments.length !== 1 || storageKeys.length !== 1)
+    ) {
+      throw new Error("Required signed devis PDF attachment was not loaded");
+    }
 
     const boundary = `boundary_${Date.now()}`;
     let rawEmail = [
       `From: me`,
       `To: ${comm.recipientEmail || ""}`,
       `Subject: ${comm.subject}`,
-      ...(comm.type === "devis_client_link"
+      ...(["devis_client_link", "devis_signed_contractor_copy"].includes(comm.type)
         ? [`Message-ID: ${communicationProviderMessageId(comm)}`]
         : []),
       `MIME-Version: 1.0`,
@@ -1056,6 +1098,7 @@ export async function sendCommunication(
 
     const requestBody: { raw: string; threadId?: string } = { raw: encodedMessage };
     if (opts?.threadId) requestBody.threadId = opts.threadId;
+    providerAttempted = true;
     const sendResult = await gmail.users.messages.send({
       userId: "me",
       requestBody,
@@ -1063,7 +1106,7 @@ export async function sendCommunication(
     providerAccepted = true;
     const acceptedAt = new Date();
     if (
-      comm.type === "devis_client_link" &&
+      ["devis_client_link", "devis_signed_contractor_copy"].includes(comm.type) &&
       !sentViaUserId &&
       sendResult.data.id
     ) {
@@ -1073,7 +1116,7 @@ export async function sendCommunication(
         sentAt: acceptedAt,
       });
     }
-    if (comm.type === "devis_client_link" && sendResult.data.id) {
+    if (["devis_client_link", "devis_signed_contractor_copy"].includes(comm.type) && sendResult.data.id) {
       // Record provider acceptance separately from the final sent transition.
       // A later database failure can then be distinguished from a request that
       // merely holds the pre-send claim, without ever transmitting a duplicate.
@@ -1107,7 +1150,11 @@ export async function sendCommunication(
     // For client links, a provider-accepted message has a deterministic
     // Message-ID and remains `sending` if the success write fails. A retry
     // reconciles Gmail's Sent mailbox instead of transmitting it again.
-    if (!providerAccepted || comm.type !== "devis_client_link") {
+    if (
+      comm.type !== "devis_signed_contractor_copy"
+        ? (!providerAccepted || comm.type !== "devis_client_link")
+        : !providerAttempted
+    ) {
       await storage.updateProjectCommunication(communicationId, {
         status: "failed",
       });

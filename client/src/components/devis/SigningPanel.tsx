@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Send, Loader2, ExternalLink, ArrowLeft, MailWarning, FileUp } from "lucide-react";
+import { Send, Loader2, ExternalLink, ArrowLeft, MailWarning, FileUp, RefreshCw, CheckCircle2, Clock3, Ban } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -33,6 +33,20 @@ import { buildClientSignatureMessageTemplate } from "@shared/signature-message-t
  * into view and opens the (mandatory-context) send dialog.
  */
 export const OPEN_SIGNING_SEND_EVENT = "architrak:open-signing-send";
+
+type SignedCopyNotice = {
+  id: number;
+  status: string;
+  recipientEmail: string | null;
+  sentAt: string | null;
+  lastError: string | null;
+  communicationId: number | null;
+  canRetry: boolean;
+};
+
+type SignedCopyNoticeResponse = {
+  notice: SignedCopyNotice | null;
+};
 
 /**
  * AT4 Signing panel — orchestrates the §1.2 transition
@@ -59,6 +73,45 @@ export function SigningPanel({
   const { toast } = useToast();
   const devisQuery = useQuery<Devis>({
     queryKey: ["/api/devis", devisId],
+  });
+  const signedCopyNoticeQuery = useQuery<SignedCopyNoticeResponse>({
+    queryKey: ["/api/devis", devisId, "signed-copy-notice"],
+    refetchOnMount: "always",
+    refetchInterval: (query) => {
+      const status = query.state.data?.notice?.status;
+      return status === "pending_pdf" ||
+        status === "queued" ||
+        status === "sending" ||
+        status === "reconciling"
+        ? 3000
+        : false;
+    },
+  });
+
+  const retrySignedCopyMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/devis/${devisId}/signed-copy-notice/retry`, {});
+      return res.json() as Promise<SignedCopyNoticeResponse>;
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(["/api/devis", devisId, "signed-copy-notice"], data);
+      toast({
+        title: data.notice?.status === "reconciling" ? "Send-result check requested" : "Contractor copy queued",
+        description: data.notice?.status === "reconciling"
+          ? "Architrak will check the original send result without sending another email."
+          : "The signed PDF will be sent to the contractor when it is ready.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "signed-copy-notice"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/communications"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Could not retry the contractor copy",
+        description: error.message,
+        variant: "destructive",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "signed-copy-notice"] });
+    },
   });
 
   // Task #257 — the client-context message is MANDATORY on first send.
@@ -110,6 +163,7 @@ export function SigningPanel({
       setManualNote("");
       setManualExternalRef("");
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "signed-copy-notice"] });
       queryClient.invalidateQueries({ queryKey: ["/api/devis"] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/summary"] });
@@ -685,6 +739,15 @@ export function SigningPanel({
         </AlertDialogContent>
       </AlertDialog>
 
+      <SignedCopyNoticeStatus
+        devisId={devisId}
+        notice={signedCopyNoticeQuery.data?.notice ?? null}
+        isLoading={signedCopyNoticeQuery.isLoading}
+        error={signedCopyNoticeQuery.error as Error | null}
+        isRetrying={retrySignedCopyMutation.isPending}
+        onRetry={() => retrySignedCopyMutation.mutate()}
+      />
+
       {/* Manual signed-copy dialog — the secondary pathway. Upload the
           signed PDF + mandatory audit note + optional external reference
           (e.g. an Archisign envelope signed outside this integration). */}
@@ -902,5 +965,148 @@ export function SigningPanel({
         </div>
       )}
     </LuxuryCard>
+  );
+}
+
+function SignedCopyNoticeStatus({
+  devisId,
+  notice,
+  isLoading,
+  error,
+  isRetrying,
+  onRetry,
+}: {
+  devisId: number;
+  notice: SignedCopyNotice | null;
+  isLoading: boolean;
+  error: Error | null;
+  isRetrying: boolean;
+  onRetry: () => void;
+}) {
+  if (isLoading) {
+    return <Skeleton className="h-9 w-full" data-testid={`skeleton-signed-copy-notice-${devisId}`} />;
+  }
+
+  if (error) {
+    return (
+      <div
+        className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+        role="alert"
+        data-testid={`error-signed-copy-notice-${devisId}`}
+      >
+        Could not load the contractor copy status: {error.message}
+      </div>
+    );
+  }
+
+  if (!notice) return null;
+
+  const normalizedStatus = notice.status.toLowerCase().replace(/[\s-]+/g, "_");
+  const states: Record<string, {
+    label: string;
+    detail: string;
+    className: string;
+    Icon: typeof Clock3;
+  }> = {
+    pending_pdf: {
+      label: "Waiting for signed PDF",
+      detail: "The contractor copy will queue as soon as the final signed PDF is available.",
+      className: "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-200",
+      Icon: Clock3,
+    },
+    queued: {
+      label: "Contractor copy queued",
+      detail: "The signed copy is waiting to be sent.",
+      className: "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200",
+      Icon: Clock3,
+    },
+    sending: {
+      label: "Sending contractor copy",
+      detail: "The email provider is processing the signed copy.",
+      className: "border-blue-200 bg-blue-50 text-blue-900 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-200",
+      Icon: Loader2,
+    },
+    reconciling: {
+      label: "Send result unconfirmed",
+      detail: "Architrak must confirm the original send result before allowing another email.",
+      className: "border-violet-200 bg-violet-50 text-violet-900 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-200",
+      Icon: RefreshCw,
+    },
+    sent: {
+      label: "Contractor copy sent",
+      detail: "Accepted by the email provider; this does not confirm inbox delivery.",
+      className: "border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200",
+      Icon: CheckCircle2,
+    },
+    failed: {
+      label: "Contractor copy failed",
+      detail: "The signed copy could not be sent.",
+      className: "border-red-200 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950/30 dark:text-red-200",
+      Icon: MailWarning,
+    },
+    blocked: {
+      label: "Contractor copy blocked",
+      detail: "Sending cannot continue until the issue below is resolved.",
+      className: "border-red-200 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950/30 dark:text-red-200",
+      Icon: Ban,
+    },
+  };
+  const state = states[normalizedStatus] ?? {
+    label: `Contractor copy: ${notice.status}`,
+    detail: "The automatic contractor copy is being processed.",
+    className: "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-200",
+    Icon: Clock3,
+  };
+  const StateIcon = state.Icon;
+  const sentDate = notice.sentAt
+    ? new Date(notice.sentAt).toLocaleString("fr-FR", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : null;
+
+  return (
+    <div
+      className={`flex items-start justify-between gap-3 rounded-lg border px-3 py-2 ${state.className}`}
+      data-testid={`status-signed-copy-notice-${devisId}`}
+    >
+      <div className="flex items-start gap-2 min-w-0">
+        <StateIcon className={`h-4 w-4 mt-0.5 shrink-0 ${
+          normalizedStatus === "sending" ? "animate-spin" : ""
+        }`} />
+        <div className="min-w-0 text-xs">
+          <p className="font-semibold">{state.label}</p>
+          <p className="opacity-80">{state.detail}</p>
+          {normalizedStatus === "sent" && (
+            <p className="mt-0.5 font-medium" data-testid={`text-signed-copy-recipient-${devisId}`}>
+              {notice.recipientEmail || "Recipient not recorded"}
+              {sentDate ? ` · ${sentDate}` : ""}
+            </p>
+          )}
+          {normalizedStatus !== "sent" && notice.lastError && (
+            <p className="mt-1 break-words font-medium" data-testid={`text-signed-copy-error-${devisId}`}>
+              {notice.lastError}
+            </p>
+          )}
+        </div>
+      </div>
+      {notice.canRetry && (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 shrink-0 bg-background/70 px-2 text-[10px]"
+          disabled={isRetrying}
+          onClick={onRetry}
+          data-testid={`button-retry-signed-copy-${devisId}`}
+        >
+          {isRetrying ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <RefreshCw className="h-3 w-3 mr-1" />}
+          {normalizedStatus === "reconciling" ? "Check send result" : "Retry"}
+        </Button>
+      )}
+    </div>
   );
 }

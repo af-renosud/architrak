@@ -2280,6 +2280,7 @@ export async function buildCertificatPreviewHtml(opts?: { isAcompte?: boolean })
     marcheId: null,
     notes: null,
     archisignPinnedPdfStorageKey: null,
+    signedPdfArchisignEnvelopeId: null,
     signedOffVia: null,
     manualSignoffAt: null,
     manualSignoffBy: null,
