@@ -433,6 +433,47 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
       constraint: "signed_devis_copy_notices_intended_contractor_id_contractors_id_fk",
     },
   },
+  {
+    tag: "0133_manual_signed_devis_contractor_copy",
+    artifact: {
+      kind: "all",
+      artifacts: [
+        {
+          kind: "column",
+          table: "signed_devis_copy_notices",
+          column: "source",
+        },
+        {
+          kind: "column",
+          table: "signed_devis_copy_notices",
+          column: "request_id",
+        },
+        {
+          kind: "column",
+          table: "signed_devis_copy_notices",
+          column: "requested_by_user_id",
+        },
+        {
+          kind: "column",
+          table: "signed_devis_copy_notices",
+          column: "confirmation_snapshot",
+        },
+        {
+          kind: "index",
+          index: "signed_devis_copy_notices_automatic_devis_envelope_uidx",
+        },
+        {
+          kind: "index",
+          index: "signed_devis_copy_notices_manual_request_uidx",
+        },
+        {
+          kind: "constraint",
+          table: "signed_devis_copy_notices",
+          constraint: "signed_devis_copy_notices_requested_by_user_id_users_id_fk",
+        },
+      ],
+    },
+  },
 ];
 
 interface JournalFile {

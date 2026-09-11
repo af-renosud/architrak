@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import express from "express";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 
 const gmail = vi.hoisted(() => ({
@@ -84,7 +85,7 @@ type FixtureOptions = {
   envelope?: string;
   signedPdfStorageKey?: string | null;
   signedPdfArchisignEnvelopeId?: string | null;
-  signedOffVia?: string;
+  signedOffVia?: string | null;
 };
 
 async function fixture(options: FixtureOptions = {}): Promise<{
@@ -117,7 +118,7 @@ async function fixture(options: FixtureOptions = {}): Promise<{
     amountHt: "1000.00",
     amountTtc: "1200.00",
     signOffStage: "client_signed_off",
-    signedOffVia: options.signedOffVia ?? "archisign",
+    signedOffVia: options.signedOffVia === undefined ? "archisign" : options.signedOffVia,
     archisignEnvelopeId: envelope,
     archisignEnvelopeStatus: "signed",
     signedPdfStorageKey: options.signedPdfStorageKey ?? null,
@@ -612,5 +613,368 @@ describe("automatic signed devis contractor copies (real DB)", () => {
     });
     expect(gmail.list.mock.calls.at(-1)?.[0]?.q).toMatch(/AT-DV-[a-f0-9]+/);
     expect(gmail.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats sent communication evidence as authoritative when notice repair fails", async () => {
+    await enable();
+    const key = `${PREFIX}/notice-repair-failure.pdf`;
+    documents.set(key, Buffer.from("NOTICE-REPAIR-FAILURE-PDF"));
+    const { row } = await fixture({ signedPdfStorageKey: key });
+    await storage.updateDevis(row.id, { signedPdfArchisignEnvelopeId: row.archisignEnvelopeId });
+    const notice = await intent(row, new Date(Date.now() + 1_000));
+    await materializeSignedCopyOutbox(row.id);
+
+    const originalUpdate = db.update.bind(db);
+    const updateSpy = vi.spyOn(db, "update").mockImplementation(((table: unknown) => {
+      const query = originalUpdate(table as never) as any;
+      if (table !== signedDevisCopyNotices) return query;
+      const originalSet = query.set.bind(query);
+      query.set = ((values: unknown) => {
+        if (
+          typeof values === "object"
+          && values !== null
+          && (values as { status?: string }).status === "sent"
+        ) {
+          return {
+            where: async () => {
+              throw new Error("injected notice repair failure");
+            },
+          };
+        }
+        return originalSet(values);
+      }) as any;
+      return query;
+    }) as typeof db.update);
+
+    try {
+      await dispatchSignedCopyNotice(notice!.id);
+    } finally {
+      updateSpy.mockRestore();
+    }
+
+    const [rawNotice] = await db.select().from(signedDevisCopyNotices)
+      .where(eq(signedDevisCopyNotices.id, notice!.id));
+    expect(rawNotice.status).toBe("sending");
+    expect((await storage.getProjectCommunication(rawNotice.communicationId!))?.status).toBe("sent");
+    const payload = await (await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy`)).json();
+    expect(payload).toMatchObject({
+      canSend: true,
+      deliveries: [expect.objectContaining({
+        id: notice!.id,
+        source: "automatic",
+        status: "sent",
+        canRetry: false,
+      })],
+    });
+    expect(gmail.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries an automatic failed history row through the contractor-copy endpoint", async () => {
+    await enable();
+    const key = `${PREFIX}/automatic-failed-history.pdf`;
+    documents.set(key, Buffer.from("AUTOMATIC-FAILED-HISTORY-PDF"));
+    const { row } = await fixture({ signedPdfStorageKey: key });
+    await storage.updateDevis(row.id, { signedPdfArchisignEnvelopeId: row.archisignEnvelopeId });
+    const notice = await intent(row, new Date(Date.now() + 1_000));
+    await materializeSignedCopyOutbox(row.id);
+    const [saved] = await db.select().from(signedDevisCopyNotices)
+      .where(eq(signedDevisCopyNotices.id, notice!.id));
+    await db.update(projectCommunications).set({ status: "failed" })
+      .where(eq(projectCommunications.id, saved.communicationId!));
+    await db.update(signedDevisCopyNotices).set({
+      status: "failed",
+      lastError: "temporary automatic failure",
+    }).where(eq(signedDevisCopyNotices.id, saved.id));
+
+    const before = await (await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy`)).json();
+    expect(before.deliveries).toEqual([
+      expect.objectContaining({
+        id: saved.id,
+        source: "automatic",
+        status: "failed",
+        canRetry: true,
+      }),
+    ]);
+    const retried = await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy/${saved.id}/retry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+    });
+    expect(retried.status).toBe(200);
+    expect((await retried.json()).deliveries).toEqual([
+      expect.objectContaining({
+        id: saved.id,
+        source: "automatic",
+        status: "queued",
+        canRetry: false,
+      }),
+    ]);
+    await sweepSignedCopyNotices();
+    const [sent] = await db.select().from(signedDevisCopyNotices)
+      .where(eq(signedDevisCopyNotices.id, saved.id));
+    expect(sent.status).toBe("sent");
+    expect(gmail.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows an authenticated manual copy while automation is disabled and records the operator", async () => {
+    await putSetting(false);
+    const key = `${PREFIX}/manual-disabled.pdf`;
+    documents.set(key, Buffer.from("MANUAL-DISABLED-PDF"));
+    const { row } = await fixture({
+      signedPdfStorageKey: key,
+      signedPdfArchisignEnvelopeId: undefined,
+    });
+    await storage.updateDevis(row.id, { signedPdfArchisignEnvelopeId: row.archisignEnvelopeId });
+
+    const preview = await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy`);
+    expect(preview.status).toBe(200);
+    const previewBody = await preview.json();
+    expect(previewBody).toMatchObject({
+      canSend: true,
+      reason: null,
+      confirmationToken: expect.any(String),
+      deliveries: [],
+    });
+    expect(previewBody.confirmationToken).not.toContain(key);
+
+    const requestId = randomUUID();
+    const send = await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        requestId,
+        confirmationToken: previewBody.confirmationToken,
+      }),
+    });
+    expect(send.status).toBe(200);
+    expect((await send.json()).deliveries).toEqual([
+      expect.objectContaining({
+        source: "manual",
+        status: "sent",
+        canRetry: false,
+      }),
+    ]);
+    expect(gmail.send).toHaveBeenCalledTimes(1);
+
+    const [delivery] = await db.select().from(signedDevisCopyNotices)
+      .where(eq(signedDevisCopyNotices.requestId, requestId));
+    expect(delivery).toMatchObject({
+      source: "manual",
+      requestId,
+      requestedByUserId: 1,
+      status: "sent",
+      confirmationSnapshot: expect.objectContaining({
+        recipientEmail: `${PREFIX.toLowerCase()}-${projectIds.length}@example.test`,
+        signedPdfArchisignEnvelopeId: row.archisignEnvelopeId,
+      }),
+    });
+  });
+
+  it("does not let an older-envelope inflight row block a current-envelope confirmation", async () => {
+    await enable();
+    const oldKey = `${PREFIX}/older-envelope-inflight.pdf`;
+    const currentKey = `${PREFIX}/current-envelope-after-inflight.pdf`;
+    documents.set(oldKey, Buffer.from("OLDER-ENVELOPE-INFLIGHT-PDF"));
+    documents.set(currentKey, Buffer.from("CURRENT-ENVELOPE-AFTER-INFLIGHT-PDF"));
+    const { row } = await fixture({ signedPdfStorageKey: oldKey });
+    await storage.updateDevis(row.id, { signedPdfArchisignEnvelopeId: row.archisignEnvelopeId });
+    const oldNotice = await intent(row, new Date(Date.now() + 1_000));
+    await materializeSignedCopyOutbox(row.id);
+    await putSetting(false);
+
+    const currentEnvelope = `${row.archisignEnvelopeId}-current`;
+    await storage.updateDevis(row.id, {
+      archisignEnvelopeId: currentEnvelope,
+      signedPdfStorageKey: currentKey,
+      signedPdfArchisignEnvelopeId: currentEnvelope,
+      archisignEnvelopeStatus: "signed",
+    });
+    const preview = await (await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy`)).json();
+    expect(preview).toMatchObject({ canSend: true, reason: null });
+    const send = await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        requestId: randomUUID(),
+        confirmationToken: preview.confirmationToken,
+      }),
+    });
+    expect(send.status).toBe(200);
+    expect(gmail.send).toHaveBeenCalledTimes(1);
+    const [oldSaved] = await db.select().from(signedDevisCopyNotices)
+      .where(eq(signedDevisCopyNotices.id, oldNotice!.id));
+    expect(oldSaved.status).toBe("queued");
+  });
+
+  it("accepts legacy Archisign completions with null signedOffVia only when provenance matches", async () => {
+    await putSetting(false);
+    const key = `${PREFIX}/legacy-null-signed-off-via.pdf`;
+    documents.set(key, Buffer.from("LEGACY-NULL-SIGNED-OFF-VIA-PDF"));
+    const { row } = await fixture({
+      signedOffVia: null,
+      signedPdfStorageKey: key,
+      signedPdfArchisignEnvelopeId: undefined,
+    });
+    await storage.updateDevis(row.id, { signedPdfArchisignEnvelopeId: row.archisignEnvelopeId });
+
+    const preview = await (await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy`)).json();
+    expect(preview).toMatchObject({ canSend: true, reason: null });
+    const send = await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        requestId: randomUUID(),
+        confirmationToken: preview.confirmationToken,
+      }),
+    });
+    expect(send.status).toBe(200);
+    expect(gmail.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps deliberate resends append-only and makes the request idempotent", async () => {
+    await putSetting(false);
+    const key = `${PREFIX}/manual-resend.pdf`;
+    documents.set(key, Buffer.from("MANUAL-RESEND-PDF"));
+    const { row } = await fixture({
+      signedPdfStorageKey: key,
+      signedPdfArchisignEnvelopeId: undefined,
+    });
+    await storage.updateDevis(row.id, { signedPdfArchisignEnvelopeId: row.archisignEnvelopeId });
+
+    const firstPreview = await (await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy`)).json();
+    const firstRequestId = randomUUID();
+    const firstBody = JSON.stringify({
+      requestId: firstRequestId,
+      confirmationToken: firstPreview.confirmationToken,
+    });
+    expect((await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: firstBody,
+    })).status).toBe(200);
+
+    // Reusing the exact request body after the first response is a network
+    // retry, not a second deliberate delivery.
+    const duplicate = await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: firstBody,
+    });
+    expect(duplicate.status).toBe(200);
+    expect(gmail.send).toHaveBeenCalledTimes(1);
+
+    const secondPreview = await (await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy`)).json();
+    const second = await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        requestId: randomUUID(),
+        confirmationToken: secondPreview.confirmationToken,
+      }),
+    });
+    expect(second.status).toBe(200);
+    expect(gmail.send).toHaveBeenCalledTimes(2);
+    const rows = await db.select().from(signedDevisCopyNotices)
+      .where(and(
+        eq(signedDevisCopyNotices.devisId, row.id),
+        eq(signedDevisCopyNotices.source, "manual"),
+      ));
+    expect(rows).toHaveLength(2);
+    expect(rows.every((delivery) => delivery.status === "sent")).toBe(true);
+  });
+
+  it("suppresses only the matching envelope when a prior envelope had a manual copy", async () => {
+    await putSetting(false);
+    const firstKey = `${PREFIX}/manual-first-envelope.pdf`;
+    documents.set(firstKey, Buffer.from("MANUAL-FIRST-ENVELOPE-PDF"));
+    const { row } = await fixture({
+      signedPdfStorageKey: firstKey,
+      signedPdfArchisignEnvelopeId: undefined,
+    });
+    await storage.updateDevis(row.id, { signedPdfArchisignEnvelopeId: row.archisignEnvelopeId });
+    const firstPreview = await (await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy`)).json();
+    const firstSend = await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        requestId: randomUUID(),
+        confirmationToken: firstPreview.confirmationToken,
+      }),
+    });
+    expect(firstSend.status).toBe(200);
+    expect(gmail.send).toHaveBeenCalledTimes(1);
+
+    const laterEnvelope = `${row.archisignEnvelopeId}-later`;
+    const laterKey = `${PREFIX}/manual-later-envelope.pdf`;
+    documents.set(laterKey, Buffer.from("MANUAL-LATER-ENVELOPE-PDF"));
+    await storage.updateDevis(row.id, {
+      archisignEnvelopeId: laterEnvelope,
+      signedPdfStorageKey: laterKey,
+      signedPdfArchisignEnvelopeId: laterEnvelope,
+      archisignEnvelopeStatus: "signed",
+    });
+    const laterRow = { ...row, archisignEnvelopeId: laterEnvelope };
+    await enable();
+    const automatic = await intent(laterRow, new Date(Date.now() + 1_000));
+    expect(automatic?.archisignEnvelopeId).toBe(laterEnvelope);
+    const materialized = await materializeSignedCopyOutbox(row.id);
+    await dispatchSignedCopyNotice(materialized!.id);
+    expect(gmail.send).toHaveBeenCalledTimes(2);
+    const [savedAutomatic] = await db.select().from(signedDevisCopyNotices)
+      .where(eq(signedDevisCopyNotices.id, automatic!.id));
+    expect(savedAutomatic).toMatchObject({
+      source: "automatic",
+      archisignEnvelopeId: laterEnvelope,
+      status: "sent",
+    });
+  });
+
+  it("rejects stale confirmations after an automatic delivery identity appears", async () => {
+    await putSetting(false);
+    const key = `${PREFIX}/manual-stale.pdf`;
+    documents.set(key, Buffer.from("MANUAL-STALE-PDF"));
+    const { row } = await fixture({
+      signedPdfStorageKey: key,
+      signedPdfArchisignEnvelopeId: undefined,
+    });
+    await storage.updateDevis(row.id, { signedPdfArchisignEnvelopeId: row.archisignEnvelopeId });
+    const preview = await (await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy`)).json();
+
+    await enable();
+    await intent(row, new Date(Date.now() + 1_000));
+    const stale = await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        requestId: randomUUID(),
+        confirmationToken: preview.confirmationToken,
+      }),
+    });
+    expect(stale.status).toBe(409);
+    expect(gmail.send).not.toHaveBeenCalled();
+  });
+
+  it("coalesces concurrent manual confirmations without a second Gmail call", async () => {
+    await putSetting(false);
+    const key = `${PREFIX}/manual-concurrent.pdf`;
+    documents.set(key, Buffer.from("MANUAL-CONCURRENT-PDF"));
+    const { row } = await fixture({
+      signedPdfStorageKey: key,
+      signedPdfArchisignEnvelopeId: undefined,
+    });
+    await storage.updateDevis(row.id, { signedPdfArchisignEnvelopeId: row.archisignEnvelopeId });
+    const preview = await (await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy`)).json();
+    const requestId = randomUUID();
+    const responses = await Promise.all(Array.from({ length: 6 }, () =>
+      fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ requestId, confirmationToken: preview.confirmationToken }),
+      }),
+    ));
+    expect(responses.every((response) => response.status === 200)).toBe(true);
+    expect(gmail.send).toHaveBeenCalledTimes(1);
+    const rows = await db.select().from(signedDevisCopyNotices)
+      .where(eq(signedDevisCopyNotices.requestId, requestId));
+    expect(rows).toHaveLength(1);
   });
 });

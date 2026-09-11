@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import { db } from "../db";
 import { storage } from "../storage";
 import {
@@ -11,10 +11,35 @@ import {
 } from "@shared/schema";
 import { isValidRecipientEmail } from "../communications/email-sender";
 import { MAX_SIGNED_PDF_RETRY_ATTEMPTS } from "./signed-pdf-retry-policy";
+import type { SignedCopyConfirmationSnapshot } from "./manual-signed-devis-contractor-copy.service";
 
 export const SIGNED_COPY_SETTING_KEY = "automatic_signed_devis_contractor_copies";
 export const MAX_SIGNED_COPY_SEND_ATTEMPTS = 5;
 const BACKOFF_MS = [60_000, 5 * 60_000, 30 * 60_000, 2 * 60 * 60_000] as const;
+export const SIGNED_COPY_AUTOMATIC_SOURCE = "automatic";
+export const SIGNED_COPY_MANUAL_SOURCE = "manual";
+
+/** Null is a legacy Archisign provenance value; manual uploads never qualify. */
+export function hasVerifiedArchisignSignOff(d: Pick<
+  Devis,
+  "signOffStage" | "signedOffVia" | "archisignEnvelopeId" | "signedPdfStorageKey" | "signedPdfArchisignEnvelopeId"
+>): boolean {
+  return d.signOffStage === "client_signed_off"
+    && (d.signedOffVia === "archisign" || d.signedOffVia === null)
+    && !!d.archisignEnvelopeId
+    && !!d.signedPdfStorageKey
+    && d.signedPdfArchisignEnvelopeId === d.archisignEnvelopeId;
+}
+
+export function signedCopyDedupeKey(notice: Pick<SignedDevisCopyNotice, "source" | "requestId" | "devisId" | "archisignEnvelopeId">): string {
+  return notice.source === SIGNED_COPY_MANUAL_SOURCE
+    ? `devis_signed_contractor_copy:manual:${notice.requestId}`
+    : `devis_signed_contractor_copy:${notice.devisId}:${notice.archisignEnvelopeId}`;
+}
+
+export function storageKeyHash(key: string): string {
+  return createHash("sha256").update(key).digest("hex");
+}
 
 export interface SignedCopySetting {
   enabled: boolean;
@@ -27,6 +52,15 @@ export function signedCopyDeliveryReference(notice: Pick<SignedDevisCopyNotice, 
     .digest("hex")
     .slice(0, 20);
   return `AT-DV-${digest}`;
+}
+
+function signedCopyBodyDeliveryReference(
+  notice: Pick<SignedDevisCopyNotice, "id" | "archisignEnvelopeId" | "source" | "requestId">,
+): string {
+  if (notice.source === SIGNED_COPY_MANUAL_SOURCE && notice.requestId) {
+    return `AT-DV-${createHash("sha256").update(notice.requestId).digest("hex").slice(0, 20)}`;
+  }
+  return signedCopyDeliveryReference(notice);
 }
 
 export async function getSignedCopySetting(): Promise<SignedCopySetting> {
@@ -90,34 +124,77 @@ export async function recordEligibleSignedCopyIntent(
       archisignEnvelopeId: envelopeId,
       intendedContractorId: d.contractorId,
       signedAt,
+      source: SIGNED_COPY_AUTOMATIC_SOURCE,
       status: "pending_pdf",
       nextAttemptAt: new Date(),
     })
     .onConflictDoNothing({
       target: [signedDevisCopyNotices.devisId, signedDevisCopyNotices.archisignEnvelopeId],
+      where: sql`${signedDevisCopyNotices.source} = 'automatic'`,
     })
     .returning();
   if (inserted) return inserted;
   const [existing] = await db.select().from(signedDevisCopyNotices).where(and(
     eq(signedDevisCopyNotices.devisId, d.id),
     eq(signedDevisCopyNotices.archisignEnvelopeId, envelopeId),
+      eq(signedDevisCopyNotices.source, SIGNED_COPY_AUTOMATIC_SOURCE),
   )).limit(1);
   return existing ?? null;
 }
 
 export async function getSignedCopyNoticeForDevis(devisId: number): Promise<SignedDevisCopyNotice | null> {
   const [row] = await db.select().from(signedDevisCopyNotices)
-    .where(eq(signedDevisCopyNotices.devisId, devisId))
+    .where(and(
+      eq(signedDevisCopyNotices.devisId, devisId),
+      eq(signedDevisCopyNotices.source, SIGNED_COPY_AUTOMATIC_SOURCE),
+    ))
     .orderBy(sql`${signedDevisCopyNotices.id} DESC`)
+    .limit(1);
+  return row ? withCommunicationSentState(row) : null;
+}
+
+export async function listSignedCopyDeliveriesForDevis(devisId: number): Promise<SignedDevisCopyNotice[]> {
+  const rows = await db.select().from(signedDevisCopyNotices)
+    .where(eq(signedDevisCopyNotices.devisId, devisId))
+    .orderBy(desc(signedDevisCopyNotices.id));
+  return Promise.all(rows.map(withCommunicationSentState));
+}
+
+/**
+ * The communication outbox is the provider-delivery evidence. If the
+ * follow-up notice repair lost a race or failed after the provider accepted
+ * the message, every eligibility/history reader must still see the delivery
+ * as sent and must not offer another copy.
+ */
+async function withCommunicationSentState(
+  notice: SignedDevisCopyNotice,
+): Promise<SignedDevisCopyNotice> {
+  if (notice.status === "sent" || !notice.communicationId) return notice;
+  const communication = await storage.getProjectCommunication(notice.communicationId);
+  if (communication?.status !== "sent") return notice;
+  return {
+    ...notice,
+    status: "sent",
+    sentAt: notice.sentAt ?? communication.sentAt ?? new Date(),
+    lastError: null,
+  };
+}
+
+async function getLatestSignedCopyDeliveryForDevis(
+  devisId: number,
+): Promise<SignedDevisCopyNotice | null> {
+  const [row] = await db.select().from(signedDevisCopyNotices)
+    .where(eq(signedDevisCopyNotices.devisId, devisId))
+    .orderBy(desc(signedDevisCopyNotices.id))
     .limit(1);
   return row ?? null;
 }
 
-function subject(ref: string, projectName: string): string {
+export function subject(ref: string, projectName: string): string {
   return `Copie du devis signé ${ref} — ${projectName}`;
 }
 
-function body(contractorName: string, ref: string, projectName: string, deliveryRef: string): string {
+export function body(contractorName: string, ref: string, projectName: string, deliveryRef: string): string {
   return (
     `Bonjour ${contractorName},\n\n` +
     `Veuillez trouver en pièce jointe une copie du devis ${ref}, signé par le client pour le projet « ${projectName} ».\n\n` +
@@ -148,6 +225,7 @@ export async function materializeSignedCopyOutbox(devisId: number): Promise<Sign
 export async function materializeSignedCopyNotice(noticeId: number): Promise<SignedDevisCopyNotice | null> {
   const [notice] = await db.select().from(signedDevisCopyNotices)
     .where(eq(signedDevisCopyNotices.id, noticeId)).limit(1);
+  if (notice?.source !== SIGNED_COPY_AUTOMATIC_SOURCE) return notice ?? null;
   if (!notice || notice.communicationId || notice.status === "sent") return notice;
   const devisId = notice.devisId;
   const d = await storage.getDevis(devisId);
@@ -160,7 +238,7 @@ export async function materializeSignedCopyNotice(noticeId: number): Promise<Sig
   if (!d || !project) failure = "Devis or project no longer exists";
   else if (d.projectId !== notice.projectId)
     failure = "Project no longer matches the signed-copy intent";
-  else if (d.signOffStage !== "client_signed_off" || d.signedOffVia !== "archisign")
+  else if (d.signOffStage !== "client_signed_off" || (d.signedOffVia !== "archisign" && d.signedOffVia !== null))
     failure = "Devis is not a verified Archisign completion";
   else if (d.archisignEnvelopeId !== notice.archisignEnvelopeId)
     failure = "Archisign envelope no longer matches the signed-copy intent";
@@ -211,7 +289,7 @@ export async function materializeSignedCopyNotice(noticeId: number): Promise<Sig
     contractor?.name ?? "Madame, Monsieur",
     ref,
     projectName,
-    signedCopyDeliveryReference(notice),
+    signedCopyBodyDeliveryReference(notice),
   );
   const expectedAttachment = (
     d?.signedPdfStorageKey
@@ -228,7 +306,7 @@ export async function materializeSignedCopyNotice(noticeId: number): Promise<Sig
     attachmentStorageKeys: expectedAttachment ? [expectedAttachment] : [],
     status: failure ? "failed" : "queued",
     relatedDevisId: devisId,
-    dedupeKey: `devis_signed_contractor_copy:${devisId}:${notice.archisignEnvelopeId}`,
+    dedupeKey: signedCopyDedupeKey(notice),
   } as InsertProjectCommunication & { relatedDevisId: number };
   const created = await storage.createProjectCommunication(communication);
   const immutableTupleMatches =
@@ -285,7 +363,10 @@ export async function assertSignedCopyDispatchValid(
     .where(eq(signedDevisCopyNotices.communicationId, communicationId)).limit(1);
   if (!notice) throw new Error("Signed devis copy has no durable delivery intent");
   const setting = await getSignedCopySetting();
-  if (!setting.enabled || !setting.activatedAt || Number.isNaN(new Date(setting.activatedAt).getTime())) {
+  if (
+    notice.source === SIGNED_COPY_AUTOMATIC_SOURCE
+    && (!setting.enabled || !setting.activatedAt || Number.isNaN(new Date(setting.activatedAt).getTime()))
+  ) {
     throw new Error("Automatic signed devis copies are disabled");
   }
   const d = await storage.getDevis(notice.devisId);
@@ -295,19 +376,37 @@ export async function assertSignedCopyDispatchValid(
     : undefined;
   if (!d || !project || !contractor) throw new Error("Signed-copy devis, project, or intended contractor is unavailable");
   if (d.projectId !== notice.projectId) throw new Error("Project mismatch; signed-copy delivery is blocked");
-  if (d.signOffStage !== "client_signed_off" || d.signedOffVia !== "archisign")
+  if (d.signOffStage !== "client_signed_off" || (d.signedOffVia !== "archisign" && d.signedOffVia !== null))
     throw new Error("Devis is not a verified Archisign completion");
+  if (!hasVerifiedArchisignSignOff(d))
+    throw new Error("Verified Archisign signed PDF is unavailable or has mismatched provenance");
+  const signedPdfStorageKey = d.signedPdfStorageKey;
+  if (!signedPdfStorageKey) throw new Error("Verified Archisign signed PDF is unavailable");
   if (project.archivedAt) throw new Error("Project is archived; signed-copy delivery is blocked");
   if (d.archisignEnvelopeId !== notice.archisignEnvelopeId)
     throw new Error("Archisign envelope mismatch; signed-copy delivery is blocked");
   if (d.contractorId !== notice.intendedContractorId)
     throw new Error("Contractor assignment changed; signed-copy delivery is blocked");
-  if (!d.signedPdfStorageKey || d.signedPdfArchisignEnvelopeId !== notice.archisignEnvelopeId)
-    throw new Error("Verified Archisign signed PDF is unavailable or has mismatched provenance");
+  if (notice.source === SIGNED_COPY_MANUAL_SOURCE) {
+    const snapshot = notice.confirmationSnapshot as Partial<SignedCopyConfirmationSnapshot> | null;
+    if (
+      !snapshot
+      || snapshot.devisId !== d.id
+      || snapshot.projectId !== d.projectId
+      || snapshot.contractorId !== contractor.id
+      || snapshot.contractorName !== contractor.name
+      || snapshot.recipientEmail !== (contractor.email ?? "").trim()
+      || snapshot.archisignEnvelopeId !== d.archisignEnvelopeId
+      || snapshot.signedPdfArchisignEnvelopeId !== d.signedPdfArchisignEnvelopeId
+       || snapshot.signedPdfStorageKeyHash !== storageKeyHash(signedPdfStorageKey)
+    ) {
+      throw new Error("Signed-copy confirmation no longer matches the verified document or recipient");
+    }
+  }
   const keys = await storage.getProjectCommunication(communicationId);
   if (!keys) throw new Error("Signed-copy communication is unavailable");
   const attachments = Array.isArray(keys?.attachmentStorageKeys) ? keys.attachmentStorageKeys : [];
-  if (attachments.length !== 1 || attachments[0] !== d.signedPdfStorageKey)
+  if (attachments.length !== 1 || attachments[0] !== signedPdfStorageKey)
     throw new Error("Signed-copy attachment does not match the verified Archisign PDF");
   const recipientEmail = (contractor.email ?? "").trim();
   if (!isValidRecipientEmail(recipientEmail)) throw new Error("Contractor email is missing or invalid");
@@ -320,22 +419,22 @@ export async function assertSignedCopyDispatchValid(
     contractor.name,
     ref,
     project.name,
-    signedCopyDeliveryReference(notice),
+    signedCopyBodyDeliveryReference(notice),
   );
   if (
     keys.projectId !== notice.projectId
     || keys.type !== "devis_signed_contractor_copy"
     || keys.recipientType !== "contractor"
     || keys.relatedDevisId !== notice.devisId
-    || keys.dedupeKey !== `devis_signed_contractor_copy:${notice.devisId}:${notice.archisignEnvelopeId}`
+    || keys.dedupeKey !== signedCopyDedupeKey(notice)
     || keys.recipientName !== contractor.name
     || keys.subject !== expectedSubject
     || keys.body !== expectedBody
-    || !keys.body.includes(`Référence de remise : ${signedCopyDeliveryReference(notice)}`)
+    || !keys.body.includes(`Référence de remise : ${signedCopyBodyDeliveryReference(notice)}`)
   ) {
     throw new Error("Signed-copy communication immutable identity or content does not match its intent");
   }
-  return { notice, storageKey: d.signedPdfStorageKey, recipientEmail };
+  return { notice, storageKey: signedPdfStorageKey, recipientEmail };
 }
 
 async function markNoticeFailure(notice: SignedDevisCopyNotice, error: unknown): Promise<void> {
@@ -344,31 +443,96 @@ async function markNoticeFailure(notice: SignedDevisCopyNotice, error: unknown):
   const message = error instanceof Error ? error.message : String(error);
   await db.update(signedDevisCopyNotices).set({
     attempts,
-    status: terminal ? "failed" : "queued",
+    // Automatic work is worker-retryable and stays queued. A manual
+    // confirmation must remain an explicit operator retry instead of being
+    // silently picked up by the automatic sweeper.
+    status: notice.source === SIGNED_COPY_MANUAL_SOURCE || terminal ? "failed" : "queued",
     lastError: message,
     nextAttemptAt: new Date(Date.now() + (BACKOFF_MS[attempts - 1] ?? BACKOFF_MS[BACKOFF_MS.length - 1])),
     updatedAt: new Date(),
   }).where(eq(signedDevisCopyNotices.id, notice.id));
 }
 
-export async function dispatchSignedCopyNotice(noticeId: number): Promise<void> {
+export async function dispatchSignedCopyNotice(
+  noticeId: number,
+  options?: { sentByUserId?: number | null },
+): Promise<void> {
+  const [candidate] = await db.select().from(signedDevisCopyNotices)
+    .where(eq(signedDevisCopyNotices.id, noticeId))
+    .limit(1);
+  if (!candidate) return;
   const setting = await getSignedCopySetting();
   if (
-    !setting.enabled
-    || !setting.activatedAt
-    || Number.isNaN(new Date(setting.activatedAt).getTime())
+    candidate.source === SIGNED_COPY_AUTOMATIC_SOURCE
+    && (
+      !setting.enabled
+      || !setting.activatedAt
+      || Number.isNaN(new Date(setting.activatedAt).getTime())
+    )
   ) return;
-  const [claimed] = await db.update(signedDevisCopyNotices).set({
-    status: "sending",
-    updatedAt: new Date(),
-  }).where(and(
-    eq(signedDevisCopyNotices.id, noticeId),
-    inArray(signedDevisCopyNotices.status, ["queued", "reconciling"]),
-  )).returning();
+
+  const claimed = await db.transaction(async (tx) => {
+    // The manual confirmation path takes this same lock. This closes the
+    // race where the automatic worker had only just started its provider
+    // claim while a stale operator tab was confirming a resend.
+    await tx.execute(sql`SELECT id FROM devis WHERE id = ${candidate.devisId} FOR UPDATE`);
+    if (candidate.source === SIGNED_COPY_AUTOMATIC_SOURCE) {
+      const manualDeliveries = await tx.select({
+        id: signedDevisCopyNotices.id,
+        status: signedDevisCopyNotices.status,
+        communicationId: signedDevisCopyNotices.communicationId,
+      })
+        .from(signedDevisCopyNotices)
+        .where(and(
+          eq(signedDevisCopyNotices.devisId, candidate.devisId),
+          eq(signedDevisCopyNotices.archisignEnvelopeId, candidate.archisignEnvelopeId),
+          eq(signedDevisCopyNotices.source, SIGNED_COPY_MANUAL_SOURCE),
+        ))
+        .orderBy(desc(signedDevisCopyNotices.id));
+      for (const manualDelivery of manualDeliveries) {
+        const [manualCommunication] = manualDelivery.communicationId
+          ? await tx.select({ status: projectCommunications.status })
+              .from(projectCommunications)
+              .where(eq(projectCommunications.id, manualDelivery.communicationId))
+              .limit(1)
+          : [];
+        if (
+          manualDelivery.status === "sent"
+          || manualCommunication?.status === "sent"
+        ) {
+          await tx.update(signedDevisCopyNotices).set({
+            status: "failed",
+            lastError: "Automatic delivery suppressed because a manual copy was already sent",
+            nextAttemptAt: new Date("9999-12-31T23:59:59.000Z"),
+            updatedAt: new Date(),
+          }).where(and(
+            eq(signedDevisCopyNotices.id, candidate.id),
+            inArray(signedDevisCopyNotices.status, ["queued", "reconciling"]),
+          ));
+          return undefined;
+        }
+        if (["pending_pdf", "queued", "sending", "reconciling"].includes(manualDelivery.status)) {
+          return undefined;
+        }
+      }
+    }
+    const [row] = await tx.update(signedDevisCopyNotices).set({
+      status: "sending",
+      updatedAt: new Date(),
+    }).where(and(
+      eq(signedDevisCopyNotices.id, noticeId),
+      inArray(signedDevisCopyNotices.status, ["queued", "reconciling"]),
+    )).returning();
+    return row;
+  });
   if (!claimed?.communicationId) return;
   try {
     const { sendCommunication } = await import("../communications/email-sender");
-    await sendCommunication(claimed.communicationId);
+    await sendCommunication(claimed.communicationId, {
+      sentByUserId: options?.sentByUserId ?? (
+        claimed.source === SIGNED_COPY_MANUAL_SOURCE ? claimed.requestedByUserId : null
+      ),
+    });
     const comm = await storage.getProjectCommunication(claimed.communicationId);
     await db.update(signedDevisCopyNotices).set({
       status: "sent",
@@ -378,7 +542,20 @@ export async function dispatchSignedCopyNotice(noticeId: number): Promise<void> 
     }).where(eq(signedDevisCopyNotices.id, claimed.id));
   } catch (error) {
     const comm = await storage.getProjectCommunication(claimed.communicationId);
-    if (comm?.status === "sending") {
+    if (comm?.status === "sent") {
+      // Provider acceptance is authoritative. A failure in this repair
+      // update must never turn a sent outbox row into a retryable notice.
+      try {
+        await db.update(signedDevisCopyNotices).set({
+          status: "sent",
+          sentAt: comm.sentAt ?? new Date(),
+          lastError: null,
+          updatedAt: new Date(),
+        }).where(eq(signedDevisCopyNotices.id, claimed.id));
+      } catch {
+        // Readers join the communication row via withCommunicationSentState.
+      }
+    } else if (comm?.status === "sending") {
       // Provider outcome is uncertain. Reconciliation may prove acceptance,
       // but this path never performs another provider send.
       const attempts = claimed.attempts + 1;
@@ -482,7 +659,7 @@ export async function retrySignedCopyNotice(devisId: number): Promise<SignedDevi
       || d.contractorId !== notice.intendedContractorId
       || d.archisignEnvelopeId !== notice.archisignEnvelopeId
       || d.signOffStage !== "client_signed_off"
-      || d.signedOffVia !== "archisign"
+      || (d.signedOffVia !== "archisign" && d.signedOffVia !== null)
     ) {
       throw new Error("Signed-copy recovery identity no longer matches the verified completion");
     }

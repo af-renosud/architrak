@@ -2420,6 +2420,19 @@ export const signedDevisCopyNotices = pgTable("signed_devis_copy_notices", {
   archisignEnvelopeId: text("archisign_envelope_id").notNull(),
   intendedContractorId: integer("intended_contractor_id").notNull().references(() => contractors.id),
   signedAt: timestamp("signed_at", { withTimezone: true }).notNull(),
+  // `automatic` is the one callback-created delivery for a completed
+  // envelope. `manual` rows are append-only operator confirmations; keeping
+  // them in the same history means a deliberate resend never reopens or
+  // overwrites an earlier sent row.
+  source: text("source").notNull().default("automatic"),
+  // UUID supplied by the confirmation client. It is deliberately separate
+  // from the automatic envelope identity: the same signed PDF may be sent
+  // more than once, but each confirmed request must remain idempotent.
+  requestId: text("request_id"),
+  requestedByUserId: integer("requested_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  // Server-owned, immutable confirmation-time identity. It includes hashes
+  // rather than exposing object-storage keys to the client token.
+  confirmationSnapshot: jsonb("confirmation_snapshot"),
   status: text("status").notNull().default("pending_pdf"),
   communicationId: integer("communication_id").references(() => projectCommunications.id, { onDelete: "set null" }),
   attempts: integer("attempts").notNull().default(0),
@@ -2429,7 +2442,15 @@ export const signedDevisCopyNotices = pgTable("signed_devis_copy_notices", {
   createdAt: timestamp("created_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
-  uniqueIndex("signed_devis_copy_notices_devis_envelope_uidx").on(table.devisId, table.archisignEnvelopeId),
+  // Automatic callback dedupe remains one row per DV/envelope. Manual rows
+  // intentionally do not participate in that uniqueness boundary.
+  uniqueIndex("signed_devis_copy_notices_automatic_devis_envelope_uidx")
+    .on(table.devisId, table.archisignEnvelopeId)
+    .where(sql`${table.source} = 'automatic'`),
+  uniqueIndex("signed_devis_copy_notices_manual_request_uidx")
+    .on(table.requestId)
+    .where(sql`${table.source} = 'manual' AND ${table.requestId} IS NOT NULL`),
+  index("signed_devis_copy_notices_devis_id_idx").on(table.devisId),
   index("signed_devis_copy_notices_due_idx").on(table.status, table.nextAttemptAt),
 ]);
 

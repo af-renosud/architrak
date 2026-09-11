@@ -12,8 +12,20 @@ import { sendCommunication } from "../communications/email-sender";
 import { scheduleReminders } from "../communications/payment-scheduler";
 import { uploadDocument } from "../storage/object-storage";
 import { validateRequest } from "../middleware/validate";
+import { requireAuth } from "../auth/middleware";
 
 const router = Router();
+// This router is mounted at root. Never intercept the public app shell.
+router.use([
+  "/api/communications",
+  "/api/failed-contractor-notices",
+  "/api/projects/:projectId/communications",
+  "/api/projects/:projectId/reminders",
+  "/api/projects/:projectId/payment-evidence",
+  "/api/certificats/:certId/schedule-reminders",
+  "/api/reminders",
+  "/api/client-evidence/upload",
+], requireAuth);
 const idParams = z.object({ id: z.coerce.number().int().positive() });
 const projectIdParams = z.object({ projectId: z.coerce.number().int().positive() });
 const certIdParams = z.object({ certId: z.coerce.number().int().positive() });

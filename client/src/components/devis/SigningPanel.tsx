@@ -26,6 +26,7 @@ import {
   DEVIS_CLIENT_MESSAGE_MAX_LEN,
 } from "@shared/schema";
 import { buildClientSignatureMessageTemplate } from "@shared/signature-message-template";
+import { ContractorCopySend } from "@/components/devis/ContractorCopySend";
 
 /**
  * Task #257 — the workflow stepper's "Sent to Client" button no longer
@@ -964,6 +965,13 @@ export function SigningPanel({
           )}
         </div>
       )}
+
+      <ContractorCopySend
+        devisId={devisId}
+        projectId={d.projectId}
+        isArchived={isArchived}
+        isSigned={isSigned}
+      />
     </LuxuryCard>
   );
 }
