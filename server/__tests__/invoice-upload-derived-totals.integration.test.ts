@@ -22,7 +22,9 @@ const { storageSpy } = vi.hoisted(() => ({
     createInvoice: vi.fn(async (row: Record<string, unknown>) => ({
       id: 555,
       invoiceNumber: row.invoiceNumber,
+      devisId: row.devisId,
       projectId: row.projectId,
+      contractorId: row.contractorId,
     })),
     revokeDevisCheckTokenIfFullyInvoiced: vi.fn(async () => undefined),
     updateDevis: vi.fn(async () => undefined),

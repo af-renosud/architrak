@@ -278,6 +278,7 @@ export async function promoteParkedFinancialDocument(
     const amounts = amountPair(parsed, validation.correctedValues);
     const warnings = manualWarnings(validation.warnings, parsed, reason);
     let promotedId: number;
+    let reusedExistingFinancialInvoice = false;
 
     if (input.kind === "devis") {
       const [created] = await tx
@@ -366,17 +367,66 @@ export async function promoteParkedFinancialDocument(
           where: isNotNull(invoices.sourceIntakeDocumentId),
         })
         .returning();
+      // An automatic intake attempt may already have persisted this source's
+      // invoice before parking it for financial review. Lock that winner and
+      // prove it is the exact manual target before reusing it: the source-key
+      // uniqueness constraint alone does not bind the audit target to the
+      // financial identity of the pre-existing invoice.
       const promoted = created ?? (await tx
         .select()
         .from(invoices)
-        .where(eq(invoices.sourceIntakeDocumentId, doc.id)))[0];
+        .where(eq(invoices.sourceIntakeDocumentId, doc.id))
+        .for("update"))[0];
       if (!promoted) throw new Error("invoice source insert conflicted without an existing target");
+      if (
+        !created
+        && (
+          promoted.sourceIntakeDocumentId !== doc.id
+          || promoted.projectId !== doc.projectId
+          || promoted.devisId !== targetDevis!.id
+          || promoted.contractorId !== selectedContractorId
+        )
+      ) {
+        fail(
+          409,
+          "existing_invoice_target_mismatch",
+          "This source already owns an invoice for a different devis, project, or contractor.",
+        );
+      }
+      if (!created) {
+        // A matching automatic invoice can be recovered only as an explicit
+        // manual-review draft. Do not imply its parked financial continuation
+        // completed: preserve the invoice itself, add the normal auditable
+        // manual warning, and restore the approval gate before routing.
+        const priorWarnings = Array.isArray(promoted.validationWarnings)
+          ? promoted.validationWarnings
+          : [];
+        await tx.update(invoices).set({
+          validationWarnings: [...priorWarnings, ...warnings],
+          notes: promoted.notes
+            ? `${promoted.notes}\nManual intake recovery: ${note}`
+            : `Manual intake recovery: ${note}`,
+          manualIntakeReviewRequired: true,
+          manualIntakeReviewedAt: null,
+          manualIntakeReviewedByUserId: null,
+        }).where(eq(invoices.id, promoted.id));
+        reusedExistingFinancialInvoice = true;
+      }
       promotedId = promoted.id;
     }
 
-    const projectDocExists = doc.sourceEmailDocumentId == null
-      ? false
-      : (await tx
+    const projectDocExists = reusedExistingFinancialInvoice
+      ? (await tx
+        .select({ id: projectDocuments.id })
+        .from(projectDocuments)
+        .where(and(
+          eq(projectDocuments.projectId, doc.projectId),
+          eq(projectDocuments.storageKey, doc.storageKey),
+          eq(projectDocuments.documentType, "invoice"),
+        ))
+        .limit(1)).length > 0
+      : doc.sourceEmailDocumentId != null
+        && (await tx
         .select({ id: projectDocuments.id })
         .from(projectDocuments)
         .where(eq(projectDocuments.sourceEmailDocumentId, doc.sourceEmailDocumentId))

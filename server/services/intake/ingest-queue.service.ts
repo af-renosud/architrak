@@ -45,7 +45,12 @@ import { getConfirmedIntakeProjectIdentity } from "./project-identity-resolution
 import { enqueueReconciliation } from "../reconciliation/reconciliation-queue.service";
 import type { ParsedDocument } from "../../gmail/document-parser";
 import { acompteNoInvoicePayments, projectIntakeDocuments, type InsertMarcheDocument, type ProjectIntakeDocument } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
+import {
+  extractAuditableReferences,
+  resolveIntakeDocumentRelationship,
+  type RelationExtraction,
+} from "@shared/intake-document-relations";
 
 export const MAX_INTAKE_ATTEMPTS = 5;
 
@@ -243,9 +248,22 @@ export async function attemptIntakeJob(jobId: number): Promise<void> {
         attempts: attemptNum,
         lastError: message.slice(0, 1000),
       });
-      await storage
-        .updateProjectIntakeDocument(row.intakeDocumentId, { analysisState: "failed", routingState: "failed" })
-        .catch((e) => console.error(`[IntakeQueue] failed to mark doc #${row.intakeDocumentId} failed:`, e));
+      const source = await storage.getProjectIntakeDocument(row.intakeDocumentId);
+      if (source) {
+        await db.update(projectIntakeDocuments).set({
+          analysisState: "failed",
+          routingState: "failed",
+        }).where(and(
+          eq(projectIntakeDocuments.id, source.id),
+          or(
+            isNull(projectIntakeDocuments.contentFingerprint),
+            eq(projectIntakeDocuments.contentFingerprint, source.contentFingerprint ?? ""),
+          ),
+          eq(projectIntakeDocuments.analysisState, "analyzing"),
+          eq(projectIntakeDocuments.routingState, "unrouted"),
+          isNull(projectIntakeDocuments.promotedId),
+        )).catch((e) => console.error(`[IntakeQueue] failed to mark doc #${row.intakeDocumentId} failed:`, e));
+      }
       console.warn(
         `[IntakeQueue] job ${row.id} (intake #${row.intakeDocumentId}) ${exhausted ? "exhausted" : "permanent failure"}: ${message}`,
       );
@@ -277,6 +295,11 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
     // a clean success so the queue row terminates rather than retrying.
     return;
   }
+  // A previous guarded financial write may have committed the source-owned
+  // invoice and promotion immediately before this worker crashed. Treat the
+  // retried queue row as complete; never reset the source to analyzing or run
+  // dedup against its own already-committed invoice.
+  if (doc.routingState === "routed" && doc.promotedId != null) return;
   const owningProject = typeof storage.getProject === "function"
     ? await storage.getProject(doc.projectId)
     : undefined;
@@ -309,9 +332,17 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
   // Steps 2–6 run under a per-project lock so two identical documents
   // can't both miss dedup and both create a draft (see withProjectLock).
   await withProjectLock(doc.projectId, async () => {
+    // A durable source-owned invoice denotes a continuation, not another
+    // document to classify. Look it up before every dedup layer: another
+    // identical intake source can become analysed/duplicate while this
+    // source's financial finalization is pending, and must not cause the
+    // original source to be marked duplicate on retry.
+    const sourceOwnedInvoice = typeof storage.getInvoiceBySourceIntakeDocumentId === "function"
+      ? await storage.getInvoiceBySourceIntakeDocumentId(doc.id)
+      : undefined;
     // 2. Exact-bytes dedup against already-analysed docs in this project.
     const byteDup = await storage.findProcessedIntakeDuplicateByFingerprint(doc.projectId, fingerprint, doc.id);
-    if (byteDup) {
+    if (byteDup && !sourceOwnedInvoice) {
       await markDuplicate(doc, fingerprint, byteDup.id, null);
       return;
     }
@@ -320,12 +351,7 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
     try {
       assertPdfMagic(buffer);
     } catch {
-      await storage.updateProjectIntakeDocument(doc.id, {
-        contentFingerprint: fingerprint,
-        analysisState: "analyzed",
-        routingState: "parked",
-        notes: appendNote(doc.notes, "Parked: not a PDF (magic-byte check failed)."),
-      });
+      await park(doc, fingerprint, "Parked: not a PDF (magic-byte check failed).");
       return;
     }
 
@@ -339,10 +365,37 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
     // paying for a second identical Gemini call; everything downstream
     // (dedup, routing) is agnostic to where the parse came from.
     const prior = doc.extractedData as (ParsedDocument & { preParsedFromEmail?: boolean }) | null;
-    const parsed: ParsedDocument =
-      prior && prior.preParsedFromEmail === true && typeof prior.documentType === "string"
+    const storedOwnerExtraction = sourceOwnedInvoice?.aiExtractedData;
+    let parsed: ParsedDocument;
+    if (sourceOwnedInvoice) {
+      // A durable source-owned invoice is a continuation after persistence,
+      // never permission to invoke the parser again. Standard uploads do not
+      // carry the email `preParsedFromEmail` marker, so use the authoritative
+      // extraction retained on the invoice itself.
+      if (doc.contentFingerprint !== fingerprint) {
+        throw new Error(
+          "Source-owned invoice continuation refused: the intake fingerprint is missing or no longer matches the retained file.",
+        );
+      }
+      if (
+        !storedOwnerExtraction
+        || typeof storedOwnerExtraction !== "object"
+        || !("documentType" in storedOwnerExtraction)
+        || (
+          (storedOwnerExtraction as { documentType?: unknown }).documentType !== "invoice"
+          && (storedOwnerExtraction as { documentType?: unknown }).documentType !== "acompte"
+        )
+      ) {
+        throw new Error(
+          "Source-owned invoice continuation refused: no valid stored invoice extraction is available.",
+        );
+      }
+      parsed = storedOwnerExtraction as ParsedDocument;
+    } else {
+      parsed = prior && prior.preParsedFromEmail === true && typeof prior.documentType === "string"
         ? prior
         : await parseDocument(buffer, doc.fileName);
+    }
 
     // Task #425 — deterministic firm-identity gate BEFORE dedup/routing.
     // Rewrites documentType in place so the firm's own honoraires invoices
@@ -371,7 +424,7 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
     const contentHash = computeContentHash(parsed);
     if (contentHash) {
       const contentDup = await storage.findProcessedIntakeDuplicateByTextHash(doc.projectId, contentHash, doc.id);
-      if (contentDup) {
+      if (contentDup && !sourceOwnedInvoice) {
         await markDuplicate(doc, fingerprint, contentDup.id, contentHash);
         return;
       }
@@ -384,7 +437,11 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
       contentFingerprint: fingerprint,
       extractedData,
     });
-
+    // A previous guarded write can have persisted the source-owned invoice
+    // before the worker died during finalization. Its authoritative amounts
+    // may be corrected/derived values while this retained extraction still
+    // has null or different totals, so do not let that difference turn a
+    // continuation into a duplicate-review park.
     // 5b. System-wide dedup against ALL existing typed devis/invoice records
     // in the project (not just intake documents) by business identity:
     // document number, contractor, HT amount. Catches re-scraped copies of
@@ -436,7 +493,7 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
         projectInvoices,
         contractorNames,
       );
-      if (dedup.verdict === "duplicate") {
+      if (dedup.verdict === "duplicate" && !sourceOwnedInvoice) {
         const refKey = dedup.matchKind === "devis" ? "duplicateOfDevisId" : "duplicateOfInvoiceId";
         await storage.updateProjectIntakeDocument(doc.id, {
           contentFingerprint: fingerprint,
@@ -447,7 +504,7 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
         });
         return;
       }
-      if (dedup.verdict === "review") {
+      if (dedup.verdict === "review" && !sourceOwnedInvoice) {
         await park(doc, fingerprint, dedup.reason);
         return;
       }
@@ -482,14 +539,11 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
             fileName: doc.fileName,
             storageKey: doc.storageKey,
           });
-          await storage.updateProjectIntakeDocument(doc.id, {
-            analysisState: "analyzed",
-            routingState: "parked",
-            notes: appendNote(
-              doc.notes,
-              `Architect fee invoice (facture d'honoraires) — awaiting review in the fee-invoice queue (evidence #${capture.id}).`,
-            ),
-          });
+          await park(
+            doc,
+            fingerprint,
+            `Architect fee invoice (facture d'honoraires) — awaiting review in the fee-invoice queue (evidence #${capture.id}).`,
+          );
         } catch (err) {
           throw new TransientIntakeError(
             `architect fee-invoice capture failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -511,6 +565,10 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
           // the per-project reconciliation pass (idempotent, coalescing,
           // never moves money). Fire-and-forget; failures self-retry.
           void enqueueReconciliation(doc.projectId);
+          // A quotation can complete a previously parked explicit reference.
+          // This bounded pass uses persisted extraction only (no re-parse).
+          const { scheduleStoredIntakeRelationshipReevaluation } = await import("./relationship-recovery.service");
+          scheduleStoredIntakeRelationshipReevaluation(doc.projectId);
           return;
         }
         // 503 = transient AI failure → retry. Anything else (422 contractor
@@ -526,10 +584,10 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
       }
       case "invoice":
       case "acompte": {
-        // An invoice can only be auto-routed when it maps to exactly ONE
-        // devis (project + contractor). Zero or many ⇒ park for manual
-        // attach — auto-guessing would risk filing money against the wrong
-        // contract.
+        // A supplier can have several quotations.  Do not use cardinality as
+        // a proxy for relationship evidence: only a unique explicit devis
+        // reference, or explicit invoice -> order -> devis chain, authorizes
+        // the draft. The invoice's own number is never a parent reference.
         const allProjects = await storage.getProjects({ includeArchived: true });
         const allContractors = await storage.getContractors();
         const match = await matchToProject(parsed, allProjects, allContractors);
@@ -552,12 +610,43 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
           await park(doc, fingerprint, "Invoice parked: could not identify the contractor for unique devis matching.");
           return;
         }
-        const candidates = await storage.getDevisByProjectAndContractor(doc.projectId, match.contractorId);
-        if (candidates.length !== 1) {
-          await park(
+        const [allDevis, orders] = await Promise.all([
+          storage.getDevisByProject(doc.projectId),
+          storage.getMarcheDocumentsByProject(doc.projectId),
+        ]);
+        const relationship = resolveIntakeDocumentRelationship({
+          parsed: parsed as RelationExtraction,
+          contractorId: match.contractorId,
+          allDevis,
+          orders,
+        });
+        if (relationship.outcome !== "resolved") {
+          await parkRelationship(doc, fingerprint, parsed, relationship.explanation, relationship.code);
+          return;
+        }
+        const target = allDevis.find((d) => d.id === relationship.devisId);
+        if (!target) {
+          await parkRelationship(doc, fingerprint, parsed, "Invoice parked: resolved devis disappeared before routing.", "reference_not_found");
+          return;
+        }
+        // The source key alone is not authorization to resume a saved
+        // invoice. Only a durable owner whose target tuple agrees with the
+        // freshly resolved relation may bypass duplicate/review verdicts and
+        // continue its post-persistence finalization.
+        if (
+          sourceOwnedInvoice
+          && (
+            sourceOwnedInvoice.projectId !== doc.projectId
+            || sourceOwnedInvoice.devisId !== target.id
+            || sourceOwnedInvoice.contractorId !== match.contractorId
+          )
+        ) {
+          await parkRelationship(
             doc,
             fingerprint,
-            `Invoice parked: ${candidates.length === 0 ? "no" : `${candidates.length}`} devis match for this contractor — attach manually.`,
+            parsed,
+            "Invoice parked: the existing source-owned invoice does not match the resolved devis, project, and contractor.",
+            "source_invoice_identity_mismatch",
           );
           return;
         }
@@ -567,8 +656,15 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
           console.log(`[intake-queue] Intake document ${doc.id} was deleted mid-analysis — skipping invoice routing`);
           return;
         }
-        const result = await processInvoiceUpload(candidates[0].id, file, parsed, {
+        const result = await processInvoiceUpload(target.id, file, parsed, {
           sourceIntakeDocumentId: doc.id,
+          relationshipGuard: {
+            sourceContentFingerprint: fingerprint,
+            contractorId: match.contractorId,
+            expectedDevisId: target.id,
+            expectedResolutionKey: `resolved:${relationship.devisId}:${relationship.route}`,
+            intakeNote: `Automatically linked by explicit reference chain: ${relationship.explanation}`,
+          },
         });
         if (result.success) {
           const invoiceId = (result.data as { invoice: { id: number } }).invoice.id;
@@ -583,6 +679,14 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
           void enqueueReconciliation(doc.projectId);
           return;
         }
+        // The guarded intake insert commits source routing with the invoice
+        // identity. Later non-authorising post-insert checks (for example a
+        // deposit-deduction review) may return a review result; never
+        // overwrite that committed source link back to parked/retry.
+        const atomicallyRouted = await storage.getProjectIntakeDocument(doc.id);
+        if (atomicallyRouted?.promotedKind === "invoice" && atomicallyRouted.promotedId != null) {
+          return;
+        }
         if (result.status === 503) {
           throw new TransientIntakeError(
             `invoice routing transient: ${(result.data as { message?: string }).message ?? "unknown"}`,
@@ -592,7 +696,7 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
         // certificat while evaluating the gate. Re-read before suggesting a
         // manual confirmation so stale `pending` state never asks the team to
         // confirm the same payment again.
-        const refreshedDevis = await storage.getDevis(candidates[0].id) ?? candidates[0];
+        const refreshedDevis = await storage.getDevis(target.id) ?? target;
         const openingAcompteResolution = getOpeningAcompteResolutionSuggestion(refreshedDevis, parsed);
         if (openingAcompteResolution) {
           await storage.updateProjectIntakeDocument(doc.id, {
@@ -625,7 +729,27 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
           await park(doc, fingerprint, "Situation parked: could not identify the contractor for unique devis matching — attach manually.");
           return;
         }
-        const candidates = await storage.getDevisByProjectAndContractor(doc.projectId, match.contractorId);
+        const [allDevis, orders] = await Promise.all([
+          storage.getDevisByProject(doc.projectId),
+          storage.getMarcheDocumentsByProject(doc.projectId),
+        ]);
+        const relationshipReferences = extractAuditableReferences(parsed as RelationExtraction)
+          .some((reference) => !reference.own && (reference.kind === "quotation" || reference.kind === "order"));
+        const relationship = relationshipReferences
+          ? resolveIntakeDocumentRelationship({
+              parsed: parsed as RelationExtraction,
+              contractorId: match.contractorId,
+              allDevis,
+              orders,
+            })
+          : null;
+        if (relationship && relationship.outcome !== "resolved") {
+          await parkRelationship(doc, fingerprint, parsed, relationship.explanation, relationship.code);
+          return;
+        }
+        const candidates = relationship
+          ? allDevis.filter((candidate) => candidate.id === relationship.devisId)
+          : await storage.getDevisByProjectAndContractor(doc.projectId, match.contractorId);
         if (candidates.length !== 1) {
           await park(
             doc,
@@ -666,7 +790,19 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
               parsed,
               fileName: doc.fileName,
               storageKey: doc.storageKey,
+              ...(relationship ? {
+                atomicRoute: {
+                  intakeDocumentId: doc.id,
+                  contentFingerprint: fingerprint,
+                  expectedRoutingState: "unrouted" as const,
+                  expectedAnalysisState: "analyzing" as const,
+                  contractorId: match.contractorId,
+                  resolutionKey: `resolved:${relationship.devisId}:${relationship.route}`,
+                  intakeNote: "Signed situation PDF retained by explicit reference chain (unconfirmed — review on the record).",
+                },
+              } : {}),
             });
+            if (relationship) return;
             await storage.updateProjectIntakeDocument(doc.id, {
               analysisState: "analyzed",
               routingState: "routed",
@@ -717,6 +853,13 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
           existingIntakeNotes: doc.notes,
           expectedRoutingState: "unrouted",
           contentFingerprint: fingerprint,
+          ...(relationship ? {
+            relationshipGuard: {
+              contractorId: match.contractorId,
+              expectedDevisId: relationship.devisId,
+              expectedResolutionKey: `resolved:${relationship.devisId}:${relationship.route}`,
+            },
+          } : {}),
         });
         if ("conflict" in result) {
           await park(
@@ -729,10 +872,9 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
         return;
       }
       case "commande": {
-        // Task #449 — a signed "Bon de commande". Retained as a
-        // marche_documents evidence row. Auto-route only when the
-        // contractor is identified AND exactly one devis matches
-        // (project + contractor); otherwise park for reviewed attach.
+        // Retain a commande only with a unique explicit quotation
+        // reference. Its own reference is saved with the evidence so later
+        // invoices can use invoice -> order -> devis correlation.
         const allProjects = await storage.getProjects({ includeArchived: true });
         const allContractors = await storage.getContractors();
         const match = await matchToProject(parsed, allProjects, allContractors);
@@ -740,13 +882,23 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
           await park(doc, fingerprint, "Bon de commande parked: could not identify the contractor for unique devis matching — attach manually.");
           return;
         }
-        const candidates = await storage.getDevisByProjectAndContractor(doc.projectId, match.contractorId);
-        if (candidates.length !== 1) {
-          await park(
-            doc,
-            fingerprint,
-            `Bon de commande parked: ${candidates.length === 0 ? "no" : `${candidates.length}`} devis match for this contractor — attach manually.`,
-          );
+        const [allDevis, orders] = await Promise.all([
+          storage.getDevisByProject(doc.projectId),
+          storage.getMarcheDocumentsByProject(doc.projectId),
+        ]);
+        const relationship = resolveIntakeDocumentRelationship({
+          parsed: parsed as RelationExtraction,
+          contractorId: match.contractorId,
+          allDevis,
+          orders,
+        });
+        if (relationship.outcome !== "resolved") {
+          await parkRelationship(doc, fingerprint, parsed, relationship.explanation, relationship.code);
+          return;
+        }
+        const target = allDevis.find((d) => d.id === relationship.devisId);
+        if (!target) {
+          await parkRelationship(doc, fingerprint, parsed, "Bon de commande parked: resolved devis disappeared before routing.", "reference_not_found");
           return;
         }
         if (!(await storage.getProjectIntakeDocument(doc.id))) {
@@ -761,8 +913,8 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
             kind: "commande",
             storageKey: doc.storageKey,
             fileName: doc.fileName,
-            devisId: candidates[0].id,
-            marcheId: candidates[0].marcheId ?? null,
+            devisId: target.id,
+            marcheId: target.marcheId ?? null,
             sourceIntakeDocumentId: doc.id,
             extractedData: extractedData as InsertMarcheDocument["extractedData"],
             uploadedBy: "intake-auto",
@@ -771,11 +923,21 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
           existingIntakeNotes: doc.notes,
           expectedRoutingState: "unrouted",
           contentFingerprint: fingerprint,
+          relationshipGuard: {
+            contractorId: match.contractorId,
+            expectedDevisId: target.id,
+            expectedResolutionKey: `resolved:${relationship.devisId}:${relationship.route}`,
+          },
         });
         if ("conflict" in result) {
           await park(doc, fingerprint, `Bon de commande parked: could not auto-retain (${result.conflict}) — review manually.`);
           return;
         }
+        // An order is new stored evidence. Reconsider only documents which
+        // this automatic relationship resolver itself parked; it reads their
+        // extraction JSON and does not invoke Gemini.
+        const { scheduleStoredIntakeRelationshipReevaluation } = await import("./relationship-recovery.service");
+        scheduleStoredIntakeRelationshipReevaluation(doc.projectId);
         return;
       }
       default: {
@@ -808,22 +970,71 @@ async function markDuplicate(
   // promotedId stay null (those columns mean "the devis/invoice this doc
   // became"). The link back to the original intake doc lives in
   // extracted_data + the human-readable note instead.
-  await storage.updateProjectIntakeDocument(doc.id, {
+  await db.update(projectIntakeDocuments).set({
     contentFingerprint: fingerprint,
     analysisState: "analyzed",
     routingState: "duplicate",
     extractedData: { duplicateOfIntakeDocumentId: originalId, ...(contentHash ? { contentHash } : {}) },
     notes: appendNote(doc.notes, `Duplicate of intake document #${originalId}.`),
-  });
+  }).where(and(
+    eq(projectIntakeDocuments.id, doc.id),
+    or(isNull(projectIntakeDocuments.contentFingerprint), eq(projectIntakeDocuments.contentFingerprint, fingerprint)),
+    eq(projectIntakeDocuments.analysisState, "analyzing"),
+    eq(projectIntakeDocuments.routingState, "unrouted"),
+    isNull(projectIntakeDocuments.promotedId),
+  ));
 }
 
 async function park(doc: ProjectIntakeDocument, fingerprint: string, reason: string): Promise<void> {
-  await storage.updateProjectIntakeDocument(doc.id, {
+  // Every automatic fallback is a conditional state transition. A human
+  // attach/promotion which wins while parsing must never be replaced by a
+  // delayed generic "parked" note.
+  await db.update(projectIntakeDocuments).set({
     contentFingerprint: fingerprint,
     analysisState: "analyzed",
     routingState: "parked",
     notes: appendNote(doc.notes, reason),
-  });
+  }).where(and(
+    eq(projectIntakeDocuments.id, doc.id),
+    or(isNull(projectIntakeDocuments.contentFingerprint), eq(projectIntakeDocuments.contentFingerprint, fingerprint)),
+    eq(projectIntakeDocuments.analysisState, "analyzing"),
+    eq(projectIntakeDocuments.routingState, "unrouted"),
+    isNull(projectIntakeDocuments.promotedId),
+  ));
+}
+
+async function parkRelationship(
+  doc: ProjectIntakeDocument,
+  fingerprint: string,
+  parsed: ParsedDocument,
+  reason: string,
+  code: string,
+): Promise<void> {
+  // Do not let a delayed automatic resolver overwrite a manual/routed state.
+  const [parked] = await db.update(projectIntakeDocuments).set({
+    contentFingerprint: fingerprint,
+    analysisState: "analyzed",
+    routingState: "parked",
+    extractedData: {
+      ...parsed,
+      relationshipResolution: {
+        automaticParked: true,
+        code,
+        sourceFingerprint: fingerprint,
+      },
+    },
+    notes: appendNote(doc.notes, reason),
+  }).where(and(
+    eq(projectIntakeDocuments.id, doc.id),
+    eq(projectIntakeDocuments.contentFingerprint, fingerprint),
+    eq(projectIntakeDocuments.analysisState, "analyzing"),
+    eq(projectIntakeDocuments.routingState, "unrouted"),
+    isNull(projectIntakeDocuments.promotedId),
+  )).returning({ id: projectIntakeDocuments.id });
+  if (parked) {
+    const { scheduleStoredIntakeRelationshipReevaluation } = await import("./relationship-recovery.service");
+    scheduleStoredIntakeRelationshipReevaluation(doc.projectId);
+  }
 }
 
 function appendNote(existing: string | null, note: string): string {

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   benchmarkDocuments,
@@ -263,6 +263,119 @@ describe("parked financial document manual promotion", () => {
       amountHt: "100.00",
       amountTtc: "120.00",
       manualIntakeReviewedByUserId: userId,
+    });
+  });
+
+  it("rejects a conflicting auto-persisted invoice and recovers a matching parked invoice only behind manual review", async () => {
+    const [otherTarget] = await db.insert(devis).values({
+      projectId,
+      contractorId,
+      devisCode: `MP-CONFLICT-${Date.now()}`,
+      descriptionFr: "Other invoice target",
+      amountHt: "1000.00",
+      amountTtc: "1200.00",
+      status: "draft",
+    }).returning();
+    const source = await createSource({
+      analysisState: "analyzed",
+      routingState: "parked",
+      extractedData: {
+        documentType: "invoice",
+        invoiceNumber: "AUTO-PARKED-1",
+        amountHt: 100,
+        amountTtc: 120,
+      },
+      notes: "Invoice parked after required financial review.",
+    });
+    const [autoInvoice] = await db.insert(invoices).values({
+      devisId: targetDevisId,
+      contractorId,
+      projectId,
+      sourceIntakeDocumentId: source.id,
+      invoiceNumber: "AUTO-PARKED-1",
+      amountHt: "100.00",
+      tvaAmount: "20.00",
+      amountTtc: "120.00",
+      status: "draft",
+      pdfPath: source.storageKey,
+      manualIntakeReviewRequired: false,
+      validationWarnings: [{ field: "deposit", severity: "error", message: "Financial review pending" }],
+      aiExtractedData: source.extractedData,
+    }).returning();
+    await db.insert(projectDocuments).values({
+      projectId,
+      fileName: source.fileName,
+      storageKey: source.storageKey,
+      documentType: "invoice",
+      uploadedBy: "intake-auto",
+      description: "Automatically persisted before financial review parked the source.",
+    });
+    const input = {
+      intakeDocumentId: source.id,
+      expectedFingerprint: fingerprint,
+      kind: "invoice" as const,
+      note: "Recover the existing automatic invoice only after manual review.",
+      confirmedByUserId: userId,
+    };
+
+    await expect(promoteParkedFinancialDocument({
+      ...input,
+      devisId: otherTarget.id,
+    })).rejects.toMatchObject<Partial<ManualPromotionError>>({
+      status: 409,
+      code: "existing_invoice_target_mismatch",
+    });
+    expect(await db.select().from(intakeManualPromotions)
+      .where(eq(intakeManualPromotions.intakeDocumentId, source.id))).toHaveLength(0);
+    expect(await db.select().from(projectIntakeDocuments)
+      .where(eq(projectIntakeDocuments.id, source.id))).toEqual([
+      expect.objectContaining({ routingState: "parked", promotedId: null }),
+    ]);
+
+    const recovered = await promoteParkedFinancialDocument({
+      ...input,
+      devisId: targetDevisId,
+    });
+    expect(recovered).toMatchObject({
+      kind: "invoice",
+      id: autoInvoice.id,
+      replayed: false,
+    });
+    const [storedInvoice] = await db.select().from(invoices).where(eq(invoices.id, autoInvoice.id));
+    expect(storedInvoice).toMatchObject({
+      devisId: targetDevisId,
+      projectId,
+      contractorId,
+      manualIntakeReviewRequired: true,
+      manualIntakeReviewedAt: null,
+      manualIntakeReviewedByUserId: null,
+    });
+    expect(storedInvoice.validationWarnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "deposit", message: "Financial review pending" }),
+      expect.objectContaining({ field: "manualPromotion", severity: "error" }),
+    ]));
+    const [audit] = await db.select().from(intakeManualPromotions).where(
+      eq(intakeManualPromotions.intakeDocumentId, source.id),
+    );
+    expect(audit).toMatchObject({
+      promotedId: autoInvoice.id,
+      targetDevisId,
+      contractorId,
+    });
+    expect(await db.select().from(projectIntakeDocuments)
+      .where(eq(projectIntakeDocuments.id, source.id))).toEqual([
+      expect.objectContaining({ routingState: "routed", promotedKind: "invoice", promotedId: autoInvoice.id }),
+    ]);
+    expect((await db.select().from(projectDocuments).where(and(
+      eq(projectDocuments.projectId, projectId),
+      eq(projectDocuments.storageKey, source.storageKey),
+      eq(projectDocuments.documentType, "invoice"),
+    )))).toHaveLength(1);
+    await db.update(invoices).set({ status: "pending" }).where(eq(invoices.id, autoInvoice.id));
+    await expect(approveInvoice(autoInvoice.id)).resolves.toMatchObject({
+      success: false,
+      status: 409,
+      data: { code: "manual_intake_review_required" },
     });
   });
 

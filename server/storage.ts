@@ -2,6 +2,10 @@ import { db } from "./db";
 import { createHash, randomUUID } from "node:crypto";
 import { computeCertificatPaymentState, type CertificatPaymentState } from "@shared/financial-utils";
 import {
+  resolveIntakeDocumentRelationship,
+  type RelationExtraction,
+} from "@shared/intake-document-relations";
+import {
   SUPPLIER_PAYMENT_READINESS_SCHEMA_VERSION,
   type SupplierPaymentReadinessMirrorSnapshot,
   type SupplierPaymentReadinessSnapshot,
@@ -100,6 +104,16 @@ import {
   type InvoiceRefEdit, type InsertInvoiceRefEdit,
 } from "@shared/schema";
 import { MAX_SIGNED_PDF_RETRY_ATTEMPTS } from "./services/signed-pdf-retry-policy";
+
+// Kept as a stable, explicit error marker so the upload finalizer can turn a
+// last-moment gate change into an operator-review outcome rather than routing
+// a source after the deposit became blocking.
+export const INTAKE_INVOICE_ROUTE_ACOMPTE_GATE_BLOCKED =
+  "Acompte gate became blocking before guarded source routing.";
+
+type InvoiceUpdate = Partial<InsertInvoice> & Partial<Pick<Invoice,
+  "manualIntakeReviewRequired" | "manualIntakeReviewedAt" | "manualIntakeReviewedByUserId"
+>>;
 
 export interface BenchmarkSearchFilters {
   q?: string;
@@ -452,9 +466,20 @@ export interface IStorage {
   createIntakeInvoiceWithProjectDocument(
     invoice: ServerInsertInvoice & { sourceIntakeDocumentId: number },
     projectDocument: InsertProjectDocument,
+    relationshipGuard?: {
+      sourceContentFingerprint: string;
+      contractorId: number;
+      expectedDevisId: number;
+      expectedResolutionKey: string;
+      intakeNote: string;
+      sourceAnalysisState?: "analyzing" | "analyzed";
+      sourceRoutingState?: "unrouted" | "parked";
+    },
+    /** Source promotion is a separately replayable commit after financial completion. */
+    options?: { routeSource?: boolean },
   ): Promise<{ invoice: Invoice; created: boolean }>;
 
-  updateInvoice(id: number, data: Partial<InsertInvoice>): Promise<Invoice | undefined>;
+  updateInvoice(id: number, data: InvoiceUpdate): Promise<Invoice | undefined>;
 
   deleteInvoice(id: number): Promise<boolean>;
 
@@ -500,6 +525,27 @@ export interface IStorage {
     /** Routing state the intake doc must still be in ("parked" for the reviewed flow, "unrouted" for the pipeline). */
     expectedRoutingState: string;
     contentFingerprint?: string;
+    relationshipGuard?: {
+      contractorId: number;
+      expectedDevisId: number;
+      expectedResolutionKey: string;
+      expectedAnalysisState?: "analyzing" | "analyzed";
+    };
+  }): Promise<{ situation: Situation } | { conflict: string }>;
+  createGuardedDraftSituationAndRouteIntake(opts: {
+    situation: Omit<InsertSituation, "situationNumber">;
+    lines: Omit<InsertSituationLine, "situationId">[];
+    intakeDocumentId: number;
+    sourceStorageKey: string;
+    sourceFileName: string;
+    sourceUploadedBy: string;
+    intakeNote: string;
+    contentFingerprint: string;
+    expectedRoutingState: string;
+    expectedAnalysisState: "analyzing" | "analyzed";
+    baselineSituationId: number | null;
+    baselineFingerprint: string;
+    relationshipGuard: { contractorId: number; expectedDevisId: number; expectedResolutionKey: string };
   }): Promise<{ situation: Situation } | { conflict: string }>;
   getMarcheDocument(id: number): Promise<MarcheDocument | undefined>;
   getMarcheDocumentsByProject(projectId: number): Promise<MarcheDocument[]>;
@@ -513,6 +559,12 @@ export interface IStorage {
     existingIntakeNotes: string | null;
     expectedRoutingState: string;
     contentFingerprint?: string;
+    relationshipGuard?: {
+      contractorId: number;
+      expectedDevisId: number;
+      expectedResolutionKey: string;
+      expectedAnalysisState?: "analyzing" | "analyzed";
+    };
   }): Promise<{ marcheDocument: MarcheDocument } | { conflict: string }>;
   confirmMarcheDocument(id: number, confirmedBy: string): Promise<MarcheDocument | undefined>;
 
@@ -2033,8 +2085,85 @@ export class DatabaseStorage implements IStorage {
   async createIntakeInvoiceWithProjectDocument(
     invoiceData: ServerInsertInvoice & { sourceIntakeDocumentId: number },
     projectDocumentData: InsertProjectDocument,
+    relationshipGuard?: {
+      sourceContentFingerprint: string;
+      contractorId: number;
+      expectedDevisId: number;
+      expectedResolutionKey: string;
+      intakeNote: string;
+      sourceAnalysisState?: "analyzing" | "analyzed";
+      sourceRoutingState?: "unrouted" | "parked";
+    },
+    options: { routeSource?: boolean } = {},
   ): Promise<{ invoice: Invoice; created: boolean }> {
     return db.transaction(async (tx) => {
+      if (relationshipGuard) {
+        // The resolver's selection and source promotion are one serializable
+        // transaction. A concurrent quotation/order insertion that could
+        // introduce a conflicting candidate aborts one transaction rather
+        // than letting a stale preview attach financial data.
+        await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL SERIALIZABLE`);
+        const [source] = await tx.select().from(projectIntakeDocuments)
+          .where(eq(projectIntakeDocuments.id, invoiceData.sourceIntakeDocumentId)).for("update");
+        const [project] = await tx.select().from(projects)
+          .where(eq(projects.id, invoiceData.projectId)).for("update");
+        if (
+          !source
+          || source.projectId !== invoiceData.projectId
+          || source.contentFingerprint !== relationshipGuard.sourceContentFingerprint
+          || source.analysisState !== (relationshipGuard.sourceAnalysisState ?? "analyzing")
+          || source.routingState !== (relationshipGuard.sourceRoutingState ?? "unrouted")
+          || source.promotedId != null
+          || !project
+          || project.archivedAt != null
+        ) {
+          throw new Error("Relationship source or project changed before promotion.");
+        }
+        const candidates = await tx.select().from(devis)
+          .where(eq(devis.projectId, invoiceData.projectId)).for("update");
+        const orders = await tx.select().from(marcheDocuments)
+          .where(eq(marcheDocuments.projectId, invoiceData.projectId)).for("update");
+        const resolution = resolveIntakeDocumentRelationship({
+          parsed: (source.extractedData ?? {}) as RelationExtraction,
+          contractorId: relationshipGuard.contractorId,
+          allDevis: candidates,
+          orders,
+        });
+        if (
+          resolution.outcome !== "resolved"
+          || resolution.devisId !== relationshipGuard.expectedDevisId
+          || `resolved:${resolution.devisId}:${resolution.route}` !== relationshipGuard.expectedResolutionKey
+          || invoiceData.devisId !== resolution.devisId
+          || invoiceData.projectId !== source.projectId
+          || invoiceData.contractorId !== relationshipGuard.contractorId
+        ) {
+          throw new Error("Relationship evidence changed before promotion.");
+        }
+        const resolvedDevis = candidates.find((candidate) => candidate.id === resolution.devisId);
+        if (
+          !resolvedDevis
+          || resolvedDevis.projectId !== invoiceData.projectId
+          || resolvedDevis.contractorId !== invoiceData.contractorId
+        ) {
+          throw new Error("Resolved devis identity changed before promotion.");
+        }
+        // Financial completion and source routing happen in separate durable
+        // phases. Re-check the deposit gate while this final promotion holds
+        // the same devis lock as the relationship proof: an architect may
+        // have armed a pending/invoiced acompte after the financial worker
+        // observed an earlier, non-blocking state. A facture d'acompte itself
+        // remains exempt, otherwise its own lifecycle could never be linked.
+        const documentType = (
+          invoiceData.aiExtractedData as { documentType?: unknown } | null
+        )?.documentType;
+        const isAcompteInvoice = documentType === "acompte";
+        const acompteGateBlocked = resolvedDevis.acompteRequired === true
+          && resolvedDevis.allowProgressBeforeAcompte !== true
+          && ["pending", "invoiced"].includes(resolvedDevis.acompteState ?? "none");
+        if (options.routeSource === true && !isAcompteInvoice && acompteGateBlocked) {
+          throw new Error(INTAKE_INVOICE_ROUTE_ACOMPTE_GATE_BLOCKED);
+        }
+      }
       const [invoice] = await tx
         .insert(invoices)
         .values(invoiceData)
@@ -2049,14 +2178,55 @@ export class DatabaseStorage implements IStorage {
           .from(invoices)
           .where(eq(invoices.sourceIntakeDocumentId, invoiceData.sourceIntakeDocumentId));
         if (!existing) throw new Error("invoice source insert conflicted but no existing invoice was found");
+        if (relationshipGuard) {
+          // A unique source key only proves that *some* invoice won an earlier
+          // attempt.  Never use that fact to route this source unless its
+          // complete financial identity is the same one which the guarded
+          // relationship resolver just verified.  The database's individual
+          // FKs cannot express this cross-table tuple invariant.
+          if (
+            existing.sourceIntakeDocumentId !== invoiceData.sourceIntakeDocumentId
+            || existing.projectId !== invoiceData.projectId
+            || existing.devisId !== invoiceData.devisId
+            || existing.contractorId !== invoiceData.contractorId
+          ) {
+            throw new Error("Existing source invoice identity conflicts with the guarded relationship.");
+          }
+          if (options.routeSource === true) {
+            const [routed] = await tx.update(projectIntakeDocuments).set({
+            analysisState: "analyzed", routingState: "routed",
+            promotedKind: "invoice", promotedId: existing.id,
+            notes: sql`CASE WHEN ${projectIntakeDocuments.notes} IS NULL THEN ${relationshipGuard.intakeNote} ELSE ${projectIntakeDocuments.notes} || '\n' || ${relationshipGuard.intakeNote} END`,
+            }).where(and(
+            eq(projectIntakeDocuments.id, invoiceData.sourceIntakeDocumentId),
+            eq(projectIntakeDocuments.contentFingerprint, relationshipGuard.sourceContentFingerprint),
+            eq(projectIntakeDocuments.analysisState, relationshipGuard.sourceAnalysisState ?? "analyzing"),
+            eq(projectIntakeDocuments.routingState, relationshipGuard.sourceRoutingState ?? "unrouted"),
+            )).returning({ id: projectIntakeDocuments.id });
+            if (!routed) throw new Error("Relationship source changed before promotion could be committed.");
+          }
+        }
         return { invoice: existing, created: false };
       }
       await tx.insert(projectDocuments).values(projectDocumentData);
+      if (relationshipGuard && options.routeSource === true) {
+        const [routed] = await tx.update(projectIntakeDocuments).set({
+          analysisState: "analyzed", routingState: "routed",
+          promotedKind: "invoice", promotedId: invoice.id,
+          notes: sql`CASE WHEN ${projectIntakeDocuments.notes} IS NULL THEN ${relationshipGuard.intakeNote} ELSE ${projectIntakeDocuments.notes} || '\n' || ${relationshipGuard.intakeNote} END`,
+        }).where(and(
+          eq(projectIntakeDocuments.id, invoiceData.sourceIntakeDocumentId),
+          eq(projectIntakeDocuments.contentFingerprint, relationshipGuard.sourceContentFingerprint),
+          eq(projectIntakeDocuments.analysisState, relationshipGuard.sourceAnalysisState ?? "analyzing"),
+          eq(projectIntakeDocuments.routingState, relationshipGuard.sourceRoutingState ?? "unrouted"),
+        )).returning({ id: projectIntakeDocuments.id });
+        if (!routed) throw new Error("Relationship source changed before promotion could be committed.");
+      }
       return { invoice, created: true };
     });
   }
 
-  async updateInvoice(id: number, data: Partial<InsertInvoice>): Promise<Invoice | undefined> {
+  async updateInvoice(id: number, data: InvoiceUpdate): Promise<Invoice | undefined> {
     const [invoice] = await db.update(invoices).set(data).where(eq(invoices.id, id)).returning();
     return invoice;
   }
@@ -2153,6 +2323,12 @@ export class DatabaseStorage implements IStorage {
     existingIntakeNotes: string | null;
     expectedRoutingState: string;
     contentFingerprint?: string;
+    relationshipGuard?: {
+      contractorId: number;
+      expectedDevisId: number;
+      expectedResolutionKey: string;
+      expectedAnalysisState?: "analyzing" | "analyzed";
+    };
   }): Promise<{ situation: Situation } | { conflict: string }> {
     class AttachConflict extends Error {
       constructor(public readonly reason: string) {
@@ -2162,6 +2338,36 @@ export class DatabaseStorage implements IStorage {
     const now = new Date();
     try {
       return await db.transaction(async (tx) => {
+        if (opts.relationshipGuard) {
+          await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL SERIALIZABLE`);
+          const [source] = await tx.select().from(projectIntakeDocuments)
+            .where(eq(projectIntakeDocuments.id, opts.intakeDocumentId)).for("update");
+          const [project] = await tx.select().from(projects)
+            .where(eq(projects.id, source?.projectId ?? -1)).for("update");
+          const candidates = source ? await tx.select().from(devis)
+            .where(eq(devis.projectId, source.projectId)).for("update") : [];
+          const orders = source ? await tx.select().from(marcheDocuments)
+            .where(eq(marcheDocuments.projectId, source.projectId)).for("update") : [];
+          const [lockedSituation] = await tx.select().from(situations)
+            .where(eq(situations.id, opts.situationId)).for("update");
+          const resolution = source ? resolveIntakeDocumentRelationship({
+            parsed: (source.extractedData ?? {}) as RelationExtraction,
+            contractorId: opts.relationshipGuard.contractorId,
+            allDevis: candidates,
+            orders,
+          }) : null;
+          if (
+            !source || !project || project.archivedAt != null
+            || source.contentFingerprint !== opts.contentFingerprint
+            || source.analysisState !== (opts.relationshipGuard.expectedAnalysisState ?? "analyzing")
+            || source.routingState !== opts.expectedRoutingState
+            || source.promotedId != null
+            || !lockedSituation || lockedSituation.devisId !== opts.relationshipGuard.expectedDevisId
+            || resolution?.outcome !== "resolved"
+            || resolution.devisId !== opts.relationshipGuard.expectedDevisId
+            || `resolved:${resolution.devisId}:${resolution.route}` !== opts.relationshipGuard.expectedResolutionKey
+          ) throw new AttachConflict("Relationship source, target, or project changed before situation attachment.");
+        }
         // 1. Claim the intake document: parked → routed, only if it has not
         //    been routed/claimed by anyone else in the meantime.
         const [claimed] = await tx
@@ -2178,6 +2384,10 @@ export class DatabaseStorage implements IStorage {
           .where(
             and(
               eq(projectIntakeDocuments.id, opts.intakeDocumentId),
+              ...(opts.relationshipGuard ? [
+                eq(projectIntakeDocuments.contentFingerprint, opts.contentFingerprint!),
+                eq(projectIntakeDocuments.analysisState, opts.relationshipGuard.expectedAnalysisState ?? "analyzing"),
+              ] : []),
               eq(projectIntakeDocuments.routingState, opts.expectedRoutingState),
               isNull(projectIntakeDocuments.promotedId),
             ),
@@ -2213,6 +2423,92 @@ export class DatabaseStorage implements IStorage {
         return { conflict: "This document is already attached to another situation." };
       }
       throw err;
+    }
+  }
+
+  async createGuardedDraftSituationAndRouteIntake(opts: {
+    situation: Omit<InsertSituation, "situationNumber">;
+    lines: Omit<InsertSituationLine, "situationId">[];
+    intakeDocumentId: number;
+    sourceStorageKey: string;
+    sourceFileName: string;
+    sourceUploadedBy: string;
+    intakeNote: string;
+    contentFingerprint: string;
+    expectedRoutingState: string;
+    expectedAnalysisState: "analyzing" | "analyzed";
+    baselineSituationId: number | null;
+    baselineFingerprint: string;
+    relationshipGuard: { contractorId: number; expectedDevisId: number; expectedResolutionKey: string };
+  }): Promise<{ situation: Situation } | { conflict: string }> {
+    try {
+      return await db.transaction(async (tx) => {
+        await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL SERIALIZABLE`);
+        const [source] = await tx.select().from(projectIntakeDocuments)
+          .where(eq(projectIntakeDocuments.id, opts.intakeDocumentId)).for("update");
+        const [project] = await tx.select().from(projects)
+          .where(eq(projects.id, source?.projectId ?? -1)).for("update");
+        const candidates = source ? await tx.select().from(devis)
+          .where(eq(devis.projectId, source.projectId)).for("update") : [];
+        const orders = source ? await tx.select().from(marcheDocuments)
+          .where(eq(marcheDocuments.projectId, source.projectId)).for("update") : [];
+        const resolution = source ? resolveIntakeDocumentRelationship({
+          parsed: (source.extractedData ?? {}) as RelationExtraction,
+          contractorId: opts.relationshipGuard.contractorId,
+          allDevis: candidates,
+          orders,
+        }) : null;
+        if (
+          !source || !project || project.archivedAt != null
+          || source.contentFingerprint !== opts.contentFingerprint
+          || source.analysisState !== opts.expectedAnalysisState
+          || source.routingState !== opts.expectedRoutingState || source.promotedId != null
+          || resolution?.outcome !== "resolved"
+          || resolution.devisId !== opts.relationshipGuard.expectedDevisId
+          || `resolved:${resolution.devisId}:${resolution.route}` !== opts.relationshipGuard.expectedResolutionKey
+          || opts.situation.devisId !== resolution.devisId
+        ) throw new Error("relationship source, target, or project changed");
+        const existing = await tx.select().from(situations)
+          .where(eq(situations.devisId, opts.situation.devisId)).for("update");
+        if (existing.some((row) => row.status === "draft")) throw new Error("a draft situation already exists");
+        const latestConfirmed = existing.filter((row) => row.status === "confirmed")
+          .sort((a, b) => a.situationNumber - b.situationNumber).at(-1) ?? null;
+        const actualBaselineFingerprint = latestConfirmed
+          ? (await tx.select().from(situationLines).where(eq(situationLines.situationId, latestConfirmed.id)))
+            .sort((a, b) => a.id - b.id)
+            .map((line) => `${line.id}:${line.devisLineItemId}:${line.percentComplete}:${line.cumulativeAmount}`)
+            .join("|")
+          : "";
+        if (
+          (latestConfirmed?.id ?? null) !== opts.baselineSituationId
+          || actualBaselineFingerprint !== opts.baselineFingerprint
+        ) throw new Error("confirmed situation baseline changed; refresh and retry");
+        const nextNumber = existing.reduce((max, row) => Math.max(max, row.situationNumber), 0) + 1;
+        const [situation] = await tx.insert(situations).values({
+          ...opts.situation, situationNumber: nextNumber,
+        }).returning();
+        await tx.insert(situationLines).values(opts.lines.map((line) => ({ ...line, situationId: situation.id })));
+        await tx.update(situations).set({
+          sourceStorageKey: opts.sourceStorageKey, sourceFileName: opts.sourceFileName,
+          sourceUploadedAt: new Date(), sourceUploadedBy: opts.sourceUploadedBy,
+          sourceIntakeDocumentId: opts.intakeDocumentId,
+        }).where(eq(situations.id, situation.id));
+        const [claimed] = await tx.update(projectIntakeDocuments).set({
+          analysisState: "analyzed", routingState: "routed",
+          promotedKind: "situation", promotedId: situation.id,
+          notes: sql`CASE WHEN ${projectIntakeDocuments.notes} IS NULL THEN ${opts.intakeNote} ELSE ${projectIntakeDocuments.notes} || '\n' || ${opts.intakeNote} END`,
+        }).where(and(
+          eq(projectIntakeDocuments.id, opts.intakeDocumentId),
+          eq(projectIntakeDocuments.contentFingerprint, opts.contentFingerprint),
+          eq(projectIntakeDocuments.analysisState, opts.expectedAnalysisState),
+          eq(projectIntakeDocuments.routingState, opts.expectedRoutingState),
+          isNull(projectIntakeDocuments.promotedId),
+        )).returning({ id: projectIntakeDocuments.id });
+        if (!claimed) throw new Error("intake source changed");
+        return { situation };
+      });
+    } catch (error) {
+      return { conflict: error instanceof Error ? error.message : String(error) };
     }
   }
 
@@ -2271,6 +2567,12 @@ export class DatabaseStorage implements IStorage {
     existingIntakeNotes: string | null;
     expectedRoutingState: string;
     contentFingerprint?: string;
+    relationshipGuard?: {
+      contractorId: number;
+      expectedDevisId: number;
+      expectedResolutionKey: string;
+      expectedAnalysisState?: "analyzing" | "analyzed";
+    };
   }): Promise<{ marcheDocument: MarcheDocument } | { conflict: string }> {
     class AttachConflict extends Error {
       constructor(public readonly reason: string) {
@@ -2280,6 +2582,43 @@ export class DatabaseStorage implements IStorage {
     const now = new Date();
     try {
       return await db.transaction(async (tx) => {
+        if (opts.relationshipGuard) {
+          await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL SERIALIZABLE`);
+          const [source] = await tx.select().from(projectIntakeDocuments)
+            .where(eq(projectIntakeDocuments.id, opts.data.sourceIntakeDocumentId)).for("update");
+          const [project] = await tx.select().from(projects)
+            .where(eq(projects.id, opts.data.projectId)).for("update");
+          if (
+            !source
+            || source.projectId !== opts.data.projectId
+            || source.contentFingerprint !== opts.contentFingerprint
+            || source.analysisState !== (opts.relationshipGuard.expectedAnalysisState ?? "analyzing")
+            || source.routingState !== opts.expectedRoutingState
+            || source.promotedId != null
+            || !project
+            || project.archivedAt != null
+          ) {
+            throw new AttachConflict("Relationship source or project changed before evidence routing.");
+          }
+          const candidates = await tx.select().from(devis)
+            .where(eq(devis.projectId, opts.data.projectId)).for("update");
+          const orders = await tx.select().from(marcheDocuments)
+            .where(eq(marcheDocuments.projectId, opts.data.projectId)).for("update");
+          const resolution = resolveIntakeDocumentRelationship({
+            parsed: (source.extractedData ?? {}) as RelationExtraction,
+            contractorId: opts.relationshipGuard.contractorId,
+            allDevis: candidates,
+            orders,
+          });
+          if (
+            resolution.outcome !== "resolved"
+            || resolution.devisId !== opts.relationshipGuard.expectedDevisId
+            || `resolved:${resolution.devisId}:${resolution.route}` !== opts.relationshipGuard.expectedResolutionKey
+            || opts.data.devisId !== resolution.devisId
+          ) {
+            throw new AttachConflict("Relationship evidence changed before evidence routing.");
+          }
+        }
         // 1. Insert the evidence row. The partial unique index on
         //    source_intake_document_id makes a concurrent duplicate insert
         //    a no-op — treated as a conflict (the winner already routed).
@@ -2313,6 +2652,10 @@ export class DatabaseStorage implements IStorage {
           .where(
             and(
               eq(projectIntakeDocuments.id, opts.data.sourceIntakeDocumentId),
+              ...(opts.relationshipGuard ? [
+                eq(projectIntakeDocuments.analysisState, opts.relationshipGuard.expectedAnalysisState ?? "analyzing"),
+                eq(projectIntakeDocuments.contentFingerprint, opts.contentFingerprint!),
+              ] : []),
               eq(projectIntakeDocuments.routingState, opts.expectedRoutingState),
               isNull(projectIntakeDocuments.promotedId),
             ),

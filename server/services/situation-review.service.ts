@@ -150,8 +150,17 @@ export async function createDraftSituationFromParsed(args: {
   parsed: ParsedDocument;
   fileName: string;
   storageKey: string;
+  atomicRoute?: {
+    intakeDocumentId: number;
+    contentFingerprint: string;
+    expectedRoutingState: string;
+    expectedAnalysisState: "analyzing" | "analyzed";
+    contractorId: number;
+    resolutionKey: string;
+    intakeNote: string;
+  };
 }): Promise<{ situation: Situation; lines: SituationLine[] }> {
-  const { devis, parsed, fileName, storageKey } = args;
+  const { devis, parsed, fileName, storageKey, atomicRoute } = args;
   if (devis.invoicingMode !== "mode_b") {
     throw new SituationReviewError("Situation review requires a mode_b (line-item) devis", 422);
   }
@@ -173,6 +182,15 @@ export async function createDraftSituationFromParsed(args: {
   const nextNumber = existing.reduce((m, s) => Math.max(m, s.situationNumber), 0) + 1;
 
   const { byLineItem: baseline } = await getBaseline(devis.id);
+  const baselineSituation = (await storage.getSituationsByDevis(devis.id))
+    .filter((s) => s.status === "confirmed")
+    .at(-1) ?? null;
+  const baselineFingerprint = baselineSituation
+    ? (await storage.getSituationLines(baselineSituation.id))
+      .sort((a, b) => a.id - b.id)
+      .map((line) => `${line.id}:${line.devisLineItemId}:${line.percentComplete}:${line.cumulativeAmount}`)
+      .join("|")
+    : "";
   const claimedByLine = mapClaimedPercents(devisLines, parsed.lineItems);
 
   const lineInputs = devisLines
@@ -195,6 +213,46 @@ export async function createDraftSituationFromParsed(args: {
     lineInputs.map((l) => ({ cumulativeAmount: l.cumulativeAmount, previousAmount: l.previousAmount })),
     devisTvaRate(devis),
   );
+
+  if (atomicRoute) {
+    const result = await storage.createGuardedDraftSituationAndRouteIntake({
+      situation: {
+        devisId: devis.id,
+        dateIssued: parsed.date ?? null,
+        cumulativeHt: totals.cumulativeHt.toFixed(2),
+        previousHt: totals.previousHt.toFixed(2),
+        netHt: totals.netHt.toFixed(2),
+        retenueGarantie: "0.00",
+        netToPayHt: totals.netToPayHt.toFixed(2),
+        tvaAmount: totals.tvaAmount.toFixed(2),
+        netToPayTtc: totals.netToPayTtc.toFixed(2),
+        status: "draft",
+        aiExtractedData: {
+          documentType: parsed.documentType, reference: parsed.reference ?? null,
+          date: parsed.date ?? null, amountHt: parsed.amountHt ?? null,
+          lineItems: parsed.lineItems.map((l) => ({ description: l.description, percentComplete: l.percentComplete ?? null, total: l.total ?? null })),
+        },
+      },
+      lines: lineInputs.map((li) => ({
+        devisLineItemId: li.dl.id, percentComplete: li.approved.toFixed(2),
+        cumulativeAmount: li.cumulativeAmount.toFixed(2), previousAmount: li.previousAmount.toFixed(2),
+        netAmount: li.netAmount.toFixed(2), claimedPercent: li.claimed != null ? li.claimed.toFixed(2) : null,
+        checkStatus: "unchecked", checkNotes: null,
+      })),
+      intakeDocumentId: atomicRoute.intakeDocumentId,
+      sourceStorageKey: storageKey, sourceFileName: fileName, sourceUploadedBy: "intake-auto",
+      intakeNote: atomicRoute.intakeNote, contentFingerprint: atomicRoute.contentFingerprint,
+      expectedRoutingState: atomicRoute.expectedRoutingState, expectedAnalysisState: atomicRoute.expectedAnalysisState,
+      baselineSituationId: baselineSituation?.id ?? null,
+      baselineFingerprint,
+      relationshipGuard: {
+        contractorId: atomicRoute.contractorId, expectedDevisId: devis.id,
+        expectedResolutionKey: atomicRoute.resolutionKey,
+      },
+    });
+    if ("conflict" in result) throw new SituationReviewError(result.conflict);
+    return { situation: result.situation, lines: await storage.getSituationLines(result.situation.id) };
+  }
 
   const situation = await storage.createSituation({
     devisId: devis.id,

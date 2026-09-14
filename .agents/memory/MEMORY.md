@@ -49,6 +49,7 @@
 - [Trigger redefinition inheritance](trigger-redefinition-inheritance.md) — later migrations redefining shared trigger functions must start from the latest prior definition, then add the narrow change.
 - [No-invoice deposit evidence](no-invoice-deposit-evidence.md) — confirmation is a locked, append-only financial event; freeze source identity, reject archived projects, and delete DB rows before object bytes.
 - [Reviewed intake identity](reviewed-intake-identity.md) — human project confirmation is only for unresolved labels; bind it to the source fingerprint, and atomically promote one typed record per intake.
+- [Intake relationship replay](intake-relationship-replay.md) — source-owned invoices resume financial processing rather than global dedup; validate all parent references and guard fallback state changes.
 - [Production certificate verification](production-certificate-verification.md) — live preview checks need an authenticated operator session; keep verification read-only and never bypass production auth.
 - [Certificate email delivery state](certificate-email-delivery-state.md) — successful certificat_sent evidence, never the editable status alone, proves client delivery; legacy false-sent rows stay recoverable.
 - [Gmail accepted-send reconciliation](gmail-accepted-send-reconciliation.md) — retryable bearer-link emails use immutable RFC Message-IDs; provider-accepted/DB-uncertain sends stay in-flight and reconcile Sent before retry.

@@ -15,6 +15,10 @@ import {
   ManualPromotionError,
   promoteParkedFinancialDocument,
 } from "../services/intake/manual-promotion.service";
+import {
+  applyProjectIntakeRelationships,
+  previewProjectIntakeRelationships,
+} from "../services/intake/relationship-recovery.service";
 
 /**
  * Unified document intake (Task #229) — the single "front door".
@@ -49,6 +53,51 @@ const manualPromotionBodySchema = z.object({
   note: z.string().trim().min(10).max(2000),
 }).strict();
 
+function sendRelationshipRecoveryError(
+  res: Response,
+  error: unknown,
+  context: string,
+): Response {
+  const candidate = error && typeof error === "object"
+    ? error as { status?: unknown; code?: unknown; message?: unknown }
+    : null;
+  const code = typeof candidate?.code === "string" ? candidate.code : undefined;
+  const message = typeof candidate?.message === "string" && candidate.message.trim()
+    ? candidate.message
+    : context;
+  const candidateStatus = typeof candidate?.status === "number" ? candidate.status : null;
+  const conflictCodes = new Set([
+    "preview_expired",
+    "preview_token_invalid",
+    "preview_token_mismatch",
+    "invalid_preview_token",
+    "preview_token_stale",
+    "preview_stale",
+    "stale_preview",
+    "stale_preview_token",
+    "expired_preview_token",
+    "relationship_conflict",
+    "stale_source",
+    "source_not_parked",
+  ]);
+  const invalidPreviewToken = /preview(?: relationship)? token (?:is )?(?:invalid|stale|expired)|preview token .*belongs to another project/i.test(message);
+  // The recovery service owns the detailed conflict reason. Preserve its
+  // deliberate 4xx status (especially stale/invalid preview tokens and
+  // concurrent state changes), while never allowing an arbitrary status to
+  // escape as a server response code.
+  const isConflict = conflictCodes.has(code ?? "") || invalidPreviewToken;
+  const status = isConflict
+    ? 409
+    : candidateStatus != null && candidateStatus >= 400 && candidateStatus < 500
+      ? candidateStatus
+      : 500;
+  const responseCode = code ?? (invalidPreviewToken ? "preview_token_invalid" : undefined);
+  return res.status(status).json({
+    message: status === 500 ? `${context}: ${message}` : message,
+    ...(responseCode ? { code: responseCode } : {}),
+  });
+}
+
 router.get(
   "/api/projects/:projectId/intake",
   validateRequest({ params: projectIdParams }),
@@ -56,6 +105,74 @@ router.get(
     const includeVoid = req.query.includeVoid === "true";
     const docs = await storage.getProjectIntakeDocuments(Number(req.params.projectId), { includeVoid });
     res.json(docs);
+  },
+);
+
+/**
+ * Relationship recovery is deliberately project-scoped and authenticated.
+ * The preview token is a dry-run capability: it is returned by the recovery
+ * service and must be supplied unchanged to the apply endpoint. Keep these
+ * routes on the intake router rather than adding auth middleware to the whole
+ * router; the upload/list/download surfaces retain their existing perimeter.
+ */
+router.get(
+  "/api/projects/:projectId/intake/relationships/preview",
+  requireAuth,
+  validateRequest({ params: projectIdParams }),
+  async (req, res) => {
+    try {
+      const projectId = Number(req.params.projectId);
+      const project = await storage.getProject(projectId);
+      if (!project) return res.status(404).json({ message: "Project not found", code: "project_not_found" });
+      if (project.archivedAt != null) {
+        return res.status(409).json({
+          message: "Archived projects are read-only; intake relationships cannot be re-evaluated.",
+          code: "project_archived",
+        });
+      }
+
+      const preview = await previewProjectIntakeRelationships(projectId);
+      return res.json(preview);
+    } catch (error: unknown) {
+      return sendRelationshipRecoveryError(res, error, "Relationship preview failed");
+    }
+  },
+);
+
+const relationshipReevaluateBodySchema = z.object({
+  // Signed previews can contain up to 50 verbose explanations and claims.
+  // Keep a generous bounded limit without accepting unbounded request bodies.
+  token: z.string().trim().min(1).max(65536),
+}).strict();
+
+router.post(
+  "/api/projects/:projectId/intake/relationships/re-evaluate",
+  requireAuth,
+  validateRequest({ params: projectIdParams, body: relationshipReevaluateBodySchema }),
+  async (req, res) => {
+    try {
+      const projectId = Number(req.params.projectId);
+      const project = await storage.getProject(projectId);
+      if (!project) return res.status(404).json({ message: "Project not found", code: "project_not_found" });
+      if (project.archivedAt != null) {
+        return res.status(409).json({
+          message: "Archived projects are read-only; intake relationships cannot be re-evaluated.",
+          code: "project_archived",
+        });
+      }
+
+      const { token } = req.body as z.infer<typeof relationshipReevaluateBodySchema>;
+      const result = await applyProjectIntakeRelationships(
+        projectId,
+        token,
+        // Relationship audit notes use the same actor string for operator
+        // actions and the queue's "intake-auto" pass.
+        String(req.session.userId),
+      );
+      return res.json(result);
+    } catch (error: unknown) {
+      return sendRelationshipRecoveryError(res, error, "Relationship re-evaluation failed");
+    }
   },
 );
 

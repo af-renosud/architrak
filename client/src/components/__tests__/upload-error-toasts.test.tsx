@@ -56,6 +56,24 @@ function InvoiceUploadHarness({ onMounted }: { onMounted: (mutate: () => void) =
       const title = getInvoiceUploadErrorTitle(error.code);
       toast({ title, description: error.message, variant: "destructive" });
     },
+    onSuccess: (data: {
+      fileName?: string;
+      extraction?: { confidence?: string };
+      postPersistenceWarning?: { message?: string; reviewRequired?: boolean };
+    }) => {
+      // Mirrors the successful-upload callbacks in both InvoiceUploadDialog
+      // and FacturesTab: a persisted draft with unfinished post-processing
+      // must never receive the ordinary green success toast.
+      if (data.postPersistenceWarning?.reviewRequired) {
+        toast({
+          title: "Invoice created — review required",
+          description: `${data.fileName} — ${
+            data.postPersistenceWarning.message ?? "A required post-upload review is still pending."
+          }`,
+          variant: "destructive",
+        });
+      }
+    },
   });
   onMounted(() => m.mutate());
   return null;
@@ -138,6 +156,30 @@ describe("Invoice upload toast — server code → toast title contract", () => 
     ) as unknown as typeof fetch;
     await runMutationAndFlush(InvoiceUploadHarness);
     expect(toastSpy.mock.calls[0][0].title).toBe(getInvoiceUploadErrorTitle(undefined));
+  });
+
+  it("shows a created-needs-review warning for a successful persisted invoice with unfinished follow-up", async () => {
+    globalThis.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({
+        fileName: "deposit.pdf",
+        extraction: { confidence: "high" },
+        postPersistenceWarning: {
+          reviewRequired: true,
+          message: "Opening-deposit financial review is pending.",
+        },
+      }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+    ) as unknown as typeof fetch;
+
+    await runMutationAndFlush(InvoiceUploadHarness);
+
+    expect(toastSpy).toHaveBeenCalledWith({
+      title: "Invoice created — review required",
+      description: "deposit.pdf — Opening-deposit financial review is pending.",
+      variant: "destructive",
+    });
   });
 });
 

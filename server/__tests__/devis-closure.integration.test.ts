@@ -239,12 +239,19 @@ describe("PV-gated devis closure", () => {
     });
 
     await marcheLocked;
-    const closePromise = closeDevisWithApprovedPv(raceDevisId, userId);
+    // Attach a rejection handler immediately: the locking race intentionally
+    // rejects this promise, and waiting until after the concurrent edit can
+    // make Node report it as an unhandled rejection before the assertion.
+    const closeOutcome = closeDevisWithApprovedPv(raceDevisId, userId).then(
+      () => ({ error: null }),
+      (error) => ({ error }),
+    );
     await new Promise((resolve) => setTimeout(resolve, 30));
     releaseMarcheEdit();
     await editPromise;
 
-    await expect(closePromise).rejects.toMatchObject({
+    const { error } = await closeOutcome;
+    expect(error).toMatchObject({
       code: "DEVIS_MARCHE_MISMATCH",
     });
     const [stored] = await db.select().from(devis).where(eq(devis.id, raceDevisId));

@@ -36,6 +36,7 @@ import { LuxuryCard } from "@/components/ui/luxury-card";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { ManualPromotionDialog, type ManualPromotionSource } from "@/components/intake/ManualPromotionDialog";
+import { RelationshipRecoveryDialog } from "@/components/intake/RelationshipRecoveryDialog";
 import type { Devis, ProjectIntakeDocument, Situation } from "@shared/schema";
 
 type IntakeListItem = ProjectIntakeDocument & { isVoid?: boolean };
@@ -698,7 +699,14 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
         </div>
       </LuxuryCard>
 
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        {(intakeDocs?.some((doc) => doc.routingState === "parked" && !doc.promotedId) ?? false) && (
+          <RelationshipRecoveryDialog
+            projectId={projectId}
+            parkedCount={intakeDocs?.filter((doc) => doc.routingState === "parked" && !doc.promotedId).length ?? 0}
+            isArchived={isArchived}
+          />
+        )}
         <Button
           variant="outline"
           size="sm"
@@ -773,7 +781,7 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
                           </span>
                         )}
                       </div>
-                      {doc.notes && (doc.routingState === "parked" || doc.routingState === "duplicate" || doc.analysisState === "failed") && (
+                      {doc.notes && (doc.routingState !== "unrouted" || doc.promotedId != null) && (
                         <p className="text-[10px] text-muted-foreground mt-1 line-clamp-2" data-testid={`text-intake-notes-${doc.id}`}>
                           {doc.notes}
                         </p>

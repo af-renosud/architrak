@@ -76,8 +76,11 @@ const { storageSpy, uploadDocumentSpy, txSpies, dbSpy } = vi.hoisted(() => {
     findProcessedIntakeDuplicateByFingerprint: vi.fn(async () => null),
     findProcessedIntakeDuplicateByTextHash: vi.fn(async () => null),
     getDevisByProject: vi.fn(async () => []),
+    getMarcheDocumentsByProject: vi.fn(async () => []),
     getInvoicesByProject: vi.fn(async () => []),
     getContractors: vi.fn(async () => [{ id: 11, name: "Acme" }]),
+    getProject: vi.fn(async (id: number) => ({ id, archivedAt: null })),
+    getProjectIntakeDocuments: vi.fn(async () => []),
     // --- devis upload internals ---
     getProjects: vi.fn(async () => [{ id: 3, name: "Maison Durand" }]),
     createProjectDocument: vi.fn(async () => ({ id: 1 })),
@@ -93,7 +96,9 @@ const { storageSpy, uploadDocumentSpy, txSpies, dbSpy } = vi.hoisted(() => {
     createInvoice: vi.fn(async (row: Record<string, unknown>) => ({
       id: 555,
       invoiceNumber: row.invoiceNumber,
+      devisId: row.devisId,
       projectId: row.projectId,
+      contractorId: row.contractorId,
     })),
     revokeDevisCheckTokenIfFullyInvoiced: vi.fn(async () => undefined),
     updateDevis: vi.fn(async () => undefined),

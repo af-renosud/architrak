@@ -61,6 +61,12 @@ export interface ParsedDocument {
   projectName?: string;
   /** Explicitly labelled project/site reference or code (not the document number). */
   projectReference?: string;
+  /**
+   * References to other documents explicitly named on this document. These
+   * are evidence for relationship resolution only; the document's own
+   * reference remains in `reference`, `invoiceNumber`, or `devisNumber`.
+   */
+  relatedDocumentReferences?: RelatedDocumentReference[];
   /** TTC deposit amount explicitly shown as already paid/deducted. */
   acomptePaidAmountTtc?: number;
   /** Verbatim source line supporting the paid-deposit amount. */
@@ -192,6 +198,18 @@ export interface ParsedDocument {
   extractionCoverage?: ExtractionCoverage;
 }
 
+export type RelatedDocumentReferenceKind = "quotation" | "order" | "invoice";
+
+export interface RelatedDocumentReference {
+  kind: RelatedDocumentReferenceKind;
+  /** Exact reference as printed on the source document. */
+  reference: string;
+  /** Short, verbatim documentary text that contains/supports the reference. */
+  evidenceText: string;
+  /** 1-indexed PDF page containing the evidence, when confidently known. */
+  page?: number;
+}
+
 export interface ExtractionCoverage {
   /** Authoritative page count from pdfinfo; null when the PDF was too broken
    *  for pdfinfo (legacy lenient path). */
@@ -274,6 +292,7 @@ Domain Knowledge:
 - Bon de commande: a purchase order / order form issued to (and typically signed by) the client or maître d'ouvrage to authorise the works of a devis. Titles like "BON DE COMMANDE", "Bon pour accord / commande" indicate documentType="commande". Do NOT confuse with a devis (quotation) or a facture.
 - Situations de travaux carry a sequence number ("Situation n°3", "Situation #2", "3ème situation") — extract it as situationNumber (integer).
 - Distinguish Acompte (deposit invoice / deposit clause on a devis) from Situation (progress claim with cumulative percentages). On a devis, an acompte is announced via payment-terms wording such as "Acompte de 30% à la commande", "30 % à la signature", "Versement à la réservation", etc. — when present, set acompteRequired=true, capture acomptePercent and/or acompteAmountHt, and copy the verbatim phrase into acompteTrigger. On a facture, the document itself is an "acompte" when the title/header includes "FACTURE D'ACOMPTE" or "ACOMPTE Nº" — use documentType="acompte" in that case (do NOT confuse with progress invoices).
+- Document identity and relationships: reference, invoiceNumber, and devisNumber are this PDF's own document identifiers. relatedDocumentReferences is ONLY for a different document explicitly named in this PDF. Each related reference requires an exact printed identifier and a short verbatim evidenceText containing the identifier; use kind "quotation" for a devis, "order" for a bon de commande, and "invoice" for a facture/facture d'acompte/situation. Do not infer a relationship from matching amounts, contractor/project identity, filenames, document type, or generic words such as "commande" or "acompte". If an invoice says "Acompte sur la commande n° CM00000195", record CM00000195 as a related order reference, but keep this invoice's own number in invoiceNumber. Never put a parent order or quotation number in devisNumber. Never put this PDF's own identifier in relatedDocumentReferences. When a request contains a chunk of pages, page is the 1-indexed image number within that chunk. If there is no exact, visible related identifier, omit the row.
 
 Extraction Rules:
 - All monetary amounts must be numbers with exactly 2 decimal precision (e.g., 15000.00 not 15000).
@@ -307,6 +326,7 @@ const USER_PROMPT = `Analyze this French construction document and extract the f
 - reference: primary document reference number
 - invoiceNumber: specific invoice number if this is a facture (e.g., "FA-2024-001")
 - devisNumber: specific devis number if this is a devis (e.g., "DEV-2024-042")
+- relatedDocumentReferences: array of OTHER documents explicitly named on this PDF. Each item has kind, reference, evidenceText, and page where kind is exactly "quotation", "order", or "invoice"; reference is the exact printed related-document identifier; evidenceText is a short verbatim phrase from the PDF proving that identifier is mentioned; page is the 1-indexed page containing that phrase within the supplied image chunk. Include references found in invoice/acompte line descriptions and headers, not just a title. For example, if an invoice says "Acompte sur la commande n° CM00000195", record CM00000195 as kind "order" and keep this invoice's own number in invoiceNumber. Never put a parent order or quotation number in devisNumber. Never put this PDF's own identifier in relatedDocumentReferences. Omit the array (or return an empty array) when no exact related identifier is visibly printed. The current PDF's own number belongs in reference/invoiceNumber/devisNumber, never here.
 - siret: contractor SIRET number (14-digit identifier) if visible on the document
 - tvaIntracom: contractor's intra-community VAT number if visible (e.g., "FR75820466761") — copy the full string including the FR prefix
 - date: document date in YYYY-MM-DD format
@@ -412,6 +432,36 @@ const EXTRACTION_SCHEMA: ResponseSchema = {
       type: SchemaType.STRING,
       description: "Specific devis number for quotations",
       nullable: true,
+    },
+    relatedDocumentReferences: {
+      type: SchemaType.ARRAY,
+      description: "References to other documents explicitly named on this PDF, each with verbatim evidence",
+      nullable: true,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          kind: {
+            type: SchemaType.STRING,
+            format: "enum",
+            description: "Related document kind: quotation, order, or invoice",
+            enum: ["quotation", "order", "invoice"],
+          },
+          reference: {
+            type: SchemaType.STRING,
+            description: "Exact related-document identifier as printed",
+          },
+          evidenceText: {
+            type: SchemaType.STRING,
+            description: "Short verbatim printed phrase containing and supporting the related identifier",
+          },
+          page: {
+            type: SchemaType.NUMBER,
+            description: "1-indexed page containing the related-document evidence (within the supplied images)",
+            nullable: true,
+          },
+        },
+        required: ["kind", "reference", "evidenceText"],
+      },
     },
     siret: {
       type: SchemaType.STRING,
@@ -2260,6 +2310,10 @@ export function extractionChunkPagesFor(
     : EXTRACTION_CHUNK_PAGES;
 }
 
+function relatedDocumentReferenceKey(reference: RelatedDocumentReference): string {
+  return `${reference.kind}\u0000${reference.reference.trim().toLocaleLowerCase()}`;
+}
+
 // Merge per-chunk parses into a single ParsedDocument.
 //  - lineItems: concatenated in chunk order; pageHint is rebased from
 //    chunk-relative (the AI only sees the chunk's images) to global 1-indexed
@@ -2268,6 +2322,8 @@ export function extractionChunkPagesFor(
 //    first non-empty value wins — they live on page 1.
 //  - totals / financial summary fields: LAST non-null value wins — French
 //    devis print the totals block on the final page(s).
+//  - relatedDocumentReferences: unioned by kind/reference in chunk order;
+//    evidence pages are rebased from chunk-relative to global pages.
 //  - documentType: first chunk that is not "unknown"/"other" wins.
 export function mergeChunkedParses(
   chunks: Array<{ parsed: ParsedDocument; pageOffset: number; pageCount: number }>,
@@ -2314,6 +2370,55 @@ export function mergeChunkedParses(
     }
   }
   if (lotRefs.length > 0) merged.lotReferences = lotRefs;
+
+  const relatedRefs: RelatedDocumentReference[] = [];
+  const relatedRefIndexes = new Map<string, number>();
+  for (const { parsed, pageOffset, pageCount } of chunks) {
+    for (const candidate of parsed.relatedDocumentReferences ?? []) {
+      // Parsed JSON is runtime data even though the AI response is typed.
+      // Require the evidence-bearing shape before allowing a relationship
+      // into the merged extraction; empty/unsupported rows are not useful to
+      // the resolver and would violate the evidence-only contract.
+      if (
+        !candidate
+        || typeof candidate !== "object"
+        || !["quotation", "order", "invoice"].includes(candidate.kind)
+        || typeof candidate.reference !== "string"
+        || candidate.reference.trim() === ""
+        || typeof candidate.evidenceText !== "string"
+        || candidate.evidenceText.trim() === ""
+      ) {
+        continue;
+      }
+
+      const rebased: RelatedDocumentReference = { ...candidate };
+      if (candidate.page !== undefined) {
+        if (!Number.isInteger(candidate.page) || candidate.page < 1) {
+          delete rebased.page;
+        } else if (pageCount === 1) {
+          rebased.page = pageOffset + 1;
+        } else if (
+          candidate.page <= pageCount
+        ) {
+          rebased.page = candidate.page + pageOffset;
+        } else {
+          delete rebased.page;
+        }
+      }
+
+      const key = relatedDocumentReferenceKey(rebased);
+      const existingIndex = relatedRefIndexes.get(key);
+      if (existingIndex === undefined) {
+        relatedRefIndexes.set(key, relatedRefs.length);
+        relatedRefs.push(rebased);
+      } else if (relatedRefs[existingIndex].page === undefined && rebased.page !== undefined) {
+        // A repeated reference may have a page hint in only one chunk. Keep
+        // the first verbatim evidence, but do not discard the useful page.
+        relatedRefs[existingIndex].page = rebased.page;
+      }
+    }
+  }
+  if (relatedRefs.length > 0) merged.relatedDocumentReferences = relatedRefs;
 
   const lineItems: NonNullable<ParsedDocument["lineItems"]> = [];
   for (const { parsed, pageOffset, pageCount } of chunks) {

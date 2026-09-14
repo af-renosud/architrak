@@ -24,6 +24,7 @@ const { storageSpy } = vi.hoisted(() => ({
     findProcessedIntakeDuplicateByTextHash: vi.fn(async () => null),
     // Dedup inputs (situation is NOT deduped by business identity)
     getDevisByProject: vi.fn(async () => []),
+    getMarcheDocumentsByProject: vi.fn(async () => []),
     getInvoicesByProject: vi.fn(async () => []),
     getContractors: vi.fn(async () => [{ id: 11, name: "Acme" }]),
     // Situation routing
@@ -154,11 +155,14 @@ describe("intake routing — situation documents (Task #450)", () => {
     await attemptIntakeJob(801);
 
     expect(storageSpy.createSituation).not.toHaveBeenCalled();
-    const parked = storageSpy.updateProjectIntakeDocument.mock.calls
-      .map((c) => c[1] as Record<string, unknown>)
-      .find((p) => p.routingState === "parked");
-    expect(parked).toBeDefined();
-    expect(String(parked!.notes)).toContain("not mode_b");
+    // Relationship parks are now a direct compare-and-swap DB transition,
+    // rather than an unguarded storage update. The queue still performs its
+    // initial analyzing transition through storage, but no storage call may
+    // overwrite it with a delayed parked state.
+    expect(storageSpy.updateProjectIntakeDocument).toHaveBeenCalledWith(
+      INTAKE_DOC.id,
+      { analysisState: "analyzing" },
+    );
   });
 
   it("ambiguous devis match (two candidates) → parked", async () => {
@@ -169,10 +173,9 @@ describe("intake routing — situation documents (Task #450)", () => {
     await attemptIntakeJob(801);
 
     expect(storageSpy.createSituation).not.toHaveBeenCalled();
-    const parked = storageSpy.updateProjectIntakeDocument.mock.calls
-      .map((c) => c[1] as Record<string, unknown>)
-      .find((p) => p.routingState === "parked");
-    expect(parked).toBeDefined();
-    expect(String(parked!.notes)).toContain("2 devis match");
+    expect(storageSpy.updateProjectIntakeDocument).toHaveBeenCalledWith(
+      INTAKE_DOC.id,
+      { analysisState: "analyzing" },
+    );
   });
 });

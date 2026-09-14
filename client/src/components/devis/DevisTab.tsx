@@ -494,7 +494,16 @@ function InvoiceUploadDialog({
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "invoices") });
       onOpenChange(false);
       const ext = data.extraction;
-      if (ext.confidence === "low") {
+      const postPersistenceWarning = data.postPersistenceWarning as
+        | { message?: string; reviewRequired?: boolean }
+        | undefined;
+      if (postPersistenceWarning?.reviewRequired) {
+        toast({
+          title: "Invoice created — review required",
+          description: `${data.fileName} — ${postPersistenceWarning.message ?? "A required post-upload review is still pending."}`,
+          variant: "destructive",
+        });
+      } else if (ext.confidence === "low") {
         toast({ title: "Invoice uploaded — review needed", description: `${data.fileName} — amounts could not be extracted automatically. Please check the invoice record.`, variant: "destructive" });
       } else {
         toast({ title: "Invoice uploaded successfully", description: `${data.fileName} — ${fmt(ext.amountHt)} HT detected` });

@@ -5,8 +5,11 @@ import type { AddressInfo } from "node:net";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
+  acompteNoInvoicePayments,
+  certificats,
   contractors,
   devis,
+  invoiceAcompteApplications,
   invoices,
   intakeProjectIdentityResolutions,
   projectDocuments,
@@ -37,6 +40,8 @@ vi.mock("../storage/object-storage", async (importOriginal) => {
 
 import intakeRouter from "../routes/intake";
 import { processInvoiceUpload } from "../services/invoice-upload.service";
+import { confirmNoInvoiceAcomptePayment } from "../services/acompte.service";
+import { getProjectFinancialSummary } from "../services/financial-summary.service";
 import { storage } from "../storage";
 
 const fingerprint = "a".repeat(64);
@@ -324,6 +329,352 @@ describe("fingerprint-bound intake project identity confirmation", () => {
       expect(docs).toHaveLength(1);
     } finally {
       await db.delete(invoices).where(eq(invoices.sourceIntakeDocumentId, source.id));
+      await db.delete(projectDocuments).where(and(
+        eq(projectDocuments.projectId, projectId),
+        eq(projectDocuments.fileName, source.fileName),
+      ));
+      await db.delete(projectIntakeDocuments).where(eq(projectIntakeDocuments.id, source.id));
+      await db.delete(devis).where(eq(devis.id, quotation.id));
+      await db.delete(contractors).where(eq(contractors.id, contractor.id));
+    }
+  });
+
+  it("never routes a guarded source by reusing a typed invoice with a different financial identity", async () => {
+    const suffix = Date.now();
+    const [targetContractor, wrongContractor] = await db.insert(contractors).values([
+      { name: `T688 guarded target contractor ${suffix}` },
+      { name: `T688 guarded wrong contractor ${suffix}` },
+    ]).returning();
+    const [quotation] = await db.insert(devis).values({
+      projectId,
+      contractorId: targetContractor.id,
+      devisCode: `T688-GUARD-${suffix}`,
+      descriptionFr: "Guarded source identity",
+      amountHt: "1000.00",
+      amountTtc: "1200.00",
+      acompteRequired: false,
+    }).returning();
+    const source = await createDoc({
+      fileName: `guarded-conflict-${suffix}.pdf`,
+      storageKey: `tests/guarded-conflict-${suffix}.pdf`,
+      contentFingerprint: "f".repeat(64),
+      analysisState: "analyzing",
+      routingState: "unrouted",
+      extractedData: {
+        documentType: "invoice",
+        relatedDocumentReferences: [{
+          kind: "quotation",
+          reference: quotation.devisCode,
+          evidenceText: `Devis ${quotation.devisCode}`,
+        }],
+      },
+    });
+    try {
+      // This simulates a corrupted/historical source-key winner.  The unique
+      // key alone must never authorize promotion to the resolver's target.
+      await db.insert(invoices).values({
+        projectId,
+        contractorId: wrongContractor.id,
+        devisId: quotation.id,
+        sourceIntakeDocumentId: source.id,
+        invoiceNumber: `T688-WRONG-${suffix}`,
+        amountHt: "500.00",
+        tvaAmount: "100.00",
+        amountTtc: "600.00",
+        status: "draft",
+      });
+      await expect(storage.createIntakeInvoiceWithProjectDocument({
+        projectId,
+        contractorId: targetContractor.id,
+        devisId: quotation.id,
+        sourceIntakeDocumentId: source.id,
+        invoiceNumber: `T688-RIGHT-${suffix}`,
+        amountHt: "500.00",
+        tvaAmount: "100.00",
+        amountTtc: "600.00",
+        status: "draft",
+      }, {
+        projectId,
+        fileName: source.fileName,
+        storageKey: source.storageKey,
+        documentType: "invoice",
+        uploadedBy: "test",
+      }, {
+        sourceContentFingerprint: source.contentFingerprint!,
+        contractorId: targetContractor.id,
+        expectedDevisId: quotation.id,
+        expectedResolutionKey: `resolved:${quotation.id}:quotation`,
+        intakeNote: "Must not route conflicting source winner",
+      })).rejects.toThrow(/Existing source invoice identity conflicts/);
+      expect(await storage.getProjectIntakeDocument(source.id)).toMatchObject({
+        analysisState: "analyzing",
+        routingState: "unrouted",
+        promotedId: null,
+      });
+    } finally {
+      await db.delete(invoices).where(eq(invoices.sourceIntakeDocumentId, source.id));
+      await db.delete(projectIntakeDocuments).where(eq(projectIntakeDocuments.id, source.id));
+      await db.delete(devis).where(eq(devis.id, quotation.id));
+      await db.delete(contractors).where(eq(contractors.id, targetContractor.id));
+      await db.delete(contractors).where(eq(contractors.id, wrongContractor.id));
+    }
+  });
+
+  it("does not route a progress invoice when a pending acompte is armed before final guarded promotion", async () => {
+    const suffix = Date.now();
+    const [contractor] = await db.insert(contractors).values({
+      name: `T739 final-route gate contractor ${suffix}`,
+    }).returning();
+    const [quotation] = await db.insert(devis).values({
+      projectId,
+      contractorId: contractor.id,
+      devisCode: `T739-GATE-${suffix}`,
+      descriptionFr: "Final guarded deposit gate",
+      amountHt: "1000.00",
+      amountTtc: "1200.00",
+      acompteRequired: true,
+      acompteAmountHt: "200.00",
+      acompteState: "pending",
+    }).returning();
+    const source = await createDoc({
+      fileName: `final-route-gate-${suffix}.pdf`,
+      storageKey: `tests/final-route-gate-${suffix}.pdf`,
+      contentFingerprint: "g".repeat(64),
+      analysisState: "analyzing",
+      routingState: "unrouted",
+      extractedData: {
+        documentType: "invoice",
+        relatedDocumentReferences: [{
+          kind: "quotation",
+          reference: quotation.devisCode,
+          evidenceText: `Devis ${quotation.devisCode}`,
+        }],
+      },
+    });
+    try {
+      await expect(storage.createIntakeInvoiceWithProjectDocument({
+        projectId,
+        contractorId: contractor.id,
+        devisId: quotation.id,
+        sourceIntakeDocumentId: source.id,
+        invoiceNumber: `T739-PROGRESS-${suffix}`,
+        amountHt: "500.00",
+        tvaAmount: "100.00",
+        amountTtc: "600.00",
+        status: "draft",
+        aiExtractedData: { documentType: "invoice" },
+      }, {
+        projectId,
+        fileName: source.fileName,
+        storageKey: source.storageKey,
+        documentType: "invoice",
+        uploadedBy: "test",
+      }, {
+        sourceContentFingerprint: source.contentFingerprint!,
+        contractorId: contractor.id,
+        expectedDevisId: quotation.id,
+        expectedResolutionKey: `resolved:${quotation.id}:quotation`,
+        intakeNote: "Final promotion must re-check acompte gate",
+      }, { routeSource: true })).rejects.toThrow(/Acompte gate became blocking/);
+
+      expect(await db.select().from(invoices)
+        .where(eq(invoices.sourceIntakeDocumentId, source.id))).toHaveLength(0);
+      expect(await storage.getProjectIntakeDocument(source.id)).toMatchObject({
+        analysisState: "analyzing",
+        routingState: "unrouted",
+        promotedId: null,
+      });
+    } finally {
+      await db.delete(invoices).where(eq(invoices.sourceIntakeDocumentId, source.id));
+      await db.delete(projectDocuments).where(and(
+        eq(projectDocuments.projectId, projectId),
+        eq(projectDocuments.fileName, source.fileName),
+      ));
+      await db.delete(projectIntakeDocuments).where(eq(projectIntakeDocuments.id, source.id));
+      await db.delete(devis).where(eq(devis.id, quotation.id));
+      await db.delete(contractors).where(eq(contractors.id, contractor.id));
+    }
+  });
+
+  it("routes an evidenced paid deposit through one application across two progress invoices and a final invoice", async () => {
+    const suffix = Date.now();
+    const [contractor] = await db.insert(contractors).values({
+      name: `T688 deposit lifecycle contractor ${suffix}`,
+    }).returning();
+    const [quotation] = await db.insert(devis).values({
+      projectId,
+      contractorId: contractor.id,
+      devisCode: `T688-DEP-${suffix}`,
+      descriptionFr: "Opening deposit then staged works",
+      amountHt: "10000.00",
+      amountTtc: "12000.00",
+      acompteRequired: true,
+      acompteAmountHt: "2000.00",
+      acompteState: "pending",
+      signOffStage: "client_signed_off",
+      accountingState: "active",
+    }).returning();
+    const sourceExtraction = {
+      documentType: "invoice" as const,
+      projectId,
+      contractorId: contractor.id,
+      devisId: quotation.id,
+      devisCode: quotation.devisCode,
+      invoiceNumber: `T688-P1-${suffix}`,
+      amountHt: 5000,
+      amountTtc: 6000,
+      netAPayer: 3600,
+      acomptePaidAmountTtc: 2400,
+      acomptePaidEvidenceText: "Acompte versé 2 400,00 €",
+      relatedDocumentReferences: [{
+        kind: "quotation" as const,
+        reference: quotation.devisCode,
+        evidenceText: `Devis ${quotation.devisCode}`,
+      }],
+    };
+    const source = await createDoc({
+      fileName: `deposit-progress-${suffix}.pdf`,
+      storageKey: `tests/deposit-progress-${suffix}.pdf`,
+      contentFingerprint: "e".repeat(64),
+      analysisState: "analyzing",
+      routingState: "unrouted",
+      extractedData: sourceExtraction,
+    });
+    let certificateId: number | null = null;
+    let firstInvoiceId: number | null = null;
+    let secondInvoiceId: number | null = null;
+    let finalInvoiceId: number | null = null;
+    try {
+      // This is explicit operator-confirmed supplier-payment evidence; no
+      // invoice date, certificate-payment ledger entry, or inferred money is
+      // used to advance pending → paid.
+      const payment = await confirmNoInvoiceAcomptePayment({
+        devisId: quotation.id,
+        sourceIntakeDocumentId: source.id,
+        paidAt: new Date("2024-01-15T12:00:00.000Z"),
+        paymentReference: `SUPPLIER-DEPOSIT-${suffix}`,
+        confirmedByUserId: testUserId,
+      });
+      expect(payment.outcome).toBe("ok");
+      if (payment.outcome !== "ok") throw new Error("Expected explicit deposit payment confirmation");
+      certificateId = payment.certificatId;
+      expect((await storage.getDevis(quotation.id))?.acompteState).toBe("paid");
+
+      const parsed = {
+        ...sourceExtraction,
+      };
+      // A financial mismatch may persist a recoverable typed invoice, but
+      // cannot make the source look routed. The next retry below is therefore
+      // able to apply only after the evidence itself is corrected.
+      await db.update(projectIntakeDocuments).set({
+        extractedData: { ...sourceExtraction, acomptePaidAmountTtc: 2399 },
+      }).where(eq(projectIntakeDocuments.id, source.id));
+      const review = await processInvoiceUpload(quotation.id, {
+        originalname: source.fileName,
+        mimetype: "application/pdf",
+        buffer: Buffer.from("%PDF-1.4\n%%EOF"),
+      }, { ...parsed, acomptePaidAmountTtc: 2399 }, {
+        sourceIntakeDocumentId: source.id,
+        relationshipGuard: {
+          sourceContentFingerprint: source.contentFingerprint!,
+          contractorId: contractor.id,
+          expectedDevisId: quotation.id,
+          expectedResolutionKey: `resolved:${quotation.id}:quotation`,
+          intakeNote: "Tested explicit relationship route",
+        },
+      });
+      expect(review).toMatchObject({ success: false, status: 409 });
+      expect(await storage.getProjectIntakeDocument(source.id)).toMatchObject({
+        analysisState: "analyzing",
+        routingState: "unrouted",
+        promotedId: null,
+      });
+      expect(await db.select().from(invoiceAcompteApplications)
+        .where(eq(invoiceAcompteApplications.devisId, quotation.id))).toHaveLength(0);
+      await db.update(projectIntakeDocuments).set({ extractedData: sourceExtraction })
+        .where(eq(projectIntakeDocuments.id, source.id));
+
+      const routed = await processInvoiceUpload(quotation.id, {
+        originalname: source.fileName,
+        mimetype: "application/pdf",
+        buffer: Buffer.from("%PDF-1.4\n%%EOF"),
+      }, parsed, {
+        sourceIntakeDocumentId: source.id,
+        relationshipGuard: {
+          sourceContentFingerprint: source.contentFingerprint!,
+          contractorId: contractor.id,
+          expectedDevisId: quotation.id,
+          expectedResolutionKey: `resolved:${quotation.id}:quotation`,
+          intakeNote: "Tested explicit relationship route",
+        },
+      });
+      expect(routed.success).toBe(true);
+      if (!routed.success) throw new Error("Expected source-bound first progress invoice");
+      firstInvoiceId = (routed.data as { invoice: { id: number } }).invoice.id;
+
+      const applications = await db.select().from(invoiceAcompteApplications)
+        .where(eq(invoiceAcompteApplications.invoiceId, firstInvoiceId));
+      expect(applications).toHaveLength(1);
+      expect(applications[0]).toMatchObject({
+        devisId: quotation.id,
+        appliedHt: "2000.00",
+        appliedTtc: "2400.00",
+        invoiceGrossHt: "5000.00",
+        invoiceGrossTtc: "6000.00",
+        invoiceNetPayableTtc: "3600.00",
+      });
+      expect((await storage.getDevis(quotation.id))?.acompteState).toBe("applied");
+
+      const second = await storage.createInvoice({
+        projectId,
+        contractorId: contractor.id,
+        devisId: quotation.id,
+        invoiceNumber: `T688-P2-${suffix}`,
+        amountHt: "3000.00",
+        tvaAmount: "600.00",
+        amountTtc: "3600.00",
+        status: "draft",
+      });
+      secondInvoiceId = second.id;
+      const final = await storage.createInvoice({
+        projectId,
+        contractorId: contractor.id,
+        devisId: quotation.id,
+        invoiceNumber: `T688-FINAL-${suffix}`,
+        amountHt: "2000.00",
+        tvaAmount: "400.00",
+        amountTtc: "2400.00",
+        status: "draft",
+      });
+      finalInvoiceId = final.id;
+
+      const summary = await getProjectFinancialSummary(projectId);
+      expect(summary.success).toBe(true);
+      if (!summary.success) throw new Error("Expected financial summary");
+      const row = summary.data.devis.find((item) => item.devisId === quotation.id);
+      expect(row).toMatchObject({
+        invoiceCount: 3,
+        certifiedHt: 10000,
+        certifiedTtc: 12000,
+        acompteCertifiedHt: 0,
+        acompteCertifiedTtc: 0,
+        acompteAppliedHt: 2000,
+        acompteAppliedTtc: 2400,
+        currentInvoiceBalanceTtc: 3600,
+        resteARealiser: 0,
+        resteARealiserTtc: 0,
+      });
+    } finally {
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT set_config('app.allow_acompte_application_delete', 'true', true)`);
+        await tx.delete(invoiceAcompteApplications).where(eq(invoiceAcompteApplications.devisId, quotation.id));
+        await tx.execute(sql`SELECT set_config('app.allow_acompte_audit_delete', 'true', true)`);
+        await tx.delete(acompteNoInvoicePayments).where(eq(acompteNoInvoicePayments.devisId, quotation.id));
+      });
+      if (firstInvoiceId != null || secondInvoiceId != null || finalInvoiceId != null) {
+        await db.delete(invoices).where(eq(invoices.devisId, quotation.id));
+      }
+      if (certificateId != null) await db.delete(certificats).where(eq(certificats.id, certificateId));
       await db.delete(projectDocuments).where(and(
         eq(projectDocuments.projectId, projectId),
         eq(projectDocuments.fileName, source.fileName),

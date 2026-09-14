@@ -34,6 +34,7 @@ const { storageSpy } = vi.hoisted(() => ({
     findProcessedIntakeDuplicateByTextHash: vi.fn(async () => null),
     // 5b system-wide dedup inputs
     getDevisByProject: vi.fn(async () => []),
+    getMarcheDocumentsByProject: vi.fn(async () => []),
     getInvoicesByProject: vi.fn(async () => []),
     getContractors: vi.fn(async () => [{ id: 11, name: "Acme" }]),
     // Invoice routing
@@ -47,7 +48,10 @@ const { storageSpy } = vi.hoisted(() => ({
     createInvoice: vi.fn(async (row: Record<string, unknown>) => ({
       id: 911,
       invoiceNumber: row.invoiceNumber,
+      devisId: row.devisId,
       projectId: row.projectId,
+      contractorId: row.contractorId,
+      pdfPath: row.pdfPath,
     })),
     revokeDevisCheckTokenIfFullyInvoiced: vi.fn(async () => undefined),
     updateDevis: vi.fn(async () => undefined),
@@ -116,6 +120,11 @@ const EMAIL_PARSED = {
     { description: "Charpente", total: 77000 },
     { description: "Menuiseries", total: 50000 },
   ],
+  relatedDocumentReferences: [{
+    kind: "quotation",
+    reference: "DVP0000662",
+    evidenceText: "Devis DVP0000662",
+  }],
 };
 
 const INTAKE_DOC = {
@@ -146,12 +155,19 @@ beforeEach(() => {
     attempts: 0,
   });
   storageSpy.getProjectIntakeDocument.mockResolvedValue(INTAKE_DOC);
+  storageSpy.getDevisByProject.mockResolvedValue([DEVIS]);
   storageSpy.getDevisByProjectAndContractor.mockResolvedValue([DEVIS]);
   storageSpy.getDevis.mockResolvedValue(DEVIS);
-  storageSpy.createIntakeInvoiceWithProjectDocument.mockImplementation(async (row) => ({
-    invoice: await storageSpy.createInvoice(row),
-    created: true,
-  }));
+  let savedInvoice: any;
+  storageSpy.createIntakeInvoiceWithProjectDocument.mockImplementation(async (row, _document, guard) => {
+    const created = !savedInvoice;
+    const invoice = savedInvoice ?? await storageSpy.createInvoice(row);
+    savedInvoice = invoice;
+    if (guard) await storageSpy.updateProjectIntakeDocument(row.sourceIntakeDocumentId, {
+      analysisState: "analyzed", routingState: "routed", promotedKind: "invoice", promotedId: invoice.id,
+    });
+    return { invoice, created };
+  });
 });
 
 describe("email-ingest path — derived-totals warning reaches the persisted acompte (Task #344)", () => {

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createHash } from "node:crypto";
 
 // Task #342 — Integration coverage for the derived-totals draft warning
 // through the EMAIL-INGEST processing path.
@@ -38,6 +39,7 @@ const { storageSpy } = vi.hoisted(() => ({
     findProcessedIntakeDuplicateByTextHash: vi.fn(async () => null),
     // 5b system-wide dedup inputs
     getDevisByProject: vi.fn(async () => []),
+    getMarcheDocumentsByProject: vi.fn(async () => []),
     getInvoicesByProject: vi.fn(async () => []),
     getContractors: vi.fn(async () => [{ id: 11, name: "Acme" }]),
     // Invoice routing
@@ -50,13 +52,13 @@ const { storageSpy } = vi.hoisted(() => ({
     createIntakeInvoiceWithProjectDocument: vi.fn(),
     createInvoice: vi.fn(async (row: Record<string, unknown>) => ({
       id: 909,
-      invoiceNumber: row.invoiceNumber,
-      projectId: row.projectId,
+      ...row,
     })),
     revokeDevisCheckTokenIfFullyInvoiced: vi.fn(async () => undefined),
     updateDevis: vi.fn(async () => undefined),
   },
 }));
+let savedInvoice: any;
 
 vi.mock("../storage", () => ({ storage: storageSpy }));
 vi.mock("../storage/object-storage", () => ({
@@ -119,6 +121,11 @@ const EMAIL_PARSED = {
     { description: "Charpente", total: 77000 },
     { description: "Menuiseries", total: 50000 },
   ],
+  relatedDocumentReferences: [{
+    kind: "quotation",
+    reference: "DVP0000661",
+    evidenceText: "Devis DVP0000661",
+  }],
 };
 
 const INTAKE_DOC = {
@@ -149,12 +156,23 @@ beforeEach(() => {
     attempts: 0,
   });
   storageSpy.getProjectIntakeDocument.mockResolvedValue(INTAKE_DOC);
+  storageSpy.getDevisByProject.mockResolvedValue([DEVIS]);
   storageSpy.getDevisByProjectAndContractor.mockResolvedValue([DEVIS]);
   storageSpy.getDevis.mockResolvedValue(DEVIS);
-  storageSpy.createIntakeInvoiceWithProjectDocument.mockImplementation(async (row) => ({
-    invoice: await storageSpy.createInvoice(row),
-    created: true,
-  }));
+  savedInvoice = undefined;
+  storageSpy.getInvoicesByProject.mockImplementation(async () => savedInvoice ? [savedInvoice] : []);
+  storageSpy.getInvoiceBySourceIntakeDocumentId.mockImplementation(async (sourceIntakeDocumentId: number) =>
+    savedInvoice?.sourceIntakeDocumentId === sourceIntakeDocumentId ? savedInvoice : undefined,
+  );
+  storageSpy.createIntakeInvoiceWithProjectDocument.mockImplementation(async (row, _document, guard) => {
+    const created = !savedInvoice;
+    const invoice = savedInvoice ?? await storageSpy.createInvoice(row);
+    savedInvoice = invoice;
+    if (guard) await storageSpy.updateProjectIntakeDocument(row.sourceIntakeDocumentId, {
+      analysisState: "analyzed", routingState: "routed", promotedKind: "invoice", promotedId: invoice.id,
+    });
+    return { invoice, created };
+  });
 });
 
 describe("email-ingest path — derived-totals warning reaches the persisted invoice (Task #342)", () => {
@@ -248,5 +266,156 @@ describe("email-ingest path — derived-totals warning reaches the persisted inv
     expect(row.amountHt).toBe("2000");
     // TVA-neutral defaulting: no derivable TTC ⇒ mirror HT (derived TVA = 0).
     expect(row.amountTtc).toBe("2000");
+  });
+
+  it("resumes a source-owned derived-total invoice instead of parking it for the persisted-total dedup review", async () => {
+    await attemptIntakeJob(501);
+    // Simulate a retry after the guarded invoice insert succeeded but before
+    // its source route/finalization completed. The retained extraction still
+    // has null totals; the persisted owner contains the derived totals.
+    storageSpy.getProjectIntakeDocument.mockResolvedValue({
+      ...INTAKE_DOC,
+      contentFingerprint: createHash("sha256")
+        .update(Buffer.from("%PDF-1.4 fake email attachment"))
+        .digest("hex"),
+    });
+    await attemptIntakeJob(501);
+
+    expect(storageSpy.markIntakeJobSucceeded).toHaveBeenCalledTimes(2);
+    expect(storageSpy.createInvoice).toHaveBeenCalledTimes(1);
+    // Initial persistence, first finalization route, then the retried
+    // finalization route all reuse the one source-owned invoice.
+    expect(storageSpy.createIntakeInvoiceWithProjectDocument).toHaveBeenCalledTimes(3);
+    const routingWrites = storageSpy.updateProjectIntakeDocument.mock.calls
+      .map((call) => call[1] as Record<string, unknown>)
+      .filter((update) => update.routingState === "routed" && update.promotedKind === "invoice");
+    expect(routingWrites).toHaveLength(5);
+  });
+
+  it("lets a pending source-owned invoice resume after another source is deduped, without replacing its metadata", async () => {
+    const sourceA = {
+      ...INTAKE_DOC,
+      id: 42,
+      notes: "source A metadata",
+      analysisState: "pending",
+      routingState: "pending",
+    };
+    const sourceB = {
+      ...INTAKE_DOC,
+      id: 43,
+      fileName: "facture-email-copy.pdf",
+      storageKey: "intake/3/facture-email-copy.pdf",
+      extractedData: {
+        ...EMAIL_PARSED,
+        // The second extraction has the totals the first persisted from lines,
+        // so it is a typed exact duplicate while source A is still pending.
+        amountHt: 227000,
+        amountTtc: 272400,
+      },
+      notes: "source B metadata",
+      analysisState: "pending",
+      routingState: "pending",
+    };
+    const docs = new Map<number, any>([[sourceA.id, sourceA], [sourceB.id, sourceB]]);
+    let phase: "a-first" | "b" | "a-retry" = "a-first";
+    let revokeAttempts = 0;
+    storageSpy.getProjectIntakeDocument.mockImplementation(async (id: number) => docs.get(id));
+    storageSpy.updateProjectIntakeDocument.mockImplementation(async (id: number, update: Record<string, unknown>) => {
+      Object.assign(docs.get(id)!, update);
+    });
+    storageSpy.claimIntakeJobForAttempt.mockImplementation(async (jobId: number) => ({
+      id: jobId,
+      intakeDocumentId: phase === "b" ? sourceB.id : sourceA.id,
+      attempts: 0,
+    }));
+    storageSpy.findProcessedIntakeDuplicateByFingerprint.mockImplementation(async (_projectId: number, _fingerprint: string, sourceId: number) =>
+      phase === "a-retry" && sourceId === sourceA.id ? { id: sourceB.id } : null,
+    );
+    storageSpy.revokeDevisCheckTokenIfFullyInvoiced.mockImplementation(async () => {
+      revokeAttempts++;
+      if (revokeAttempts === 1) throw new Error("simulated post-persistence failure");
+    });
+    storageSpy.createIntakeInvoiceWithProjectDocument.mockImplementation(async (row, _document, guard, routeOptions) => {
+      const created = !savedInvoice;
+      const invoice = savedInvoice ?? await storageSpy.createInvoice(row);
+      savedInvoice = invoice;
+      if (guard && routeOptions?.routeSource) {
+        await storageSpy.updateProjectIntakeDocument(row.sourceIntakeDocumentId, {
+          analysisState: "analyzed",
+          routingState: "routed",
+          promotedKind: "invoice",
+          promotedId: invoice.id,
+        });
+      }
+      return { invoice, created };
+    });
+
+    // A persists its invoice, then its finalization fails before the source
+    // route. B arrives while A is still not analysed and is safely deduped.
+    await attemptIntakeJob(501);
+    expect(storageSpy.createInvoice).toHaveBeenCalledTimes(1);
+    phase = "b";
+    await attemptIntakeJob(502);
+    expect(docs.get(sourceB.id)).toMatchObject({ routingState: "duplicate" });
+
+    // On retry, B is now an analysed exact-fingerprint duplicate. A must use
+    // its source ownership to bypass that early dedup and finish normally.
+    phase = "a-retry";
+    await attemptIntakeJob(503);
+    expect(storageSpy.createInvoice).toHaveBeenCalledTimes(1);
+    expect(docs.get(sourceA.id)).toMatchObject({
+      routingState: "routed",
+      promotedKind: "invoice",
+      promotedId: 909,
+      notes: "source A metadata",
+    });
+    expect((docs.get(sourceA.id).extractedData as Record<string, unknown>).duplicateOfIntakeDocumentId)
+      .toBeUndefined();
+  });
+
+  it("reuses a standard-upload source owner's stored extraction without re-parsing on retry", async () => {
+    const fingerprint = createHash("sha256")
+      .update(Buffer.from("%PDF-1.4 fake email attachment"))
+      .digest("hex");
+    const standardSource = {
+      ...INTAKE_DOC,
+      contentFingerprint: fingerprint,
+      // Standard uploads have no Gmail pre-parse marker. It must not matter
+      // after the invoice's guarded persistence has retained its extraction.
+      extractedData: { documentType: "unknown" },
+      notes: "standard-upload source metadata",
+      analysisState: "analyzing",
+      routingState: "unrouted",
+    };
+    savedInvoice = {
+      id: 909,
+      sourceIntakeDocumentId: standardSource.id,
+      devisId: DEVIS.id,
+      projectId: DEVIS.projectId,
+      contractorId: DEVIS.contractorId,
+      invoiceNumber: EMAIL_PARSED.invoiceNumber,
+      amountHt: "227000",
+      amountTtc: "272400",
+      tvaAmount: "45400",
+      status: "draft",
+      dateIssued: null,
+      datePaid: null,
+      pdfPath: "mock-key/facture-email.pdf",
+      notes: null,
+      validationWarnings: [],
+      aiExtractedData: { ...EMAIL_PARSED, preParsedFromEmail: undefined },
+      aiConfidence: 40,
+      extractedIban: null,
+      extractedBic: null,
+    };
+    storageSpy.getProjectIntakeDocument.mockImplementation(async () => standardSource);
+    storageSpy.getInvoicesByProject.mockResolvedValue([savedInvoice]);
+
+    await attemptIntakeJob(501);
+
+    expect(parseDocumentMock).not.toHaveBeenCalled();
+    expect(storageSpy.createInvoice).not.toHaveBeenCalled();
+    expect(storageSpy.createIntakeInvoiceWithProjectDocument).toHaveBeenCalledTimes(1);
+    expect(storageSpy.markIntakeJobSucceeded).toHaveBeenCalledTimes(1);
   });
 });
