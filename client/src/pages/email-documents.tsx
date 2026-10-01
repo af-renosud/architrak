@@ -2,7 +2,6 @@ import { useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
-import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Mail, FileText, RefreshCw, ExternalLink, Search, Filter, Eye, RotateCcw, Trash2, ChevronRight, TriangleAlert } from "lucide-react";
 import {
@@ -26,6 +25,8 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { EmailDocument, Project } from "@shared/schema";
 import { ManualPromotionDialog, type ManualPromotionSource } from "@/components/intake/ManualPromotionDialog";
+import { EmailDocumentFilingStatus, EmailExtractionStatus } from "@/components/email-documents/EmailDocumentFilingStatus";
+import { invalidateEmailDocumentProject, useEmailDocuments } from "@/hooks/use-email-documents";
 
 function formatDate(date: string | Date | null): string {
   if (!date) return "—";
@@ -84,16 +85,15 @@ export default function EmailDocuments() {
   });
   const [typeFilter, setTypeFilterState] = useState<string>("all");
   const [searchQuery, setSearchQueryState] = useState("");
-  const [viewingDoc, setViewingDoc] = useState<EmailDocument | null>(null);
+  const [viewingDocId, setViewingDocId] = useState<number | null>(null);
   // Task #421 — "not relevant" removal: per-row and bulk dismissal.
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [confirmDismissIds, setConfirmDismissIds] = useState<number[] | null>(null);
   const [isDismissing, setIsDismissing] = useState(false);
   const [manualPromotionTarget, setManualPromotionTarget] = useState<ManualPromotionSource | null>(null);
 
-  const { data: emailDocs, isLoading } = useQuery<EmailDocument[]>({
-    queryKey: ["/api/email-documents"],
-  });
+  const { data: emailDocs, isLoading, isFetching, error, refresh, pollingExpired, isPolling } = useEmailDocuments();
+  const viewingDoc = emailDocs?.find((doc) => doc.id === viewingDocId) ?? null;
 
   const { data: projects } = useQuery<Project[]>({
     queryKey: ["/api/projects"],
@@ -124,8 +124,8 @@ export default function EmailDocuments() {
     }
   };
 
-  // Task #318 — drain progress banner: polls queue stats every 30 s while the
-  // backlog sweeper works through pending emails.
+  // Keep the existing drain banner, but stop its polling with the bounded
+  // active-document observation window (never poll a parked queue forever).
   const { data: queueStats } = useQuery<{
     pending: number;
     processing: number;
@@ -134,7 +134,7 @@ export default function EmailDocuments() {
     processedLast5Min: number;
   }>({
     queryKey: ["/api/admin/email-documents/queue-stats"],
-    refetchInterval: 30_000,
+    refetchInterval: isPolling ? 30_000 : false,
   });
 
   const pollMutation = useMutation({
@@ -169,12 +169,20 @@ export default function EmailDocuments() {
 
   const assignMutation = useMutation({
     mutationFn: async ({ id, projectId }: { id: number; projectId: number }) => {
+      const previous = emailDocs?.find((doc) => doc.id === id);
+      const previousProjectIds = [previous?.projectId, previous?.filing.projectId];
       const res = await apiRequest("PATCH", `/api/email-documents/${id}`, { projectId });
-      return res.json();
+      await res.json();
+      return { projectId, previousProjectIds };
     },
-    onSuccess: () => {
+    onSuccess: ({ projectId, previousProjectIds }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/email-documents"] });
+      const affected = new Set([projectId, ...previousProjectIds]);
+      affected.forEach((id) => { if (id != null) invalidateEmailDocumentProject(queryClient, id); });
       toast({ title: "Project assigned" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Project assignment failed", description: error.message, variant: "destructive" });
     },
   });
 
@@ -295,8 +303,12 @@ export default function EmailDocuments() {
     <AppLayout>
       <div className="space-y-8">
         <div className="flex items-center justify-between flex-wrap gap-4">
-          <SectionHeader icon={Mail} title="Email Documents" subtitle={skippedCount > 0 ? `${activeCount} active · ${skippedCount} removed` : `${activeCount} documents extracted`} />
+          <SectionHeader icon={Mail} title="Email Documents" subtitle={skippedCount > 0 ? `${activeCount} active · ${skippedCount} removed` : `${activeCount} documents captured`} />
           <div className="flex items-center gap-3">
+            <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={isFetching} data-testid="button-refresh-documents">
+              <RefreshCw size={14} className={isFetching ? "animate-spin" : ""} />
+              <span className="text-xs">Refresh status</span>
+            </Button>
             {gmailStatus && (
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <div className={`w-2 h-2 rounded-full ${gmailStatus.configured ? "bg-emerald-500" : "bg-rose-500"}`} />
@@ -319,6 +331,14 @@ export default function EmailDocuments() {
           </div>
         </div>
 
+        {(pollingExpired || error) && (
+          <div role="status" className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100" data-testid="email-document-refresh-notice">
+            {error
+              ? `Could not refresh document status: ${error.message}. Use Refresh status to try again.`
+              : "Automatic status updates paused after 10 minutes. Processing may still be running; use Refresh status to check again."}
+          </div>
+        )}
+
         {queueStats && queueStats.pending > 0 && (
           <div
             className="bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-xl px-4 py-3 flex items-center gap-3"
@@ -338,7 +358,7 @@ export default function EmailDocuments() {
               </span>
               {queueStats.oldestPendingAt && (
                 <div className="text-xs text-blue-700/70 dark:text-blue-300/70 mt-0.5">
-                  Oldest pending since {formatDate(queueStats.oldestPendingAt)} · updates every 30 s
+                  Oldest pending since {formatDate(queueStats.oldestPendingAt)}{isPolling ? " · updates every 30 s" : " · automatic updates paused"}
                 </div>
               )}
             </div>
@@ -384,7 +404,7 @@ export default function EmailDocuments() {
               <SelectItem value="all">All Status</SelectItem>
               <SelectItem value="pending">Pending</SelectItem>
               <SelectItem value="processing">Processing</SelectItem>
-              <SelectItem value="completed">Completed</SelectItem>
+              <SelectItem value="completed">Extracted</SelectItem>
               <SelectItem value="needs_review">Needs Review</SelectItem>
               <SelectItem value="needs_attention">Needs Attention</SelectItem>
               <SelectItem value="needs_project">Needs Project</SelectItem>
@@ -495,7 +515,7 @@ export default function EmailDocuments() {
                           <span className="text-sm font-semibold truncate" data-testid={`text-doc-filename-${doc.id}`}>
                             {doc.attachmentFileName || "Unknown file"}
                           </span>
-                          <StatusBadge status={doc.extractionStatus} size="sm" />
+                          <EmailExtractionStatus status={doc.extractionStatus} />
                           <span className="text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
                             {typeLabels[doc.documentType] || doc.documentType}
                           </span>
@@ -517,6 +537,7 @@ export default function EmailDocuments() {
                         <div className="text-xs text-muted-foreground mt-0.5 truncate">
                           {doc.emailSubject || "No subject"}
                         </div>
+                        <EmailDocumentFilingStatus document={doc} surface="row" />
                         {extractionFailure && (
                           <div
                             className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100"
@@ -570,7 +591,7 @@ export default function EmailDocuments() {
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8"
-                        onClick={() => setViewingDoc(doc)}
+                        onClick={() => setViewingDocId(doc.id)}
                         data-testid={`button-view-doc-${doc.id}`}
                       >
                         <Eye size={14} />
@@ -690,13 +711,15 @@ export default function EmailDocuments() {
           </AlertDialogContent>
         </AlertDialog>
 
-        <Dialog open={!!viewingDoc} onOpenChange={() => setViewingDoc(null)}>
+        <Dialog open={viewingDocId != null} onOpenChange={(open) => { if (!open) setViewingDocId(null); }}>
           <DialogContent className="max-w-2xl">
             <DialogHeader>
               <DialogTitle>Document Details</DialogTitle>
             </DialogHeader>
             {viewingDoc && (
               <div className="space-y-4">
+                <EmailExtractionStatus status={viewingDoc.extractionStatus} />
+                <EmailDocumentFilingStatus document={viewingDoc} surface="detail" />
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <TechnicalLabel>File Name</TechnicalLabel>
@@ -756,6 +779,9 @@ export default function EmailDocuments() {
                   </a>
                 </div>
               </div>
+            )}
+            {!viewingDoc && viewingDocId != null && (
+              <p className="text-sm text-muted-foreground">This document is no longer available. Refresh the list to check its status.</p>
             )}
           </DialogContent>
         </Dialog>

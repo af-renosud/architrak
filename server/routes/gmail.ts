@@ -9,6 +9,7 @@ import { validateRequest } from "../middleware/validate";
 import { dismissEmailDocument, purgeSkippedEmailDocument, DismissRefusedError } from "../services/email-document-dismiss.service";
 import { EMAIL_PURGE_DAYS_KEY, EMAIL_PURGE_DAYS_DEFAULT } from "../services/email-document-processor.service";
 import { requireAuth } from "../auth/middleware";
+import { enrichEmailDocumentsWithFiling } from "../services/email-document-filing.service";
 import {
   ManualPromotionError,
   promoteParkedFinancialDocument,
@@ -154,6 +155,7 @@ router.post("/api/gmail/poll", validateRequest({ body: z.object({}).strict().opt
 
 router.get(
   "/api/email-documents",
+  requireAuth,
   validateRequest({ query: emailDocsQuerySchema }),
   async (req, res) => {
     const q = req.query as unknown as z.infer<typeof emailDocsQuerySchema>;
@@ -162,7 +164,7 @@ router.get(
       status: q.status,
       documentType: q.documentType,
     });
-    res.json(docs);
+    res.json(await enrichEmailDocumentsWithFiling(docs));
   },
 );
 
@@ -185,11 +187,12 @@ router.put(
   },
 );
 
-router.get("/api/email-documents/:id", validateRequest({ params: idParams }), async (req, res) => {
+router.get("/api/email-documents/:id", requireAuth, validateRequest({ params: idParams }), async (req, res) => {
   // (was mistakenly calling update with the request body — read-only now)
   const doc = await storage.getEmailDocument(Number(req.params.id));
   if (!doc) return res.status(404).json({ message: "Document not found" });
-  res.json(doc);
+  const [enriched] = await enrichEmailDocumentsWithFiling([doc]);
+  res.json(enriched);
 });
 
 router.post(

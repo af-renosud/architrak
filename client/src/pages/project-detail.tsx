@@ -441,6 +441,11 @@ export default function ProjectDetail() {
           ? "factures"
           : "resume",
   );
+  // Internal intake/destination links can change only the search string while
+  // this same project component stays mounted.
+  useEffect(() => {
+    setActiveTab(deepLinkTab || (deepLinkDevisId ? "devis" : deepLinkInvoiceId ? "factures" : "resume"));
+  }, [projectId, deepLinkTab, deepLinkDevisId, deepLinkInvoiceId]);
   const deepLinkCheckId = (() => {
     const raw = searchParams.get("check");
     const n = raw ? Number(raw) : NaN;
@@ -1745,6 +1750,7 @@ export default function ProjectDetail() {
               projectId={projectId!}
               contractors={contractors ?? []}
               isArchived={isArchived}
+              initialExpandedInvoiceId={deepLinkInvoiceId}
               onGoToIntake={() => setActiveTab("intake")}
             />
           </TabsContent>

@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
@@ -493,9 +493,10 @@ interface FacturesTabProps {
   contractors: Contractor[];
   isArchived?: boolean;
   onGoToIntake: () => void;
+  initialExpandedInvoiceId?: number | null;
 }
 
-export function FacturesTab({ projectId, contractors, isArchived = false, onGoToIntake }: FacturesTabProps) {
+export function FacturesTab({ projectId, contractors, isArchived = false, onGoToIntake, initialExpandedInvoiceId = null }: FacturesTabProps) {
   const { toast } = useToast();
   const { download: downloadPdf, pendingKey: pdfPendingKey } = usePdfDownload();
   const [expandedInvoice, setExpandedInvoice] = useState<number | null>(null);
@@ -506,6 +507,23 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
   const { data: invoices, isLoading } = useQuery<Invoice[]>({
     queryKey: projectScopedKey(projectId, "invoices"),
   });
+
+  const openedDeepLink = useRef<string | null>(null);
+  useEffect(() => {
+    if (initialExpandedInvoiceId == null) {
+      openedDeepLink.current = null;
+      return;
+    }
+    if (initialExpandedInvoiceId == null || !invoices?.some((invoice) => invoice.id === initialExpandedInvoiceId)) return;
+    const key = `${projectId}:${initialExpandedInvoiceId}`;
+    if (openedDeepLink.current === key) return;
+    openedDeepLink.current = key;
+    setExpandedInvoice(initialExpandedInvoiceId);
+    const timer = window.setTimeout(() => {
+      document.getElementById(`facture-${initialExpandedInvoiceId}`)?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [projectId, initialExpandedInvoiceId, invoices]);
 
   const { data: devisList } = useQuery<Devis[]>({
     queryKey: projectScopedKey(projectId, "devis"),
@@ -690,7 +708,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
               : null;
             const wrongContractor = selectionContractorId != null && inv.contractorId !== selectionContractorId;
             return (
-              <div key={inv.id}>
+              <div key={inv.id} id={`facture-${inv.id}`}>
                 <LuxuryCard data-testid={`card-facture-${inv.id}`}>
                   <div
                     className="flex items-center justify-between gap-3 flex-wrap cursor-pointer"
