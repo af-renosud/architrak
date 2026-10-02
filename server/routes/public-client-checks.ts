@@ -51,6 +51,7 @@ export interface ClientPortalDataPayload {
     descriptionEn: string | null;
     hasPdf: boolean;
     amountHt: string | null;
+    amountTtc: string | null;
   };
   project: { name: string } | null;
   client: { name: string | null; email: string };
@@ -272,6 +273,7 @@ export async function buildClientPortalPayload(
       descriptionEn: devis.descriptionUk ?? null,
       hasPdf: !!devis.pdfStorageKey,
       amountHt: devis.amountHt ?? null,
+      amountTtc: devis.amountTtc ?? null,
     },
     project: project ? { name: project.name } : null,
     client: {

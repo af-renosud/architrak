@@ -51,6 +51,7 @@ export interface ProjectSharePayload {
     description: string | null;
     descriptionEn: string | null;
     amountHt: string | null;
+    amountTtc: string | null;
     /** True when a finalised English translation exists. */
     translationAvailable: boolean;
     /** True when a CONFIRMED cost analysis exists (drafts never signalled). */
@@ -123,6 +124,7 @@ export async function buildProjectSharePayload(
       description: devis.descriptionFr ?? null,
       descriptionEn: devis.descriptionUk ?? null,
       amountHt: devis.amountHt ?? null,
+      amountTtc: devis.amountTtc ?? null,
       translationAvailable: translation?.status === "finalised",
       analysisAvailable: analysis?.status === "confirmed",
       openQuestionCount,
@@ -558,10 +560,10 @@ function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
 
-function formatAmount(a) {
+function formatAmount(a, basis = "HT") {
   const n = parseFloat(a);
   if (!isFinite(n)) return null;
-  return new Intl.NumberFormat("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n) + " € HT";
+  return new Intl.NumberFormat("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n) + " € " + basis;
 }
 
 function formatMoney(n) {
@@ -601,10 +603,12 @@ function renderQuotation(q) {
   if (q.analysisAvailable) badges.push('<span class="badge b-info">Cost analysis available</span>');
   if (q.openQuestionCount > 0) badges.push('<span class="badge b-questions" data-testid="badge-questions-' + escapeHtml(q.ref) + '">' + q.openQuestionCount + ' open question' + (q.openQuestionCount > 1 ? 's' : '') + '</span>');
   const amount = q.amountHt ? formatAmount(q.amountHt) : null;
+  const amountTtc = q.amountTtc != null ? formatAmount(q.amountTtc, "TTC") : null;
   const href = DETAIL_URL_BASE + '/' + encodeURIComponent(q.id) + DETAIL_URL_SUFFIX;
   return '<a class="card" href="' + escapeHtml(href) + '" data-testid="card-quotation-' + escapeHtml(q.ref) + '">'
     + '<div class="top"><div>'
     + '<h3>Devis ' + escapeHtml(q.ref) + '</h3>'
+    + '<p class="amount" data-testid="text-quotation-ttc-' + escapeHtml(q.id) + '"><strong>Total payable TTC (including VAT): ' + (amountTtc ? escapeHtml(amountTtc) : 'not available') + '</strong></p>'
     + (q.trade ? '<p class="trade" data-testid="text-trade-' + escapeHtml(q.ref) + '">' + escapeHtml(q.trade) + '</p>' : '')
     + '</div>'
     + (amount ? '<div class="amount" data-testid="text-amount-' + escapeHtml(q.ref) + '">' + escapeHtml(amount) + '</div>' : '')

@@ -264,7 +264,10 @@ function renderDevisInfo(data) {
   const descEn = d.descriptionEn ? '<p class="devis-desc devis-desc-en" data-testid="text-devis-description-en"><em>' + escapeHtml(d.descriptionEn) + '</em></p>' : '';
   const scopeEn = data.translationHeaderEn ? '<p class="devis-desc devis-desc-en" data-testid="text-devis-scope-en"><em>' + escapeHtml(data.translationHeaderEn) + '</em></p>' : '';
   const summary = data.translationSummary ? '<p class="devis-desc" data-testid="text-devis-summary">' + escapeHtml(data.translationSummary) + '</p>' : '';
-  const total = d.amountHt ? '<p class="devis-total" data-testid="text-devis-amount-ht"><strong>Amount HT:</strong> ' + escapeHtml(d.amountHt) + ' €</p>' : '';
+  const total = (d.amountTtc != null
+    ? '<p class="devis-total" data-testid="text-devis-amount-ttc"><strong>Total payable TTC (including VAT): ' + escapeHtml(d.amountTtc) + ' €</strong></p>'
+    : '<p class="devis-total" data-testid="text-devis-amount-ttc">Total TTC: not available</p>')
+    + (d.amountHt != null ? '<p class="devis-total" data-testid="text-devis-amount-ht"><strong>Amount HT (excluding VAT):</strong> ' + escapeHtml(d.amountHt) + ' €</p>' : '');
   const pkg = data.packageAvailable
     ? '<div class="devis-actions"><a class="btn-download" href="' + PACKAGE_URL + '" target="_blank" rel="noopener" data-testid="link-download-package">Download the complete package (PDF)</a>'
       + '<span class="hint">English translation, contextual notes and value analysis, followed by the original French devis.</span></div>'
