@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { PDFDocument, PageSizes } from "pdf-lib";
+import { db } from "../../db";
+vi.mock("../../db", () => ({ db: { execute: vi.fn().mockResolvedValue({ rows: [] }) } }));
 
 vi.mock("../../env", () => ({
   env: {
@@ -60,10 +62,21 @@ describe("generateCombinedPdf — page ordering", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.execute).mockResolvedValue({ rows: [] } as any);
     updateDevisTranslation.mockResolvedValue({});
     updateIfVersion.mockResolvedValue(true);
     uploadDocumentMock.mockResolvedValue("storage/key/combined.pdf");
     getDevisLineContexts.mockResolvedValue([]);
+  });
+
+  it("appends supporting plans after translation and original in stored order", async () => {
+    getDevis.mockResolvedValue({ id: 7, projectId: 1, devisCode: "D-7", pdfStorageKey: "original" });
+    getDevisTranslation.mockResolvedValue({ translatedPdfStorageKey: "translated", contextsVersion: 3 });
+    vi.mocked(db.execute).mockResolvedValue({ rows: [{storage_key:"plan"}, {storage_key:"spec"}] } as any);
+    const buffers = { translated: await buildPdf([[100,100]]), original: await buildPdf([[200,200]]), plan: await buildPdf([[300,300]]), spec: await buildPdf([[400,400]]) };
+    getDocumentBufferMock.mockImplementation(async (key: string) => buffers[key as keyof typeof buffers]);
+    const merged = await PDFDocument.load((await generateCombinedPdf(7)).pdfBuffer);
+    expect(merged.getPages().map(p => p.getWidth())).toEqual([100,200,300,400]);
   });
 
   it("merges translated pages first, then original, preserving page counts and source order", async () => {

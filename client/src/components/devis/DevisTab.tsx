@@ -56,6 +56,7 @@ import {
 import { SigningPanel, OPEN_SIGNING_SEND_EVENT } from "@/components/devis/SigningPanel";
 import { CertificatPanel } from "@/components/devis/CertificatPanel";
 import { DevisClosurePanel } from "@/components/devis/DevisClosurePanel";
+import { SupportingPdfsPanel } from "@/components/devis/SupportingPdfsPanel";
 import { countDevisSignOff } from "@/components/devis/devis-counters";
 
 import { Amount } from "@/components/ui/amount";
@@ -6234,6 +6235,13 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
           </div>
         </TooltipProvider>
       </div>
+      <SupportingPdfsPanel
+        devisId={devis.id}
+        isArchived={isArchived}
+        signOffStage={devis.signOffStage}
+        status={devis.status}
+        hasSigningSnapshot={!!devis.archisignPinnedPdfStorageKey || !!devis.signedPdfStorageKey}
+      />
       {devis.notes && (
         <div
           className="rounded border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-[12px] text-amber-900 dark:text-amber-200 whitespace-pre-wrap"

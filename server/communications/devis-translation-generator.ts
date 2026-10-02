@@ -1,4 +1,6 @@
 import { PDFDocument } from "pdf-lib";
+import { db } from "../db";
+import { sql } from "drizzle-orm";
 import { storage } from "../storage";
 import { uploadDocument, getDocumentBuffer } from "../storage/object-storage";
 import { convertHtmlToPdf } from "../services/docraptor";
@@ -430,6 +432,12 @@ export async function generateCombinedPdf(
   for (const p of translatedPages) merged.addPage(p);
   const originalPages = await merged.copyPages(originalDoc, originalDoc.getPageIndices());
   for (const p of originalPages) merged.addPage(p);
+
+  const supporting = await db.execute(sql`SELECT storage_key FROM devis_supporting_pdfs WHERE devis_id=${devisId} ORDER BY position,id`);
+  for (const row of supporting.rows) {
+    const document = await PDFDocument.load(await getDocumentBuffer(String(row.storage_key)));
+    for (const page of await merged.copyPages(document, document.getPageIndices())) merged.addPage(page);
+  }
 
   const mergedBytes = await merged.save();
   const pdfBuffer = Buffer.from(mergedBytes);

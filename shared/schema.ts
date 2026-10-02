@@ -641,6 +641,17 @@ export const devis = pgTable("devis", {
   // findNextLotSequence in server/lib/devis-code.ts before insert/update.
 ]);
 
+export const devisSupportingPdfs = pgTable("devis_supporting_pdfs", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
+  label: text("label").notNull(),
+  fileName: text("file_name").notNull(),
+  storageKey: text("storage_key").notNull(),
+  pageCount: integer("page_count").notNull(),
+  byteSize: integer("byte_size").notNull(),
+  position: integer("position").notNull(),
+});
+
 export const devisLineItems = pgTable("devis_line_items", {
   id: serial("id").primaryKey(),
   devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),

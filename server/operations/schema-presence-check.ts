@@ -434,6 +434,10 @@ export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
     },
   },
   {
+    tag: "0134_devis_supporting_pdfs",
+    artifact: { kind: "table", table: "devis_supporting_pdfs" },
+  },
+  {
     tag: "0133_manual_signed_devis_contractor_copy",
     artifact: {
       kind: "all",

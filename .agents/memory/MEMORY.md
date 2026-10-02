@@ -59,3 +59,4 @@
 - [Certificate reference authority](certificate-reference-authority.md) — C-numbers are server-owned and project-scoped; allocate in the insert tx before row locks, with uniqueness as the backstop.
 - [Certificate TVA authority](certificate-tva-authority.md) — server owns TVA; exact invoice/quotation evidence is pinned and revalidated; historical unlinked rows preserve recorded decisions.
 - [Retention applicability](certificate-retention-applicability.md) — defaults do not prove agreed retention; keep professional-services exemptions operator-decided, not inferred from categories.
+- [Supporting PDF lifecycle](supporting-pdf-lifecycle.md) — preserve originals; appended plans are separate attachments; object cleanup must respect concurrent package builds.
