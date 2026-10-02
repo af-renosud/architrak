@@ -82,6 +82,30 @@ beforeEach(() => {
 });
 
 describe("ClientPortalPanel quotation-link email", () => {
+  it("keeps the message open when an external writing widget is clicked", async () => {
+    renderPanel();
+    fireEvent.click(screen.getByTestId("button-send-to-client-42"));
+    const message = screen.getByTestId("textarea-client-link-message-42");
+    fireEvent.change(message, { target: { value: "Please review this new quotation." } });
+    // Radix installs its document-level pointer listener on the next tick.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const widget = document.createElement("button");
+    widget.textContent = "Translate with DeepL";
+    document.body.appendChild(widget);
+    try {
+      fireEvent.pointerDown(widget);
+      fireEvent.focusIn(widget);
+      fireEvent.click(widget);
+      expect(screen.getByTestId("dialog-send-to-client-42")).toBeVisible();
+      expect(message).toHaveValue("Please review this new quotation.");
+      expect(apiRequestMock).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: /^Close$/ }));
+      await waitFor(() => expect(screen.queryByTestId("dialog-send-to-client-42")).not.toBeInTheDocument());
+    } finally {
+      widget.remove();
+    }
+  });
+
   it("requires a message, reviews exact details, then sends the trimmed draft", async () => {
     renderPanel();
     fireEvent.click(screen.getByTestId("button-send-to-client-42"));

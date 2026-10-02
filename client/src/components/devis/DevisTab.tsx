@@ -4193,7 +4193,13 @@ export function ClientPortalPanel({
       )}
 
       <Dialog open={issueOpen} onOpenChange={(o) => { if (!issueMutation.isPending) { setIssueOpen(o); if (!o) setDialogStep("compose"); } }}>
-        <DialogContent className="max-w-lg" data-testid={`dialog-send-to-client-${devisId}`}>
+        <DialogContent
+          className="max-w-lg"
+          data-testid={`dialog-send-to-client-${devisId}`}
+          // Translation/dictation extensions mount their widgets outside this
+          // portal. Interacting with them must not dismiss the message draft.
+          onInteractOutside={(event) => event.preventDefault()}
+        >
           <DialogHeader>
             <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
               <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#0B2545] text-white">1</span>
