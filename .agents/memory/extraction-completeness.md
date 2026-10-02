@@ -18,3 +18,9 @@ Rule: When vision silently under-extracts a dense machine-readable quotation, a 
 **Why:** dense vision requests can return valid but incomplete JSON, and different providers may disagree on row grouping or monetary columns. Exact text rows are safer only when independent completeness evidence proves the parser neither dropped nor added rows.
 
 **How to apply:** keep vision authoritative for document identity, visual layout, retained-selection wording, and totals-box evidence. Use the text layer only for exact body-table transcription under the count gate; reject partial parses, summary-row duplication, non-contiguous option groups, and any exclusion set that does not reconcile the printed HT exactly.
+
+Rule: Illustrated quotation specifications can be image-only while prices are text; full page coverage does not prove correct product grouping across chunk boundaries.
+
+**Why:** A real illustrated joinery quotation yielded generic descriptions and a duplicate continuation product despite complete page coverage. Whole-PDF input recovered correct ordered prices in a bounded comparison, but an intermediate layout summary shifted prices to the wrong products.
+
+**How to apply:** evaluate native-PDF recovery against independent ordered source prices, not totals alone. Retain human review of specifications and image associations, especially repeated equal-price products; never replace a user's corrected live quotation during experimentation.

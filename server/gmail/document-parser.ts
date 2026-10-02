@@ -11,6 +11,7 @@ import { writeFile, readFile, readdir, unlink, mkdtemp } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { env } from "../env";
+import { illustratedPriceRows, acceptIllustratedRecovery } from "../services/illustrated-quotation";
 import { decideEmailDocRetry, EMAIL_DOC_MAX_ATTEMPTS } from "../services/email-doc-retry";
 import { evaluateEmailPrefilter, tierToExtractionStatus } from "./email-prefilter";
 import {
@@ -49,6 +50,8 @@ function getGeminiClient() {
 }
 
 export interface ParsedDocument {
+  /** Deterministic audit, never accepted from model output. */
+  illustratedRecovery?: { status: "recovered" | "review_required"; reason: string };
   documentType: "quotation" | "invoice" | "situation" | "avenant" | "acompte" | "commande" | "architect_fee_invoice" | "payment_confirmation" | "other" | "unknown";
   // Task #449 — for situations de travaux: the situation sequence number
   // printed on the document (e.g. 3 for "Situation n°3"). Used to attach
@@ -2475,6 +2478,7 @@ export interface ParseDocumentDeps {
   hasOpenAIKey?: () => boolean;
   hasGeminiKey?: () => boolean;
   getGeminiFallbackModelId?: () => string;
+  recoverIllustratedPdf?: (buffer: Buffer, modelId: string) => Promise<ParsedDocument>;
 }
 
 export async function parseDocument(
@@ -2710,6 +2714,35 @@ export async function parseDocument(
   }
 
   if (parsed) {
+    delete parsed.illustratedRecovery;
+    const illustratedRows = parsed.documentType === "quotation" ? illustratedPriceRows(pageTexts) : [];
+    if (illustratedRows.length) {
+      parsed.illustratedRecovery = { status: "review_required", reason: "Illustrated product blocks require specification and price-association review." };
+      if (provider === "gemini" && pdfBuffer.length <= 15 * 1024 * 1024 && images.length <= 20) {
+        try {
+          const recover = deps.recoverIllustratedPdf ?? (async (pdf: Buffer, id: string) => {
+            const model = getGeminiClient().getGenerativeModel({
+              model: id,
+              generationConfig: { temperature: 0, responseMimeType: "application/json" },
+            }, { timeout: 120_000 });
+            const response = await model.generateContent([
+              buildDocumentExtractionPrompt(),
+              { inlineData: { mimeType: "application/pdf", data: pdf.toString("base64") } },
+            ]);
+            return JSON.parse(response.response.text()) as ParsedDocument;
+          });
+          const candidate = await recover(pdfBuffer, modelId);
+          const recovered = acceptIllustratedRecovery(parsed, candidate, illustratedRows);
+          if (recovered) {
+            parsed.lineItems = recovered;
+            parsed.illustratedRecovery = { status: "recovered", reason: "Whole-PDF descriptions recovered; every price and quantity matches the source rows. Review specifications and illustration associations before approval." };
+          }
+        } catch {
+          // Keep the original draft and explicit review advisory; no silent success.
+          parsed.illustratedRecovery.reason = "Whole-PDF recovery failed; review illustrated product blocks against the original PDF.";
+        }
+      }
+    }
     const textIdentity = extractLabelledProjectIdentityFromTextLayer(pageTexts);
     if (!parsed.projectName && textIdentity.projectName) parsed.projectName = textIdentity.projectName;
     if (!parsed.projectReference && textIdentity.projectReference) {

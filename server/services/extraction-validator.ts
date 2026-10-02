@@ -69,6 +69,15 @@ function detectVatInclusiveLineTotal(
 // only and never persisted; we don't validate it as a separate equation.
 export function validateExtraction(parsed: ParsedDocument): ValidationResult {
   const warnings: ValidationWarning[] = [];
+  if (parsed.illustratedRecovery) {
+    warnings.push({
+      field: "illustrated_quotation_review",
+      expected: "Verified product specifications and illustration associations",
+      actual: parsed.illustratedRecovery.status,
+      message: parsed.illustratedRecovery.reason,
+      severity: "warning",
+    });
+  }
   const correctedValues: Partial<ParsedDocument> = {};
 
   // Task #350 — deterministic completeness back-checks (page coverage,
