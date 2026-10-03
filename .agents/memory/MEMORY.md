@@ -63,3 +63,5 @@
 - [Client quotation totals](client-quotation-totals.md) — show HT and TTC together, emphasizing the authoritative VAT-inclusive payable total.
 - [Credential error diagnostics](credential-error-diagnostics.md) — OAuth/DB exceptions require allowlisted categories, not message redaction; app-owned Gmail grants differ from the connector.
 - [Tailwind compatibility](tailwind-compatibility.md) — preserve pre-migration visual scales; CSS theme variable collisions can silently override framework defaults.
+- [Multi-package dependency audits](multi-package-dependency-audits.md) — a clean root npm audit does not cover separately installed artifact dependencies; check every tracked lockfile.
+- [Integration test worker isolation](integration-test-worker-isolation.md) — live dev-server ArchiDoc sync can invalidate integration-test fixtures; pause the workflow when testing against the shared dev DB.
