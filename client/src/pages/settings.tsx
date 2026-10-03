@@ -2241,7 +2241,7 @@ function WishListSection() {
             onPaste={handlePaste}
             maxLength={2000}
             rows={3}
-            className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-[12px] text-foreground placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300"
+            className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-[12px] text-foreground placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-slate-300"
             data-testid="textarea-wish-description"
           />
 

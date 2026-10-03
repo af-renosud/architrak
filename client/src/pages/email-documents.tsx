@@ -369,7 +369,7 @@ export default function EmailDocuments() {
           <button
             type="button"
             onClick={showDocumentsNeedingAttention}
-            className="w-full bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-xl px-4 py-3 flex items-center gap-3 text-left transition-colors hover:bg-amber-100/70 dark:hover:bg-amber-900/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2"
+            className="w-full bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-xl px-4 py-3 flex items-center gap-3 text-left transition-colors hover:bg-amber-100/70 dark:hover:bg-amber-900/30 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2"
             data-testid="button-show-pending-documents"
             aria-label={`Show ${pendingCount} document${pendingCount > 1 ? "s" : ""} needing attention`}
           >

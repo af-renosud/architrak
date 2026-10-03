@@ -62,3 +62,4 @@
 - [Supporting PDF lifecycle](supporting-pdf-lifecycle.md) — preserve originals; appended plans are separate attachments; object cleanup must respect concurrent package builds.
 - [Client quotation totals](client-quotation-totals.md) — show HT and TTC together, emphasizing the authoritative VAT-inclusive payable total.
 - [Credential error diagnostics](credential-error-diagnostics.md) — OAuth/DB exceptions require allowlisted categories, not message redaction; app-owned Gmail grants differ from the connector.
+- [Tailwind compatibility](tailwind-compatibility.md) — preserve pre-migration visual scales; CSS theme variable collisions can silently override framework defaults.

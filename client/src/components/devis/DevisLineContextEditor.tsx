@@ -260,7 +260,7 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
           class:
             // Green tint distinguishes the CONTEXT box from the translation
             // textarea (sky tint) — the team kept typing notes into the wrong one.
-            "ctx-editor min-h-[44px] w-full rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-[11px] leading-snug focus:outline-none focus:ring-1 focus:ring-ring prose-sm max-w-none dark:border-emerald-800 dark:bg-emerald-950/40",
+            "ctx-editor min-h-[44px] w-full rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-[11px] leading-snug focus:outline-hidden focus:ring-1 focus:ring-ring prose-sm max-w-none dark:border-emerald-800 dark:bg-emerald-950/40",
           "data-testid": `input-context-${devisId}-${lineNumber}`,
         },
         handlePaste: (_view, event) => {

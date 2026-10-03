@@ -433,7 +433,7 @@ function PdfPopoutViewerWindow({
       tabIndex={-1}
       data-testid={`dialog-pdf-popout-${idForTest}`}
       data-minimized={isMinimized ? "true" : "false"}
-      className={`fixed z-[60] flex flex-col bg-white dark:bg-neutral-900 border rounded-lg shadow-2xl overflow-hidden focus:outline-none ${isFloorPlan ? "border-[#32656a]/40 dark:border-[#5d9698]/40" : "border-[#0B2545]/30 dark:border-neutral-700"}`}
+      className={`fixed z-[60] flex flex-col bg-white dark:bg-neutral-900 border rounded-lg shadow-2xl overflow-hidden focus:outline-hidden ${isFloorPlan ? "border-[#32656a]/40 dark:border-[#5d9698]/40" : "border-[#0B2545]/30 dark:border-neutral-700"}`}
       style={{
         left: frame.x,
         top: frame.y,
@@ -637,7 +637,7 @@ function PdfPopoutViewerWindow({
         // operable via arrow keys (Shift = larger step) for keyboard users.
         <button
           type="button"
-          className={`absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize focus:outline-none focus-visible:ring-2 ${isFloorPlan ? "bg-[#24565c]/20 hover:bg-[#24565c]/40 focus:bg-[#24565c]/60 focus-visible:ring-[#24565c]" : "bg-[#0B2545]/20 hover:bg-[#0B2545]/40 focus:bg-[#0B2545]/60 focus-visible:ring-[#0B2545]"}`}
+          className={`absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize focus:outline-hidden focus-visible:ring-2 ${isFloorPlan ? "bg-[#24565c]/20 hover:bg-[#24565c]/40 focus:bg-[#24565c]/60 focus-visible:ring-[#24565c]" : "bg-[#0B2545]/20 hover:bg-[#0B2545]/40 focus:bg-[#0B2545]/60 focus-visible:ring-[#0B2545]"}`}
           onPointerDown={onPointerDownResize}
           onKeyDown={onResizeKeyDown}
           data-testid={`pdf-popout-resize-${idForTest}`}

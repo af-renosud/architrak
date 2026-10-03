@@ -170,7 +170,7 @@ function SituationLineRow({
           <td colSpan={6} className="px-2 pb-2 pt-0.5">
             <input
               type="text"
-              className="w-full h-7 px-3 text-[11px] rounded-lg border-2 outline-none transition-colors bg-white disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full h-7 px-3 text-[11px] rounded-lg border-2 outline-hidden transition-colors bg-white disabled:opacity-50 disabled:cursor-not-allowed"
               style={{ borderColor: "#c1a27b" }}
               placeholder="Notes"
               defaultValue={notes}

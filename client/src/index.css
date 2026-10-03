@@ -1,6 +1,33 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss" source(none);
+@config "../../tailwind.config.ts";
+@source "../index.html";
+@source "./";
+
+/*
+ * Keep the v3 visual scale while migrating the compiler. Inline values avoid
+ * collisions with the application's existing --shadow-* custom properties.
+ * The configured 3px/6px/9px radii remain in tailwind.config.ts.
+ */
+@theme inline {
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+  --shadow-2xl: 0 25px 50px -12px rgb(0 0 0 / 0.25);
+  --blur-sm: 4px;
+  --default-ring-width: 3px;
+  --default-ring-color: #3b82f6;
+}
+
+/* Compatibility utilities keep existing component class names and variants. */
+@utility shadow {
+  --tw-shadow: 0 1px 3px 0 var(--tw-shadow-color, rgb(0 0 0 / 0.1)), 0 1px 2px -1px var(--tw-shadow-color, rgb(0 0 0 / 0.1));
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+}
+
+@utility flex-shrink-0 {
+  flex-shrink: 0;
+}
 
 :root {
   --button-outline: rgba(0,0,0, .10);
@@ -192,8 +219,20 @@
 }
 
 @layer base {
-  * {
+  *, ::before, ::after, ::backdrop, ::file-selector-button {
     @apply border-border;
+  }
+
+  button:not(:disabled), [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  input::placeholder, textarea::placeholder {
+    color: #9ca3af;
+  }
+
+  dialog {
+    margin: auto;
   }
 
   body {
