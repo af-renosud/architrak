@@ -24,3 +24,15 @@ Rule: Illustrated quotation specifications can be image-only while prices are te
 **Why:** A real illustrated joinery quotation yielded generic descriptions and a duplicate continuation product despite complete page coverage. Whole-PDF input recovered correct ordered prices in a bounded comparison, but an intermediate layout summary shifted prices to the wrong products.
 
 **How to apply:** evaluate native-PDF recovery against independent ordered source prices, not totals alone. Retain human review of specifications and image associations, especially repeated equal-price products; never replace a user's corrected live quotation during experimentation.
+
+Rule: Synthetic illustrated supplier PDFs establish deterministic eligibility and rejection behavior, not model accuracy on unseen real suppliers. Do not broaden automatic recovery based on synthetic reconciliation alone.
+
+**Why:** Equal-price products can be interchanged while every financial check passes, and locally available ordinary supplier tables are not evidence for illustrated layouts.
+
+**How to apply:** Keep reference identity checks and explicit specification-review advisories. Before supporting a further supplier shape, inspect a disposable original and derive independent row evidence; never use live re-scraping to run comparisons.
+
+Rule: A recovery gate must reject unaccounted monetary rows even when amounts are integers or adjustments cancel, and must compare against independently parsed printed totals rather than only the baseline model total.
+
+**Why:** A zero-net delivery/credit pair can disappear without changing the sum; agreeing model totals can also disagree with the PDF. Neither arithmetic check alone proves completeness.
+
+**How to apply:** Include integer-currency, credit/fee and conflicting/duplicate printed-total fixtures whenever widening illustrated source evidence.

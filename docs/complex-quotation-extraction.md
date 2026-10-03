@@ -63,3 +63,64 @@ live quotation, manual correction, context asset or translation was changed.
 prefix, with optional `baseline`, `native` or `layout` mode. Results contain
 private source data and must not be committed. Regression tests use synthetic
 data; real PDF/results remain outside the repository.
+
+## Reference-led supplier cards
+
+The parser also recognizes two strictly labelled card formats, independent of
+“fourniture et pose” / “Composé de”:
+
+- `Repère : WIN-01`, a drawing caption, then
+  `Quantité : 1  Prix unitaire HT : 100,00  Total HT : 100,00`.
+- `Référence produit : WIN-01`, a drawing caption, then
+  `P.U. HT : 100,00  Qté : 1  Montant HT : 100,00`.
+
+These are conservative templates, **not general support for every illustrated
+supplier PDF**. At least three unique product references, drawing captions and
+complete arithmetic-consistent price rows are required. A `(suite)` reference
+must name the current product; the description can span pages but the page hint
+remains the price page. Equal-price products must retain their distinct
+references in candidate descriptions. Missing, repeated, mixed or unrecognized
+monetary rows reject the whole recovery. Blank/unreadable text pages also reject
+it: no model-invented source evidence is allowed.
+For these reference-led formats, exactly one printed `TOTAL GENERAL HT` must
+independently match the source-row sum; missing, conflicting or duplicate totals
+are review-only. Integer amounts with HT/currency labels and credit, transport
+or fee rows are rejected too, including zero-net adjustments that leave the
+overall sum unchanged.
+Unknown numeric lines also fail closed regardless of their labels or currency
+notation; only the exact drawing-caption dimension shape is exempt. This is
+intentionally restrictive for untested specification formats. Total labels are
+recognized before parsing their values, so an unreadable duplicate is rejected.
+
+Source options, alternatives and discounts are deliberately review-only, even
+if arithmetic happens to reconcile; baseline option/discount descriptions also
+prevent replacement. No option is dropped, discount guessed, or exclusion
+inferred from a total difference. This pass only replaces fresh parser output,
+not stored quotations, corrections, translations or assets. No persistence or
+re-scrape endpoint is used by the regression fixtures.
+
+The printed HT must reconcile **before** spending a recovery call. The existing
+Gemini-only, 20-page, 15-MiB and 120-second limits still apply; there is one
+additional native-PDF request and no recovery retry/layout-map request.
+Rejected evidence, unsupported providers, exceeded budgets, failed requests,
+rejected candidates and successful recoveries all retain review advisories.
+Even a successful recovery does not prove image/specification associations.
+
+### Verification and limits
+
+`server/__tests__/fixtures/illustrated-supplier.ts` builds two disposable
+four-page, illustrated PDFs with fictional references/prices, an explicit
+continuation and two equal-price products. Regression tests run Poppler on the
+actual generated PDF bytes, then check ordered source prices, reference identity,
+page provenance, rejection cases and parser call budgets with mocked model
+responses. Temporary source files are removed after each test. No private PDF
+or extracted private text is included in fixtures.
+
+Local disposable copies of existing ordinary supplier tables were also inspected
+as negative controls; those are not evidence for broadening illustrated
+eligibility. These tests prove deterministic gating and integration, not live
+model accuracy on additional real illustrated suppliers. A new supplier shape
+must supply its own independent row evidence before further broadening this gate.
+
+Run:
+`npx vitest run server/__tests__/illustrated-quotation.test.ts server/__tests__/illustrated-supplier-layouts.test.ts`

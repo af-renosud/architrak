@@ -11,7 +11,7 @@ import { writeFile, readFile, readdir, unlink, mkdtemp } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { env } from "../env";
-import { illustratedPriceRows, acceptIllustratedRecovery } from "../services/illustrated-quotation";
+import { illustratedEvidence, sourceRowsReconcile, acceptIllustratedRecovery } from "../services/illustrated-quotation";
 import { decideEmailDocRetry, EMAIL_DOC_MAX_ATTEMPTS } from "../services/email-doc-retry";
 import { evaluateEmailPrefilter, tierToExtractionStatus } from "./email-prefilter";
 import {
@@ -2715,10 +2715,19 @@ export async function parseDocument(
 
   if (parsed) {
     delete parsed.illustratedRecovery;
-    const illustratedRows = parsed.documentType === "quotation" ? illustratedPriceRows(pageTexts) : [];
-    if (illustratedRows.length) {
-      parsed.illustratedRecovery = { status: "review_required", reason: "Illustrated product blocks require specification and price-association review." };
-      if (provider === "gemini" && pdfBuffer.length <= 15 * 1024 * 1024 && images.length <= 20) {
+    const evidence = parsed.documentType === "quotation" ? illustratedEvidence(pageTexts) : undefined;
+    const illustratedRows = evidence?.rows ?? [];
+    if (evidence?.detected) {
+      parsed.illustratedRecovery = { status: "review_required", reason: evidence.reason || "Illustrated product blocks require specification and price-association review." };
+      const reconciles = sourceRowsReconcile(parsed, illustratedRows);
+      const withinBudget = pdfBuffer.length <= 15 * 1024 * 1024 && images.length <= 20;
+      const completeText = pageTexts.length === images.length;
+      if (!evidence.reason && (!reconciles || !completeText)) {
+        parsed.illustratedRecovery.reason = "Source rows do not fully reconcile the printed HT or page coverage; original extraction preserved for review.";
+      } else if (!evidence.reason && (provider !== "gemini" || !withinBudget)) {
+        parsed.illustratedRecovery.reason = "Whole-PDF recovery is unavailable for this provider or exceeds the 20-page/15-MiB budget; review the original extraction.";
+      }
+      if (reconciles && completeText && provider === "gemini" && withinBudget) {
         try {
           const recover = deps.recoverIllustratedPdf ?? (async (pdf: Buffer, id: string) => {
             const model = getGeminiClient().getGenerativeModel({
@@ -2727,6 +2736,7 @@ export async function parseDocument(
             }, { timeout: 120_000 });
             const response = await model.generateContent([
               buildDocumentExtractionPrompt(),
+              "Preserve every printed product reference verbatim in its description. A '(suite)' block continues the same product, even across pages. Never merge equal-price products or transfer specifications between references.",
               { inlineData: { mimeType: "application/pdf", data: pdf.toString("base64") } },
             ]);
             return JSON.parse(response.response.text()) as ParsedDocument;
@@ -2736,6 +2746,8 @@ export async function parseDocument(
           if (recovered) {
             parsed.lineItems = recovered;
             parsed.illustratedRecovery = { status: "recovered", reason: "Whole-PDF descriptions recovered; every price and quantity matches the source rows. Review specifications and illustration associations before approval." };
+          } else {
+            parsed.illustratedRecovery.reason = "Whole-PDF recovery did not match every source price, quantity and product identity; original extraction preserved for review.";
           }
         } catch {
           // Keep the original draft and explicit review advisory; no silent success.
