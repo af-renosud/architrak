@@ -21,6 +21,7 @@ import { env } from "../env";
 import type { InsertProjectCommunication, ProjectCommunication } from "@shared/schema";
 import { decryptCommunicationBody } from "../services/communication-body-crypto";
 import { CLIENT_NO_PAYMENT_NOTICE } from "@shared/signature-message-template";
+import { safeErrorDiagnostic } from "../safe-error";
 import type { Certificat } from "@shared/schema";
 import type { SupplierPaymentReadinessSnapshot } from "@shared/supplier-payment-readiness";
 import { assertSupplierCertificateDispatchValid } from "../services/supplier-certificate-dispatch.service";
@@ -115,7 +116,7 @@ async function mirrorRibForAttachment(args: {
     const fileName = args.ribDocumentName || `RIB.pdf`;
     return await uploadDocument(args.projectId, fileName, buffer, "application/pdf");
   } catch (err: unknown) {
-    console.warn(`[Certificat] RIB mirror failed:`, err instanceof Error ? err.message : err);
+    console.warn(`[Certificat] RIB mirror failed:`, safeErrorDiagnostic(err));
     return null;
   }
 }
@@ -745,7 +746,7 @@ export async function sendCommunication(
         } catch (error) {
           console.warn(
             `[EmailSender] Gmail has accepted client-link communication ${communicationId}, but confirmation lookup failed:`,
-            error,
+            safeErrorDiagnostic(error),
           );
         }
         throw new CommunicationDeliveryAwaitingConfirmationError(communicationId);
@@ -967,7 +968,7 @@ export async function sendCommunication(
           gmail = await getGmailClientForUser(sender);
           sentViaUserId = sender.id;
         } catch (err) {
-          console.error(`[EmailSender] Linked Gmail client failed for sender ${sender.id}, falling back to connector:`, err);
+          console.error(`[EmailSender] Linked Gmail client failed for sender ${sender.id}, falling back to connector:`, safeErrorDiagnostic(err));
         }
       }
     }
@@ -1023,7 +1024,7 @@ export async function sendCommunication(
           contentType,
         });
       } catch (err) {
-        console.error(`[EmailSender] Failed to load attachment ${key}:`, err);
+        console.error(`[EmailSender] Failed to load attachment ${key}:`, safeErrorDiagnostic(err));
         if (
           requiredSupplierAttachmentKeys?.includes(key)
           || requiredSignedCopyAttachmentKey === key
@@ -1175,7 +1176,7 @@ export async function sendCommunication(
         await sendCommunication(notice.id, { sentByUserId: opts?.sentByUserId ?? null });
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = safeErrorDiagnostic(err);
       console.error(
         `[EmailSender] Contractor payment notice for certificat ${comm.relatedCertificatId} failed (client send unaffected): ${message}`,
       );
@@ -1428,7 +1429,7 @@ export async function sendDevisSignatureContextEmail(opts: {
     await sendCommunication(communicationId);
     return { communicationId, status: "sent" };
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = safeErrorDiagnostic(err);
     console.error(
       `[EmailSender] Devis context email failed for devis ${opts.devisId} envelope ${opts.envelopeId}:`,
       message,
@@ -1503,7 +1504,7 @@ export async function sendPaymentChase(reminderId: number): Promise<void> {
       sentAt: new Date(),
     });
   } catch (err) {
-    console.error(`[EmailSender] Failed to send payment chase ${reminderId}:`, err);
+    console.error(`[EmailSender] Failed to send payment chase ${reminderId}:`, safeErrorDiagnostic(err));
     throw err;
   }
 }

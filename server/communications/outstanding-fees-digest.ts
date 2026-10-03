@@ -1,4 +1,5 @@
 import { env } from "../env";
+import { safeErrorDiagnostic } from "../safe-error";
 import { getUncachableGmailClient, isGmailConfigured } from "../gmail/client";
 import { getOutstandingFeesGlobal } from "../services/outstanding-fees.service";
 import {
@@ -185,7 +186,7 @@ export async function processOutstandingFeesDigest(
         `${summary.totalCount} entries, ${formatCurrencyNoSymbol(summary.totalFeeHt)} HT`,
     );
   } catch (err) {
-    console.error("[outstanding-fees-digest] error:", err);
+    console.error("[outstanding-fees-digest] error:", safeErrorDiagnostic(err));
   }
 }
 
@@ -199,7 +200,7 @@ export function startOutstandingFeesDigestScheduler(
   );
   schedulerInterval = setInterval(() => {
     processOutstandingFeesDigest().catch((err) =>
-      console.error("[outstanding-fees-digest] tick error:", err),
+      console.error("[outstanding-fees-digest] tick error:", safeErrorDiagnostic(err)),
     );
   }, intervalMs);
 }

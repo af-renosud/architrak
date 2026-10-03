@@ -61,3 +61,4 @@
 - [Retention applicability](certificate-retention-applicability.md) — defaults do not prove agreed retention; keep professional-services exemptions operator-decided, not inferred from categories.
 - [Supporting PDF lifecycle](supporting-pdf-lifecycle.md) — preserve originals; appended plans are separate attachments; object cleanup must respect concurrent package builds.
 - [Client quotation totals](client-quotation-totals.md) — show HT and TTC together, emphasizing the authoritative VAT-inclusive payable total.
+- [Credential error diagnostics](credential-error-diagnostics.md) — OAuth/DB exceptions require allowlisted categories, not message redaction; app-owned Gmail grants differ from the connector.

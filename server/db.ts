@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import * as schema from "@shared/schema";
 import { env } from "./env";
+import { safeErrorDiagnostic } from "./safe-error";
 
 const { Pool } = pg;
 
@@ -20,7 +21,7 @@ export const pool = new Pool({
 });
 
 pool.on("error", (err) => {
-  console.error("[db] Unexpected error on idle client:", err);
+  console.error("[db] Unexpected error on idle client:", safeErrorDiagnostic(err));
 });
 
 export const db = drizzle(pool, { schema });

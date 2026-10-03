@@ -1,4 +1,5 @@
 import { env } from "../env";
+import { safeErrorDiagnostic } from "../safe-error";
 import { getUncachableGmailClient, isGmailConfigured } from "../gmail/client";
 
 // Lightweight operator-alert plumbing for post-deploy maintenance scripts.
@@ -89,7 +90,7 @@ export async function sendOperatorAlert(
     );
     return { delivered: true, recipients };
   } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
+    const reason = safeErrorDiagnostic(err);
     console.error(
       `[operator-alert] failed to deliver alert from ${alert.source}: ${reason}`,
     );

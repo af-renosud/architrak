@@ -197,7 +197,7 @@ describe("sendDevisSignatureContextEmail", () => {
       message: "Bonjour Marie, voici le devis pour signature.",
     });
     expect(result.status).toBe("failed");
-    expect(result.error).toMatch(/gmail boom/);
+    expect(result.error).toBe("operation_failed");
     // The communication row exists and is marked failed for later retry.
     expect(state.comms[0].status).toBe("failed");
   });
@@ -210,7 +210,7 @@ describe("sendDevisSignatureContextEmail", () => {
       message: "Bonjour Marie, voici le devis pour signature.",
     });
     expect(result.status).toBe("failed");
-    expect(result.error).toMatch(/Client contact email missing/);
+    expect(result.error).toBe("operation_failed");
     expect(storageSpy.createProjectCommunication).not.toHaveBeenCalled();
   });
 });

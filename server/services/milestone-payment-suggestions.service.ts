@@ -17,6 +17,7 @@
  * dismisses.
  */
 import { db } from "../db";
+import { safeErrorDiagnostic } from "../safe-error";
 import { and, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import type { gmail_v1 } from "googleapis";
 import {
@@ -148,7 +149,7 @@ export async function scanMilestoneInvoiceReplies(gmail: gmail_v1.Gmail): Promis
       }
     } catch (err) {
       result.errors++;
-      console.error(`[MilestonePaymentSuggestions] thread scan failed for evidence ${evidence.id} (milestone ${milestone.id}):`, err);
+      console.error(`[MilestonePaymentSuggestions] thread scan failed for evidence ${evidence.id} (milestone ${milestone.id}):`, safeErrorDiagnostic(err));
     }
   }
   return result;

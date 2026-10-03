@@ -8,6 +8,7 @@ import { google, gmail_v1 } from "googleapis";
 import { env } from "../env";
 import { storage } from "../storage";
 import type { User } from "@shared/schema";
+import { safeErrorDiagnostic } from "../safe-error";
 
 /**
  * Build a Gmail API client authenticated as `user`. google-auth-library
@@ -70,7 +71,7 @@ export async function getGmailClientForUser(
       .catch((err) => {
         console.error(
           `[Gmail] Failed to persist refreshed tokens for user ${user.id}:`,
-          err,
+          safeErrorDiagnostic(err),
         );
       });
   });

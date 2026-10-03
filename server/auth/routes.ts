@@ -2,6 +2,7 @@ import type { Express, Request, Response } from "express";
 import { getAuthUrl, exchangeCodeForUser, DomainRestrictionError } from "./google-oauth";
 import { storage } from "../storage";
 import { env } from "../env";
+import { safeErrorDiagnostic } from "../safe-error";
 
 function getCallbackUrl(req: Request): string {
   const protocol = req.headers["x-forwarded-proto"] || req.protocol;
@@ -69,13 +70,13 @@ export function registerAuthRoutes(app: Express) {
 
       req.session.regenerate((regenerateErr) => {
         if (regenerateErr) {
-          console.error("Session regenerate error:", regenerateErr);
+          console.error("Session regenerate error:", safeErrorDiagnostic(regenerateErr));
           return res.status(500).json({ message: "Failed to create session" });
         }
         req.session.userId = user.id;
         req.session.save((saveErr) => {
           if (saveErr) {
-            console.error("Session save error:", saveErr);
+            console.error("Session save error:", safeErrorDiagnostic(saveErr));
             return res.status(500).json({ message: "Failed to create session" });
           }
           res.redirect("/");
@@ -97,7 +98,7 @@ export function registerAuthRoutes(app: Express) {
           </div></body></html>
         `);
       }
-      console.error("OAuth callback error:", error);
+      console.error("OAuth callback error:", safeErrorDiagnostic(error));
       res.status(500).json({ message: "Authentication failed" });
     }
   });
@@ -122,21 +123,21 @@ export function registerAuthRoutes(app: Express) {
         });
         req.session.regenerate((regenerateErr) => {
           if (regenerateErr) {
-            console.error("[dev-login] session regenerate error:", regenerateErr);
+            console.error("[dev-login] session regenerate error:", safeErrorDiagnostic(regenerateErr));
             return res.status(500).json({ message: "Failed to create session" });
           }
           req.session.userId = user.id;
           req.session.save((saveErr) => {
             if (saveErr) {
-              console.error("[dev-login] session save error:", saveErr);
+              console.error("[dev-login] session save error:", safeErrorDiagnostic(saveErr));
               return res.status(500).json({ message: "Failed to create session" });
             }
             res.json({ id: user.id, email: user.email });
           });
         });
       } catch (error: any) {
-        console.error("[dev-login] failed:", error);
-        res.status(500).json({ message: error?.message ?? "dev-login failed" });
+        console.error("[dev-login] failed:", safeErrorDiagnostic(error));
+        res.status(500).json({ message: "dev-login failed" });
       }
     });
   }
@@ -144,7 +145,7 @@ export function registerAuthRoutes(app: Express) {
   app.get("/api/auth/logout", (req: Request, res: Response) => {
     req.session.destroy((err) => {
       if (err) {
-        console.error("Session destroy error:", err);
+        console.error("Session destroy error:", safeErrorDiagnostic(err));
       }
       res.redirect("/");
     });

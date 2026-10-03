@@ -28,6 +28,7 @@
  */
 
 import { storage } from "../../storage";
+import { safeErrorDiagnostic } from "../../safe-error";
 import {
   isPennylaneConfigured,
   isPennylaneDryRun,
@@ -144,11 +145,11 @@ async function scheduleInlineSweep(projectId: number): Promise<void> {
     const due = await storage.listDuePennylanePushes(10);
     for (const row of due.filter((r) => r.projectId === projectId)) {
       attemptPennylanePush(row.id).catch((err) => {
-        console.error(`[PennylaneQueue] inline attempt for push ${row.id} crashed:`, err);
+        console.error(`[PennylaneQueue] inline attempt for push ${row.id} crashed:`, safeErrorDiagnostic(err));
       });
     }
   } catch (err) {
-    console.error("[PennylaneQueue] inline sweep failed:", err);
+    console.error("[PennylaneQueue] inline sweep failed:", safeErrorDiagnostic(err));
   }
 }
 
@@ -220,7 +221,7 @@ export async function attemptPennylanePush(pushId: number): Promise<void> {
   } catch (err) {
     const transient =
       err instanceof PennylaneApiError ? err.transient : false;
-    const message = err instanceof Error ? err.message : String(err);
+    const message = row.kind === "email_send" ? safeErrorDiagnostic(err) : err instanceof Error ? err.message : String(err);
     const exhausted = attemptNum >= MAX_PENNYLANE_PUSH_ATTEMPTS;
     if (!transient || exhausted) {
       await storage.markPennylanePushDeadLettered({
@@ -756,11 +757,11 @@ export async function sweepPennylanePushes(): Promise<void> {
     const due = await storage.listDuePennylanePushes(20);
     for (const row of due) {
       await attemptPennylanePush(row.id).catch((err) => {
-        console.error(`[PennylaneQueue] sweep attempt for ${row.id} crashed:`, err);
+        console.error(`[PennylaneQueue] sweep attempt for ${row.id} crashed:`, safeErrorDiagnostic(err));
       });
     }
   } catch (err) {
-    console.error("[PennylaneQueue] sweep failed:", err);
+    console.error("[PennylaneQueue] sweep failed:", safeErrorDiagnostic(err));
   }
 }
 
@@ -771,7 +772,7 @@ export function startPennylanePushSweeper(intervalMs: number = 60_000): void {
     return;
   }
   sweeperInterval = setInterval(() => {
-    sweepPennylanePushes().catch(console.error);
+    sweepPennylanePushes().catch((err) => console.error("[PennylaneQueue] sweep rejected:", safeErrorDiagnostic(err)));
   }, intervalMs);
   console.log(`[PennylaneQueue] sweeper started (every ${Math.round(intervalMs / 1000)}s)`);
 }

@@ -140,7 +140,25 @@ describe("sendOperatorAlert", () => {
       body: "body",
     });
     expect(res.delivered).toBe(false);
-    expect(res.reason).toBe("rate limited");
+    expect(res.reason).toBe("operation_failed");
     expect(res.recipients).toEqual(["ops@a.co"]);
+  });
+
+  it("never logs or returns nested Gmail credentials", async () => {
+    envOverrides.OPERATOR_ALERT_EMAIL = "synthetic@example.invalid";
+    const sentinel = "synthetic-operator-alert-credential";
+    gmailSendMock.mockRejectedValue(Object.assign(new Error(sentinel), {
+      code: 401, config: { headers: { Authorization: sentinel }, data: { refresh_token: sentinel } },
+    }));
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await sendOperatorAlert({ source: "test", subject: "synthetic", body: "synthetic" });
+      expect(res.reason).toBe("http_401");
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log.mock.calls.flat().every((arg) => typeof arg === "string")).toBe(true);
+      expect(JSON.stringify(log.mock.calls)).not.toContain(sentinel);
+    } finally {
+      log.mockRestore();
+    }
   });
 });

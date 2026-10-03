@@ -11,6 +11,7 @@
 // pass per tick (no user iteration) and label everything as user "0".
 
 import { createHash } from "crypto";
+import { safeErrorDiagnostic } from "../safe-error";
 import { getUncachableGmailClient, isGmailConfigured, isFakeGmailMode } from "./client";
 import { getGmailClientForUser } from "./user-client";
 import { uploadDocument, isObjectStorageConfigured } from "../storage/object-storage";
@@ -81,10 +82,10 @@ export function startPolling(intervalMs: number = 15 * 60 * 1000) {
 
   console.log(`[Gmail Monitor] Starting polling every ${intervalMs / 1000}s`);
   pollInterval = setInterval(() => {
-    pollInbox().catch(console.error);
+    pollInbox().catch((err) => console.error("[Gmail Monitor] Poll rejected:", safeErrorDiagnostic(err)));
   }, intervalMs);
 
-  setTimeout(() => pollInbox().catch(console.error), 5000);
+  setTimeout(() => pollInbox().catch((err) => console.error("[Gmail Monitor] Poll rejected:", safeErrorDiagnostic(err))), 5000);
 }
 
 export function stopPolling() {
@@ -119,13 +120,13 @@ export async function pollInbox(): Promise<{ processed: number; errors: number }
       // Task #466 — keep the payment-reply scan on the fake path too so the
       // code path stays exercised in dev (fake threads.get returns empty).
       const scan = await scanCertificatReplies(fake).catch((err) => {
-        console.error("[Gmail Monitor] Payment-reply scan failed (fake mode):", err);
+        console.error("[Gmail Monitor] Payment-reply scan failed (fake mode):", safeErrorDiagnostic(err));
         return { scannedThreads: 0, suggestionsCreated: 0, ambiguousCreated: 0, errors: 1 };
       });
       errors += scan.errors;
       // Task #617 — milestone honoraires threads too (same fake-path reason).
       const msScan = await scanMilestoneInvoiceReplies(fake).catch((err) => {
-        console.error("[Gmail Monitor] Milestone payment-reply scan failed (fake mode):", err);
+        console.error("[Gmail Monitor] Milestone payment-reply scan failed (fake mode):", safeErrorDiagnostic(err));
         return { scannedThreads: 0, suggestionsCreated: 0, ambiguousCreated: 0, errors: 1 };
       });
       errors += msScan.errors;
@@ -194,8 +195,8 @@ export async function pollInbox(): Promise<{ processed: number; errors: number }
           }
         } catch (scanErr: any) {
           scanErrors = 1;
-          scanErrorMsg = `Payment-reply scan failed: ${(scanErr?.message || "unknown error").slice(0, 300)}`;
-          console.error(`[Gmail Monitor] Payment-reply scan failed for user ${user.id}:`, scanErr);
+          scanErrorMsg = `Payment-reply scan failed: ${safeErrorDiagnostic(scanErr)}`;
+          console.error(`[Gmail Monitor] Payment-reply scan failed for user ${user.id}:`, safeErrorDiagnostic(scanErr));
         }
         errors += scanErrors;
         await storage.updateUserGmailPollStatus(user.id, {
@@ -206,7 +207,7 @@ export async function pollInbox(): Promise<{ processed: number; errors: number }
       } catch (err: any) {
         errors++;
         const msg = err?.message || "Unknown error";
-        console.error(`[Gmail Monitor] Poll failed for user ${user.id} (${user.email}):`, err);
+        console.error(`[Gmail Monitor] Poll failed for user ${user.id}:`, safeErrorDiagnostic(err));
         // 401 / invalid_grant means the user revoked access in their Google
         // account settings. Mark the row so the dashboard surfaces a re-link
         // CTA, but keep the refresh_token for now (operator can clear it).
@@ -215,7 +216,7 @@ export async function pollInbox(): Promise<{ processed: number; errors: number }
         await storage.updateUserGmailPollStatus(user.id, {
           gmailLastPollAt: startedAt,
           gmailLastPollStatus: isAuthFailure ? "auth_revoked" : "error",
-          gmailLastPollError: msg.slice(0, 500),
+          gmailLastPollError: isAuthFailure ? "oauth_reauthorization_required" : safeErrorDiagnostic(err),
         });
       }
     }
@@ -232,8 +233,8 @@ export async function pollInbox(): Promise<{ processed: number; errors: number }
     console.log(`[Gmail Monitor] Poll complete: ${processed} processed, ${errors} errors across ${users.length} inbox(es)`);
   } catch (err: any) {
     lastPollStatus = "error";
-    lastPollError = err.message || "Unknown error";
-    console.error("[Gmail Monitor] Poll failed:", err);
+    lastPollError = safeErrorDiagnostic(err);
+    console.error("[Gmail Monitor] Poll failed:", safeErrorDiagnostic(err));
   } finally {
     isPolling = false;
   }
@@ -270,7 +271,7 @@ async function scanConnectorSentThreads(): Promise<number> {
     }
     return scan.errors;
   } catch (err) {
-    console.error("[Gmail Monitor] Connector payment-reply scan failed:", err);
+    console.error("[Gmail Monitor] Connector payment-reply scan failed:", safeErrorDiagnostic(err));
     return 1;
   }
 }
@@ -352,7 +353,7 @@ export async function collectUnprocessedMessageIds(
         });
       } catch (err) {
         listErrors++;
-        console.error(`[Gmail Monitor] User ${userId}: message list failed for query "${q.slice(0, 120)}…" (page ${page + 1}):`, err);
+        console.error(`[Gmail Monitor] User ${userId}: message list failed (page ${page + 1}):`, safeErrorDiagnostic(err));
         return;
       }
       const pageIds: string[] = [];
@@ -474,18 +475,18 @@ async function pollOneInbox(
       // extinguish as soon as the underlying problem is gone.  Fire-and-forget:
       // a failure here must never shadow the successful processing.
       storage.clearGmailMessageFailure(userId, id).catch((clearErr) => {
-        console.error(`[Gmail Monitor] User ${userId}: could not clear failure record for message ${id}:`, clearErr);
+        console.error(`[Gmail Monitor] User ${userId}: could not clear failure record for message ${id}:`, safeErrorDiagnostic(clearErr));
       });
       processed++;
     } catch (err) {
       errors++;
-      console.error(`[Gmail Monitor] User ${userId}: error processing message ${id}:`, err);
+      console.error(`[Gmail Monitor] User ${userId}: error processing message ${id}:`, safeErrorDiagnostic(err));
       // Task #506 — increment the per-message failure counter so the dashboard
       // can surface messages that fail on every poll (e.g. corrupt attachment).
       // Fire-and-forget: a failure to record the counter must never shadow the
       // original processing error.
       storage.recordGmailMessageFailure(userId, id).catch((counterErr) => {
-        console.error(`[Gmail Monitor] User ${userId}: could not record failure counter for message ${id}:`, counterErr);
+        console.error(`[Gmail Monitor] User ${userId}: could not record failure counter for message ${id}:`, safeErrorDiagnostic(counterErr));
       });
     }
   }
@@ -521,7 +522,7 @@ async function getPrefilterContext(): Promise<PrefilterContext> {
     );
     firm = { legalNames: getFirmProfile().legalNames, domains: getFirmEmailDomains() };
   } catch (err) {
-    console.error("[Gmail Monitor] Firm profile unavailable for prefilter context:", err);
+    console.error("[Gmail Monitor] Firm profile unavailable for prefilter context:", safeErrorDiagnostic(err));
   }
   const ctx: PrefilterContext = {
     contractors,
@@ -564,7 +565,7 @@ async function ensureLabelSafe(gmail: gmail_v1.Gmail, userId: number): Promise<b
       console.warn(`[Gmail Monitor] User ${userId}: cannot create/manage labels — insufficient permissions. Skipping label operations.`);
       return false;
     }
-    console.error(`[Gmail Monitor] User ${userId}: failed to create label:`, err);
+    console.error(`[Gmail Monitor] User ${userId}: failed to create label:`, safeErrorDiagnostic(err));
     return false;
   }
 }
@@ -579,7 +580,7 @@ async function applyLabel(gmail: gmail_v1.Gmail, messageId: string, userId: numb
       requestBody: { addLabelIds: [lid] },
     });
   } catch (err) {
-    console.error(`[Gmail Monitor] User ${userId}: failed to apply label to ${messageId}:`, err);
+    console.error(`[Gmail Monitor] User ${userId}: failed to apply label to ${messageId}:`, safeErrorDiagnostic(err));
   }
 }
 

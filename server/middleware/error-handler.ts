@@ -1,6 +1,7 @@
 import type { ErrorRequestHandler, Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 import { env } from "../env";
+import { safeErrorDiagnostic } from "../safe-error";
 
 /**
  * Global Express error handler.
@@ -11,7 +12,7 @@ import { env } from "../env";
  * leave the server.
  *
  * Behavior:
- *  - Always logs the full error (with request id when present) to
+ *  - Logs only a credential-safe diagnostic (with request id when present) to
  *    `console.error` for internal tracing.
  *  - `ZodError` ⇒ 400 with a flat array of `{ path, message }` issues.
  *  - Errors carrying an explicit `status`/`statusCode` ⇒ that status
@@ -62,17 +63,12 @@ export const errorHandler: ErrorRequestHandler = (
 ): void => {
   // Always log internally, regardless of what we send to the client.
   const ridSuffix = req.requestId ? ` rid=${req.requestId}` : "";
-  if (err instanceof Error) {
-    console.error(`[error-handler]${ridSuffix} ${err.name}: ${err.message}`);
-    if (err.stack) console.error(err.stack);
-  } else {
-    console.error(`[error-handler]${ridSuffix} non-Error thrown:`, err);
-  }
+  console.error(`[error-handler]${ridSuffix}`, safeErrorDiagnostic(err));
 
   // If headers were already sent (e.g. SSE stream), defer to Express's
   // default handler which will close the connection.
   if (res.headersSent) {
-    next(err);
+    next(new Error(safeErrorDiagnostic(err)));
     return;
   }
 

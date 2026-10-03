@@ -1,4 +1,5 @@
 import { storage } from "../storage";
+import { safeErrorDiagnostic } from "../safe-error";
 import { reconcilePayments } from "./certificat-payments.service";
 import type { gmail_v1 } from "googleapis";
 
@@ -239,7 +240,7 @@ export async function scanCertificatReplies(gmail: gmail_v1.Gmail, scope?: numbe
       }
     } catch (err) {
       result.errors++;
-      console.error(`[PaymentSuggestions] thread scan failed for communication ${comm.id} (cert ${cert.certificateRef}):`, err);
+      console.error(`[PaymentSuggestions] thread scan failed for communication ${comm.id} (cert ${cert.certificateRef}):`, safeErrorDiagnostic(err));
     }
   }
   return result;

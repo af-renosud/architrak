@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { safeErrorDiagnostic } from "../safe-error";
 import { z } from "zod";
 import { storage } from "../storage";
 import { getGmailMonitorStatus, pollInbox } from "../gmail/monitor";
@@ -73,7 +74,7 @@ router.get("/api/gmail/status", async (_req, res) => {
       });
     }
   } catch (err) {
-    console.error("[Gmail] poll-health classification failed:", err);
+    console.error("[Gmail] poll-health classification failed:", safeErrorDiagnostic(err));
     pollHealth = { level: "never", ageMs: null, message: "Could not determine inbox scan health." };
   }
   // Task #313: surface how many emailed documents finished extraction but
@@ -86,7 +87,7 @@ router.get("/api/gmail/status", async (_req, res) => {
     needsAttentionCount = needsReview.length;
     needsProjectCount = needsReview.filter((d) => d.projectId == null).length;
   } catch (err) {
-    console.error("[Gmail] needs-project count failed:", err);
+    console.error("[Gmail] needs-project count failed:", safeErrorDiagnostic(err));
   }
 
   // Task #506 — count messages that have failed >= PERSISTENT_FAILURE_THRESHOLD
@@ -95,7 +96,7 @@ router.get("/api/gmail/status", async (_req, res) => {
   try {
     persistentFailureCount = await storage.getPersistentGmailFailureCount(PERSISTENT_FAILURE_THRESHOLD);
   } catch (err) {
-    console.error("[Gmail] persistent-failure count failed:", err);
+    console.error("[Gmail] persistent-failure count failed:", safeErrorDiagnostic(err));
   }
 
   res.json({

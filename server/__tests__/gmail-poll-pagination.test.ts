@@ -48,6 +48,27 @@ function fakeGmail(pagesByQuery: Record<string, string[][]>): {
 describe("collectUnprocessedMessageIds (Task #503)", () => {
   beforeEach(() => processedSet.clear());
 
+  it("does not log Gmail request credentials, search queries, or driver parameters on list failure", async () => {
+    const sentinel = "synthetic-private-query-and-token";
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const gmail = {
+        users: { messages: { list: vi.fn().mockRejectedValue(Object.assign(new Error(sentinel), {
+          code: 401,
+          params: [sentinel],
+          config: { headers: { Authorization: sentinel }, url: `https://invalid.example/?token=${sentinel}` },
+        })) } },
+      } as unknown as gmail_v1.Gmail;
+      await collectUnprocessedMessageIds(gmail, 1, { targeted: [], backstop: sentinel });
+      expect(log).toHaveBeenCalled();
+      expect(log.mock.calls.flat().every((value) => typeof value === "string")).toBe(true);
+      expect(JSON.stringify(log.mock.calls)).not.toContain(sentinel);
+      expect(JSON.stringify(log.mock.calls)).toContain("http_401");
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("advances to page two when the entire first page is already processed", async () => {
     const page1 = Array.from({ length: 10 }, (_, i) => `old-${i}`);
     for (const id of page1) processedSet.add(id);

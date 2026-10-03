@@ -1,4 +1,5 @@
 import { storage } from "../storage";
+import { safeErrorDiagnostic } from "../safe-error";
 import { sendPaymentChase } from "./email-sender";
 import { getUncachableGmailClient, isGmailConfigured } from "../gmail/client";
 import type { ArchitectFeeInvoice, InsertPaymentReminder } from "@shared/schema";
@@ -43,13 +44,13 @@ export function startScheduler(intervalMs: number = 60 * 60 * 1000) {
 
   console.log(`[PaymentScheduler] Starting scheduler, checking every ${intervalMs / 1000}s`);
   schedulerInterval = setInterval(() => {
-    processDueReminders().catch(console.error);
-    processDesignContractDigest().catch(console.error);
+    processDueReminders().catch((err) => console.error("[PaymentScheduler] Reminder task rejected:", safeErrorDiagnostic(err)));
+    processDesignContractDigest().catch((err) => console.error("[PaymentScheduler] Digest task rejected:", safeErrorDiagnostic(err)));
   }, intervalMs);
 
   setTimeout(() => {
-    processDueReminders().catch(console.error);
-    processDesignContractDigest().catch(console.error);
+    processDueReminders().catch((err) => console.error("[PaymentScheduler] Reminder task rejected:", safeErrorDiagnostic(err)));
+    processDesignContractDigest().catch((err) => console.error("[PaymentScheduler] Digest task rejected:", safeErrorDiagnostic(err)));
   }, 30000);
 }
 
@@ -175,7 +176,7 @@ async function processDesignContractDigest(): Promise<void> {
         } catch (err) {
           console.error(
             `[design-digest] gmail send failed for user=${architectUserId}:`,
-            err instanceof Error ? err.message : err,
+            safeErrorDiagnostic(err),
           );
           continue;
         }
@@ -192,7 +193,7 @@ async function processDesignContractDigest(): Promise<void> {
       }
     }
   } catch (err) {
-    console.error("[design-digest] error:", err);
+    console.error("[design-digest] error:", safeErrorDiagnostic(err));
   }
 }
 
@@ -279,10 +280,10 @@ async function processDueReminders(): Promise<void> {
       try {
         await sendPaymentChase(reminder.id);
       } catch (err) {
-        console.error(`[PaymentScheduler] Failed to send reminder ${reminder.id}:`, err);
+        console.error(`[PaymentScheduler] Failed to send reminder ${reminder.id}:`, safeErrorDiagnostic(err));
       }
     }
   } catch (err) {
-    console.error("[PaymentScheduler] Error processing reminders:", err);
+    console.error("[PaymentScheduler] Error processing reminders:", safeErrorDiagnostic(err));
   }
 }

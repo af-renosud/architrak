@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { safeErrorDiagnostic } from "../safe-error";
 import { and, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import { db } from "../db";
 import { storage } from "../storage";
@@ -723,5 +724,5 @@ let timer: ReturnType<typeof setInterval> | null = null;
 export function startSignedCopyNoticeSweeper(intervalMs = 60_000): void {
   if (timer) return;
   timer = setInterval(() => void sweepSignedCopyNotices().catch((error) =>
-    console.error("[SignedDevisCopy] sweep failed", error)), intervalMs);
+    console.error("[SignedDevisCopy] sweep failed", safeErrorDiagnostic(error))), intervalMs);
 }
