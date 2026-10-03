@@ -57,6 +57,7 @@ import { SigningPanel, OPEN_SIGNING_SEND_EVENT } from "@/components/devis/Signin
 import { CertificatPanel } from "@/components/devis/CertificatPanel";
 import { DevisClosurePanel } from "@/components/devis/DevisClosurePanel";
 import { SupportingPdfsPanel } from "@/components/devis/SupportingPdfsPanel";
+import { ClientConversationPanel } from "@/components/devis/ClientConversationPanel";
 import { countDevisSignOff } from "@/components/devis/devis-counters";
 
 import { Amount } from "@/components/ui/amount";
@@ -5242,6 +5243,7 @@ function ChecksPanel({
       <LapsingTokenBanner devisId={devisId} isArchived={isArchived} />
       <TokenPanel devisId={devisId} projectId={projectId} isArchived={isArchived} />
       <ClientPortalPanel devisId={devisId} projectId={projectId} isArchived={isArchived} />
+      <ClientConversationPanel devisId={devisId} lineItems={lineItems} isArchived={isArchived} />
       <ProjectSharePublishControl projectId={projectId} devisId={devisId} isArchived={isArchived} />
       <InsurancePanel devisId={devisId} isArchived={isArchived} />
       <SigningPanel devisId={devisId} isArchived={isArchived} />

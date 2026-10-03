@@ -30,7 +30,7 @@ const sendToClientSchema = z.object({
 }).strict();
 
 const architectReplySchema = z.object({
-  body: z.string().min(1).max(5000),
+  body: z.string().trim().min(1).max(5000),
 }).strict();
 
 const resolveSchema = z.object({
@@ -148,6 +148,11 @@ router.post(
     const userId = req.session?.userId ?? null;
     const check = await storage.getClientCheck(checkId);
     if (!check) return res.status(404).json({ message: "Check not found" });
+    if (check.status !== "open") return res.status(409).json({ message: "This conversation is closed" });
+    const devis = await storage.getDevis(check.devisId);
+    const project = devis ? await storage.getProject(devis.projectId) : null;
+    if (!project) return res.status(404).json({ message: "Project not found" });
+    if (project.archivedAt) return res.status(409).json({ message: "Archived projects are read-only" });
     const user = userId ? await storage.getUser(Number(userId)) : null;
     const msg = await storage.createClientCheckMessage({
       checkId,
@@ -170,6 +175,13 @@ router.post(
   validateRequest({ params: checkIdParams, body: resolveSchema }),
   async (req, res) => {
     const checkId = Number(req.params.checkId);
+    const check = await storage.getClientCheck(checkId);
+    if (!check) return res.status(404).json({ message: "Check not found" });
+    if (check.status !== "open") return res.status(409).json({ message: "This conversation is closed" });
+    const devis = await storage.getDevis(check.devisId);
+    const project = devis ? await storage.getProject(devis.projectId) : null;
+    if (!project) return res.status(404).json({ message: "Project not found" });
+    if (project.archivedAt) return res.status(409).json({ message: "Archived projects are read-only" });
     const userId = req.session?.userId ?? null;
     const user = userId ? await storage.getUser(Number(userId)) : null;
     const updated = await storage.updateClientCheck(checkId, {
