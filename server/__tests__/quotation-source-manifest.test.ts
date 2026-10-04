@@ -5,12 +5,12 @@ import type { ParsedDocument } from "../gmail/document-parser";
 const r = (page: number, y: number) => ({ page, x: 0.1, y, w: 0.8, h: 0.1 });
 const manifest = {
   sections: [
-    { id: "010", reference: "WIN-A", priceRegion: r(1, 0.8), specificationRegions: [r(2, 0.1)], quantity: 1, unitPrice: 100, total: 100 },
-    { id: "011", reference: "WIN-B", priceRegion: r(2, 0.4), specificationRegions: [r(2, 0.6)], quantity: 1, unitPrice: 100, total: 100 },
+    { id: "010", reference: "WIN-A", independentText: "WIN-A Dim. L x H : 900 mm X 1200 mm", priceRegion: r(1, 0.8), specificationRegions: [r(2, 0.1)], quantity: 1, unitPrice: 100, total: 100 },
+    { id: "011", reference: "WIN-B", independentText: "WIN-B Dim. L x H : 900 mm X 1200 mm", priceRegion: r(2, 0.4), specificationRegions: [r(2, 0.6)], quantity: 1, unitPrice: 100, total: 100 },
   ],
   segments: [
-    { id: "a", section: "010", page: 2, text: "WIN-A double vitrage", disposition: "item", region: r(2, 0.1) },
-    { id: "b", section: "011", page: 2, text: "WIN-B hors peinture", disposition: "item", region: r(2, 0.6) },
+    { id: "a", section: "010", page: 2, text: "WIN-A double vitrage\nDim. L x H : 900 mm X 1200 mm", disposition: "item", region: r(2, 0.1) },
+    { id: "b", section: "011", page: 2, text: "WIN-B hors peinture\nDim. L x H : 900 mm X 1200 mm", disposition: "item", region: r(2, 0.6) },
   ],
   inventoriedPages: [1, 2],
 };
@@ -28,6 +28,11 @@ describe("independent source manifest verification", () => {
   });
   it("rejects equal-price description swaps", () => {
     expect(verifyQuotationManifest(manifest, rows, { ...candidate, lineItems: [...candidate.lineItems!].reverse() }, 2).verified).toBe(false);
+  });
+  it("rejects appending A's full specification to B while both correct descriptions remain", () => {
+    const changed = structuredClone(candidate);
+    changed.lineItems![1].description += `\n${changed.lineItems![0].description}`;
+    expect(verifyQuotationManifest(manifest, rows, changed, 2).verified).toBe(false);
   });
   it("rejects a missing page even with all financial rows", () => {
     expect(verifyQuotationManifest({ ...manifest, inventoriedPages: [1] }, rows, candidate, 2).verified).toBe(false);

@@ -1,6 +1,7 @@
 import { db } from "./db";
 import { createHash, randomUUID } from "node:crypto";
 import { computeCertificatPaymentState, type CertificatPaymentState } from "@shared/financial-utils";
+import { translationEditInvalidation } from "./services/translation-edit-invalidation";
 import {
   resolveIntakeDocumentRelationship,
   type RelationExtraction,
@@ -5606,9 +5607,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateDevisTranslation(devisId: number, data: Partial<InsertDevisTranslation>): Promise<DevisTranslation | undefined> {
+    const hasContent = data.lineTranslations !== undefined || data.headerTranslated !== undefined;
     const [row] = await db
       .update(devisTranslations)
-      .set({ ...data, updatedAt: new Date() })
+      .set({ ...data, ...translationEditInvalidation(data),
+        ...(hasContent ? { contextsVersion: sql`${devisTranslations.contextsVersion} + 1` } : {}),
+        updatedAt: new Date() })
       .where(eq(devisTranslations.devisId, devisId))
       .returning();
     return row;

@@ -69,6 +69,13 @@ function detectVatInclusiveLineTotal(
 // only and never persisted; we don't validate it as a separate equation.
 export function validateExtraction(parsed: ParsedDocument): ValidationResult {
   const warnings: ValidationWarning[] = [];
+  if (parsed.quotationVerification && !parsed.quotationVerification.verified) {
+    warnings.push({ field: "quotationContentCoverage", expected: "Complete source-linked specifications",
+      actual: "unverified", severity: "error",
+      message: [...parsed.quotationVerification.failures,
+        ...(parsed.quotationVerification.coverage?.issues ?? []).map(i =>
+          `Page ${i.page}, section ${i.section}: ${i.kind} content (${i.segmentId})`)].join(" ") });
+  }
   if (parsed.illustratedRecovery) {
     warnings.push({
       field: "illustrated_quotation_review",

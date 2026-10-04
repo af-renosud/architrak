@@ -21,7 +21,7 @@ export interface QuotationCoverageIssue {
   segmentId: string;
   page: number;
   section: string;
-  kind: "invalid_inventory" | "uncertain" | "missing" | "misplaced" | "duplicate";
+  kind: "invalid_inventory" | "uncertain" | "missing" | "misplaced" | "duplicate" | "unattributed";
 }
 
 // Do not remove punctuation, accents, numbers or units: those can change the
@@ -80,13 +80,41 @@ export function compareQuotationContent(
     }
     const targets = segment.disposition === "document"
       ? [document] : normalized.filter(c => c.section === segment.section).map(c => c.text);
-    const expectedCount = source.filter(s => s.section === segment.section
-      && s.disposition === segment.disposition && normalizeQuotationText(s.text) === text).length;
+    // A short segment may also occur legitimately within a longer source
+    // paragraph. Count source occurrences, not merely identical segment rows.
+    const expectedCount = occurrences(normalizeQuotationText(source.filter(s => s.section === segment.section
+      && s.disposition === segment.disposition).map(s => s.text).join("\n")), text);
     const count = targets.reduce((sum, target) => sum + occurrences(target, text), 0);
     if (count > expectedCount) issue("duplicate");
     if (count < expectedCount) {
       const elsewhere = normalized.some(c => c.section !== segment.section && occurrences(c.text, text) > 0);
       issue(elsewhere ? "misplaced" : "missing");
+    }
+  }
+  // Check the reverse direction too: all candidate text must belong to this
+  // section's source. Merely finding every source passage misses extra or
+  // cross-section specifications appended to an otherwise correct product.
+  for (const candidate of [...normalized.map(c => ({ ...c, document: false })),
+    { section: "document", text: document, document: true }]) {
+    const allowed = source.filter(s => candidate.document ? s.disposition === "document"
+      : s.disposition === "item" && s.section === candidate.section);
+    const covered = new Uint8Array(candidate.text.length);
+    for (const segment of allowed) {
+      const text = normalizeQuotationText(segment.text);
+      if (!text) continue;
+      let cursor = 0;
+      while ((cursor = candidate.text.indexOf(text, cursor)) !== -1) {
+        const before = candidate.text[cursor - 1] ?? "";
+        const after = candidate.text[cursor + text.length] ?? "";
+        if (!/[0-9A-Za-zÀ-ÿ]/.test(before) && !/[0-9A-Za-zÀ-ÿ]/.test(after))
+          covered.fill(1, cursor, cursor + text.length);
+        cursor += text.length;
+      }
+    }
+    if (candidate.text.split("").some((char, i) => !covered[i] && !/\s/.test(char))) {
+      const location = allowed[0];
+      issues.push({ segmentId: location?.id ?? "", page: location?.page ?? 0, section: candidate.section,
+        kind: "unattributed" });
     }
   }
   return { complete: issues.length === 0, issues };

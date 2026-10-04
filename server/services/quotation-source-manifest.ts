@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { compareQuotationContent } from "../../shared/quotation-content-coverage";
+import { normalizeQuotationText } from "../../shared/quotation-content-coverage";
+import { graphicEvidenceIssues } from "../../shared/quotation-graphic-evidence";
 import type { ParsedDocument } from "../gmail/document-parser";
 import type { IllustratedPriceRow } from "./illustrated-quotation";
 
@@ -13,9 +15,11 @@ const region = z.object({
 }).refine(r => r.x + r.w <= 1.001 && r.y + r.h <= 1.001, "Region extends outside page");
 
 export const quotationSourceManifestSchema = z.object({
+  documentText: z.string().optional(),
   sections: z.array(z.object({
     id: z.string().trim().min(1),
     reference: z.string().trim().min(1),
+    independentText: z.string().min(1),
     priceRegion: region,
     specificationRegions: z.array(region).min(1),
     quantity: z.number().positive(),
@@ -38,6 +42,28 @@ export type QuotationSourceManifest = z.infer<typeof quotationSourceManifestSche
 
 const cents = (n: number | undefined) => typeof n === "number" && Number.isFinite(n) ? Math.round(n * 100) : null;
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+export function canonicalProductReference(reference: string): string {
+  return reference.match(/\b[A-Z]{2,}[- ]+\d{2,}[A-Z0-9-]*/)?.[0] ?? reference.trim();
+}
+
+/** Difference inventory against the initial OCR, without treating its row
+ * ordinal as trustworthy provenance. Unmatched text is retained for review. */
+export function compareInitialQuotation(initial: ParsedDocument["lineItems"], candidate: ParsedDocument,
+  manifest: QuotationSourceManifest) {
+  return (initial ?? []).map((line, index) => {
+    const references = manifest.sections.filter(s => normalizeQuotationText(line.description)
+      .includes(normalizeQuotationText(s.reference)));
+    const target = references.length === 1
+      ? candidate.lineItems?.[manifest.sections.findIndex(s => s.id === references[0].id)] : undefined;
+    return { initialRow: index + 1, page: line.pageHint ?? null, initialText: line.description,
+      sourceText: references.length === 1 ? manifest.segments
+        .filter(s => s.section === references[0].id && s.disposition === "item").map(s => s.text).join("\n") : null,
+      sourceRegions: references.length === 1 ? references[0].specificationRegions : [],
+      section: references.length === 1 ? references[0].id : null,
+      status: target && normalizeQuotationText(target.description).includes(normalizeQuotationText(line.description))
+        ? "preserved" : "requires_source_review" };
+  });
+}
 
 /**
  * Validates independently collected source evidence before using it to judge a
@@ -67,6 +93,8 @@ export function verifyQuotationManifest(
   manifest.sections.forEach((section, i) => {
     const row = sourceRows[i];
     const line = candidate.lineItems?.[i];
+    if (line) failures.push(...graphicEvidenceIssues(section.reference, section.independentText, line.description)
+      .map(issue => `${section.id}: ${issue}`));
     if (!row || !line || row.page !== section.priceRegion.page
       || row.quantity !== section.quantity || row.quantity !== line.quantity
       || cents(row.unitPrice) !== cents(section.unitPrice) || cents(row.unitPrice) !== cents(line.unitPrice)
@@ -102,7 +130,7 @@ export function verifyQuotationManifest(
   const coverage = compareQuotationContent(manifest.segments,
     (candidate.lineItems ?? []).map((line, i) => ({
       section: manifest.sections[i]?.id ?? "", text: line.description,
-    })), [candidate.description, candidate.paymentTerms].filter(Boolean).join("\n"));
+    })), candidate.rawText ?? [candidate.description, candidate.paymentTerms].filter(Boolean).join("\n"));
   return {
     verified: failures.length === 0 && coverage.complete,
     failures, coverage,

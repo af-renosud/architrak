@@ -1,3 +1,5 @@
+import { verifyTranslationCoverage } from "./quotation-translation-coverage";
+import { quotationApprovalBlocker } from "./quotation-approval-guard";
 import OpenAI from "openai";
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 import { storage } from "../storage";
@@ -164,6 +166,8 @@ export async function translateDevis(
 }> {
   const devis = await storage.getDevis(devisId);
   if (!devis) throw new Error(`Devis ${devisId} not found`);
+  const blocker = await quotationApprovalBlocker(devisId);
+  if (blocker) throw new Error(blocker);
 
   const existing = await storage.getDevisTranslation(devisId);
 
@@ -216,6 +220,7 @@ export async function translateDevis(
       finalHeader = (headerWasEdited ? previousHeader : result.header) || result.header;
     }
 
+    await verifyTranslationCoverage(devisId, mergedLines, finalHeader);
     await storage.updateDevisTranslation(devisId, {
       status: "draft",
       provider,

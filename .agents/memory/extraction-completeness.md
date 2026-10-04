@@ -42,3 +42,9 @@ Rule: Independent source transcription is not an OCR accuracy certificate. A who
 **Why:** The dense illustrated source requires substantially more output for every specification and region than a list of priced items. Repeated full-document attempts did not establish completeness.
 
 **How to apply:** Budget source evidence collection separately, preserve uncertainty on timeout, and verify bounded section-level collection against cross-page anchors before relying on its inventory to approve an extraction.
+
+Rule: A generative source inventory must not validate its own facts merely because a candidate copies its text. Corroborate graphic references and critical dimensions with non-generative evidence; uncertainty still requires review.
+
+**Why:** A bounded inventory returned all 18 products and the correct total, yet invented terminal-product dimensions (800 × 1760 instead of the visible 600 × 700). A text-coverage check against that same inventory falsely passed.
+
+**How to apply:** Require independently read graphic facts before approving the inventory. Keep explicit human classification of initial-OCR discrepancies separate from source verification; human approval cannot waive failed independent source checks.

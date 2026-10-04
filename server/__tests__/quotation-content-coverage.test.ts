@@ -44,8 +44,31 @@ describe("independent quotation text coverage", () => {
     expect(compareQuotationContent(source, candidates.map(c => ({ ...c, text: `${c.text} ${c.text}` })), "")
       .issues.some(i => i.kind === "duplicate")).toBe(true);
   });
+  it("rejects extra invented and cross-section passages even when all source passages remain", () => {
+    for (const added of ["Invented qualification.", candidates[0].text]) {
+      const changed = structuredClone(candidates);
+      changed[1].text += `\n${added}`;
+      expect(compareQuotationContent(source, changed, "").issues.some(i => i.kind === "unattributed")).toBe(true);
+    }
+  });
+  it("permits the same source specification independently present in two sections", () => {
+    const repeated = [...source, { ...source[1], id: "shared", section: "011" }];
+    const changed = structuredClone(candidates);
+    changed[1].text += `\n${source[1].text}`;
+    expect(compareQuotationContent(repeated, changed, "").complete).toBe(true);
+  });
   it("fails closed on an empty inventory", () => {
     expect(compareQuotationContent([], [], "").complete).toBe(false);
+  });
+  it.each(["accessoire : paumelle simple", "hors reprise de peinture", "finition RAL 7005S", "vitrage 16 mm"])(
+    "rejects dropping %s even though financial rows are unchanged", (text) => {
+      const full = [...source, { id: "extra", page: 6, section: "010", text, disposition: "item" as const }];
+      expect(compareQuotationContent(full, candidates, "").complete).toBe(false);
+    });
+  it("does not mistake a source phrase nested in another source paragraph for an added duplicate", () => {
+    const segments = ["Paumelle simple", "Paumelle simple en aluminium"].map((text, i) =>
+      ({ id: String(i), text, page: 1, section: "item", disposition: "item" as const }));
+    expect(compareQuotationContent(segments, [{ section: "item", text: segments.map(s => s.text).join("\n") }], "").complete).toBe(true);
   });
   it("preserves legitimate repeated source text with the same multiplicity", () => {
     const repeated = [...source, { ...source[0], id: "repeat" }];

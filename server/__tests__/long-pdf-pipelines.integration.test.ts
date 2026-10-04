@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { createHash } from "node:crypto";
+import { quotationWorkingVersion } from "../services/quotation-working-version";
 
 // Task #352 — Long-PDF regression coverage for the OTHER parseDocument
 // callers: the email intake queue, the invoice upload service, and the
@@ -17,7 +19,7 @@ import { join } from "path";
 //   3. the pipeline is NOT hard-gated by those advisories — persistence
 //      succeeds.
 
-const { storageSpy, uploadDocumentSpy, txSpies, dbSpy } = vi.hoisted(() => {
+const { storageSpy, uploadDocumentSpy, txSpies, dbSpy, poolQuery } = vi.hoisted(() => {
   // --- devis rescrape (Task #353) transaction plumbing ---
   // rescrapeDevis runs its mutation inside db.transaction with a tx that
   // executes raw SQL (lock, precondition counts, line delete) plus builder
@@ -26,10 +28,14 @@ const { storageSpy, uploadDocumentSpy, txSpies, dbSpy } = vi.hoisted(() => {
   const vi_ = vi;
   const txSpies = {
     lockedRow: null as Record<string, unknown> | null,
+    currentTranslation: undefined as Record<string, unknown> | undefined,
+    protectedLink: null as string | null,
     updateSet: vi_.fn(),
     insertValues: vi_.fn(),
     execute: vi_.fn(async (q: unknown) => {
       const t = JSON.stringify(q);
+      if (t.includes("AS present") && txSpies.protectedLink && t.includes(txSpies.protectedLink))
+        return { rows: [{ present: true }] };
       if (t.includes("FOR UPDATE")) return { rows: [] };
       if (t.includes("invoices")) return { rows: [{ count: 0 }] };
       if (t.includes("situation_lines")) return { rows: [{ count: 0 }] };
@@ -40,11 +46,14 @@ const { storageSpy, uploadDocumentSpy, txSpies, dbSpy } = vi.hoisted(() => {
   const tx = {
     execute: txSpies.execute,
     select: () => ({
-      from: () => ({
+      from: (table: any) => ({
         where: () => {
-          const rows = txSpies.lockedRow ? [txSpies.lockedRow] : [];
+          const row = table[Symbol.for("drizzle:Name")] === "devis_translations"
+            ? txSpies.currentTranslation : txSpies.lockedRow;
+          const rows = row ? [row] : [];
           return Object.assign(Promise.resolve(rows), {
             for: async () => rows,
+            orderBy: async () => [],
           });
         },
       }),
@@ -93,6 +102,8 @@ const { storageSpy, uploadDocumentSpy, txSpies, dbSpy } = vi.hoisted(() => {
     createDevisLineItem: vi.fn(async () => ({ id: 1 })),
     // --- invoice upload internals ---
     getDevis: vi.fn(),
+    getDevisLineItems: vi.fn(async () => []),
+    getDevisTranslation: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
     createInvoice: vi.fn(async (row: Record<string, unknown>) => ({
       id: 555,
       invoiceNumber: row.invoiceNumber,
@@ -114,6 +125,7 @@ const { storageSpy, uploadDocumentSpy, txSpies, dbSpy } = vi.hoisted(() => {
     getDevisLineContextAssetsByDevis: vi.fn(async () => []),
   };
   return {
+    poolQuery: vi.fn(),
     txSpies,
     dbSpy,
     storageSpy,
@@ -122,7 +134,8 @@ const { storageSpy, uploadDocumentSpy, txSpies, dbSpy } = vi.hoisted(() => {
 });
 
 vi.mock("../storage", () => ({ storage: storageSpy }));
-vi.mock("../db", () => ({ db: dbSpy }));
+vi.mock("../db", () => ({ db: dbSpy, pool: { query: poolQuery } }));
+vi.mock("../services/quotation-extraction-events", () => ({ recordExtractionEvent: vi.fn(async () => undefined) }));
 vi.mock("../storage/object-storage", () => ({
   getDocumentBuffer: vi.fn(async () => FIXTURE_PDF),
   uploadDocument: uploadDocumentSpy,
@@ -485,7 +498,7 @@ describe("devis re-scrape — long-PDF parse flows coverage into the updated dev
     projectId: 3,
     contractorId: 11,
     lotId: null,
-    status: "sent",
+    status: "draft",
     invoicingMode: "mode_a",
     amountHt: "100",
     amountTtc: "120",
@@ -496,7 +509,97 @@ describe("devis re-scrape — long-PDF parse flows coverage into the updated dev
 
   beforeEach(() => {
     txSpies.lockedRow = { ...DEVIS_ROW };
+    txSpies.currentTranslation = undefined;
+    txSpies.protectedLink = null;
+    storageSpy.getDevisTranslation.mockResolvedValue(undefined);
     storageSpy.getDevis.mockResolvedValue({ ...DEVIS_ROW });
+  });
+
+  it("preserves existing state when content coverage fails despite reconciled finances", async () => {
+    parseDocumentMock.mockResolvedValue({ ...realParsed, quotationVerification: {
+      verified: false, failures: ["Missing terminal source specification"], initialLineItems: realParsed.lineItems,
+    } });
+    const result = await rescrapeDevis(42);
+    expect(result.success).toBe(false);
+    expect(result.status).toBe(422);
+    expect(dbSpy.transaction).not.toHaveBeenCalled();
+    expect(txSpies.updateSet).not.toHaveBeenCalled();
+    expect(txSpies.insertValues).not.toHaveBeenCalled();
+  });
+
+  function reviewCandidate(uncertain: boolean) {
+    const sections = Array.from({ length: 7 }, (_, i) => ({
+      id: String(i + 1), reference: `WIN ${String(i + 1).padStart(3, "0")}`,
+      independentText: `WIN ${String(i + 1).padStart(3, "0")} Dim. L x H : 600 mm X 700 mm`,
+      priceRegion: { page: i + 1, x: 0, y: 0.1, w: 1, h: 0.01 },
+      specificationRegions: [{ page: i + 1, x: 0, y: 0.3, w: 1, h: 0.2 }],
+      quantity: 1, unitPrice: 1000, total: 1000,
+    }));
+    const lineItems = sections.map(s => ({ description: s.independentText, quantity: 1, unitPrice: 1000, total: 1000 }));
+    return { ...realParsed, lineItems, quotationVerification: {
+      verified: false, failures: ["Initial OCR requires human source review"], proposedLineItems: lineItems,
+      sourceDigest: createHash("sha256").update(FIXTURE_PDF).digest("hex"),
+      manifest: { sections, inventoriedPages: sections.map(s => s.priceRegion.page),
+        segments: sections.map((s, i) => ({ id: s.id, section: s.id, page: s.priceRegion.page,
+          text: s.independentText, region: s.specificationRegions[0], disposition: uncertain && i === 6 ? "uncertain" : "item" })) },
+    } };
+  }
+
+  it("allows explicitly reviewed initial-OCR differences only when independent evidence passes", async () => {
+    poolQuery.mockResolvedValueOnce({ rows: [{ snapshot: { extraction: reviewCandidate(false),
+      preparedFingerprint: quotationWorkingVersion(DEVIS_ROW, [], undefined) } }] });
+    const result = await rescrapeDevis(42, { attemptId: 1, actorId: 1, reason: "Checked every source region against the original." });
+    expect(result.success).toBe(true);
+    expect(parseDocumentMock).not.toHaveBeenCalled();
+    expect(txSpies.insertValues).toHaveBeenCalled();
+    const auditSql = txSpies.execute.mock.calls.map(([q]) => JSON.stringify(q)).join("\n");
+    expect(auditSql).toContain("beforeLines");
+    expect(auditSql).toContain("afterLines");
+    expect(auditSql).toContain("sourceDigest");
+  });
+
+  it("never lets explicit approval waive an uncertain final source region", async () => {
+    poolQuery.mockResolvedValueOnce({ rows: [{ snapshot: { extraction: reviewCandidate(true),
+      preparedFingerprint: quotationWorkingVersion(DEVIS_ROW, [], undefined) } }] });
+    const result = await rescrapeDevis(42, { attemptId: 1, actorId: 1, reason: "Checked every source region against the original." });
+    expect(result.status).toBe(409);
+    expect(dbSpy.transaction).not.toHaveBeenCalled();
+    expect(txSpies.insertValues).not.toHaveBeenCalled();
+  });
+
+  it.each(["quotation", "translation", "lines"])("refuses a preview prepared before newer %s work", async field => {
+    poolQuery.mockResolvedValueOnce({ rows: [{ snapshot: { extraction: reviewCandidate(false),
+      preparedFingerprint: quotationWorkingVersion(DEVIS_ROW, [], undefined) } }] });
+    if (field === "quotation") storageSpy.getDevis.mockResolvedValue({ ...DEVIS_ROW, descriptionFr: "Newer successful extraction" });
+    if (field === "translation") storageSpy.getDevisTranslation.mockResolvedValue({ status: "draft", headerTranslated: { title: "New work" } });
+    if (field === "lines") storageSpy.getDevisLineItems.mockResolvedValueOnce([{ id: 456, description: "New source extraction" }] as never);
+    const result = await rescrapeDevis(42, { attemptId: 1, actorId: 1, reason: "An earlier valid source proposal." });
+    expect(result.status).toBe(409);
+    expect(dbSpy.transaction).not.toHaveBeenCalled();
+    expect(txSpies.insertValues).not.toHaveBeenCalled();
+  });
+
+  it.each(["devis_checks", "client_checks"])("preserves %s links even when the line is still unchecked", async table => {
+    parseDocumentMock.mockResolvedValue(realParsed);
+    txSpies.protectedLink = table;
+    expect((await rescrapeDevis(42)).status).toBe(409);
+    expect(txSpies.updateSet).not.toHaveBeenCalled();
+    expect(txSpies.insertValues).not.toHaveBeenCalled();
+    expect(txSpies.execute.mock.calls.some(([q]) => JSON.stringify(q).includes("DELETE FROM devis_line_items"))).toBe(false);
+  });
+
+  it("refuses issued evidence before invoking extraction", async () => {
+    storageSpy.getDevis.mockResolvedValue({ ...DEVIS_ROW, status: "sent" });
+    expect((await rescrapeDevis(42)).status).toBe(409);
+    expect(parseDocumentMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a concurrent working-version change before replacing rows", async () => {
+    parseDocumentMock.mockResolvedValue(realParsed);
+    txSpies.lockedRow = { ...DEVIS_ROW, dateSent: "2026-10-04" };
+    expect((await rescrapeDevis(42)).status).toBe(409);
+    expect(txSpies.updateSet).not.toHaveBeenCalled();
+    expect(txSpies.insertValues).not.toHaveBeenCalled();
   });
 
   it("full coverage + numbering advisory persist on the devis; line items replaced with rebased hints", async () => {

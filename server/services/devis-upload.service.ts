@@ -306,7 +306,7 @@ export async function processDevisUpload(projectId: number, file: UploadedFile, 
         await storage.createDevisLineItem({
           devisId: devisRecord.id,
           lineNumber: i + 1,
-          description: toSentenceCase(li.description || `Line ${i + 1}`) as string,
+          description: parsed.quotationVerification ? li.description : toSentenceCase(li.description || `Line ${i + 1}`) as string,
           quantity: String(li.quantity ?? 1),
           unit: "u",
           unitPriceHt: String(roundCurrency(li.unitPrice ?? 0)),

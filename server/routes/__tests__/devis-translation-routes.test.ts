@@ -252,11 +252,7 @@ describe("PATCH /api/devis/:id/translation", () => {
     expect(byNum.get(2)?.edited).toBe(false);
   });
 
-  it("accepts edits on a finalised translation and preserves the finalised status", async () => {
-    // Intended contract: architects can make inline tweaks to an approved
-    // (finalised) translation without re-translating everything. The edit is
-    // accepted, cached PDFs are invalidated, and the status stays "finalised"
-    // (approval metadata untouched) rather than dropping back to "edited".
+  it("accepts inline edits but removes final approval until the edited version is verified", async () => {
     getDevisTranslation.mockResolvedValue({
       status: "finalised",
       headerTranslated: {},
@@ -275,7 +271,7 @@ describe("PATCH /api/devis/:id/translation", () => {
     const [calledId, patch] = updateDevisTranslation.mock.calls[0];
     expect(calledId).toBe(11);
     expect(patch).toMatchObject({
-      status: "finalised",
+      status: "edited",
       translatedPdfStorageKey: null,
       combinedPdfStorageKey: null,
       headerTranslated: { description: "x" },

@@ -70,6 +70,13 @@ export interface MigrationArtifact {
  * migration. Set the flag on every new data-only DML backfill.
  */
 export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
+  { tag: "0138_quotation_extraction_events", artifact: { kind: "all", artifacts: [
+    { kind: "table", table: "quotation_extraction_events" },
+    { kind: "constraint", table: "quotation_extraction_events", constraint: "quotation_extraction_events_kind_check" },
+    { kind: "constraint", table: "quotation_extraction_events", constraint: "quotation_extraction_events_effort_minutes_check" },
+    { kind: "trigger", table: "quotation_extraction_events", trigger: "quotation_extraction_events_immutable" },
+    { kind: "trigger", table: "devis", trigger: "quotation_extraction_attempt_inserted" },
+  ] } },
   { tag: "0137_extraction_row_corrections", artifact: { kind: "all", artifacts: [
     { kind: "table", table: "extraction_row_corrections" },
     { kind: "constraint", table: "extraction_row_corrections", constraint: "extraction_row_corrections_reason_check" },

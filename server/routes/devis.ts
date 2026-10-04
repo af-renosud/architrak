@@ -14,6 +14,10 @@ import { upload } from "../middleware/upload";
 import { processDevisUpload } from "../services/devis-upload.service";
 import { enqueueReconciliation } from "../services/reconciliation/reconciliation-queue.service";
 import { rescrapeDevis } from "../services/devis-rescrape.service";
+import { startQuotationRescrape } from "../services/quotation-rescrape-jobs";
+import { quotationApprovalBlocker } from "../services/quotation-approval-guard";
+import { translationCoverageBlocker } from "../services/quotation-translation-coverage";
+import { commitTranslationApproval } from "../services/translation-approval-commit";
 import { duplicateCorrection, getDuplicateCorrectionHistory, CorrectionError } from "../services/duplicate-extraction";
 import { extractionRowCorrection } from "../services/extraction-row-correction";
 import { extractionCorrectionSchema } from "../../shared/extraction-row-correction";
@@ -584,6 +588,12 @@ router.post(
   async (req, res) => {
     try {
       const devisId = Number(req.params.id);
+      const existing = await storage.getDevis(devisId);
+      const sourceEvidence = existing?.aiExtractedData as { illustratedRecovery?: unknown; quotationVerification?: unknown } | null;
+      if (sourceEvidence?.illustratedRecovery || sourceEvidence?.quotationVerification) {
+        startQuotationRescrape(devisId);
+        return res.status(202).json({ pending: true, message: "Source extraction is running. Follow its result in Extraction review." });
+      }
       const result = await rescrapeDevis(devisId);
       res.status(result.status).json(result.data);
     } catch (err: unknown) {
@@ -669,7 +679,13 @@ router.post(
   validateRequest({ params: idParams }),
   async (req, res) => {
     const devisId = Number(req.params.id);
-    const existing = await storage.getDevisTranslation(devisId);
+    const [quotation, lines, existing] = await Promise.all([
+      storage.getDevis(devisId), storage.getDevisLineItems(devisId), storage.getDevisTranslation(devisId),
+    ]);
+    const coverageBlocker = await quotationApprovalBlocker(devisId);
+    if (coverageBlocker) return res.status(409).json({ message: coverageBlocker, code: "quotation_content_unverified" });
+    const translationBlocker = await translationCoverageBlocker(devisId);
+    if (translationBlocker) return res.status(409).json({ message: translationBlocker, code: "translation_content_unverified" });
     if (!existing) return res.status(404).json({ message: "No translation to finalise" });
     if (existing.status !== "draft" && existing.status !== "edited") {
       return res.status(409).json({ message: `Cannot finalise translation in status ${existing.status}` });
@@ -677,14 +693,9 @@ router.post(
     const userId = req.session?.userId;
     if (!userId) return res.status(401).json({ message: "Authentication required" });
     const approver = await storage.getUser(Number(userId));
-    const updated = await storage.updateDevisTranslation(devisId, {
-      status: "finalised",
-      translatedPdfStorageKey: null,
-      combinedPdfStorageKey: null,
-      approvedAt: new Date(),
-      approvedBy: Number(userId),
-      approvedByEmail: approver?.email ?? null,
-    });
+    const updated = await commitTranslationApproval(devisId, { quotation, lines, translation: existing },
+      Number(userId), approver?.email ?? null);
+    if (!updated) return res.status(409).json({ message: "Quotation or translation changed during verification. Verify the current version before finalising." });
     res.json(updated);
   },
 );
@@ -724,11 +735,8 @@ router.patch(
     const devisId = Number(req.params.id);
     const existing = await storage.getDevisTranslation(devisId);
     if (!existing) return res.status(404).json({ message: "No translation to update" });
-    // NOTE: Edits are accepted even when the translation is "finalised" (approved).
-    // Architects asked for inline tweaks without having to re-translate everything;
-    // this is a low-risk content change, not a security-sensitive one. The approval
-    // metadata (approvedAt / approvedByEmail) is preserved untouched below.
-    const wasFinalised = existing.status === "finalised";
+    // Inline editing remains available, but changes must never inherit approval.
+    // Storage atomically clears approval/cache keys and bumps the PDF version.
 
     const previousLines = (existing.lineTranslations as z.infer<typeof devisTranslationLineSchema>[] | null) || [];
     const previousByNum = new Map(previousLines.map((l) => [l.lineNumber, l]));
@@ -750,9 +758,7 @@ router.patch(
       lineTranslations: mergedLines,
       translatedPdfStorageKey: null,
       combinedPdfStorageKey: null,
-      // Keep the approved/finalised state if it was already approved — only
-      // bump to "edited" when starting from a non-finalised state.
-      status: wasFinalised ? "finalised" : "edited",
+      status: "edited",
     });
     res.json(updated);
   },

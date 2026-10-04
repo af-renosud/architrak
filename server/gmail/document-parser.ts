@@ -1,3 +1,4 @@
+import { createHash as quotationHash } from "node:crypto";
 import OpenAI from "openai";
 import { GoogleGenerativeAI, SchemaType, type ResponseSchema } from "@google/generative-ai";
 import { storage } from "../storage";
@@ -12,6 +13,8 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { env } from "../env";
 import { illustratedEvidence, sourceRowsReconcile, acceptIllustratedRecovery } from "../services/illustrated-quotation";
+import { collectSectionInventory } from "../services/quotation-section-inventory";
+import { verifyQuotationManifest, compareInitialQuotation, type QuotationSourceManifest } from "../services/quotation-source-manifest";
 import { decideEmailDocRetry, EMAIL_DOC_MAX_ATTEMPTS } from "../services/email-doc-retry";
 import { evaluateEmailPrefilter, tierToExtractionStatus } from "./email-prefilter";
 import {
@@ -50,6 +53,16 @@ function getGeminiClient() {
 }
 
 export interface ParsedDocument {
+  quotationVerification?: {
+    manifest?: QuotationSourceManifest;
+    verified: boolean;
+    failures: string[];
+    coverage?: { complete: boolean; issues: Array<{ segmentId: string; page: number; section: string; kind: string }> } | null;
+    initialLineItems?: ParsedDocument["lineItems"];
+    initialComparison?: ReturnType<typeof compareInitialQuotation>;
+    proposedLineItems?: ParsedDocument["lineItems"];
+    sourceDigest?: string;
+  };
   /** Deterministic audit, never accepted from model output. */
   illustratedRecovery?: { status: "recovered" | "review_required"; reason: string };
   documentType: "quotation" | "invoice" | "situation" | "avenant" | "acompte" | "commande" | "architect_fee_invoice" | "payment_confirmation" | "other" | "unknown";
@@ -2479,6 +2492,7 @@ export interface ParseDocumentDeps {
   hasGeminiKey?: () => boolean;
   getGeminiFallbackModelId?: () => string;
   recoverIllustratedPdf?: (buffer: Buffer, modelId: string) => Promise<ParsedDocument>;
+  collectQuotationInventory?: typeof collectSectionInventory;
 }
 
 export async function parseDocument(
@@ -2714,10 +2728,15 @@ export async function parseDocument(
   }
 
   if (parsed) {
+    delete parsed.quotationVerification;
     delete parsed.illustratedRecovery;
     const evidence = parsed.documentType === "quotation" ? illustratedEvidence(pageTexts) : undefined;
     const illustratedRows = evidence?.rows ?? [];
     if (evidence?.detected) {
+      const initialLineItems = structuredClone(parsed.lineItems);
+      parsed.quotationVerification = {
+        verified: false, failures: ["Independent source inventory has not been verified."], initialLineItems,
+      };
       parsed.illustratedRecovery = { status: "review_required", reason: evidence.reason || "Illustrated product blocks require specification and price-association review." };
       const reconciles = sourceRowsReconcile(parsed, illustratedRows);
       const withinBudget = pdfBuffer.length <= 15 * 1024 * 1024 && images.length <= 20;
@@ -2752,6 +2771,34 @@ export async function parseDocument(
         } catch {
           // Keep the original draft and explicit review advisory; no silent success.
           parsed.illustratedRecovery.reason = "Whole-PDF recovery failed; review illustrated product blocks against the original PDF.";
+        }
+        // Separate input from candidate recovery: physically bounded source
+        // crops prohibit a whole-document response shifting equal-price rows.
+        try {
+          if (deps.recoverIllustratedPdf && !deps.collectQuotationInventory) throw new Error("Independent source fixture required");
+          const manifest = await (deps.collectQuotationInventory ?? collectSectionInventory)(pdfBuffer, illustratedRows, modelId);
+          parsed.rawText = manifest.documentText ?? parsed.rawText;
+          // Construct the proposed descriptions from verbatim, bounded source
+          // segments, never by moving old descriptions to equally priced rows.
+          const proposed: ParsedDocument = { ...parsed, lineItems: manifest.sections.map((section, i) => ({
+            description: manifest.segments.filter(s => s.section === section.id && s.disposition === "item")
+              .map(s => s.text).join("\n"),
+            quantity: illustratedRows[i]?.quantity, unitPrice: illustratedRows[i]?.unitPrice,
+            total: illustratedRows[i]?.total, pageHint: section.priceRegion.page, unit: parsed.lineItems?.[i]?.unit,
+          })) };
+          const result = verifyQuotationManifest(manifest, illustratedRows, proposed, images.length);
+          const initialComparison = compareInitialQuotation(initialLineItems, proposed, manifest);
+          if (initialComparison.some(row => row.status === "requires_source_review")) {
+            result.verified = false;
+            result.failures.push("Initial OCR differs from the independent source transcription. Review the retained original passages before replacement.");
+          }
+          if (result.verified) parsed.lineItems = proposed.lineItems;
+          parsed.quotationVerification = { manifest, verified: result.verified,
+            failures: result.failures, coverage: result.coverage, initialLineItems, initialComparison,
+            proposedLineItems: proposed.lineItems, sourceDigest: quotationHash("sha256").update(pdfBuffer).digest("hex") };
+        } catch {
+          parsed.quotationVerification = { verified: false,
+            failures: ["Independent source inventory could not be completed. Original-source review is required."], initialLineItems };
         }
       }
     }

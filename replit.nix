@@ -1,5 +1,6 @@
 {pkgs}: {
   deps = [
+    pkgs.tesseract
     pkgs.ghostscript
     pkgs.gdk-pixbuf
     pkgs.gtk3

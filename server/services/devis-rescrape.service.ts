@@ -1,4 +1,10 @@
-import { db } from "../db";
+import { db, pool } from "../db";
+import { createHash } from "node:crypto";
+import { verifyQuotationManifest } from "./quotation-source-manifest";
+import type { ParsedDocument } from "../gmail/document-parser";
+import { recordExtractionEvent } from "./quotation-extraction-events";
+import { hasSignedOrClosedEvidence } from "./quotation-source-guards";
+import { quotationWorkingVersion } from "./quotation-working-version";
 import { sql } from "drizzle-orm";
 import { storage } from "../storage";
 import { getDocumentBuffer } from "../storage/object-storage";
@@ -17,6 +23,7 @@ import { recoverPlanningTotalsBoxLines } from "./planning-totals-recovery.servic
 import {
   devis as devisTable,
   devisLineItems as devisLineItemsTable,
+  devisTranslations,
 } from "@shared/schema";
 
 export const RESCRAPE_ERROR_CODES = {
@@ -60,7 +67,15 @@ interface RescrapeResult {
  * transaction that rolls back on any error — no partial state, no
  * duplicated line numbers under concurrent submits.
  */
-export async function rescrapeDevis(devisId: number): Promise<RescrapeResult> {
+export async function rescrapeDevis(devisId: number, approval?: { attemptId: number; actorId: number; reason: string }): Promise<RescrapeResult> {
+  try { return await runRescrape(devisId, approval); }
+  catch (error) {
+    await recordExtractionEvent(devisId, "attempt", "failed", { category: "unavailable" });
+    throw error;
+  }
+}
+
+async function runRescrape(devisId: number, approval?: { attemptId: number; actorId: number; reason: string }): Promise<RescrapeResult> {
   // ----- Phase 1: load + parse OUTSIDE the transaction. -----
   // The Gemini call can take several seconds; we don't want it holding a
   // row lock that long.
@@ -83,10 +98,21 @@ export async function rescrapeDevis(devisId: number): Promise<RescrapeResult> {
     };
   }
 
+  if (hasSignedOrClosedEvidence(initial) || initial.archisignEnvelopeId
+    || !["pending", "draft", "confirmed", "received", "analyzed"].includes(initial.status)
+    || (initial.signOffStage && !["received", "checked_internal", "client_rejected"].includes(initial.signOffStage))) {
+    return { success: false, status: 409, data: { message: "Issued, signed or closed quotations cannot be re-scraped." } };
+  }
+  await recordExtractionEvent(devisId, "attempt", "started");
+  const initialLines = await storage.getDevisLineItems(devisId);
+  const initialTranslation = await storage.getDevisTranslation(devisId);
+  let beforeFingerprint = quotationWorkingVersion(initial, initialLines, initialTranslation);
+
   let buffer: Buffer;
   try {
     buffer = await getDocumentBuffer(initial.pdfStorageKey);
   } catch (err: unknown) {
+    await recordExtractionEvent(devisId, "attempt", "failed", { category: "source_unavailable" });
     const message = err instanceof Error ? err.message : String(err);
     return {
       success: false,
@@ -102,7 +128,38 @@ export async function rescrapeDevis(devisId: number): Promise<RescrapeResult> {
   const { parseDocument, isTransientParseFailure, getParseFailureMessage } = await import(
     "../gmail/document-parser"
   );
-  let parsed = await parseDocument(buffer, fileName);
+  let parsed: ParsedDocument;
+  if (approval) {
+    const { rows } = await pool.query(`SELECT snapshot FROM quotation_extraction_events
+      WHERE id=$1 AND devis_id=$2 AND kind='attempt' AND outcome='failed'`,
+    [approval.attemptId, devisId]);
+    const candidate = rows[0]?.snapshot?.extraction as ParsedDocument | undefined;
+    const preparedFingerprint = rows[0]?.snapshot?.preparedFingerprint;
+    if (typeof preparedFingerprint !== "string" || preparedFingerprint !== beforeFingerprint) {
+      return { success: false, status: 409, data: { message: "This proposal was prepared for an older working version. Re-scrape the current quotation before approving it." } };
+    }
+    beforeFingerprint = preparedFingerprint;
+    const evidence = candidate?.quotationVerification;
+    if (!candidate || !evidence?.manifest || !evidence.proposedLineItems
+      || evidence.sourceDigest !== createHash("sha256").update(buffer).digest("hex")
+      || !approval.reason.trim()) {
+      return { success: false, status: 409, data: { message: "Candidate evidence is unavailable or belongs to a different source PDF." } };
+    }
+    candidate.lineItems = evidence.proposedLineItems;
+    const sourceRows = evidence.manifest.sections.map(s => ({ page: s.priceRegion.page,
+      reference: s.reference, quantity: s.quantity, unitPrice: s.unitPrice, total: s.total }));
+    const check = verifyQuotationManifest(evidence.manifest, sourceRows, candidate,
+      candidate.extractionCoverage?.pdfPageCount ?? 0);
+    if (!check.verified) return { success: false, status: 409,
+      data: { message: "Independent source coverage still has unresolved findings. It cannot be approved.", verification: check } };
+    // This explicit human classification applies ONLY to differing initial OCR.
+    // It cannot waive an uncertain source region or change source prices.
+    evidence.verified = true;
+    evidence.failures = [];
+    parsed = candidate;
+  } else {
+    parsed = await parseDocument(buffer, fileName);
+  }
 
   if (
     parsed.documentType === "unknown" &&
@@ -112,6 +169,7 @@ export async function rescrapeDevis(devisId: number): Promise<RescrapeResult> {
   ) {
     const transient = isTransientParseFailure(parsed);
     const reason = getParseFailureMessage(parsed);
+    await recordExtractionEvent(devisId, "attempt", "failed", { category: "extraction_unavailable" });
     return {
       success: false,
       status: transient ? 503 : 422,
@@ -137,8 +195,12 @@ export async function rescrapeDevis(devisId: number): Promise<RescrapeResult> {
 
   // Task #350 — completeness hard gate, mirrored from the upload path: never
   // overwrite existing line items with a demonstrably partial extraction.
-  const blockingCompleteness = findBlockingCompletenessWarnings(validation.warnings);
+  const blockingCompleteness = [
+    ...findBlockingCompletenessWarnings(validation.warnings),
+    ...validation.warnings.filter(w => w.field === "quotationContentCoverage" && w.severity === "error"),
+  ];
   if (blockingCompleteness.length > 0) {
+    await recordExtractionEvent(devisId, "attempt", "failed", { warnings: blockingCompleteness, extraction: parsed, preparedFingerprint: beforeFingerprint });
     return {
       success: false,
       status: 422,
@@ -182,6 +244,47 @@ export async function rescrapeDevis(devisId: number): Promise<RescrapeResult> {
         status: 404,
         data: { message: "Devis not found", code: RESCRAPE_ERROR_CODES.DEVIS_NOT_FOUND },
       };
+    }
+    await tx.execute(sql`SELECT 1 FROM projects WHERE id=${locked.projectId} FOR SHARE`);
+    await tx.execute(sql`SELECT id FROM devis_line_items WHERE devis_id=${devisId} FOR UPDATE`);
+    await tx.execute(sql`SELECT devis_id FROM devis_translations WHERE devis_id=${devisId} FOR UPDATE`);
+    const currentLines = await tx.select().from(devisLineItemsTable)
+      .where(sql`${devisLineItemsTable.devisId}=${devisId}`).orderBy(devisLineItemsTable.lineNumber);
+    const [currentTranslation] = await tx.select().from(devisTranslations)
+      .where(sql`${devisTranslations.devisId}=${devisId}`);
+    if (quotationWorkingVersion(locked, currentLines, currentTranslation) !== beforeFingerprint) {
+      return { kind: "blocked", status: 409, data: { message: "Quotation changed while extraction was running. No rows were replaced." } };
+    }
+    if (hasSignedOrClosedEvidence(locked) || locked.archisignEnvelopeId
+      || !["pending", "draft", "confirmed", "received", "analyzed"].includes(locked.status)
+      || (locked.signOffStage && !["received", "checked_internal", "client_rejected"].includes(locked.signOffStage))) {
+      return { kind: "blocked", status: 409, data: { message: "Quotation was issued, signed or closed during extraction." } };
+    }
+    const protection = await tx.execute<{ present: boolean }>(sql`
+      SELECT EXISTS(SELECT 1 FROM projects WHERE id=${locked.projectId} AND archived_at IS NOT NULL)
+      OR EXISTS(SELECT 1 FROM devis_translations WHERE devis_id=${devisId}
+        AND (status IN ('edited','finalised','processing')
+          OR line_translations::text LIKE '%"edited": true%'))
+      OR EXISTS(SELECT 1 FROM duplicate_extraction_audit WHERE devis_id=${devisId})
+      OR EXISTS(SELECT 1 FROM extraction_row_corrections WHERE devis_id=${devisId})
+      OR EXISTS(SELECT 1 FROM acompte_no_invoice_payments WHERE devis_id=${devisId})
+      OR EXISTS(SELECT 1 FROM certificats WHERE project_id=${locked.projectId}
+        AND contractor_id=${locked.contractorId} AND status <> 'superseded')
+      OR EXISTS(SELECT 1 FROM devis_line_contexts c JOIN devis_line_items l ON l.id=c.devis_line_item_id WHERE l.devis_id=${devisId})
+      OR EXISTS(SELECT 1 FROM devis_line_context_assets c JOIN devis_line_items l ON l.id=c.devis_line_item_id WHERE l.devis_id=${devisId})
+      OR EXISTS(SELECT 1 FROM devis_checks c JOIN devis_line_items l ON l.id=c.line_item_id WHERE l.devis_id=${devisId})
+      OR EXISTS(SELECT 1 FROM client_checks c JOIN devis_line_items l ON l.id=c.devis_line_item_id WHERE l.devis_id=${devisId})
+      OR EXISTS(SELECT 1 FROM devis_line_items WHERE devis_id=${devisId}
+        AND (check_status <> 'unchecked' OR check_notes IS NOT NULL OR percent_complete <> 0))
+      AS present`);
+    if ((protection as unknown as { rows: Array<{ present: boolean }> }).rows[0]?.present) {
+      return { kind: "blocked", status: 409, data: { message: "Existing translation, correction, review or context evidence prevents destructive replacement. The current quotation has been preserved." } };
+    }
+    if (approval) {
+      const applied = await tx.execute(sql`SELECT 1 FROM quotation_extraction_events WHERE devis_id=${devisId}
+        AND kind='replacement' AND snapshot->'humanReview'->>'attemptId'=${String(approval.attemptId)} LIMIT 1`);
+      if (applied.rows.length) return { kind: "blocked", status: 409,
+        data: { message: "This prepared candidate has already been applied." } };
     }
 
     // Freshness guard: if the PDF was replaced (e.g. another user
@@ -253,6 +356,27 @@ export async function rescrapeDevis(devisId: number): Promise<RescrapeResult> {
     const incomingHasLines = !!(parsed.lineItems && parsed.lineItems.length > 0);
     const nextInvoicingMode =
       locked.invoicingMode === "mode_a" && incomingHasLines ? "mode_b" : locked.invoicingMode;
+    if (!incomingHasLines) {
+      return { kind: "blocked", status: 422, data: { message: "The new extraction contains no rows. Existing content was preserved." } };
+    }
+    await tx.execute(sql`INSERT INTO quotation_extraction_events(devis_id,kind,outcome,snapshot)
+      SELECT ${devisId},'replacement','applied',
+        jsonb_build_object('before',to_jsonb(d),'beforeLines',
+          (SELECT jsonb_agg(to_jsonb(l) ORDER BY l.id) FROM devis_line_items l WHERE l.devis_id=${devisId}),
+          'beforeTranslation',(SELECT to_jsonb(t) FROM devis_translations t WHERE t.devis_id=${devisId}),
+          'candidate',${JSON.stringify(parsed)}::jsonb,
+          'humanReview',${JSON.stringify(approval ?? null)}::jsonb,
+          'sourceDigest',${createHash("sha256").update(buffer).digest("hex")})
+      FROM devis d WHERE d.id=${devisId}`);
+    await tx.execute(sql`UPDATE devis_translations SET status='pending',line_translations=NULL,
+      translated_pdf_storage_key=NULL,combined_pdf_storage_key=NULL,contexts_version=contexts_version+1,
+      approved_at=NULL,approved_by=NULL,approved_by_email=NULL WHERE devis_id=${devisId}`);
+    if (approval) {
+      await tx.execute(sql`INSERT INTO quotation_extraction_events
+        (devis_id,actor_id,kind,outcome,category,reason,snapshot)
+        VALUES(${devisId},${approval.actorId},'review','corrected','wrong_association',${approval.reason},
+          ${JSON.stringify({ attemptId: approval.attemptId, initialOcrClassifiedAsErroneous: true })}::jsonb)`);
+    }
 
     await tx
       .update(devisTable)
@@ -297,7 +421,7 @@ export async function rescrapeDevis(devisId: number): Promise<RescrapeResult> {
         return {
           devisId,
           lineNumber: i + 1,
-          description: toSentenceCase(li.description || `Line ${i + 1}`) as string,
+          description: parsed.quotationVerification ? li.description : toSentenceCase(li.description || `Line ${i + 1}`) as string,
           quantity: String(li.quantity ?? 1),
           unit: "u",
           unitPriceHt: String(roundCurrency(li.unitPrice ?? 0)),
@@ -311,14 +435,22 @@ export async function rescrapeDevis(devisId: number): Promise<RescrapeResult> {
         await tx.insert(devisLineItemsTable).values(inserts);
         lineItemsCreated = inserts.length;
       }
+    await tx.execute(sql`INSERT INTO quotation_extraction_events(devis_id,kind,outcome,snapshot)
+      SELECT ${devisId},'replacement','committed',
+        jsonb_build_object('afterLines',(SELECT jsonb_agg(to_jsonb(l) ORDER BY l.line_number)
+          FROM devis_line_items l WHERE l.devis_id=${devisId}),
+          'sourceSections',${JSON.stringify(parsed.quotationVerification?.manifest?.sections ?? [])}::jsonb,
+          'sourceDigest',${createHash("sha256").update(buffer).digest("hex")})`);
     }
 
     return { kind: "ok", lineItemsCreated, lineItemsRemoved };
   });
 
   if (txResult.kind === "blocked") {
+    await recordExtractionEvent(devisId, "attempt", "failed", txResult.data);
     return { success: false, status: txResult.status, data: txResult.data };
   }
+  await recordExtractionEvent(devisId, "attempt", "succeeded");
 
   // ----- Phase 3: best-effort post-commit hooks. -----
   // The line delete cascaded the context-asset rows; remove their stored

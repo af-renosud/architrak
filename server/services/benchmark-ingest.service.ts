@@ -1,6 +1,7 @@
 import { storage } from "../storage";
 import { db } from "../db";
-import { devis as devisTable, benchmarkDocuments, benchmarkItems, benchmarkItemTags } from "@shared/schema";
+import { devis as devisTable, devisLineItems, benchmarkDocuments, benchmarkItems, benchmarkItemTags } from "@shared/schema";
+import { quotationWorkingCoverageBlocker } from "./quotation-approval-guard";
 import { and, eq, sql } from "drizzle-orm";
 import { missingSourceTotalChanges } from "./quotation-source-guards";
 import { uploadDocument } from "../storage/object-storage";
@@ -377,6 +378,13 @@ export async function confirmDevisAndMirror(
     if (!current || current.status !== "draft") {
       return { devis: undefined, benchmarkDocId: null, inserted: [], parsed: null };
     }
+    const contentEvidence = current.aiExtractedData as ParsedDocument | null;
+    if (contentEvidence?.quotationVerification || contentEvidence?.illustratedRecovery) {
+      const currentLines = await tx.select().from(devisLineItems)
+        .where(eq(devisLineItems.devisId, devisId)).orderBy(devisLineItems.lineNumber).for("update");
+      const blocker = quotationWorkingCoverageBlocker(contentEvidence, currentLines);
+      if (blocker) throw new DevisConfirmGuardError(409, "quotation_content_unverified", blocker);
+    }
     if (current.manualIntakeReviewRequired) {
       if (!options.manualReviewConfirmedByUserId) {
         throw new DevisConfirmGuardError(
@@ -445,6 +453,7 @@ export async function confirmDevisAndMirror(
     // extractions always land in the review queue.
     const docNeedsReview =
       findBlockingCompletenessWarnings(validation.warnings || []).length > 0 ||
+      (validation.warnings || []).some(w => w.field === "quotationContentCoverage" && w.severity === "error") ||
       docConfidence < 70 ||
       (validation.warnings || []).some(w => w.severity === "error");
     const totalHt = aiData.amountHt != null ? String(roundCurrency(aiData.amountHt)) : null;

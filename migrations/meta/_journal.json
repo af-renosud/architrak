@@ -967,6 +967,13 @@
       "when": 1791119000000,
       "tag": "0137_extraction_row_corrections",
       "breakpoints": true
+    },
+    {
+      "idx": 138,
+      "version": "7",
+      "when": 1791120000000,
+      "tag": "0138_quotation_extraction_events",
+      "breakpoints": true
     }
   ]
 }

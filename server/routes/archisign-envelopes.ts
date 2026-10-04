@@ -1,3 +1,5 @@
+import { quotationApprovalBlocker } from "../services/quotation-approval-guard";
+import { translationCoverageBlocker } from "../services/quotation-translation-coverage";
 /**
  * Archisign envelope orchestration endpoints (AT4, contract §1.2 / §3.5).
  *
@@ -100,6 +102,8 @@ router.get(
     const devisId = Number(req.params.id);
     const d = await storage.getDevis(devisId);
     if (!d) return res.status(404).json({ message: "Devis not found" });
+    const coverageBlocker = await quotationApprovalBlocker(devisId);
+    if (coverageBlocker) return res.status(409).json({ message: coverageBlocker, code: "quotation_content_unverified" });
 
     const envelopeId = d.archisignEnvelopeId ?? null;
     const hasMessage = Boolean((d.archisignSignerMessage ?? "").trim());
@@ -180,6 +184,10 @@ router.post(
     if (!d) return res.status(404).json({ message: "Devis not found" });
 
     // ---- Pre-condition checks ------------------------------------------
+    const extractionBlocker = await quotationApprovalBlocker(devisId);
+    if (extractionBlocker) return res.status(409).json({ message: extractionBlocker, code: "quotation_content_unverified" });
+    const translationBlocker = await translationCoverageBlocker(devisId);
+    if (translationBlocker) return res.status(409).json({ message: translationBlocker, code: "translation_content_unverified" });
     if (d.signOffStage !== "approved_for_signing") {
       return res.status(409).json({
         message:

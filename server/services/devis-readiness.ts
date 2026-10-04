@@ -54,6 +54,7 @@ export interface DeriveReadinessInput {
     Devis,
     | "id"
     | "status"
+    | "aiExtractedData"
     | "signOffStage"
     | "invoicingMode"
     | "lotId"
@@ -100,6 +101,7 @@ export function deriveDevisReadiness(input: DeriveReadinessInput): DevisReadines
   const d = input.devis;
   const isModeB = d.invoicingMode === "mode_b";
   const translationStatus = input.translationStatus ?? "missing";
+  const content = (d.aiExtractedData as { quotationVerification?: { verified: boolean }; illustratedRecovery?: unknown } | null);
   const signature = deriveSignature(input);
   const sent =
     signature !== "not_sent" ||
@@ -119,6 +121,9 @@ export function deriveDevisReadiness(input: DeriveReadinessInput): DevisReadines
   }
   // The send route requires a translated PDF (draft/edited/finalised) for
   // EVERY invoicing mode — the envelope PDF is the translation.
+  if ((content?.illustratedRecovery || content?.quotationVerification) && !content.quotationVerification?.verified) {
+    blockers.push("Source specification coverage is unverified");
+  }
   const translationReady =
     translationStatus === "draft" ||
     translationStatus === "edited" ||

@@ -61,6 +61,7 @@ import { ClientConversationPanel } from "@/components/devis/ClientConversationPa
 import { countDevisSignOff } from "@/components/devis/devis-counters";
 import { DuplicateExtractionCorrection } from "@/components/devis/DuplicateExtractionCorrection";
 import { ExtractionRowCorrection } from "@/components/devis/ExtractionRowCorrection";
+import { QuotationExtractionReview } from "@/components/devis/QuotationExtractionReview";
 
 import { Amount } from "@/components/ui/amount";
 import { formatCurrency as fmt } from "@/lib/utils";
@@ -5722,6 +5723,7 @@ function DevisDetailTabs({
       <div className="flex justify-end px-3 py-2 border-b border-border/40">
         <ExtractionRowCorrection key={devis.id} devisId={devis.id} projectId={String(devis.projectId)} lines={lineItems ?? []} disabled={isArchived} />
       </div>
+      <QuotationExtractionReview key={`review-${devis.id}`} devisId={devis.id} projectId={String(devis.projectId)} disabled={isArchived} />
       <TabsList className="w-full justify-start rounded-none border-b border-black/5 bg-[#0B2545]/[0.03] px-2 h-auto p-0">
         {isModeB && (
           <TabsTrigger
@@ -5953,14 +5955,15 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
       const res = await apiRequest("POST", `/api/devis/${devis.id}/rescrape`, {});
       return res.json();
     },
-    onSuccess: (data: { extraction?: { lineItemsExtracted?: number; lineItemsCreated?: number } }) => {
+    onSuccess: (data: { pending?: boolean; extraction?: { lineItemsExtracted?: number; lineItemsCreated?: number } }) => {
       setRescrapeConfirmOpen(false);
       const created = data?.extraction?.lineItemsCreated ?? 0;
       const extracted = data?.extraction?.lineItemsExtracted ?? 0;
       toast({
-        title: "Devis re-scraped",
+        title: data.pending ? "Source extraction started" : "Devis re-scraped",
         description:
-          extracted > 0
+          data.pending ? "The original quotation is preserved while source sections are checked. Follow progress in Extraction review."
+          : extracted > 0
             ? `Refreshed ${created} of ${extracted} line item${extracted === 1 ? "" : "s"} from the PDF.`
             : "Re-scraped, but the AI did not return any line items.",
       });
@@ -5968,6 +5971,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id, "line-items"] });
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devis.id, "translation"] });
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis") });
+      queryClient.invalidateQueries({ queryKey: [`/api/devis/${devis.id}/extraction-review`] });
     },
     onError: (err: Error) => {
       toast({

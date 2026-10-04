@@ -127,25 +127,65 @@ must supply its own independent row evidence before further broadening this gate
 Run:
 `npx vitest run server/__tests__/illustrated-quotation.test.ts server/__tests__/illustrated-supplier-layouts.test.ts`
 
-## Independent content verification — unfinished foundation
+## Independent content verification and guarded review
 
-New standalone comparison modules check verbatim content coverage, exact section
-identity, cross-page region boundaries and ordered source finances. Formatting
-normalization is limited to whitespace and canonical Unicode; missing content
-and uncertain source regions cannot pass. These modules are **not yet connected
-to the application pipeline** and do not change existing approval guarantees.
+The illustrated extraction path now inventories positioned supply/install
+sections and their cross-page continuations, separately from candidate recovery.
+Verbatim coverage checks preserve section identity, numbers and punctuation.
+Missing or uncertain evidence blocks confirmation, translation finalisation
+and signing. Tesseract independently corroborates graphic references and labelled
+dimensions; a generative inventory cannot establish those facts by copying its
+own output into a candidate.
 
-The independent native-PDF inventory collector deliberately does not receive
-the candidate extraction. It is bounded to 20 pages, 15 MiB and 120 seconds.
-The disposable annotated 11-page reference did not produce a usable inventory:
-the native request timed out. This is not evidence of completeness or successful
-recovery. A smaller section-based collection approach remains necessary.
+Whole-document inventory timed out. Bounded section requests recovered the 18
+introductions, including the distinct equal-price products and terminal MEXT 205.
+A visual spot-check then caught invented terminal dimensions despite reconciled
+prices: matching an inventory to itself is not independent accuracy evidence.
+Non-generative graphic corroboration is now required. OCR uncertainty remains
+blocking, and neither this check nor a model confidence claim certifies universal
+OCR accuracy.
 
-The local comparison tests use synthetic evidence, not successful transcription
-of the private PDF. Run:
+Run focused deterministic checks:
 `npx vitest run server/__tests__/quotation-content-coverage.test.ts server/__tests__/quotation-source-manifest.test.ts`
 
-Remaining assigned scope includes independently verified real-source evidence,
-pipeline/finalisation integration, safe audited replacement preserving linked
-records, translation checks, source discrepancy UI and outcome monitoring.
-No live quotation has been re-scraped and full-editing permissions are unchanged.
+The review panel retains initial OCR differences, independently transcribed
+source segments and a complete proposed candidate. Initial-OCR disagreements
+require an explicit original-source review and reason. This cannot waive an
+uncertain source region or mismatched graphic evidence.
+
+Replacement checks the original PDF digest, bidirectional candidate coverage
+and the preparation-time quotation/line/translation fingerprint under locks
+before an atomic, append-only audited replacement. Signed/issued or
+financially linked evidence, manual translations, context and review edits
+prevent destructive replacement. Unedited draft translations are snapshotted
+and regenerated. English translation has separate critical-number/reference
+and semantic-coverage checks, bound to the exact source and translation version.
+This includes the French header, English header description, explanation and
+scope summary; header-only edits cannot reuse a line-only verification receipt.
+Line-linked internal/client questions block replacement even while the source
+line is unchecked. Editing translated content invalidates final approval and
+PDF caches atomically; finalisation commits only the exact checked version.
+Confirmation rechecks the locked working rows instead of trusting the original
+parser flag, including older illustrated extractions lacking a source manifest.
+
+Attempt and review events distinguish unreviewed processing from confirmed
+inaccuracies, false alarms, unresolved findings and corrections. Monitoring
+counts distinct quotations rather than retries and never changes editing rights.
+The annotated attachment is regression evidence only: no live supplier PDF or
+quotation has been replaced during implementation.
+
+### Disposable verification outcome
+
+The bounded inventory, with an alternate vision provider for uncertain sections
+and independent Tesseract corroboration, passed the reference checks with 18
+items and €32,405 HT. MEXT 104 and MEXT 105 remain separate at €1,795 HT;
+MEXT 205 remains €915 HT with independently corroborated 600 × 700 mm dimensions.
+This is a tested source/candidate result, not a universal OCR accuracy claim or
+permission to skip the operator's review of initial-OCR disagreements.
+
+Deterministic tests cover annotated/unannotated synthetic 18-section equivalents,
+unchanged-total shifts, omitted specifications and terminal content, rejected
+candidate preservation, version conflicts, issued-evidence protection and
+explicit approval that cannot waive uncertain source evidence. An authenticated
+desktop/mobile browser pass verified persistent reviews, distinct-document
+monitoring, preserved inputs on rejected approval and blocked finalisation.
