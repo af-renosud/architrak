@@ -39,6 +39,7 @@ interface Props {
 export function DuplicateExtractionCorrection({ devisId, projectId, line, lines, disabled = false }: Props) {
   const [open, setOpen] = useState(false);
   const [retainId, setRetainId] = useState<number | null>(null);
+  const [lineSearch, setLineSearch] = useState("");
   const [reason, setReason] = useState("");
   const [error, setError] = useState("");
   const [needsPreview, setNeedsPreview] = useState(false);
@@ -54,6 +55,8 @@ export function DuplicateExtractionCorrection({ devisId, projectId, line, lines,
   const { toast } = useToast();
   // No inference from equal amounts or description similarity; selection is human.
   const counterparts = lines.filter((other) => other.devisId === devisId && other.id !== line.id);
+  const visibleCounterparts = counterparts.filter(other =>
+    `${other.lineNumber} ${other.description} ${other.totalHt}`.toLocaleLowerCase().includes(lineSearch.trim().toLocaleLowerCase()));
   const { preview, correction } = useDuplicateCorrection(devisId, projectId, line.id, retainId, open && !disabled);
   const data = preview.data;
   const validPreview = !needsPreview && !preview.isError && !preview.isFetching && !!data && data.blockedReason === null;
@@ -180,13 +183,32 @@ export function DuplicateExtractionCorrection({ devisId, projectId, line, lines,
             <p className="font-mono mt-1">{evidenceLine.totalHt} EUR HT</p>
           </div>
           <div className="space-y-1">
-            <label className="font-semibold" htmlFor={`${id}-retain`}>Retained counterpart (same quotation)</label>
-            <select id={`${id}-retain`} className="w-full rounded-md border border-input bg-background p-2 text-xs"
-              value={retainId ?? ""} disabled={correction.isPending || disabled}
-              onChange={(event) => { setRetainId(event.target.value ? Number(event.target.value) : null); setNeedsPreview(false); setError(""); }}>
-              <option value="">Choose the line to retain…</option>
-              {counterparts.map((other) => <option key={other.id} value={other.id}>#{other.lineNumber} · {other.description} · {other.totalHt} EUR HT</option>)}
-            </select>
+            <p id={`${id}-retain`} className="font-semibold">Retained counterpart (same quotation)</p>
+            <label className="sr-only" htmlFor={`${id}-search`}>Search quotation lines</label>
+            <input id={`${id}-search`} type="search" value={lineSearch}
+              onChange={event => setLineSearch(event.target.value)}
+              disabled={correction.isPending || disabled}
+              placeholder="Search by line number or description…"
+              className="w-full min-w-0 rounded-md border border-input bg-background p-2 text-xs" />
+            <p className="text-muted-foreground" role="status">
+              {visibleCounterparts.length} of {counterparts.length} available lines · scroll to see more
+            </p>
+            <div role="radiogroup" aria-labelledby={`${id}-retain`}
+              className="max-h-60 overflow-y-auto overscroll-contain rounded-md border border-input">
+              {visibleCounterparts.map(other => <label key={other.id}
+                className={`flex min-w-0 cursor-pointer items-start gap-2 border-b border-border p-3 last:border-b-0 ${retainId === other.id ? "bg-accent" : "hover:bg-muted/50"}`}>
+                <input type="radio" name={`${id}-retained-line`} value={other.id}
+                  checked={retainId === other.id} disabled={correction.isPending || disabled}
+                  className="mt-0.5 shrink-0"
+                  onChange={() => { setRetainId(other.id); setNeedsPreview(false); setError(""); }} />
+                <span className="min-w-0 flex-1">
+                  <span className="block font-semibold">Line #{other.lineNumber} · {other.totalHt} EUR HT</span>
+                  <span className="block whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{other.description}</span>
+                </span>
+              </label>)}
+              {!visibleCounterparts.length && counterparts.length > 0 && <p className="p-3">No matching lines. Clear the search to see all lines.</p>}
+            </div>
+            {retainId !== null && <p className="font-semibold">Selected: line #{counterparts.find(other => other.id === retainId)?.lineNumber}</p>}
             {!counterparts.length && <p>No other line in this quotation can be retained. Nothing can be removed.</p>}
           </div>
           {retainId !== null && preview.isFetching && <div aria-label="Loading financial preview" className="space-y-2"><Skeleton className="h-5 w-full" /><Skeleton className="h-12 w-full" /></div>}

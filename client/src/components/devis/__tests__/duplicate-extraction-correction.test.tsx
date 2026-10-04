@@ -20,16 +20,16 @@ const preview = {
 const fetchMock = vi.fn();
 const confirmName = "Confirm duplicate extraction removal";
 const reasonLabel = "Reason for correcting this extraction (required)";
-function mount(disabled = false) {
+function mount(disabled = false, lines = [removed, retained, legitimate, foreign]) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const rendered = render(<QueryClientProvider client={client}>
-    <DuplicateExtractionCorrection devisId={42} projectId="7" line={removed} lines={[removed, retained, legitimate, foreign]} disabled={disabled} />
+    <DuplicateExtractionCorrection devisId={42} projectId="7" line={removed} lines={lines} disabled={disabled} />
   </QueryClientProvider>);
   return { client, ...rendered };
 }
 function open() { fireEvent.click(screen.getByRole("button", { name: "Remove duplicate extraction" })); }
 async function selectRetained() {
-  fireEvent.change(screen.getByLabelText("Retained counterpart (same quotation)"), { target: { value: "11" } });
+  fireEvent.click(screen.getByRole("radio", { name: /Line #11/ }));
   await screen.findByRole("region", { name: "Server financial preview" });
 }
 function typeReason(value = "The short heading was extracted again as the detailed row.") {
@@ -47,12 +47,29 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("duplicate extraction correction", () => {
+  it("exposes every candidate beyond line nine and searches long descriptions without losing selection", async () => {
+    const lines = Array.from({ length: 25 }, (_, i) => ({
+      ...retained, id: i + 1, lineNumber: i + 1,
+      description: `Long specification for opening ${i + 1}. `.repeat(30),
+    }));
+    mount(false, lines);
+    open();
+    expect(screen.getAllByRole("radio")).toHaveLength(24);
+    expect(screen.getByRole("radio", { name: /Line #25/ })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Search quotation lines"), { target: { value: "11" } });
+    expect(screen.getAllByRole("radio")).toHaveLength(1);
+    await selectRetained();
+    fireEvent.change(screen.getByLabelText("Search quotation lines"), { target: { value: "" } });
+    expect(screen.getByRole("radio", { name: /Line #11/ })).toBeChecked();
+    expect(screen.getAllByRole("radio")).toHaveLength(24);
+    expect(screen.getByRole("radiogroup")).toHaveClass("overflow-y-auto", "max-h-60");
+  });
   it("requires an explicit same-quotation counterpart and a nonblank human reason", async () => {
     mount(); open();
     expect(screen.getByRole("button", { name: confirmName })).toBeDisabled();
-    expect(screen.queryByRole("option", { name: /Other quotation/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: /#10/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("option", { name: /Separate opening, same price/ })).toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: /Other quotation/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: /#10/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Separate opening, same price/ })).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
     await selectRetained();
     typeReason("   ");
@@ -97,7 +114,7 @@ describe("duplicate extraction correction", () => {
   it("preserves typed text and forbids mutation when preview fails; offers retry", async () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ message: "Preview unavailable" }), { status: 503 }));
     mount(); open(); typeReason("Keep this pending explanation.");
-    fireEvent.change(screen.getByLabelText("Retained counterpart (same quotation)"), { target: { value: "11" } });
+    fireEvent.click(screen.getByRole("radio", { name: /Line #11/ }));
     await screen.findByText(/Financial preview failed: Preview unavailable/);
     expect(screen.getByRole("button", { name: confirmName })).toBeDisabled();
     expect(screen.getByLabelText(reasonLabel)).toHaveValue("Keep this pending explanation.");
@@ -129,7 +146,7 @@ describe("duplicate extraction correction", () => {
   it("rejects malformed or mismatched previews instead of authorizing removal", async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ ...preview, retainLine: { ...retained, id: 99 } }), { status: 200 }));
     mount(); open(); typeReason();
-    fireEvent.change(screen.getByLabelText("Retained counterpart (same quotation)"), { target: { value: "11" } });
+    fireEvent.click(screen.getByRole("radio", { name: /Line #11/ }));
     await screen.findByText(/preview does not match the selected lines/);
     expect(screen.getByRole("button", { name: confirmName })).toBeDisabled();
     expect(postCalls()).toHaveLength(0);
@@ -158,10 +175,10 @@ describe("duplicate extraction correction", () => {
       }), { status: 200 }));
     });
     mount(); open(); typeReason();
-    fireEvent.change(screen.getByLabelText("Retained counterpart (same quotation)"), { target: { value: "11" } });
+    fireEvent.click(screen.getByRole("radio", { name: /Line #11/ }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
     expect(screen.getByRole("button", { name: confirmName })).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Retained counterpart (same quotation)"), { target: { value: "12" } });
+    fireEvent.click(screen.getByRole("radio", { name: /Line #12/ }));
     await screen.findByText("3601.91 EUR");
     await act(async () => { resolveOld(new Response(JSON.stringify(preview), { status: 200 })); });
     expect(screen.queryByText("3602.23 EUR")).not.toBeInTheDocument();
