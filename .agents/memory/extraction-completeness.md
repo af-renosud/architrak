@@ -21,7 +21,7 @@ Rule: When vision silently under-extracts a dense machine-readable quotation, a 
 
 Rule: Illustrated quotation specifications can be image-only while prices are text; full page coverage does not prove correct product grouping across chunk boundaries.
 
-**Why:** A real illustrated joinery quotation yielded generic descriptions and a duplicate continuation product despite complete page coverage. Whole-PDF input recovered correct ordered prices in a bounded comparison, but an intermediate layout summary shifted prices to the wrong products.
+**Why:** A real illustrated joinery quotation yielded generic descriptions despite complete page coverage. The user subsequently clarified that the apparent duplicate comprised two legitimate equal-price products with shifted descriptions and an omitted terminal specification. Whole-PDF input recovered correct ordered prices in a bounded comparison, but that did not prove description alignment.
 
 **How to apply:** evaluate native-PDF recovery against independent ordered source prices, not totals alone. Retain human review of specifications and image associations, especially repeated equal-price products; never replace a user's corrected live quotation during experimentation.
 
@@ -36,3 +36,9 @@ Rule: A recovery gate must reject unaccounted monetary rows even when amounts ar
 **Why:** A zero-net delivery/credit pair can disappear without changing the sum; agreeing model totals can also disagree with the PDF. Neither arithmetic check alone proves completeness.
 
 **How to apply:** Include integer-currency, credit/fee and conflicting/duplicate printed-total fixtures whenever widening illustrated source evidence.
+
+Rule: Independent source transcription is not an OCR accuracy certificate. A whole-document, verbatim region inventory can exceed the provider timeout even when ordinary structured extraction succeeds.
+
+**Why:** The dense illustrated source requires substantially more output for every specification and region than a list of priced items. Repeated full-document attempts did not establish completeness.
+
+**How to apply:** Budget source evidence collection separately, preserve uncertainty on timeout, and verify bounded section-level collection against cross-page anchors before relying on its inventory to approve an extraction.

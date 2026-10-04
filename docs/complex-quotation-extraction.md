@@ -6,7 +6,9 @@ Read-only inspection of quotation 260309 found an 11-page PDF whose priced
 “fourniture et pose” rows are machine-readable, while product specifications
 and drawings are embedded images. Some product blocks continue across pages.
 The stored extraction processed all pages but contained generic “Composé de”
-descriptions and duplicated a product at a five-page chunk boundary.
+descriptions. Subsequent source review and user clarification established that
+the apparent duplicate was two legitimate equal-price items: descriptions were
+shifted, and the terminal MEXT 205 specification was missing.
 Page coverage alone therefore did not establish item or description completeness.
 The historical model is not recorded in that extraction.
 
@@ -124,3 +126,26 @@ must supply its own independent row evidence before further broadening this gate
 
 Run:
 `npx vitest run server/__tests__/illustrated-quotation.test.ts server/__tests__/illustrated-supplier-layouts.test.ts`
+
+## Independent content verification — unfinished foundation
+
+New standalone comparison modules check verbatim content coverage, exact section
+identity, cross-page region boundaries and ordered source finances. Formatting
+normalization is limited to whitespace and canonical Unicode; missing content
+and uncertain source regions cannot pass. These modules are **not yet connected
+to the application pipeline** and do not change existing approval guarantees.
+
+The independent native-PDF inventory collector deliberately does not receive
+the candidate extraction. It is bounded to 20 pages, 15 MiB and 120 seconds.
+The disposable annotated 11-page reference did not produce a usable inventory:
+the native request timed out. This is not evidence of completeness or successful
+recovery. A smaller section-based collection approach remains necessary.
+
+The local comparison tests use synthetic evidence, not successful transcription
+of the private PDF. Run:
+`npx vitest run server/__tests__/quotation-content-coverage.test.ts server/__tests__/quotation-source-manifest.test.ts`
+
+Remaining assigned scope includes independently verified real-source evidence,
+pipeline/finalisation integration, safe audited replacement preserving linked
+records, translation checks, source discrepancy UI and outcome monitoring.
+No live quotation has been re-scraped and full-editing permissions are unchanged.
