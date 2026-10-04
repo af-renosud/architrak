@@ -45,7 +45,7 @@ vi.mock("openai", () => {
 });
 
 import { storage } from "../../storage";
-import { translateDevis } from "../devis-translation";
+import { translateDevis, retranslateSingleLine } from "../devis-translation";
 
 const getDevis = storage.getDevis as unknown as ReturnType<typeof vi.fn>;
 const getDevisTranslation = storage.getDevisTranslation as unknown as ReturnType<typeof vi.fn>;
@@ -84,6 +84,26 @@ describe("translateDevis", () => {
     getDevisLineItems.mockResolvedValue(baseLines);
     upsertDevisTranslation.mockResolvedValue({});
     updateDevisTranslation.mockResolvedValue({});
+  });
+
+  it.each(["gemini", "openai"])("formats %s full and single-line translations before saving", async (provider) => {
+    const payload = {
+      header: { description: "Joinery:\nFrames\nGlazing" },
+      lines: [{ lineNumber: 1, originalDescription: "Cadres\nVitrage", translation: "Frames\nGlazing" }],
+    };
+    getDevisTranslation.mockResolvedValue({ status: "draft", lineTranslations: [] });
+    getAiModelSetting.mockResolvedValue({ provider, modelId: "test" });
+    generateContentMock.mockResolvedValue(geminiResponse(payload));
+    openaiCreateMock.mockResolvedValue(openaiResponse(payload));
+    const result = await translateDevis(42);
+    expect(result.translation.header.description).toBe("Joinery: Frames, and Glazing.");
+    expect(result.translation.lines[0].translation).toBe("Frames, and Glazing.");
+    expect(result.translation.lines[0].originalDescription).toBe("Cadres\nVitrage");
+    const single = await retranslateSingleLine(42, 1);
+    expect(single.translation).toBe("Frames, and Glazing.");
+    expect(updateDevisTranslation).toHaveBeenLastCalledWith(42, expect.objectContaining({
+      lineTranslations: [expect.objectContaining({ translation: "Frames, and Glazing." })],
+    }));
   });
 
   it("translates successfully via Gemini, transitions processing → draft, and clears stale PDF keys", async () => {

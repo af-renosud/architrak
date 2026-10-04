@@ -55,6 +55,7 @@
 - [Gmail accepted-send reconciliation](gmail-accepted-send-reconciliation.md) — retryable bearer-link emails use immutable RFC Message-IDs; provider-accepted/DB-uncertain sends stay in-flight and reconcile Sent before retry.
 - [Automated document delivery](automated-document-delivery.md) — persist eligibility before webhook dedup; seal document key + provenance together and reserve generated outbox key namespaces.
 - [Client-facing language](client-facing-language.md) — all outbound client email copy must be English; French is reserved for internal operator-facing records and audit text.
+- [Quotation translation format](quotation-translation-format.md) — generated description lists should be comma-separated paragraphs, retaining every specification and condition.
 - [Publish diff and unvalidated checks](publish-diff-unvalidated-checks.md) — Publish may emit malformed CHECK DDL from a dev constraint marked NOT VALID; if rows comply, validate it in dev and recompute the diff.
 - [Certificate reference authority](certificate-reference-authority.md) — C-numbers are server-owned and project-scoped; allocate in the insert tx before row locks, with uniqueness as the backstop.
 - [Certificate TVA authority](certificate-tva-authority.md) — server owns TVA; exact invoice/quotation evidence is pinned and revalidated; historical unlinked rows preserve recorded decisions.
