@@ -17,3 +17,9 @@ Missing intake totals are not authoritative contractor figures: a zero placehold
 **Why:** Freezing placeholders prevents failed/manual intake drafts from ever completing. This exception fills absent evidence; it must not reopen a recorded source figure or a previously confirmed transcription for editing.
 
 **How to apply:** Require a human reason and preserve the original extraction, with confirmation and its audit in one transaction. Protect signed/closed documents using durable evidence, not just a workflow stage that an operator can move backwards.
+
+Missing/misread row corrections require a page-specific original-PDF transcription, not a commercial revision. Text-layer evidence is corroborated against the source; image-only pages remain explicitly human-attested, never labelled machine-verified.
+
+**Why:** Scanned contractor quotations still need ingestion repair, but an operator's transcription and automated verification are different kinds of evidence. Neither permits changing authoritative document totals.
+
+**How to apply:** Bind confirmation to the source content digest and working-state preview; retain the verification mode, original row, corrected row and confirmed human reason separately from raw extraction.

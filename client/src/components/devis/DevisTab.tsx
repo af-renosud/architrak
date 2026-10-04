@@ -60,6 +60,7 @@ import { SupportingPdfsPanel } from "@/components/devis/SupportingPdfsPanel";
 import { ClientConversationPanel } from "@/components/devis/ClientConversationPanel";
 import { countDevisSignOff } from "@/components/devis/devis-counters";
 import { DuplicateExtractionCorrection } from "@/components/devis/DuplicateExtractionCorrection";
+import { ExtractionRowCorrection } from "@/components/devis/ExtractionRowCorrection";
 
 import { Amount } from "@/components/ui/amount";
 import { formatCurrency as fmt } from "@/lib/utils";
@@ -5717,6 +5718,9 @@ function DevisDetailTabs({
 
   return (
     <Tabs value={activeTab} onValueChange={setActiveTab} className="rounded-2xl border border-[#0B2545]/15 bg-white/60 overflow-hidden" data-testid={`tabs-devis-detail-${devis.id}`}>
+      <div className="flex justify-end px-3 py-2 border-b border-border/40">
+        <ExtractionRowCorrection key={devis.id} devisId={devis.id} projectId={String(devis.projectId)} lines={lineItems ?? []} disabled={isArchived} />
+      </div>
       <TabsList className="w-full justify-start rounded-none border-b border-black/5 bg-[#0B2545]/[0.03] px-2 h-auto p-0">
         {isModeB && (
           <TabsTrigger

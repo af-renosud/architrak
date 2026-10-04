@@ -15,6 +15,8 @@ import { processDevisUpload } from "../services/devis-upload.service";
 import { enqueueReconciliation } from "../services/reconciliation/reconciliation-queue.service";
 import { rescrapeDevis } from "../services/devis-rescrape.service";
 import { duplicateCorrection, CorrectionError } from "../services/duplicate-extraction";
+import { extractionRowCorrection } from "../services/extraction-row-correction";
+import { extractionCorrectionSchema } from "../../shared/extraction-row-correction";
 import { reopenDevisDraft } from "../services/draft-reopen.service";
 import { confirmDevisAndMirror, assignTagsForInsertedItems, DevisConfirmGuardError } from "../services/benchmark-ingest.service";
 import { PdfPasswordProtectedError } from "../gmail/document-parser";
@@ -1264,6 +1266,25 @@ const correctionSelection = z.object({
   removeLineId: z.coerce.number().int().positive(),
   retainLineId: z.coerce.number().int().positive(),
 });
+for (const confirm of [false, true]) {
+  router.post(`/api/devis/:devisId/${confirm ? "extraction-corrections" : "extraction-correction-preview"}`,
+    requireAuth, validateRequest({ params: devisIdParams }),
+    async (req, res) => {
+      const { fingerprint, confirmed, ...input } = req.body;
+      const parsed = extractionCorrectionSchema.safeParse(input);
+      if (!parsed.success)
+        return res.status(400).json({ message: parsed.error.issues.map(issue => issue.message).join(" ") });
+      if (confirm && (confirmed !== true || typeof fingerprint !== "string"))
+        return res.status(400).json({ message: "Provide a valid correction, original PDF evidence and confirmed human reason." });
+      try {
+        res.json(await extractionRowCorrection(Number(req.params.devisId), parsed.data, confirm
+          ? { actorId: Number(req.session.userId), fingerprint, confirmed: true } : undefined));
+      } catch (error) {
+        if (error instanceof CorrectionError) return res.status(error.status).json({ message: error.message });
+        throw error;
+      }
+    });
+}
 router.get("/api/devis/:devisId/duplicate-correction-preview", requireAuth,
   validateRequest({ params: devisIdParams, query: correctionSelection }),
   async (req, res) => {
