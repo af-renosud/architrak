@@ -14,6 +14,7 @@ import { upload } from "../middleware/upload";
 import { processDevisUpload } from "../services/devis-upload.service";
 import { enqueueReconciliation } from "../services/reconciliation/reconciliation-queue.service";
 import { rescrapeDevis } from "../services/devis-rescrape.service";
+import { duplicateCorrection, CorrectionError } from "../services/duplicate-extraction";
 import { reopenDevisDraft } from "../services/draft-reopen.service";
 import { confirmDevisAndMirror, assignTagsForInsertedItems, DevisConfirmGuardError } from "../services/benchmark-ingest.service";
 import { PdfPasswordProtectedError } from "../gmail/document-parser";
@@ -139,6 +140,7 @@ const devisConfirmSchema = z.object({
   feePercentageOverride: z.union([z.coerce.number().min(0).max(100), z.null()]).optional(),
   lotCode: lotCodePartsSchema,
   manualReviewConfirmed: z.literal(true).optional(),
+  sourceTotalsReason: z.string().trim().min(1).max(2000).optional(),
 }).strict();
 type DevisConfirmInput = z.infer<typeof devisConfirmSchema>;
 
@@ -885,6 +887,13 @@ router.patch(
     if (!user) return res.status(401).json({ message: "Authentication required" });
 
     const before = await storage.getDevis(id);
+    if (["pdfStorageKey", "aiExtractedData"].some(key => req.body[key] !== undefined)) {
+      return res.status(409).json({ message: "Original quotation evidence cannot be replaced through ordinary editing." });
+    }
+    if (before?.pdfStorageKey && ["amountHt", "amountTtc", "tvaRate"].some(key =>
+      req.body[key] !== undefined && Number(req.body[key]) !== Number((before as any)[key]))) {
+      return res.status(409).json({ message: "Contractor PDF figures cannot be manually amended. Correct ingestion errors through an audited correction." });
+    }
     if (!before) return res.status(404).json({ message: "Devis not found" });
 
     if (Object.prototype.hasOwnProperty.call(req.body, "status")) {
@@ -1182,6 +1191,10 @@ router.post(
   "/api/devis/:devisId/line-items",
   validateRequest({ params: devisIdParams, body: createLineItemBodySchema }),
   async (req, res) => {
+    const parent = await storage.getDevis(Number(req.params.devisId));
+    if (parent?.pdfStorageKey) return res.status(409).json({
+      message: "Adding priced lines to an ingested contractor quotation requires an audited ingestion correction.",
+    });
     const item = await storage.createDevisLineItem({ ...normalizeLineItemText({ ...req.body }), devisId: Number(req.params.devisId) });
     // Quotation data changed → any cached translated/combined PDF (which may
     // embed a now-stale confirmed cost analysis) must not be served again.
@@ -1196,6 +1209,9 @@ router.patch(
   validateRequest({ params: idParams, body: updateLineItemSchema }),
   async (req, res) => {
     const lineItemId = Number(req.params.id);
+    if (["quantity", "unit", "unitPriceHt", "totalHt", "devisId", "lineNumber"].some(key => req.body[key] !== undefined)) {
+      return res.status(409).json({ message: "Quotation figures and line identity cannot be changed through ordinary editing. Use an audited ingestion correction." });
+    }
     const item = await storage.updateDevisLineItem(lineItemId, normalizeLineItemText({ ...req.body }));
     if (!item) return res.status(404).json({ message: "Line item not found" });
     // Quotation data changed → invalidate cached translated/combined PDFs so
@@ -1244,20 +1260,40 @@ router.patch(
   },
 );
 
+const correctionSelection = z.object({
+  removeLineId: z.coerce.number().int().positive(),
+  retainLineId: z.coerce.number().int().positive(),
+});
+router.get("/api/devis/:devisId/duplicate-correction-preview", requireAuth,
+  validateRequest({ params: devisIdParams, query: correctionSelection }),
+  async (req, res) => {
+    try {
+      const selected = correctionSelection.parse(req.query);
+      res.json(await duplicateCorrection(Number(req.params.devisId), selected.removeLineId, selected.retainLineId));
+    } catch (error) {
+      if (error instanceof CorrectionError) return res.status(error.status).json({ message: error.message });
+      throw error;
+    }
+  });
+router.post("/api/devis/:devisId/duplicate-corrections", requireAuth,
+  validateRequest({ params: devisIdParams, body: correctionSelection.extend({
+    reason: z.string().trim().min(1).max(2000), fingerprint: z.string().min(1),
+  }).strict() }),
+  async (req, res) => {
+    try {
+      res.json(await duplicateCorrection(Number(req.params.devisId), req.body.removeLineId, req.body.retainLineId,
+        { actorId: Number(req.session.userId), reason: req.body.reason, fingerprint: req.body.fingerprint }));
+    } catch (error) {
+      if (error instanceof CorrectionError) return res.status(error.status).json({ message: error.message });
+      throw error;
+    }
+  });
+
 router.delete(
   "/api/line-items/:id",
   validateRequest({ params: idParams }),
   async (req, res) => {
-    const lineItemId = Number(req.params.id);
-    // Snapshot the context-asset storage keys BEFORE the delete — the FK
-    // cascade removes the rows, after which the keys are unrecoverable.
-    const contextAssets = await storage.getDevisLineContextAssets(lineItemId);
-    const deletedDevisId = await storage.deleteDevisLineItem(lineItemId);
-    // Quotation data changed → invalidate cached translated/combined PDFs.
-    if (deletedDevisId !== null) await storage.bumpContextsVersionAndClearPdfCache(deletedDevisId);
-    // Best-effort object cleanup (rows already cascaded); never blocks the 204.
-    if (contextAssets.length > 0) void deleteContextAssetObjects(contextAssets);
-    res.status(204).send();
+    res.status(410).json({ message: "Use Remove duplicate extraction with a confirmed human reason. Unaudited deletion is no longer allowed." });
   },
 );
 
@@ -1302,6 +1338,8 @@ router.post(
       if (devis.status !== "draft") return res.status(400).json({ message: "Only draft devis can be confirmed" });
 
       const corrections = { ...req.body };
+      const sourceTotalsReason = corrections.sourceTotalsReason;
+      delete corrections.sourceTotalsReason;
       const manualReviewConfirmed = corrections.manualReviewConfirmed === true;
       delete corrections.manualReviewConfirmed;
       if (devis.manualIntakeReviewRequired && !manualReviewConfirmed) {
@@ -1384,7 +1422,8 @@ router.post(
       const { devis: updated, inserted } = await confirmDevisAndMirror(
         Number(req.params.id),
         updates,
-        { manualReviewConfirmedByUserId: manualReviewConfirmed ? Number(req.session.userId) : null },
+        { manualReviewConfirmedByUserId: manualReviewConfirmed ? Number(req.session.userId) : null,
+          sourceTotalsReason, sourceTotalsActorId: Number(req.session.userId) },
       );
       if (!updated) {
         return res.status(409).json({

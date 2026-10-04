@@ -236,12 +236,19 @@ describe("parked financial document manual promotion", () => {
       status: 422,
     });
 
+    await expect(confirmDevisAndMirror(promoted.id, {
+      status: "pending", amountHt: "100.00", amountTtc: "120.00",
+    }, { manualReviewConfirmedByUserId: userId })).rejects.toMatchObject({
+      code: "source_transcription_reason_required",
+    });
     const first = await confirmDevisAndMirror(promoted.id, {
       status: "pending",
       amountHt: "100.00",
       amountTtc: "120.00",
     }, {
       manualReviewConfirmedByUserId: userId,
+      sourceTotalsActorId: userId,
+      sourceTotalsReason: "Read the missing totals from the original PDF totals box.",
     });
     expect(first.devis).toMatchObject({
       status: "pending",
@@ -249,6 +256,15 @@ describe("parked financial document manual promotion", () => {
       manualIntakeReviewedByUserId: userId,
     });
     expect(first.devis?.manualIntakeReviewedAt).not.toBeNull();
+    const audit = await db.execute(sql`SELECT actor_id,reason,snapshot FROM quotation_source_transcriptions WHERE devis_id=${promoted.id}`);
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0].actor_id).toBe(userId);
+    expect(audit.rows[0].reason).toBe("Read the missing totals from the original PDF totals box.");
+    expect((audit.rows[0].snapshot as any).original.amountHt).toBe("0.00");
+    expect((audit.rows[0].snapshot as any).transcribed).toEqual({ amountHt: "100.00", amountTtc: "120.00" });
+    await expect(db.transaction(async tx => {
+      await tx.execute(sql`UPDATE quotation_source_transcriptions SET reason='changed' WHERE devis_id=${promoted.id}`);
+    })).rejects.toThrow();
 
     const second = await confirmDevisAndMirror(promoted.id, {
       status: "pending",

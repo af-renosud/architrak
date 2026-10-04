@@ -59,6 +59,7 @@ import { DevisClosurePanel } from "@/components/devis/DevisClosurePanel";
 import { SupportingPdfsPanel } from "@/components/devis/SupportingPdfsPanel";
 import { ClientConversationPanel } from "@/components/devis/ClientConversationPanel";
 import { countDevisSignOff } from "@/components/devis/devis-counters";
+import { DuplicateExtractionCorrection } from "@/components/devis/DuplicateExtractionCorrection";
 
 import { Amount } from "@/components/ui/amount";
 import { formatCurrency as fmt } from "@/lib/utils";
@@ -2766,6 +2767,7 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
   const [lotCode, setLotCode] = useState<LotCodeValue>(initialLotCode);
   const [forcedNextLotSequence, setForcedNextLotSequence] = useState<number | null>(null);
   const [manualReviewConfirmed, setManualReviewConfirmed] = useState(false);
+  const [sourceTotalsReason, setSourceTotalsReason] = useState("");
 
   const fieldWarnings = (field: string) => warnings.filter(w => w.field === field);
 
@@ -2832,6 +2834,7 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
       },
     };
     if (devis.manualIntakeReviewRequired) corrections.manualReviewConfirmed = manualReviewConfirmed;
+    if (sourceTotalsReason.trim()) corrections.sourceTotalsReason = sourceTotalsReason.trim();
     if (editValues.amountHt !== (devis.amountHt ?? "")) corrections.amountHt = editValues.amountHt;
     if (editValues.amountTtc !== (devis.amountTtc ?? "")) corrections.amountTtc = editValues.amountTtc;
     if (editValues.devisNumber !== (devis.devisNumber ?? "")) corrections.devisNumber = editValues.devisNumber;
@@ -2895,6 +2898,15 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
                 data-testid={`checkbox-manual-devis-review-${devis.id}`}
               />
               <span>I reviewed this manually submitted PDF and verified its contractor, code, description, HT, and TTC values.</span>
+            </label>
+          )}
+          {devis.pdfStorageKey && (
+            <label className="block space-y-1 text-xs">
+              <span>Reason for completing missing PDF totals</span>
+              <Textarea value={sourceTotalsReason} onChange={event => setSourceTotalsReason(event.target.value)}
+                maxLength={2000} data-testid="source-totals-reason"
+                placeholder="If filling missing totals, describe where you verified them in the original PDF." />
+              <span className="text-muted-foreground">Only missing extraction values can be completed. Recorded contractor figures cannot be amended. Your reason is kept in the audit trail.</span>
             </label>
           )}
           {lotRefWarnings.length > 0 && (
@@ -3119,6 +3131,8 @@ function LineItemWithCheck({
   li,
   onUpdate,
   devisId,
+  projectId,
+  quotationLines,
   openCheck,
   onSaveCheckQuery,
   disabled = false,
@@ -3129,6 +3143,8 @@ function LineItemWithCheck({
   li: DevisLineItem;
   onUpdate: (data: Record<string, string>) => Promise<unknown> | unknown;
   devisId: number;
+  projectId: string;
+  quotationLines: DevisLineItem[];
   openCheck: { id: number; query: string } | null;
   onSaveCheckQuery: (checkId: number, query: string) => Promise<unknown>;
   disabled?: boolean;
@@ -3366,6 +3382,13 @@ function LineItemWithCheck({
               </div>
             </div>
           )}
+          <DuplicateExtractionCorrection
+            devisId={devisId}
+            projectId={projectId}
+            line={li}
+            lines={quotationLines}
+            disabled={disabled || editingDesc || savingDesc || popoverOpen || savingPopover}
+          />
         </td>
         <td className="py-1.5 px-2 text-[11px] text-right">{li.quantity}</td>
         <td className="py-1.5 px-2 text-[11px] text-right">{li.unitPriceHt ? <Amount value={parseFloat(li.unitPriceHt)} denomination="HT" /> : "-"}</td>
@@ -5776,6 +5799,8 @@ function DevisDetailTabs({
                       key={li.id}
                       li={li}
                       devisId={devis.id}
+                      projectId={String(devis.projectId)}
+                      quotationLines={lineItems}
                       openCheck={openLineCheckMap.get(li.id) ?? null}
                       onSaveCheckQuery={(checkId, query) => saveCheckQueryMutation.mutateAsync({ checkId, query })}
                       onUpdate={(data) => onUpdateLineItem(li.id, data)}
@@ -6267,6 +6292,8 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
               replace its current line items and totals with whatever it
               extracts. Your manual edits to the devis code, contractor, lot
               and status will be kept. This usually takes a few seconds.
+              {" "}Previous duplicate-extraction corrections will not be automatically reapplied.
+              Review the new extraction against the original PDF before confirming it.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -70,6 +70,17 @@ export interface MigrationArtifact {
  * migration. Set the flag on every new data-only DML backfill.
  */
 export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
+  { tag: "0136_missing_source_totals_audit", artifact: { kind: "all", artifacts: [
+    { kind: "table", table: "quotation_source_transcriptions" },
+    { kind: "constraint", table: "quotation_source_transcriptions", constraint: "quotation_source_transcriptions_reason_check" },
+    { kind: "trigger", table: "quotation_source_transcriptions", trigger: "quotation_source_transcriptions_immutable" },
+  ] } },
+  { tag: "0135_duplicate_extraction_audit", artifact: { kind: "all", artifacts: [
+    { kind: "table", table: "duplicate_extraction_audit" },
+    { kind: "constraint", table: "duplicate_extraction_audit", constraint: "duplicate_extraction_audit_removed_line_id_key" },
+    { kind: "constraint", table: "duplicate_extraction_audit", constraint: "duplicate_extraction_audit_reason_check" },
+    { kind: "trigger", table: "duplicate_extraction_audit", trigger: "duplicate_extraction_audit_immutable" },
+  ] } },
   { tag: "0000_baseline", artifact: { kind: "table", table: "ai_model_settings" } },
   { tag: "0001_regular_leo", artifact: { kind: "column", table: "projects", column: "archived_at" } },
   { tag: "0002_lot_catalog", artifact: { kind: "table", table: "lot_catalog" } },

@@ -652,6 +652,27 @@ export const devisSupportingPdfs = pgTable("devis_supporting_pdfs", {
   position: integer("position").notNull(),
 });
 
+// Deliberately no cascading foreign keys: correction evidence outlives working rows.
+export const quotationSourceTranscriptions = pgTable("quotation_source_transcriptions", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").notNull(),
+  actorId: integer("actor_id").notNull(),
+  reason: text("reason").notNull(),
+  snapshot: jsonb("snapshot").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [check("quotation_source_transcriptions_reason_check", sql`length(trim(${table.reason})) > 0`)]);
+
+export const duplicateExtractionAudit = pgTable("duplicate_extraction_audit", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").notNull(),
+  removedLineId: integer("removed_line_id").notNull().unique(),
+  retainedLineId: integer("retained_line_id").notNull(),
+  actorId: integer("actor_id").notNull(),
+  reason: text("reason").notNull(),
+  snapshot: jsonb("snapshot").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [check("duplicate_extraction_audit_reason_check", sql`length(trim(${table.reason})) > 0`)]);
+
 export const devisLineItems = pgTable("devis_line_items", {
   id: serial("id").primaryKey(),
   devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),

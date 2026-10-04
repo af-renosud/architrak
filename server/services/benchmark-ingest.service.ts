@@ -1,7 +1,8 @@
 import { storage } from "../storage";
 import { db } from "../db";
 import { devis as devisTable, benchmarkDocuments, benchmarkItems, benchmarkItemTags } from "@shared/schema";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
+import { missingSourceTotalChanges } from "./quotation-source-guards";
 import { uploadDocument } from "../storage/object-storage";
 import { parseDocument, type ParsedDocument, isTransientParseFailure, getParseFailureMessage } from "../gmail/document-parser";
 import { BENCHMARK_UPLOAD_ERROR_CODES } from "../../shared/benchmark-upload-errors";
@@ -351,7 +352,7 @@ export async function processStandaloneBenchmarkUpload(file: UploadedFile, input
 export async function confirmDevisAndMirror(
   devisId: number,
   devisUpdates: Record<string, unknown>,
-  options: { manualReviewConfirmedByUserId?: number | null } = {},
+  options: { manualReviewConfirmedByUserId?: number | null; sourceTotalsReason?: string; sourceTotalsActorId?: number } = {},
 ): Promise<{
   devis: typeof devisTable.$inferSelect | undefined;
   benchmarkDocId: number | null;
@@ -400,6 +401,28 @@ export async function confirmDevisAndMirror(
       devisUpdates.manualIntakeReviewRequired = false;
       devisUpdates.manualIntakeReviewedAt = new Date();
       devisUpdates.manualIntakeReviewedByUserId = options.manualReviewConfirmedByUserId;
+    }
+    let changedSourceTotals: string[];
+    try { changedSourceTotals = missingSourceTotalChanges(current, devisUpdates); }
+    catch (error) { throw new DevisConfirmGuardError(409, "source_totals_immutable", (error as Error).message); }
+    if (changedSourceTotals.length) {
+      if (!options.sourceTotalsReason?.trim() || !options.sourceTotalsActorId)
+        throw new DevisConfirmGuardError(422, "source_transcription_reason_required", "Enter a human reason confirming the missing totals were read from the original PDF.");
+      const lockedProject = await tx.execute(sql`SELECT archived_at FROM projects WHERE id=${current.projectId} FOR SHARE`);
+      if (lockedProject.rows[0]?.archived_at)
+        throw new DevisConfirmGuardError(409, "source_transcription_protected", "Archived projects are read-only.");
+      const protection = await tx.execute(sql`SELECT
+        EXISTS(SELECT 1 FROM invoices WHERE devis_id=${devisId}) OR
+        EXISTS(SELECT 1 FROM certificats WHERE project_id=${current.projectId} AND contractor_id=${current.contractorId} AND status <> 'superseded') OR
+        EXISTS(SELECT 1 FROM situation_lines sl JOIN devis_line_items li ON li.id=sl.devis_line_item_id WHERE li.devis_id=${devisId}) OR
+        EXISTS(SELECT 1 FROM quotation_source_transcriptions WHERE devis_id=${devisId} AND
+          (${changedSourceTotals.includes("amountHt")} AND snapshot->'transcribed' ? 'amountHt' OR
+           ${changedSourceTotals.includes("amountTtc")} AND snapshot->'transcribed' ? 'amountTtc')) AS blocked`);
+      if (protection.rows[0]?.blocked)
+        throw new DevisConfirmGuardError(409, "source_transcription_protected", "Recorded transcriptions and financial evidence cannot be amended.");
+      await tx.execute(sql`INSERT INTO quotation_source_transcriptions (devis_id, actor_id, reason, snapshot)
+        VALUES (${devisId}, ${options.sourceTotalsActorId}, ${options.sourceTotalsReason.trim()},
+        ${JSON.stringify({ original: current, transcribed: Object.fromEntries(changedSourceTotals.map(key => [key, devisUpdates[key]])) })}::jsonb)`);
     }
     const [updatedDevis] = await tx
       .update(devisTable)
