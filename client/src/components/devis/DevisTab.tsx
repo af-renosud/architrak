@@ -65,6 +65,7 @@ import { ExtractionRowCorrection } from "@/components/devis/ExtractionRowCorrect
 import { Amount } from "@/components/ui/amount";
 import { formatCurrency as fmt } from "@/lib/utils";
 import { normalizeRef } from "@shared/intake-dedup";
+import { DuplicateExtractionHistory } from "@/components/devis/DuplicateExtractionHistory";
 
 interface DevisFinancialSummary {
   devisId: number;
@@ -6266,6 +6267,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
           </div>
         </TooltipProvider>
       </div>
+      <DuplicateExtractionHistory key={devis.id} devisId={devis.id} />
       <SupportingPdfsPanel
         devisId={devis.id}
         isArchived={isArchived}

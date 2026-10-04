@@ -54,7 +54,8 @@ export function useDuplicateCorrection(
       await apiRequest("POST", `/api/devis/${devisId}/duplicate-corrections`, data);
     },
     onSuccess: () => {
-      // Includes line items, translations, context, checks and cached quotation data.
+      // Includes duplicate-corrections history (even while collapsed), line items,
+      // translations, context, checks and cached quotation data.
       void client.invalidateQueries({ queryKey: ["/api/devis", devisId] });
       void client.invalidateQueries({ queryKey: projectScopedKey(projectId) });
     },

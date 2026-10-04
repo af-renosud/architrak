@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { DuplicateExtractionCorrection } from "../DuplicateExtractionCorrection";
+import { duplicateExtractionHistoryKey } from "../use-duplicate-extraction-history";
 
 vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: vi.fn() }) }));
 const removed = { id: 10, devisId: 42, lineNumber: 10, description: "Aluminium opening", totalHt: "1795.00" };
@@ -75,6 +76,8 @@ describe("duplicate extraction correction", () => {
   });
   it("posts only IDs, reviewed reason and fingerprint once; refreshes quotation and project queries", async () => {
     const { client } = mount();
+    client.setQueryData(duplicateExtractionHistoryKey(42), []);
+    client.setQueryData(duplicateExtractionHistoryKey(43), []);
     const invalidate = vi.spyOn(client, "invalidateQueries");
     open(); await selectRetained(); typeReason("  Verified against PDF page 2: repeated heading.  ");
     const confirm = screen.getByRole("button", { name: confirmName });
@@ -88,6 +91,8 @@ describe("duplicate extraction correction", () => {
     ]);
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/devis", 42] }));
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/projects", "7"] });
+    expect(client.getQueryState(duplicateExtractionHistoryKey(42))?.isInvalidated).toBe(true);
+    expect(client.getQueryState(duplicateExtractionHistoryKey(43))?.isInvalidated).toBe(false);
   });
   it("preserves typed text and forbids mutation when preview fails; offers retry", async () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ message: "Preview unavailable" }), { status: 503 }));

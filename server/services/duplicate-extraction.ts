@@ -3,6 +3,43 @@ import { pool } from "../db";
 import type { PoolClient } from "pg";
 import { validateExtraction } from "./extraction-validator";
 import { hasSignedOrClosedEvidence } from "./quotation-source-guards";
+import type { DuplicateExtractionHistoryEntry } from "@shared/schema";
+
+export async function getDuplicateCorrectionHistory(devisId: number): Promise<DuplicateExtractionHistoryEntry[]> {
+  const quotation = await pool.query("SELECT id FROM devis WHERE id=$1", [devisId]);
+  if (!quotation.rows.length) throw new CorrectionError("Quotation not found", 404);
+  // Project only reviewed display fields in SQL: raw snapshots never leave this read path.
+  // Use historical line evidence, not live rows (which may have been removed or re-extracted).
+  const { rows } = await pool.query(`SELECT a.id, a.created_at, a.actor_id, a.reason,
+    NULLIF(trim(concat_ws(' ', u.first_name, u.last_name)), '') AS actor_name,
+    a.removed_line_id, a.retained_line_id,
+    a.snapshot #>> '{preview,removeLine,lineNumber}' AS removed_number,
+    a.snapshot #>> '{preview,removeLine,description}' AS removed_description,
+    a.snapshot #>> '{preview,removeLine,totalHt}' AS removed_total,
+    a.snapshot #>> '{preview,retainLine,lineNumber}' AS retained_number,
+    a.snapshot #>> '{preview,retainLine,description}' AS retained_description,
+    a.snapshot #>> '{preview,retainLine,totalHt}' AS retained_total,
+    a.snapshot #>> '{preview,sourceTotalHt}' AS source_total,
+    a.snapshot #>> '{preview,beforeSumHt}' AS before_sum,
+    a.snapshot #>> '{preview,afterSumHt}' AS after_sum,
+    a.snapshot #>> '{preview,discrepancyBeforeHt}' AS before_discrepancy,
+    a.snapshot #>> '{preview,discrepancyAfterHt}' AS after_discrepancy
+    FROM duplicate_extraction_audit a LEFT JOIN users u ON u.id=a.actor_id
+    WHERE a.devis_id=$1 ORDER BY a.created_at DESC, a.id DESC`, [devisId]);
+  return rows.map(row => ({
+    id: row.id,
+    createdAt: new Date(row.created_at).toISOString(),
+    actor: { id: row.actor_id, name: row.actor_name || `User #${row.actor_id}` },
+    reason: row.reason,
+    removedLine: { id: row.removed_line_id, lineNumber: Number(row.removed_number),
+      description: row.removed_description, totalHt: row.removed_total },
+    retainedLine: { id: row.retained_line_id, lineNumber: Number(row.retained_number),
+      description: row.retained_description, totalHt: row.retained_total },
+    reconciliation: { sourceTotalHt: row.source_total, beforeSumHt: row.before_sum,
+      afterSumHt: row.after_sum, discrepancyBeforeHt: row.before_discrepancy,
+      discrepancyAfterHt: row.after_discrepancy },
+  }));
+}
 
 export class CorrectionError extends Error {
   constructor(message: string, public status = 409) { super(message); }

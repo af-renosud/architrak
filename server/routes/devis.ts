@@ -14,7 +14,7 @@ import { upload } from "../middleware/upload";
 import { processDevisUpload } from "../services/devis-upload.service";
 import { enqueueReconciliation } from "../services/reconciliation/reconciliation-queue.service";
 import { rescrapeDevis } from "../services/devis-rescrape.service";
-import { duplicateCorrection, CorrectionError } from "../services/duplicate-extraction";
+import { duplicateCorrection, getDuplicateCorrectionHistory, CorrectionError } from "../services/duplicate-extraction";
 import { extractionRowCorrection } from "../services/extraction-row-correction";
 import { extractionCorrectionSchema } from "../../shared/extraction-row-correction";
 import { reopenDevisDraft } from "../services/draft-reopen.service";
@@ -1285,6 +1285,17 @@ for (const confirm of [false, true]) {
       }
     });
 }
+router.get("/api/devis/:devisId/duplicate-corrections", requireAuth,
+  validateRequest({ params: devisIdParams }),
+  async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    try {
+      res.json(await getDuplicateCorrectionHistory(Number(req.params.devisId)));
+    } catch (error) {
+      if (error instanceof CorrectionError) return res.status(error.status).json({ message: error.message });
+      throw error;
+    }
+  });
 router.get("/api/devis/:devisId/duplicate-correction-preview", requireAuth,
   validateRequest({ params: devisIdParams, query: correctionSelection }),
   async (req, res) => {

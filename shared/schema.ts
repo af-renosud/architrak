@@ -662,6 +662,23 @@ export const quotationSourceTranscriptions = pgTable("quotation_source_transcrip
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [check("quotation_source_transcriptions_reason_check", sql`length(trim(${table.reason})) > 0`)]);
 
+// Public read model: deliberately excludes the internal audit snapshot and links.
+export interface DuplicateExtractionHistoryEntry {
+  id: number;
+  createdAt: string;
+  actor: { id: number; name: string };
+  reason: string;
+  removedLine: { id: number; lineNumber: number; description: string; totalHt: string };
+  retainedLine: { id: number; lineNumber: number; description: string; totalHt: string };
+  reconciliation: {
+    sourceTotalHt: string;
+    beforeSumHt: string;
+    afterSumHt: string;
+    discrepancyBeforeHt: string;
+    discrepancyAfterHt: string;
+  };
+}
+
 export const duplicateExtractionAudit = pgTable("duplicate_extraction_audit", {
   id: serial("id").primaryKey(),
   devisId: integer("devis_id").notNull(),
