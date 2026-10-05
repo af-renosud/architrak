@@ -23,3 +23,15 @@ Missing or misread intake totals are not authoritative source figures. Provide a
 Two equal-price joinery rows are legitimate separate items; the problem is shifted descriptions and a missing terminal specification. Do not infer duplication from matching prices or repair this case by deleting an item.
 
 **Why:** Equal prices and matching totals cannot establish product identity. The user explicitly confirms both items are valid.
+
+## Implemented control boundary
+
+The expanded quotation exposes an architect working editor with explicit atomic save, stable row IDs,
+bilingual content/explanations, contextual and priced additions, reordering and passage transfer.
+`quotation_source_baselines` records a one-time human PDF transcription tied to its SHA-256 digest;
+`quotation_architect_audit` retains actor/time and full before-and-after data. Neither ordinary saves nor
+re-scraping may rewrite that PDF/extraction receipt. Financial saves use shared decimal/cents arithmetic,
+actual VAT, accepted options, explicit HT discounts and source-selected VAT rounding. Text-only edits remain
+available without a stale OCR manifest. Human Approve is distinct from automatic verification.
+Existing signed PDFs, pins, financial references and payment/certificate history remain untouched.
+Corrected quotation signing must fail closed if an original-containing combined package is unavailable.

@@ -2,6 +2,8 @@ import { db } from "../db";
 import { eq, sql } from "drizzle-orm";
 import { devis, devisLineItems, devisTranslations, type Devis, type DevisLineItem, type DevisTranslation } from "@shared/schema";
 import { quotationWorkingVersion } from "./quotation-working-version";
+import { correctedFinancialBlocker } from "./architect-quotation-correction";
+import type { ArchitectCorrectionDraft } from "@shared/architect-quotation";
 
 /** Coverage is checked before this call. Commit only the exact checked version,
  * under the same source/line/translation locks used by extraction replacement. */
@@ -20,7 +22,19 @@ export async function commitTranslationApproval(
     const [translation] = await tx.select().from(devisTranslations).where(eq(devisTranslations.devisId, devisId));
     if (!translation || !["draft", "edited"].includes(translation.status)
       || quotationWorkingVersion(quotation, lines, translation) !== fingerprint) return null;
+    const correction = await tx.execute(sql`SELECT s.draft,b.ttc FROM quotation_architect_state s
+      LEFT JOIN quotation_source_baselines b ON b.devis_id=s.devis_id WHERE s.devis_id=${devisId}`);
+    if (correction.rows.length) {
+      const row = correction.rows[0], saved = row.draft as ArchitectCorrectionDraft;
+      const working = { ...saved, lines: saved.lines.map(l => {
+        const live = lines.find(r => r.id === l.id);
+        return live ? { ...l, quantity: live.quantity ?? "0", unitPriceHt: live.unitPriceHt ?? "0.00", totalHt: live.totalHt } : l;
+      }) };
+      if (correctedFinancialBlocker(working, row.ttc == null ? null : { ttc: String(row.ttc) },
+        { ht: quotation.amountHt ?? "",ttc: quotation.amountTtc ?? "" })) return null;
+    }
     const [updated] = await tx.update(devisTranslations).set({
+      headerTranslated: { ...((translation.headerTranslated ?? {}) as object), humanReviewed: true },
       status: "finalised", approvedAt: new Date(), approvedBy: actorId, approvedByEmail: email,
       translatedPdfStorageKey: null, combinedPdfStorageKey: null,
       contextsVersion: sql`${devisTranslations.contextsVersion} + 1`, updatedAt: new Date(),

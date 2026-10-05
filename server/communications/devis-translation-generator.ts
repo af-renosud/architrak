@@ -1,4 +1,5 @@
 import { PDFDocument } from "pdf-lib";
+import { assertOriginalReceiptBytes } from "../services/architect-quotation-correction";
 import { db } from "../db";
 import { sql } from "drizzle-orm";
 import { storage } from "../storage";
@@ -137,24 +138,27 @@ export async function loadLineContextRenders(devisId: number): Promise<Map<numbe
 }
 
 function buildHtml(input: BuildHtmlInput): string {
-  const { devis, project, contractor, lines, header, translatedLines, includeExplanations, companyLogoBase64, approvedAt, approvedByEmail, lineContexts, costAnalysisHtml } = input;
+  const { devis, project, contractor, lines, header, translatedLines, companyLogoBase64, approvedAt, approvedByEmail, lineContexts, costAnalysisHtml } = input;
+  const includeExplanations = input.includeExplanations || header.workingDiscountHt != null;
   const isApproved = !!approvedAt;
 
   const byLineNumber = new Map<number, DevisTranslationLine>();
   for (const t of translatedLines) byLineNumber.set(t.lineNumber, t);
 
   const colHeaders = includeExplanations
-    ? `<th>#</th><th>French (original)</th><th>English (literal)</th><th>Plain English</th><th>Qty</th><th>Unit</th><th>Unit HT</th><th>Total HT</th>`
-    : `<th>#</th><th>French (original)</th><th>English (literal)</th><th>Qty</th><th>Unit</th><th>Unit HT</th><th>Total HT</th>`;
+    ? `<th>#</th><th>French (working interpretation)</th><th>English</th><th>Context (FR / EN)</th><th>Qty</th><th>Unit</th><th>Unit HT</th><th>Total HT</th>`
+    : `<th>#</th><th>French (working interpretation)</th><th>English</th><th>Qty</th><th>Unit</th><th>Unit HT</th><th>Total HT</th>`;
 
   const columnCount = includeExplanations ? 8 : 7;
 
   const rows = lines
     .map((li) => {
       const t = byLineNumber.get(li.lineNumber);
-      const fr = escapeHtml(li.description);
+      const classification = t?.kind === "context" ? "Context only · no charge" : t?.included === false ? "Unaccepted option · excluded from total"
+        : t?.vatRate ? `VAT ${t.vatRate}%` : "";
+      const fr = escapeHtml(li.description) + (classification ? `<div class="expl">${escapeHtml(classification)}</div>` : "");
       const en = escapeHtml(t?.translation || "");
-      const expl = escapeHtml(t?.explanation || "");
+      const expl = [t?.explanationFr, t?.explanation].filter(Boolean).map(v => escapeHtml(v)).join("<br />");
       const explCell = includeExplanations ? `<td class="expl">${expl}</td>` : "";
       const mainRow = `<tr>
         <td class="num">${li.lineNumber}</td>
@@ -182,7 +186,7 @@ function buildHtml(input: BuildHtmlInput): string {
 
   const headerSummary = escapeHtml(header.summary || "");
   const headerEn = escapeHtml(header.description || "");
-  const headerExpl = includeExplanations ? escapeHtml(header.descriptionExplanation || "") : "";
+  const headerExpl = includeExplanations ? [header.descriptionExplanationFr, header.descriptionExplanation].filter(Boolean).map(v => escapeHtml(v)).join("<br />") : "";
   const headerFr = escapeHtml(devis.descriptionFr || "");
 
   const logoTag = companyLogoBase64
@@ -246,6 +250,9 @@ ${COST_ANALYSIS_PDF_CSS}
   </div>
 
   ${headerSummary ? `<div class="summary"><div class="lbl">Document overview</div><p>${headerSummary}</p></div>` : ""}
+  ${header.workingDiscountHt ? `<div class="summary"><div class="lbl">Working financial treatment</div>
+    <p>Document discount HT: ${formatCurrency(header.workingDiscountHt)}. VAT rounding: ${header.workingVatRounding === "line" ? "per line" : "per VAT-rate subtotal"}.
+    Unaccepted options and contextual rows are excluded from the total. The independently confirmed source TTC is the financial backstop.</p></div>` : ""}
 
   ${headerFr || headerEn ? `<div class="scope">
     <div class="lbl">Scope description</div>
@@ -263,10 +270,10 @@ ${COST_ANALYSIS_PDF_CSS}
 
   ${isApproved ? `<div class="disclaimer" style="background:#F1F7F1;border-color:#7BAE7E;color:#2F5D31;">
     <strong>Reviewed &amp; approved:</strong> This English translation was reviewed and approved${approvedByEmail ? ` by ${escapeHtml(approvedByEmail)}` : ""} on ${formatDate(approvedAt)}.
-    The original French document remains the legally binding contractual reference; all amounts, quantities and units are reproduced verbatim from the source.
+    The original contractor PDF remains the legally binding contractual reference. This package contains a working interpretation; its quantities, figures and descriptions may have been corrected by the architect.
   </div>` : `<div class="disclaimer">
-    <strong>Note:</strong> This is an unofficial translation generated automatically from the original French devis for reference only.
-    The original French document remains the legally binding contractual reference. All amounts, quantities and units are reproduced verbatim from the source.
+    <strong>Note:</strong> This is an explanatory working translation, for reference only.
+    The original contractor PDF remains the legally binding contractual reference. Do not treat working row corrections as amendments to that original.
   </div>`}
 
   ${costAnalysisHtml ? `<div class="ca-section">
@@ -420,6 +427,7 @@ export async function generateCombinedPdf(
     getDocumentBuffer(devis.pdfStorageKey),
     translatedBufPromise,
   ]);
+  await assertOriginalReceiptBytes(devisId, devis.pdfStorageKey, originalBuf);
 
   const merged = await PDFDocument.create();
   const originalDoc = await PDFDocument.load(originalBuf, { ignoreEncryption: true });

@@ -6,6 +6,7 @@ import { pool } from "../db";
 import { storage } from "../storage";
 import type { DevisTranslationLine, DevisTranslationHeader } from "@shared/schema";
 import { normalizeQuotationText } from "../../shared/quotation-content-coverage";
+import { hasArchitectCorrection } from "./architect-quotation-correction";
 
 const digest = stableQuotationDigest;
 const numbers = (s: string) => (s.match(/\d+(?:[.,]\d+)?/g) ?? []).map(n => n.replace(",", ".")).sort();
@@ -98,9 +99,11 @@ ${JSON.stringify(batch.map(s => ({ lineNumber: s.lineNumber, french: s.descripti
 }
 
 export async function translationCoverageBlocker(devisId: number) {
+  if (await hasArchitectCorrection(devisId)) return null;
   const quotation = await storage.getDevis(devisId);
   if (!(quotation?.aiExtractedData as any)?.quotationVerification) return null;
   const translation = await storage.getDevisTranslation(devisId);
+  if (translation?.status === "finalised" && (translation.headerTranslated as DevisTranslationHeader | null)?.humanReviewed) return null;
   const source = await storage.getDevisLineItems(devisId);
   const translations = (translation?.lineTranslations ?? []) as DevisTranslationLine[];
   const header = translation?.headerTranslated as DevisTranslationHeader | null;

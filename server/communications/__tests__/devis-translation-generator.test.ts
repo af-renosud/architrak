@@ -1,3 +1,4 @@
+vi.mock("../../services/architect-quotation-correction", () => ({ assertOriginalReceiptBytes: vi.fn(async () => undefined) }));
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { PDFDocument, PageSizes } from "pdf-lib";
 import { db } from "../../db";

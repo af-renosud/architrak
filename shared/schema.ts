@@ -662,6 +662,34 @@ export const quotationSourceTranscriptions = pgTable("quotation_source_transcrip
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [check("quotation_source_transcriptions_reason_check", sql`length(trim(${table.reason})) > 0`)]);
 
+// No cascading foreign keys: original-PDF receipts and correction history
+// outlive mutable working records. Immutable triggers live in migration 0139.
+export const quotationSourceBaselines = pgTable("quotation_source_baselines", {
+  devisId: integer("devis_id").primaryKey(),
+  sourceStorageKey: text("source_storage_key").notNull(),
+  sourceFileName: text("source_file_name").notNull(),
+  sourceDigest: text("source_digest").notNull(),
+  ttc: numeric("ttc", { precision: 12, scale: 2 }).notNull(),
+  pdfPage: integer("pdf_page").notNull(),
+  actorId: integer("actor_id").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+export const quotationArchitectState = pgTable("quotation_architect_state", {
+  devisId: integer("devis_id").primaryKey(),
+  revision: integer("revision").notNull().default(1),
+  draft: jsonb("draft").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+export const quotationArchitectAudit = pgTable("quotation_architect_audit", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").notNull(),
+  actorId: integer("actor_id").notNull(),
+  operation: text("operation").notNull(),
+  beforeSnapshot: jsonb("before_snapshot").notNull(),
+  afterSnapshot: jsonb("after_snapshot").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 // Public read model: deliberately excludes the internal audit snapshot and links.
 export interface DuplicateExtractionHistoryEntry {
   id: number;
@@ -3124,6 +3152,10 @@ export const devisTranslationLineSchema = z.object({
   originalDescription: z.string(),
   translation: z.string(),
   explanation: z.string().nullable().optional(),
+  explanationFr: z.string().optional(),
+  kind: z.enum(["priced", "context"]).optional(),
+  included: z.boolean().optional(),
+  vatRate: z.string().optional(),
   edited: z.boolean().optional(),
 });
 
@@ -3142,6 +3174,10 @@ export function isTranslationReady(status: string | null | undefined): boolean {
 }
 
 export const devisTranslationHeaderSchema = z.object({
+  humanReviewed: z.boolean().optional(),
+  descriptionExplanationFr: z.string().optional(),
+  workingDiscountHt: z.string().optional(),
+  workingVatRounding: z.enum(["bucket", "line"]).optional(),
   description: z.string().nullable().optional(),
   descriptionExplanation: z.string().nullable().optional(),
   summary: z.string().nullable().optional(),

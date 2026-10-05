@@ -5,6 +5,7 @@ import type { ParsedDocument } from "../gmail/document-parser";
 import { recordExtractionEvent } from "./quotation-extraction-events";
 import { hasSignedOrClosedEvidence } from "./quotation-source-guards";
 import { quotationWorkingVersion } from "./quotation-working-version";
+import { hasArchitectCorrection, hasQuotationSourceBaseline } from "./architect-quotation-correction";
 import { sql } from "drizzle-orm";
 import { storage } from "../storage";
 import { getDocumentBuffer } from "../storage/object-storage";
@@ -87,6 +88,8 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
       data: { message: "Devis not found", code: RESCRAPE_ERROR_CODES.DEVIS_NOT_FOUND },
     };
   }
+  if (await hasArchitectCorrection(devisId) || await hasQuotationSourceBaseline(devisId)) return { success: false, status: 409,
+    data: { message: "Architect corrections are protected. Re-scraping cannot replace this working version; use the correction editor." } };
   if (!initial.pdfStorageKey) {
     return {
       success: false,

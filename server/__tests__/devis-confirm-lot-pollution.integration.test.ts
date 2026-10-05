@@ -1,3 +1,6 @@
+vi.mock("../services/architect-quotation-correction", () => ({
+  hasArchitectCorrection: vi.fn(async () => false), architectFinancialBoundary: vi.fn(async () => null),
+}));
 import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
 import http from "http";
 import express from "express";
@@ -211,6 +214,9 @@ const { state, storageSpy, dbSpy } = vi.hoisted(() => {
   });
 
   const tx = {
+    // This fixture has no architect correction; retain the real confirm
+    // transaction while supplying the new authority-presence probe.
+    execute: vi.fn(async () => ({ rows: [] })),
     update: vi.fn((table: object) => updateBuilder(table)),
     select: vi.fn(() => selectBuilder()),
     insert: vi.fn((table: object) => insertBuilder(table)),

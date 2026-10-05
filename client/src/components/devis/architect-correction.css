@@ -1,0 +1,55 @@
+.architect-correction {
+  --correction-ink: #0b2545;
+  --correction-paper: #f8f5ef;
+  --correction-rule: #d8cbb9;
+  --correction-accent: #94734c;
+  color: var(--correction-ink);
+}
+.architect-correction .correction-banner {
+  background: var(--correction-paper);
+  border: 1px solid var(--correction-rule);
+  border-left: 3px solid var(--correction-accent);
+}
+.architect-correction .correction-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: #657084;
+}
+.architect-correction .correction-row {
+  border: 1px solid var(--correction-rule);
+  background: #faf8f3;
+  border-radius: 8px;
+}
+.architect-correction .correction-number {
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, monospace;
+}
+.architect-correction .correction-toolbar {
+  position: sticky;
+  bottom: 0;
+  background: #f8f5ef;
+  border-top: 1px solid var(--correction-rule);
+  z-index: 2;
+}
+.architect-correction textarea {
+  min-height: 110px;
+  line-height: 1.6;
+}
+.architect-correction input:focus-visible,
+.architect-correction textarea:focus-visible {
+  outline: 2px solid var(--correction-accent);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .architect-correction .correction-row {
+    animation: correction-arrive .18s ease-out;
+  }
+  @keyframes correction-arrive {
+    from { opacity: .6; transform: translateY(3px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+}

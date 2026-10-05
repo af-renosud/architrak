@@ -1,6 +1,11 @@
+vi.mock("../../services/architect-quotation-correction", () => ({
+  hasArchitectCorrection: vi.fn(async () => false), architectFinancialBoundary: vi.fn(async () => null),
+}));
 import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
 import express from "express";
 import type { AddressInfo } from "net";
+import { hasArchitectCorrection } from "../../services/architect-quotation-correction";
+import { getValidatedCachedPdfKey } from "../../communications/devis-translation-generator";
 
 /**
  * Coverage for the architect-supplied message on
@@ -196,6 +201,20 @@ async function postSend(devisId: number, body: unknown) {
 }
 
 describe("POST /api/devis/:id/send-to-signer — personalised message", () => {
+  it("fails closed for a corrected quotation if its combined original-containing package cannot be generated", async () => {
+    vi.mocked(hasArchitectCorrection).mockResolvedValue(true);
+    vi.mocked(getValidatedCachedPdfKey).mockImplementation(async (_id, variant) => variant === "combined" ? null : "translated-only.pdf");
+    try {
+      const response = await postSend(100, { message: "Bonjour, voici le devis pour signature." });
+      expect(response.status).toBe(502);
+      expect((await response.json()).code).toBe("ORIGINAL_CONTAINING_PDF_REQUIRED");
+      expect(archisignMock.createEnvelope).not.toHaveBeenCalled();
+      expect(archisignMock.sendEnvelope).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(hasArchitectCorrection).mockResolvedValue(false);
+      vi.mocked(getValidatedCachedPdfKey).mockResolvedValue("cache/pinned-test.pdf");
+    }
+  });
   it("rejects messages longer than the max (Archisign 2000-cap minus the fixed notice) with a 400", async () => {
     // Task #442 — the server appends "\n\n" + CLIENT_NO_PAYMENT_NOTICE to
     // the envelope body, so the architect's allowance shrinks in lockstep

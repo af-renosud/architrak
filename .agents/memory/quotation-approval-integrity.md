@@ -3,7 +3,7 @@ name: Quotation approval integrity
 description: Content coverage, prepared-proposal versions, linked questions and mutable translation approval.
 ---
 
-Coverage must be bidirectional: preserve every source segment, and reject candidate content not attributable to that item's source.
+Automatic extraction coverage must be bidirectional: preserve every source segment, and reject automatic candidate content not attributable to that item's source. This is not a veto on explicitly saved or approved human content.
 
 **Why:** A candidate containing both correct descriptions plus another item's complete specification could pass a presence-only comparison with unchanged totals.
 
@@ -21,8 +21,8 @@ Translation approval belongs to exact content. Inline changes must invalidate ap
 
 **How to apply:** Clear approval and PDF cache metadata atomically with content changes, bump the PDF version, and reject stale finalisation.
 
-Source confirmation must revalidate locked working rows, including legacy illustrated evidence without a verified manifest. Translation receipts must bind French and English headers as well as every translated line.
+Architect source confirmation records the original PDF digest and independently transcribed TTC. Human corrections and approval are not gated by an OCR manifest or translation semantic model, including legacy illustrated evidence. Financial corrections must reconcile exact cents with actual VAT, discounts and options. Automatic extraction acceptance remains strict.
 
 **Why:** Stored parser flags survive ordinary description edits; a line-only receipt survives contradictory header edits. Neither is current approval evidence.
 
-**How to apply:** Use the same live source verifier at confirmation and later approval boundaries. Canonicalize object keys when hashing JSON receipts: PostgreSQL JSONB can reorder keys from the provider's original object.
+**How to apply:** Use version-bound transactional human saves, immutable PDF/TTC receipts and actor/time before-and-after audit. Ordinary Save/Approve distinguishes human review from machine verification. Canonicalize receipt keys; preserve manual translations, source bytes and signed snapshots. Signing corrected packages must contain the original PDF and cannot fall back to translation-only evidence.

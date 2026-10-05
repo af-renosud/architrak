@@ -1,4 +1,5 @@
 import { quotationApprovalBlocker } from "../services/quotation-approval-guard";
+import { hasArchitectCorrection } from "../services/architect-quotation-correction";
 import { translationCoverageBlocker } from "../services/quotation-translation-coverage";
 /**
  * Archisign envelope orchestration endpoints (AT4, contract §1.2 / §3.5).
@@ -320,6 +321,10 @@ router.post(
           // public route used).
         }
       }
+      if (!pinnedKey && await hasArchitectCorrection(devisId)) return res.status(502).json({
+        message: "The corrected quotation cannot be sent for signature without its original contractor PDF in the combined package.",
+        code: "ORIGINAL_CONTAINING_PDF_REQUIRED",
+      });
       if (!pinnedKey) pinnedKey = await getValidatedCachedPdfKey(devisId, "translated");
       if (!pinnedKey) {
         try {

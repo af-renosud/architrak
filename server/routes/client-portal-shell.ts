@@ -152,6 +152,12 @@ export function renderClientPortalShell(opts:
   .ask-line-chip button { background: transparent; color: #3730a3; padding: 0 2px; font-size: 14px; line-height: 1; }
   .dialogue-note { background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 13px; color: #075985; line-height: 1.5; }
   .pdf-toggle { position: fixed; bottom: 20px; right: 20px; z-index: 9; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+  .devis-table-scroll { max-width: 100%; overflow-x: auto; }
+  @media (max-width: 600px) {
+    .pdf-toggle { position: static; display: block; margin: 16px auto; }
+    .pdf-panel { max-width: calc(100vw - 24px); max-height: calc(100vh - 100px); right: 12px !important; }
+    .devis-info { min-width: 0; overflow-wrap: anywhere; }
+  }
   .pdf-panel { position: fixed; bottom: 80px; right: 20px; width: 480px; height: 640px; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; box-shadow: 0 12px 32px rgba(0,0,0,0.2); display: none; flex-direction: column; z-index: 10; }
   .pdf-panel.open { display: flex; }
   .pdf-handle { padding: 8px 12px; background: #0B2545; color: #fff; cursor: move; user-select: none; border-radius: 8px 8px 0 0; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
@@ -264,6 +270,9 @@ function renderDevisInfo(data) {
   const descEn = d.descriptionEn ? '<p class="devis-desc devis-desc-en" data-testid="text-devis-description-en"><em>' + escapeHtml(d.descriptionEn) + '</em></p>' : '';
   const scopeEn = data.translationHeaderEn ? '<p class="devis-desc devis-desc-en" data-testid="text-devis-scope-en"><em>' + escapeHtml(data.translationHeaderEn) + '</em></p>' : '';
   const summary = data.translationSummary ? '<p class="devis-desc" data-testid="text-devis-summary">' + escapeHtml(data.translationSummary) + '</p>' : '';
+  const explanations = [data.translationExplanationFr, data.translationExplanationEn].filter(Boolean).map(function(value) {
+    return '<p class="devis-desc">' + escapeHtml(value) + '</p>';
+  }).join('');
   const total = (d.amountTtc != null
     ? '<p class="devis-total" data-testid="text-devis-amount-ttc"><strong>Total payable TTC (including VAT): ' + escapeHtml(d.amountTtc) + ' €</strong></p>'
     : '<p class="devis-total" data-testid="text-devis-amount-ttc">Total TTC: not available</p>')
@@ -275,7 +284,7 @@ function renderDevisInfo(data) {
   const items = Array.isArray(data.lineItems) ? data.lineItems : [];
   const hasEn = items.some((li) => li.translationEn);
   const itemsBlock = items.length
-    ? '<table class="devis-lines" data-testid="table-devis-line-items">'
+    ? '<div class="devis-table-scroll" role="region" aria-label="Quotation line items" tabindex="0"><table class="devis-lines" data-testid="table-devis-line-items">'
       + '<thead><tr><th>No.</th><th>Description' + (hasEn ? ' (FR / EN)' : '') + '</th><th class="amount">Qty</th><th>Unit</th><th class="amount">Unit price HT</th><th class="amount">Total HT</th></tr></thead>'
       + '<tbody>'
       + items.map((li) => {
@@ -299,9 +308,10 @@ function renderDevisInfo(data) {
             : '';
           return main + ctx;
         }).join('')
-      + '</tbody></table>'
+      + '</tbody></table></div>'
     : '';
-  const inner = title + descFr + descEn + scopeEn + summary + total + pkg + itemsBlock;
+  const legalReference = '<p class="devis-desc">This is the architect’s working interpretation. The attached original contractor PDF remains the contractual reference.</p>';
+  const inner = title + descFr + descEn + scopeEn + summary + explanations + legalReference + total + pkg + itemsBlock;
   if (!inner) return '';
   return '<section class="devis-info" data-testid="section-devis-info">' + inner + '</section>';
 }

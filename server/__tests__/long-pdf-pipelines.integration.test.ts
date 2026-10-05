@@ -3,6 +3,11 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { createHash } from "node:crypto";
 import { quotationWorkingVersion } from "../services/quotation-working-version";
+vi.mock("../services/architect-quotation-correction", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/architect-quotation-correction")>(),
+  hasArchitectCorrection: vi.fn(async () => false),
+  hasQuotationSourceBaseline: vi.fn(async () => false),
+}));
 
 // Task #352 — Long-PDF regression coverage for the OTHER parseDocument
 // callers: the email intake queue, the invoice upload service, and the

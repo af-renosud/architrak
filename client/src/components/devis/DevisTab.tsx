@@ -62,6 +62,7 @@ import { countDevisSignOff } from "@/components/devis/devis-counters";
 import { DuplicateExtractionCorrection } from "@/components/devis/DuplicateExtractionCorrection";
 import { ExtractionRowCorrection } from "@/components/devis/ExtractionRowCorrection";
 import { QuotationExtractionReview } from "@/components/devis/QuotationExtractionReview";
+import { ArchitectQuotationEditor } from "@/components/devis/ArchitectQuotationEditor";
 
 import { Amount } from "@/components/ui/amount";
 import { formatCurrency as fmt } from "@/lib/utils";
@@ -5720,6 +5721,7 @@ function DevisDetailTabs({
 
   return (
     <Tabs value={activeTab} onValueChange={setActiveTab} className="rounded-2xl border border-[#0B2545]/15 bg-white/60 overflow-hidden" data-testid={`tabs-devis-detail-${devis.id}`}>
+      <ArchitectQuotationEditor key={`architect-editor-${devis.id}`} devisId={devis.id} projectId={String(devis.projectId)} disabled={isArchived} />
       <div className="flex justify-end px-3 py-2 border-b border-border/40">
         <ExtractionRowCorrection key={devis.id} devisId={devis.id} projectId={String(devis.projectId)} lines={lineItems ?? []} disabled={isArchived} />
       </div>

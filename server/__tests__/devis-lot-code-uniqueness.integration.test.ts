@@ -1,3 +1,6 @@
+vi.mock("../services/architect-quotation-correction", () => ({
+  hasArchitectCorrection: vi.fn(async () => false), architectFinancialBoundary: vi.fn(async () => null),
+}));
 // Integration tests for the structured-lot-code uniqueness contract
 // (Task #176 / #179 / #181). Exercises:
 //   * POST /api/devis/:id/confirm — collision returns 409 with a usable

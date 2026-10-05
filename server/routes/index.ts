@@ -78,6 +78,7 @@ import signedDevisContractorCopiesRouter from "./signed-devis-contractor-copies"
 // hit AI extraction which is expensive, and the general API limiter is a
 // belt-and-braces guard against runaway clients.
 import documentChainRouter from "./document-chain";
+import architectQuotationCorrectionRouter from "./architect-quotation-correction";
 import planningEnvelopeRouter from "./planning-envelope";
 const webhookLimiter = rateLimit({ name: "webhook", windowMs: 60_000, max: 60, message: "Webhook rate limit exceeded" });
 const uploadLimiter = rateLimit({ name: "upload", windowMs: 60_000, max: 20, message: "Upload rate limit exceeded" });
@@ -104,6 +105,7 @@ export async function registerRoutes(
   app.use(lotCatalogRouter);
   app.use(wishListRouter);
   app.use(devisRouter);
+  app.use(architectQuotationCorrectionRouter);
   app.use(supportingPdfsRouter);
   app.use(devisManualSignoffRouter);
   app.use(devisClosureRouter);

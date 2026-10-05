@@ -59,6 +59,8 @@ export interface ClientPortalDataPayload {
   translationHeaderEn: string | null;
   /** Finalised translation document overview (EN summary), or null. */
   translationSummary: string | null;
+  translationExplanationFr?: string | null;
+  translationExplanationEn?: string | null;
   /** True when the combined EN+FR package PDF can be downloaded. */
   packageAvailable: boolean;
   /**
@@ -203,6 +205,10 @@ export async function buildClientPortalPayload(
   // internal. Mirrors the "finalised devis translation rows" contract.
   const translation = await storage.getDevisTranslation(devis.id);
   const translationFinalised = translation?.status === "finalised";
+  // A newly saved working version is internal until human approval. Do not
+  // expose its edited French/figures through a previously issued portal token.
+  const pendingWorkingApproval = !translationFinalised
+    && (translation?.headerTranslated as DevisTranslationHeader | null)?.workingDiscountHt != null;
   const byLineNumber = new Map<number, DevisTranslationLine>();
   if (translationFinalised) {
     for (const t of (translation!.lineTranslations as DevisTranslationLine[] | null) ?? []) {
@@ -269,11 +275,11 @@ export async function buildClientPortalPayload(
   return {
     devis: {
       ref: devis.devisNumber || devis.devisCode,
-      description: devis.descriptionFr,
-      descriptionEn: devis.descriptionUk ?? null,
+      description: pendingWorkingApproval ? "The updated working quotation is awaiting architect approval." : devis.descriptionFr,
+      descriptionEn: pendingWorkingApproval ? null : devis.descriptionUk ?? null,
       hasPdf: !!devis.pdfStorageKey,
-      amountHt: devis.amountHt ?? null,
-      amountTtc: devis.amountTtc ?? null,
+      amountHt: pendingWorkingApproval ? null : devis.amountHt ?? null,
+      amountTtc: pendingWorkingApproval ? null : devis.amountTtc ?? null,
     },
     project: project ? { name: project.name } : null,
     client: {
@@ -282,14 +288,21 @@ export async function buildClientPortalPayload(
     },
     translationHeaderEn: header.description ?? null,
     translationSummary: header.summary ?? null,
+    translationExplanationFr: header.descriptionExplanationFr ?? null,
+    translationExplanationEn: header.descriptionExplanation ?? null,
     packageAvailable,
     analysisHtml,
-    lineItems: lineItems.map((li) => ({
+    lineItems: pendingWorkingApproval ? [] : lineItems.map((li) => ({
       id: li.id,
       lineNumber: li.lineNumber ?? null,
       description: li.description ?? null,
       translationEn: byLineNumber.get(li.lineNumber)?.translation ?? null,
-      contextHtml: contexts.get(li.id)?.html ?? null,
+      contextHtml: [contexts.get(li.id)?.html, byLineNumber.get(li.lineNumber)?.explanationFr,
+        byLineNumber.get(li.lineNumber)?.kind === "context" ? "Context only — no financial charge." :
+          byLineNumber.get(li.lineNumber)?.included === false ? "Unaccepted option — excluded from the quotation total." : null,
+        byLineNumber.get(li.lineNumber)?.explanation].map((value, index) => index === 0 ? value :
+          value ? `<p>${String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;")}</p>` : null)
+        .filter(Boolean).join("") || null,
       quantity: li.quantity ?? null,
       unit: li.unit ?? null,
       unitPrice: li.unitPriceHt ?? null,

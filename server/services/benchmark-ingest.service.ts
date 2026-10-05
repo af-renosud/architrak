@@ -4,6 +4,8 @@ import { devis as devisTable, devisLineItems, benchmarkDocuments, benchmarkItems
 import { quotationWorkingCoverageBlocker } from "./quotation-approval-guard";
 import { and, eq, sql } from "drizzle-orm";
 import { missingSourceTotalChanges } from "./quotation-source-guards";
+import { correctedFinancialBlocker } from "./architect-quotation-correction";
+import type { ArchitectCorrectionDraft } from "@shared/architect-quotation";
 import { uploadDocument } from "../storage/object-storage";
 import { parseDocument, type ParsedDocument, isTransientParseFailure, getParseFailureMessage } from "../gmail/document-parser";
 import { BENCHMARK_UPLOAD_ERROR_CODES } from "../../shared/benchmark-upload-errors";
@@ -353,7 +355,7 @@ export async function processStandaloneBenchmarkUpload(file: UploadedFile, input
 export async function confirmDevisAndMirror(
   devisId: number,
   devisUpdates: Record<string, unknown>,
-  options: { manualReviewConfirmedByUserId?: number | null; sourceTotalsReason?: string; sourceTotalsActorId?: number } = {},
+  options: { humanContentApproval?: boolean; manualReviewConfirmedByUserId?: number | null; sourceTotalsReason?: string; sourceTotalsActorId?: number } = {},
 ): Promise<{
   devis: typeof devisTable.$inferSelect | undefined;
   benchmarkDocId: number | null;
@@ -379,7 +381,16 @@ export async function confirmDevisAndMirror(
       return { devis: undefined, benchmarkDocId: null, inserted: [], parsed: null };
     }
     const contentEvidence = current.aiExtractedData as ParsedDocument | null;
-    if (contentEvidence?.quotationVerification || contentEvidence?.illustratedRecovery) {
+    const humanCorrection = await tx.execute(sql`SELECT 1 FROM quotation_architect_state WHERE devis_id=${devisId}`);
+    if (humanCorrection.rows.length) {
+      const receipt = await tx.execute(sql`SELECT s.draft,b.ttc FROM quotation_architect_state s
+        LEFT JOIN quotation_source_baselines b ON b.devis_id=s.devis_id WHERE s.devis_id=${devisId}`);
+      const row = receipt.rows[0];
+      const financialBlocker = correctedFinancialBlocker(row.draft as ArchitectCorrectionDraft, row.ttc == null ? null : { ttc: String(row.ttc) },
+        { ht: current.amountHt ?? "",ttc: current.amountTtc ?? "" });
+      if (financialBlocker) throw new DevisConfirmGuardError(409, "source_ttc_reconciliation_required", financialBlocker);
+    }
+    if (!options.humanContentApproval && !humanCorrection.rows.length && (contentEvidence?.quotationVerification || contentEvidence?.illustratedRecovery)) {
       const currentLines = await tx.select().from(devisLineItems)
         .where(eq(devisLineItems.devisId, devisId)).orderBy(devisLineItems.lineNumber).for("update");
       const blocker = quotationWorkingCoverageBlocker(contentEvidence, currentLines);

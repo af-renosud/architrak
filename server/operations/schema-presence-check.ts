@@ -70,6 +70,24 @@ export interface MigrationArtifact {
  * migration. Set the flag on every new data-only DML backfill.
  */
 export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
+  { tag: "0139_architect_quotation_corrections", artifact: { kind: "all", artifacts: [
+    { kind: "table", table: "quotation_source_baselines" },
+    { kind: "constraint", table: "quotation_source_baselines", constraint: "quotation_source_baselines_pkey" },
+    { kind: "constraint", table: "quotation_source_baselines", constraint: "quotation_source_baselines_source_digest_check" },
+    { kind: "constraint", table: "quotation_source_baselines", constraint: "quotation_source_baselines_ttc_check" },
+    { kind: "constraint", table: "quotation_source_baselines", constraint: "quotation_source_baselines_pdf_page_check" },
+    { kind: "table", table: "quotation_architect_state" },
+    { kind: "constraint", table: "quotation_architect_state", constraint: "quotation_architect_state_pkey" },
+    { kind: "constraint", table: "quotation_architect_state", constraint: "quotation_architect_state_revision_check" },
+    { kind: "table", table: "quotation_architect_audit" },
+    { kind: "constraint", table: "quotation_architect_audit", constraint: "quotation_architect_audit_operation_check" },
+    { kind: "index", index: "quotation_architect_audit_devis_idx" },
+    { kind: "trigger", table: "quotation_source_baselines", trigger: "quotation_source_baselines_immutable" },
+    { kind: "trigger", table: "quotation_architect_audit", trigger: "quotation_architect_audit_immutable" },
+    { kind: "trigger", table: "devis", trigger: "devis_architect_source_guard" },
+    { kind: "trigger", table: "devis_line_items", trigger: "devis_architect_line_guard" },
+    { kind: "trigger", table: "devis_translations", trigger: "devis_architect_translation_guard" },
+  ] } },
   { tag: "0138_quotation_extraction_events", artifact: { kind: "all", artifacts: [
     { kind: "table", table: "quotation_extraction_events" },
     { kind: "constraint", table: "quotation_extraction_events", constraint: "quotation_extraction_events_kind_check" },

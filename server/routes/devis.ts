@@ -75,6 +75,7 @@ import {
   LineContextError,
 } from "../services/devis-line-context";
 import { CONTEXT_ASSET_MAX_BYTES } from "@shared/context-doc";
+import { architectFinancialBoundary, hasArchitectCorrection } from "../services/architect-quotation-correction";
 
 const router = Router();
 
@@ -677,15 +678,16 @@ router.post(
   "/api/devis/:id/translation/finalise",
   requireAuth,
   validateRequest({ params: idParams }),
-  async (req, res) => {
+  async (req, res, next) => {
+    try {
     const devisId = Number(req.params.id);
     const [quotation, lines, existing] = await Promise.all([
       storage.getDevis(devisId), storage.getDevisLineItems(devisId), storage.getDevisTranslation(devisId),
     ]);
-    const coverageBlocker = await quotationApprovalBlocker(devisId);
-    if (coverageBlocker) return res.status(409).json({ message: coverageBlocker, code: "quotation_content_unverified" });
-    const translationBlocker = await translationCoverageBlocker(devisId);
-    if (translationBlocker) return res.status(409).json({ message: translationBlocker, code: "translation_content_unverified" });
+    // This endpoint is explicit human approval, not automatic extraction
+    // acceptance. OCR/semantic observations must not veto the architect.
+    const financialBlocker = await architectFinancialBoundary(devisId);
+    if (financialBlocker) return res.status(409).json({ message: financialBlocker, code: "SOURCE_TTC_RECONCILIATION_REQUIRED" });
     if (!existing) return res.status(404).json({ message: "No translation to finalise" });
     if (existing.status !== "draft" && existing.status !== "edited") {
       return res.status(409).json({ message: `Cannot finalise translation in status ${existing.status}` });
@@ -697,6 +699,7 @@ router.post(
       Number(userId), approver?.email ?? null);
     if (!updated) return res.status(409).json({ message: "Quotation or translation changed during verification. Verify the current version before finalising." });
     res.json(updated);
+    } catch (error) { next(error); }
   },
 );
 
@@ -735,6 +738,10 @@ router.patch(
     const devisId = Number(req.params.id);
     const existing = await storage.getDevisTranslation(devisId);
     if (!existing) return res.status(404).json({ message: "No translation to update" });
+    if (await hasArchitectCorrection(devisId)) return res.status(409).json({
+      message: "Use Edit working quotation to save this architect-controlled translation with its version and audit history.",
+      code: "ARCHITECT_EDITOR_REQUIRED",
+    });
     // Inline editing remains available, but changes must never inherit approval.
     // Storage atomically clears approval/cache keys and bumps the PDF version.
 
@@ -1376,6 +1383,16 @@ router.post(
       if (devis.status !== "draft") return res.status(400).json({ message: "Only draft devis can be confirmed" });
 
       const corrections = { ...req.body };
+      if (await hasArchitectCorrection(devis.id)) {
+        const financialBlocker = await architectFinancialBoundary(devis.id);
+        if (financialBlocker) return res.status(409).json({ code: "source_ttc_reconciliation_required",message: financialBlocker });
+        if (corrections.descriptionFr != null && corrections.descriptionFr !== devis.descriptionFr
+          || corrections.amountHt != null && roundCurrency(corrections.amountHt) !== roundCurrency(Number(devis.amountHt))
+          || corrections.amountTtc != null && roundCurrency(corrections.amountTtc) !== roundCurrency(Number(devis.amountTtc))) {
+          return res.status(409).json({ message: "Save header and financial corrections in Edit working quotation before confirming." });
+        }
+        delete corrections.descriptionFr; delete corrections.amountHt; delete corrections.amountTtc;
+      }
       const sourceTotalsReason = corrections.sourceTotalsReason;
       delete corrections.sourceTotalsReason;
       const manualReviewConfirmed = corrections.manualReviewConfirmed === true;
@@ -1460,7 +1477,7 @@ router.post(
       const { devis: updated, inserted } = await confirmDevisAndMirror(
         Number(req.params.id),
         updates,
-        { manualReviewConfirmedByUserId: manualReviewConfirmed ? Number(req.session.userId) : null,
+        { humanContentApproval: true, manualReviewConfirmedByUserId: manualReviewConfirmed ? Number(req.session.userId) : null,
           sourceTotalsReason, sourceTotalsActorId: Number(req.session.userId) },
       );
       if (!updated) {

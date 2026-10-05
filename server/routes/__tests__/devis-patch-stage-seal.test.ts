@@ -1,3 +1,6 @@
+vi.mock("../../services/architect-quotation-correction", () => ({
+  hasArchitectCorrection: vi.fn(async () => false), architectFinancialBoundary: vi.fn(async () => null),
+}));
 import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
 import express from "express";
 import type { AddressInfo } from "net";

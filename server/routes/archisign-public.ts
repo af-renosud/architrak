@@ -19,6 +19,7 @@
  */
 
 import { Router } from "express";
+import { hasArchitectCorrection } from "../services/architect-quotation-correction";
 import { storage } from "../storage";
 import { verifyPdfFetchToken } from "../services/archisign-pdf-token";
 import { getDocumentStream } from "../storage/object-storage";
@@ -112,6 +113,10 @@ router.get("/api/public/devis-pdf/:token", async (req, res) => {
     }
   }
   if (!storageKey) {
+    if (await hasArchitectCorrection(devisId)) return res.status(502).json({
+      message: "The corrected quotation cannot be signed without its original contractor PDF. Generate an original-containing combined package and retry.",
+      code: "ORIGINAL_CONTAINING_PDF_REQUIRED",
+    });
     storageKey = await getValidatedCachedPdfKey(devisId, "translated");
   }
   if (!storageKey) {

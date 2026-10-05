@@ -14,6 +14,8 @@ import {
 } from "@shared/schema";
 import { z } from "zod";
 import { translationParagraph } from "./translation-paragraph";
+import { hasArchitectCorrection } from "./architect-quotation-correction";
+import type { ArchitectCorrectionDraft } from "@shared/architect-quotation";
 
 const TASK_TYPE = "devis_translation";
 
@@ -155,6 +157,17 @@ async function translateWithOpenAI(prompt: string, modelId: string): Promise<Dev
 export interface TranslateDevisOptions {
   force?: boolean;
 }
+/** Explicit, unsaved suggestion for the current French draft. Never writes
+ * quotation/translation rows or calls semantic acceptance. The UI only fills
+ * empty English fields and the architect still saves/approves the whole batch. */
+export async function suggestArchitectTranslation(draft: ArchitectCorrectionDraft) {
+  const { provider, modelId } = await getActiveModel();
+  const prompt = JSON.stringify({ headerDescriptionFr: draft.headerFr,
+    lines: draft.lines.map((l, i) => ({ lineNumber: i + 1, description: l.descriptionFr })),
+    instructions: "Translate this architect-reviewed French working interpretation. Return JSON {header:{description,descriptionExplanation,summary},lines:[{lineNumber,originalDescription,translation,explanation}]}. Do not change financial figures." });
+  const result = provider === "openai" ? await translateWithOpenAI(prompt, modelId) : await translateWithGemini(prompt, modelId);
+  return result;
+}
 
 export async function translateDevis(
   devisId: number,
@@ -166,6 +179,13 @@ export async function translateDevis(
 }> {
   const devis = await storage.getDevis(devisId);
   if (!devis) throw new Error(`Devis ${devisId} not found`);
+  if (await hasArchitectCorrection(devisId)) {
+    const saved = await storage.getDevisTranslation(devisId);
+    if (!saved) throw new Error("Architect working translation is missing.");
+    // Even force/re-scrape does not replace human-authored English or context.
+    return { translation: { header: (saved.headerTranslated ?? {}) as DevisTranslationHeader,
+      lines: (saved.lineTranslations ?? []) as DevisTranslationLine[] }, provider: saved.provider ?? "architect", modelId: saved.modelId ?? "human" };
+  }
   const blocker = await quotationApprovalBlocker(devisId);
   if (blocker) throw new Error(blocker);
 
@@ -249,6 +269,7 @@ export async function retranslateSingleLine(
 ): Promise<DevisTranslationLine> {
   const devis = await storage.getDevis(devisId);
   if (!devis) throw new Error(`Devis ${devisId} not found`);
+  if (await hasArchitectCorrection(devisId)) throw new Error("Architect-reviewed text is protected. Edit its English translation in the working quotation editor.");
   const existing = await storage.getDevisTranslation(devisId);
   if (!existing) throw new Error("No existing translation to update");
 

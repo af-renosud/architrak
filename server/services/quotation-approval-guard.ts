@@ -2,11 +2,15 @@ import { storage } from "../storage";
 import type { ParsedDocument } from "../gmail/document-parser";
 import { verifyQuotationManifest } from "./quotation-source-manifest";
 import type { DevisLineItem } from "@shared/schema";
+import { architectFinancialBoundary, hasArchitectCorrection } from "./architect-quotation-correction";
 
 /** Re-evaluate live descriptions, not only the historical parser verdict. */
 export async function quotationApprovalBlocker(devisId: number): Promise<string | null> {
   const devis = await storage.getDevis(devisId);
   if (!devis) return "Quotation not found.";
+  if (await hasArchitectCorrection(devisId)) return architectFinancialBoundary(devisId);
+  const translation = await storage.getDevisTranslation(devisId);
+  if (translation?.status === "finalised" && (translation.headerTranslated as { humanReviewed?: boolean } | null)?.humanReviewed) return null;
   const parsed = devis.aiExtractedData as ParsedDocument | null;
   if (!parsed?.illustratedRecovery && !parsed?.quotationVerification) return null;
   return quotationWorkingCoverageBlocker(parsed, await storage.getDevisLineItems(devisId));

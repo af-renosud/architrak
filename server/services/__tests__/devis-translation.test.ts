@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+vi.mock("../architect-quotation-correction", () => ({
+  hasArchitectCorrection: vi.fn(async () => false), architectFinancialBoundary: vi.fn(async () => null),
+}));
 
 vi.mock("../../env", () => ({
   env: {
