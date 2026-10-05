@@ -70,6 +70,7 @@ export interface MigrationArtifact {
  * migration. Set the flag on every new data-only DML backfill.
  */
 export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
+  { tag: "0140_mn1_alu_description_alignment", artifact: { kind: "data_only", reason: "Guarded user-authorized MN.1.ALU description alignment; preserves money/source/row IDs and records before/after", rerunnable: true } },
   { tag: "0139_architect_quotation_corrections", artifact: { kind: "all", artifacts: [
     { kind: "table", table: "quotation_source_baselines" },
     { kind: "constraint", table: "quotation_source_baselines", constraint: "quotation_source_baselines_pkey" },

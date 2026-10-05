@@ -981,6 +981,13 @@
       "when": 1791121000000,
       "tag": "0139_architect_quotation_corrections",
       "breakpoints": true
+    },
+    {
+      "idx": 140,
+      "version": "7",
+      "when": 1791211000000,
+      "tag": "0140_mn1_alu_description_alignment",
+      "breakpoints": true
     }
   ]
 }
