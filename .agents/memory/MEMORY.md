@@ -68,3 +68,4 @@
 - [Tailwind compatibility](tailwind-compatibility.md) — preserve pre-migration visual scales; CSS theme variable collisions can silently override framework defaults.
 - [Multi-package dependency audits](multi-package-dependency-audits.md) — a clean root npm audit does not cover separately installed artifact dependencies; check every tracked lockfile.
 - [Integration test worker isolation](integration-test-worker-isolation.md) — live dev-server ArchiDoc sync can invalidate integration-test fixtures; pause the workflow when testing against the shared dev DB.
+- [Production query parameters](production-query-parameters.md) — pass params even for static reads; an empty START/ROLLBACK output does not prove the query ran.
