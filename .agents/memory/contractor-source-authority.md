@@ -1,35 +1,25 @@
 ---
 name: Contractor quotation source authority
-description: Human corrections repair ingestion only and cannot amend contractor figures.
+description: Architect controls working content and figures; original PDF and independently recorded TTC remain authoritative.
 ---
-The user states: “No architect or user is allowed to manually change, in any way whatsoever, a contractor's quotation in terms of the physical figures. We are only correcting ingestion errors.”
+## Current policy — explicitly revised 2026-10-05
 
-The ingested original PDF is the ultimate reconciliation reference. Its source quantities and global amounts must not be changed through correction tools. Corrected extraction is a separate representation, not an amended contractor quotation.
+The architect may rearrange, replace and create working descriptions, translations and contextual explanations, add contextual or priced lines, and correct actual working figures. The user explicitly requests control of figures, not just text-only or zero-value additions. The completed working quotation must match the independently recorded, locked TTC of the original contractor PDF.
 
-Every removed extracted line requires a human-defined reason entered by typing or dictation. Dictated text must be visible for review and confirmation, and the confirmed reason retained with actor, timestamp and original row evidence.
+**Why:** Repeated extraction attempts still left legitimate equal-price items with shifted/incomplete descriptions. The user wants prompt architect corrections rather than machine-verification vetoes. The user identifies the original PDF as the contractual document attached to the client link and ultimately signed.
 
-**Why:** A duplicate extracted line must be removed without giving operators permission to alter contractual figures or conceal the discrepancy by changing source totals.
+**How to apply:** Provide a batch correction workflow with editable working quantities, prices, VAT and amounts, plus new lines and free content editing. Reconcile the entire correction against source TTC server-side before applying/sharing it; intermediate unsaved edits may temporarily differ. Never update the source baseline from edited rows, silently balance discrepancies, or overwrite the original PDF. Retain automatic actor/time/before-and-after history without burdensome per-text-edit reasons or AI-only permission checks.
 
-**How to apply:** Keep source evidence distinct from corrected working data. Never make source totals follow the working-row sum. Enforce authority server-side, not just with disabled inputs; inspect generic editing endpoints for bypasses. Do not substitute an automatically generated audit reason for human justification.
+This supersedes the former ban on manual description realignment, the prohibition on editing individual working figures, and the conditional-only proposal for full editing. It does not authorize rewriting signed evidence, invoices, certificates or payment history. Distinguish human-reviewed contextual content from machine-verified extraction.
 
-Missing intake totals are not authoritative contractor figures: a zero placeholder or a missing HT/TTC copied from the other total needs a narrowly audited transcription path from the PDF.
+## Source baseline and interpretation
 
-**Why:** Freezing placeholders prevents failed/manual intake drafts from ever completing. This exception fills absent evidence; it must not reopen a recorded source figure or a previously confirmed transcription for editing.
+Missing or misread intake totals are not authoritative source figures. Provide a straightforward original-PDF transcription/confirmation path to establish the baseline; preserve its provenance independently of the working quotation.
 
-**How to apply:** Require a human reason and preserve the original extraction, with confirmation and its audit in one transaction. Protect signed/closed documents using durable evidence, not just a workflow stage that an operator can move backwards.
+**Why:** Freezing a placeholder would prevent legitimate correction, while deriving the baseline from edited rows would defeat the TTC backstop.
 
-Missing/misread row corrections require a page-specific original-PDF transcription, not a commercial revision. Text-layer evidence is corroborated against the source; image-only pages remain explicitly human-attested, never labelled machine-verified.
+**How to apply:** Keep source and working data separate. Enforce exact financial arithmetic with actual VAT/discount treatment; TTC equality protects the total but does not certify individual descriptions or VAT correctness. The architect is responsible for reviewing the contextual interpretation.
 
-**Why:** Scanned contractor quotations still need ingestion repair, but an operator's transcription and automated verification are different kinds of evidence. Neither permits changing authoritative document totals.
+Two equal-price joinery rows are legitimate separate items; the problem is shifted descriptions and a missing terminal specification. Do not infer duplication from matching prices or repair this case by deleting an item.
 
-**How to apply:** Bind confirmation to the source content digest and working-state preview; retain the verification mode, original row, corrected row and confirmed human reason separately from raw extraction.
-
-The user clarified that two equal-price joinery rows were legitimate separate items: descriptions had shifted and the terminal product description was missing. Do not infer duplication from matching prices or repair an association error by deleting an item. Re-extract against the source rather than manually moving descriptions.
-
-**Why:** Financial agreement and equal prices cannot establish product identity or complete specifications.
-
-The user conditionally wants the editing restrictions reconsidered if monitoring reveals recurring inaccurate scrapes. A future full-editing mode would require matching an independently verified, locked source TTC. This is a future policy review, not current permission to enable unrestricted editing.
-
-**Why:** Imperfect OCR must not leave operators permanently unable to correct legitimate quotations. Matching TTC protects the total but not item associations, specifications or VAT treatment.
-
-**How to apply:** Monitor confirmed errors separately from warnings and retries, including mistakes found after automated checks passed. Preserve original source evidence and before/after history; obtain explicit authorization before changing editing permissions.
+**Why:** Equal prices and matching totals cannot establish product identity. The user explicitly confirms both items are valid.
