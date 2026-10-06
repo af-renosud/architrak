@@ -30,6 +30,11 @@ vi.mock("../../storage", async () => {
 vi.mock("../../services/certificat-seal.service", () => ({
   sealCertificat: vi.fn(),
 }));
+vi.mock("../../services/certificat-architect-invoice.service", () => ({
+  reserveArchitectInvoiceDelivery: vi.fn().mockResolvedValue(undefined),
+  getArchitectInvoice: vi.fn().mockResolvedValue(undefined),
+  assertArchitectInvoiceAttached: vi.fn(),
+}));
 vi.mock("../../services/supplier-certificate-dispatch.service", () => ({
   assertSupplierCertificateDispatchValid: vi.fn(),
 }));
@@ -55,6 +60,7 @@ vi.mock("../../storage/object-storage", () => ({
 import { sendCertificat, sendCommunication } from "../email-sender";
 import { storage } from "../../storage";
 import { sealCertificat } from "../../services/certificat-seal.service";
+import { reserveArchitectInvoiceDelivery, getArchitectInvoice } from "../../services/certificat-architect-invoice.service";
 import { assertSupplierCertificateDispatchValid } from "../../services/supplier-certificate-dispatch.service";
 import { buildCertificatEmailBody } from "../certificat-generator";
 import {
@@ -98,6 +104,8 @@ const sealedCert = {
 beforeEach(() => {
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+  vi.mocked(reserveArchitectInvoiceDelivery).mockResolvedValue(undefined);
+  vi.mocked(getArchitectInvoice).mockResolvedValue(undefined);
   buildBody.mockReturnValue("BODY");
   getProject.mockResolvedValue({
     id: 1,
@@ -132,6 +140,32 @@ const supplierNoticeCalls = () =>
   createComm.mock.calls.filter(
     (c) => c[0].type === "certificat_supplier_notice",
   );
+
+describe("architect invoice attachment", () => {
+  const invoice = {storage_key:"projects/1/architect-invoice.pdf",file_name:"Fee invoice.pdf",frozen_at:new Date()};
+  it("attaches the frozen invoice to the client email only", async () => {
+    vi.mocked(reserveArchitectInvoiceDelivery).mockResolvedValue(invoice);
+    await sendCertificat(7);
+    expect(clientCalls()[0][0].attachmentStorageKeys).toContain(invoice.storage_key);
+    expect(noticeCalls()[0][0].attachmentStorageKeys ?? []).not.toContain(invoice.storage_key);
+  });
+  it("fails delivery rather than silently omitting an unavailable architect invoice", async () => {
+    vi.mocked(getArchitectInvoice).mockResolvedValue(invoice);
+    vi.mocked(storage.getCertificat).mockResolvedValue(sealedCert as any);
+    claimComm.mockResolvedValue({id:55,status:"sending",projectId:1,type:"certificat_sent",relatedCertificatId:7,
+      recipientEmail:"client@example.com",subject:"Certificate",body:"BODY",
+      attachmentStorageKeys:[sealedCert.pdfStorageKey,invoice.storage_key]});
+    getBuffer.mockImplementation(async (key:string) => {
+      if(key===invoice.storage_key) throw new Error("missing invoice");
+      return Buffer.from("%PDF");
+    });
+    const gmailSend = vi.fn();
+    getGmail.mockResolvedValue({users:{messages:{send:gmailSend}}});
+    await expect(sendCommunication(55)).rejects.toThrow("architect invoice could not be loaded");
+    expect(gmailSend).not.toHaveBeenCalled();
+    expect(updateComm).toHaveBeenCalledWith(55,{status:"failed"});
+  });
+});
 
 function supplierIssuanceSnapshot(ribSha256: string) {
   return {

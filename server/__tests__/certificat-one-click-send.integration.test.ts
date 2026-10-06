@@ -57,6 +57,11 @@ let base: string;
 let projectId: number;
 let contractorId: number;
 const madeCertIds: number[] = [];
+const sendWithoutInvoice = {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ confirmWithoutArchitectInvoice: true }),
+};
 
 async function makeReadyCert(status = "ready"): Promise<number> {
   const storageKey = `test/t543-${Date.now()}-${Math.floor(Math.random() * 1e6)}.pdf`;
@@ -151,9 +156,7 @@ describe("POST /api/projects/:projectId/certificats/:certId/send — one-click d
     fakeSend.mockClear();
     const before = await db.select().from(certificats).where(eq(certificats.id, certId));
 
-    const res = await fetch(`${base}/api/projects/${projectId}/certificats/${certId}/send`, {
-      method: "POST",
-    });
+    const res = await fetch(`${base}/api/projects/${projectId}/certificats/${certId}/send`, sendWithoutInvoice);
     expect(res.status).toBe(200);
 
     const after = await db.select().from(certificats).where(eq(certificats.id, certId));
@@ -181,7 +184,7 @@ describe("POST /api/projects/:projectId/certificats/:certId/send — one-click d
     const certId = await makeReadyCert();
     fakeSend.mockClear();
 
-    const res = await fetch(`${base}/api/projects/${projectId}/certificats/${certId}/send`, { method: "POST" });
+    const res = await fetch(`${base}/api/projects/${projectId}/certificats/${certId}/send`, sendWithoutInvoice);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { id: number; status: string; type: string };
     expect(body.type).toBe("certificat_sent");
@@ -210,7 +213,7 @@ describe("POST /api/projects/:projectId/certificats/:certId/send — one-click d
     });
 
     const url = `${base}/api/projects/${projectId}/certificats/${certId}/send`;
-    const [a, b] = await Promise.all([fetch(url, { method: "POST" }), fetch(url, { method: "POST" })]);
+    const [a, b] = await Promise.all([fetch(url, sendWithoutInvoice), fetch(url, sendWithoutInvoice)]);
     const statuses = [a.status, b.status].sort();
     // One winner (200); the loser reports in-progress (409) or, if it raced
     // in after completion, the idempotent 200 with the sent row.
@@ -238,7 +241,7 @@ describe("POST /api/projects/:projectId/certificats/:certId/send — one-click d
     fakeSend.mockRejectedValueOnce(new Error("gmail exploded"));
 
     const url = `${base}/api/projects/${projectId}/certificats/${certId}/send`;
-    const first = await fetch(url, { method: "POST" });
+    const first = await fetch(url, sendWithoutInvoice);
     expect(first.status).toBe(502);
     expect((await commsForCert(certId)).find((c) => c.type === "certificat_sent")!.status).toBe("failed");
 
@@ -249,7 +252,7 @@ describe("POST /api/projects/:projectId/certificats/:certId/send — one-click d
       fakeMessageCounter++;
       return { data: { id: `fake-msg-${fakeMessageCounter}`, threadId: `fake-thread-${fakeMessageCounter}` } };
     });
-    const [a, b] = await Promise.all([fetch(url, { method: "POST" }), fetch(url, { method: "POST" })]);
+    const [a, b] = await Promise.all([fetch(url, sendWithoutInvoice), fetch(url, sendWithoutInvoice)]);
     expect([a.status, b.status].some((s) => s === 200)).toBe(true);
     expect([a.status, b.status].every((s) => s === 200 || s === 409)).toBe(true);
 
@@ -270,7 +273,7 @@ describe("POST /api/projects/:projectId/certificats/:certId/send — one-click d
     fakeSend.mockClear();
     fakeSend.mockRejectedValueOnce(new Error("gmail exploded"));
 
-    const res = await fetch(`${base}/api/projects/${projectId}/certificats/${certId}/send`, { method: "POST" });
+    const res = await fetch(`${base}/api/projects/${projectId}/certificats/${certId}/send`, sendWithoutInvoice);
     expect(res.status).toBe(502);
     const body = (await res.json()) as { code: string; message: string; communication: { status: string } };
     expect(body.code).toBe("CERTIFICAT_SEND_FAILED");

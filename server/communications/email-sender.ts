@@ -16,6 +16,7 @@ import {
   type SupplierDirectPaymentPresentation,
 } from "./certificat-generator";
 import { sealCertificat } from "../services/certificat-seal.service";
+import { reserveArchitectInvoiceDelivery, getArchitectInvoice, assertArchitectInvoiceAttached } from "../services/certificat-architect-invoice.service";
 import { getDocumentBuffer, uploadDocument } from "../storage/object-storage";
 import { env } from "../env";
 import type { InsertProjectCommunication, ProjectCommunication } from "@shared/schema";
@@ -323,7 +324,7 @@ export function buildSupplierNoticeEmailBody(opts: {
   );
 }
 
-export async function sendCertificat(certificatId: number): Promise<number> {
+export async function sendCertificat(certificatId: number, options: { confirmWithoutArchitectInvoice?: boolean; userId?: number } = {}): Promise<number> {
   // Task #451 — issuance seal FIRST: render once, pin the bytes. Re-sends
   // and concurrent sends all attach the same pinned PDF (idempotent inside
   // sealCertificat via a version-guarded conditional single-writer UPDATE).
@@ -375,6 +376,8 @@ export async function sendCertificat(certificatId: number): Promise<number> {
   // hub, while the already sealed certificat remains valid and the same send
   // action can retry the exact frozen RIB.
   const attachmentStorageKeys: string[] = [storageKey];
+  const architectInvoice = await reserveArchitectInvoiceDelivery(certificatId, options.confirmWithoutArchitectInvoice === true, options.userId);
+  if (architectInvoice?.storage_key) attachmentStorageKeys.push(architectInvoice.storage_key);
   if (!supplierTrack && contractor.ribDocumentUrl) {
     const ribKey = await mirrorRibForAttachment({
       projectId: project.id,
@@ -412,7 +415,7 @@ export async function sendCertificat(certificatId: number): Promise<number> {
       ? created.attachmentStorageKeys
       : [];
     const existingRibKey = existingAttachmentKeys.find(
-      (key) => key !== storageKey,
+      (key) => key !== storageKey && key !== architectInvoice?.storage_key,
     );
     if (!existingRibKey) {
       const banking = supplierSnapshot.readiness.supplier.banking;
@@ -775,7 +778,20 @@ export async function sendCommunication(
 
   let requiredSupplierAttachmentKeys: [string, string] | null = null;
   let requiredSignedCopyAttachmentKey: string | null = null;
+  let requiredArchitectInvoiceKey: string | null = null;
+  let architectInvoiceName: string | null = null;
   let relatedSupplierCert: Certificat | null = null;
+  if (comm.type === "certificat_sent" && comm.relatedCertificatId) {
+    try {
+      const invoice = await getArchitectInvoice(comm.relatedCertificatId);
+      assertArchitectInvoiceAttached(invoice, (comm.attachmentStorageKeys as string[]) ?? []);
+      requiredArchitectInvoiceKey = invoice?.frozen_at ? invoice.storage_key : null;
+      architectInvoiceName = invoice?.file_name ?? null;
+    } catch (error) {
+      await storage.updateProjectCommunication(communicationId, { status: "failed" });
+      throw error;
+    }
+  }
 
   // Every supplier certificate communication path, including direct Hub
   // retries and supplier notices, must re-run the same live payment safety
@@ -830,7 +846,7 @@ export async function sendCommunication(
         : [];
       const pinnedPdfKey = cert.pdfStorageKey;
       const hasSupplierRib = currentAttachments.some(
-        (key) => key !== pinnedPdfKey,
+        (key) => key !== pinnedPdfKey && key !== requiredArchitectInvoiceKey,
       );
       if (!hasSupplierRib) {
         const ribDocument =
@@ -850,7 +866,7 @@ export async function sendCommunication(
               supplierSnapshot.readiness.supplier.id,
             ribDocument,
           });
-          const attachmentStorageKeys = [pinnedPdfKey, ribKey];
+          const attachmentStorageKeys = [pinnedPdfKey, ribKey, ...(requiredArchitectInvoiceKey ? [requiredArchitectInvoiceKey] : [])];
           await storage.updateProjectCommunication(communicationId, {
             attachmentStorageKeys,
           });
@@ -868,11 +884,11 @@ export async function sendCommunication(
         ? comm.attachmentStorageKeys
         : [];
       const finalRibKeys = finalAttachmentKeys.filter(
-        (key) => key !== pinnedPdfKey,
+        (key) => key !== pinnedPdfKey && key !== requiredArchitectInvoiceKey,
       );
       if (
         !pinnedPdfKey ||
-        finalAttachmentKeys.length !== 2 ||
+        finalAttachmentKeys.length !== (requiredArchitectInvoiceKey ? 3 : 2) ||
         !finalAttachmentKeys.includes(pinnedPdfKey) ||
         finalRibKeys.length !== 1
       ) {
@@ -1014,7 +1030,9 @@ export async function sendCommunication(
       }
       try {
         const buffer = await getDocumentBuffer(key);
-        const filename = key.split("/").pop() || "attachment";
+        const filename = key === requiredArchitectInvoiceKey
+          ? `Architect-invoice-${architectInvoiceName ?? "invoice.pdf"}`
+          : key.split("/").pop() || "attachment";
         let contentType = "application/octet-stream";
         if (filename.endsWith(".pdf")) contentType = "application/pdf";
         else if (filename.endsWith(".html")) contentType = "text/html";
@@ -1028,9 +1046,12 @@ export async function sendCommunication(
         if (
           requiredSupplierAttachmentKeys?.includes(key)
           || requiredSignedCopyAttachmentKey === key
+          || requiredArchitectInvoiceKey === key
         ) {
           throw new Error(
-            requiredSignedCopyAttachmentKey === key
+            requiredArchitectInvoiceKey === key
+              ? "The attached architect invoice could not be loaded. No email was sent."
+              : requiredSignedCopyAttachmentKey === key
               ? `Required signed devis attachment unavailable: ${key}`
               : `Required supplier payment attachment unavailable: ${key}`,
             { cause: err },
@@ -1040,7 +1061,7 @@ export async function sendCommunication(
     }
     if (
       requiredSupplierAttachmentKeys &&
-      attachments.length !== requiredSupplierAttachmentKeys.length
+      attachments.length !== requiredSupplierAttachmentKeys.length + (requiredArchitectInvoiceKey ? 1 : 0)
     ) {
       throw new Error(
         "Required supplier payment attachments were not loaded completely",

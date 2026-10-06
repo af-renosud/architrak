@@ -1273,6 +1273,20 @@ export type InsertMilestonePaymentSuggestion = z.infer<typeof insertMilestonePay
  * the rendered PDF, with ON CONFLICT DO NOTHING so a concurrent-send loser
  * can replay harmlessly.
  */
+export const certificatArchitectInvoices = pgTable("certificat_architect_invoices", {
+  certificatId: integer("certificat_id").primaryKey().references(() => certificats.id, { onDelete: "cascade" }),
+  storageKey: text("storage_key"),
+  fileName: text("file_name"),
+  uploadedAt: timestamp("uploaded_at", { withTimezone: true }),
+  uploadedBy: text("uploaded_by"),
+  frozenAt: timestamp("frozen_at", { withTimezone: true }),
+  preparedBy: text("prepared_by"),
+  confirmedWithoutInvoice: boolean("confirmed_without_invoice").notNull().default(false),
+}, (t) => [
+  check("certificat_architect_invoice_file_pair", sql`(${t.storageKey} IS NULL) = (${t.fileName} IS NULL)`),
+  check("certificat_architect_invoice_confirmation", sql`${t.frozenAt} IS NULL OR ${t.storageKey} IS NOT NULL OR ${t.confirmedWithoutInvoice}`),
+]);
+
 export const certificatSources = pgTable("certificat_sources", {
   id: serial("id").primaryKey(),
   certificatId: integer("certificat_id").notNull().references(() => certificats.id, { onDelete: "cascade" }),

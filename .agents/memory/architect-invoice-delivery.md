@@ -7,3 +7,9 @@ The user generates the architect's commission invoice in proprietary accounting 
 **Why:** The requested convenience is delivery of an existing accounting document, not creation of a replacement invoice inside the certificate.
 
 **How to apply:** Preserve the external invoice as its own PDF and separate the architect's fee from the contractor payment amount. Any future attachment workflow should explicitly select the correct project invoice before dispatch.
+
+The user requested a warning before sending without the invoice and a quickly visible attachment status in certificate records. This is a reminder with explicit “send without” confirmation, not a mandatory invoice requirement.
+
+**Why:** Some certificates legitimately go out without an architect invoice. Financial sealing and email attachment preparation are separate steps: the invoice is prepared externally and may be attached after the certificate PDF exists.
+
+**How to apply:** Never equate “attached now” with “sent with invoice.” Keep the actual delivery choice stable for retries, and show unknown history for older sends rather than fabricating a yes/no answer.

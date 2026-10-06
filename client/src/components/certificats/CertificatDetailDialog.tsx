@@ -7,6 +7,8 @@
  */
 
 import { useState } from "react";
+import { ArchitectInvoiceSection } from "@/components/certificats/ArchitectInvoiceSection";
+import { useInvoiceAwareCertificatSend } from "@/hooks/use-invoice-aware-certificat-send";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
@@ -364,14 +366,8 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
     queryKey: ["/api/certificats", String(cert.id), "sources"],
     enabled: isSupplier,
   });
-  const sendMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest(
-        "POST",
-        `/api/projects/${cert.projectId}/certificats/${cert.id}/send`,
-      );
-      return res.json() as Promise<{ sentAt?: string | null; recipientEmail?: string | null }>;
-    },
+  const sendMutation = useInvoiceAwareCertificatSend<{ sentAt?: string | null; recipientEmail?: string | null }>({
+    target: () => ({ projectId: cert.projectId, certId: cert.id }),
     onSuccess: (communication) => {
       setSentEvidence({
         sentAt: communication.sentAt ?? new Date().toISOString(),
@@ -388,6 +384,7 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
   });
   return (
     <Dialog open onOpenChange={onClose}>
+      {sendMutation.confirmationDialog}
       <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-[16px] font-black uppercase tracking-tight">
@@ -402,6 +399,7 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
+          <ArchitectInvoiceSection certId={cert.id} />
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <StatusBadge status={cert.status} />
             {falseSent && (
@@ -459,7 +457,7 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
               </div>
               <Button
                 size="sm"
-                onClick={() => sendMutation.mutate()}
+                onClick={() => sendMutation.mutate(undefined)}
                 disabled={sendMutation.isPending}
                 data-testid={`button-send-cert-detail-${cert.id}`}
               >

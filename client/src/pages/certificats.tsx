@@ -1,4 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
+import { ArchitectInvoiceBadge } from "@/components/certificats/ArchitectInvoiceSection";
+import { useInvoiceAwareCertificatSend } from "@/hooks/use-invoice-aware-certificat-send";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
@@ -330,14 +332,8 @@ export default function Certificats() {
     },
   });
 
-  const sendMutation = useMutation({
-    mutationFn: async (cert: CertificatWithSentInfo) => {
-      const res = await apiRequest(
-        "POST",
-        `/api/projects/${cert.projectId}/certificats/${cert.id}/send`,
-      );
-      return res.json();
-    },
+  const sendMutation = useInvoiceAwareCertificatSend<unknown, CertificatWithSentInfo>({
+    target: (cert) => ({ projectId: cert.projectId, certId: cert.id }),
     onSuccess: (_communication, cert) => {
       queryClient.invalidateQueries({ queryKey: projectScopedKey(cert.projectId, "certificats") });
       queryClient.invalidateQueries({ queryKey: projectScopedKey(cert.projectId, "communications") });
@@ -428,6 +424,7 @@ export default function Certificats() {
 
   return (
     <AppLayout>
+      {sendMutation.confirmationDialog}
       <div className="space-y-8">
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <h1 className="text-[22px] font-light uppercase tracking-tight text-foreground" data-testid="text-page-title">
@@ -501,6 +498,7 @@ export default function Certificats() {
               const missingIban = !isSupplierCert && certContractor && !certContractor.iban && (cert.status === "draft" || cert.status === "ready");
               return (
                 <LuxuryCard key={cert.id} data-testid={`card-certificat-${cert.id}`}>
+                  <ArchitectInvoiceBadge certId={cert.id} />
                   {missingIban && (
                     <div
                       className="flex items-start gap-2 rounded-md border border-red-300/70 dark:border-red-500/30 bg-red-50/70 dark:bg-red-950/20 px-3 py-2 mb-3"

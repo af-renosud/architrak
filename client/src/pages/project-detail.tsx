@@ -1,4 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
+import { ArchitectInvoiceBadge } from "@/components/certificats/ArchitectInvoiceSection";
+import { useInvoiceAwareCertificatSend } from "@/hooks/use-invoice-aware-certificat-send";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
@@ -902,11 +904,8 @@ export default function ProjectDetail() {
     },
   });
 
-  const sendCertMutation = useMutation({
-    mutationFn: async (certId: number) => {
-      const res = await apiRequest("POST", `/api/projects/${projectId}/certificats/${certId}/send`);
-      return res.json();
-    },
+  const sendCertMutation = useInvoiceAwareCertificatSend<unknown, number>({
+    target: (certId) => ({ projectId: projectId!, certId }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "communications") });
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "certificats") });
@@ -1260,6 +1259,7 @@ export default function ProjectDetail() {
 
   return (
     <AppLayout>
+      {sendCertMutation.confirmationDialog}
       <div className="space-y-8">
         <div className="flex items-center gap-3 flex-wrap">
           <Link href="/projets">
@@ -2128,6 +2128,7 @@ export default function ProjectDetail() {
                     const nextLabel = getNextCertLabel(c.status);
                     return (
                       <LuxuryCard key={c.id} data-testid={`card-certificat-tab-${c.id}`}>
+                        <ArchitectInvoiceBadge certId={c.id} />
                         {(() => {
                           const certContractor = contractors?.find((ct) => ct.id === c.contractorId);
                           const missingIban = certContractor && !certContractor.iban && (c.status === "draft" || c.status === "ready");
@@ -2942,8 +2943,9 @@ export default function ProjectDetail() {
                   {certificatsList && certificatsList.filter(canSendCertificat).length > 0 && (
                     <div className="flex gap-1">
                       {certificatsList.filter(canSendCertificat).map(cert => (
+                        <div key={cert.id} className="flex flex-col items-start gap-1">
+                        <ArchitectInvoiceBadge certId={cert.id} />
                         <Button
-                          key={cert.id}
                           variant="outline"
                           size="sm"
                           onClick={() => sendCertMutation.mutate(cert.id)}
@@ -2953,6 +2955,7 @@ export default function ProjectDetail() {
                           <Send size={12} />
                           <span className="text-[8px] font-bold uppercase tracking-widest">Send {cert.certificateRef}</span>
                         </Button>
+                        </div>
                       ))}
                     </div>
                   )}

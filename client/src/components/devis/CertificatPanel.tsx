@@ -1,12 +1,14 @@
 import { useMemo, useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { ArchitectInvoiceBadge } from "@/components/certificats/ArchitectInvoiceSection";
+import { useInvoiceAwareCertificatSend } from "@/hooks/use-invoice-aware-certificat-send";
+import { useQuery } from "@tanstack/react-query";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Award, Send, Loader2, FileCheck2, LockKeyhole } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient, projectScopedKey, ApiError } from "@/lib/queryClient";
+import { queryClient, projectScopedKey, ApiError } from "@/lib/queryClient";
 import type { Devis, Certificat, Contractor, Invoice } from "@shared/schema";
 import { CreateMultiCertificatDialog } from "@/components/factures/FacturesTab";
 import {
@@ -92,11 +94,8 @@ export function CertificatPanel({
 
   // Task #539 — the dashboard's unsent list shares the SAME server-side
   // definition; invalidated after every send so both surfaces agree.
-  const sendMutation = useMutation({
-    mutationFn: async (certId: number) => {
-      const res = await apiRequest("POST", `/api/projects/${projectId}/certificats/${certId}/send`);
-      return res.json();
-    },
+  const sendMutation = useInvoiceAwareCertificatSend<unknown, number>({
+    target: (certId) => ({ projectId, certId }),
     onSuccess: () => {
       toast({ title: "Certificat sent" });
       queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "certificats") });
@@ -251,6 +250,7 @@ export function CertificatPanel({
 
   return (
     <LuxuryCard className="p-3 space-y-2" data-testid={`panel-certificat-${devisId}`}>
+      {sendMutation.confirmationDialog}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Award className="h-4 w-4 text-[#0B2545]" />
@@ -312,6 +312,7 @@ export function CertificatPanel({
                 data-testid={`row-devis-certificat-${cert.id}`}
               >
                 <div className="flex flex-col gap-0.5 min-w-0">
+                  <ArchitectInvoiceBadge certId={cert.id} />
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-[11px] font-semibold text-foreground truncate">
                       {cert.certificateRef}

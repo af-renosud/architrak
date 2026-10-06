@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { ArchitectInvoiceBadge } from "@/components/certificats/ArchitectInvoiceSection";
+import { useInvoiceAwareCertificatSend } from "@/hooks/use-invoice-aware-certificat-send";
 import { Amount } from "@/components/ui/amount";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -352,14 +354,8 @@ function UnsentCertificatsAlert() {
     queryKey: ["/api/certificats/unsent"],
   });
 
-  const sendMutation = useMutation({
-    mutationFn: async (cert: UnsentCertificat) => {
-      const res = await apiRequest(
-        "POST",
-        `/api/projects/${cert.projectId}/certificats/${cert.certificatId}/send`,
-      );
-      return res.json();
-    },
+  const sendMutation = useInvoiceAwareCertificatSend<unknown, UnsentCertificat>({
+    target: (cert) => ({ projectId: cert.projectId, certId: cert.certificatId }),
     onSuccess: (_data, cert) => {
       toast({ title: "Certificat sent", description: cert.certificateRef });
       refetch();
@@ -375,6 +371,7 @@ function UnsentCertificatsAlert() {
 
   return (
     <>
+      {sendMutation.confirmationDialog}
       <button
         onClick={() => setOpen(true)}
         className="w-full text-left bg-transparent border-0 p-0 cursor-pointer"
@@ -417,6 +414,7 @@ function UnsentCertificatsAlert() {
                 data-testid={`row-unsent-certificat-${cert.certificatId}`}
               >
                 <div className="min-w-0">
+                  <ArchitectInvoiceBadge certId={cert.certificatId} />
                   <Link href={`/projets/${cert.projectId}`} onClick={() => setOpen(false)}>
                     <p className="text-[11px] font-semibold text-foreground truncate underline-offset-2 hover:underline cursor-pointer">
                       {cert.projectName} — {cert.certificateRef}

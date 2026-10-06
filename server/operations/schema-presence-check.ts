@@ -70,6 +70,14 @@ export interface MigrationArtifact {
  * migration. Set the flag on every new data-only DML backfill.
  */
 export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
+  { tag: "0141_certificat_architect_invoice", artifact: { kind: "all", artifacts: [
+    { kind: "table", table: "certificat_architect_invoices" },
+    { kind: "constraint", table: "certificat_architect_invoices", constraint: "certificat_architect_invoices_pkey" },
+    { kind: "constraint", table: "certificat_architect_invoices", constraint: "certificat_architect_invoices_certificat_id_fkey" },
+    { kind: "constraint", table: "certificat_architect_invoices", constraint: "certificat_architect_invoice_file_pair" },
+    { kind: "constraint", table: "certificat_architect_invoices", constraint: "certificat_architect_invoice_confirmation" },
+    { kind: "trigger", table: "certificat_architect_invoices", trigger: "certificat_architect_invoice_frozen" },
+  ] } },
   { tag: "0140_mn1_alu_description_alignment", artifact: { kind: "data_only", reason: "Guarded user-authorized MN.1.ALU description alignment; preserves money/source/row IDs and records before/after", rerunnable: true } },
   { tag: "0139_architect_quotation_corrections", artifact: { kind: "all", artifacts: [
     { kind: "table", table: "quotation_source_baselines" },

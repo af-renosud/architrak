@@ -19,6 +19,7 @@ import {
   type SupplierDirectPaymentPresentation,
 } from "../communications/certificat-generator";
 import { sendCertificat, sendCommunication, CommunicationSendInProgressError } from "../communications/email-sender";
+import { requireArchitectInvoiceConfirmation, ArchitectInvoiceError } from "../services/certificat-architect-invoice.service";
 import { validateRequest } from "../middleware/validate";
 import { rejectClientCertificateReference } from "../middleware/certificate-reference";
 import { rejectClientCertificateTva } from "../middleware/certificate-tva";
@@ -2337,7 +2338,9 @@ router.post(
       // Communications hub. sendCommunication() marks the row sent (and
       // chains the contractor notice) or flips it to a visible, retryable
       // FAILED row before rethrowing — never a silent queued row.
-      const commId = await sendCertificat(certId);
+      const confirmed = req.body?.confirmWithoutArchitectInvoice === true;
+      await requireArchitectInvoiceConfirmation(certId, confirmed);
+      const commId = await sendCertificat(certId, { confirmWithoutArchitectInvoice: confirmed, userId: req.session.userId });
       try {
         await sendCommunication(commId, { sentByUserId: req.session.userId ?? null });
       } catch (sendErr: unknown) {
@@ -2410,6 +2413,9 @@ router.post(
           conflictingInvoiceIds: err.conflictingInvoiceIds,
           claimingCertificateRefs: err.claimingCertificateRefs,
         });
+      }
+      if (err instanceof ArchitectInvoiceError) {
+        return res.status(err.status).json({ code: err.code, message: err.message });
       }
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ message: `Failed to send certificat: ${message}` });
