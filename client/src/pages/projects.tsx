@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Amount } from "@/components/ui/amount";
+import { CommitmentEvidenceSummary } from "@/components/projects/CommitmentEvidenceSummary";
+import type { FinancialSummary } from "@/lib/financial-summary";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
@@ -843,12 +845,6 @@ function ProjectCard({
   project: Project;
   accountingStatus?: ProjectAccountingStatusSummary;
 }) {
-  interface FinancialSummary {
-    totalContractedHt: number;
-    totalCertifiedHt: number;
-    totalResteARealiser: number;
-  }
-
   const { toast } = useToast();
   const [, navigate] = useLocation();
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -1018,26 +1014,27 @@ function ProjectCard({
             </p>
           )}
 
-          {summary && contracted > 0 && (
+          {summary && (contracted > 0 || summary.totalPendingHt > 0 || (summary.financialExceptions?.length ?? 0) > 0) && (
             <div className="space-y-2 pt-3 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]">
               <div className="flex items-center justify-between gap-2">
-                <TechnicalLabel>Contracted HT</TechnicalLabel>
+                <TechnicalLabel>Contracted HT — Signed</TechnicalLabel>
                 <span className="text-[11px] font-semibold text-foreground" data-testid={`text-contracted-${project.id}`}>
                   <Amount value={contracted} denomination="HT" />
                 </span>
               </div>
               <div className="flex items-center justify-between gap-2">
-                <TechnicalLabel>Certified HT</TechnicalLabel>
+                <TechnicalLabel>Certified HT — Signed</TechnicalLabel>
                 <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400" data-testid={`text-certified-${project.id}`}>
                   <Amount value={certified} denomination="HT" />
                 </span>
               </div>
               <div className="flex items-center justify-between gap-2">
-                <TechnicalLabel>Reste à Réaliser</TechnicalLabel>
+                <TechnicalLabel>Reste à Réaliser — Signed</TechnicalLabel>
                 <span className="text-[11px] font-semibold text-amber-600 dark:text-amber-400" data-testid={`text-reste-${project.id}`}>
                   <Amount value={reste} denomination="HT" />
                 </span>
               </div>
+              <CommitmentEvidenceSummary summary={summary} />
               <div className="h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800 mt-1">
                 <div
                   className="h-full rounded-full bg-emerald-500 transition-all"

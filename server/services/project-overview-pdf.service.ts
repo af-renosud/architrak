@@ -3,6 +3,7 @@ import { storage } from "../storage";
 import { getDocumentBuffer } from "../storage/object-storage";
 import { convertHtmlToPdf } from "./docraptor";
 import { getProjectFinancialSummary } from "./financial-summary.service";
+import { excludedCommitmentsHtml, type ExcludedCommitmentRow } from "./commitment-reporting";
 import { formatCurrencyNoSymbol, roundCurrency } from "../../shared/financial-utils";
 
 /**
@@ -41,6 +42,7 @@ export interface OverviewRollupRow {
 }
 
 export interface ProjectOverviewData {
+  excludedRows?: ExcludedCommitmentRow[];
   projectName: string;
   projectCode: string;
   clientName: string | null;
@@ -59,6 +61,11 @@ export interface ProjectOverviewData {
 }
 
 interface SummaryDevisRow {
+  commitmentEligible?: boolean;
+  commitmentStatus?: string;
+  adjustedTtc?: number;
+  certifiedTtc?: number;
+  hasFinancialEvidence?: boolean;
   devisCode: string;
   descriptionFr: string | null;
   descriptionUk: string | null;
@@ -93,7 +100,7 @@ export function buildProjectOverviewData(
   now: Date = new Date(),
 ): ProjectOverviewData {
   const activeDevis = summary.devis.filter(
-    (d) => d.accountingState === "active" && d.status !== "void",
+    (d) => d.commitmentEligible === true,
   );
 
   const progressPercent =
@@ -112,7 +119,7 @@ export function buildProjectOverviewData(
     description: d.descriptionFr || d.descriptionUk || "",
     // NB: the canonical signed terminal stage is "client_signed_off" — a
     // prior version compared against "signed_off", which does not exist.
-    signed: d.signOffStage === "client_signed_off",
+    signed: d.commitmentEligible === true,
     adjustedHt: d.adjustedHt,
     certifiedHt: d.certifiedHt,
     resteARealiser: d.resteARealiser,
@@ -138,6 +145,11 @@ export function buildProjectOverviewData(
   }
 
   return {
+    excludedRows: summary.devis.filter(d => d.commitmentStatus === "unsigned" || (!d.commitmentEligible && d.hasFinancialEvidence)).map(d => ({
+      devisCode: d.devisCode, commitmentStatus: d.commitmentStatus ?? "inactive",
+      adjustedHt: d.adjustedHt, adjustedTtc: d.adjustedTtc ?? 0,
+      certifiedHt: d.certifiedHt, certifiedTtc: d.certifiedTtc ?? 0, hasFinancialEvidence: d.hasFinancialEvidence,
+    })),
     projectName: summary.projectName,
     projectCode: summary.projectCode ?? "",
     clientName,
@@ -269,8 +281,8 @@ export function buildProjectOverviewHtml(
 
   <table style="width:100%;margin:0 -2mm 6mm;border-spacing:0;">
     <tr>
-      ${kpiCell("Montant total des travaux", data.totalContractedHt, data.totalContractedTtc, NAVY)}
-      ${kpiCell("Total facturé à ce jour", data.totalCertifiedHt, data.totalCertifiedTtc, "#2a7d2e")}
+      ${kpiCell("Engagements signés", data.totalContractedHt, data.totalContractedTtc, NAVY)}
+      ${kpiCell("Facturé — devis signés", data.totalCertifiedHt, data.totalCertifiedTtc, "#2a7d2e")}
       ${kpiCell("Reste à payer", data.totalResteARealiser, data.totalResteARealiserTtc, GOLD)}
     </tr>
   </table>
@@ -310,7 +322,7 @@ export function buildProjectOverviewHtml(
     <tbody>${rows}</tbody>
     <tfoot>
       <tr style="border-top:2px solid ${NAVY};background:#E8ECF1;">
-        <td colspan="3" style="font-weight:800;font-size:7pt;color:${NAVY};text-transform:uppercase;padding:6px;">Total</td>
+        <td colspan="3" style="font-weight:800;font-size:7pt;color:${NAVY};text-transform:uppercase;padding:6px;">Total engagements signés</td>
         <td style="text-align:right;font-weight:800;font-size:7pt;color:${NAVY};padding:6px;">${fmt(data.totalContractedHt)}</td>
         <td style="text-align:right;font-weight:800;font-size:7pt;color:${NAVY};padding:6px;">${fmt(data.totalCertifiedHt)}</td>
         <td style="text-align:right;font-weight:800;font-size:7pt;color:${GOLD};padding:6px;">${fmt(data.totalResteARealiser)}</td>
@@ -318,6 +330,7 @@ export function buildProjectOverviewHtml(
     </tfoot>
   </table>
 
+  ${excludedCommitmentsHtml(data.excludedRows)}
   <div style="font-size:6.5pt;color:${GREY};border-top:1px solid #E6E6E6;padding-top:2mm;">
     Montants ajustés des avenants approuvés (plus-values / moins-values). Document d'information établi par
     l'architecte à la date indiquée&nbsp;; les montants «&nbsp;Facturé&nbsp;» correspondent aux factures

@@ -11,45 +11,8 @@ import { Link } from "wouter";
 import type { Project } from "@shared/schema";
 
 import { Amount } from "@/components/ui/amount";
-
-interface DevisSummary {
-  devisId: number;
-  devisCode: string;
-  descriptionFr: string;
-  descriptionUk: string | null;
-  status: string;
-  contractorId: number;
-  invoicingMode: string;
-  originalHt: number;
-  originalTtc: number;
-  pvTotal: number;
-  mvTotal: number;
-  adjustedHt: number;
-  adjustedTtc: number;
-  certifiedHt: number;
-  certifiedTtc: number;
-  resteARealiser: number;
-  resteARealiserTtc: number;
-  invoiceCount: number;
-  avenantCount: number;
-}
-
-interface FinancialSummary {
-  projectId: number;
-  projectName: string;
-  projectCode: string;
-  devis: DevisSummary[];
-  totalContractedHt: number;
-  totalContractedTtc: number;
-  totalCertifiedHt: number;
-  totalCertifiedTtc: number;
-  totalResteARealiser: number;
-  totalResteARealiserTtc: number;
-  totalOriginalHt: number;
-  totalOriginalTtc: number;
-  totalPv: number;
-  totalMv: number;
-}
+import { CommitmentEvidenceSummary } from "@/components/projects/CommitmentEvidenceSummary";
+import { commitmentLabel, isSignedCommitment, type FinancialSummary } from "@/lib/financial-summary";
 
 // hint: Logic changed on both sides. Requires understanding intent of each change.
 function ProjectFinancialCard({ project }: { project: Project }) {
@@ -77,7 +40,7 @@ function ProjectFinancialCard({ project }: { project: Project }) {
     ? (summary.totalCertifiedHt / summary.totalContractedHt) * 100
     : 0;
 
-  const anomalies = summary.devis.filter((d) => d.resteARealiser < 0 || d.certifiedHt > d.adjustedHt);
+  const anomalies = summary.devis.filter((d) => isSignedCommitment(d) && (d.resteARealiser < 0 || d.certifiedHt > d.adjustedHt));
 
   return (
     <LuxuryCard data-testid={`card-financial-project-${project.id}`}>
@@ -98,7 +61,7 @@ function ProjectFinancialCard({ project }: { project: Project }) {
 
       <div className="grid grid-cols-3 gap-3 mb-3">
         <div>
-          <TechnicalLabel>Contracted</TechnicalLabel>
+          <TechnicalLabel>Contracted — Signed</TechnicalLabel>
           <p className="text-[13px] font-semibold text-foreground mt-0.5" data-testid={`text-contracted-${project.id}`}>
             <Amount value={summary.totalContractedHt} denomination="HT" />
           </p>
@@ -107,7 +70,7 @@ function ProjectFinancialCard({ project }: { project: Project }) {
           </p>
         </div>
         <div>
-          <TechnicalLabel>Certified</TechnicalLabel>
+          <TechnicalLabel>Certified — Signed</TechnicalLabel>
           <p className="text-[13px] font-semibold text-foreground mt-0.5" data-testid={`text-certified-${project.id}`}>
             <Amount value={summary.totalCertifiedHt} denomination="HT" />
           </p>
@@ -116,7 +79,7 @@ function ProjectFinancialCard({ project }: { project: Project }) {
           </p>
         </div>
         <div>
-          <TechnicalLabel>Remaining</TechnicalLabel>
+          <TechnicalLabel>Remaining — Signed</TechnicalLabel>
           <p className={`text-[13px] font-semibold mt-0.5 ${summary.totalResteARealiser < 0 ? "text-red-500" : "text-foreground"}`} data-testid={`text-remaining-${project.id}`}>
             <Amount value={summary.totalResteARealiser} denomination="HT" />
           </p>
@@ -140,26 +103,33 @@ function ProjectFinancialCard({ project }: { project: Project }) {
         </div>
       )}
 
+      <CommitmentEvidenceSummary summary={summary} />
       {summary.devis.length > 0 && (
         <div className="mt-3 pt-3 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.05)]">
           <div className="space-y-1.5">
             {summary.devis.map((d) => {
               const pct = d.adjustedHt > 0 ? (d.certifiedHt / d.adjustedHt) * 100 : 0;
-              const isAnomaly = d.resteARealiser < 0;
+               const isAnomaly = isSignedCommitment(d) && d.resteARealiser < 0;
               return (
                 <div
                   key={d.devisId}
                   className={`flex items-center gap-2 py-1 ${isAnomaly ? "text-red-500" : ""}`}
                   data-testid={`row-devis-financial-${d.devisId}`}
                 >
-                  <span className="text-[10px] font-semibold text-foreground min-w-[80px]">{d.devisCode}</span>
+                  <div className="text-[10px] text-foreground min-w-[80px]">
+                    <span className="font-semibold">{d.devisCode}</span>
+                    <p className="text-[9px] text-muted-foreground" data-testid={`text-commitment-status-${d.devisId}`}>{commitmentLabel(d)}</p>
+                    {!isSignedCommitment(d) && (
+                      <p className="text-[9px] text-muted-foreground">Certified: <Amount value={d.certifiedTtc} denomination="TTC" />{" · "}<Amount value={d.certifiedHt} denomination="HT" /></p>
+                    )}
+                  </div>
                   <div className="flex-1">
                     <Progress value={Math.min(100, pct)} className="h-1" />
                   </div>
                   <span className="text-[10px] text-muted-foreground min-w-[50px] text-right">{pct.toFixed(0)}%</span>
                   <div className={`text-right min-w-[80px] ${isAnomaly ? "text-red-500" : "text-foreground"}`}>
                     <div className="text-[10px] font-semibold">
-                      <Amount value={d.resteARealiser} denomination="HT" />
+                      {!isSignedCommitment(d) && <span className="text-[9px] text-muted-foreground">Excluded balance: </span>}<Amount value={d.resteARealiser} denomination="HT" />
                     </div>
                     <div className="text-[9px] opacity-60">
                       <Amount value={d.resteARealiserTtc} denomination="TTC" />

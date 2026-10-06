@@ -1,5 +1,6 @@
 import { storage } from "../storage";
 import { roundCurrency } from "../../shared/financial-utils";
+import { quotationCommitmentStatus } from "../../shared/quotation-commitment";
 
 /**
  * Task #546 — acompte (opening-deposit) certificats in the Certified figures.
@@ -175,6 +176,9 @@ export async function getProjectFinancialSummary(
       const resteARealiserTtc = roundCurrency(adjustedTtc - certifiedTtc);
 
       return {
+        commitmentStatus: quotationCommitmentStatus(d),
+        commitmentEligible: quotationCommitmentStatus(d) === "signed",
+        hasFinancialEvidence: devisInvoices.length > 0 || projectCertificats.some(c => c.acompteDevisId === d.id && c.status !== "superseded" && (["ready", "sent", "paid"].includes(c.status) || opts?.treatAsIssuedCertificatIds?.includes(c.id))),
         devisId: d.id,
         devisCode: d.devisCode,
         descriptionFr: d.descriptionFr,
@@ -206,12 +210,10 @@ export async function getProjectFinancialSummary(
     })
   );
 
-  // Task #232 — Contracted guard. Only genuinely-active devis count toward the
-  // buckets: `provisional` (freshly ingested, not yet reconciled) and
-  // `superseded` (folded into another devis) are excluded, as are `void` ones.
-  // Existing rows backfill to `active`, so historic behaviour is unchanged.
+  // Both signature evidence and active accounting are required. Retain the
+  // full quotation list and disclose excluded financial evidence separately.
   const activeDevis = devisSummaries.filter(
-    ds => ds.accountingState === "active" && ds.status !== "void",
+    ds => ds.commitmentEligible,
   );
   const totals = activeDevis.reduce(
     (acc, ds) => ({
@@ -240,6 +242,8 @@ export async function getProjectFinancialSummary(
     }
   );
 
+  const pending = devisSummaries.filter(d => d.commitmentStatus === "unsigned");
+  const financialExceptions = devisSummaries.filter(d => !d.commitmentEligible && d.hasFinancialEvidence);
   return {
     success: true,
     status: 200,
@@ -248,6 +252,11 @@ export async function getProjectFinancialSummary(
       projectName: project.name,
       projectCode: project.code,
       devis: devisSummaries,
+      totalPendingHt: roundCurrency(pending.reduce((sum, d) => sum + d.adjustedHt, 0)),
+      totalPendingTtc: roundCurrency(pending.reduce((sum, d) => sum + d.adjustedTtc, 0)),
+      financialExceptions,
+      totalExcludedCertifiedHt: roundCurrency(financialExceptions.reduce((sum, d) => sum + d.certifiedHt, 0)),
+      totalExcludedCertifiedTtc: roundCurrency(financialExceptions.reduce((sum, d) => sum + d.certifiedTtc, 0)),
       ...totals,
     },
   };

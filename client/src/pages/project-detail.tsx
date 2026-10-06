@@ -59,26 +59,11 @@ import {
   manualCertificatPreviewQueryOptions,
 } from "@/lib/manual-certificat-preview";
 import { PlanningEnvelopeTab } from "@/components/projects/PlanningEnvelopeTab";
+import { CommitmentEvidenceSummary } from "@/components/projects/CommitmentEvidenceSummary";
+import { commitmentLabel, isSignedCommitment, type FinancialSummary } from "@/lib/financial-summary";
 
 import { Amount } from "@/components/ui/amount";
 import { formatCurrency as fmt } from "@/lib/utils";
-
-interface FinancialSummary {
-  projectId: number;
-  projectName: string;
-  projectCode: string;
-  totalContractedHt: number;
-  totalContractedTtc: number;
-  totalCertifiedHt: number;
-  totalCertifiedTtc: number;
-  totalResteARealiser: number;
-  totalResteARealiserTtc: number;
-  totalOriginalHt: number;
-  totalOriginalTtc: number;
-  totalPv: number;
-  totalMv: number;
-  devis: DevisSummary[];
-}
 
 interface AccountingStatusSummary {
   projectId: number;
@@ -87,34 +72,6 @@ interface AccountingStatusSummary {
   supersededCount: number;
   needsReviewCount: number;
   eurosAtRisk: number;
-}
-
-interface DevisSummary {
-  devisId: number;
-  devisCode: string;
-  descriptionFr: string;
-  descriptionUk: string | null;
-  status: string;
-  contractorId: number;
-  invoicingMode: string;
-  originalHt: number;
-  originalTtc: number;
-  pvTotal: number;
-  mvTotal: number;
-  adjustedHt: number;
-  adjustedTtc: number;
-  certifiedHt: number;
-  certifiedTtc: number;
-  acompteCertifiedHt?: number;
-  acompteCertifiedTtc?: number;
-  acompteAppliedHt?: number;
-  acompteAppliedTtc?: number;
-  currentInvoiceBalanceTtc?: number | null;
-  acomptePaymentConflict?: boolean;
-  resteARealiser: number;
-  resteARealiserTtc: number;
-  invoiceCount: number;
-  avenantCount: number;
 }
 
 function CommissionInput({ projectId, initialValue }: { projectId: number; initialValue: string }) {
@@ -1564,14 +1521,14 @@ export default function ProjectDetail() {
                 <DesignContractCard projectId={project.id} />
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <LuxuryCard data-testid="card-total-contracted">
-                    <TechnicalLabel>Total Contracted</TechnicalLabel>
+                    <TechnicalLabel>Total Contracted — Signed</TechnicalLabel>
                     <p className="text-[20px] font-light text-foreground mt-2" data-testid="text-total-contracted">
                        <Amount value={financialSummary.totalContractedTtc} denomination="TTC" />
                     </p>
                      <p className="text-[12px] text-muted-foreground"><Amount value={financialSummary.totalContractedHt} denomination="HT" /></p>
                   </LuxuryCard>
                   <LuxuryCard data-testid="card-total-certified">
-                    <TechnicalLabel>Total Certified</TechnicalLabel>
+                    <TechnicalLabel>Total Certified — Signed</TechnicalLabel>
                     <p className="text-[20px] font-light text-emerald-600 dark:text-emerald-400 mt-2" data-testid="text-total-certified">
                        <Amount value={financialSummary.totalCertifiedTtc} denomination="TTC" />
                     </p>
@@ -1583,7 +1540,7 @@ export default function ProjectDetail() {
                     </p>
                   </LuxuryCard>
                   <LuxuryCard data-testid="card-total-reste">
-                    <TechnicalLabel>Reste à Réaliser</TechnicalLabel>
+                    <TechnicalLabel>Reste à Réaliser — Signed</TechnicalLabel>
                     <p className="text-[20px] font-light text-amber-600 dark:text-amber-400 mt-2" data-testid="text-total-reste">
                        <Amount value={financialSummary.totalResteARealiserTtc} denomination="TTC" />
                     </p>
@@ -1591,6 +1548,7 @@ export default function ProjectDetail() {
                   </LuxuryCard>
                 </div>
 
+                <CommitmentEvidenceSummary summary={financialSummary} />
                 {financialSummary.devis.length > 0 ? (
                   <LuxuryCard data-testid="card-devis-breakdown">
                     <div className="flex items-center justify-between mb-4">
@@ -1625,26 +1583,27 @@ export default function ProjectDetail() {
                               <div>
                                 <TechnicalLabel>{ds.devisCode}</TechnicalLabel>
                                 <p className="text-[12px] text-foreground mt-0.5">{ds.descriptionFr}</p>
+                                <p className="text-[10px] text-muted-foreground mt-1" data-testid={`text-commitment-status-${ds.devisId}`}>{commitmentLabel(ds)}</p>
                               </div>
                               <StatusBadge status={ds.status} />
                             </div>
                             <div className="grid grid-cols-3 gap-4">
                               <div>
-                                <TechnicalLabel>Contracted</TechnicalLabel>
+                                <TechnicalLabel>{isSignedCommitment(ds) ? "Contracted — Signed" : "Quotation value — Excluded"}</TechnicalLabel>
                                 <p className="text-[12px] font-semibold text-foreground mt-0.5">
                                   <Amount value={ds.adjustedTtc} denomination="TTC" />
                                 </p>
                                 <p className="text-[10px] text-muted-foreground"><Amount value={ds.adjustedHt} denomination="HT" /></p>
                               </div>
                               <div>
-                                <TechnicalLabel>Certified</TechnicalLabel>
+                                <TechnicalLabel>{isSignedCommitment(ds) ? "Certified" : "Certified — Outside commitment"}</TechnicalLabel>
                                 <p className="text-[12px] font-semibold text-emerald-600 dark:text-emerald-400 mt-0.5">
                                   <Amount value={ds.certifiedTtc} denomination="TTC" />
                                 </p>
                                 <p className="text-[10px] text-muted-foreground"><Amount value={ds.certifiedHt} denomination="HT" /></p>
                               </div>
                               <div>
-                                <TechnicalLabel>Remaining</TechnicalLabel>
+                                <TechnicalLabel>{isSignedCommitment(ds) ? "Remaining" : "Quotation balance — Excluded"}</TechnicalLabel>
                                 <p className="text-[12px] font-semibold text-amber-600 dark:text-amber-400 mt-0.5">
                                   <Amount value={ds.resteARealiserTtc} denomination="TTC" />
                                 </p>

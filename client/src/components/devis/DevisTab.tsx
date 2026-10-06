@@ -68,25 +68,7 @@ import { Amount } from "@/components/ui/amount";
 import { formatCurrency as fmt } from "@/lib/utils";
 import { normalizeRef } from "@shared/intake-dedup";
 import { DuplicateExtractionHistory } from "@/components/devis/DuplicateExtractionHistory";
-
-interface DevisFinancialSummary {
-  devisId: number;
-  originalHt: number;
-  originalTtc: number;
-  adjustedHt: number;
-  adjustedTtc: number;
-  certifiedHt: number;
-  certifiedTtc: number;
-  acompteCertifiedHt?: number;
-  acompteCertifiedTtc?: number;
-  resteARealiser: number;
-  resteARealiserTtc: number;
-  invoiceCount: number;
-}
-
-interface ProjectFinancialSummary {
-  devis: DevisFinancialSummary[];
-}
+import { commitmentLabel, isSignedCommitment, type FinancialSummary as ProjectFinancialSummary } from "@/lib/financial-summary";
 
 export type LotCodeValue = {
   lotCatalogId: number | null;
@@ -6609,19 +6591,20 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
 
       {financial ? (
         <div className="space-y-2" data-testid={`card-devis-detail-financial-${devis.id}`}>
+          <p className="text-[11px] text-muted-foreground" data-testid={`text-devis-detail-commitment-${devis.id}`}>{commitmentLabel(financial)}</p>
           <div className="grid grid-cols-4 gap-3">
             <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-              <TechnicalLabel>Original Contracted</TechnicalLabel>
+              <TechnicalLabel>{isSignedCommitment(financial) ? "Original Contracted — Signed" : "Original Quotation — Excluded"}</TechnicalLabel>
               <p className="text-[13px] font-semibold text-foreground mt-1"><Amount value={financial.originalTtc} denomination="TTC" /></p>
               <p className="text-[10px] text-muted-foreground"><Amount value={financial.originalHt} denomination="HT" /></p>
             </div>
             <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-              <TechnicalLabel>Adjusted (+ PV/MV)</TechnicalLabel>
+              <TechnicalLabel>{isSignedCommitment(financial) ? "Adjusted (+ PV/MV)" : "Adjusted Quotation — Excluded"}</TechnicalLabel>
               <p className="text-[13px] font-semibold text-foreground mt-1"><Amount value={financial.adjustedTtc} denomination="TTC" /></p>
               <p className="text-[10px] text-muted-foreground"><Amount value={financial.adjustedHt} denomination="HT" /></p>
             </div>
             <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-              <TechnicalLabel>Certified</TechnicalLabel>
+              <TechnicalLabel>{isSignedCommitment(financial) ? "Certified" : "Certified — Outside commitment"}</TechnicalLabel>
               <p className="text-[13px] font-semibold text-emerald-600 mt-1" data-testid={`text-devis-detail-certified-${devis.id}`}>
                 <Amount value={financial.certifiedTtc} denomination="TTC" />
               </p>
@@ -6637,7 +6620,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
               </p>
             </div>
             <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-              <TechnicalLabel>Reste à Réaliser</TechnicalLabel>
+              <TechnicalLabel>{isSignedCommitment(financial) ? "Reste à Réaliser" : "Quotation balance — Excluded"}</TechnicalLabel>
               <p
                 className={`text-[13px] font-semibold mt-1 ${financial.resteARealiser < 0 ? "text-red-600" : "text-amber-600"}`}
                 data-testid={`text-devis-detail-remaining-${devis.id}`}

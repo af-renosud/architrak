@@ -25,6 +25,7 @@ import {
   type FinancialSummaryPayload,
 } from "../services/project-overview-pdf.service";
 import type { ClientProjectShareToken, Devis } from "@shared/schema";
+import { quotationCommitmentStatus } from "../../shared/quotation-commitment";
 
 /**
  * Public project-scoped client share link (Task #388) — /p/client/project/:token.
@@ -60,6 +61,8 @@ export interface ProjectSharePayload {
     openQuestionCount: number;
     /** Display status: signed | rejected | awaiting_signature | in_review */
     status: "signed" | "rejected" | "awaiting_signature" | "in_review";
+    commitmentEligible: boolean;
+    commitmentStatus: "signed" | "unsigned" | "inactive";
   }>;
   /**
    * Task #415 — project-level financial overview, the SAME headline figures
@@ -67,7 +70,8 @@ export interface ProjectSharePayload {
    * financial-summary service, progress via buildProjectOverviewData so the
    * two surfaces can never disagree). Aggregate totals only — never per-devis
    * invoice detail, banking fields, or contractor data. Null when the project
-   * has no contracted works yet (nothing meaningful to show).
+   * has no signed commitment. Pending/evidence totals remain operator-only:
+   * they may include drafts never published to this token.
    */
   financials: {
     totalContractedHt: number;
@@ -129,6 +133,8 @@ export async function buildProjectSharePayload(
       analysisAvailable: analysis?.status === "confirmed",
       openQuestionCount,
       status: publicStatus(devis),
+      commitmentEligible: quotationCommitmentStatus(devis) === "signed",
+      commitmentStatus: quotationCommitmentStatus(devis),
     });
   }
   // Stable ordering: by ref, so the page doesn't reshuffle between visits.
@@ -137,7 +143,7 @@ export async function buildProjectSharePayload(
   let financials: ProjectSharePayload["financials"] = null;
   if (project) {
     const summaryResult = await getProjectFinancialSummary(project.id);
-    if (summaryResult.success) {
+    if (summaryResult.success && "totalContractedHt" in summaryResult.data) {
       const overview = buildProjectOverviewData(
         summaryResult.data as FinancialSummaryPayload,
         null,
@@ -583,10 +589,11 @@ function renderFinancials(f) {
   return '<section class="fin" data-testid="section-financial-overview">'
     + '<h2>Project financial overview</h2>'
     + '<div class="fin-kpis">'
-    + kpi('k-total', 'Total works', f.totalContractedTtc, f.totalContractedHt, 'kpi-total-works')
-    + kpi('k-invoiced', 'Invoiced to date', f.totalCertifiedTtc, f.totalCertifiedHt, 'kpi-invoiced')
-    + kpi('k-remaining', 'Remaining', f.totalResteARealiserTtc, f.totalResteARealiser, 'kpi-remaining')
+    + kpi('k-total', 'Signed works commitment', f.totalContractedTtc, f.totalContractedHt, 'kpi-total-works')
+    + kpi('k-invoiced', 'Invoiced — signed works', f.totalCertifiedTtc, f.totalCertifiedHt, 'kpi-invoiced')
+    + kpi('k-remaining', 'Remaining — signed works', f.totalResteARealiserTtc, f.totalResteARealiser, 'kpi-remaining')
     + '</div>'
+    + '<p class="trade">Commitment, invoiced and remaining totals cover signed active quotations only.</p>'
     + '<div class="fin-progress-head"><span class="p-label">Invoicing progress</span>'
     + '<span class="p-pct" data-testid="text-progress-percent">' + escapeHtml(pctLabel) + '&nbsp;%</span></div>'
     + '<div class="fin-bar"><div class="fin-bar-fill" data-testid="bar-invoicing-progress" style="width:' + pct + '%;"></div></div>'
@@ -599,6 +606,8 @@ function renderQuotation(q) {
   const badges = [
     '<span class="badge b-status-' + escapeHtml(q.status) + '" data-testid="badge-status-' + escapeHtml(q.ref) + '">' + (STATUS_LABELS[q.status] || escapeHtml(q.status)) + '</span>',
   ];
+  if (q.commitmentStatus === "unsigned") badges.push('<span class="badge b-info" data-testid="badge-commitment-' + escapeHtml(q.id) + '">Not signed — excluded from commitment</span>');
+  if (q.commitmentStatus === "inactive") badges.push('<span class="badge b-info" data-testid="badge-commitment-' + escapeHtml(q.id) + '">Inactive — excluded from commitment</span>');
   if (q.translationAvailable) badges.push('<span class="badge b-info">English translation available</span>');
   if (q.analysisAvailable) badges.push('<span class="badge b-info">Cost analysis available</span>');
   if (q.openQuestionCount > 0) badges.push('<span class="badge b-questions" data-testid="badge-questions-' + escapeHtml(q.ref) + '">' + q.openQuestionCount + ' open question' + (q.openQuestionCount > 1 ? 's' : '') + '</span>');

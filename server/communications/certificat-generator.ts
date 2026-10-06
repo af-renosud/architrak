@@ -2,6 +2,7 @@ import { storage } from "../storage";
 import { uploadDocument, getDocumentBuffer } from "../storage/object-storage";
 import { convertHtmlToPdf } from "../services/docraptor";
 import { getProjectFinancialSummary } from "../services/financial-summary.service";
+import { excludedCommitmentsHtml, type ExcludedCommitmentRow } from "../services/commitment-reporting";
 import { roundCurrency } from "@shared/financial-utils";
 import type { Certificat, Project, Contractor, Devis, Lot, Invoice, Avenant } from "@shared/schema";
 import { formatLotDescription } from "@shared/lot-label";
@@ -166,6 +167,7 @@ interface ProjectSummaryRow {
  * certificat can never disagree with the dashboard or the project overview
  * PDF (which use the same service). */
 interface ProjectSummarySection {
+  excludedRows?: ExcludedCommitmentRow[];
   rows: ProjectSummaryRow[];
   totalContractedHt: number;
   totalContractedTtc: number;
@@ -477,6 +479,11 @@ async function buildAnnexeData(
       descriptionUk: string | null;
       status: string;
       accountingState: string | null;
+      commitmentEligible: boolean;
+      commitmentStatus: string;
+      adjustedTtc: number;
+      certifiedTtc: number;
+      hasFinancialEvidence: boolean;
       adjustedHt: number;
       certifiedHt: number;
       resteARealiser: number;
@@ -489,8 +496,9 @@ async function buildAnnexeData(
     totalResteARealiserTtc: number;
   };
   const projectSummary: ProjectSummarySection = {
+    excludedRows: summary.devis.filter(d => d.commitmentStatus === "unsigned" || (!d.commitmentEligible && d.hasFinancialEvidence)),
     rows: summary.devis
-      .filter((d) => d.accountingState === "active" && d.status !== "void")
+      .filter((d) => d.commitmentEligible)
       .map((d) => ({
         devisCode: d.devisCode,
         description: d.descriptionUk || d.descriptionFr || "\u2014",
@@ -690,7 +698,7 @@ function buildAnnexeHtml(data: AnnexeData): string {
  * contractors, so the client always sees their total liability and the
  * overall financial position, not just the contract this certificat covers.
  */
-function buildProjectSummaryHtml(ps: ProjectSummarySection): string {
+export function buildProjectSummaryHtml(ps: ProjectSummarySection): string {
   const fmtNum = (v: number) => formatCurrencyNoSymbol(v);
   const th = (label: string, align: string) =>
     `<th style="background:#0B2545;color:#FFF;font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:5px 6px;text-align:${align};">${label}</th>`;
@@ -707,15 +715,15 @@ function buildProjectSummaryHtml(ps: ProjectSummarySection): string {
     </tr>`;
   });
   if (!rows) {
-    rows = `<tr><td colspan="5" style="color:#7E7F83;font-style:italic;padding:6px;">No live works on this project</td></tr>`;
+    rows = `<tr><td colspan="5" style="color:#7E7F83;font-style:italic;padding:6px;">No signed commitments on this project</td></tr>`;
   }
 
   return `
     <div style="font-size:10pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#0B2545;margin-bottom:3mm;padding-bottom:1.5mm;border-bottom:1px solid #E6E6E6;">
-      3. Whole Project — All Live Works
+      3. Whole Project — Signed Commitments
     </div>
     <div style="font-size:6.5pt;color:#7E7F83;margin-bottom:2mm;">
-      All contracted works currently live on the project, across every contractor \u2014 your total commitment, what has been certified to date (contractor invoices plus any deposit certificats not yet recovered, including this one), and what remains to be invoiced.
+      Signed or explicitly recorded-as-signed quotations currently active on the project, across every contractor \u2014 signed commitment, certified amounts against those quotations (contractor invoices plus outstanding deposit certificates, including this one), and the remaining signed balance. Unsigned quotations are disclosed separately and excluded.
     </div>
     <table class="annexe-table" style="width:100%;border-collapse:collapse;margin-bottom:4mm;font-size:7pt;">
       <thead>
@@ -730,7 +738,7 @@ function buildProjectSummaryHtml(ps: ProjectSummarySection): string {
       <tbody>${rows}</tbody>
       <tfoot>
         <tr style="border-top:2px solid #0B2545;background:#E8ECF1;">
-          <td colspan="2" style="font-weight:800;font-size:7pt;color:#0B2545;text-transform:uppercase;padding:6px;">TOTAL PROJECT COMMITMENT</td>
+          <td colspan="2" style="font-weight:800;font-size:7pt;color:#0B2545;text-transform:uppercase;padding:6px;">TOTAL SIGNED PROJECT COMMITMENT</td>
           <td style="text-align:right;font-weight:800;font-size:7pt;color:#0B2545;padding:6px;">${fmtNum(ps.totalContractedHt)}</td>
           <td style="text-align:right;font-weight:800;font-size:7pt;color:#0B2545;padding:6px;">${fmtNum(ps.totalCertifiedHt)}</td>
           <td style="text-align:right;font-weight:800;font-size:7pt;color:#C1A27B;padding:6px;">${fmtNum(ps.totalResteARealiser)}</td>
@@ -742,7 +750,7 @@ function buildProjectSummaryHtml(ps: ProjectSummarySection): string {
           <td style="text-align:right;font-weight:700;font-size:7pt;color:#C1A27B;padding:3px 6px;">${fmtNum(ps.totalResteARealiserTtc)}</td>
         </tr>
       </tfoot>
-    </table>`;
+    </table>${excludedCommitmentsHtml(ps.excludedRows)}`;
 }
 
 /**
@@ -2051,7 +2059,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
 
   <div class="section-title">Works Description</div>
   <table class="works-table">
-    <thead>
+      <thead>
       <tr>
         <th>Description</th>
         <th>Contractor</th>

@@ -17,6 +17,8 @@ function devisRow(overrides: Record<string, unknown> = {}) {
     descriptionUk: "Masonry",
     status: "approved",
     accountingState: "active",
+    commitmentEligible: true,
+    commitmentStatus: "signed",
     signOffStage: "client_signed_off",
     contractorId: 10,
     invoicingMode: "standard",
@@ -101,9 +103,9 @@ describe("buildProjectOverviewData", () => {
       summary({
         devis: [
           devisRow({ devisCode: "D-A" }),
-          devisRow({ devisCode: "D-B", accountingState: "provisional" }),
-          devisRow({ devisCode: "D-C", accountingState: "superseded" }),
-          devisRow({ devisCode: "D-D", status: "void" }),
+          devisRow({ devisCode: "D-B", accountingState: "provisional", commitmentEligible: false, commitmentStatus: "inactive" }),
+          devisRow({ devisCode: "D-C", accountingState: "superseded", commitmentEligible: false, commitmentStatus: "inactive" }),
+          devisRow({ devisCode: "D-D", status: "void", commitmentEligible: false, commitmentStatus: "inactive" }),
         ],
       }),
       null,
@@ -111,18 +113,22 @@ describe("buildProjectOverviewData", () => {
     expect(data.devisRows.map((r) => r.devisCode)).toEqual(["D-A"]);
   });
 
-  it("flags a devis as signed only when signOffStage is client_signed_off", () => {
+  it("shows unsigned quotations separately, outside the signed table", () => {
     const data = buildProjectOverviewData(
       summary({
         devis: [
           devisRow({ devisCode: "D-A", signOffStage: "client_signed_off" }),
-          devisRow({ devisCode: "D-B", signOffStage: "sent" }),
-          devisRow({ devisCode: "D-C", signOffStage: null }),
+          devisRow({ devisCode: "D-B", signOffStage: "sent", commitmentEligible:false, commitmentStatus:"unsigned" }),
+          devisRow({ devisCode: "D-C", signOffStage: null, commitmentEligible:false, commitmentStatus:"unsigned", hasFinancialEvidence:true }),
         ],
       }),
       null,
     );
-    expect(data.devisRows.map((r) => r.signed)).toEqual([true, false, false]);
+    expect(data.devisRows.map((r) => r.signed)).toEqual([true]);
+    expect(data.excludedRows?.map(r=>r.devisCode)).toEqual(["D-B","D-C"]);
+    const html = buildProjectOverviewHtml(data,null);
+    expect(html).toContain("Not signed — excluded from commitment");
+    expect(html).toContain("review required");
   });
   it("keeps all rows itemised at exactly MAX_DEVIS_ROWS (no rollup)", () => {
     const devis = Array.from({ length: MAX_DEVIS_ROWS }, (_, i) =>
