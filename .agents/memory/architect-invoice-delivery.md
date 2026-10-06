@@ -4,6 +4,10 @@ description: Architect commission invoices originate in external accounting soft
 ---
 The user generates the architect's commission invoice in proprietary accounting software and wants to be able to send that original invoice with the outbound payment certificate.
 
+The user identified that accounting software as Pennylane on 2026-10-06. They currently operate the two systems disconnected despite earlier integration development, and want a copyable certificate-based paragraph for manual invoice preparation.
+
+**Why:** Existing integration code does not mean the user wants synchronization activated. The description should be reusable for eventual automation without requiring it now.
+
 **Why:** The requested convenience is delivery of an existing accounting document, not creation of a replacement invoice inside the certificate.
 
 **How to apply:** Preserve the external invoice as its own PDF and separate the architect's fee from the contractor payment amount. Any future attachment workflow should explicitly select the correct project invoice before dispatch.
