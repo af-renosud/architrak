@@ -13,6 +13,7 @@ export async function getCertificateInvoiceDescription(certId: number) {
     };
   } | null;
   const contractor = await storage.getContractor(cert.contractorId);
+  const project = await storage.getProject(cert.projectId);
   const sources = await storage.getCertificatSources(certId);
   const invoiceIds = new Set<number>();
   const devisIds = new Set<number>();
@@ -32,13 +33,30 @@ export async function getCertificateInvoiceDescription(certId: number) {
     invoiceIds.clear();
     sealedIds.forEach(id => { if (Number.isSafeInteger(id) && id > 0) invoiceIds.add(id); });
   }
+  const evidenceDevis = cert.tvaEvidenceKind === "signed_quotation" && cert.tvaEvidenceDevisId != null
+    ? await storage.getDevis(cert.tvaEvidenceDevisId) : undefined;
+  // The contextual creation route pins signed_quotation only when no invoice
+  // exists. Recognise its opening deposit by exact recorded terms, not by the
+  // mere absence of references. Do not modify financial deposit state here.
+  const expectedDeposit = evidenceDevis?.acompteAmountHt != null
+    ? Number(evidenceDevis.acompteAmountHt)
+    : Number(evidenceDevis?.amountHt) * Number(evidenceDevis?.acomptePercent) / 100;
+  const quotationDeposit = evidenceDevis?.projectId === cert.projectId
+    && evidenceDevis?.contractorId === cert.contractorId
+    && evidenceDevis?.acompteRequired === true
+    && cert.previousPayments != null && Number(cert.previousPayments) === 0
+    && !cert.isSolde && Number(cert.pvMvAdjustment ?? 0) === 0
+    && expectedDeposit > 0 && Number.isFinite(expectedDeposit)
+    && Math.round(Number(cert.totalWorksHt) * 100) === Math.round(expectedDeposit * 100)
+    && invoiceIds.size === 0 && sources.length === 0;
+  const depositDevisId = cert.acompteDevisId ?? (quotationDeposit ? evidenceDevis!.id : null);
   // A no-invoice deposit is scoped exclusively to its quotation. Historical
   // render snapshots can include the contractor's other invoices for context;
   // those do not become documentary evidence for this deposit.
-  if (cert.acompteDevisId != null) {
+  if (depositDevisId != null) {
     invoiceIds.clear();
     devisIds.clear();
-    devisIds.add(cert.acompteDevisId);
+    devisIds.add(depositDevisId);
   }
   const invoiceNumbers: Array<string | null> = [];
   for (const id of Array.from(invoiceIds)) {
@@ -64,6 +82,7 @@ export async function getCertificateInvoiceDescription(certId: number) {
     quotations.push({
       lotNumber: lot?.projectId === cert.projectId ? lot.lotNumber : null,
       title: devis.descriptionUk?.trim() || devis.descriptionFr,
+      managementPercentage: devis.feePercentageOverride ?? project?.feePercentage ?? null,
     });
   }
   return { description: buildCertificateInvoiceDescription({
@@ -72,6 +91,6 @@ export async function getCertificateInvoiceDescription(certId: number) {
     netToPayHt: cert.netToPayHt,
     quotations,
     invoiceNumbers,
-    openingDeposit: cert.acompteDevisId != null && invoiceIds.size === 0,
+    openingDeposit: depositDevisId != null && invoiceIds.size === 0,
   }) };
 }

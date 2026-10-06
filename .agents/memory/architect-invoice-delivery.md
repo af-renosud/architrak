@@ -6,6 +6,10 @@ The user generates the architect's commission invoice in proprietary accounting 
 
 The user identified that accounting software as Pennylane on 2026-10-06. They currently operate the two systems disconnected despite earlier integration development, and want a copyable certificate-based paragraph for manual invoice preparation.
 
+The user wants the applicable project-management percentage in that paragraph for all projects, not a special-case rate for one certificate.
+
+**Why:** The paragraph supplies the external invoice's description; a fixed example percentage would misstate other projects' fees.
+
 **Why:** Existing integration code does not mean the user wants synchronization activated. The description should be reusable for eventual automation without requiring it now.
 
 **Why:** The requested convenience is delivery of an existing accounting document, not creation of a replacement invoice inside the certificate.

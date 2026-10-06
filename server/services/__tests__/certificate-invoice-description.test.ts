@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../storage", () => ({ storage: {
   getCertificat: vi.fn(), getContractor: vi.fn(), getCertificatSources: vi.fn(),
-  getSituation: vi.fn(), getInvoice: vi.fn(), getDevis: vi.fn(), getLot: vi.fn(),
+  getSituation: vi.fn(), getInvoice: vi.fn(), getDevis: vi.fn(), getLot: vi.fn(), getProject: vi.fn(),
 } }));
 import { storage } from "../../storage";
 import { getCertificateInvoiceDescription } from "../certificate-invoice-description.service";
@@ -9,6 +9,7 @@ import { buildCertificateInvoiceDescription } from "@shared/certificate-invoice-
 const mocked = vi.mocked(storage);
 beforeEach(() => {
   vi.resetAllMocks();
+  mocked.getProject.mockResolvedValue({ id: 2, feePercentage: "10.00" } as any);
   mocked.getCertificat.mockResolvedValue({ id: 1, projectId: 2, contractorId: 3,
     certificateRef: "C4", netToPayHt: "950", totalWorksHt: "9000",
     acompteDevisId: null } as any);
@@ -19,6 +20,41 @@ beforeEach(() => {
   mocked.getLot.mockImplementation(async id => ({ projectId: 2, lotNumber: `L${id}` }) as any);
 });
 describe("certificate accounting description", () => {
+  it("uses the project rate and preserves quotation overrides including zero", async () => {
+    expect((await getCertificateInvoiceDescription(1))?.description).toContain("Project management fee: 10%.");
+    const base = mocked.getDevis.getMockImplementation()!;
+    mocked.getDevis.mockImplementation(async id => ({ ...await base(id), feePercentageOverride: id === 4 ? "0.00" : "12.50" }) as any);
+    const text = (await getCertificateInvoiceDescription(1))!.description;
+    expect(text).toContain("Lot L4 — Work 4: 0%");
+    expect(text).toContain("Lot L5 — Work 5: 12.5%");
+    mocked.getProject.mockResolvedValue(undefined);
+    mocked.getDevis.mockImplementation(base);
+    expect((await getCertificateInvoiceDescription(1))?.description).toContain("Project management fee: (rate unavailable).");
+  });
+  it("recognises the exact quotation deposit before and after sealing without invoice sources", async () => {
+    const cert = { ...await mocked.getCertificat(1), tvaEvidenceKind: "signed_quotation",
+      tvaEvidenceDevisId: 4, previousPayments: "0", totalWorksHt: "19002", isSolde: false };
+    const quote = { ...await mocked.getDevis(4), acompteRequired: true, acompteAmountHt: "19002",
+      acomptePercent: "30", amountHt: "63340" };
+    mocked.getDevis.mockResolvedValue(quote as any);
+    mocked.getCertificatSources.mockResolvedValue([]);
+    mocked.getCertificat.mockResolvedValue(cert as any);
+    const before = await getCertificateInvoiceDescription(1);
+    expect(before?.description).toContain("Opening Deposit - No accompanying contractor invoice.");
+    mocked.getCertificat.mockResolvedValue({ ...cert, issuanceSnapshot: { sourceInvoiceIds: [] } } as any);
+    expect(await getCertificateInvoiceDescription(1)).toEqual(before);
+    for (const patch of [{ totalWorksHt: "18000" }, { previousPayments: "100" }, { isSolde: true },
+      { tvaEvidenceKind: "legacy" }, { pvMvAdjustment: "100" }]) {
+      mocked.getCertificat.mockResolvedValue({ ...cert, ...patch } as any);
+      expect((await getCertificateInvoiceDescription(1))?.description).not.toContain("Opening Deposit");
+    }
+    mocked.getCertificat.mockResolvedValue(cert as any);
+    mocked.getDevis.mockResolvedValue({ ...quote, acompteRequired: false } as any);
+    expect((await getCertificateInvoiceDescription(1))?.description).not.toContain("Opening Deposit");
+    mocked.getDevis.mockResolvedValue(quote as any);
+    mocked.getCertificatSources.mockResolvedValue([{ invoiceId: 4 }] as any);
+    expect((await getCertificateInvoiceDescription(1))?.description).not.toContain("Opening Deposit");
+  });
   it("uses only linked deduplicated invoices and period net HT with associated lots", async () => {
     const result = await getCertificateInvoiceDescription(1);
     expect(result?.description).toContain("F4, F5");
