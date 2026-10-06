@@ -8,6 +8,7 @@
 
 import { useState } from "react";
 import { ArchitectInvoiceSection } from "@/components/certificats/ArchitectInvoiceSection";
+import { PennylaneInvoiceDescription } from "./PennylaneInvoiceDescription";
 import { useInvoiceAwareCertificatSend } from "@/hooks/use-invoice-aware-certificat-send";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -399,6 +400,7 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
+          <PennylaneInvoiceDescription certId={cert.id} />
           <ArchitectInvoiceSection certId={cert.id} />
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <StatusBadge status={cert.status} />

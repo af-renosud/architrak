@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { requireAuth } from "../auth/middleware";
+import { getCertificateInvoiceDescription } from "../services/certificate-invoice-description.service";
 import { z } from "zod";
 import {
   allocateCertificateRef,
@@ -76,6 +78,14 @@ const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
 const projectIdParams = z.object({ projectId: z.coerce.number().int().positive() });
 const certIdParams = z.object({ certId: z.coerce.number().int().positive() });
+router.get("/api/certificats/:certId/invoice-description", requireAuth, validateRequest({ params: certIdParams }), async (req, res, next) => {
+  try {
+    const result = await getCertificateInvoiceDescription(Number(req.params.certId));
+    if (!result) return res.status(404).json({ message: "Certificate not found." });
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json(result);
+  } catch (error) { next(error); }
+});
 const sendCertParams = z.object({
   projectId: z.coerce.number().int().positive(),
   certId: z.coerce.number().int().positive(),

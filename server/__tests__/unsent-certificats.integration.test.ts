@@ -221,7 +221,7 @@ describe("sendCertificat — retry from FAILED state", () => {
     expect(before.some((r) => r.certificatId === cert.id)).toBe(true);
 
     // Trigger send — sealCertificat short-circuits on the pre-pinned key.
-    const commId = await sendCertificat(cert.id);
+    const commId = await sendCertificat(cert.id, { confirmWithoutArchitectInvoice: true });
 
     // Must return the SAME communication row (dedupe key matched).
     expect(commId).toBe(failedComm.id);

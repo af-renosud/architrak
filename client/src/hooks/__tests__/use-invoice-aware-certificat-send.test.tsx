@@ -89,7 +89,7 @@ describe("architect invoice send reminder", () => {
     fireEvent.click(screen.getByText("Gérer la facture"));
     await screen.findByTestId("architect-invoice-section-42");
     expect(screen.queryByTestId("architect-invoice-send-reminder")).toBeNull();
-    expect(api.apiRequest).not.toHaveBeenCalled();
+    expect(vi.mocked(api.apiRequest).mock.calls.every(([method]) => method === "GET")).toBe(true);
     expect(screen.getByTestId("upload-architect-invoice-42").hasAttribute("disabled")).toBe(false);
   });
 });

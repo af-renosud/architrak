@@ -8,6 +8,7 @@ import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, A
 import { useArchitectInvoice, useArchitectInvoiceMutation } from "@/hooks/use-architect-invoice";
 import { architectInvoiceDeliveryLabel } from "@/lib/architect-invoice";
 import { useToast } from "@/hooks/use-toast";
+import { PennylaneInvoiceDescription } from "./PennylaneInvoiceDescription";
 
 export function ArchitectInvoiceSection({ certId }: { certId: number }) {
   const query = useArchitectInvoice(certId);
@@ -58,7 +59,7 @@ export function ArchitectInvoiceSection({ certId }: { certId: number }) {
 }
 
 export function ArchitectInvoiceManager({ certId, onClose }: { certId: number; onClose: () => void }) {
-  return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}><DialogContent className="max-w-lg"><DialogHeader><DialogTitle>Facture d’architecte</DialogTitle><DialogDescription>Pièce jointe du certificat #{certId} — indépendante de la comptabilité.</DialogDescription></DialogHeader><ArchitectInvoiceSection certId={certId} /></DialogContent></Dialog>;
+  return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}><DialogContent className="max-w-lg max-h-[90dvh] overflow-y-auto"><DialogHeader><DialogTitle>Facture d’architecte</DialogTitle><DialogDescription>Pièce jointe du certificat #{certId} — indépendante de la comptabilité.</DialogDescription></DialogHeader><PennylaneInvoiceDescription certId={certId} /><ArchitectInvoiceSection certId={certId} /></DialogContent></Dialog>;
 }
 
 export function ArchitectInvoiceBadge({ certId }: { certId: number }) {
