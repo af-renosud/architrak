@@ -61,7 +61,7 @@ export function AppLayout({ children }: AppLayoutProps) {
       >
         <Menu size={18} />
       </button>
-      <main className="ml-0 min-w-0 flex-1 overflow-x-hidden lg:ml-64">
+      <main data-scroll-navigation-scope="" className="ml-0 min-w-0 flex-1 overflow-x-hidden lg:ml-64">
         <div className="mx-auto max-w-[1600px] p-4 pt-16 sm:p-6 sm:pt-16 lg:p-8">
           {children}
         </div>

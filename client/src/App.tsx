@@ -29,6 +29,7 @@ import AdminPennylanePushes from "@/pages/admin-pennylane-pushes";
 import AdminSignedPdfRecovery from "@/pages/admin-signed-pdf-recovery";
 import AdminArchisignRendering from "@/pages/admin-archisign-rendering";
 import { Loader2 } from "lucide-react";
+import { ScrollNavigation } from "@/components/layout/ScrollNavigation";
 
 function Router() {
   return (
@@ -75,7 +76,7 @@ function AuthGate() {
     return <LoginPage />;
   }
 
-  return <Router />;
+  return <><Router /><ScrollNavigation /></>;
 }
 
 function App() {

@@ -1,0 +1,48 @@
+.scroll-navigation {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 55;
+  pointer-events: auto;
+}
+.scroll-navigation[data-document] {
+  position: fixed;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
+}
+.scroll-navigation button {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+  color: hsl(var(--foreground));
+  background: hsl(var(--background) / 0.96);
+  box-shadow: 0 2px 8px hsl(var(--foreground) / 0.08);
+}
+/* Leave the existing bilingual line-switch shortcut in its original position. */
+body:has([data-scroll-navigation-obstacle]) .scroll-navigation[data-document] {
+  bottom: max(80px, calc(env(safe-area-inset-bottom) + 64px));
+}
+.scroll-navigation:not([data-document]) {
+  transform: translateY(calc(-1 * env(safe-area-inset-bottom)));
+}
+.scroll-navigation button:hover:not(:disabled) {
+  background: hsl(var(--accent));
+}
+.scroll-navigation button:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+.scroll-navigation button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+@media (min-width: 768px) {
+  .scroll-navigation[data-document] {
+    right: max(24px, env(safe-area-inset-right));
+    bottom: max(24px, env(safe-area-inset-bottom));
+  }
+}

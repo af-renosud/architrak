@@ -5913,7 +5913,7 @@ function DevisDetailTabs({
       </TabsContent>
 
       {showLineToggle && workingLine && (
-        <div className="fixed bottom-6 right-6 z-50">
+        <div data-scroll-navigation-obstacle="" className="fixed bottom-6 right-6 z-50">
           <TooltipProvider delayDuration={300}>
             <Tooltip>
               <TooltipTrigger asChild>
