@@ -1,13 +1,13 @@
 import { mkdirSync, writeFileSync } from "fs";
 import path from "path";
-import glob from "fast-glob";
+import { glob } from "tinyglobby";
 import chokidar from "chokidar";
 import type { FSWatcher } from "chokidar";
 import type { Plugin } from "vite";
 
 /**
  * Vite plugin that dynamically discovers mockup components and writes them to
- * a generated module under src/.generated. Uses fast-glob for initial
+ * a generated module under src/.generated. Uses tinyglobby for initial
  * discovery and a dedicated chokidar watcher (with awaitWriteFinish) for
  * reliable file monitoring.
  *
