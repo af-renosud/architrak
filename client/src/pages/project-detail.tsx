@@ -1460,7 +1460,7 @@ export default function ProjectDetail() {
         />
 
         <Tabs value={activeTab} onValueChange={setActiveTab} data-testid="tabs-project-detail">
-          <TabsList className="flex-wrap">
+          <TabsList className="h-auto min-h-10 w-full flex-wrap justify-start gap-1">
             <TabsTrigger value="resume" data-testid="tab-resume">
               <BarChart3 size={12} className="mr-1" />
               Financial Summary

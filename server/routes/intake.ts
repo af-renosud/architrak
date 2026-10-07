@@ -448,12 +448,20 @@ router.post(
 
 router.delete(
   "/api/intake-documents/:id",
+  requireAuth,
   validateRequest({ params: intakeIdParams }),
   async (req, res) => {
     try {
       const id = Number(req.params.id);
       const doc = await storage.getProjectIntakeDocument(id);
       if (!doc) return res.status(404).json({ message: "Document not found" });
+      const project = await storage.getProject(doc.projectId);
+      if (!project || project.archivedAt) {
+        return res.status(409).json({ message: "Documents in archived or missing projects cannot be deleted." });
+      }
+      if (doc.analysisState === "analyzing" || doc.analysisState === "pending") {
+        return res.status(409).json({ message: "This document is waiting for or undergoing analysis. Wait until processing finishes before deleting it." });
+      }
 
       // A document that has already been routed into a typed record (devis /
       // invoice) is the source file of that record — deleting it from intake
@@ -477,18 +485,14 @@ router.delete(
         });
       }
 
-      // Gmail-mirrored docs: tombstone the source email document FIRST so a
-      // concurrent/later email-document update cannot resurrect this intake
-      // row via mirrorEmailDocumentToIntake.
-      if (doc.sourceEmailDocumentId) {
-        await storage.tombstoneEmailDocumentIntake(doc.sourceEmailDocumentId);
-      }
-
       // Delete the database row first. Its RESTRICT evidence FK is the
-      // concurrency-safe decision; only a committed deletion may erase bytes.
+      // concurrency-safe decision; the storage transaction also tombstones
+      // the source email. Only a committed deletion may erase bytes.
       await storage.deleteProjectIntakeDocument(id);
       try {
-        await deleteDocument(doc.storageKey);
+        if (!await storage.isStorageKeyReferencedElsewhere(doc.storageKey, 0)) {
+          await deleteDocument(doc.storageKey);
+        }
       } catch (err) {
         console.warn(`[intake] Failed to delete storage object for intake doc ${id} (continuing):`, err);
       }

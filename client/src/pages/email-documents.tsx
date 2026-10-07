@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
@@ -90,6 +90,8 @@ export default function EmailDocuments() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [confirmDismissIds, setConfirmDismissIds] = useState<number[] | null>(null);
   const [isDismissing, setIsDismissing] = useState(false);
+  const dismissBusy = useRef(false);
+  const [dismissFailures, setDismissFailures] = useState<string[]>([]);
   const [manualPromotionTarget, setManualPromotionTarget] = useState<ManualPromotionSource | null>(null);
 
   const { data: emailDocs, isLoading, isFetching, error, refresh, pollingExpired, isPolling } = useEmailDocuments();
@@ -188,11 +190,12 @@ export default function EmailDocuments() {
 
   // Changing any filter clears the selection: "Remove selected" must never
   // act on rows the operator can no longer see.
-  const setStatusFilterAndClear = (v: string) => { setSelectedIds(new Set()); setStatusFilter(v); };
-  const setTypeFilter = (v: string) => { setSelectedIds(new Set()); setTypeFilterState(v); };
-  const setSearchQuery = (v: string) => { setSelectedIds(new Set()); setSearchQueryState(v); };
+  const clearDismissSelection = () => { setSelectedIds(new Set()); if (!dismissBusy.current) setConfirmDismissIds(null); setDismissFailures([]); };
+  const setStatusFilterAndClear = (v: string) => { clearDismissSelection(); setStatusFilter(v); };
+  const setTypeFilter = (v: string) => { clearDismissSelection(); setTypeFilterState(v); };
+  const setSearchQuery = (v: string) => { clearDismissSelection(); setSearchQueryState(v); };
   const showDocumentsNeedingAttention = () => {
-    setSelectedIds(new Set());
+    clearDismissSelection();
     setStatusFilter("needs_attention");
     setTypeFilterState("all");
     setSearchQueryState("");
@@ -206,27 +209,42 @@ export default function EmailDocuments() {
   // surface in the summary toast. Already-skipped rows are permanently
   // purged server-side (that's how the Skipped view is emptied).
   const dismissDocuments = async (ids: number[]) => {
+    if (dismissBusy.current) return;
+    dismissBusy.current = true;
     setIsDismissing(true);
+    setDismissFailures([]);
     let removed = 0;
     const refused: string[] = [];
+    const succeeded = new Set<number>();
+    const named = (id: number) => emailDocs?.find((doc) => doc.id === id)?.attachmentFileName || `Document ${id}`;
     try {
       // The endpoint caps a request at 500 ids — chunk larger selections.
       for (let i = 0; i < ids.length; i += 500) {
-        const res = await apiRequest("POST", "/api/email-documents/bulk-dismiss", { ids: ids.slice(i, i + 500) });
-        const body = await res.json() as { removed: number; refused: number; results: Array<{ id: number; outcome: string; message?: string }> };
-        removed += body.removed;
-        body.results.forEach(r => {
-          if (r.outcome === "refused" || r.outcome === "error") refused.push(r.message ?? `Document ${r.id} refused`);
-        });
+        const chunk = ids.slice(i, i + 500);
+        try {
+          const res = await apiRequest("POST", "/api/email-documents/bulk-dismiss", { ids: chunk });
+          const body = await res.json() as { results: Array<{ id: number; outcome: string; message?: string }> };
+          chunk.forEach((id) => {
+            const result = body.results.find((record) => record.id === id);
+            if (result && ["dismissed", "already_dismissed", "purged"].includes(result.outcome)) {
+              succeeded.add(id);
+              removed += 1;
+            } else refused.push(`${named(id)}: ${result?.message ?? "Removal was not confirmed by the server."}`);
+          });
+        } catch (error) {
+          chunk.forEach((id) => refused.push(`${named(id)}: ${error instanceof Error ? error.message : String(error)}`));
+        }
       }
     } catch (err) {
       refused.push(err instanceof Error ? err.message : String(err));
     } finally {
       setIsDismissing(false);
+      dismissBusy.current = false;
       setConfirmDismissIds(null);
+      setDismissFailures(refused);
       setSelectedIds(prev => {
         const next = new Set(prev);
-        ids.forEach(id => next.delete(id));
+        succeeded.forEach(id => next.delete(id));
         return next;
       });
       queryClient.invalidateQueries({ queryKey: ["/api/email-documents"] });
@@ -279,6 +297,11 @@ export default function EmailDocuments() {
     }
     return true;
   }) ?? [];
+  const visibleIdKey = JSON.stringify(filtered.map((doc) => doc.id));
+  useEffect(() => {
+    const visibleIds = new Set<number>(JSON.parse(visibleIdKey));
+    setSelectedIds((old) => new Set(Array.from(old).filter((id) => visibleIds.has(id))));
+  }, [visibleIdKey]);
 
   if (isLoading) {
     return (
@@ -451,7 +474,9 @@ export default function EmailDocuments() {
           {filtered.length > 0 ? (
             <div className="flex items-center gap-2">
               <Checkbox
-                checked={filtered.length > 0 && filtered.every(d => selectedIds.has(d.id))}
+                checked={filtered.every(d => selectedIds.has(d.id)) ? true : filtered.some(d => selectedIds.has(d.id)) ? "indeterminate" : false}
+                aria-label="Select all email documents shown"
+                disabled={isDismissing}
                 onCheckedChange={(checked) => {
                   setSelectedIds(prev => {
                     const next = new Set(prev);
@@ -486,6 +511,10 @@ export default function EmailDocuments() {
           </div>
         </div>
 
+        {dismissFailures.length > 0 && <div role="alert" className="rounded-xl border border-destructive/30 p-3 text-xs">
+          <p className="font-semibold">These documents were not removed. Failed visible documents remain selected.</p>
+          <ul className="mt-2 max-h-48 overflow-y-auto space-y-1 text-destructive">{dismissFailures.map((message, index) => <li className="break-words" key={index}>{message}</li>)}</ul>
+        </div>}
         <div className="space-y-3">
           {filtered.length === 0 ? (
             <LuxuryCard className="p-8 text-center">
@@ -504,6 +533,9 @@ export default function EmailDocuments() {
                       <Checkbox
                         className="mt-3"
                         checked={selectedIds.has(doc.id)}
+                        aria-label={`Select ${doc.attachmentFileName || `email document ${doc.id}`}`}
+                        disabled={isDismissing}
+                        onClick={(event) => event.stopPropagation()}
                         onCheckedChange={(checked) => toggleSelected(doc.id, checked === true)}
                         data-testid={`checkbox-select-doc-${doc.id}`}
                       />
@@ -684,7 +716,7 @@ export default function EmailDocuments() {
           </div>
         )}
 
-        <AlertDialog open={!!confirmDismissIds} onOpenChange={(open) => { if (!open) setConfirmDismissIds(null); }}>
+        <AlertDialog open={!!confirmDismissIds} onOpenChange={(open) => { if (!open && !isDismissing) setConfirmDismissIds(null); }}>
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>
@@ -697,10 +729,13 @@ export default function EmailDocuments() {
                 removed.
               </AlertDialogDescription>
             </AlertDialogHeader>
+            <ul className="max-h-48 overflow-y-auto rounded-lg border border-border p-3 text-xs space-y-1" aria-label="Email documents to remove">
+              {confirmDismissIds?.map((id) => <li className="break-words" key={id}>{emailDocs?.find((doc) => doc.id === id)?.attachmentFileName || `Document ${id}`}</li>)}
+            </ul>
             <AlertDialogFooter>
-              <AlertDialogCancel data-testid="button-cancel-dismiss">Cancel</AlertDialogCancel>
+              <AlertDialogCancel disabled={isDismissing} data-testid="button-cancel-dismiss">Cancel</AlertDialogCancel>
               <AlertDialogAction
-                onClick={() => confirmDismissIds && dismissDocuments(confirmDismissIds)}
+                onClick={(event) => { event.preventDefault(); if (confirmDismissIds) void dismissDocuments(confirmDismissIds); }}
                 disabled={isDismissing}
                 className="bg-rose-600 hover:bg-rose-700"
                 data-testid="button-confirm-dismiss"

@@ -5018,9 +5018,27 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteProjectIntakeDocument(id: number): Promise<void> {
-    // intake_jobs rows cascade via their FK; promoted records are guarded at
-    // the route level (a routed doc cannot be deleted from intake).
-    await db.delete(projectIntakeDocuments).where(eq(projectIntakeDocuments.id, id));
+    await db.transaction(async (tx) => {
+      const [doc] = await tx.select().from(projectIntakeDocuments)
+        .where(eq(projectIntakeDocuments.id, id)).for("update");
+      if (!doc) return;
+      // Recheck under the row lock: a processor may have promoted the document
+      // since the route read it. Protect SET NULL provenance as well as the
+      // immutable-evidence RESTRICT foreign keys enforced by PostgreSQL.
+      if (doc.promotedId != null || doc.analysisState === "analyzing" || doc.analysisState === "pending") {
+        throw new Error("This document is processing or linked to a record and cannot be deleted.");
+      }
+      if (await this.intakeMirrorHasProvenanceRefs(tx, id)) {
+        throw new Error("This document is retained evidence for an invoice, situation or order and cannot be deleted.");
+      }
+      await tx.delete(projectIntakeDocuments).where(eq(projectIntakeDocuments.id, id));
+      // Only tombstone after deletion succeeds; a refused delete must not
+      // silently change the source email's lifecycle.
+      if (doc.sourceEmailDocumentId) {
+        await tx.update(emailDocuments).set({ intakeDeletedAt: new Date() })
+          .where(eq(emailDocuments.id, doc.sourceEmailDocumentId));
+      }
+    });
   }
 
   async tombstoneEmailDocumentIntake(emailDocumentId: number): Promise<void> {

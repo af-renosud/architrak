@@ -1,4 +1,7 @@
 import { useState, useRef, useEffect } from "react";
+import { BulkDocumentActions, BulkDocumentCheckbox } from "@/components/documents/BulkDocumentActions";
+import { useBulkDocuments } from "@/hooks/use-bulk-documents";
+import { canBulkDiscardInvoice } from "@/lib/bulk-document-eligibility";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
@@ -550,6 +553,19 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
 
   const contractorMap = new Map(contractors.map(c => [c.id, c.name]));
   const devisMap = new Map((devisList ?? []).map(d => [d.id, d]));
+  const canDiscard = (invoice: Invoice) => certLinks != null && devisList != null && canBulkDiscardInvoice(
+    invoice, isArchived, certLinkByInvoice.has(invoice.id), (devisList ?? []).some((d) => d.acompteInvoiceId === invoice.id),
+  );
+  const bulk = useBulkDocuments({
+    items: (invoices ?? []).map((invoice) => ({ id: invoice.id, name: `Facture ${invoice.invoiceNumber}`, eligible: canDiscard(invoice) })),
+    scope: `invoices:${projectId}:${isArchived}`,
+    execute: (id) => apiRequest("DELETE", `/api/invoices/${id}`),
+    onSettled: async () => {
+      await Promise.all(["invoices", "financial-summary", "accounting-status", "devis-readiness", "intake", "certificat-invoice-links"].map((list) =>
+        queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, list) })));
+      await queryClient.invalidateQueries({ predicate: (query) => query.queryKey[0] === "/api/devis" && query.queryKey[2] === "invoices" });
+    },
+  });
 
   const uploadMutation = useMutation({
     mutationFn: async ({ file, devisId }: { file: File; devisId: number }) => {
@@ -691,6 +707,9 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
         );
       })()}
 
+      {(!!invoices?.length || bulk.result) && <BulkDocumentActions selection={bulk} action="Discard drafts" disabled={isArchived}
+            eligibilityHint="Draft invoices only; paid, certified and linked deposit evidence is excluded. Separate from certificate selection."
+            description="Permanently delete these draft invoice records. This cannot be undone. This does not void quotations or delete the original intake evidence." />}
       {invoices && invoices.length > 0 ? (
         <div className="space-y-3">
           {invoices.map((inv) => {
@@ -716,6 +735,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                     data-testid={`row-facture-toggle-${inv.id}`}
                   >
                     <div className="flex items-center gap-3 flex-wrap min-w-0 flex-1">
+                      <BulkDocumentCheckbox selection={bulk} id={inv.id} name={`draft invoice ${inv.invoiceNumber}`} eligible={canDiscard(inv)} />
                       {isEligibleForCert && (
                         <input
                           type="checkbox"

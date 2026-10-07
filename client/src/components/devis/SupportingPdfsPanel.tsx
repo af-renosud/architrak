@@ -1,4 +1,6 @@
 import { useRef, useState } from "react";
+import { BulkDocumentActions, BulkDocumentCheckbox } from "@/components/documents/BulkDocumentActions";
+import { useBulkDocuments } from "@/hooks/use-bulk-documents";
 import { ArrowDown, ArrowUp, FileText, LockKeyhole, Paperclip, Pencil, ShieldCheck, Trash2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,9 +44,15 @@ export function SupportingPdfsPanel(props: Props) {
   const [preview, setPreview] = useState<SupportingPdf | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const lockReason = supportingPdfsLockReason(props);
-  const disabled = !!lockReason || mutation.isPending || isLoading || isError;
+  const bulk = useBulkDocuments({
+    items: documents.map((document) => ({ id: document.id, name: document.label, eligible: !lockReason && !isLoading && !isError })),
+    scope: `supporting:${devisId}:${lockReason ?? ""}`,
+    execute: (id) => mutation.mutateAsync({ kind: "remove", id }),
+    onSettled: () => refetch(),
+  });
+  const disabled = !!lockReason || mutation.isPending || bulk.pending || isLoading || isError;
   const run = async (action: Parameters<typeof mutation.mutateAsync>[0]): Promise<boolean> => {
-    if (disabled) return false;
+    if (disabled || bulk.pending) return false;
     setActionError(null);
     try {
       await mutation.mutateAsync(action);
@@ -78,11 +86,15 @@ export function SupportingPdfsPanel(props: Props) {
       <input ref={fileInput} type="file" accept=".pdf,application/pdf" className="sr-only" tabIndex={-1} aria-label="Upload supporting PDF"
         disabled={disabled} onChange={(event) => { upload(event.target.files?.[0]); event.target.value = ""; }} />
       {lockReason && <p className="mt-3 flex items-start gap-2 rounded-lg bg-muted/50 p-3 text-[11px] text-muted-foreground"><LockKeyhole size={13} className="mt-0.5 shrink-0" />{lockReason}</p>}
+      {!isLoading && !isError && (documents.length > 0 || bulk.result) && <div className="mt-3"><BulkDocumentActions selection={bulk} action="Remove PDFs" disabled={!!lockReason || (mutation.isPending && !bulk.pending)}
+        eligibilityHint="Only editable quotation packages. Signed, archived and signing-locked packages are read-only."
+        description="Permanently remove these supporting PDFs from the quotation and future client packages. This cannot be undone. The original French quotation is not changed." /></div>}
       {isLoading ? <div className="mt-4 space-y-2" aria-label="Loading supporting documents"><Skeleton className="h-14 w-full rounded-lg" /><Skeleton className="h-14 w-3/4 rounded-lg" /></div>
         : isError ? <div role="alert" className="mt-3 rounded-lg border border-destructive/20 p-3 text-[11px]"><p>Supporting documents could not be loaded.</p><p className="mt-1 text-muted-foreground">{error instanceof Error ? error.message : "Please try again."}</p><Button type="button" size="sm" variant="outline" className="mt-2" onClick={() => void refetch()}>Retry</Button></div>
         : documents.length > 0 ? (
           <ol className="supporting-pdfs__list" aria-label="Supporting PDFs in client package order">
             {documents.map((document, index) => <li className="supporting-pdfs__row" key={document.id}>
+              <BulkDocumentCheckbox selection={bulk} id={document.id} name={document.label} eligible={!lockReason} disabled={disabled} />
               <span className="supporting-pdfs__order">{String(index + 1).padStart(2, "0")}</span>
               <FileText size={18} className="shrink-0 text-[#c1a27b]" />
               <div className="min-w-0 flex-1">

@@ -1,4 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { BulkDocumentActions, BulkDocumentCheckbox } from "@/components/documents/BulkDocumentActions";
+import { useBulkDocuments } from "@/hooks/use-bulk-documents";
+import { canBulkDeleteIntake } from "@/lib/bulk-document-eligibility";
 import { useEffect, useRef, useState } from "react";
 import { Upload, FileText, Download, Mail, HardDriveUpload, Inbox, ArrowRight, RotateCw, Trash2, Eye, EyeOff, Paperclip, BadgeCheck, FolderCheck } from "lucide-react";
 import { Link } from "wouter";
@@ -595,6 +598,18 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
 
   const [deleteTarget, setDeleteTarget] = useState<ProjectIntakeDocument | null>(null);
   const [attachTarget, setAttachTarget] = useState<ProjectIntakeDocument | null>(null);
+  const bulk = useBulkDocuments({
+    items: (intakeDocs ?? []).map((doc) => ({ id: doc.id, name: doc.fileName, eligible: canBulkDeleteIntake(doc, isArchived) })),
+    scope: `intake:${projectId}:${showVoid}:${isArchived}`,
+    execute: (id) => apiRequest("DELETE", `/api/intake-documents/${id}`),
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "intake"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/email-documents"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/admin/email-documents/queue-stats"] }),
+      ]);
+    },
+  });
 
   const deleteMutation = useMutation({
     mutationFn: async (intakeDocumentId: number) => {
@@ -721,6 +736,9 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
         </Button>
       </div>
 
+      {!isLoading && (!!intakeDocs?.length || bulk.result) && <BulkDocumentActions selection={bulk} action="Delete" disabled={isArchived || deleteMutation.isPending}
+        eligibilityHint="Only finished, unpromoted documents without known confirmed evidence. Processing and promoted files are excluded."
+        description="Permanently delete these intake documents and their stored files. This cannot be undone. Email copies will be marked removed to prevent re-import." />}
       {isLoading ? (
         <LuxuryCard><Skeleton className="h-40 w-full" /></LuxuryCard>
       ) : intakeDocs && intakeDocs.length > 0 ? (
@@ -739,8 +757,9 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
             const extractedIdentity = doc.extractedData as { projectName?: string; projectReference?: string } | null;
             return (
               <LuxuryCard key={doc.id} className="p-4" data-testid={`card-intake-doc-${doc.id}`}>
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0">
+                    <BulkDocumentCheckbox selection={bulk} id={doc.id} name={doc.fileName} eligible={canBulkDeleteIntake(doc, isArchived)} disabled={deleteMutation.isPending} />
                     <div className="w-9 h-9 rounded-xl bg-blue-50 dark:bg-blue-950/30 flex items-center justify-center flex-shrink-0">
                       <FileText size={14} className="text-blue-600" />
                     </div>
@@ -793,7 +812,7 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
                       )}
                     </div>
                   </div>
-                  <div className="flex items-center gap-1 flex-shrink-0">
+                  <div className="flex flex-wrap items-center gap-1">
                     {draftHref && (
                       <Link href={draftHref}>
                         <Button variant="outline" size="sm" className="h-8" data-testid={`button-open-draft-${doc.id}`}>
@@ -883,7 +902,7 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
                         size="icon"
                         className="h-8 w-8 text-muted-foreground hover:text-red-600"
                         onClick={() => setDeleteTarget(doc)}
-                        disabled={deleteMutation.isPending}
+                        disabled={deleteMutation.isPending || bulk.pending}
                         title="Delete document"
                         data-testid={`button-delete-intake-${doc.id}`}
                       >

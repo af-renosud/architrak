@@ -1,4 +1,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import { BulkDocumentActions, BulkDocumentCheckbox } from "@/components/documents/BulkDocumentActions";
+import { useBulkDocuments, type BulkDocumentsSelection } from "@/hooks/use-bulk-documents";
+import { canBulkVoidDevis } from "@/lib/bulk-document-eligibility";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
@@ -674,6 +677,7 @@ function AvenantDialog({
 }
 
 interface DevisRowProps {
+  bulkSelection: BulkDocumentsSelection;
   d: Devis;
   projectId: string;
   contractors: Contractor[];
@@ -1028,7 +1032,7 @@ function ReadinessStrip({ d, r }: { d: Devis; r: DevisReadiness }) {
   );
 }
 
-function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openChecks, readiness, onToggle, onEditRefs, onReviewDraft, onGoToIntake, onCreateCertificat, sameRefPeer }: DevisRowProps) {
+function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openChecks, readiness, onToggle, onEditRefs, onReviewDraft, onGoToIntake, onCreateCertificat, sameRefPeer, bulkSelection }: DevisRowProps) {
   const { toast } = useToast();
   const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [avenantOpen, setAvenantOpen] = useState(false);
@@ -1129,6 +1133,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
           data-testid={`row-devis-toggle-${d.id}`}
         >
           <div className="flex items-center gap-3 flex-wrap min-w-0 flex-1">
+            <BulkDocumentCheckbox selection={bulkSelection} id={d.id} name={d.devisCode} eligible={canBulkVoidDevis(d, isArchived)} />
             {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
@@ -1635,6 +1640,16 @@ export function DevisTab({
     return true;
   });
   const hiddenByFilterCount = visibleBeforeFilters.length - filteredDevisList.length;
+  const bulk = useBulkDocuments({
+    items: filteredDevisList.map((d) => ({ id: d.id, name: d.devisCode, eligible: canBulkVoidDevis(d, isArchived) })),
+    scope: JSON.stringify(["devis", projectId, showVoid, selectedLots, searchQuery, isArchived]),
+    execute: (id, reason) => apiRequest("PATCH", `/api/devis/${id}`, { status: "void", voidReason: reason }),
+    onSettled: async () => {
+      await Promise.all(["devis", "devis-readiness", "financial-summary", "accounting-status", "intake"].map((list) =>
+        queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, list) })));
+      await queryClient.invalidateQueries({ predicate: (query) => query.queryKey[0] === "/api/devis" });
+    },
+  });
   const filtersActive = selectedLots.length > 0 || searchQuery.trim().length > 0;
 
   const toggleLotFilter = (lot: string) => {
@@ -1884,11 +1899,15 @@ export function DevisTab({
         </div>
       )}
 
+      {(!!filteredDevisList.length || bulk.result) && <BulkDocumentActions selection={bulk} action="Void" requireReason disabled={isArchived}
+        eligibilityHint="Draft quotations only. Signed, signing-locked, replaced and live quotations are excluded."
+        description="Mark these draft quotations void with the reason below. Their records and source PDFs are retained as evidence, not deleted. Void quotations are excluded from financial calculations." />}
       {filteredDevisList && filteredDevisList.length > 0 ? (
         <div className="space-y-3">
           {filteredDevisList.map((d) => (
             <DevisRow
               key={d.id}
+              bulkSelection={bulk}
               d={d}
               projectId={projectId}
               contractors={contractors}
