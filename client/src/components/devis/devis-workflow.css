@@ -1,0 +1,40 @@
+.devis-summary-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: .6rem 1.5rem;
+  padding: .75rem 1rem;
+  border: 1px solid hsl(var(--border));
+  border-radius: .75rem;
+  background: #f5f2ec;
+  color: #0b2545;
+  font-size: 11px;
+}
+.devis-summary-strip strong { font-size: 13px; font-variant-numeric: tabular-nums; }
+.devis-workflow { display: flex; flex-direction: column; gap: .65rem; min-width: 0; }
+.devis-workflow__tools { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .4rem 0; }
+.devis-workflow__tools button, .devis-workflow__tools select {
+  border: 1px solid hsl(var(--border)); border-radius: .4rem;
+  background: #f8f5ef; padding: .35rem .6rem; font-size: 11px; color: #0b2545;
+}
+.devis-workflow__tools span { margin-right: auto; font-size: 10px; color: hsl(var(--muted-foreground)); }
+.devis-workflow__group { min-width: 0; border: 1px solid #d8cbb9; border-radius: .65rem; background: #f8f5ef; }
+.devis-workflow__group[data-group="review"] { order: 10; }
+.devis-workflow__group[data-group="prepare"] { order: 20; }
+.devis-workflow__group[data-group="send"] { order: 30; }
+.devis-workflow__group[data-group="after"] { order: 40; }
+.devis-workflow__heading { display: flex; width: 100%; align-items: center; gap: .65rem; padding: .7rem .85rem; text-align: left; color: #0b2545; }
+.devis-workflow__heading strong { font-size: 12px; }
+.devis-workflow__heading small { margin-left: auto; text-align: right; font-size: 10px; color: #6c716f; }
+.devis-workflow__number { color: #94734c; font-size: 10px; font-variant-numeric: tabular-nums; }
+.devis-workflow__body { padding: .75rem; border-top: 1px solid #d8cbb9; }
+.devis-workflow__body[hidden], .devis-visited-detail[hidden], .devis-preserved-tab[hidden] { display: none !important; }
+.devis-workflow__attention { display: flex; flex-direction: column; gap: .35rem; padding: 0 .85rem .65rem; }
+.devis-workflow__attention button { text-align: left; font-size: 11px; color: #934428; text-decoration: underline; text-underline-offset: 3px; }
+.devis-detail-tablist { overflow-x: auto; justify-content: flex-start; }
+.devis-detail-tablist > * { flex-shrink: 0; }
+@media (max-width: 767px) {
+  .devis-workflow__heading { flex-wrap: wrap; gap: .4rem; }
+  .devis-workflow__heading small { flex-basis: 100%; margin-left: 1.8rem; text-align: left; }
+  .devis-workflow__body { padding: .5rem; }
+}

@@ -61,6 +61,7 @@ export function DevisTranslationSection({
   // rebuilds the edit buffers over in-progress typing, and (b) unmount can
   // flush a still-unsaved edit when the user navigates away without blurring.
   const [isSavingTranslation, setIsSavingTranslation] = useState(false);
+  const [translationSaveError, setTranslationSaveError] = useState<string | null>(null);
   const pendingPatchRef = useRef<{
     patch: { header?: DevisTranslationHeader; lines?: DevisTranslationLine[] };
     epoch: number;
@@ -88,6 +89,7 @@ export function DevisTranslationSection({
     setIsSavingTranslation(true);
     try {
       await apiRequest("PATCH", `/api/devis/${devisId}/translation`, pending.patch);
+      setTranslationSaveError(null);
       if (!pendingPatchRef.current && editEpochRef.current === pending.epoch) {
         // Everything the user has typed so far is in the payload that just
         // saved — safe to let the next refetch rebuild the local buffers.
@@ -100,6 +102,7 @@ export function DevisTranslationSection({
       // match the batch readiness query by key suffix.
       queryClient.invalidateQueries({ predicate: (q) => q.queryKey.includes("devis-readiness") });
     } catch (err) {
+      setTranslationSaveError(err instanceof Error ? err.message : String(err));
       toast({
         title: "Save failed",
         description: err instanceof Error ? err.message : String(err),
@@ -505,8 +508,10 @@ export function DevisTranslationSection({
         </div>
       </div>
 
+      {translationSaveError && <p role="alert" className="text-xs text-destructive">Translation save failed · your local edits are preserved. {translationSaveError}</p>}
+      {(isSavingTranslation || dirtyRef.current) && <p data-workflow-attention className="text-xs text-muted-foreground">{isSavingTranslation ? "Translation · saving edits." : "Translation · unsaved edits."}</p>}
       {status === "failed" && translation?.errorMessage && (
-        <p className="text-xs text-destructive" data-testid={`text-translation-error-${devisId}`}>
+        <p role="alert" className="text-xs text-destructive" data-testid={`text-translation-error-${devisId}`}>
           {translation.errorMessage}
         </p>
       )}

@@ -29,6 +29,7 @@ import {
   parseDevisIdFromContextEmailDedupeKey,
 } from "@/components/communications/ContextEmailResendButton";
 import { DevisTab } from "@/components/devis/DevisTab";
+import { PreservedTabsContent } from "@/components/devis/DevisWorkflow";
 import { IntakeTab } from "@/components/intake/IntakeTab";
 import { OutstandingFeesPanel } from "@/components/fees/OutstandingFeesPanel";
 import { OutstandingFeesBanner } from "@/components/fees/OutstandingFeesBanner";
@@ -1460,7 +1461,7 @@ export default function ProjectDetail() {
         />
 
         <Tabs value={activeTab} onValueChange={setActiveTab} data-testid="tabs-project-detail">
-          <TabsList className="h-auto min-h-10 w-full flex-wrap justify-start gap-1">
+          <TabsList className="h-auto min-h-10 w-full flex-nowrap overflow-x-auto justify-start gap-1 md:flex-wrap [&>button]:shrink-0">
             <TabsTrigger value="resume" data-testid="tab-resume">
               <BarChart3 size={12} className="mr-1" />
               Financial Summary
@@ -1688,7 +1689,7 @@ export default function ProjectDetail() {
             />
           </TabsContent>
 
-          <TabsContent value="devis">
+          <PreservedTabsContent activeTab={activeTab} value="devis">
             <DevisTab
               projectId={projectId!}
               contractors={contractors ?? []}
@@ -1702,7 +1703,7 @@ export default function ProjectDetail() {
                 openCreateCert(context);
               }}
             />
-          </TabsContent>
+          </PreservedTabsContent>
 
           <TabsContent value="factures">
             <FacturesTab

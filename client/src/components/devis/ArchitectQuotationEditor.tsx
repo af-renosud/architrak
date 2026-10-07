@@ -185,6 +185,8 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false 
 
   return <>
     <div className="architect-correction px-3 py-3" data-testid={`architect-correction-entry-${devisId}`}>
+      {error && <p role="alert" className="mb-2 text-xs text-destructive">{stale ? "Stale working quotation · your draft is preserved. " : "Working quotation save failed · your draft is preserved. "}{error}</p>}
+      {(dirty || pending) && <p data-workflow-attention className="mb-2 text-[11px] text-muted-foreground">{pending ? "Working quotation · save or update in progress. Keep this project open." : "Working quotation · unsaved correction draft."}</p>}
       <div className="correction-banner rounded-lg flex flex-wrap items-center justify-between gap-3 px-4 py-3">
         <div className="flex items-start gap-3">
           <Pencil size={15} className="mt-0.5 shrink-0" />

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -119,6 +119,8 @@ export function DevisCostAnalysisCard({ devisId, translationFinalised }: DevisCo
   const [dirty, setDirty] = useState(false);
   const [confirmRegenerate, setConfirmRegenerate] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const syncedAnalysis = useRef<DevisCostAnalysis | null | undefined>(undefined);
 
   const { data, isLoading } = useQuery<{ analysis: DevisCostAnalysis | null; quotationChanged?: boolean }>({
     queryKey: ["/api/devis", devisId, "cost-analysis"],
@@ -131,7 +133,12 @@ export function DevisCostAnalysisCard({ devisId, translationFinalised }: DevisCo
   // Sync the editor with the server row whenever it changes and the
   // architect has no unsaved local edits (stale-cache remount lesson).
   useEffect(() => {
-    if (!dirty && analysis) setRawText(analysis.rawText);
+    if (dirty) return;
+    // A successful save clears dirty before invalidation returns. Do not
+    // restore the old cached rawText during that window.
+    if (syncedAnalysis.current === analysis) return;
+    syncedAnalysis.current = analysis;
+    if (analysis) setRawText(analysis.rawText);
     if (!analysis) {
       setRawText("");
       setDirty(false);
@@ -154,6 +161,7 @@ export function DevisCostAnalysisCard({ devisId, translationFinalised }: DevisCo
 
   const onError = (err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
+    setActionError(message);
     toast({ title: "Cost analysis", description: message, variant: "destructive" });
     invalidate();
   };
@@ -164,6 +172,7 @@ export function DevisCostAnalysisCard({ devisId, translationFinalised }: DevisCo
       return res.json();
     },
     onSuccess: () => {
+      setActionError(null);
       setDirty(false);
       invalidate();
       toast({ title: "Cost analysis generated", description: "Review the draft, then confirm it to include it in the PDF." });
@@ -173,6 +182,7 @@ export function DevisCostAnalysisCard({ devisId, translationFinalised }: DevisCo
     // (missing key, blocked prompt, malformed response) surface verbatim.
     onError: (err: unknown) => {
       if (err instanceof ApiError && err.code === "ai_timeout") {
+        setActionError("Generation timed out. Retry generation; existing draft is preserved.");
         toast({
           title: "The AI took too long",
           description:
@@ -207,6 +217,8 @@ export function DevisCostAnalysisCard({ devisId, translationFinalised }: DevisCo
       return res.json();
     },
     onSuccess: () => {
+      setActionError(null);
+      syncedAnalysis.current = analysis;
       setDirty(false);
       invalidate();
       toast({ title: "Draft saved" });
@@ -222,6 +234,7 @@ export function DevisCostAnalysisCard({ devisId, translationFinalised }: DevisCo
       return res.json();
     },
     onSuccess: () => {
+      setActionError(null);
       invalidate();
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "translation"] });
       toast({ title: "Cost analysis confirmed", description: "It will be appended to the translated and combined PDFs." });
@@ -237,6 +250,7 @@ export function DevisCostAnalysisCard({ devisId, translationFinalised }: DevisCo
       return res.json();
     },
     onSuccess: () => {
+      setActionError(null);
       setDirty(false);
       setRawText("");
       invalidate();
@@ -254,6 +268,9 @@ export function DevisCostAnalysisCard({ devisId, translationFinalised }: DevisCo
 
   return (
     <div className="border rounded-md mt-4" data-testid={`card-cost-analysis-${devisId}`}>
+      {actionError && <p role="alert" className="px-4 py-2 text-xs text-destructive">Cost analysis update failed · your draft is preserved. {actionError}</p>}
+      {quotationChanged && <p data-workflow-attention className="px-4 pt-2 text-xs text-amber-800">Stale cost analysis · quotation changed. Review before sending; stale analysis is excluded from the client package.</p>}
+      {(dirty || busy) && <p data-workflow-attention className="px-4 pt-2 text-xs text-muted-foreground">{busy ? "Cost analysis · update in progress." : "Cost analysis · unsaved draft."}</p>}
       <button
         type="button"
         className="w-full flex items-center justify-between px-4 py-3 text-left"

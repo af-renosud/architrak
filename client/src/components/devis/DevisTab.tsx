@@ -14,7 +14,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Receipt, FilePlus2, ListOrdered, Languages, ClipboardCheck } from "lucide-react";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -57,8 +57,7 @@ import {
   type FragmentLineItemLike,
 } from "@/components/devis/draft-warnings";
 import { SigningPanel, OPEN_SIGNING_SEND_EVENT } from "@/components/devis/SigningPanel";
-import { CertificatPanel } from "@/components/devis/CertificatPanel";
-import { DevisClosurePanel } from "@/components/devis/DevisClosurePanel";
+import { DevisAfterSigning } from "@/components/devis/DevisAfterSigning";
 import { SupportingPdfsPanel } from "@/components/devis/SupportingPdfsPanel";
 import { ClientConversationPanel } from "@/components/devis/ClientConversationPanel";
 import { countDevisSignOff } from "@/components/devis/devis-counters";
@@ -66,12 +65,14 @@ import { DuplicateExtractionCorrection } from "@/components/devis/DuplicateExtra
 import { ExtractionRowCorrection } from "@/components/devis/ExtractionRowCorrection";
 import { QuotationExtractionReview } from "@/components/devis/QuotationExtractionReview";
 import { ArchitectQuotationEditor } from "@/components/devis/ArchitectQuotationEditor";
+import { DevisWorkflow, WorkflowSection, WorkflowNotice, VisitedDetail, PreservedTabsContent, useWorkflowSectionVisible } from "@/components/devis/DevisWorkflow";
+import { useDevisWorkflowStatus } from "@/components/devis/use-devis-workflow-status";
 
 import { Amount } from "@/components/ui/amount";
 import { formatCurrency as fmt } from "@/lib/utils";
 import { normalizeRef } from "@shared/intake-dedup";
 import { DuplicateExtractionHistory } from "@/components/devis/DuplicateExtractionHistory";
-import { commitmentLabel, isSignedCommitment, type FinancialSummary as ProjectFinancialSummary } from "@/lib/financial-summary";
+import { commitmentLabel, type FinancialSummary as ProjectFinancialSummary } from "@/lib/financial-summary";
 
 export type LotCodeValue = {
   lotCatalogId: number | null;
@@ -1369,7 +1370,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
         </div>
       </LuxuryCard>
 
-      {expanded && (
+      <VisitedDetail open={expanded} onReveal={onToggle}>
         <DevisDetailInline
           devis={d}
           projectId={projectId}
@@ -1384,7 +1385,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
           hasPdf={hasPdf}
            onCreateCertificat={onCreateCertificat}
         />
-      )}
+      </VisitedDetail>
 
       <AlertDialog open={markReplacedOpen} onOpenChange={setMarkReplacedOpen}>
         <AlertDialogContent data-testid={`dialog-mark-replaced-${d.id}`}>
@@ -1483,10 +1484,13 @@ export function DevisTab({
     let attempts = 0;
     const tryScroll = () => {
       if (cancelled) return;
+      window.dispatchEvent(new CustomEvent("architrak:workflow-jump", { detail: { devisId: initialExpandedDevisId, group: "send" } }));
       const el = document.querySelector(
         `[data-testid="check-${initialFocusedCheckId}"]`,
       );
       if (el) {
+        (el as HTMLElement).setAttribute("tabindex", "-1");
+        (el as HTMLElement).focus({ preventScroll: true });
         el.scrollIntoView({ behavior: "smooth", block: "center" });
         (el as HTMLElement).classList.add("ring-2", "ring-amber-400");
         window.setTimeout(() => {
@@ -1742,24 +1746,11 @@ export function DevisTab({
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-        <LuxuryCard data-testid="card-devis-count">
-          <TechnicalLabel>Total Devis</TechnicalLabel>
-          <p className="text-[20px] font-light text-foreground mt-1" data-testid="text-devis-count">{totalDevisCount}</p>
-        </LuxuryCard>
-        <LuxuryCard data-testid="card-devis-total">
-          <TechnicalLabel>Total Amount</TechnicalLabel>
-          <p className="text-[16px] font-semibold text-foreground mt-1"><Amount value={totalAmountTtc} denomination="TTC" /></p>
-          <p className="text-[10px] text-muted-foreground"><Amount value={totalAmountHt} denomination="HT" /></p>
-        </LuxuryCard>
-        <LuxuryCard data-testid="card-devis-pending">
-          <TechnicalLabel>Pending</TechnicalLabel>
-          <p className="text-[20px] font-light text-amber-600 mt-1" data-testid="text-devis-pending">{pendingDevisCount}</p>
-        </LuxuryCard>
-        <LuxuryCard data-testid="card-devis-signed">
-          <TechnicalLabel>Signed</TechnicalLabel>
-          <p className="text-[20px] font-light text-emerald-600 mt-1" data-testid="text-devis-signed">{signedDevisCount}</p>
-        </LuxuryCard>
+      <div className="devis-summary-strip" aria-label="Quotation summary">
+        <span data-testid="card-devis-count"><strong data-testid="text-devis-count">{totalDevisCount}</strong> quotations</span>
+        <span data-testid="card-devis-total">Quoted · <strong><Amount value={totalAmountTtc} denomination="TTC" /></strong> · <Amount value={totalAmountHt} denomination="HT" /><span className="ml-2 text-muted-foreground">not signed commitments</span></span>
+        <span data-testid="card-devis-pending"><strong data-testid="text-devis-pending">{pendingDevisCount}</strong> pending</span>
+        <span data-testid="card-devis-signed"><strong data-testid="text-devis-signed">{signedDevisCount}</strong> signed</span>
       </div>
 
       <ProjectClientSharePanel projectId={projectId} isArchived={isArchived} />
@@ -4422,6 +4413,7 @@ export function ProjectClientSharePanel({
 }) {
   const { toast } = useToast();
   const [issueOpen, setIssueOpen] = useState(false);
+  const [managementOpen, setManagementOpen] = useState(false);
   const [emailDraft, setEmailDraft] = useState("");
   const [nameDraft, setNameDraft] = useState("");
   const [emailErr, setEmailErr] = useState<string | null>(null);
@@ -4534,16 +4526,17 @@ export function ProjectClientSharePanel({
           >
             {stateLabel}
           </span>
-          {hasActiveLink && (
-            <span className="text-[10px] text-slate-500" data-testid="text-project-share-published-count">
+          <span className="text-[10px] text-slate-500" data-testid="text-project-share-published-count">
               {publishedCount === 0
                 ? "No quotations published yet"
                 : `${publishedCount} quotation(s) published`}
-            </span>
-          )}
+          </span>
         </div>
+        <Button type="button" variant="ghost" size="sm" className="h-6 text-[10px]" aria-expanded={managementOpen} aria-controls={`project-share-management-${projectId}`} onClick={() => setManagementOpen(open => !open)}>
+          {managementOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />} Manage client link
+        </Button>
         {!isArchived && (
-          <div className="flex items-center gap-1.5">
+          <div hidden={!managementOpen} className={managementOpen ? "flex items-center gap-1.5 flex-wrap" : "hidden"}>
             <Button
               variant="outline"
               size="sm"
@@ -4622,6 +4615,10 @@ export function ProjectClientSharePanel({
         )}
       </div>
 
+      {(issueMutation.error || extendMutation.error || revokeMutation.error || copyLinkMutation.error) && <p role="alert" className="text-[11px] text-destructive">
+        Client link update failed · {(issueMutation.error || extendMutation.error || revokeMutation.error || copyLinkMutation.error)?.message}
+        <button type="button" className="ml-2 underline" onClick={() => setManagementOpen(true)}>Review link controls</button>
+      </p>}
       {data?.archidocLookupMiss && (
         <div
           className="flex items-start gap-2 rounded border border-amber-300 bg-amber-50 p-2 text-[10px] text-amber-800"
@@ -4642,6 +4639,8 @@ export function ProjectClientSharePanel({
         </div>
       )}
 
+      <VisitedDetail open={managementOpen}>
+      <div id={`project-share-management-${projectId}`}>
       {token ? (
         <div className="grid grid-cols-3 gap-2 text-[10px] text-slate-600">
           <div>
@@ -4675,6 +4674,8 @@ export function ProjectClientSharePanel({
       )}
 
       <ProjectShareHistory projectId={projectId} />
+      </div>
+      </VisitedDetail>
 
       <Dialog open={issueOpen} onOpenChange={(o) => { if (!issueMutation.isPending) setIssueOpen(o); }}>
         <DialogContent data-testid="dialog-issue-project-share">
@@ -5125,14 +5126,12 @@ function ChecksPanel({
   isArchived,
   contractorEmail,
   lineItems,
-  onCreateCertificat,
 }: {
   devisId: number;
   projectId: string;
   isArchived: boolean;
   contractorEmail: string | null;
   lineItems: DevisLineItem[];
-  onCreateCertificat?: (context: { contractorId: number; devisId: number }) => void;
 }) {
   const { toast } = useToast();
   const [replyDrafts, setReplyDrafts] = useState<Record<number, string>>({});
@@ -5275,7 +5274,6 @@ function ChecksPanel({
       <ProjectSharePublishControl projectId={projectId} devisId={devisId} isArchived={isArchived} />
       <InsurancePanel devisId={devisId} isArchived={isArchived} />
       <SigningPanel devisId={devisId} isArchived={isArchived} />
-      <CertificatPanel devisId={devisId} projectId={projectId} isArchived={isArchived} onCreateManual={onCreateCertificat} />
 
       {/* Bottom mirror — variant B "Inline composer + bottom mirror".
           Navy-bordered card showing the architect exactly what will be
@@ -5570,6 +5568,15 @@ function DevisDetailTabs({
 
   const defaultTab = isModeB ? "lines" : "avenants";
   const [activeTab, setActiveTab] = useState(defaultTab);
+  const sectionVisible = useWorkflowSectionVisible("prepare");
+  useEffect(() => {
+    const reveal = (event: Event) => {
+      const detail = (event as CustomEvent<{ devisId: number; tab: string }>).detail;
+      if (detail?.devisId === devis.id) setActiveTab(detail.tab);
+    };
+    window.addEventListener("architrak:workflow-tab", reveal);
+    return () => window.removeEventListener("architrak:workflow-tab", reveal);
+  }, [devis.id]);
 
   // --- Working-line anchor + floating toggle ------------------------------
   // The team reviews line by line, bouncing between the Line Items tab
@@ -5689,7 +5696,7 @@ function DevisDetailTabs({
 
   const toggleTargetTab = activeTab === "lines" ? "translation" : "lines";
   const showLineToggle =
-    isModeB && workingLine !== null && (activeTab === "lines" || activeTab === "translation");
+    sectionVisible && isModeB && workingLine !== null && (activeTab === "lines" || activeTab === "translation");
 
   const handleLineToggle = () => {
     if (!workingLine) return;
@@ -5722,12 +5729,7 @@ function DevisDetailTabs({
 
   return (
     <Tabs value={activeTab} onValueChange={setActiveTab} className="rounded-2xl border border-[#0B2545]/15 bg-white/60 overflow-hidden" data-testid={`tabs-devis-detail-${devis.id}`}>
-      <ArchitectQuotationEditor key={`architect-editor-${devis.id}`} devisId={devis.id} projectId={String(devis.projectId)} disabled={isArchived} />
-      <div className="flex justify-end px-3 py-2 border-b border-border/40">
-        <ExtractionRowCorrection key={devis.id} devisId={devis.id} projectId={String(devis.projectId)} lines={lineItems ?? []} disabled={isArchived} />
-      </div>
-      <QuotationExtractionReview key={`review-${devis.id}`} devisId={devis.id} projectId={String(devis.projectId)} disabled={isArchived} />
-      <TabsList className="w-full justify-start rounded-none border-b border-black/5 bg-[#0B2545]/[0.03] px-2 h-auto p-0">
+      <TabsList className="devis-detail-tablist w-full justify-start rounded-none border-b border-black/5 bg-[#0B2545]/[0.03] px-2 h-auto p-0">
         {isModeB && (
           <TabsTrigger
             value="lines"
@@ -5780,7 +5782,7 @@ function DevisDetailTabs({
       </TabsList>
 
       {isModeB && (
-        <TabsContent value="lines" className="p-4 mt-0">
+        <PreservedTabsContent activeTab={activeTab} value="lines" className="p-4 mt-0">
           <div className="flex items-center justify-between mb-2">
             <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
               Devis Line Items ({lineCount})
@@ -5826,10 +5828,10 @@ function DevisDetailTabs({
           ) : (
             <p className="text-[11px] text-muted-foreground text-center py-4">No line items yet.</p>
           )}
-        </TabsContent>
+        </PreservedTabsContent>
       )}
 
-      <TabsContent value="translation" className="p-4 mt-0">
+      <PreservedTabsContent activeTab={activeTab} value="translation" className="p-4 mt-0">
         <DevisTranslationSection
           devisId={devis.id}
           devisCode={devis.devisCode}
@@ -5838,9 +5840,9 @@ function DevisDetailTabs({
           flashLineNumber={flashLine?.tab === "translation" ? flashLine.lineNumber : null}
           onWorkingLineChange={setWorkingLineAndBroadcast}
         />
-      </TabsContent>
+      </PreservedTabsContent>
 
-      <TabsContent value="avenants" className="p-4 mt-0">
+      <PreservedTabsContent activeTab={activeTab} value="avenants" className="p-4 mt-0">
         <div className="flex items-center justify-between mb-2">
           <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
             Avenants ({avenantCount})
@@ -5870,20 +5872,20 @@ function DevisDetailTabs({
         ) : (
           <p className="text-[11px] text-muted-foreground text-center py-2">No avenants.</p>
         )}
-      </TabsContent>
+      </PreservedTabsContent>
 
       {isModeB && (
-        <TabsContent value="situations" className="p-4 mt-0">
+        <PreservedTabsContent activeTab={activeTab} value="situations" className="p-4 mt-0">
           <div className="flex items-center justify-between mb-2">
             <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
               Situations de travaux ({situationCount})
             </h4>
           </div>
           <SituationsSection devisId={devis.id} isArchived={isArchived} />
-        </TabsContent>
+        </PreservedTabsContent>
       )}
 
-      <TabsContent value="invoices" className="p-4 mt-0">
+      <PreservedTabsContent activeTab={activeTab} value="invoices" className="p-4 mt-0">
         <div className="flex items-center justify-between mb-2">
           <h4 className="text-[12px] font-black uppercase tracking-tight text-foreground">
             Invoices ({invoiceCount})
@@ -5911,7 +5913,7 @@ function DevisDetailTabs({
         ) : (
           <p className="text-[11px] text-muted-foreground text-center py-2">No invoices.</p>
         )}
-      </TabsContent>
+      </PreservedTabsContent>
 
       {showLineToggle && workingLine && (
         <div data-scroll-navigation-obstacle="" className="fixed bottom-6 right-6 z-50">
@@ -6170,9 +6172,27 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
     },
   });
   const checksLocked = openChecksCountForDevis > 0;
+  const { data: workflowReadiness } = useQuery<Record<number, DevisReadiness>>({
+    queryKey: projectScopedKey(projectId, "devis-readiness"),
+  });
+  const readiness = workflowReadiness?.[devis.id];
+  const workflowStatus = useDevisWorkflowStatus(devis.id);
 
   return (
     <div className={`ml-4 mt-1 mb-3 border-l-2 border-[rgba(0,0,0,0.08)] pl-4 space-y-4 ${isVoid ? "opacity-50" : ""}`} data-testid={`detail-devis-${devis.id}`}>
+      <DevisWorkflow devisId={devis.id} stage={devis.signOffStage} status={devis.status}>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground" aria-label="Quotation workflow status">
+        <span>Quoted · <Amount value={parseFloat(devis.amountHt)} denomination="HT" /> · <Amount value={parseFloat(devis.amountTtc)} denomination="TTC" /></span>
+        <span>{financial ? commitmentLabel(financial) : "Commitment evidence · see financial summary"}</span>
+        <span>{openChecksCountForDevis} unresolved contractor question(s){readiness ? ` · ${readiness.openClientChecks} client question(s)` : ""}</span>
+      </div>
+      {signOffBlocked && !isVoid && <WorkflowNotice group="review" message={`Sign-off blocked · ${missingLot ? "Lot assignment required. " : ""}${missingDescriptionUk ? "English works description required." : ""}`} />}
+      {!!readiness?.blockers.length && <div className="text-[11px] text-amber-800" data-testid={`workflow-blockers-${devis.id}`}>{readiness.blockers.join(" · ")}</div>}
+      {workflowStatus.analysis.data?.quotationChanged && <WorkflowNotice group="prepare" tab="translation" message="Stale cost analysis · quotation changed. Review before sending; stale analysis is excluded from client packages." />}
+      {workflowStatus.translation.data?.status === "failed" && <WorkflowNotice group="prepare" tab="translation" error message={`Translation failed · ${workflowStatus.translation.data.errorMessage ?? "Review Prepare package to retry."}`} />}
+      {(workflowStatus.analysis.isError || workflowStatus.translation.isError) && <WorkflowNotice group="prepare" error message="Package status could not be loaded. Review before sending." onRetry={() => { void workflowStatus.analysis.refetch(); void workflowStatus.translation.refetch(); }} />}
+      {updateDevisMutation.isError && <WorkflowNotice group="review" error message={`Quotation update failed · ${updateDevisMutation.error.message}`} />}
+      {isFinancialSummaryError && <WorkflowNotice group="after" error message="Financial evidence could not be loaded." onRetry={() => void refetchFinancialSummary()} />}
       {devis.accountingState === "superseded" && ((invoices?.length ?? 0) > 0 || (avenants?.length ?? 0) > 0) && (
         <div
           className="mt-2 rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-[11px] text-amber-800 dark:text-amber-300"
@@ -6186,6 +6206,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
           still reference it. They are not re-linked automatically — review them and re-attach to the replacement devis if needed.
         </div>
       )}
+      <WorkflowSection group="review" summary={`${devis.status === "draft" ? "Draft · review required" : "Source & extraction"} · ${lineItems?.length ?? translationLineItems?.length ?? 0} lines`}>
       <div className="flex items-center justify-between gap-2 pt-1" data-testid={`header-devis-detail-${devis.id}`}>
         <TechnicalLabel>Devis Document</TechnicalLabel>
         <TooltipProvider delayDuration={200}>
@@ -6275,13 +6296,11 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
         </TooltipProvider>
       </div>
       <DuplicateExtractionHistory key={devis.id} devisId={devis.id} />
-      <SupportingPdfsPanel
-        devisId={devis.id}
-        isArchived={isArchived}
-        signOffStage={devis.signOffStage}
-        status={devis.status}
-        hasSigningSnapshot={!!devis.archisignPinnedPdfStorageKey || !!devis.signedPdfStorageKey}
-      />
+      <ArchitectQuotationEditor key={`architect-editor-${devis.id}`} devisId={devis.id} projectId={projectId} disabled={isArchived} />
+      <div className="flex justify-end px-3 py-2 border-b border-border/40">
+        <ExtractionRowCorrection key={devis.id} devisId={devis.id} projectId={projectId} lines={lineItems ?? []} disabled={isArchived} />
+      </div>
+      <QuotationExtractionReview key={`review-${devis.id}`} devisId={devis.id} projectId={projectId} disabled={isArchived} />
       {devis.notes && (
         <div
           className="rounded border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-[12px] text-amber-900 dark:text-amber-200 whitespace-pre-wrap"
@@ -6504,7 +6523,8 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
         </div>
       )}
 
-      <div className="flex items-center gap-1.5 py-2" data-testid={`stepper-signoff-${devis.id}`}>
+      </WorkflowSection>
+      <div className="flex items-center gap-1.5 py-2 overflow-x-auto" data-testid={`stepper-signoff-${devis.id}`}>
         {SIGN_OFF_STAGES.map((stage, idx) => {
           const isCompleted = idx <= currentStageIndex && !isVoid;
           const isCurrent = idx === currentStageIndex && !isVoid;
@@ -6606,81 +6626,14 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
         )}
       </div>
 
-      <DevisClosurePanel devis={devis} projectId={projectId} isArchived={isArchived} />
-
-      {financial ? (
-        <div className="space-y-2" data-testid={`card-devis-detail-financial-${devis.id}`}>
-          <p className="text-[11px] text-muted-foreground" data-testid={`text-devis-detail-commitment-${devis.id}`}>{commitmentLabel(financial)}</p>
-          <div className="grid grid-cols-4 gap-3">
-            <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-              <TechnicalLabel>{isSignedCommitment(financial) ? "Original Contracted — Signed" : "Original Quotation — Excluded"}</TechnicalLabel>
-              <p className="text-[13px] font-semibold text-foreground mt-1"><Amount value={financial.originalTtc} denomination="TTC" /></p>
-              <p className="text-[10px] text-muted-foreground"><Amount value={financial.originalHt} denomination="HT" /></p>
-            </div>
-            <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-              <TechnicalLabel>{isSignedCommitment(financial) ? "Adjusted (+ PV/MV)" : "Adjusted Quotation — Excluded"}</TechnicalLabel>
-              <p className="text-[13px] font-semibold text-foreground mt-1"><Amount value={financial.adjustedTtc} denomination="TTC" /></p>
-              <p className="text-[10px] text-muted-foreground"><Amount value={financial.adjustedHt} denomination="HT" /></p>
-            </div>
-            <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-              <TechnicalLabel>{isSignedCommitment(financial) ? "Certified" : "Certified — Outside commitment"}</TechnicalLabel>
-              <p className="text-[13px] font-semibold text-emerald-600 mt-1" data-testid={`text-devis-detail-certified-${devis.id}`}>
-                <Amount value={financial.certifiedTtc} denomination="TTC" />
-              </p>
-              <p className="text-[10px] text-muted-foreground"><Amount value={financial.certifiedHt} denomination="HT" /></p>
-              {(financial.acompteCertifiedHt ?? 0) > 0 && (
-                <p className="text-[9px] text-emerald-700 dark:text-emerald-400 mt-1" data-testid={`text-devis-detail-acompte-${devis.id}`}>
-                  Includes opening deposit: <Amount value={financial.acompteCertifiedTtc ?? 0} denomination="TTC" />
-                  {" · "}<Amount value={financial.acompteCertifiedHt ?? 0} denomination="HT" />
-                </p>
-              )}
-              <p className="text-[9px] text-muted-foreground mt-1">
-                {financial.invoiceCount} supplier invoice{financial.invoiceCount !== 1 ? "s" : ""}
-              </p>
-            </div>
-            <div className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] bg-white/50">
-              <TechnicalLabel>{isSignedCommitment(financial) ? "Reste à Réaliser" : "Quotation balance — Excluded"}</TechnicalLabel>
-              <p
-                className={`text-[13px] font-semibold mt-1 ${financial.resteARealiser < 0 ? "text-red-600" : "text-amber-600"}`}
-                data-testid={`text-devis-detail-remaining-${devis.id}`}
-              >
-                <Amount value={financial.resteARealiserTtc} denomination="TTC" />
-              </p>
-              <p className="text-[10px] text-muted-foreground"><Amount value={financial.resteARealiser} denomination="HT" /></p>
-            </div>
-          </div>
-          <TvaDerivedHint
-            amountHt={financial.adjustedHt}
-            amountTtc={financial.adjustedTtc}
-            testId={`text-devis-detail-tva-derived-${devis.id}`}
-          />
-          <div className="h-1.5 w-full rounded-full bg-slate-100">
-            <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} />
-          </div>
-        </div>
-      ) : isFinancialSummaryError ? (
-        <div
-          className="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-3"
-          data-testid={`error-devis-detail-financial-${devis.id}`}
-        >
-          <p className="text-[11px] text-amber-900">Financial summary could not be loaded.</p>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-7 text-[10px]"
-            disabled={isFinancialSummaryFetching}
-            onClick={() => void refetchFinancialSummary()}
-          >
-            {isFinancialSummaryFetching ? "Retrying…" : "Retry"}
-          </Button>
-        </div>
-      ) : (
-        <div className="grid grid-cols-4 gap-3" data-testid={`skeleton-devis-detail-financial-${devis.id}`}>
-          {[0, 1, 2, 3].map((index) => <Skeleton key={index} className="h-20 rounded-xl" />)}
-        </div>
-      )}
-
+      <WorkflowSection group="prepare" summary={`Translation · ${workflowStatus.translation.data?.status ?? readiness?.translationStatus ?? "loading"} · analysis ${workflowStatus.analysis.data?.analysis?.status ?? "not attached"}`}>
+      <SupportingPdfsPanel
+        devisId={devis.id}
+        isArchived={isArchived}
+        signOffStage={devis.signOffStage}
+        status={devis.status}
+        hasSigningSnapshot={!!devis.archisignPinnedPdfStorageKey || !!devis.signedPdfStorageKey}
+      />
       <DevisDetailTabs
         devis={devis}
         lineItems={lineItems}
@@ -6696,6 +6649,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
         }}
         onUpdateLineItem={(id, data) => updateLineItemMutation.mutateAsync({ id, ...data })}
       />
+      </WorkflowSection>
 
       {/* Bottom-mirror digest of contractor questions sits BELOW the line-items
           table (Variant B layout from the canvas). Architects flag rows red in
@@ -6703,6 +6657,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
           summarises what will go out in the next email round. Kept above the
           sign-off stepper so checksLocked gating stays visually adjacent to
           the gated SENT_TO_CLIENT button. */}
+      <WorkflowSection group="send" summary={`${openChecksCountForDevis} contractor questions · ${readiness?.signature ?? devis.signOffStage ?? "Not sent"}`}>
       {!isVoid && (
         <ChecksPanel
           devisId={devis.id}
@@ -6710,9 +6665,15 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
           isArchived={isArchived}
           contractorEmail={contractors.find((c) => c.id === devis.contractorId)?.email ?? null}
           lineItems={lineItems ?? []}
-          onCreateCertificat={onCreateCertificat}
         />
       )}
+      {isVoid && <p className="text-[11px] text-muted-foreground">This quotation is void. Sending and signing are unavailable.</p>}
+      </WorkflowSection>
+      <DevisAfterSigning devis={devis} projectId={projectId} isArchived={isArchived} financial={financial}
+        progress={progress} invoiceCount={invoices?.length ?? 0} avenantCount={avenants?.length ?? 0}
+        isError={isFinancialSummaryError} isFetching={isFinancialSummaryFetching} onRetry={() => void refetchFinancialSummary()}
+        onCreateCertificat={onCreateCertificat} />
+      </DevisWorkflow>
 
       <Dialog open={voidDialogOpen} onOpenChange={setVoidDialogOpen}>
         <DialogContent className="max-w-sm">
