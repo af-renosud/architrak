@@ -63,6 +63,7 @@ import {
 } from "@/lib/manual-certificat-preview";
 import { PlanningEnvelopeTab } from "@/components/projects/PlanningEnvelopeTab";
 import { CommitmentEvidenceSummary } from "@/components/projects/CommitmentEvidenceSummary";
+import { GlobalProjectBudget } from "@/components/projects/GlobalProjectBudget";
 import { commitmentLabel, isSignedCommitment, type FinancialSummary } from "@/lib/financial-summary";
 
 import { Amount } from "@/components/ui/amount";
@@ -1520,6 +1521,7 @@ export default function ProjectDetail() {
             {financialSummary ? (
               <div className="space-y-6">
                 <DesignContractCard projectId={project.id} />
+                <GlobalProjectBudget key={project.id} projectId={project.id} summary={financialSummary} readOnly={isArchived} />
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <LuxuryCard data-testid="card-total-contracted">
                     <TechnicalLabel>Total Contracted — Signed</TechnicalLabel>

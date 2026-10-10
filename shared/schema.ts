@@ -215,6 +215,41 @@ export const projects = pgTable("projects", {
   unique("projects_archidoc_id_unique").on(table.archidocId),
 ]);
 
+export const externalWorks = pgTable("external_works", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "restrict" }),
+  reference: text("reference").notNull(),
+  normalizedReference: text("normalized_reference").notNull(),
+  description: text("description").notNull(),
+  amountHt: numeric("amount_ht", { precision: 12, scale: 2 }).notNull(),
+  amountTtc: numeric("amount_ttc", { precision: 12, scale: 2 }).notNull(),
+  companyName: text("company_name"),
+  lot: text("lot"),
+  completionDate: date("completion_date"),
+  status: text("status").notNull().default("active"),
+  version: integer("version").notNull().default(1),
+  voidReason: text("void_reason"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, table => [
+  uniqueIndex("external_works_project_reference_unique").on(table.projectId, table.normalizedReference),
+  check("external_works_values_check", sql`${table.amountHt} >= 0 AND ${table.amountTtc} >= ${table.amountHt}`),
+  check("external_works_state_check", sql`${table.status} IN ('active', 'void') AND ${table.version} > 0 AND (${table.status} <> 'void' OR (${table.voidReason} IS NOT NULL AND length(trim(${table.voidReason})) > 0))`),
+]);
+
+export const externalWorkAudit = pgTable("external_work_audit", {
+  id: serial("id").primaryKey(),
+  entryId: integer("entry_id").notNull().references(() => externalWorks.id, { onDelete: "restrict" }),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "restrict" }),
+  action: text("action").notNull(),
+  actorId: integer("actor_id").notNull().references(() => users.id),
+  actorName: text("actor_name").notNull(),
+  before: jsonb("before"),
+  after: jsonb("after").notNull(),
+  reason: text("reason"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, table => [index("external_work_audit_project_idx").on(table.projectId)]);
+
 export const contractors = pgTable("contractors", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),

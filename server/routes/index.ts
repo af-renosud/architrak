@@ -26,6 +26,7 @@ import certificatPaymentSuggestionsRouter from "./certificat-payment-suggestions
 import milestonePaymentSuggestionsRouter from "./milestone-payment-suggestions";
 import feesRouter from "./fees";
 import financialRouter from "./financial";
+import externalWorksRouter from "./external-works";
 import dashboardRouter from "./dashboard";
 import archidocRouter from "./archidoc";
 import gmailRouter from "./gmail";
@@ -127,6 +128,7 @@ export async function registerRoutes(
   app.use(architectFeeInvoicesRouter);
   app.use(milestonePaymentSuggestionsRouter);
   app.use(financialRouter);
+  app.use(externalWorksRouter);
   app.use(dashboardRouter);
   app.use(archidocRouter);
   app.use(gmailRouter);

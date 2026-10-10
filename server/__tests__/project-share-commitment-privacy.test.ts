@@ -27,12 +27,16 @@ it("does not disclose pending prices or evidence of an unpublished draft through
     totalCertifiedHt:0,totalCertifiedTtc:0,totalResteARealiser:100,totalResteARealiserTtc:120,
     totalPendingHt:98765,totalPendingTtc:118518,totalExcludedCertifiedHt:12345,totalExcludedCertifiedTtc:14814,
     financialExceptions:[{devisCode:"PRIVATE",certifiedHt:12345}],
+    externalWorks:[{id:7,reference:"PRIVATE-HISTORY",description:"Historical",amountHt:"6543.21",amountTtc:"7851.85"}],
+    totalExternalHt:6543.21,totalExternalTtc:7851.85,totalCombinedCostHt:6643.21,totalCombinedCostTtc:7971.85,
   }} as any);
   const payload = await buildProjectSharePayload({id:1,projectId:1,clientName:null,clientEmail:"client@example.test"});
   expect(payload.quotations.map(q=>q.id)).toEqual([1]);
   expect(payload.financials?.totalContractedHt).toBe(100);
   expect(payload.financials).not.toHaveProperty("totalPendingHt");
+  expect(payload.financials).not.toHaveProperty("totalCombinedCostHt");
+  expect(payload.financials).not.toHaveProperty("externalWorks");
   expect(payload.financials).not.toHaveProperty("totalExcludedCertifiedHt");
-  expect(JSON.stringify(payload)).not.toMatch(/98765|118518|12345|14814|PRIVATE/);
+  expect(JSON.stringify(payload)).not.toMatch(/98765|118518|12345|14814|PRIVATE|6543|7851|6643|7971/);
   expect(mock.getDevis).not.toHaveBeenCalledWith(2);
 });

@@ -613,6 +613,7 @@ export async function sealCertificat(certificatId: number): Promise<{
     // Immutable record of the financial inputs at issuance — audit evidence
     // that outlives any later (blocked) edit attempt or contract recompute.
     const issuanceSnapshot = {
+      externalWorksOverview: rendered.externalWorksOverview ?? null,
       sealedAt: new Date().toISOString(),
       projectId: existing.projectId,
       contractorId: existing.contractorId,

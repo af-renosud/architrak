@@ -3575,6 +3575,10 @@ export class DatabaseStorage implements IStorage {
       // sides see each other's committed certificat_sources rows and one
       // facture can never be certified by two live certificats.
       await tx.execute(sql`select pg_advisory_xact_lock(${seal.projectId}, ${seal.contractorId})`);
+      // External-register mutations lock project then bump every unsealed
+      // certificate version. Serialize in the same order before checking the
+      // captured render version, freezing its historical overview with the PDF.
+      await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, seal.projectId)).for("update");
       const [current] = await tx
         .select({
           projectId: certificats.projectId,

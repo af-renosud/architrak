@@ -14,6 +14,7 @@ const unsigned: DevisFinancialSummary = {
   resteARealiser: 7500, resteARealiserTtc: 9000, invoiceCount: 0, avenantCount: 0,
 };
 const summary: FinancialSummary = {
+  externalWorks: [], totalExternalHt: 0, totalExternalTtc: 0, totalCombinedCostHt: 0, totalCombinedCostTtc: 0,
   projectId: 12, projectName: "Villa des Pins", projectCode: "VDP",
   totalContractedHt: 0, totalContractedTtc: 0, totalCertifiedHt: 0, totalCertifiedTtc: 0,
   totalResteARealiser: 0, totalResteARealiserTtc: 0,

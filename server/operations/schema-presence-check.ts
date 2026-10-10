@@ -70,6 +70,22 @@ export interface MigrationArtifact {
  * migration. Set the flag on every new data-only DML backfill.
  */
 export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
+  { tag: "0142_external_works", artifact: { kind: "all", artifacts: [
+    { kind: "table", table: "external_works" },
+    { kind: "table", table: "external_work_audit" },
+    { kind: "constraint", table: "external_works", constraint: "external_works_pkey" },
+    { kind: "constraint", table: "external_works", constraint: "external_works_project_id_fkey" },
+    { kind: "constraint", table: "external_work_audit", constraint: "external_work_audit_pkey" },
+    { kind: "constraint", table: "external_work_audit", constraint: "external_work_audit_entry_id_fkey" },
+    { kind: "constraint", table: "external_work_audit", constraint: "external_work_audit_project_id_fkey" },
+    { kind: "constraint", table: "external_work_audit", constraint: "external_work_audit_actor_id_fkey" },
+    { kind: "index", index: "external_work_audit_project_idx" },
+    { kind: "index", index: "external_works_project_reference_unique" },
+    { kind: "constraint", table: "external_works", constraint: "external_works_values_check" },
+    { kind: "constraint", table: "external_works", constraint: "external_works_state_check" },
+    { kind: "trigger", table: "external_work_audit", trigger: "external_work_audit_immutable" },
+    { kind: "trigger", table: "external_works", trigger: "external_works_no_delete" },
+  ] } },
   { tag: "0141_certificat_architect_invoice", artifact: { kind: "all", artifacts: [
     { kind: "table", table: "certificat_architect_invoices" },
     { kind: "constraint", table: "certificat_architect_invoices", constraint: "certificat_architect_invoices_pkey" },

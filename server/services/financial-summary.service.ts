@@ -1,6 +1,7 @@
 import { storage } from "../storage";
 import { roundCurrency } from "../../shared/financial-utils";
 import { quotationCommitmentStatus } from "../../shared/quotation-commitment";
+import { buildExternalCostOverview, listExternalWorks } from "./external-works.service";
 
 /**
  * Task #546 — acompte (opening-deposit) certificats in the Certified figures.
@@ -244,6 +245,7 @@ export async function getProjectFinancialSummary(
 
   const pending = devisSummaries.filter(d => d.commitmentStatus === "unsigned");
   const financialExceptions = devisSummaries.filter(d => !d.commitmentEligible && d.hasFinancialEvidence);
+  const external = buildExternalCostOverview(await listExternalWorks(projectId), totals.totalContractedHt, totals.totalContractedTtc);
   return {
     success: true,
     status: 200,
@@ -251,6 +253,11 @@ export async function getProjectFinancialSummary(
       projectId,
       projectName: project.name,
       projectCode: project.code,
+      externalWorks: external.entries,
+      totalExternalHt: external.totalExternalHt,
+      totalExternalTtc: external.totalExternalTtc,
+      totalCombinedCostHt: external.totalCombinedCostHt,
+      totalCombinedCostTtc: external.totalCombinedCostTtc,
       devis: devisSummaries,
       totalPendingHt: roundCurrency(pending.reduce((sum, d) => sum + d.adjustedHt, 0)),
       totalPendingTtc: roundCurrency(pending.reduce((sum, d) => sum + d.adjustedTtc, 0)),

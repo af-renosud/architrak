@@ -3,6 +3,8 @@ import { storage } from "../storage";
 import { getDocumentBuffer } from "../storage/object-storage";
 import { convertHtmlToPdf } from "./docraptor";
 import { getProjectFinancialSummary } from "./financial-summary.service";
+import { externalOverviewFromSummary, externalWorksOverviewHtml } from "./external-works-reporting";
+import type { ExternalCostOverview, ExternalCostRow } from "@shared/external-works";
 import { excludedCommitmentsHtml, type ExcludedCommitmentRow } from "./commitment-reporting";
 import { formatCurrencyNoSymbol, roundCurrency } from "../../shared/financial-utils";
 
@@ -42,6 +44,7 @@ export interface OverviewRollupRow {
 }
 
 export interface ProjectOverviewData {
+  externalOverview?: ExternalCostOverview | null;
   excludedRows?: ExcludedCommitmentRow[];
   projectName: string;
   projectCode: string;
@@ -78,6 +81,11 @@ interface SummaryDevisRow {
 }
 
 export interface FinancialSummaryPayload {
+  externalWorks?: ExternalCostRow[];
+  totalExternalHt?: number;
+  totalExternalTtc?: number;
+  totalCombinedCostHt?: number;
+  totalCombinedCostTtc?: number;
   projectName: string;
   projectCode: string | null;
   devis: SummaryDevisRow[];
@@ -102,6 +110,10 @@ export function buildProjectOverviewData(
   const activeDevis = summary.devis.filter(
     (d) => d.commitmentEligible === true,
   );
+  // Reserve room for the compact historical-cost summary without growing the
+  // existing one-page overview. Certificates retain the complete itemised list.
+  const externalOverview = externalOverviewFromSummary(summary);
+  const rowLimit = externalOverview ? 7 : MAX_DEVIS_ROWS;
 
   const progressPercent =
     summary.totalContractedHt > 0
@@ -129,12 +141,12 @@ export function buildProjectOverviewData(
   // a single rollup row. Sort is deterministic (amount desc, then code).
   let devisRows = allRows;
   let rollup: OverviewRollupRow | null = null;
-  if (allRows.length > MAX_DEVIS_ROWS) {
+  if (allRows.length > rowLimit) {
     const sorted = [...allRows].sort(
       (a, b) => b.adjustedHt - a.adjustedHt || a.devisCode.localeCompare(b.devisCode),
     );
-    const kept = sorted.slice(0, MAX_DEVIS_ROWS - 1);
-    const folded = sorted.slice(MAX_DEVIS_ROWS - 1);
+    const kept = sorted.slice(0, rowLimit - 1);
+    const folded = sorted.slice(rowLimit - 1);
     devisRows = kept;
     rollup = {
       count: folded.length,
@@ -145,6 +157,7 @@ export function buildProjectOverviewData(
   }
 
   return {
+    externalOverview,
     excludedRows: summary.devis.filter(d => d.commitmentStatus === "unsigned" || (!d.commitmentEligible && d.hasFinancialEvidence)).map(d => ({
       devisCode: d.devisCode, commitmentStatus: d.commitmentStatus ?? "inactive",
       adjustedHt: d.adjustedHt, adjustedTtc: d.adjustedTtc ?? 0,
@@ -331,6 +344,7 @@ export function buildProjectOverviewHtml(
   </table>
 
   ${excludedCommitmentsHtml(data.excludedRows)}
+  ${externalWorksOverviewHtml(data.externalOverview, false)}
   <div style="font-size:6.5pt;color:${GREY};border-top:1px solid #E6E6E6;padding-top:2mm;">
     Montants ajustés des avenants approuvés (plus-values / moins-values). Document d'information établi par
     l'architecte à la date indiquée&nbsp;; les montants «&nbsp;Facturé&nbsp;» correspondent aux factures

@@ -1,3 +1,5 @@
+import type { ExternalWork } from "@/lib/external-works";
+
 export type CommitmentStatus = "signed" | "unsigned" | "inactive";
 
 export interface CommitmentSummary {
@@ -35,6 +37,11 @@ export interface DevisFinancialSummary extends CommitmentSummary {
 }
 
 export interface FinancialSummary {
+  externalWorks: ExternalWork[];
+  totalExternalHt: number;
+  totalExternalTtc: number;
+  totalCombinedCostHt: number;
+  totalCombinedCostTtc: number;
   projectId: number;
   projectName: string;
   projectCode: string;

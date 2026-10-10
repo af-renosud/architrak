@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Devis } from "@shared/schema";
+vi.mock("../external-works.service", async importOriginal => ({
+  ...await importOriginal<typeof import("../external-works.service")>(),
+  listExternalWorks: vi.fn().mockResolvedValue([]),
+}));
 
 vi.mock("../../storage", () => ({
   storage: {
@@ -14,6 +18,7 @@ vi.mock("../../storage", () => ({
 
 import { getProjectFinancialSummary } from "../financial-summary.service";
 import { storage } from "../../storage";
+import { listExternalWorks } from "../external-works.service";
 
 const mockedStorage = storage as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -37,6 +42,7 @@ function devis(id: number, amountHt: string, accountingState: string, status = "
 describe("financial-summary — Contracted accounting guard (Task #232)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(listExternalWorks).mockResolvedValue([]);
     mockedStorage.getProject.mockResolvedValue({ id: 1, name: "P", code: "P1" });
     mockedStorage.getInvoicesByProject.mockResolvedValue([]);
     mockedStorage.getCertificatsByProject.mockResolvedValue([]);
@@ -100,5 +106,23 @@ describe("financial-summary — Contracted accounting guard (Task #232)", () => 
     ]);
     const result = await getProjectFinancialSummary(1);
     expect(result.data).toMatchObject({totalContractedHt:110,totalPendingHt:210});
+  });
+
+  it("adds a separate historical lane without changing managed certified or remaining totals", async () => {
+    mockedStorage.getDevisByProject.mockResolvedValue([
+      devis(1, "100.00", "active"), { ...devis(2, "200.00", "active"), signOffStage: "received" },
+    ]);
+    mockedStorage.getInvoicesByProject.mockResolvedValue([{ devisId: 1, amountHt: "30", amountTtc: "30" }]);
+    vi.mocked(listExternalWorks).mockResolvedValue([
+      { id: 1, reference: "HIST", description: "Completed", amountHt: "50.05", amountTtc: "60.07", status: "active" },
+      { id: 2, reference: "VOID", description: "Removed", amountHt: "999", amountTtc: "999", status: "void" },
+    ] as any);
+    const { data } = await getProjectFinancialSummary(1);
+    expect(data).toMatchObject({
+      totalContractedHt:100, totalContractedTtc:100, totalCertifiedHt:30, totalCertifiedTtc:30,
+      totalResteARealiser:70,totalResteARealiserTtc:70,totalPendingHt:200,
+      totalExternalHt:50.05,totalExternalTtc:60.07,totalCombinedCostHt:150.05,totalCombinedCostTtc:160.07,
+    });
+    expect((data as any).externalWorks).toHaveLength(1);
   });
 });

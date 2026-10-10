@@ -2,6 +2,8 @@ import { storage } from "../storage";
 import { uploadDocument, getDocumentBuffer } from "../storage/object-storage";
 import { convertHtmlToPdf } from "../services/docraptor";
 import { getProjectFinancialSummary } from "../services/financial-summary.service";
+import { externalOverviewFromSummary, externalWorksOverviewHtml } from "../services/external-works-reporting";
+import type { ExternalCostOverview, ExternalCostRow } from "@shared/external-works";
 import { excludedCommitmentsHtml, type ExcludedCommitmentRow } from "../services/commitment-reporting";
 import { roundCurrency } from "@shared/financial-utils";
 import type { Certificat, Project, Contractor, Devis, Lot, Invoice, Avenant } from "@shared/schema";
@@ -167,6 +169,7 @@ interface ProjectSummaryRow {
  * certificat can never disagree with the dashboard or the project overview
  * PDF (which use the same service). */
 interface ProjectSummarySection {
+  externalOverview?: ExternalCostOverview | null;
   excludedRows?: ExcludedCommitmentRow[];
   rows: ProjectSummaryRow[];
   totalContractedHt: number;
@@ -473,6 +476,11 @@ async function buildAnnexeData(
     throw new Error(`Project financial summary unavailable for project ${certificat.projectId}`);
   }
   const summary = summaryResult.data as {
+    externalWorks?: ExternalCostRow[];
+    totalExternalHt?: number;
+    totalExternalTtc?: number;
+    totalCombinedCostHt?: number;
+    totalCombinedCostTtc?: number;
     devis: Array<{
       devisCode: string;
       descriptionFr: string | null;
@@ -496,6 +504,7 @@ async function buildAnnexeData(
     totalResteARealiserTtc: number;
   };
   const projectSummary: ProjectSummarySection = {
+    externalOverview: externalOverviewFromSummary(summary),
     excludedRows: summary.devis.filter(d => d.commitmentStatus === "unsigned" || (!d.commitmentEligible && d.hasFinancialEvidence)),
     rows: summary.devis
       .filter((d) => d.commitmentEligible)
@@ -750,7 +759,7 @@ export function buildProjectSummaryHtml(ps: ProjectSummarySection): string {
           <td style="text-align:right;font-weight:700;font-size:7pt;color:#C1A27B;padding:3px 6px;">${fmtNum(ps.totalResteARealiserTtc)}</td>
         </tr>
       </tfoot>
-    </table>${excludedCommitmentsHtml(ps.excludedRows)}`;
+    </table>${excludedCommitmentsHtml(ps.excludedRows)}${externalWorksOverviewHtml(ps.externalOverview)}`;
 }
 
 /**
@@ -793,6 +802,7 @@ export async function generateCertificatPdf(
     seedDevisCode: string;
   };
   supplierPresentation: SupplierDirectPaymentPresentation | null;
+  externalWorksOverview: ExternalCostOverview | null;
 }> {
   const certificat = await storage.getCertificat(certificatId);
   if (!certificat) throw new Error(`Certificat ${certificatId} not found`);
@@ -1022,6 +1032,7 @@ export async function generateCertificatPdf(
   ]);
 
   let html: string;
+  let externalWorksOverview: ExternalCostOverview | null = null;
   if (certificateTrack === "supplier_direct_payment") {
     if (!supplierReadinessSnapshot) {
       throw new SupplierCertificateSourceError(
@@ -1044,6 +1055,7 @@ export async function generateCertificatPdf(
       contractor,
       activeDevis,
     );
+    externalWorksOverview = annexeData.projectSummary.externalOverview ?? null;
 
     // Task #485 — resolve the actual retention rate the same way the
     // deduction resolver does (marché rate, 5% default, bank guarantee ⇒ 0),
@@ -1104,6 +1116,7 @@ export async function generateCertificatPdf(
   if (opts.mode !== "issue") {
     return {
       storageKey: null,
+      externalWorksOverview,
       pdfBuffer,
       fileName,
       sourceInvoiceIds,
@@ -1130,6 +1143,7 @@ export async function generateCertificatPdf(
   };
 
   return {
+    externalWorksOverview,
     storageKey,
     pdfBuffer,
     fileName,

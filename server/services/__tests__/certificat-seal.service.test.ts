@@ -171,7 +171,8 @@ describe("sealCertificat", () => {
 
   it("renders once in issue mode, seals with the pre-render version, and records invoice + situation sources", async () => {
     getCertificat.mockResolvedValue({ ...draftCert, version: 7 });
-    generate.mockResolvedValue(renderResult("new-key.pdf", [11, 12]));
+    const historicalOverview = { entries: [{ reference: "EXT", amountHt: "50", amountTtc: "60" }], totalExternalHt: 50, totalExternalTtc: 60, totalCombinedCostHt: 1050, totalCombinedCostTtc: 1260 };
+    generate.mockResolvedValue({ ...renderResult("new-key.pdf", [11, 12]), externalWorksOverview: historicalOverview });
     sealCertificatStore.mockResolvedValue({ ...draftCert, pdfStorageKey: "new-key.pdf" });
     getInvoice.mockImplementation(async (id: number) => ({
       id,
@@ -197,6 +198,7 @@ describe("sealCertificat", () => {
     expect(sealCertificatStore).toHaveBeenCalledTimes(1);
     // The seal is guarded by the version captured BEFORE rendering.
     expect(sealCertificatStore.mock.calls[0][1].expectedVersion).toBe(7);
+    expect(sealCertificatStore.mock.calls[0][1].issuanceSnapshot.externalWorksOverview).toEqual(historicalOverview);
     // Source rows travel INSIDE the seal call — atomic with the seal columns.
     const rows = sealCertificatStore.mock.calls[0][1].sourceRows;
     expect(rows).toEqual(
