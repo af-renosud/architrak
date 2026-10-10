@@ -1,3 +1,4 @@
+- [External historical works](external-historical-works.md) — migrated projects need manual reference/description/HT/TTC cost tracking, not uploaded or processed Devis.
 - [Archisign envelope fields](archisign-envelope-fields.md) — §3.5.1.1 IN FORCE: subject guaranteed as contiguous substring (firm-prefix framing allowed), body RENDERED, echo shipped; verify via bodyApplied + inbox; counterparty version tags differ, reconcile by clause anchor + date.
 - [Client portal outbound gating](client-portal-outbound-gating.md) — portal shows rich content only when translation FINALISED; analysis only confirmed+fingerprint-fresh; /agree //reject are 410-retired but verdict markers/classifier stay for audit + spoof-proofing.
 - [Overlap-case human resolution](overlap-case-human-resolution.md) — a confirm leaves the case active/needs_review (detection re-detects superseded members); review-queue read surfaces must exclude ALL human-resolved cases, not just dismissed.
