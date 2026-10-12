@@ -1,4 +1,6 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { PdfPopoutViewer } from "@/components/devis/PdfPopoutViewer";
+import "./invoice-pdf-popout.css";
 import { BulkDocumentActions, BulkDocumentCheckbox } from "@/components/documents/BulkDocumentActions";
 import { useBulkDocuments } from "@/hooks/use-bulk-documents";
 import { canBulkDiscardInvoice } from "@/lib/bulk-document-eligibility";
@@ -503,6 +505,8 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
   const { toast } = useToast();
   const { download: downloadPdf, pendingKey: pdfPendingKey } = usePdfDownload();
   const [expandedInvoice, setExpandedInvoice] = useState<number | null>(null);
+  const [pdfInvoice, setPdfInvoice] = useState<Invoice | null>(null);
+  const closeInvoicePdf = useCallback(() => setPdfInvoice(null), []);
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [selectedDevisId, setSelectedDevisId] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -811,7 +815,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                           className="h-7 px-3 gap-1.5 border-[#0B2545]/20 text-[#0B2545] hover:bg-[#0B2545]/5"
                           onClick={(e) => {
                             e.stopPropagation();
-                            window.open(`/api/invoices/${inv.id}/pdf`, "_blank");
+                            setPdfInvoice(inv);
                           }}
                           data-testid={`button-view-pdf-facture-${inv.id}`}
                         >
@@ -887,6 +891,17 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
             No invoices for this project yet. Upload an invoice PDF to get started.
           </p>
         </LuxuryCard>
+      )}
+
+      {pdfInvoice && (
+        <PdfPopoutViewer
+          devisCode={`Facture ${pdfInvoice.invoiceNumber}`}
+          pdfUrl={`/api/invoices/${pdfInvoice.id}/pdf`}
+          downloadUrl={`/api/invoices/${pdfInvoice.id}/pdf`}
+          downloadName={`facture-${pdfInvoice.invoiceNumber}.pdf`}
+          viewerId={`invoice-${pdfInvoice.id}`}
+          onClose={closeInvoicePdf}
+        />
       )}
 
       {multiCertDialogOpen && (() => {

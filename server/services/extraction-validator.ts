@@ -1,6 +1,7 @@
 import type { ParsedDocument } from "../gmail/document-parser";
 import { roundCurrency, deriveTvaAmount } from "../../shared/financial-utils";
 import { checkExtractionCompleteness, checkFragmentLines } from "./extraction-completeness";
+import { isVerifiedOpeningDeposit } from "./opening-deposit-evidence";
 
 export interface ValidationWarning {
   field: string;
@@ -300,7 +301,7 @@ export function validateExtraction(parsed: ParsedDocument): ValidationResult {
     const acomptePaid = parsed.acomptePaidAmountTtc ?? 0;
     const expectedNet = roundCurrency(ttc - rg - acomptePaid);
     const actualNet = roundCurrency(parsed.netAPayer);
-    if (Math.abs(actualNet - expectedNet) > 0.01) {
+    if (Math.abs(actualNet - expectedNet) > 0.01 && !isVerifiedOpeningDeposit(parsed)) {
       warnings.push({
         field: "netAPayer",
         expected: expectedNet,

@@ -87,6 +87,8 @@ export interface ParsedDocument {
   acomptePaidAmountTtc?: number;
   /** Verbatim source line supporting the paid-deposit amount. */
   acomptePaidEvidenceText?: string;
+  /** Verbatim opening-deposit heading recovered from the PDF text layer. */
+  openingDepositEvidenceText?: string;
   reference?: string;
   invoiceNumber?: string;
   devisNumber?: string;
@@ -353,7 +355,7 @@ const USER_PROMPT = `Analyze this French construction document and extract the f
 - tvaRate: TVA rate as a percentage number (e.g., 20 for 20%). If auto-liquidation, set to 0.
 - autoLiquidation: true if TVA auto-liquidation applies (Article 283-2 nonies CGI), false otherwise
 - retenueDeGarantie: retenue de garantie holdback amount if present, as a number with 2 decimal places
-- netAPayer: net payable amount (after deductions) if visible, as a number with 2 decimal places
+- netAPayer: net payable amount (after deductions) if visible, as a number with 2 decimal places. On a FACTURE D'ACOMPTE explicitly requesting a percentage of the overall contract TTC, use the actual deposit requested, not the overall contract's generic net-total box. Preserve the printed gross totals in amountHt/amountTtc, copy the exact deposit heading (including percentage and TTC basis) into acompteTrigger, and never classify a requested deposit as acomptePaidAmountTtc.
 - paymentTerms: payment conditions text if visible (e.g., "30 jours fin de mois")
 - lotReferences: array of lot codes/references visible on the document (e.g., ["Lot 1", "Lot 7 - Electricite"])
 - description: brief description of the work/service
@@ -2806,6 +2808,11 @@ export async function parseDocument(
     if (!parsed.projectName && textIdentity.projectName) parsed.projectName = textIdentity.projectName;
     if (!parsed.projectReference && textIdentity.projectReference) {
       parsed.projectReference = textIdentity.projectReference;
+    }
+    if (parsed.documentType === "invoice" || parsed.documentType === "acompte") {
+      const { openingDepositEvidence } = await import("../services/opening-deposit-evidence");
+      const opening = openingDepositEvidence(pageTexts.join("\n"));
+      if (opening) parsed.openingDepositEvidenceText = opening.text;
     }
     if (parsed.documentType === "invoice" || parsed.documentType === "situation") {
       const paidAcompte = extractPaidAcompteFromTextLayer(pageTexts);

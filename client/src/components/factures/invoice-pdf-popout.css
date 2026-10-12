@@ -1,0 +1,38 @@
+/* Only invoice windows: keep quotation and floor-plan viewers unchanged. */
+[data-testid^="dialog-pdf-popout-invoice-"] > [data-testid^="pdf-popout-handle-"] {
+  touch-action: none;
+}
+
+[data-testid^="dialog-pdf-popout-invoice-"] > .flex-1 {
+  min-height: 0;
+}
+
+@media (max-width: 767px) {
+  [data-testid^="dialog-pdf-popout-invoice-"] {
+    left: 8px !important;
+    top: auto !important;
+    bottom: max(8px, env(safe-area-inset-bottom)) !important;
+    width: calc(100vw - 16px) !important;
+    height: 55dvh !important;
+    max-height: calc(100dvh - 16px);
+  }
+
+  [data-testid^="dialog-pdf-popout-invoice-"][data-minimized="true"] {
+    height: 44px !important;
+  }
+
+  [data-testid^="dialog-pdf-popout-invoice-"] > [data-testid^="pdf-popout-handle-"] {
+    gap: 4px;
+    padding-inline: 8px;
+    cursor: default;
+  }
+
+  [data-testid^="dialog-pdf-popout-invoice-"] [data-testid^="pdf-popout-title-"] {
+    min-width: 0;
+    flex: 1;
+  }
+
+  [data-testid^="dialog-pdf-popout-invoice-"] [data-testid^="pdf-popout-resize-"] {
+    display: none;
+  }
+}

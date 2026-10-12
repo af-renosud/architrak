@@ -3,6 +3,12 @@ name: Acompte in Certified figures
 description: How the financial summary counts acompte certificats without double-counting recouped deposits
 ---
 
+Opening deposit **requests** must remain distinct from deposits **already paid**. A contractor PDF may print the full contract totals and separately request a percentage as a “FACTURE D'ACOMPTE”; the lower requested sum is not inherently an extraction error.
+
+**Why:** the user's contractor example prints full TTC €69,674 alongside a 30% request of €20,902.20. Treating every net amount as full TTC minus deductions produces a false warning.
+
+**How to apply:** require explicit source wording and matching percentage arithmetic before exempting this case; never infer a paid deposit, alter gross financial amounts, or suppress unrelated discrepancies.
+
 "Certified" per devis = gross facture sums + OUTSTANDING acompte (issued, non-superseded acompte cert works HT minus contractor-level `cumulativeAcompteRecoupment` read from the LATEST issued non-superseded progress cert — latest-prior rule, never max()/sum()). A source-bound immutable invoice application is authoritative proof that the deposit was recovered and therefore contributes 0, even if the devis workflow state is stale; `acompteState = 'applied'` remains the normal lifecycle representation. When that gross invoice is certified, its applied HT enters certificate previous-payments exactly once; later certificates inherit it through the prior chain. Once an application exists, the database—not only individual routes—must seal the invoice's economic and source-provenance facts.
 
 **Why:** an acompte cert has no facture; without this a client sees a payment demand next to "Certified 0,00 €". A later gross invoice can retain its full documentary value while separately proving the exact deposit deduction. Counting both that gross invoice and the deposit overstates certified totals, while relying only on mutable workflow state can reintroduce the error.
