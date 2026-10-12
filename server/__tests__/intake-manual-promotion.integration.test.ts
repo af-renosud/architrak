@@ -133,6 +133,33 @@ afterAll(async () => {
 });
 
 describe("parked financial document manual promotion", () => {
+  it("persists only the requested TTC deposit and calculated HT while preserving contract evidence", async () => {
+    const source = await createSource({
+      analysisState: "analyzed", routingState: "parked",
+      extractedData: {
+        documentType: "acompte", amountHt: 63340, amountTtc: 69674,
+        tvaAmount: 6334, tvaRate: 10, netAPayer: 20902.2,
+        rawText: "FACTURE D'ACOMPTE DE 30 % TTC",
+      },
+    });
+    const promoted = await promoteParkedFinancialDocument({
+      intakeDocumentId: source.id, expectedFingerprint: fingerprint,
+      kind: "invoice", contractorId, devisId: targetDevisId,
+      note: "Verified source deposit for financial review.",
+      confirmedByUserId: userId,
+    });
+    const [invoice] = await db.select().from(invoices).where(eq(invoices.id, promoted.id));
+    expect(Number(invoice.amountHt)).toBe(19002);
+    expect(Number(invoice.amountTtc)).toBe(20902.2);
+    expect(Number(invoice.tvaAmount)).toBe(1900.2);
+    expect(invoice.aiExtractedData).toMatchObject({
+      amountHt: 63340, amountTtc: 69674,
+      openingDepositSourceTotals: { amountHt: 63340, amountTtc: 69674 },
+    });
+    expect(invoice.status).toBe("draft");
+    expect(invoice.datePaid).toBeNull();
+  });
+
   it("creates exactly one incomplete devis and immutable audit under concurrent replay", async () => {
     const source = await createSource();
     const input = {

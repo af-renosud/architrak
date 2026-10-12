@@ -27,6 +27,8 @@ import { TvaDerivedHint } from "@/components/ui/tva-derived-hint";
 import { type ReactNode } from "react";
 import { Amount } from "@/components/ui/amount";
 import { formatCurrency as fmt } from "@/lib/utils";
+import { useInvoiceReviewAmounts } from "./invoice-review-amounts";
+import { InvoiceDepositContext, InvoiceAmountCalculationHint } from "./InvoiceDepositContext";
 
 // Task #413 — fetch a generated PDF (slow: rendered on demand) and open it in
 // a new tab, keeping a spinner on the button while it generates.
@@ -1021,8 +1023,8 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
   const warnings = (invoice.validationWarnings as ValidationWarning[] | null) ?? [];
   const confidence = invoice.aiConfidence ?? 50;
 
-  const [editAmountHt, setEditAmountHt] = useState(invoice.amountHt);
-  const [editAmountTtc, setEditAmountTtc] = useState(invoice.amountTtc);
+  const amountReview = useInvoiceReviewAmounts(invoice.aiExtractedData, invoice.amountHt, invoice.amountTtc);
+  const { amountHt: editAmountHt, amountTtc: editAmountTtc } = amountReview;
   const [editInvoiceNumber, setEditInvoiceNumber] = useState(String(invoice.invoiceNumber));
   const [editDateIssued, setEditDateIssued] = useState(invoice.dateIssued ?? "");
   const [manualReviewConfirmed, setManualReviewConfirmed] = useState(false);
@@ -1031,6 +1033,7 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
 
   const confirmMutation = useMutation({
     mutationFn: async () => {
+      if (!amountReview.validAmounts) throw new Error("Enter valid HT and TTC amounts before confirming.");
       const corrections: Record<string, any> = {};
       if (editAmountHt !== invoice.amountHt) corrections.amountHt = editAmountHt;
       if (editAmountTtc !== invoice.amountTtc) corrections.amountTtc = editAmountTtc;
@@ -1110,17 +1113,26 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
         <AdvisoriesList subject={{ type: "invoice", id: invoice.id }} />
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
+      <InvoiceDepositContext
+        review={amountReview}
+        invoiceId={invoice.id}
+        disabled={isArchived || confirmMutation.isPending || discardMutation.isPending}
+      />
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <label className="text-[10px] font-semibold text-foreground block mb-1">
             Amount HT
             {fieldWarnings("amountHt").length > 0 && <Badge variant="destructive" className="ml-1 text-[8px]">Flagged</Badge>}
           </label>
           <Input
+            aria-label="Amount HT"
             type="number"
             step="0.01"
+            min="0"
             value={editAmountHt}
-            onChange={(e) => setEditAmountHt(e.target.value)}
+            onChange={(e) => amountReview.editAmount(e.target.value, "ht")}
+            disabled={isArchived || confirmMutation.isPending || discardMutation.isPending}
             className="text-[12px]"
             data-testid={`input-draft-ht-${invoice.id}`}
           />
@@ -1131,20 +1143,19 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
             {fieldWarnings("amountTtc").length > 0 && <Badge variant="destructive" className="ml-1 text-[8px]">Flagged</Badge>}
           </label>
           <Input
+            aria-label="Amount TTC"
             type="number"
             step="0.01"
+            min="0"
             value={editAmountTtc}
-            onChange={(e) => setEditAmountTtc(e.target.value)}
+            onChange={(e) => amountReview.editAmount(e.target.value, "ttc")}
+            disabled={isArchived || confirmMutation.isPending || discardMutation.isPending}
             className="text-[12px]"
             data-testid={`input-draft-ttc-${invoice.id}`}
           />
         </div>
-        <div className="col-span-2">
-          <TvaDerivedHint
-            amountHt={editAmountHt}
-            amountTtc={editAmountTtc}
-            testId={`text-draft-invoice-tva-derived-${invoice.id}`}
-          />
+        <div className="sm:col-span-2">
+          <InvoiceAmountCalculationHint review={amountReview} invoiceId={invoice.id} />
         </div>
         <div>
           <label className="text-[10px] font-semibold text-foreground block mb-1">Invoice Number</label>
@@ -1186,7 +1197,7 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
           size="sm"
           className="gap-1.5"
           onClick={() => confirmMutation.mutate()}
-          disabled={confirmMutation.isPending || discardMutation.isPending || isArchived || (invoice.manualIntakeReviewRequired && !manualReviewConfirmed)}
+          disabled={confirmMutation.isPending || discardMutation.isPending || isArchived || !amountReview.validAmounts || (invoice.manualIntakeReviewRequired && !manualReviewConfirmed)}
           data-testid={`button-confirm-draft-${invoice.id}`}
         >
           {confirmMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}

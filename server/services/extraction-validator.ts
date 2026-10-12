@@ -2,6 +2,7 @@ import type { ParsedDocument } from "../gmail/document-parser";
 import { roundCurrency, deriveTvaAmount } from "../../shared/financial-utils";
 import { checkExtractionCompleteness, checkFragmentLines } from "./extraction-completeness";
 import { isVerifiedOpeningDeposit } from "./opening-deposit-evidence";
+import { resolveOpeningDeposit } from "../../shared/invoice-deposit";
 
 export interface ValidationWarning {
   field: string;
@@ -237,7 +238,14 @@ export function validateExtraction(parsed: ParsedDocument): ValidationResult {
       0,
     );
     const roundedLineTotal = roundCurrency(lineTotal);
-    const roundedHt = roundCurrency(ht);
+    // An opening invoice requests a fraction of the contract. Printed work lines
+    // still describe the entire contract and must be checked against that source,
+    // not incorrectly compared with the deposit recorded as the invoice amount.
+    const deposit = resolveOpeningDeposit(parsed);
+    const usesDepositAmounts = deposit != null
+      && Math.abs(ht - deposit.amountHt) < 0.011
+      && ttc != null && Math.abs(ttc - deposit.amountTtc) < 0.011;
+    const roundedHt = roundCurrency(usesDepositAmounts ? (deposit.sourceHt ?? ht) : ht);
     if (Math.abs(roundedLineTotal - roundedHt) > 1.0) {
       // Before flagging a mismatch, check whether the line totals are simply
       // VAT-inclusive (TTC) amounts. French quotations often print per-line
@@ -247,8 +255,8 @@ export function validateExtraction(parsed: ParsedDocument): ValidationResult {
       const vatInclusiveMatch = detectVatInclusiveLineTotal(
         roundedLineTotal,
         roundedHt,
-        ttc,
-        tvaAmount,
+        usesDepositAmounts ? deposit.sourceTtc : ttc,
+        usesDepositAmounts ? roundCurrency(deposit.sourceTtc - roundedHt) : tvaAmount,
       );
       if (vatInclusiveMatch) {
         checksPassed++;
@@ -312,6 +320,16 @@ export function validateExtraction(parsed: ParsedDocument): ValidationResult {
     } else {
       checksPassed++;
     }
+  }
+
+  if (isVerifiedOpeningDeposit(parsed) && !resolveOpeningDeposit(parsed)) {
+    warnings.push({
+      field: "openingDepositAmount",
+      expected: "A single, consistent TVA rate declared in the source document",
+      actual: parsed.tvaRate,
+      message: "This document requests an opening deposit in TTC, not the full quotation total. The deposit HT could not be calculated safely because the document's TVA rate is missing, mixed, or inconsistent. Review the requested TTC and tax breakdown in the PDF before confirming; do not use the full quotation amounts as the deposit.",
+      severity: "warning",
+    });
   }
 
   let confidenceScore =

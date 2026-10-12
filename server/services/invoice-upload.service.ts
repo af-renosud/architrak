@@ -4,6 +4,7 @@ import {
 } from "../storage";
 import { uploadDocument } from "../storage/object-storage";
 import { validateExtraction } from "./extraction-validator";
+import { invoiceRequestAmounts } from "./invoice-request-amounts";
 import { findBlockingCompletenessWarnings } from "./extraction-completeness";
 import { roundCurrency, deriveTvaAmount } from "../../shared/financial-utils";
 import { reconcileAdvisories } from "./advisory-reconciler";
@@ -410,8 +411,13 @@ export async function processInvoiceUpload(
 
   const storageKey = await uploadDocument(devis.projectId, file.originalname, file.buffer, file.mimetype);
 
-  const effectiveHt = validation.correctedValues.amountHt ?? parsed.amountHt;
-  const effectiveTtc = validation.correctedValues.amountTtc ?? parsed.amountTtc;
+  const effectiveDocument = { ...parsed, ...validation.correctedValues };
+  const requestedAmounts = invoiceRequestAmounts(effectiveDocument);
+  if (effectiveDocument.openingDepositSourceTotals) {
+    parsed.openingDepositSourceTotals = effectiveDocument.openingDepositSourceTotals;
+  }
+  const effectiveHt = requestedAmounts.amountHt;
+  const effectiveTtc = requestedAmounts.amountTtc;
 
   // TVA-neutral: HT + TTC are the source of truth. tvaAmount is ALWAYS
   // derived as TTC − HT — we never persist an extracted tvaAmount that

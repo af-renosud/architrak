@@ -14,6 +14,7 @@ import {
   projects,
 } from "@shared/schema";
 import type { ParsedDocument } from "../../gmail/document-parser";
+import { invoiceRequestAmounts } from "../invoice-request-amounts";
 import { db } from "../../db";
 import { assertPdfMagic } from "../../middleware/upload";
 import { getDocumentBuffer } from "../../storage/object-storage";
@@ -275,7 +276,8 @@ export async function promoteParkedFinancialDocument(
     const parsed = asParsedDocument(doc.extractedData, input.kind);
     const validation = validateExtraction(parsed);
     const corrected = { ...parsed, ...validation.correctedValues };
-    const amounts = amountPair(parsed, validation.correctedValues);
+    const requested = input.kind === "invoice" ? invoiceRequestAmounts(corrected) : corrected;
+    const amounts = amountPair(parsed, requested);
     const warnings = manualWarnings(validation.warnings, parsed, reason);
     let promotedId: number;
     let reusedExistingFinancialInvoice = false;

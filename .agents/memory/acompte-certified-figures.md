@@ -7,7 +7,13 @@ Opening deposit **requests** must remain distinct from deposits **already paid**
 
 **Why:** the user's contractor example prints full TTC €69,674 alongside a 30% request of €20,902.20. Treating every net amount as full TTC minus deductions produces a false warning.
 
-**How to apply:** require explicit source wording and matching percentage arithmetic before exempting this case; never infer a paid deposit, alter gross financial amounts, or suppress unrelated discrepancies.
+**How to apply:** require explicit source wording and matching percentage arithmetic before exempting this case; never infer a paid deposit or suppress unrelated discrepancies. Preserve the full-contract extracted totals as source evidence, but populate the financial invoice with the verified deposit request (not the full contract), converting TTC to HT only with a single consistent document-declared TVA rate.
+
+Contractors commonly request an opening deposit only as a gross TTC amount. The user wants substantial explanatory context identifying the full contract reference, requested percentage/TTC, source TVA, and derived HT/TVA—not just corrected numbers.
+
+**Why:** suppressing a mismatch warning alone left full-contract totals in the editable invoice and forced the architect to manually reverse-calculate HT, risking over-certification.
+
+**How to apply:** new invoice ingestion (including manual intake promotion) uses the verified request; existing drafts get an explicit apply action rather than silent overwrites. Linked HT/TTC edits need a source-backed single rate; missing, conflicting or multiple rates require review. Requested deposits remain distinct from already-paid deductions.
 
 "Certified" per devis = gross facture sums + OUTSTANDING acompte (issued, non-superseded acompte cert works HT minus contractor-level `cumulativeAcompteRecoupment` read from the LATEST issued non-superseded progress cert — latest-prior rule, never max()/sum()). A source-bound immutable invoice application is authoritative proof that the deposit was recovered and therefore contributes 0, even if the devis workflow state is stale; `acompteState = 'applied'` remains the normal lifecycle representation. When that gross invoice is certified, its applied HT enters certificate previous-payments exactly once; later certificates inherit it through the prior chain. Once an application exists, the database—not only individual routes—must seal the invoice's economic and source-provenance facts.
 

@@ -364,8 +364,14 @@ router.post(
         // corrections body. AI output remains evidence; final invoice values
         // are authoritative.
         const aiData = (invoice.aiExtractedData as Record<string, unknown> | null) ?? {};
+        const { invoiceRequestAmounts } = await import("../services/invoice-request-amounts");
+        const sourceEvidence = { documentType: "invoice", ...aiData } as ParsedDocument;
+        invoiceRequestAmounts(sourceEvidence);
+        if (sourceEvidence.openingDepositSourceTotals && !aiData.openingDepositSourceTotals) {
+          updates.aiExtractedData = sourceEvidence;
+        }
         const canonicalParsed = {
-          ...aiData,
+          ...sourceEvidence,
           amountHt: finalHt,
           amountTtc: finalTtc,
           tvaAmount: deriveTvaAmount(finalHt, finalTtc),

@@ -165,6 +165,10 @@ export interface ParsedDocument {
   /** Printed pre-tax charges outside Montant H.T. (for example "FRAIS FIXES"). */
   preTaxChargesHt?: number;
   tvaRate?: number;
+  /** Explicit rates collected from the PDF text layer; multiple rates disable automatic conversion. */
+  declaredTvaRates?: number[];
+  /** Original full-work totals retained when the invoice records only a requested deposit. */
+  openingDepositSourceTotals?: { amountHt: number; amountTtc: number; tvaAmount?: number };
   autoLiquidation?: boolean;
   retenueDeGarantie?: number;
   netAPayer?: number;
@@ -352,7 +356,8 @@ const USER_PROMPT = `Analyze this French construction document and extract the f
 - preTaxChargesHt: sum of separately printed pre-tax fixed, freight, delivery, or environmental charges added after amountHt and before TVA; use 0 when the totals box is legible and no such charge is printed; do not fold these charges into amountHt or lineItems
 - amountTtc: total amount including tax (Montant TTC) as a number with 2 decimal places
 - tvaAmount: TVA amount as a number with 2 decimal places
-- tvaRate: TVA rate as a percentage number (e.g., 20 for 20%). If auto-liquidation, set to 0.
+- tvaRate: TVA rate as a percentage number (e.g., 20 for 20%). If auto-liquidation, set to 0. Do not invent an effective or blended rate when several rates are printed.
+- declaredTvaRates: array of all distinct TVA percentages explicitly printed on the document. For mixed-rate documents include every rate, not just the main rate. Use [] if none is stated. Never include a deposit percentage in this list.
 - autoLiquidation: true if TVA auto-liquidation applies (Article 283-2 nonies CGI), false otherwise
 - retenueDeGarantie: retenue de garantie holdback amount if present, as a number with 2 decimal places
 - netAPayer: net payable amount (after deductions) if visible, as a number with 2 decimal places. On a FACTURE D'ACOMPTE explicitly requesting a percentage of the overall contract TTC, use the actual deposit requested, not the overall contract's generic net-total box. Preserve the printed gross totals in amountHt/amountTtc, copy the exact deposit heading (including percentage and TTC basis) into acompteTrigger, and never classify a requested deposit as acomptePaidAmountTtc.
@@ -519,6 +524,12 @@ const EXTRACTION_SCHEMA: ResponseSchema = {
     tvaRate: {
       type: SchemaType.NUMBER,
       description: "TVA rate as percentage (e.g., 20 for 20%). Set to 0 if auto-liquidation.",
+      nullable: true,
+    },
+    declaredTvaRates: {
+      type: SchemaType.ARRAY,
+      items: { type: SchemaType.NUMBER },
+      description: "All distinct explicitly printed TVA percentages, including every rate on mixed-rate documents. Empty if absent. Never a deposit percentage or inferred/blended rate.",
       nullable: true,
     },
     autoLiquidation: {
@@ -2810,9 +2821,16 @@ export async function parseDocument(
       parsed.projectReference = textIdentity.projectReference;
     }
     if (parsed.documentType === "invoice" || parsed.documentType === "acompte") {
-      const { openingDepositEvidence } = await import("../services/opening-deposit-evidence");
-      const opening = openingDepositEvidence(pageTexts.join("\n"));
+      const { openingDepositEvidence, declaredTvaRates, printedOpeningDepositRequest } = await import("../../shared/invoice-deposit");
+      const sourceText = pageTexts.join("\n");
+      const opening = openingDepositEvidence(sourceText);
       if (opening) parsed.openingDepositEvidenceText = opening.text;
+      parsed.declaredTvaRates = Array.from(new Set([
+        ...(Array.isArray(parsed.declaredTvaRates) ? parsed.declaredTvaRates : []),
+        ...declaredTvaRates(sourceText),
+      ]));
+      const requested = printedOpeningDepositRequest(sourceText, parsed.amountTtc);
+      if (requested != null) parsed.netAPayer = requested;
     }
     if (parsed.documentType === "invoice" || parsed.documentType === "situation") {
       const paidAcompte = extractPaidAcompteFromTextLayer(pageTexts);
