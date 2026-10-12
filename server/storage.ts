@@ -2233,8 +2233,15 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteInvoice(id: number): Promise<boolean> {
-    const result = await db.delete(invoices).where(eq(invoices.id, id)).returning();
-    return result.length > 0;
+    return db.transaction(async tx => {
+      const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, id)).for("update");
+      if (!invoice || invoice.status !== "draft") return false;
+      // Database source/payment guards still reject protected invoice deletion.
+      await tx.delete(invoices).where(eq(invoices.id, id));
+      const { releaseDeletedInvoiceSource } = await import("./services/intake/release-deleted-invoice");
+      await releaseDeletedInvoiceSource(tx, invoice);
+      return true;
+    });
   }
 
   async getInvoiceRefEdits(invoiceId: number): Promise<InvoiceRefEdit[]> {
@@ -7842,6 +7849,8 @@ export class DatabaseStorage implements IStorage {
         eq(projectIntakeDocuments.projectId, projectId),
         eq(projectIntakeDocuments.contentFingerprint, fingerprint),
         eq(projectIntakeDocuments.analysisState, "analyzed"),
+        ne(projectIntakeDocuments.routingState, "duplicate"),
+        sql`NOT (${projectIntakeDocuments.promotedId} IS NULL AND COALESCE(${projectIntakeDocuments.extractedData}, '{}'::jsonb) ? 'releasedInvoiceId')`,
         ne(projectIntakeDocuments.id, excludeId),
       ))
       .orderBy(asc(projectIntakeDocuments.id))
@@ -7862,6 +7871,8 @@ export class DatabaseStorage implements IStorage {
         eq(projectIntakeDocuments.analysisState, "analyzed"),
         ne(projectIntakeDocuments.id, excludeId),
         sql`${projectIntakeDocuments.extractedData}->>'contentHash' = ${textHash}`,
+        ne(projectIntakeDocuments.routingState, "duplicate"),
+        sql`NOT (${projectIntakeDocuments.promotedId} IS NULL AND COALESCE(${projectIntakeDocuments.extractedData}, '{}'::jsonb) ? 'releasedInvoiceId')`,
       ))
       .orderBy(asc(projectIntakeDocuments.id))
       .limit(1);

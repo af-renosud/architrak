@@ -70,6 +70,7 @@ export interface MigrationArtifact {
  * migration. Set the flag on every new data-only DML backfill.
  */
 export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
+  { tag: "0143_recover_deleted_invoice_intake", artifact: { kind: "data_only", reason: "guarded recovery of deleted Massey draft invoice source and blocked re-upload", rerunnable: true } },
   { tag: "0142_external_works", artifact: { kind: "all", artifacts: [
     { kind: "table", table: "external_works" },
     { kind: "table", table: "external_work_audit" },

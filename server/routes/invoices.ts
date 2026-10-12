@@ -13,6 +13,7 @@ import {
 import { eq } from "drizzle-orm";
 import { upload } from "../middleware/upload";
 import { processInvoiceUpload } from "../services/invoice-upload.service";
+import { releaseDeletedInvoiceSource } from "../services/intake/release-deleted-invoice";
 import { PdfPasswordProtectedError } from "../gmail/document-parser";
 import { INVOICE_UPLOAD_ERROR_CODES } from "../../shared/invoice-upload-errors";
 import { approveInvoice } from "../services/invoice-approval.service";
@@ -525,6 +526,7 @@ router.delete(
         if (application) return { outcome: "immutable" as const };
 
         await tx.delete(invoicesTable).where(eq(invoicesTable.id, invoice.id));
+        await releaseDeletedInvoiceSource(tx, invoice);
         return { outcome: "deleted" as const, devisId: invoice.devisId };
       });
       if (deletion.outcome === "not_found") return res.status(404).json({ message: "Invoice not found" });

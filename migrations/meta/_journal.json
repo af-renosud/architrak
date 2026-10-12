@@ -1002,6 +1002,13 @@
       "when": 1791600000000,
       "tag": "0142_external_works",
       "breakpoints": true
+    },
+    {
+      "idx": 143,
+      "version": "7",
+      "when": 1791900000000,
+      "tag": "0143_recover_deleted_invoice_intake",
+      "breakpoints": true
     }
   ]
 }
