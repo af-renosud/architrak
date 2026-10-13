@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { invoiceRequestConflict } from "../invoice-request-guard";
+import { invoiceRequestConflict, invoiceRequestEvidenceKey } from "../invoice-request-guard";
 
 const evidence = {
   documentType: "invoice", amountHt: 63340, amountTtc: 69674, netAPayer: 20902.2, tvaRate: 10,
@@ -10,6 +10,17 @@ const row = (amountHt: number | string, amountTtc: number | string) =>
   ({ amountHt, amountTtc, aiExtractedData: evidence });
 
 describe("requested deposit amount safety", () => {
+  it("accepts an explicit decision only for the exact source and amounts", () => {
+    const source = { ...evidence, _requestResolution: {
+      evidenceKey: invoiceRequestEvidenceKey(evidence), amountHt: 20000, amountTtc: 22000,
+      reason: "Operator checked the revised documentary request.",
+    } };
+    expect(invoiceRequestConflict({ ...row(20000, 22000), aiExtractedData: source })).toBeNull();
+    expect(invoiceRequestConflict({ ...row(20001, 22000), aiExtractedData: source })).toBeTruthy();
+    expect(invoiceRequestConflict({ ...row(20000, 22000), aiExtractedData: {
+      ...source, openingDepositSourceTotals: { ...evidence.openingDepositSourceTotals, amountHt: 64000 },
+    } })).toBeTruthy();
+  });
   it("refuses internally consistent contract totals despite a generic review acknowledgement", () => {
     expect(invoiceRequestConflict({ ...row("63340.00", "69674.00"), ...{ manualIntakeReviewRequired: false } }))
       .toContain("20902.20 EUR TTC (19002.00 EUR HT");

@@ -21,3 +21,9 @@ No-invoice deposits must derive accounting descriptions exclusively from their d
 - Database immutability needs a claim-side row lock as well as a mutation trigger: lock the invoice before inserting its source row, then reject protected UPDATE/DELETE while any non-superseded certificate references it. Superseded-only references intentionally remain mutable.
 - **Why:** a mutation trigger alone can race an uncommitted source insert under READ COMMITTED and observe no reference; serializing both sides on the evidence row makes one ordering authoritative.
 - **How to apply:** every new source-claim writer, including direct SQL and maintenance workers, must pass through the claim-side lock trigger; preserve the same active-versus-superseded policy in application prechecks and database guards.
+
+An unscoped certificate must not be assigned to an invoice merely because contractor and HT amount match. Unknown legacy scope requires documentary reconciliation; an authorized one-off repair must be pinned to the reviewed identities and source fingerprint.
+
+**Why:** equal deposits can occur on unrelated quotations. Amount matching could attach the wrong invoice and remove an unrelated architect invoice from its outbound package.
+
+**How to apply:** scope payment, communication and attachment checks to proven relationships; refuse genuinely ambiguous legacy certificates. A quotation's TVA evidence alone is not proof of its complete invoice scope.

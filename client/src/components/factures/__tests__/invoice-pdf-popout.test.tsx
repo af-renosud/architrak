@@ -10,6 +10,10 @@ import type { Invoice } from "@shared/schema";
 
 vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: vi.fn() }) }));
 vi.mock("@/components/advisories/AdvisoriesList", () => ({ AdvisoriesList: () => null, AdvisoryBadge: () => null }));
+// History is independent of PDF viewing and has its own request-safety coverage.
+// Isolate it so one-shot access-error and PDF-generation mocks reach the PDF
+// request they exercise, rather than the expanded detail's history GET.
+vi.mock("../InvoiceRequestResolutionHistory", () => ({ InvoiceRequestResolutionHistory: () => null }));
 
 const makeInvoice = (id: number) => ({
   id, devisId: 35, projectId: 12, contractorId: 7,

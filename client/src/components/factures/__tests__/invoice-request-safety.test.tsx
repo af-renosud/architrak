@@ -40,11 +40,25 @@ function renderTab(expanded: number | null = 41) {
   );
 }
 
+function expectOnlyHistoryReads() {
+  const calls = vi.mocked(fetch).mock.calls;
+  expect(calls.filter(([, options]) => options?.method === "POST")).toHaveLength(0);
+  for (const [url, options] of calls) {
+    expect(url).toBe("/api/invoices/41/request-resolution-history");
+    expect(options).toEqual(expect.objectContaining({ method: "GET", credentials: "include" }));
+  }
+}
+
 beforeEach(() => {
   queryClient.clear();
   queryClient.setQueryData(projectScopedKey(12, "devis"), []);
   queryClient.setQueryData(projectScopedKey(12, "certificat-invoice-links"), []);
-  vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Unexpected request")));
+  vi.stubGlobal("fetch", vi.fn().mockImplementation(async (url, options) => {
+    if (url === "/api/invoices/41/request-resolution-history" && options?.method === "GET") {
+      return { ok: true, json: async () => [] } as Response;
+    }
+    throw new Error("Unexpected request");
+  }));
 });
 afterEach(() => { cleanup(); queryClient.clear(); vi.unstubAllGlobals(); });
 
@@ -65,7 +79,7 @@ describe("invoice request safety", () => {
     expect(screen.queryByTestId("conflict-draft-invoice-41")).toBeNull();
     fireEvent.change(screen.getByTestId("input-draft-ht-41"), { target: { value: "18237.45" } });
     expect(confirm).toBeDisabled();
-    expect(fetch).not.toHaveBeenCalled();
+    expectOnlyHistoryReads();
   });
 
   it("keeps unresolved evidence blocked even after acknowledging review", async () => {
@@ -80,13 +94,24 @@ describe("invoice request safety", () => {
 
   it("shows the complete conflict on collapsed pending rows and blocks approval without blocking reopen", async () => {
     const pending = invoice(41, "pending");
-    seed([pending]);
+    seed([invoice(40, "pending"), pending]);
     renderTab(null);
     expect(screen.getByTestId("conflict-invoice-41")).toHaveTextContent(invoiceRequestConflict(pending)!);
+    expect(screen.queryByTestId("request-resolution-history-41")).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId("row-facture-toggle-41"));
     expect(await screen.findByTestId("button-approve-invoice-41")).toBeDisabled();
     expect(screen.getByTestId("button-reopen-review-invoice-41")).toBeEnabled();
-    expect(fetch).not.toHaveBeenCalled();
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    expectOnlyHistoryReads();
+    expect(screen.queryByTestId("request-resolution-history-40")).toBeNull();
+    fireEvent.click(screen.getByTestId("row-facture-toggle-41"));
+    expect(screen.queryByTestId("request-resolution-history-41")).toBeNull();
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/invoices", 41, "request-resolution-history"] });
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expectOnlyHistoryReads();
   });
 
   it("blocks single creation and selection, including a selection that becomes conflicting after refresh", async () => {

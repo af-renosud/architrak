@@ -8,9 +8,10 @@ import {
   insertInvoiceSchema,
   invoiceAcompteApplications,
   invoices as invoicesTable,
+  invoiceRequestDecisions,
   type InsertInvoice,
 } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 import { upload } from "../middleware/upload";
 import { processInvoiceUpload } from "../services/invoice-upload.service";
 import { releaseDeletedInvoiceSource } from "../services/intake/release-deleted-invoice";
@@ -19,7 +20,7 @@ import { INVOICE_UPLOAD_ERROR_CODES } from "../../shared/invoice-upload-errors";
 import { approveInvoice } from "../services/invoice-approval.service";
 import { reopenInvoiceDraft } from "../services/draft-reopen.service";
 import { invoiceRequestConflict } from "../../shared/invoice-request-guard";
-import { getDocumentStream } from "../storage/object-storage";
+import { getDocumentStream, getDocumentBuffer } from "../storage/object-storage";
 import {
   generateInvoicePackagePdf,
   ProjectOverviewNotFoundError,
@@ -44,13 +45,56 @@ import {
 } from "../services/invoice-certificate-source-guard.service";
 
 const router = Router();
+import { resolveInvoiceRequest, RequestResolutionError } from "../services/invoice-request-resolution.service";
+const resolutionSchema = z.object({
+  expectedVersion: z.string().length(64), reason: z.string().trim().min(20).max(4000),
+  amountHt: z.number().finite().positive().multipleOf(0.01),
+  amountTtc: z.number().finite().positive().multipleOf(0.01),
+  reconcileCertificateId: z.number().int().positive().optional(),
+  externalInvoiceUnsent: z.boolean().optional(),
+}).strict().refine(value => value.amountTtc >= value.amountHt, "TTC must be at least HT");
+router.get("/api/invoices/:id/request-resolution", requireAuth, async (req, res) => {
+  try { res.json(await resolveInvoiceRequest(Number(req.params.id), String(req.session.userId))); }
+  catch (error) { res.status(error instanceof RequestResolutionError ? 409 : 500).json({ message: error instanceof RequestResolutionError ? error.message : "Correction preview failed." }); }
+});
+router.get("/api/invoices/:id/request-resolution-history", requireAuth, async (req, res) => {
+  const events = await db.select().from(invoiceRequestDecisions)
+    .where(eq(invoiceRequestDecisions.invoiceId, Number(req.params.id))).orderBy(desc(invoiceRequestDecisions.id));
+  res.json(events.map(event => {
+    const before = event.beforeState as any, after = event.afterState as any;
+    return { id: event.id, reason: event.reason, createdAt: event.createdAt, actor: event.actor,
+      beforeHt: before.invoice.amountHt, beforeTtc: before.invoice.amountTtc,
+      afterHt: after.invoice.amountHt, afterTtc: after.invoice.amountTtc,
+      originals: (before.attachments ?? []).filter((a: any) => a.storageKey).map((a: any) => ({
+        certificateId: a.certificatId, fileName: a.fileName,
+        url: `/api/invoices/${req.params.id}/request-resolution-history/${event.id}/original/${a.certificatId}`,
+      })),
+    };
+  }));
+});
+router.get("/api/invoices/:id/request-resolution-history/:eventId/original/:certificatId", requireAuth, async (req, res) => {
+  const [event] = await db.select().from(invoiceRequestDecisions).where(and(
+    eq(invoiceRequestDecisions.id, Number(req.params.eventId)), eq(invoiceRequestDecisions.invoiceId, Number(req.params.id))));
+  const original = (event?.beforeState as any)?.attachments?.find((a: any) => a.certificatId === Number(req.params.certificatId));
+  if (!original?.storageKey) return res.status(404).json({ message: "Original not found." });
+  try {
+    const buffer = await getDocumentBuffer(original.storageKey);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", "attachment; filename=\"original-architect-invoice.pdf\"");
+    res.send(buffer);
+  } catch { res.status(500).json({ message: "Original could not be retrieved." }); }
+});
+router.post("/api/invoices/:id/request-resolution", requireAuth, validateRequest({ body: resolutionSchema }), async (req, res) => {
+  try { res.json(await resolveInvoiceRequest(Number(req.params.id), String(req.session.userId), req.body)); }
+  catch (error) { res.status(error instanceof RequestResolutionError ? 409 : 500).json({ message: error instanceof RequestResolutionError ? error.message : "Correction failed; no changes were committed." }); }
+});
 const idParams = z.object({ id: z.coerce.number().int().positive() });
 const devisIdParams = z.object({ devisId: z.coerce.number().int().positive() });
 const advisoryAckParams = z.object({
   id: z.coerce.number().int().positive(),
   advisoryId: z.coerce.number().int().positive(),
 });
-const createInvoiceBodySchema = insertInvoiceSchema.omit({ devisId: true });
+const createInvoiceBodySchema = insertInvoiceSchema.omit({ devisId: true, aiExtractedData: true, status: true });
 const updateInvoiceSchema = insertInvoiceSchema.omit({ status: true, aiExtractedData: true }).partial().strict();
 
 const invoiceConfirmSchema = z.object({
@@ -230,9 +274,6 @@ router.patch(
         if (!existing) return { outcome: "not_found" as const };
 
         if (changesApplicationProtectedInvoiceField(req.body)) {
-          if (existing.status === "approved" || existing.status === "paid" || existing.datePaid) {
-            return { outcome: "approved_immutable" as const };
-          }
           if (await hasLiveCertificateSource(tx, invoiceId)) {
             return { outcome: "certificate_immutable" as const };
           }
@@ -242,11 +283,21 @@ router.patch(
             .where(eq(invoiceAcompteApplications.invoiceId, invoiceId))
             .limit(1);
           if (application) return { outcome: "immutable" as const };
+          if (existing.status === "approved" || existing.status === "paid" || existing.datePaid) {
+            return { outcome: "approved_immutable" as const };
+          }
         }
 
         const [invoice] = await tx
           .update(invoicesTable)
-          .set(req.body)
+          .set({
+            ...req.body,
+            ...(changesApplicationProtectedInvoiceField(req.body) ? {
+              aiExtractedData: Object.fromEntries(Object.entries(
+                (existing.aiExtractedData as Record<string, unknown>) ?? {},
+              ).filter(([key]) => key !== "_requestResolution")),
+            } : {}),
+          })
           .where(eq(invoicesTable.id, invoiceId))
           .returning();
         return { outcome: "updated" as const, invoice };

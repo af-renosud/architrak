@@ -1717,6 +1717,16 @@ export const archidocTrades = pgTable("archidoc_trades", {
   syncedAt: timestamp("synced_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
+export const invoiceRequestDecisions = pgTable("invoice_request_decisions", {
+  id: serial("id").primaryKey(),
+  invoiceId: integer("invoice_id").notNull(),
+  actor: text("actor").notNull(),
+  reason: text("reason").notNull(),
+  beforeState: jsonb("before_state").notNull(),
+  afterState: jsonb("after_state").notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, t => [check("invoice_request_decisions_reason_check", sql`length(trim(${t.reason})) >= 20`)]);
+
 export const archidocTechnicalLots = pgTable("archidoc_technical_lots", {
   archidocId: varchar("archidoc_id", { length: 255 }).primaryKey(),
   code: text("code").notNull(),

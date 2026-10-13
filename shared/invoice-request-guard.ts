@@ -1,10 +1,27 @@
 import { resolveOpeningDeposit, openingDepositEvidence, type DepositDocument } from "./invoice-deposit";
 
+export function invoiceRequestEvidenceKey(source: unknown): string {
+  const clean = { ...(source as Record<string, unknown> ?? {}) };
+  delete clean._requestResolution;
+  function canonical(value: any): any {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === "object") return Object.fromEntries(
+      Object.keys(value).sort().map(key => [key, canonical(value[key])]));
+    return value;
+  }
+  return JSON.stringify(canonical(clean));
+}
+
 /** Evaluate stored source evidence separately from the editable economic amounts. */
 export function invoiceRequestConflict(invoice: {
   aiExtractedData?: unknown; amountHt: string | number; amountTtc: string | number;
 }): string | null {
   const source = invoice.aiExtractedData as DepositDocument | null;
+  const resolution = (source as any)?._requestResolution;
+  if (resolution?.evidenceKey === invoiceRequestEvidenceKey(source)
+    && resolution.amountHt === Number(invoice.amountHt)
+    && resolution.amountTtc === Number(invoice.amountTtc)
+    && typeof resolution.reason === "string" && resolution.reason.trim().length >= 20) return null;
   if (!source || !["invoice", "acompte"].includes(source.documentType ?? "")) return null;
   // Already-paid deductions are a different accounting event.
   if ((source.acomptePaidAmountTtc ?? 0) > 0) return null;

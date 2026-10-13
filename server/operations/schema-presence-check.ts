@@ -70,6 +70,12 @@ export interface MigrationArtifact {
  * migration. Set the flag on every new data-only DML backfill.
  */
 export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
+  { tag: "0144_invoice_request_decisions", artifact: { kind: "all", artifacts: [
+    { kind: "table", table: "invoice_request_decisions" },
+    { kind: "constraint", table: "invoice_request_decisions", constraint: "invoice_request_decisions_pkey" },
+    { kind: "constraint", table: "invoice_request_decisions", constraint: "invoice_request_decisions_reason_check" },
+    { kind: "trigger", table: "invoice_request_decisions", trigger: "invoice_request_decisions_immutable" },
+  ] } },
   { tag: "0143_recover_deleted_invoice_intake", artifact: { kind: "data_only", reason: "guarded recovery of deleted Massey draft invoice source and blocked re-upload", rerunnable: true } },
   { tag: "0142_external_works", artifact: { kind: "all", artifacts: [
     { kind: "table", table: "external_works" },

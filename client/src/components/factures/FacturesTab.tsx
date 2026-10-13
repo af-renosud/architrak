@@ -30,6 +30,8 @@ import { Amount } from "@/components/ui/amount";
 import { formatCurrency as fmt } from "@/lib/utils";
 import { useInvoiceReviewAmounts } from "./invoice-review-amounts";
 import { InvoiceDepositContext, InvoiceAmountCalculationHint, InvoiceRequestConflictNotice } from "./InvoiceDepositContext";
+import { InvoiceRequestResolutionDialog } from "./InvoiceRequestResolutionDialog";
+import { InvoiceRequestResolutionHistory } from "./InvoiceRequestResolutionHistory";
 
 // Task #413 — fetch a generated PDF (slow: rendered on demand) and open it in
 // a new tab, keeping a spinner on the button while it generates.
@@ -558,6 +560,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
   });
   const certLinkByInvoice = new Map((certLinks ?? []).map((l) => [l.invoiceId, l]));
   const [certDialogInvoice, setCertDialogInvoice] = useState<Invoice | null>(null);
+  const [resolutionInvoice, setResolutionInvoice] = useState<Invoice | null>(null);
 
   // Multi-facture certificats — selection of eligible factures (same contractor).
   const [selectedForCert, setSelectedForCert] = useState<Set<number>>(new Set());
@@ -888,6 +891,13 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                       <StatusBadge status={inv.status} />
                     </div>
                   </div>
+                  {requestConflict && ["draft", "pending", "approved"].includes(inv.status) && (
+                    <div className="mt-3 flex justify-end">
+                      <Button variant="outline" size="sm" disabled={isArchived || inv.datePaid != null} onClick={() => setResolutionInvoice(inv)} data-testid={`button-resolve-invoice-request-${inv.id}`}>
+                        Resolve request with audited decision
+                      </Button>
+                    </div>
+                  )}
                   {(inv.status === "pending" || inv.status === "approved") && (
                     <div className={requestConflict ? "mt-3" : undefined}>
                       <InvoiceRequestConflictNotice message={requestConflict} testId={`conflict-invoice-${inv.id}`} />
@@ -902,6 +912,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                     devis={dv}
                     contractorName={contractorMap.get(inv.contractorId) ?? `#${inv.contractorId}`}
                     isArchived={isArchived}
+                    onResolveRequest={() => setResolutionInvoice(inv)}
                   />
                 )}
               </div>
@@ -949,6 +960,9 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
           projectId={projectId}
           onClose={() => setCertDialogInvoice(null)}
         />
+      )}
+      {resolutionInvoice && (
+        <InvoiceRequestResolutionDialog invoice={resolutionInvoice} onClose={() => setResolutionInvoice(null)} />
       )}
 
       <Dialog open={uploadDialogOpen} onOpenChange={(open) => { if (!uploadMutation.isPending) setUploadDialogOpen(open); }}>
@@ -1034,11 +1048,12 @@ function ConfidenceIndicator({ score }: { score: number }) {
   );
 }
 
-function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
+function DraftReviewPanel({ invoice, projectId, devis, isArchived = false, onResolveRequest }: {
   invoice: Invoice;
   projectId: string;
   devis?: Devis;
   isArchived?: boolean;
+  onResolveRequest: () => void;
 }) {
   const { toast } = useToast();
   const warnings = (invoice.validationWarnings as ValidationWarning[] | null) ?? [];
@@ -1136,6 +1151,11 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
       </div>
 
       <InvoiceRequestConflictNotice message={amountReview.requestConflict} testId={`conflict-draft-invoice-${invoice.id}`} />
+      {amountReview.requestConflict && (
+        <Button variant="outline" size="sm" disabled={isArchived || confirmMutation.isPending || discardMutation.isPending} onClick={onResolveRequest}>
+          Resolve request with audited decision
+        </Button>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div className="sm:col-span-2">
@@ -1235,12 +1255,13 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
   );
 }
 
-function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArchived = false }: {
+function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArchived = false, onResolveRequest }: {
   invoice: Invoice;
   projectId: string;
   devis?: Devis;
   contractorName: string;
   isArchived?: boolean;
+  onResolveRequest: () => void;
 }) {
   const { toast } = useToast();
   const [notes, setNotes] = useState(invoice.notes ?? "");
@@ -1306,6 +1327,7 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
 
   return (
     <div className="ml-4 mt-2 space-y-4 border-l-2 border-[#c1a27b]/30 pl-4 pb-2">
+      <InvoiceRequestResolutionHistory invoiceId={invoice.id} />
       <div className="space-y-1.5" data-testid={`section-advisories-invoice-${invoice.id}`}>
         <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
           Extraction Advisories
@@ -1314,7 +1336,14 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
       </div>
 
       {invoice.status === "draft" && (
-        <DraftReviewPanel invoice={invoice} projectId={projectId} devis={devis} isArchived={isArchived} />
+        <DraftReviewPanel
+          key={JSON.stringify((invoice.aiExtractedData as Record<string, unknown> | null)?._requestResolution ?? null)}
+          invoice={invoice}
+          projectId={projectId}
+          devis={devis}
+          isArchived={isArchived}
+          onResolveRequest={onResolveRequest}
+        />
       )}
 
       {invoice.status === "pending" && (
