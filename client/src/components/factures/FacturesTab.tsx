@@ -22,13 +22,14 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient, projectScopedKey, ApiError } from "@/lib/queryClient";
 import type { Invoice, Contractor, Devis } from "@shared/schema";
 import { getInvoiceUploadErrorTitle } from "@shared/invoice-upload-errors";
+import { invoiceRequestConflict } from "@shared/invoice-request-guard";
 import { AdvisoriesList, AdvisoryBadge } from "@/components/advisories/AdvisoriesList";
 import { TvaDerivedHint } from "@/components/ui/tva-derived-hint";
 import { type ReactNode } from "react";
 import { Amount } from "@/components/ui/amount";
 import { formatCurrency as fmt } from "@/lib/utils";
 import { useInvoiceReviewAmounts } from "./invoice-review-amounts";
-import { InvoiceDepositContext, InvoiceAmountCalculationHint } from "./InvoiceDepositContext";
+import { InvoiceDepositContext, InvoiceAmountCalculationHint, InvoiceRequestConflictNotice } from "./InvoiceDepositContext";
 
 // Task #413 — fetch a generated PDF (slow: rendered on demand) and open it in
 // a new tab, keeping a spinner on the button while it generates.
@@ -131,13 +132,16 @@ function CreateCertificatDialog({
   onClose: () => void;
 }) {
   const { toast } = useToast();
+  const requestConflict = invoiceRequestConflict(invoice);
 
   const { data: preview, isLoading, error } = useQuery<CertificatPreview>({
     queryKey: ["/api/invoices", invoice.id, "certificat-preview"],
+    enabled: !requestConflict,
   });
 
   const createMutation = useMutation({
     mutationFn: async () => {
+      if (requestConflict) throw new Error(requestConflict);
       const res = await apiRequest("POST", `/api/invoices/${invoice.id}/create-certificat`, {
         issueDate: preview?.issueDate,
       });
@@ -181,6 +185,7 @@ function CreateCertificatDialog({
           </DialogDescription>
         </DialogHeader>
 
+        <InvoiceRequestConflictNotice message={requestConflict} testId="conflict-create-certificat" />
         {isLoading ? (
           <div className="space-y-2">
             <Skeleton className="h-6 w-full" />
@@ -253,7 +258,7 @@ function CreateCertificatDialog({
           </Button>
           <Button
             className="bg-[#0B2545] hover:bg-[#0B2545]/90 text-white gap-1.5"
-            disabled={!preview || createMutation.isPending}
+            disabled={!preview || createMutation.isPending || !!requestConflict}
             onClick={() => createMutation.mutate()}
             data-testid={isSupplier ? "button-confirm-supplier-direct-payment" : "button-confirm-create-certificat"}
           >
@@ -292,6 +297,10 @@ export function CreateMultiCertificatDialog({
   const { toast } = useToast();
   const invoiceIds = invoices.map((i) => i.id);
   const invoiceCountLabel = `${invoices.length} facture${invoices.length === 1 ? "" : "s"}`;
+  const requestConflicts = invoices.flatMap((invoice) => {
+    const message = invoiceRequestConflict(invoice);
+    return message ? [{ invoice, message }] : [];
+  });
 
   const { data: preview, isLoading, error } = useQuery<CertificatPreview & {
     derivation: CertificatPreview["derivation"] & {
@@ -299,6 +308,7 @@ export function CreateMultiCertificatDialog({
     };
   }>({
     queryKey: [`/api/projects/${projectId}/certificats/from-invoices/preview`, invoiceIds.join(",")],
+    enabled: requestConflicts.length === 0,
     queryFn: async () => {
       const res = await apiRequest("POST", `/api/projects/${projectId}/certificats/from-invoices/preview`, { invoiceIds });
       return res.json();
@@ -307,6 +317,7 @@ export function CreateMultiCertificatDialog({
 
   const createMutation = useMutation({
     mutationFn: async () => {
+      if (requestConflicts.length) throw new Error(requestConflicts.map(({ invoice, message }) => `Facture #${invoice.invoiceNumber}: ${message}`).join("\n"));
       const res = await apiRequest("POST", `/api/projects/${projectId}/certificats/from-invoices`, {
         invoiceIds,
         issueDate: preview?.issueDate,
@@ -360,6 +371,9 @@ export function CreateMultiCertificatDialog({
             {isSupplier ? `Autorisation unique de paiement direct au fournisseur ${contractorName}, sur les factures sélectionnées.` : `Un seul certificat couvrant les factures sélectionnées de ${contractorName}. Montants dérivés automatiquement — vérifiez puis confirmez.`}
           </DialogDescription>
         </DialogHeader>
+        {requestConflicts.map(({ invoice, message }) => (
+          <InvoiceRequestConflictNotice key={invoice.id} message={`Facture #${invoice.invoiceNumber}: ${message}`} testId={`conflict-create-certificat-multi-${invoice.id}`} />
+        ))}
 
         {context && (
           <div
@@ -472,7 +486,7 @@ export function CreateMultiCertificatDialog({
           </Button>
           <Button
             className="bg-[#0B2545] hover:bg-[#0B2545]/90 text-white gap-1.5"
-            disabled={!preview || createMutation.isPending}
+            disabled={!preview || createMutation.isPending || requestConflicts.length > 0}
             onClick={() => createMutation.mutate()}
             data-testid={isSupplier ? "button-confirm-supplier-direct-payment-multi" : "button-confirm-create-certificat-multi"}
           >
@@ -681,6 +695,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
 
       {selectedForCert.size > 0 && (() => {
         const selectedInvoices = (invoices ?? []).filter((i) => selectedForCert.has(i.id));
+        const selectionHasConflict = selectedInvoices.some((invoice) => !!invoiceRequestConflict(invoice));
         const selTotalHt = selectedInvoices.reduce((s, i) => s + parseFloat(i.amountHt), 0);
         const selContractor = selectedInvoices[0] ? contractorMap.get(selectedInvoices[0].contractorId) : "";
         return (
@@ -700,7 +715,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
               <Button
                 size="sm"
                 className="bg-[#0B2545] hover:bg-[#0B2545]/90 text-white gap-1.5"
-                disabled={selectedInvoices.length < 2 || isArchived}
+                disabled={selectedInvoices.length < 2 || isArchived || selectionHasConflict}
                 onClick={() => setMultiCertDialogOpen(true)}
                 data-testid={contractors.find((c) => c.id === selectedInvoices[0]?.contractorId)?.archidocPartnerType === "supplier" ? "button-create-supplier-direct-payment-multi" : "button-create-certificat-multi"}
                 title={selectedInvoices.length < 2 ? "Sélectionnez au moins 2 factures" : undefined}
@@ -719,6 +734,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
       {invoices && invoices.length > 0 ? (
         <div className="space-y-3">
           {invoices.map((inv) => {
+            const requestConflict = invoiceRequestConflict(inv);
             const dv = devisMap.get(inv.devisId);
             const contractor = contractors.find((c) => c.id === inv.contractorId);
             const isSupplier = contractor?.archidocPartnerType === "supplier";
@@ -747,8 +763,8 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                           type="checkbox"
                           className="h-4 w-4 accent-[#0B2545] cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                           checked={selectedForCert.has(inv.id)}
-                          disabled={wrongContractor}
-                          title={wrongContractor ? "Un certificat groupé couvre les factures d'une seule entreprise" : "Sélectionner pour un certificat groupé"}
+                          disabled={wrongContractor || !!requestConflict}
+                          title={requestConflict ?? (wrongContractor ? "Un certificat groupé couvre les factures d'une seule entreprise" : "Sélectionner pour un certificat groupé")}
                           onClick={(e) => e.stopPropagation()}
                           onChange={() => toggleCertSelection(inv.id)}
                           data-testid={`checkbox-select-facture-${inv.id}`}
@@ -798,7 +814,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                           <Button
                             size="sm"
                             className="h-8 px-4 gap-1.5 bg-[#0B2545] hover:bg-[#0B2545]/90 text-white shadow-sm"
-                            disabled={isArchived}
+                            disabled={isArchived || !!requestConflict}
                             onClick={(e) => {
                               e.stopPropagation();
                               setCertDialogInvoice(inv);
@@ -872,6 +888,11 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                       <StatusBadge status={inv.status} />
                     </div>
                   </div>
+                  {(inv.status === "pending" || inv.status === "approved") && (
+                    <div className={requestConflict ? "mt-3" : undefined}>
+                      <InvoiceRequestConflictNotice message={requestConflict} testId={`conflict-invoice-${inv.id}`} />
+                    </div>
+                  )}
                 </LuxuryCard>
 
                 {expandedInvoice === inv.id && (
@@ -923,7 +944,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
 
       {certDialogInvoice && (
         <CreateCertificatDialog
-          invoice={certDialogInvoice}
+          invoice={(invoices ?? []).find((invoice) => invoice.id === certDialogInvoice.id) ?? certDialogInvoice}
           contractorName={contractorMap.get(certDialogInvoice.contractorId) ?? `#${certDialogInvoice.contractorId}`}
           projectId={projectId}
           onClose={() => setCertDialogInvoice(null)}
@@ -1034,6 +1055,7 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
   const confirmMutation = useMutation({
     mutationFn: async () => {
       if (!amountReview.validAmounts) throw new Error("Enter valid HT and TTC amounts before confirming.");
+      if (amountReview.requestConflict) throw new Error(amountReview.requestConflict);
       const corrections: Record<string, any> = {};
       if (editAmountHt !== invoice.amountHt) corrections.amountHt = editAmountHt;
       if (editAmountTtc !== invoice.amountTtc) corrections.amountTtc = editAmountTtc;
@@ -1113,13 +1135,13 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
         <AdvisoriesList subject={{ type: "invoice", id: invoice.id }} />
       </div>
 
-      <InvoiceDepositContext
-        review={amountReview}
-        invoiceId={invoice.id}
-        disabled={isArchived || confirmMutation.isPending || discardMutation.isPending}
-      />
+      <InvoiceRequestConflictNotice message={amountReview.requestConflict} testId={`conflict-draft-invoice-${invoice.id}`} />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="sm:col-span-2">
+          <p className="text-[13px] font-semibold text-[#0B2545]">Amount requested on this invoice</p>
+          <p className="text-[11px] text-muted-foreground">Confirm only this payment request, not the full quotation totals. Check these amounts against the source PDF.</p>
+        </div>
         <div>
           <label className="text-[10px] font-semibold text-foreground block mb-1">
             Amount HT
@@ -1156,6 +1178,9 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
         </div>
         <div className="sm:col-span-2">
           <InvoiceAmountCalculationHint review={amountReview} invoiceId={invoice.id} />
+        </div>
+        <div className="sm:col-span-2">
+          <InvoiceDepositContext review={amountReview} invoiceId={invoice.id} disabled={isArchived || confirmMutation.isPending || discardMutation.isPending} />
         </div>
         <div>
           <label className="text-[10px] font-semibold text-foreground block mb-1">Invoice Number</label>
@@ -1197,7 +1222,7 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false }: {
           size="sm"
           className="gap-1.5"
           onClick={() => confirmMutation.mutate()}
-          disabled={confirmMutation.isPending || discardMutation.isPending || isArchived || !amountReview.validAmounts || (invoice.manualIntakeReviewRequired && !manualReviewConfirmed)}
+          disabled={confirmMutation.isPending || discardMutation.isPending || isArchived || !amountReview.validAmounts || !!amountReview.requestConflict || (invoice.manualIntakeReviewRequired && !manualReviewConfirmed)}
           data-testid={`button-confirm-draft-${invoice.id}`}
         >
           {confirmMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
@@ -1220,6 +1245,7 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
   const { toast } = useToast();
   const [notes, setNotes] = useState(invoice.notes ?? "");
   const [notesEditing, setNotesEditing] = useState(false);
+  const requestConflict = invoiceRequestConflict(invoice);
 
   const updateNotesMutation = useMutation({
     mutationFn: async (newNotes: string) => {
@@ -1237,6 +1263,7 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
 
   const approveMutation = useMutation({
     mutationFn: async () => {
+      if (requestConflict) throw new Error(requestConflict);
       const res = await apiRequest("POST", `/api/invoices/${invoice.id}/approve`);
       return res.json();
     },
@@ -1307,7 +1334,7 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
           </Button>
           <Button
             onClick={() => approveMutation.mutate()}
-            disabled={approveMutation.isPending || isArchived}
+            disabled={approveMutation.isPending || isArchived || !!requestConflict}
             className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1.5"
             data-testid={`button-approve-invoice-${invoice.id}`}
           >

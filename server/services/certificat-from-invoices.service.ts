@@ -1,3 +1,4 @@
+import { invoiceRequestConflict } from "../../shared/invoice-request-guard";
 // ─── Multi-facture certificats — shared derivation & creation ───────────────
 //
 // Generalizes the Task #496 one-click "certificat from a facture" to a SET of
@@ -150,6 +151,8 @@ export async function deriveCertificatFromInvoices(
     if (!invoice) {
       return refuse(404, { code: "INVOICE_NOT_FOUND", message: "Facture introuvable.", invoiceId: id } as InvoiceCertRefusal["body"]);
     }
+    const conflict = invoiceRequestConflict(invoice);
+    if (conflict) return refuse(409, { code: "INVOICE_REQUEST_CONFLICT", message: conflict, invoiceId: id });
     loaded.push(invoice);
   }
 
@@ -598,6 +601,7 @@ export async function createCertificatFromInvoices(
       .for("update");
     if (lockedInvoices.length !== uniqueIds.length) throw new InvoiceStateChangedError();
     for (const inv of lockedInvoices) {
+      if (invoiceRequestConflict(inv)) throw new InvoiceStateChangedError();
       if (
         inv.status === "void" ||
         inv.status !== "approved" ||

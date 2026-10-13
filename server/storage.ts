@@ -1,3 +1,4 @@
+import { invoiceRequestConflict } from "../shared/invoice-request-guard";
 import { db } from "./db";
 import { createHash, randomUUID } from "node:crypto";
 import { computeCertificatPaymentState, type CertificatPaymentState } from "@shared/financial-utils";
@@ -3586,6 +3587,13 @@ export class DatabaseStorage implements IStorage {
       // certificate version. Serialize in the same order before checking the
       // captured render version, freezing its historical overview with the PDF.
       await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, seal.projectId)).for("update");
+      const sourceInvoiceIds = seal.sourceRows.map(row => row.invoiceId).filter((value): value is number => value != null);
+      if (sourceInvoiceIds.length) {
+        const sourceInvoices = await tx.select().from(invoices)
+          .where(inArray(invoices.id, sourceInvoiceIds)).orderBy(invoices.id).for("update");
+        if (sourceInvoices.length !== new Set(sourceInvoiceIds).size ||
+            sourceInvoices.some(invoice => invoiceRequestConflict(invoice))) return null;
+      }
       const [current] = await tx
         .select({
           projectId: certificats.projectId,

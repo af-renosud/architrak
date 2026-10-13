@@ -2,6 +2,7 @@ import { db } from "../db";
 import { eq, and, sql } from "drizzle-orm";
 import { storage } from "../storage";
 import { invoices, fees, feeEntries } from "@shared/schema";
+import { invoiceRequestConflict } from "../../shared/invoice-request-guard";
 
 export async function approveInvoice(invoiceId: number) {
   return await db.transaction(async (tx) => {
@@ -12,6 +13,8 @@ export async function approveInvoice(invoiceId: number) {
     if (!locked) {
       return { success: false, status: 404, data: { message: "Invoice not found" } };
     }
+    const conflict = invoiceRequestConflict(locked);
+    if (conflict) return { success: false, status: 409, data: { code: "invoice_request_conflict", message: conflict } };
     if (locked.status !== "pending") {
       const alreadyApproved = locked.status === "approved";
       return {

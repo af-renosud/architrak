@@ -21,3 +21,9 @@ The user requested a warning before sending without the invoice and a quickly vi
 **Why:** Some certificates legitimately go out without an architect invoice. Financial sealing and email attachment preparation are separate steps: the invoice is prepared externally and may be attached after the certificate PDF exists.
 
 **How to apply:** Never equate “attached now” with “sent with invoice.” Keep the actual delivery choice stable for retries, and show unknown history for older sends rather than fabricating a yes/no answer.
+
+An empty Pennylane reference and a pending commission entry do not establish that the architect has not invoiced externally.
+
+**Why:** The disconnected workflow permits a prepared external commission invoice to be attached to a certificate without a corresponding fee-evidence record or Pennylane link.
+
+**How to apply:** Before correcting an approved contractor invoice and its commission, inspect certificate attachments as well as fee records. If an external architect invoice exists, establish its issued/payment status and reconcile it explicitly rather than silently treating the commission as uninvoiced.

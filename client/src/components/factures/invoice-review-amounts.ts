@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { invoiceRequestConflict } from "@shared/invoice-request-guard";
 import {
   calculateInvoicePair,
   declaredTvaRates,
@@ -103,6 +104,7 @@ export function useInvoiceReviewAmounts(evidence: unknown, initialHt: string, in
     document, rate, declaredRates, deposit, heading, depositRequested,
     amountHt, amountTtc, derivedField, editAmount, applyDeposit, matchesDeposit,
     validAmounts: ht != null && ttc != null,
+    requestConflict: invoiceRequestConflict({ aiExtractedData: evidence, amountHt, amountTtc }),
     tvaAmount: ht != null && ttc != null ? Math.round((ttc - ht) * 100) / 100 : null,
   };
 }

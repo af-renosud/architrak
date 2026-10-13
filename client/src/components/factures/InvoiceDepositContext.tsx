@@ -5,6 +5,19 @@ import type { useInvoiceReviewAmounts } from "./invoice-review-amounts";
 
 type ReviewAmounts = ReturnType<typeof useInvoiceReviewAmounts>;
 
+export function InvoiceRequestConflictNotice({ message, testId }: { message: string | null; testId: string }) {
+  if (!message) return null;
+  return (
+    <div role="alert" className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-[12px] leading-relaxed text-destructive" data-testid={testId}>
+      <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+      <div>
+        <p className="font-semibold">Invoice request conflict — approval and certification blocked</p>
+        <p>{message}</p>
+      </div>
+    </div>
+  );
+}
+
 export function InvoiceDepositContext({ review, invoiceId, disabled }: {
   review: ReviewAmounts;
   invoiceId: number;
@@ -31,18 +44,18 @@ export function InvoiceDepositContext({ review, invoiceId, disabled }: {
       </div>
       <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 border-y border-[#c1a27b]/25 py-2 tabular-nums">
         <div>
-          <dt className="text-[10px] uppercase tracking-wider text-muted-foreground">Full contract reference — not this claim</dt>
-          <dd className="font-medium">
-            {source.amountHt != null && Number.isFinite(source.amountHt) ? `${fmt(source.amountHt)} HT` : "HT not available"}
-            {" / "}
-            {source.amountTtc != null && Number.isFinite(source.amountTtc) ? `${fmt(source.amountTtc)} TTC` : "TTC not available"}
+          <dt className="text-[10px] uppercase tracking-wider text-[#0B2545]">Amount requested on this invoice</dt>
+          <dd className="font-semibold text-[#0B2545]">
+            {deposit ? `${fmt(deposit.amountHt)} HT / ${fmt(deposit.amountTtc)} TTC` :
+              document.netAPayer != null && Number.isFinite(document.netAPayer) ? `${fmt(document.netAPayer)} TTC printed as net payable — unverified` : "Not safely resolved"}
           </dd>
         </div>
         <div>
-          <dt className="text-[10px] uppercase tracking-wider text-muted-foreground">Requested deposit, including tax</dt>
-          <dd className="font-semibold">
-            {deposit ? `${fmt(deposit.amountTtc)} TTC` :
-              document.netAPayer != null && Number.isFinite(document.netAPayer) ? `${fmt(document.netAPayer)} TTC printed as net payable — unverified` : "Not safely resolved"}
+          <dt className="text-[10px] uppercase tracking-wider text-muted-foreground">Full contract reference — not this claim</dt>
+          <dd className="text-muted-foreground">
+            {source.amountHt != null && Number.isFinite(source.amountHt) ? `${fmt(source.amountHt)} HT` : "HT not available"}
+            {" / "}
+            {source.amountTtc != null && Number.isFinite(source.amountTtc) ? `${fmt(source.amountTtc)} TTC` : "TTC not available"}
           </dd>
         </div>
       </dl>

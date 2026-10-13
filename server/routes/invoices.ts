@@ -18,6 +18,7 @@ import { PdfPasswordProtectedError } from "../gmail/document-parser";
 import { INVOICE_UPLOAD_ERROR_CODES } from "../../shared/invoice-upload-errors";
 import { approveInvoice } from "../services/invoice-approval.service";
 import { reopenInvoiceDraft } from "../services/draft-reopen.service";
+import { invoiceRequestConflict } from "../../shared/invoice-request-guard";
 import { getDocumentStream } from "../storage/object-storage";
 import {
   generateInvoicePackagePdf,
@@ -50,7 +51,7 @@ const advisoryAckParams = z.object({
   advisoryId: z.coerce.number().int().positive(),
 });
 const createInvoiceBodySchema = insertInvoiceSchema.omit({ devisId: true });
-const updateInvoiceSchema = insertInvoiceSchema.omit({ status: true }).partial().strict();
+const updateInvoiceSchema = insertInvoiceSchema.omit({ status: true, aiExtractedData: true }).partial().strict();
 
 const invoiceConfirmSchema = z.object({
   amountHt: z.coerce.number().nonnegative().optional(),
@@ -229,6 +230,9 @@ router.patch(
         if (!existing) return { outcome: "not_found" as const };
 
         if (changesApplicationProtectedInvoiceField(req.body)) {
+          if (existing.status === "approved" || existing.status === "paid" || existing.datePaid) {
+            return { outcome: "approved_immutable" as const };
+          }
           if (await hasLiveCertificateSource(tx, invoiceId)) {
             return { outcome: "certificate_immutable" as const };
           }
@@ -248,6 +252,10 @@ router.patch(
         return { outcome: "updated" as const, invoice };
       });
       if (result.outcome === "not_found") return res.status(404).json({ message: "Invoice not found" });
+      if (result.outcome === "approved_immutable") return res.status(409).json({
+        code: "approved_invoice_correction_required",
+        message: "Approved invoice amounts and source evidence require an audited correction with a fee and certificate dependency review.",
+      });
       if (result.outcome === "certificate_immutable") {
         return immutableCertificateSourceResponse(res);
       }
@@ -367,6 +375,10 @@ router.post(
         const { invoiceRequestAmounts } = await import("../services/invoice-request-amounts");
         const sourceEvidence = { documentType: "invoice", ...aiData } as ParsedDocument;
         invoiceRequestAmounts(sourceEvidence);
+        const requestConflict = invoiceRequestConflict({
+          aiExtractedData: sourceEvidence, amountHt: finalHt, amountTtc: finalTtc,
+        });
+        if (requestConflict) return { outcome: "request_conflict" as const, message: requestConflict };
         if (sourceEvidence.openingDepositSourceTotals && !aiData.openingDepositSourceTotals) {
           updates.aiExtractedData = sourceEvidence;
         }
@@ -391,6 +403,9 @@ router.post(
         return { outcome: "prepared" as const, invoice: revalidated, warnings };
       });
 
+      if (preparation.outcome === "request_conflict") {
+        return res.status(409).json({ code: "invoice_request_conflict", message: preparation.message });
+      }
       if (preparation.outcome === "not_found") {
         return res.status(404).json({ message: "Invoice not found" });
       }
@@ -464,6 +479,7 @@ router.post(
           .for("update");
         if (!current) return { outcome: "not_found" as const };
         if (current.status !== "draft") return { outcome: "changed" as const };
+        if (invoiceRequestConflict(current)) return { outcome: "changed" as const };
         if (
           JSON.stringify(invoiceAcompteProtectedSnapshot(current))
           !== JSON.stringify(preparedProtectedSnapshot)
