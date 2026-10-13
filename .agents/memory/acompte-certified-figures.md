@@ -15,6 +15,12 @@ Contractors commonly request an opening deposit only as a gross TTC amount. The 
 
 **How to apply:** new invoice ingestion (including manual intake promotion) uses the verified request; existing drafts get an explicit apply action rather than silent overwrites. Linked HT/TTC edits need a source-backed single rate; missing, conflicting or multiple rates require review. Requested deposits remain distinct from already-paid deductions.
 
+An optional apply-deposit button and correct source extraction are not sufficient financial safeguards.
+
+**Why:** a legacy full-contract draft was confirmed and approved despite retaining explicit evidence of a smaller opening request; its full-value commission was then created. Validating gross source arithmetic alone does not validate the amount being approved.
+
+**How to apply:** amount-basis conflicts need server-authoritative resolution at confirmation, approval and certificate use. Correcting an approved invoice must account for dependent fees and pre-existing certificates, including legacy certificates without explicit source links; absence of junction rows is not evidence of independence.
+
 "Certified" per devis = gross facture sums + OUTSTANDING acompte (issued, non-superseded acompte cert works HT minus contractor-level `cumulativeAcompteRecoupment` read from the LATEST issued non-superseded progress cert — latest-prior rule, never max()/sum()). A source-bound immutable invoice application is authoritative proof that the deposit was recovered and therefore contributes 0, even if the devis workflow state is stale; `acompteState = 'applied'` remains the normal lifecycle representation. When that gross invoice is certified, its applied HT enters certificate previous-payments exactly once; later certificates inherit it through the prior chain. Once an application exists, the database—not only individual routes—must seal the invoice's economic and source-provenance facts.
 
 **Why:** an acompte cert has no facture; without this a client sees a payment demand next to "Certified 0,00 €". A later gross invoice can retain its full documentary value while separately proving the exact deposit deduction. Counting both that gross invoice and the deposit overstates certified totals, while relying only on mutable workflow state can reintroduce the error.
