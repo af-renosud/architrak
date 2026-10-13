@@ -1,0 +1,38 @@
+Dear developer,
+
+You are receiving this communication because your organization administers or develops applications that connect to Google Workspace via OAuth.
+
+We will soon roll out Google Workspace Model Context Protocol (MCP) servers that expose new functionality to external AI agents across Gmail, Drive, Calendar, and other Workspace apps using the open MCP. Ahead of this launch, we are introducing an “agentic” setting (is_agentic) on Google OAuth clients, so that Google and Workspace administrators can differentiate AI agent traffic from traditional app traffic. Only OAuth clients marked as agentic will be able to call Workspace MCP servers. We are announcing this change early so developers have time to prepare.
+
+If your app is not an AI agent and only uses Google Workspace REST APIs (for example, the Gmail API or Drive API), you do not need to take any action for this change.
+
+We have provided additional information below to outline the technical impact of this change and the actions required to keep access to Workspace MCP servers.
+
+What this means for your organization
+Key changes and timelines:
+
+October 12, 2026 (New “agentic” OAuth client classification): Developers can directly [mark their OAuth clients](https://c.gle/AAuDWvmI6XETjIBA04wEUSgsKxLsnfM0S00xNft7Mz5jP5ax9x13cqbGPpAhI2RfJH_o4bDt5sTaNngHhjtUBKmaJs8iBtv8r4uCfL3WYdW5Nn-Tcg_hZnJfFFAsoMWtcxEreBaZX7MnZL28JmQuT4A) as "agentic" (is_agentic) in the Google Cloud console.
+November 11, 2026 (Only agentic clients can call Workspace MCP servers): Google will reject requests to Workspace MCP servers from OAuth clients that are not marked as agentic.
+November 12, 2026 (The agentic setting becomes permanent): Starting on this date, you can no longer change the agentic setting on an existing OAuth client. To change it, create a new OAuth Client ID.
+Potential impact:
+
+Refused access: Starting November 11, 2026, Workspace MCP servers will reject requests from any app or integration whose OAuth client is not marked as agentic. The error message will state “the client isn't marked as an AI agent” and will link to steps to fix it.
+New OAuth Client ID requirement: OAuth clients that are not marked as agentic by November 12, 2026 will remain non-agentic and cannot call Workspace MCP servers. To use MCP after this date, you will need to create a new OAuth client marked as agentic and update your app to use it.
+Unaffected applications: Apps that are not AI agents and only call Google Workspace REST APIs are not affected by this change.
+Impacted customers/accounts:
+
+Your affected projects are listed below:
+
+[gen-lang-client-0470455119](https://c.gle/AAuDWvk1klP0XemwgzeEhguXhcFbvmx6LzoaRzTCe-wFM0ehye_1YWtuwOD7fhEqr5t0N-8N1g4OP5m-llewClz9mPmOxx2n6RrtRZS1snnyEO8JRKDspVYvG81I9fysec9FZbkuufd8NFb6B5CYSAWLbJXFzDLNkuJCqgS5Wfvbz0BK)
+[email2pdf-496212](https://c.gle/AAuDWvnBNhmqnFuxj7Z8m3NbpHv7g8flILRAJZxerLC3Pf-PmQWYzPOUZdsYmXPowpxFGxgpre6JGfOzSJd2tgKNUlqznkPs0Qu_-2TCySSTYW9OaE4bKEbt3iPQGvlbvI-iXcmZOhJN2wRbT5W7WuCs4c3FcuBjndE)
+[architrak-488911](https://c.gle/AAuDWvl8SltcKkfOsuHTrvpRQLAx1EY21LdSBY-wWTnn61hA5oofl4vLpHatGPEUaFe-ROAXUwk6E4fPej9A7rO-xydndDUXYqj4EG6YQeqzAHyH8FZHzeMCv2vPcAubV_F8cdmLbO0Bp__23CiAaJA53Ts1qOsDosU)
+What you need to do
+Action required:
+
+Identify your AI agent clients: Identify your OAuth clients that belong to AI agents, including agents that currently use Workspace REST APIs only.
+Only mark OAuth clients that are used by AI agents. Agentic clients will have separate security controls applied, such as agent access controls.
+If an app handles both AI agent and non-agent traffic, use a separate OAuth client for the AI agent.
+Mark them as agentic between October 12 and November 11, 2026: Turn on the agentic setting for these OAuth clients in the Google Cloud console so they can call Workspace MCP servers.
+Plan for the setting becoming permanent starting November 12, 2026:
+To change the setting on an existing OAuth client after this date, you will need to create a new OAuth Client ID.
+When you create a new OAuth client, you must choose whether it is agentic.
