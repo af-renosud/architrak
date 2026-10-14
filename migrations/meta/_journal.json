@@ -1023,6 +1023,13 @@
       "when": 1791980000000,
       "tag": "0145_devis_stage_decisions",
       "breakpoints": true
+    },
+    {
+      "idx": 146,
+      "version": "7",
+      "when": 1791989020000,
+      "tag": "0146_supplier_directory",
+      "breakpoints": true
     }
   ]
 }

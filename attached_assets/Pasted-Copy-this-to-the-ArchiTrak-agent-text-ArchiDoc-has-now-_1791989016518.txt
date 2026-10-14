@@ -1,0 +1,116 @@
+Copy this to the **ArchiTrak agent**:
+
+```text
+ArchiDoc has now been published with the new supplier-directory endpoint.
+
+Please proceed with restoring contractor/supplier synchronisation using the
+previously supplied v1 contract.
+
+PRODUCTION ENDPOINT
+
+GET https://archiouvro.com/api/integrations/architrak/v1/supplier-directory?limit=200
+
+Authentication:
+Authorization: Bearer <existing accepted sync key>
+Accept: application/json
+
+Keep ArchiTrak’s credential selection unchanged. The _NEXT credential previously
+returned 200 against production /api/sync/trades. Do not rotate or delete keys.
+
+REPLACE ONLY THE FAILING SUPPLIER REQUEST
+
+Replace the supplementary GET /api/suppliers call with the new endpoint.
+Keep contractor imports on GET /api/sync/contractors.
+
+/api/suppliers remains browser-session protected.
+
+VERIFY FIRST
+
+Publication is confirmed by the owner, but successful authenticated access to
+the new production endpoint has not yet been independently verified.
+
+1. Make one bounded, read-only authenticated request.
+2. Require HTTP 200 and a JSON response.
+3. Confirm:
+   schemaVersion = 1
+   scope = "supplier-directory"
+   sources = ["supplier-library", "ff-suppliers"]
+4. If the endpoint returns 401, 404 or HTML, stop and report the result.
+   Do not fall back to /api/suppliers or change credentials automatically.
+
+PAGINATION
+
+First request: ?limit=200
+Subsequent requests: ?cursor=<URL-encoded nextCursor>
+Do not send limit alongside cursor.
+
+Response envelope:
+{
+  schemaVersion,
+  scope,
+  sources,
+  snapshotId,
+  snapshotAt,
+  expiresAt,
+  totalCount,
+  items,
+  nextCursor,
+  complete
+}
+
+Stage every page before committing the supplier import.
+
+Require:
+- unchanged snapshotId and totalCount across pages;
+- no duplicate supplier IDs;
+- unique supplier count equals totalCount;
+- final nextCursor=null and complete=true.
+
+Snapshots last 30 minutes. HTTP 410 means the snapshot expired or the server
+restarted: discard the staged run and restart from page one.
+
+IDENTITIES AND RECONCILIATION
+
+Supplier-library IDs: supplier-library:<original-id>
+F&F supplier IDs: ff-supplier:<original-id>
+
+Migrate existing supplier-library external-ID mappings rather than creating
+duplicate records. Do not merge sources by name or email.
+
+Use the supplied active/inactive/deleted status.
+Hard-deleted rows may be absent rather than represented by tombstones.
+
+Only reconcile missing supplier IDs after the entire snapshot completes.
+Limit reconciliation to records imported from these supplier namespaces.
+Preserve historical/payment links, contractors and locally created records.
+
+Do not infer payment eligibility from directory membership.
+Do not clear local fields that are outside the directory response schema.
+Do not skip contacts merely because the parent updatedAt is unchanged.
+
+FAILURE HANDLING
+
+On authentication, network, parsing, source or pagination failure:
+- retain the last completed supplier import;
+- do not treat the failure as an empty directory;
+- do not advance the successful supplier-sync timestamp;
+- report contractor and supplier outcomes separately.
+
+IMPLEMENTATION AND ROLLOUT
+
+Implement and test the consumer changes, then use the normal ArchiTrak release
+process if a publish is required. Avoid repeated production tests.
+
+Return:
+1. The initial production probe result, with no secrets or personal data.
+2. Whether ArchiTrak code changes and publication are complete.
+3. First completed sync counts for contractors and each supplier source.
+4. Any remaining error or reconciliation issue.
+
+ArchiDoc checks already completed:
+- Targeted endpoint/authentication/pagination tests passed.
+- Development integration check returned a complete two-page snapshot.
+- Full pre-publish checks and production build passed.
+
+Development record counts are not an expected production total.
+```

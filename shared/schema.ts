@@ -1569,6 +1569,19 @@ export const archidocContractors = pgTable("archidoc_contractors", {
   index("archidoc_contractors_is_deleted_idx").on(table.isDeleted),
 ]);
 
+export const archidocSupplierDirectory = pgTable("archidoc_supplier_directory", {
+  id: text("id").primaryKey(),
+  sourceBaseUrl: text("source_base_url").notNull(),
+  contractorId: integer("contractor_id").notNull(),
+  snapshotId: text("snapshot_id").notNull(),
+  data: jsonb("data").notNull(),
+  isAbsent: boolean("is_absent").notNull().default(false),
+  syncedAt: timestamp("synced_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, table => [
+  foreignKey({columns:[table.contractorId],foreignColumns:[contractors.id],
+    name:"archidoc_supplier_directory_contractor_id_fkey"}),
+]);
+
 export const archidocSupplierPaymentReadiness = pgTable(
   "archidoc_supplier_payment_readiness",
   {

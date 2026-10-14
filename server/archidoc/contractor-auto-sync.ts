@@ -8,6 +8,7 @@ import {
   withMirrorSyncLock,
 } from "./sync-service";
 import { isArchidocConfigured } from "./sync-client";
+import type { DirectorySyncResult } from "./supplier-directory-sync";
 import { normalizeSiret } from "../gmail/document-parser";
 import {
   syncSupplierPaymentReadinessWithinHeldLock,
@@ -78,6 +79,7 @@ function buildSyncedFields(
 }
 
 export interface ContractorAutoSyncResult {
+  supplierDirectory?: DirectorySyncResult;
   mirrorUpdated: number;
   created: number;
   updated: number;
@@ -134,7 +136,7 @@ async function runContractorAutoSyncLocked(options: { incremental?: boolean } = 
         status: "failed", completedAt: new Date(), recordsUpdated: 0, errorMessage: message,
       }).where(eq(archidocSyncLog.id, logEntry.id));
       return { mirrorUpdated: mirrorResult.updated, created: 0, updated: 0, skipped: 0,
-        orphaned: 0, unorphaned: 0, error: message };
+        orphaned: 0, unorphaned: 0, error: message, supplierDirectory:mirrorResult.supplierDirectory };
     }
     const supplierPaymentReadiness =
       await syncSupplierPaymentReadinessWithinHeldLock();
@@ -180,7 +182,7 @@ async function runContractorAutoSyncLocked(options: { incremental?: boolean } = 
     const allMirror = await db
       .select()
       .from(archidocContractors)
-      .where(eq(archidocContractors.isDeleted, false));
+      .where(and(eq(archidocContractors.isDeleted, false),eq(archidocContractors.partnerType,"contractor")));
     // On a full sync, only iterate mirror rows refreshed in this run so we
     // don't keep upserting (and re-clearing the orphan flag for) stale rows.
     // On incremental runs, every mirror row is potentially up-to-date.
@@ -246,6 +248,7 @@ async function runContractorAutoSyncLocked(options: { incremental?: boolean } = 
           .set({ archidocOrphanedAt: new Date() })
           .where(
             and(
+              eq(contractors.archidocPartnerType,"contractor"),
               isNotNull(contractors.archidocId),
               isNull(contractors.archidocOrphanedAt),
               notInArray(contractors.archidocId, freshMirrorIds),
@@ -257,7 +260,7 @@ async function runContractorAutoSyncLocked(options: { incremental?: boolean } = 
         const newlyOrphaned = await db
           .update(contractors)
           .set({ archidocOrphanedAt: new Date() })
-          .where(and(isNotNull(contractors.archidocId), isNull(contractors.archidocOrphanedAt)))
+          .where(and(eq(contractors.archidocPartnerType,"contractor"),isNotNull(contractors.archidocId), isNull(contractors.archidocOrphanedAt)))
           .returning({ id: contractors.id });
         orphaned = newlyOrphaned.length;
       }
@@ -266,9 +269,11 @@ async function runContractorAutoSyncLocked(options: { incremental?: boolean } = 
     await db
       .update(archidocSyncLog)
       .set({
-        status: "completed",
+        status: mirrorResult.supplierDirectory?.error ? "failed" : "completed",
         completedAt: new Date(),
         recordsUpdated: created + updated,
+        errorMessage: mirrorResult.supplierDirectory?.error ??
+          (supplierPaymentReadiness.error ? `WARNING: ${supplierPaymentReadiness.error}` : null),
       })
       .where(eq(archidocSyncLog.id, logEntry.id));
 
@@ -278,6 +283,11 @@ async function runContractorAutoSyncLocked(options: { incremental?: boolean } = 
 
     return {
       mirrorUpdated: mirrorResult.updated,
+      supplierDirectory: mirrorResult.supplierDirectory,
+      ...(mirrorResult.supplierDirectory?.error ? {
+        error:`${created} contractors created, ${updated} updated. ${mirrorResult.supplierDirectory.error}`,
+      } : {}),
+      ...(supplierPaymentReadiness.error ? {warning:supplierPaymentReadiness.error} : {}),
       created,
       updated,
       skipped,

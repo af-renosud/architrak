@@ -15,6 +15,7 @@ import {
   fetchSupplierPaymentReadinessPage,
   isArchidocConfigured,
   SupplierPaymentCursorExpiredError,
+  ArchidocFetchError,
 } from "./sync-client";
 import {
   SUPPLIER_PAYMENT_READINESS_CONTRACT_VERSION,
@@ -811,6 +812,8 @@ export async function syncSupplierPaymentReadinessWithinHeldLock(
     const safeMessage =
       error instanceof SupplierPaymentReadinessSyncError
         ? error.message
+        : error instanceof ArchidocFetchError
+          ? `Supplier payment-readiness ${error.diagnostic.code} (HTTP ${error.diagnostic.status ?? "unavailable"}); the cursor was not advanced.`
         : "Supplier payment-readiness sync failed validation, fetch, or persistence; the cursor was not advanced.";
     await db
       .update(archidocSyncLog)

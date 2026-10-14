@@ -5,12 +5,13 @@ const config = vi.hoisted(() => ({
   ARCHIDOC_SYNC_API_KEY_NEXT: "test-next" as string | undefined,
 }));
 vi.mock("../../env", () => ({env:config}));
-import { fetchSuppliers, fetchContractors, selectedSyncCredentialName, probeArchiDocSyncAuthentication } from "../sync-client";
+import { prepareSupplierDirectorySnapshot, fetchContractors, selectedSyncCredentialName, probeArchiDocSyncAuthentication } from "../sync-client";
 afterEach(() => { vi.unstubAllGlobals(); config.ARCHIDOC_SYNC_API_KEY_NEXT = "test-next"; });
 it("never requests the browser-session supplier endpoint", async () => {
-  const request = vi.fn(); vi.stubGlobal("fetch", request);
-  await expect(fetchSuppliers()).rejects.toThrow("supplier_directory_contract_unavailable");
-  expect(request).not.toHaveBeenCalled();
+  const request = vi.fn().mockResolvedValue(new Response("{}",{status:401})); vi.stubGlobal("fetch", request);
+  await expect(prepareSupplierDirectorySnapshot()).rejects.toThrow("unauthorized");
+  expect(request).toHaveBeenCalledTimes(1);
+  expect(new URL(request.mock.calls[0][0]).pathname).toBe("/api/integrations/architrak/v1/supplier-directory");
 });
 it("uses the supported contractor feed with explicit NEXT precedence and no 401 fallback", async () => {
   const request = vi.fn().mockResolvedValue(new Response("{}", {status:401}));

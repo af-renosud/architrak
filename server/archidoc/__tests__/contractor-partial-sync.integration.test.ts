@@ -4,6 +4,7 @@ import { db } from "../../db";
 import { archidocContractors, archidocSyncLog } from "@shared/schema";
 import * as client from "../sync-client";
 import { syncContractors } from "../sync-service";
+import * as directory from "../supplier-directory-sync";
 
 it("reports actual partial updates, retains suppliers, skips reconciliation and does not mark completion", async () => {
   const rollback = new Error("rollback partial-sync fixture"), original = db.transaction.bind(db);
@@ -19,14 +20,14 @@ it("reports actual partial updates, retains suppliers, skips reconciliation and 
       {id:`${id}-contractor`,name:"Updated contractor"},
       {id:`${id}-supplier`,name:"Must not overwrite supplier"},
     ]});
-    vi.spyOn(client,"fetchSuppliers").mockRejectedValue(new Error("supplier_directory_contract_unavailable"));
+    vi.spyOn(directory,"syncSupplierDirectory").mockResolvedValue({updated:0,library:0,ff:0,absent:0,error:"supplier_directory_contract_unavailable"});
     try {
-      const result = await syncContractors(false);
-      expect(result).toMatchObject({updated:1,error:"supplier_directory_contract_unavailable"});
+      const result = await syncContractors(true);
+      expect(result).toMatchObject({updated:1,supplierDirectory:{error:"supplier_directory_contract_unavailable"}});
       expect(await tx.select().from(archidocContractors).where(eq(archidocContractors.archidocId,`${id}-supplier`)))
         .toMatchObject([{name:"Retained supplier",partnerType:"supplier",isDeleted:false}]);
-      const logs = await tx.select().from(archidocSyncLog).where(eq(archidocSyncLog.errorMessage,"supplier_directory_contract_unavailable"));
-      expect(logs.some(row => row.status === "failed" && row.recordsUpdated === 1)).toBe(true);
+      const logs = await tx.select().from(archidocSyncLog).where(eq(archidocSyncLog.syncType,"contractors"));
+      expect(logs.some(row => row.status === "completed" && row.recordsUpdated === 1)).toBe(true);
     } finally { vi.restoreAllMocks(); }
     throw rollback;
   })).rejects.toBe(rollback);

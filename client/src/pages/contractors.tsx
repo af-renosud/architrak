@@ -47,12 +47,15 @@ export default function Contractors() {
       const res = await apiRequest("POST", "/api/contractors/sync", {});
       return res.json();
     },
-    onSuccess: (data: { created?: number; updated?: number; skipped?: number }) => {
+    onSuccess: (data: { created?: number; updated?: number; skipped?: number; warning?: string;
+      supplierDirectory?: {library:number;ff:number;absent:number} }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/contractors"] });
       queryClient.invalidateQueries({ queryKey: ["/api/contractors/sync-status"] });
       toast({
-        title: "Sync complete",
-        description: `${data.created ?? 0} created, ${data.updated ?? 0} updated${data.skipped ? `, ${data.skipped} skipped` : ""}.`,
+        title: data.warning ? "Sync complete, with a warning" : "Sync complete",
+        description: `Contractors: ${data.created ?? 0} created, ${data.updated ?? 0} updated${data.skipped ? `, ${data.skipped} skipped` : ""}.` +
+          (data.supplierDirectory ? ` Suppliers: ${data.supplierDirectory.library} library, ${data.supplierDirectory.ff} F&F; ${data.supplierDirectory.absent} absent.` : "") +
+          (data.warning ? ` ${data.warning}` : ""),
       });
     },
     onError: (error: Error) => {

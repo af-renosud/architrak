@@ -86,6 +86,7 @@ export class SupplierPaymentCertificateNotReadyError extends Error {
 }
 
 interface ArchidocFetchOptions<T> {
+  expectedStatus?: number;
   redirect?: RequestRedirect;
   requireJsonContentType?: boolean;
   params?: Record<string, string>;
@@ -189,7 +190,7 @@ async function archidocFetch<T>(
       signal: AbortSignal.timeout(30000),
     });
 
-    if (!response.ok) {
+    if (!response.ok || (options.expectedStatus !== undefined && response.status !== options.expectedStatus)) {
       const handled = await options.handleErrorResponse?.(response);
       if (handled) throw handled;
       const failure = safeHttpFailure(response.status);
@@ -575,24 +576,21 @@ export async function fetchContractors(since?: string): Promise<{ contractors: A
   return archidocFetch<ContractorsResponse>("/api/sync/contractors", { params });
 }
 
-export async function fetchSuppliers(): Promise<ArchidocSupplierData[]> {
-  // ArchiDoc confirmed /api/suppliers requires a browser session, not a
-  // bearer integration key. Never treat its refusal as key validation.
-  throw new Error("supplier_directory_contract_unavailable: ArchiDoc has not provided a bearer-authenticated supplier-directory feed. Existing suppliers are retained; payment-readiness is not a directory replacement.");
+// Stage the full versioned directory before the transactional importer runs.
+export async function prepareSupplierDirectorySnapshot() {
+  return stageSupplierDirectory(readSupplierDirectoryPage);
 }
 
-// Deliberately NOT wired into fetchSuppliers or any scheduler. Upstream v1 is
-// not live yet, and persistence requires identity-safe transactional migration.
-export async function prepareSupplierDirectorySnapshot() {
-  return stageSupplierDirectory(params => archidocFetch(
+export async function readSupplierDirectoryPage(params: Record<string, string> = { limit: "200" }) {
+  return archidocFetch(
     "/api/integrations/architrak/v1/supplier-directory", {
-      params, redirect: "error", requireJsonContentType: true,
+      params, redirect: "error", requireJsonContentType: true, expectedStatus: 200,
       validate: raw => supplierDirectoryPageSchema.parse(raw),
       handleErrorResponse: async response => response.status === 410
         ? new SupplierDirectoryExpiredError("Supplier directory snapshot expired")
         : undefined,
     },
-  ));
+  );
 }
 
 export class SupplierPaymentCursorExpiredError extends Error {

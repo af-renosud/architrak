@@ -36,3 +36,9 @@ The agreed supplier-directory v1 contract uses namespaced supplier-library/F&F i
 **Why:** library and F&F source IDs can collide, and the directory deliberately excludes banking/private fields. Reusing the generic contractor upsert would clear omitted fields; a directory entry does not establish payment eligibility.
 
 **How to apply:** stage all pages, validate one snapshot and unique total count, then commit and reconcile atomically within directory namespaces only. Preserve payment/historical links and fields outside this contract. A verified complete empty supplier export is valid; failed/incomplete pages never imply deletion. Require upstream publication confirmation before activation.
+
+Keep namespaced directory identities as aliases to the existing local supplier, separate from its canonical financial/payment identity. Only an explicitly supplied payment identity can justify rebinding; collisions between existing business rows require review, never automatic merging.
+
+**Why:** renaming or duplicating the business row to match a directory namespace can sever invoice/history links or create two financial counterparties. Directory membership alone does not establish payment eligibility.
+
+**How to apply:** preserve the local primary key and unrelated fields during migration. Contractor-only imports and orphan reconciliation must exclude suppliers; directory and payment-readiness feeds own their respective supplier scopes independently.

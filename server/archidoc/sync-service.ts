@@ -1,4 +1,5 @@
 import { db, pool } from "../db";
+import { syncSupplierDirectory, type DirectorySyncResult } from "./supplier-directory-sync";
 import { eq, desc, asc, inArray, and, or, isNull, ne, notInArray, lt, count, sql } from "drizzle-orm";
 import {
   archidocProjects,
@@ -16,7 +17,6 @@ import {
   isArchidocConfigured,
   fetchProjects,
   fetchContractors,
-  fetchSuppliers,
   fetchTrades,
   fetchProposalFees,
   fetchTechnicalLots,
@@ -699,6 +699,7 @@ export async function reconcileContractorMirror(
       .set({ isDeleted: true, deletedAt: now })
       .where(
         and(
+          eq(archidocContractors.partnerType, "contractor"),
           eq(archidocContractors.isDeleted, false),
           or(
             isNull(archidocContractors.sourceBaseUrl),
@@ -711,11 +712,13 @@ export async function reconcileContractorMirror(
 
     const missingPredicate = seenIds.length > 0
       ? and(
+          eq(archidocContractors.partnerType, "contractor"),
           eq(archidocContractors.isDeleted, false),
           eq(archidocContractors.sourceBaseUrl, currentSource),
           notInArray(archidocContractors.archidocId, seenIds),
         )
       : and(
+          eq(archidocContractors.partnerType, "contractor"),
           eq(archidocContractors.isDeleted, false),
           eq(archidocContractors.sourceBaseUrl, currentSource),
         );
@@ -723,7 +726,7 @@ export async function reconcileContractorMirror(
     const [{ value: activeCount }] = await db
       .select({ value: count() })
       .from(archidocContractors)
-      .where(and(eq(archidocContractors.isDeleted, false), eq(archidocContractors.sourceBaseUrl, currentSource)));
+      .where(and(eq(archidocContractors.partnerType, "contractor"),eq(archidocContractors.isDeleted, false), eq(archidocContractors.sourceBaseUrl, currentSource)));
     const [{ value: wouldDelete }] = await db
       .select({ value: count() })
       .from(archidocContractors)
@@ -791,7 +794,13 @@ export async function syncProjects(incremental = true): Promise<{ updated: numbe
   }
 }
 
-export async function syncContractors(incremental = true): Promise<{ updated: number; error?: string; warning?: string }> {
+export async function syncContractors(incremental = true) {
+  const result = await syncContractorFeed(incremental);
+  const supplierDirectory = await syncSupplierDirectory();
+  return { ...result, supplierDirectory };
+}
+
+async function syncContractorFeed(incremental = true): Promise<{ updated: number; error?: string; warning?: string }> {
   if (!isArchidocConfigured()) {
     console.log("[ArchiDoc Sync] Not configured, skipping contractor sync");
     return { updated: 0, error: "Not configured" };
@@ -809,29 +818,14 @@ export async function syncContractors(incremental = true): Promise<{ updated: nu
     // Contractor authentication must succeed independently. A missing supplier
     // directory must neither mask this result nor authorize mirror deletions.
     const response = await fetchContractors(since);
-    let suppliers: Awaited<ReturnType<typeof fetchSuppliers>> = [];
-    let supplierError: string | undefined;
-    try { suppliers = await fetchSuppliers(); }
-    catch (err) { supplierError = err instanceof Error ? err.message : "Supplier directory unavailable"; }
-    const preservedSupplierIds = supplierError ? new Set(
+    const preservedSupplierIds = new Set(
       (await db.select({ id: archidocContractors.archidocId }).from(archidocContractors)
         .where(eq(archidocContractors.partnerType, "supplier"))).map(row => row.id),
-    ) : new Set<string>();
+    );
     const partnersById = new Map<string, ArchidocContractorData>();
     for (const contractor of response.contractors) {
       if (preservedSupplierIds.has(contractor.id)) continue;
       partnersById.set(contractor.id, { ...contractor, partnerType: "contractor" });
-    }
-    for (const supplier of suppliers.filter(isEligibleSupplier)) {
-      const mapped = mapSupplierToContractorData(supplier);
-      const existing = partnersById.get(supplier.id);
-      // If ArchiDoc ever exposes the same stable partner through both feeds,
-      // keep the richer contractor fields but preserve the authoritative
-      // supplier classification.
-      partnersById.set(
-        supplier.id,
-        existing ? { ...mapped, ...existing, partnerType: "supplier" } : mapped,
-      );
     }
 
     const issues: MirrorSiretIssue[] = [];
@@ -849,7 +843,7 @@ export async function syncContractors(incremental = true): Promise<{ updated: nu
     }
 
     let warning: string | undefined;
-    if (!incremental && !supplierError) {
+    if (!incremental) {
       const reconciled = await reconcileContractorMirror(seenIds, getCurrentSourceBaseUrl());
       if (reconciled.softDeletedDifferentSource > 0 || reconciled.softDeletedMissingFromResponse > 0) {
         console.log(
@@ -860,8 +854,8 @@ export async function syncContractors(incremental = true): Promise<{ updated: nu
     }
 
     await recordSiretIssues(issues, cleared, log.id);
-    await completeSyncLog(log.id, supplierError ? "failed" : "completed", count,
-      supplierError ?? (warning ? `WARNING: ${warning}` : undefined), issues.length);
+    await completeSyncLog(log.id, "completed", count,
+      warning ? `WARNING: ${warning}` : undefined, issues.length);
     if (issues.length > 0) {
       console.log(
         `[ArchiDoc Sync] Contractors synced: ${count} records (${issues.length} with malformed SIRETs)`,
@@ -869,7 +863,7 @@ export async function syncContractors(incremental = true): Promise<{ updated: nu
     } else {
       console.log(`[ArchiDoc Sync] Contractors synced: ${count} records`);
     }
-    return { updated: count, warning, ...(supplierError ? { error: supplierError } : {}) };
+    return { updated: count, warning };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     await completeSyncLog(log.id, "failed", count, message);
@@ -1183,7 +1177,7 @@ export async function syncTechnicalLots(): Promise<{ updated: number; error?: st
 
 export interface MirrorSyncResult {
   projects: { updated: number; error?: string; warning?: string };
-  contractors: { updated: number; error?: string; warning?: string };
+  contractors: { updated: number; error?: string; warning?: string; supplierDirectory?: DirectorySyncResult };
   trades: { updated: number; error?: string };
   proposalFees: { updated: number; error?: string };
   technicalLots: { updated: number; error?: string; warning?: string };
