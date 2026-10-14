@@ -61,6 +61,7 @@ import { DevisAfterSigning } from "@/components/devis/DevisAfterSigning";
 import { SupportingPdfsPanel } from "@/components/devis/SupportingPdfsPanel";
 import { ClientConversationPanel } from "@/components/devis/ClientConversationPanel";
 import { countDevisSignOff } from "@/components/devis/devis-counters";
+import { devisCardClassName } from "@/components/devis/devis-card-style";
 import { DuplicateExtractionCorrection } from "@/components/devis/DuplicateExtractionCorrection";
 import { ExtractionRowCorrection } from "@/components/devis/ExtractionRowCorrection";
 import { QuotationExtractionReview } from "@/components/devis/QuotationExtractionReview";
@@ -1122,11 +1123,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
       )}
       <LuxuryCard
         data-testid={`card-devis-${d.id}`}
-        className={
-          expanded
-            ? "border-2 border-[#0B2545]/40 dark:border-[#0B2545]/60 shadow-[0_2px_8px_rgba(11,37,69,0.08)] transition-[border-color,box-shadow] duration-150"
-            : "transition-[border-color,box-shadow] duration-150"
-        }
+        className={devisCardClassName(d, expanded)}
       >
         <div
           className={`flex items-center justify-between gap-3 flex-wrap cursor-pointer ${isVoid ? "opacity-50" : ""}`}
