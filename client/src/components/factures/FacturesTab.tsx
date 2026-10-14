@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { PdfPopoutViewer } from "@/components/devis/PdfPopoutViewer";
+import { InvoicePaymentDialog } from "@/components/certificats/InvoicePaymentDialog";
+import { paymentStateReason, type PaymentWithEvidence } from "@/hooks/use-certificat-payment-context";
 import "./invoice-pdf-popout.css";
 import { BulkDocumentActions, BulkDocumentCheckbox } from "@/components/documents/BulkDocumentActions";
 import { useBulkDocuments } from "@/hooks/use-bulk-documents";
@@ -560,6 +562,10 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
   });
   const certLinkByInvoice = new Map((certLinks ?? []).map((l) => [l.invoiceId, l]));
   const [certDialogInvoice, setCertDialogInvoice] = useState<Invoice | null>(null);
+  const [paymentInvoice, setPaymentInvoice] = useState<{ invoice: Invoice; certificatId: number } | null>(null);
+  const { data: projectPayments, error: projectPaymentsError } = useQuery<PaymentWithEvidence[]>({
+    queryKey: projectScopedKey(projectId, "certificat-payments"),
+  });
   const [resolutionInvoice, setResolutionInvoice] = useState<Invoice | null>(null);
 
   // Multi-facture certificats — selection of eligible factures (same contractor).
@@ -791,6 +797,25 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                     </div>
                     <div className="flex items-center gap-3 flex-wrap">
                       {(() => {
+                        const link = certLinkByInvoice.get(inv.id);
+                        const reason = link
+                          ? paymentStateReason(link.certStatus, isArchived)
+                          : "Un certificat émis lié à cette facture est requis. Créez puis émettez le certificat pour utiliser son journal partagé.";
+                        const linkedPayments = (projectPayments ?? []).filter((payment) => payment.invoiceAllocations?.some((allocation) => allocation.invoiceId === inv.id));
+                        const recorded = linkedPayments.reduce((sum, payment) => sum + (payment.invoiceAllocations ?? []).filter((allocation) => allocation.invoiceId === inv.id).reduce((total, allocation) => total + Number(allocation.amount), 0), 0);
+                        const evidenceCount = linkedPayments.filter((payment) => payment.evidenceFileName).length;
+                        return <div className="flex flex-wrap items-center gap-2" onClick={(event) => event.stopPropagation()}>
+                          <div className="flex flex-col items-start gap-1">
+                            <Button variant="outline" size="sm" className="h-8 text-[10px] gap-1.5" disabled={!link || !!reason} title={reason ?? "Ouvrir le journal partagé du certificat"} onClick={() => { if (link) setPaymentInvoice({ invoice: inv, certificatId: link.certificatId }); }} data-testid={`button-record-client-payment-${inv.id}`}>
+                              <Receipt size={12} /> Enregistrer un paiement client
+                            </Button>
+                            {reason && <span className="max-w-64 text-[9px] leading-snug text-muted-foreground" data-testid={`payment-unavailable-${inv.id}`}>{reason}</span>}
+                          </div>
+                          {linkedPayments.length > 0 && <Badge variant="outline" className="border-[#c1a27b]/50 bg-[#c1a27b]/10 text-[#0B2545] text-[10px]" data-testid={`badge-invoice-client-payment-${inv.id}`}>Paiement client enregistré : {fmt(recorded)} TTC · {evidenceCount ? `${evidenceCount} justificatif${evidenceCount > 1 ? "s" : ""} PDF` : "sans justificatif"}</Badge>}
+                          {projectPaymentsError && <span className="text-[9px] text-destructive">Journal indisponible — ouvrez le paiement pour réessayer.</span>}
+                        </div>;
+                      })()}
+                      {(() => {
                         // Task #496 — prominent one-click certificat action.
                         const link = certLinkByInvoice.get(inv.id);
                         const isAcompteInvoice = dv?.acompteInvoiceId === inv.id;
@@ -937,6 +962,8 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
           onClose={closeInvoicePdf}
         />
       )}
+
+      {paymentInvoice && <InvoicePaymentDialog certificatId={paymentInvoice.certificatId} invoiceId={paymentInvoice.invoice.id} invoiceNumber={paymentInvoice.invoice.invoiceNumber} onClose={() => setPaymentInvoice(null)} />}
 
       {multiCertDialogOpen && (() => {
         const selectedInvoices = (invoices ?? []).filter((i) => selectedForCert.has(i.id));

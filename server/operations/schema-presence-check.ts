@@ -70,6 +70,15 @@ export interface MigrationArtifact {
  * migration. Set the flag on every new data-only DML backfill.
  */
 export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
+  { tag:"0147_payment_evidence",artifact:{kind:"all",artifacts:[
+    {kind:"column",table:"certificat_payments",column:"note"},
+    {kind:"column",table:"certificat_payments",column:"invoice_allocations"},
+    {kind:"column",table:"certificat_payments",column:"evidence_storage_key"},
+    {kind:"column",table:"certificat_payments",column:"evidence_file_name"},
+    {kind:"column",table:"certificat_payments",column:"evidence_hash"},
+    {kind:"column",table:"certificat_payments",column:"request_id"},
+    {kind:"index",index:"certificat_payments_request_unique"},
+  ]}},
   { tag: "0146_supplier_directory", artifact: { kind: "all", artifacts: [
     { kind: "table", table: "archidoc_supplier_directory" },
     { kind: "constraint", table: "archidoc_supplier_directory", constraint: "archidoc_supplier_directory_pkey" },

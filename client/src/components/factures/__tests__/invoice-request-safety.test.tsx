@@ -53,6 +53,7 @@ beforeEach(() => {
   queryClient.clear();
   queryClient.setQueryData(projectScopedKey(12, "devis"), []);
   queryClient.setQueryData(projectScopedKey(12, "certificat-invoice-links"), []);
+  queryClient.setQueryData(projectScopedKey(12, "certificat-payments"), []);
   vi.stubGlobal("fetch", vi.fn().mockImplementation(async (url, options) => {
     if (url === "/api/invoices/41/request-resolution-history" && options?.method === "GET") {
       return { ok: true, json: async () => [] } as Response;

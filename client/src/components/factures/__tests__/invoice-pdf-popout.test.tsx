@@ -39,6 +39,7 @@ describe("invoice source PDF popout", () => {
     queryClient.setQueryData(projectScopedKey(12, "invoices"), [makeInvoice(40), makeInvoice(41)]);
     queryClient.setQueryData(projectScopedKey(12, "devis"), []);
     queryClient.setQueryData(projectScopedKey(12, "certificat-invoice-links"), []);
+    queryClient.setQueryData(projectScopedKey(12, "certificat-payments"), []);
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
     vi.spyOn(window, "open").mockReturnValue(null);
   });
@@ -110,5 +111,29 @@ describe("invoice source PDF popout", () => {
     expect(window.open).toHaveBeenCalledWith("", "_blank");
     expect(generatedTab.location.href).toBe("blob:client-package");
     expect(screen.queryByTestId("dialog-pdf-popout-invoice-41")).toBeNull();
+  });
+
+  it("shows recorded allocations and evidence on a collapsed invoice and opens the same certificate ledger", async () => {
+    const cert = { id: 61, projectId: 12, status: "issued", certificateRef: "CP-061", netToPayTtc: "1200" };
+    queryClient.setQueryData(projectScopedKey(12, "certificat-invoice-links"), [{ invoiceId: 40, certificatId: 61, certificateRef: "CP-061", certStatus: "issued" }]);
+    const payment = { id: 71, certificatId: 61, amount: "317.86", datePaid: "2026-10-02", method: "virement", note: "Versement partiel", evidenceFileName: "preuve.pdf", invoiceAllocations: [{ invoiceId: 40, amount: "317.86" }] };
+    queryClient.setQueryData(projectScopedKey(12, "certificat-payments"), [payment]);
+    queryClient.setQueryData(["/api/certificats", "61", "payment-context"], { cert, archived: false, invoices: [{ id: 40, invoiceNumber: "INV-40", amountTtc: "1200" }] });
+    queryClient.setQueryData(["/api/certificats", "61", "payments"], { payments: [payment], paidToDate: 317.86, outstanding: 882.14, fullyPaid: false });
+    queryClient.setQueryData(["/api/certificats", "61", "payment-suggestions"], []);
+    renderTab();
+    expect(screen.queryByTestId("input-draft-ht-40")).toBeNull();
+    expect(screen.getByTestId("badge-invoice-client-payment-40")).toHaveTextContent(/317,86.*1 justificatif PDF/);
+    expect(screen.getByTestId("button-record-client-payment-41")).toBeDisabled();
+    expect(screen.getByTestId("payment-unavailable-41")).toHaveTextContent("Un certificat émis");
+    fireEvent.click(screen.getByTestId("button-record-client-payment-40"));
+    expect(screen.getByTestId("dialog-invoice-payment")).toBeInTheDocument();
+    expect(screen.getByTestId("row-payment-71")).toHaveTextContent("Versement partiel");
+    expect(window.open).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("button-payment-evidence-71"));
+    expect(await screen.findByTestId("pdf-popout-iframe-payment-evidence-71")).toHaveAttribute("src", "/api/certificat-payments/71/evidence");
+    fireEvent.click(screen.getByRole("button", { name: "Close PDF viewer" }));
+    expect(screen.getByTestId("dialog-invoice-payment")).toBeInTheDocument();
+    expect(window.open).not.toHaveBeenCalled();
   });
 });

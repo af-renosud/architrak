@@ -1,3 +1,4 @@
+import { PaymentInputError, validatePaymentAllocation, type PaymentEvidence } from "./services/payment-allocation";
 import { invoiceRequestConflict } from "../shared/invoice-request-guard";
 import { db } from "./db";
 import { createHash, randomUUID } from "node:crypto";
@@ -608,7 +609,7 @@ export interface IStorage {
   getCertificatPayment(id: number): Promise<CertificatPayment | undefined>;
   getCertificatPayments(certificatId: number): Promise<CertificatPayment[]>;
   getCertificatPaymentsByProject(projectId: number): Promise<CertificatPayment[]>;
-  createCertificatPaymentAtomic(certificatId: number, data: InsertCertificatPayment): Promise<CertificatPaymentMutationResult & { payment?: CertificatPayment }>;
+  createCertificatPaymentAtomic(certificatId: number, data: InsertCertificatPayment, evidence?:PaymentEvidence): Promise<CertificatPaymentMutationResult & { payment?: CertificatPayment }>;
   updateCertificatPaymentAtomic(paymentId: number, patch: Partial<InsertCertificatPayment>, changedBy: string | null): Promise<CertificatPaymentMutationResult & { payment?: CertificatPayment }>;
   deleteCertificatPaymentAtomic(paymentId: number, changedBy: string | null): Promise<CertificatPaymentMutationResult>;
   getCertificatPaymentAudits(certificatId: number): Promise<CertificatPaymentAudit[]>;
@@ -3168,6 +3169,10 @@ export class DatabaseStorage implements IStorage {
         amount: certificatPayments.amount,
         method: certificatPayments.method,
         reference: certificatPayments.reference,
+        note: certificatPayments.note,
+        invoiceAllocations: certificatPayments.invoiceAllocations,
+        evidenceFileName: certificatPayments.evidenceFileName,
+        requestId: certificatPayments.requestId,
         loggedBy: certificatPayments.loggedBy,
         source: certificatPayments.source,
         createdAt: certificatPayments.createdAt,
@@ -3199,11 +3204,16 @@ export class DatabaseStorage implements IStorage {
   private async lockCertificatForPayments(
     tx: DbTransaction,
     certificatId: number,
+    allowCovered = false,
   ): Promise<
     | { outcome: "not_found" }
     | { outcome: "superseded" | "draft" | "locked"; cert: Certificat }
     | { outcome: "ok"; cert: Certificat; payments: CertificatPayment[] }
   > {
+    const [identity] = await tx.select().from(certificats).where(eq(certificats.id,certificatId));
+    if (!identity) return {outcome:"not_found"};
+    const [project] = await tx.select().from(projects).where(eq(projects.id,identity.projectId)).for("share");
+    if (!project || project.archivedAt || project.status==="archived") throw new PaymentInputError("Payments cannot be changed on an archived project.");
     const [cert] = await tx.select().from(certificats).where(eq(certificats.id, certificatId)).for("update");
     if (!cert) return { outcome: "not_found" };
     if (cert.status === "superseded") return { outcome: "superseded", cert };
@@ -3216,7 +3226,7 @@ export class DatabaseStorage implements IStorage {
       .from(certificatPayments)
       .where(eq(certificatPayments.certificatId, certificatId))
       .orderBy(certificatPayments.datePaid, certificatPayments.id);
-    if (this.paymentLedgerState(cert, payments).fullyPaid) return { outcome: "locked", cert };
+    if (!allowCovered && this.paymentLedgerState(cert, payments).fullyPaid) return { outcome: "locked", cert };
     return { outcome: "ok", cert, payments };
   }
 
@@ -3238,13 +3248,32 @@ export class DatabaseStorage implements IStorage {
   async createCertificatPaymentAtomic(
     certificatId: number,
     data: InsertCertificatPayment,
+    evidence?: PaymentEvidence,
   ): Promise<CertificatPaymentMutationResult & { payment?: CertificatPayment }> {
     return db.transaction(async (tx) => {
-      const guard = await this.lockCertificatForPayments(tx, certificatId);
+      const guard = await this.lockCertificatForPayments(tx, certificatId, true);
       if (guard.outcome !== "ok") return guard;
+      const allocations = await validatePaymentAllocation(tx,certificatId,data.amount,data.invoiceAllocations);
+      const existing = data.requestId ? guard.payments.find(p=>p.requestId===data.requestId) : undefined;
+      if (existing) {
+        const normalized = (a:typeof allocations)=>JSON.stringify([...a].sort((x,y)=>x.invoiceId-y.invoiceId).map(x=>[x.invoiceId,Number(x.amount)]));
+        if (Number(existing.amount)!==Number(data.amount) || existing.datePaid!==data.datePaid ||
+            existing.method!==data.method || (existing.reference??null)!==(data.reference??null) ||
+            (existing.note??null)!==(data.note??null) ||
+            normalized(existing.invoiceAllocations??[])!==normalized(allocations) ||
+            (evidence && existing.evidenceHash!==evidence.evidenceHash))
+          throw new PaymentInputError("This request was already saved with different details. Refresh before recording another payment.");
+        return {outcome:"ok" as const,cert:guard.cert,payment:existing,state:this.paymentLedgerState(guard.cert,guard.payments)};
+      }
+      if (data.requestId && (await tx.select({id:certificatPaymentAudits.id}).from(certificatPaymentAudits)
+        .where(and(eq(certificatPaymentAudits.certificatId,certificatId),
+          sql`${certificatPaymentAudits.snapshot}->>'requestId' = ${data.requestId}`)).limit(1)).length)
+        throw new PaymentInputError("This payment request was previously removed. Start a new payment record.");
+      if (this.paymentLedgerState(guard.cert,guard.payments).fullyPaid)
+        return {outcome:"locked" as const,cert:guard.cert};
       const [payment] = await tx
         .insert(certificatPayments)
-        .values({ ...data, certificatId, source: "manual" })
+        .values({ ...data, invoiceAllocations:allocations, ...evidence, certificatId, source: "manual" })
         .returning();
       await tx.insert(certificatPaymentAudits).values({
         certificatId,
@@ -3272,9 +3301,13 @@ export class DatabaseStorage implements IStorage {
       if (guard.outcome !== "ok") return guard;
       const current = guard.payments.find((p) => p.id === paymentId);
       if (!current) return { outcome: "not_found" as const };
+      if (patch.requestId !== undefined && patch.requestId !== current.requestId)
+        throw new PaymentInputError("Payment request identity cannot be changed.");
+      const allocations = await validatePaymentAllocation(tx,current.certificatId,patch.amount??current.amount,
+        patch.invoiceAllocations ?? current.invoiceAllocations);
       const [payment] = await tx
         .update(certificatPayments)
-        .set({ ...patch, updatedAt: sql`CURRENT_TIMESTAMP` })
+        .set({ ...patch, invoiceAllocations:allocations, updatedAt: sql`CURRENT_TIMESTAMP` })
         .where(eq(certificatPayments.id, paymentId))
         .returning();
       if (!payment) return { outcome: "not_found" as const };

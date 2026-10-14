@@ -1,4 +1,5 @@
 import { storage } from "../storage";
+import type { PaymentEvidence } from "./payment-allocation";
 import type { CertificatPaymentMutationResult } from "../storage";
 import { computeCertificatPaymentState, type CertificatPaymentState } from "@shared/financial-utils";
 import type { Certificat, CertificatPayment, InsertCertificatPayment } from "@shared/schema";
@@ -79,8 +80,11 @@ function unwrap<T extends CertificatPaymentMutationResult>(result: T): Extract<T
 export async function logPayment(
   certificatId: number,
   entry: InsertCertificatPayment,
+  evidence?: PaymentEvidence,
 ): Promise<{ payment: CertificatPayment; state: CertificatPaymentState }> {
-  const result = unwrap(await storage.createCertificatPaymentAtomic(certificatId, entry));
+  const result = unwrap(await (evidence
+    ? storage.createCertificatPaymentAtomic(certificatId,entry,evidence)
+    : storage.createCertificatPaymentAtomic(certificatId, entry)));
   return { payment: (result as { payment: CertificatPayment }).payment, state: result.state };
 }
 

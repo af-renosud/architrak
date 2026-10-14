@@ -6,11 +6,16 @@
  * be opened from within a project's Certificats tab too.
  */
 
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
+import { PdfPopoutViewer } from "@/components/devis/PdfPopoutViewer";
+import "./payment-evidence.css";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
+import { allocationsMatch, evidenceFileError, paymentStateReason, useCertificatPaymentContext, type PaymentWithEvidence } from "@/hooks/use-certificat-payment-context";
 import { ArchitectInvoiceSection } from "@/components/certificats/ArchitectInvoiceSection";
 import { PennylaneInvoiceDescription } from "./PennylaneInvoiceDescription";
 import { useInvoiceAwareCertificatSend } from "@/hooks/use-invoice-aware-certificat-send";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogPortal, DialogTitle } from "@/components/ui/dialog";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Button } from "@/components/ui/button";
@@ -20,7 +25,7 @@ import { ExternalLink, AlertTriangle, Plus, Copy, Send, Loader2 } from "lucide-r
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, invalidateCertificatPaymentData, projectScopedKey, queryClient } from "@/lib/queryClient";
-import type { Certificat, CertificatWithTvaEvidenceReference, Contractor, CertificatPayment, CertificatPaymentSuggestion } from "@shared/schema";
+import type { Certificat, CertificatWithTvaEvidenceReference, Contractor, CertificatPaymentSuggestion } from "@shared/schema";
 import {
   canSendCertificat,
   hasCertificatDeliveryEvidence,
@@ -32,7 +37,8 @@ import { Amount } from "@/components/ui/amount";
 import { formatCurrency as fmt } from "@/lib/utils";
 
 interface PaymentLedgerResponse {
-  payments: CertificatPayment[];
+  payments: PaymentWithEvidence[];
+  audits?: Array<{ id: number; paymentId: number; action: string; createdAt: string; snapshot: PaymentWithEvidence | null }>;
   paidToDate: number;
   outstanding: number;
   fullyPaid: boolean;
@@ -145,7 +151,7 @@ function PaymentSuggestionCard({ suggestion, onDone }: { suggestion: CertificatP
 }
 
 // Task #465 — structured client-payment ledger on the certificat detail.
-export function CertificatPaymentsSection({ cert }: { cert: Certificat }) {
+export function CertificatPaymentsSection({ cert, initialInvoiceId }: { cert: Certificat; initialInvoiceId?: number }) {
   const { toast } = useToast();
   const [editingId, setEditingId] = useState<number | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -153,9 +159,34 @@ export function CertificatPaymentsSection({ cert }: { cert: Certificat }) {
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<"virement" | "cheque" | "autre">("virement");
   const [reference, setReference] = useState("");
+  const [note, setNote] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [allocationAmounts, setAllocationAmounts] = useState<Record<number, string>>({});
+  const requestId = useRef<string | null>(null);
+  const [evidencePayment, setEvidencePayment] = useState<PaymentWithEvidence | null>(null);
+  const [proofTarget, setProofTarget] = useState<number | null>(null);
+  const [proofFile, setProofFile] = useState<File | null>(null);
+  const [proofError, setProofError] = useState<string | null>(null);
+  const closeEvidence = useCallback(() => setEvidencePayment(null), []);
+  const context = useCertificatPaymentContext(cert.id);
+  const invoices = context.data?.invoices ?? [];
+  const currentCert = context.data?.cert ?? cert;
+  const blockedReason = paymentStateReason(currentCert.status, context.data?.archived ?? false);
+  const canWrite = !!context.data && !blockedReason;
+  const invoiceAllocations = invoices.length === 1
+    ? [{ invoiceId: invoices[0].id, amount }]
+    : invoices.map((invoice) => ({
+      invoiceId: invoice.id,
+      amount: allocationAmounts[invoice.id] ?? (invoice.id === initialInvoiceId ? amount : "0"),
+    })).filter((item) => Number(item.amount) > 0);
+  const allocationsValid = invoices.length < 2 || (
+    Object.values(allocationAmounts).every((value) => Number.isFinite(Number(value)) && Number(value) >= 0)
+    && allocationsMatch(amount, invoiceAllocations)
+  );
 
   const ledgerKey = ["/api/certificats", String(cert.id), "payments"];
-  const { data: ledger } = useQuery<PaymentLedgerResponse>({ queryKey: ledgerKey });
+  const { data: ledger, isLoading: ledgerLoading, error: ledgerError, refetch: refetchLedger } = useQuery<PaymentLedgerResponse>({ queryKey: ledgerKey });
 
   // Task #466 — draft suggestions detected from client "paid" replies.
   const suggestionsKey = ["/api/certificats", String(cert.id), "payment-suggestions"];
@@ -168,34 +199,48 @@ export function CertificatPaymentsSection({ cert }: { cert: Certificat }) {
   const invalidate = () => invalidateCertificatPaymentData();
 
   const resetForm = () => {
+    saveMutation.reset();
     setEditingId(null);
     setFormOpen(false);
     setDatePaid("");
     setAmount("");
     setMethod("virement");
     setReference("");
+    setNote("");
+    setFile(null);
+    setFileError(null);
+    setAllocationAmounts({});
+    requestId.current = null;
   };
 
   const saveMutation = useMutation({
     mutationFn: async () => {
+      if (!canWrite || ledger?.fullyPaid) throw new Error(blockedReason ?? "La correction monétaire de ce certificat est verrouillée.");
+      if (!allocationsValid) throw new Error("La somme des affectations doit correspondre au montant TTC du paiement.");
       const body = {
         datePaid,
         amount,
         method,
         reference: reference.trim() ? reference.trim() : null,
+        note: note.trim() || null,
+        invoiceAllocations,
+        requestId: requestId.current ?? (requestId.current = crypto.randomUUID()),
       };
+      const multipart = new FormData();
+      multipart.append("data", JSON.stringify(body));
+      if (file) multipart.append("file", file);
       const res = editingId
         ? await apiRequest("PATCH", `/api/certificat-payments/${editingId}`, body)
-        : await apiRequest("POST", `/api/certificats/${cert.id}/payments`, body);
+        : await apiRequest("POST", `/api/certificats/${cert.id}/payments`, multipart);
       return res.json() as Promise<{ overpaid: boolean; fullyPaid: boolean }>;
     },
     onSuccess: (r) => {
       invalidate();
       resetForm();
       if (r.overpaid) {
-        toast({ title: "Paiement enregistré — trop-perçu", description: "Le total encaissé dépasse le montant TTC du certificat.", variant: "destructive" });
+        toast({ title: "Paiement client enregistré — dépassement", description: "Le total enregistré dépasse le montant TTC du certificat.", variant: "destructive" });
       } else if (r.fullyPaid) {
-        toast({ title: "Certificat intégralement payé", description: "Le statut est passé automatiquement à payé." });
+        toast({ title: "Paiement client enregistré", description: "Le total enregistré couvre le certificat. Cela ne confirme pas la réception par l'entreprise." });
       } else {
         toast({ title: "Paiement enregistré" });
       }
@@ -204,12 +249,33 @@ export function CertificatPaymentsSection({ cert }: { cert: Certificat }) {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async (id: number) => (await apiRequest("DELETE", `/api/certificat-payments/${id}`)).json(),
+    mutationFn: async (id: number) => {
+      if (!canWrite || ledger?.fullyPaid) throw new Error(blockedReason ?? "La correction monétaire de ce certificat est verrouillée.");
+      return (await apiRequest("DELETE", `/api/certificat-payments/${id}`)).json();
+    },
     onSuccess: () => {
       invalidate();
       toast({ title: "Paiement supprimé" });
     },
     onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
+  });
+  const proofMutation = useMutation({
+    mutationFn: async () => {
+      if (!canWrite || !proofTarget || !proofFile) throw new Error(blockedReason ?? "Choisissez un PDF.");
+      const validation = evidenceFileError(proofFile);
+      if (validation) throw new Error(validation);
+      const data = new FormData();
+      data.append("file", proofFile);
+      return (await apiRequest("POST", `/api/certificat-payments/${proofTarget}/evidence`, data)).json();
+    },
+    onSuccess: () => {
+      invalidate();
+      setProofTarget(null);
+      setProofFile(null);
+      setProofError(null);
+      toast({ title: "Justificatif ajouté", description: "Le montant du paiement et la réception par l'entreprise sont inchangés." });
+    },
+    onError: (error: Error) => setProofError(error.message),
   });
 
   const methodLabel: Record<string, string> = { virement: "Virement", cheque: "Chèque", autre: "Autre" };
@@ -219,10 +285,11 @@ export function CertificatPaymentsSection({ cert }: { cert: Certificat }) {
     <div className="space-y-3 p-4 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]" data-testid="section-cert-payments">
       <div className="flex items-center justify-between gap-2">
         <TechnicalLabel>Paiements Client</TechnicalLabel>
-        {!locked && cert.status !== "superseded" && (
+        {!locked && (
           <Button
             variant="outline"
             size="sm"
+            disabled={!canWrite || !ledger || saveMutation.isPending}
             onClick={() => {
               resetForm();
               setFormOpen(true);
@@ -235,15 +302,19 @@ export function CertificatPaymentsSection({ cert }: { cert: Certificat }) {
             data-testid="button-log-payment"
           >
             <Plus size={11} />
-            <span className="text-[8px] font-bold uppercase tracking-widest">Enregistrer un paiement</span>
+            <span className="text-[8px] font-bold uppercase tracking-widest">Enregistrer un paiement client</span>
           </Button>
         )}
       </div>
+      <p className="text-[11px] text-muted-foreground">Journal partagé avec le certificat. Paiements partiels possibles. Un justificatif ne confirme pas la réception des fonds par l'entreprise.</p>
+      {blockedReason && <p className="text-[11px] text-amber-800 dark:text-amber-300" role="status">{blockedReason}</p>}
+      {(ledgerLoading || context.isLoading) && <Skeleton className="h-12 w-full" />}
+      {(ledgerError || context.error) && <div role="alert" className="text-[11px] text-destructive">Impossible de charger le journal. <Button variant="ghost" size="sm" onClick={() => { void refetchLedger(); void context.refetch(); }}>Réessayer</Button></div>}
 
       {ledger && (
         <div className="flex items-center justify-between gap-2 text-[12px]">
           <span className="text-muted-foreground">
-            Encaissé <span className="font-semibold text-foreground" data-testid="text-cert-paid-to-date">{<Amount value={ledger.paidToDate} denomination="TTC" />}</span>
+            Paiements client enregistrés <span className="font-semibold text-foreground" data-testid="text-cert-paid-to-date">{<Amount value={ledger.paidToDate} denomination="TTC" />}</span>
             {" / "}{<Amount value={parseFloat(cert.netToPayTtc)} denomination="TTC" />}
           </span>
           {ledger.overpaid ? (
@@ -256,29 +327,36 @@ export function CertificatPaymentsSection({ cert }: { cert: Certificat }) {
         </div>
       )}
 
-      {openSuggestions.map((s) => (
+      {canWrite && !locked && openSuggestions.map((s) => (
         <PaymentSuggestionCard key={s.id} suggestion={s} onDone={invalidate} />
       ))}
 
       {(ledger?.payments ?? []).map((p) => (
-        <div key={p.id} className="flex items-center justify-between gap-2 text-[12px] border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] pt-2" data-testid={`row-payment-${p.id}`}>
+        <div key={p.id} className="flex flex-wrap items-center justify-between gap-2 text-[12px] border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] pt-2" data-testid={`row-payment-${p.id}`}>
           <div>
             <span className="font-semibold text-foreground">{<Amount value={parseFloat(p.amount)} denomination="TTC" />}</span>
             <span className="text-muted-foreground"> — {methodLabel[p.method] ?? p.method} le {p.datePaid}</span>
             {p.reference && <span className="text-[10px] text-muted-foreground italic"> (réf. {p.reference})</span>}
+            {p.note && <p className="text-[11px] text-muted-foreground whitespace-pre-wrap">{p.note}</p>}
+            {!!p.invoiceAllocations?.length && <p className="text-[10px] text-muted-foreground">{p.invoiceAllocations.map((allocation) => `Facture #${invoices.find((invoice) => invoice.id === allocation.invoiceId)?.invoiceNumber ?? allocation.invoiceId} : ${fmt(Number(allocation.amount))}`).join(" · ")}</p>}
+            {p.evidenceFileName ? <Button variant="ghost" size="sm" onClick={() => setEvidencePayment(p)} data-testid={`button-payment-evidence-${p.id}`}>Justificatif PDF — {p.evidenceFileName}</Button>
+              : canWrite && <Button variant="outline" size="sm" disabled={proofMutation.isPending} onClick={() => { setProofTarget(p.id); setProofFile(null); setProofError(null); }} data-testid={`button-add-payment-evidence-${p.id}`}>Ajouter un justificatif PDF</Button>}
           </div>
-          {!locked && cert.status !== "superseded" && (
+          {!locked && canWrite && (
             <div className="flex items-center gap-1">
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => {
+                  resetForm();
                   setEditingId(p.id);
                   setFormOpen(true);
                   setDatePaid(p.datePaid);
                   setAmount(p.amount);
                   setMethod((p.method as "virement" | "cheque" | "autre") ?? "virement");
                   setReference(p.reference ?? "");
+                  setNote(p.note ?? "");
+                  setAllocationAmounts(Object.fromEntries(invoices.map((invoice) => [invoice.id, String(p.invoiceAllocations?.find((allocation) => allocation.invoiceId === invoice.id)?.amount ?? 0)])));
                 }}
                 data-testid={`button-edit-payment-${p.id}`}
               >
@@ -287,7 +365,7 @@ export function CertificatPaymentsSection({ cert }: { cert: Certificat }) {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => deleteMutation.mutate(p.id)}
+                onClick={() => { if (window.confirm("Supprimer ce paiement du journal ? Le justificatif et l'historique sont conservés pour audit.")) deleteMutation.mutate(p.id); }}
                 disabled={deleteMutation.isPending}
                 data-testid={`button-delete-payment-${p.id}`}
               >
@@ -297,6 +375,26 @@ export function CertificatPaymentsSection({ cert }: { cert: Certificat }) {
           )}
         </div>
       ))}
+      {proofTarget !== null && <div className="space-y-2 rounded-lg border border-border p-3" data-testid="form-payment-evidence">
+        <p className="text-[11px] font-semibold">Ajouter le justificatif au paiement existant — aucun nouveau paiement</p>
+        <Input aria-label="Justificatif PDF du paiement existant" type="file" accept="application/pdf,.pdf" disabled={proofMutation.isPending} onChange={(event) => {
+          const selected = event.target.files?.[0] ?? null;
+          const error = selected ? evidenceFileError(selected) : null;
+          setProofError(error); setProofFile(error ? null : selected);
+        }} />
+        <p className="text-[10px] text-muted-foreground">PDF, 10 Mo maximum. Le justificatif sera conservé pour audit.</p>
+        {proofError && <p role="alert" className="text-[11px] text-destructive">{proofError}</p>}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" size="sm" disabled={proofMutation.isPending} onClick={() => { setProofTarget(null); setProofFile(null); setProofError(null); }}>Annuler</Button>
+          <Button size="sm" disabled={!canWrite || !proofFile || proofMutation.isPending} onClick={() => proofMutation.mutate()}>{proofMutation.isPending ? "Enregistrement…" : "Ajouter le justificatif"}</Button>
+        </div>
+      </div>}
+      {(ledger?.audits ?? []).filter((audit) => audit.action === "deleted").map((audit) => <div key={audit.id} className="rounded-md bg-muted/40 p-2 text-[11px] text-muted-foreground" data-testid={`audit-deleted-payment-${audit.paymentId}`}>
+        Paiement supprimé — {audit.snapshot?.amount && fmt(Number(audit.snapshot.amount))} · {new Date(audit.createdAt).toLocaleDateString("fr-FR")}
+        {audit.snapshot?.note && <p className="whitespace-pre-wrap">{audit.snapshot.note}</p>}
+        {audit.snapshot?.evidenceFileName && <Button variant="ghost" size="sm" onClick={() => setEvidencePayment({ ...audit.snapshot!, id: audit.paymentId })}>Justificatif conservé — {audit.snapshot.evidenceFileName}</Button>}
+      </div>)}
+      {evidencePayment && <PdfPopoutViewer pdfUrl={`/api/certificat-payments/${evidencePayment.id}/evidence`} downloadUrl={`/api/certificat-payments/${evidencePayment.id}/evidence`} downloadName={evidencePayment.evidenceFileName ?? "justificatif.pdf"} devisCode={`Justificatif — ${currentCert.certificateRef}`} viewerId={`payment-evidence-${evidencePayment.id}`} onClose={closeEvidence} />}
 
       {ledger && ledger.payments.length === 0 && (
         <p className="text-[11px] text-muted-foreground" data-testid="text-no-payments">
@@ -304,9 +402,9 @@ export function CertificatPaymentsSection({ cert }: { cert: Certificat }) {
         </p>
       )}
 
-      {formOpen && (
-        <div className="space-y-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] pt-3" data-testid="form-payment">
-          <div className="grid grid-cols-2 gap-2">
+      {formOpen && canWrite && !locked && (
+        <fieldset disabled={saveMutation.isPending} className="space-y-2 border-t border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] pt-3" data-testid="form-payment">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <div>
               <TechnicalLabel>Date de paiement</TechnicalLabel>
               <Input type="date" value={datePaid} onChange={(e) => setDatePaid(e.target.value)} data-testid="input-payment-date" />
@@ -316,7 +414,30 @@ export function CertificatPaymentsSection({ cert }: { cert: Certificat }) {
               <Input type="number" step="0.01" min="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} data-testid="input-payment-amount" />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-2">
+          <div>
+            <TechnicalLabel>Note (optionnelle)</TechnicalLabel>
+            <Textarea aria-label="Note du paiement" value={note} onChange={(event) => setNote(event.target.value)} data-testid="input-payment-note" />
+          </div>
+          {invoices.length > 1 && <fieldset className="space-y-2 rounded-md bg-muted/40 p-3">
+            <legend className="text-[11px] font-semibold">Affectation aux factures (TTC)</legend>
+            {invoices.map((invoice) => <label key={invoice.id} className="flex items-center justify-between gap-3 text-[11px]">
+              <span>Facture #{invoice.invoiceNumber} · {fmt(Number(invoice.amountTtc))}</span>
+              <Input className="max-w-36" aria-label={`Affectation facture ${invoice.invoiceNumber}`} type="number" step="0.01" min="0" value={allocationAmounts[invoice.id] ?? (invoice.id === initialInvoiceId ? amount : "0")} onChange={(event) => setAllocationAmounts((previous) => ({ ...previous, [invoice.id]: event.target.value }))} />
+            </label>)}
+            {!allocationsValid && <p className="text-[11px] text-destructive" role="alert">La somme des affectations doit être égale au montant TTC du paiement.</p>}
+          </fieldset>}
+          {!editingId && <div className="space-y-1">
+            <TechnicalLabel>Justificatif PDF (optionnel, 10 Mo maximum)</TechnicalLabel>
+            <Input aria-label="Justificatif PDF" type="file" accept="application/pdf,.pdf" disabled={saveMutation.isPending} onChange={(event) => {
+              const selected = event.target.files?.[0] ?? null;
+              const error = selected ? evidenceFileError(selected) : null;
+              setFileError(error); setFile(error ? null : selected);
+            }} data-testid="input-payment-evidence" />
+            {file && <p className="text-[10px] text-muted-foreground">{file.name} — conservé avec le paiement après enregistrement.</p>}
+            {fileError && <p role="alert" className="text-[11px] text-destructive">{fileError}</p>}
+          </div>}
+          {editingId && <p className="text-[10px] text-muted-foreground">Le justificatif existant est conservé pour audit. Pour ajouter une preuve manquante, utilisez « Ajouter un justificatif PDF » dans le journal.</p>}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <div>
               <TechnicalLabel>Mode</TechnicalLabel>
               <Select value={method} onValueChange={(v) => setMethod(v as "virement" | "cheque" | "autre")}>
@@ -333,20 +454,21 @@ export function CertificatPaymentsSection({ cert }: { cert: Certificat }) {
               <Input value={reference} onChange={(e) => setReference(e.target.value)} placeholder="ex: VIR-2026-081" data-testid="input-payment-reference" />
             </div>
           </div>
+          {saveMutation.error && <p role="alert" className="text-[11px] text-destructive">{saveMutation.error.message} Le formulaire et le justificatif sont conservés. Vous pouvez réessayer.</p>}
           <div className="flex items-center gap-2 justify-end">
-            <Button variant="ghost" size="sm" onClick={resetForm} data-testid="button-cancel-payment">
+            <Button variant="ghost" size="sm" disabled={saveMutation.isPending} onClick={resetForm} data-testid="button-cancel-payment">
               <span className="text-[8px] font-bold uppercase tracking-widest">Annuler</span>
             </Button>
             <Button
               size="sm"
               onClick={() => saveMutation.mutate()}
-              disabled={saveMutation.isPending || !datePaid || !amount || parseFloat(amount) <= 0}
+              disabled={!canWrite || saveMutation.isPending || !datePaid || !amount || !Number.isFinite(Number(amount)) || Number(amount) <= 0 || !allocationsValid || !!fileError}
               data-testid="button-save-payment"
             >
               <span className="text-[8px] font-bold uppercase tracking-widest">{editingId ? "Corriger" : "Enregistrer"}</span>
             </Button>
           </div>
-        </div>
+        </fieldset>
       )}
     </div>
   );
@@ -384,9 +506,13 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
     },
   });
   return (
-    <Dialog open onOpenChange={onClose}>
+    <Dialog open modal={false} onOpenChange={onClose}>
+      {/* Keep the existing backdrop while allowing the separate PDF window to receive focus. */}
+      <DialogPortal><div aria-hidden="true" className="fixed inset-0 z-50 bg-black/80" /></DialogPortal>
       {sendMutation.confirmationDialog}
-      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto" onInteractOutside={(event) => {
+        if ((event.target as HTMLElement)?.closest?.('[data-testid^="dialog-pdf-popout-payment-evidence-"]')) event.preventDefault();
+      }}>
         <DialogHeader>
           <DialogTitle className="text-[16px] font-black uppercase tracking-tight">
             {isSupplier

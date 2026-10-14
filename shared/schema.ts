@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { CLIENT_NO_PAYMENT_NOTICE } from "./signature-message-template";
 import {
   pgTable,
+  uuid,
   text,
   varchar,
   serial,
@@ -1163,6 +1164,12 @@ export const certificatPayments = pgTable("certificat_payments", {
   amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
   method: text("method").notNull().default("virement"),
   reference: text("reference"),
+  note: text("note"),
+  invoiceAllocations: jsonb("invoice_allocations").$type<{invoiceId:number;amount:string}[]>().notNull().default([]),
+  evidenceStorageKey: text("evidence_storage_key"),
+  evidenceFileName: text("evidence_file_name"),
+  evidenceHash: text("evidence_hash"),
+  requestId: uuid("request_id"),
   loggedBy: text("logged_by"),
   // `manual` today; `email` reserved for the Gmail confirmation follow-up.
   source: text("source").notNull().default("manual"),
@@ -1170,6 +1177,7 @@ export const certificatPayments = pgTable("certificat_payments", {
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   index("certificat_payments_certificat_id_idx").on(table.certificatId),
+  uniqueIndex("certificat_payments_request_unique").on(table.certificatId,table.requestId),
   check("certificat_payments_amount_positive", sql`${table.amount} > 0`),
   check("certificat_payments_method_check", sql`${table.method} IN ('virement', 'cheque', 'autre')`),
   check("certificat_payments_source_check", sql`${table.source} IN ('manual', 'email')`),
@@ -3000,6 +3008,9 @@ export type ServerInsertCertificat = InsertCertificat & {
 // method vocabulary; `source` and timestamps are server-set.
 export const insertCertificatPaymentSchema = createInsertSchema(certificatPayments)
   .omit({
+    evidenceStorageKey: true,
+    evidenceFileName: true,
+    evidenceHash: true,
     id: true,
     certificatId: true,
     source: true,
@@ -3007,6 +3018,10 @@ export const insertCertificatPaymentSchema = createInsertSchema(certificatPaymen
     updatedAt: true,
   })
   .extend({
+    note: z.string().trim().max(2000).nullable().optional(),
+    requestId: z.string().uuid().optional(),
+    invoiceAllocations: z.array(z.object({invoiceId:z.number().int().positive(),
+      amount:z.string().regex(/^\d{1,10}(\.\d{1,2})?$/).refine(v=>Number(v)>0)})).max(100).optional(),
     datePaid: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date invalide (AAAA-MM-JJ)"),
     amount: z
       .string()
@@ -3017,7 +3032,9 @@ export const insertCertificatPaymentSchema = createInsertSchema(certificatPaymen
     loggedBy: z.string().trim().max(200).nullable().optional(),
   });
 
-export type CertificatPayment = typeof certificatPayments.$inferSelect;
+type PaymentOptionalFields = "note" | "invoiceAllocations" | "evidenceStorageKey" | "evidenceFileName" | "evidenceHash" | "requestId";
+export type CertificatPayment = Omit<typeof certificatPayments.$inferSelect,PaymentOptionalFields> &
+  Partial<Pick<typeof certificatPayments.$inferSelect,PaymentOptionalFields>>;
 export type InsertCertificatPayment = z.infer<typeof insertCertificatPaymentSchema>;
 export type CertificatPaymentAudit = typeof certificatPaymentAudits.$inferSelect;
 

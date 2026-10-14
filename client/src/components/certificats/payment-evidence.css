@@ -1,0 +1,25 @@
+[data-testid^="dialog-pdf-popout-payment-evidence-"] {
+  pointer-events: auto;
+}
+[data-testid^="dialog-pdf-popout-payment-evidence-"] > [data-testid^="pdf-popout-handle-"] {
+  touch-action: none;
+}
+[data-testid^="dialog-pdf-popout-payment-evidence-"] > .flex-1 {
+  min-height: 0;
+}
+@media (max-width: 767px) {
+  [data-testid^="dialog-pdf-popout-payment-evidence-"] {
+    left: 8px !important;
+    top: auto !important;
+    bottom: max(8px, env(safe-area-inset-bottom)) !important;
+    width: calc(100vw - 16px) !important;
+    height: 60dvh !important;
+    max-height: calc(100dvh - 16px);
+  }
+  [data-testid^="dialog-pdf-popout-payment-evidence-"][data-minimized="true"] {
+    height: 44px !important;
+  }
+  [data-testid^="dialog-pdf-popout-payment-evidence-"] [data-testid^="pdf-popout-resize-"] {
+    display: none;
+  }
+}

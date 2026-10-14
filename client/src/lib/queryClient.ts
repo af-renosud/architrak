@@ -40,8 +40,8 @@ export async function apiRequest(
 ): Promise<Response> {
   const res = await fetch(url, {
     method,
-    headers: data ? { "Content-Type": "application/json" } : {},
-    body: data ? JSON.stringify(data) : undefined,
+    headers: data && !(data instanceof FormData) ? { "Content-Type": "application/json" } : {},
+    body: data instanceof FormData ? data : data ? JSON.stringify(data) : undefined,
     credentials: "include",
   });
 
@@ -99,6 +99,9 @@ export function invalidateCertificatPaymentData() {
     "payments",
     "payment-suggestions",
     "financial-summary",
+    "invoices",
+    "certificat-invoice-links",
+    "payment-context",
   ];
   queryClient.invalidateQueries({
     predicate: (query) =>

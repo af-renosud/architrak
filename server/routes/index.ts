@@ -98,6 +98,7 @@ export async function registerRoutes(
 
   app.use("/api/webhooks", webhookLimiter);
   app.use(["/api/devis/:devisId/invoices/upload", "/api/projects/:projectId/devis/upload", "/api/projects/:projectId/intake/upload", "/api/design-contracts/preview", "/api/devis/:id/record-signed-copy", "/api/projects/:projectId/planning-envelope/import"], uploadLimiter);
+  app.use(["/api/certificats/:id/payments","/api/certificat-payments/:id/evidence"],uploadLimiter);
   app.use("/api", apiLimiter);
 
   app.use(projectsRouter);
