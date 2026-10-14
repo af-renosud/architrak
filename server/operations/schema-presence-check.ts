@@ -70,6 +70,12 @@ export interface MigrationArtifact {
  * migration. Set the flag on every new data-only DML backfill.
  */
 export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
+  { tag: "0145_devis_stage_decisions", artifact: { kind: "all", artifacts: [
+    { kind: "table", table: "devis_stage_decisions" },
+    { kind: "constraint", table: "devis_stage_decisions", constraint: "devis_stage_decisions_pkey" },
+    { kind: "constraint", table: "devis_stage_decisions", constraint: "devis_stage_decisions_reason_check" },
+    { kind: "trigger", table: "devis_stage_decisions", trigger: "devis_stage_decisions_immutable" },
+  ] } },
   { tag: "0144_invoice_request_decisions", artifact: { kind: "all", artifacts: [
     { kind: "table", table: "invoice_request_decisions" },
     { kind: "constraint", table: "invoice_request_decisions", constraint: "invoice_request_decisions_pkey" },

@@ -798,6 +798,7 @@ export async function syncContractors(incremental = true): Promise<{ updated: nu
   }
 
   const log = await createSyncLog("contractors");
+  let count = 0;
   try {
     let since: string | undefined;
     if (incremental) {
@@ -805,16 +806,20 @@ export async function syncContractors(incremental = true): Promise<{ updated: nu
       if (last) since = last.toISOString();
     }
 
-    const [response, suppliers] = await Promise.all([
-      fetchContractors(since),
-      // ArchiDoc classifies supplier partners structurally by exposing them
-      // from a dedicated authenticated feed. The feed is intentionally read
-      // in full even during incremental syncs because it has no `since`
-      // contract and is currently small.
-      fetchSuppliers(),
-    ]);
+    // Contractor authentication must succeed independently. A missing supplier
+    // directory must neither mask this result nor authorize mirror deletions.
+    const response = await fetchContractors(since);
+    let suppliers: Awaited<ReturnType<typeof fetchSuppliers>> = [];
+    let supplierError: string | undefined;
+    try { suppliers = await fetchSuppliers(); }
+    catch (err) { supplierError = err instanceof Error ? err.message : "Supplier directory unavailable"; }
+    const preservedSupplierIds = supplierError ? new Set(
+      (await db.select({ id: archidocContractors.archidocId }).from(archidocContractors)
+        .where(eq(archidocContractors.partnerType, "supplier"))).map(row => row.id),
+    ) : new Set<string>();
     const partnersById = new Map<string, ArchidocContractorData>();
     for (const contractor of response.contractors) {
+      if (preservedSupplierIds.has(contractor.id)) continue;
       partnersById.set(contractor.id, { ...contractor, partnerType: "contractor" });
     }
     for (const supplier of suppliers.filter(isEligibleSupplier)) {
@@ -829,7 +834,6 @@ export async function syncContractors(incremental = true): Promise<{ updated: nu
       );
     }
 
-    let count = 0;
     const issues: MirrorSiretIssue[] = [];
     const cleared: string[] = [];
     const seenIds: string[] = [];
@@ -845,7 +849,7 @@ export async function syncContractors(incremental = true): Promise<{ updated: nu
     }
 
     let warning: string | undefined;
-    if (!incremental) {
+    if (!incremental && !supplierError) {
       const reconciled = await reconcileContractorMirror(seenIds, getCurrentSourceBaseUrl());
       if (reconciled.softDeletedDifferentSource > 0 || reconciled.softDeletedMissingFromResponse > 0) {
         console.log(
@@ -856,7 +860,8 @@ export async function syncContractors(incremental = true): Promise<{ updated: nu
     }
 
     await recordSiretIssues(issues, cleared, log.id);
-    await completeSyncLog(log.id, "completed", count, warning ? `WARNING: ${warning}` : undefined, issues.length);
+    await completeSyncLog(log.id, supplierError ? "failed" : "completed", count,
+      supplierError ?? (warning ? `WARNING: ${warning}` : undefined), issues.length);
     if (issues.length > 0) {
       console.log(
         `[ArchiDoc Sync] Contractors synced: ${count} records (${issues.length} with malformed SIRETs)`,
@@ -864,12 +869,12 @@ export async function syncContractors(incremental = true): Promise<{ updated: nu
     } else {
       console.log(`[ArchiDoc Sync] Contractors synced: ${count} records`);
     }
-    return { updated: count, warning };
+    return { updated: count, warning, ...(supplierError ? { error: supplierError } : {}) };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    await completeSyncLog(log.id, "failed", 0, message);
+    await completeSyncLog(log.id, "failed", count, message);
     console.error(`[ArchiDoc Sync] Contractor sync failed: ${message}`);
-    return { updated: 0, error: message };
+    return { updated: count, error: message };
   }
 }
 

@@ -33,6 +33,7 @@ import type { ParsedDocument } from "../gmail/document-parser";
 import { roundCurrency } from "../../shared/financial-utils";
 import { evaluateInsuranceGate } from "../services/insurance-verdict";
 import { getProjectDevisReadiness } from "../services/devis-readiness";
+import { requiresStageReopenConfirmation } from "@shared/devis-stage-recovery";
 import { evaluateManualStageTransition } from "../services/devis-stage-guard.service";
 import {
   reconcileAdvisories,
@@ -939,6 +940,9 @@ router.patch(
     const SENT_INDEX = STAGE_ORDER.indexOf("sent_to_client");
     if (Object.prototype.hasOwnProperty.call(req.body, "signOffStage")) {
       const nextStage = String(req.body.signOffStage);
+      if (requiresStageReopenConfirmation(before.signOffStage, nextStage))
+        return res.status(409).json({ code: "stage_reopen_confirmation_required",
+          message: "Moving backwards from an approved stage requires a confirmed workflow decision and reason." });
       const nextIdx = STAGE_ORDER.indexOf(nextStage);
       const prevIdx = STAGE_ORDER.indexOf(before.signOffStage);
 
@@ -1139,8 +1143,10 @@ router.patch(
       Object.assign(patchBody, result.updates);
     }
 
-    const d = await storage.updateDevis(id, normalizeDevisText(patchBody));
-    if (!d) return res.status(404).json({ message: "Devis not found" });
+    const d = req.body.signOffStage !== undefined
+      ? await storage.updateDevis(id, normalizeDevisText(patchBody), before.signOffStage)
+      : await storage.updateDevis(id, normalizeDevisText(patchBody));
+    if (!d) return res.status(409).json({ message: "Quotation changed. Refresh before editing its workflow stage." });
     // Lifecycle-bound auto-revoke: if this edit lowered the contracted HT
     // (or otherwise pushed the devis to fully-invoiced), retire the active
     // contractor portal token now. Cheap no-op when the predicate doesn't

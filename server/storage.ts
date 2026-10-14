@@ -429,7 +429,7 @@ export interface IStorage {
 
   createDevis(data: InsertDevis): Promise<Devis>;
 
-  updateDevis(id: number, data: Partial<InsertDevis>): Promise<Devis | undefined>;
+  updateDevis(id: number, data: Partial<InsertDevis>, expectedSignOffStage?: string): Promise<Devis | undefined>;
 
   getDevisRefEdits(devisId: number): Promise<DevisRefEdit[]>;
 
@@ -1980,8 +1980,10 @@ export class DatabaseStorage implements IStorage {
     return d;
   }
 
-  async updateDevis(id: number, data: Partial<InsertDevis>): Promise<Devis | undefined> {
-    const [d] = await db.update(devis).set({ ...data, updatedAt: new Date() }).where(eq(devis.id, id)).returning();
+  async updateDevis(id: number, data: Partial<InsertDevis>, expectedSignOffStage?: string): Promise<Devis | undefined> {
+    const [d] = await db.update(devis).set({ ...data, updatedAt: new Date() }).where(
+      expectedSignOffStage === undefined ? eq(devis.id, id) :
+        and(eq(devis.id, id), eq(devis.signOffStage, expectedSignOffStage))).returning();
     return d;
   }
 

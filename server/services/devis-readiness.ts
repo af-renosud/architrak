@@ -49,6 +49,7 @@ export interface DevisReadiness {
   insuranceReason: string | null;
 }
 
+import { hasRecordedSignature } from "@shared/devis-stage-recovery";
 export interface DeriveReadinessInput {
   devis: Pick<
     Devis,
@@ -62,7 +63,7 @@ export interface DeriveReadinessInput {
     | "descriptionUk"
     | "archisignEnvelopeId"
     | "archisignEnvelopeStatus"
-  >;
+  > & Partial<Pick<Devis, "signedPdfStorageKey" | "signedOffVia" | "manualSignoffAt" | "accountingState">>;
   translationStatus: string | null;
   openContractorChecks: number;
   openClientChecks: number;
@@ -83,6 +84,7 @@ const ENVELOPE_STATES: ReadonlySet<string> = new Set([
 function deriveSignature(input: DeriveReadinessInput): SignatureState {
   const d = input.devis;
   if (d.status === "void" || d.signOffStage === "void") return "void";
+  if (hasRecordedSignature(d)) return "signed";
   const env = (d.archisignEnvelopeStatus ?? "").trim();
   if (env && ENVELOPE_STATES.has(env)) return env as SignatureState;
   switch (d.signOffStage) {
@@ -109,6 +111,7 @@ export function deriveDevisReadiness(input: DeriveReadinessInput): DevisReadines
     d.signOffStage === "client_signed_off";
 
   const blockers: string[] = [];
+  if (signature === "signed") blockers.push("Already signed — use the existing signed copy, not a new signature request.");
   if (d.signOffStage !== "approved_for_signing") {
     blockers.push(`Stage is "${d.signOffStage}" — must reach "Approved for signing"`);
   }

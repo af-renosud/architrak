@@ -27,6 +27,7 @@ import {
 } from "@shared/schema";
 import { buildClientSignatureMessageTemplate } from "@shared/signature-message-template";
 import { ContractorCopySend } from "@/components/devis/ContractorCopySend";
+import { hasRecordedSignature } from "@shared/devis-stage-recovery";
 
 /**
  * Task #257 — the workflow stepper's "Sent to Client" button no longer
@@ -402,7 +403,7 @@ export function SigningPanel({
     document
       .querySelector(`[data-testid="panel-signing-${devisId}"]`)
       ?.scrollIntoView({ behavior: "smooth", block: "center" });
-    if (d.signOffStage === "approved_for_signing" && !isArchived) {
+    if (d.signOffStage === "approved_for_signing" && d.status !== "void" && !isArchived && !hasRecordedSignature(d)) {
       setPersonalMessage(messageTemplate);
       setDialogStep("compose");
       setSendDialogOpen(true);
@@ -421,13 +422,15 @@ export function SigningPanel({
   // Hide the panel entirely until the devis has been approved for
   // signing — earlier stages have nothing meaningful to show.
   const stage = d.signOffStage as string | null | undefined;
+  const recordedSignature = hasRecordedSignature(d);
   const stagesShowingPanel = new Set([
     "approved_for_signing",
     "sent_to_client",
     "client_signed_off",
     "void",
   ]);
-  if (!stage || !stagesShowingPanel.has(stage)) return null;
+  if (d.status === "void" || stage === "void") return null;
+  if (!recordedSignature && (!stage || !stagesShowingPanel.has(stage))) return null;
 
   const envelopeStatus = d.archisignEnvelopeStatus ?? null;
   const accessUrl = d.archisignAccessUrl ?? null;
@@ -467,7 +470,7 @@ export function SigningPanel({
   //       AT4's brief excludes any *additional* resend-after-expiry
   //       orchestration (no new endpoints, no reminders), so the CTA
   //       reappearing IS the entire post-expiry surface.
-  const canSend = stage === "approved_for_signing" && !isArchived;
+  const canSend = stage === "approved_for_signing" && !isArchived && !recordedSignature;
   const isResume = canSend && !!d.archisignEnvelopeId;
 
   const statusLabel: Record<string, { label: string; tone: "default" | "secondary" | "destructive" }> = {
@@ -482,7 +485,7 @@ export function SigningPanel({
 
   // Signed (via Archisign or manual upload) ⇒ green panel frame instead of
   // the red "action needed" frame.
-  const isSigned = envelopeStatus === "signed" || stage === "client_signed_off";
+  const isSigned = recordedSignature;
 
   const trimmedLen = personalMessage.trim().length;
   const composeValid = trimmedLen >= DEVIS_CLIENT_MESSAGE_MIN_LEN;
@@ -522,7 +525,7 @@ export function SigningPanel({
               Default subject used
             </Badge>
           )}
-          {stage === "client_signed_off" && d.signedOffVia === "manual_upload" && (
+          {recordedSignature && d.signedOffVia === "manual_upload" && (
             <Badge
               variant="outline"
               className="border-blue-500 bg-blue-50 text-blue-900 dark:bg-blue-950 dark:text-blue-200 gap-1"
@@ -550,7 +553,7 @@ export function SigningPanel({
           )}
         </div>
         <div className="flex items-center gap-2">
-        {(stage === "approved_for_signing" || stage === "sent_to_client") && !isArchived && (
+        {(stage === "approved_for_signing" || stage === "sent_to_client") && !isArchived && !recordedSignature && (
           <Button
             size="sm"
             variant="outline"
@@ -833,7 +836,7 @@ export function SigningPanel({
         </AlertDialogContent>
       </AlertDialog>
 
-      {!d.archisignEnvelopeId && !accessUrl && stage === "approved_for_signing" && (
+      {!recordedSignature && !d.archisignEnvelopeId && !accessUrl && stage === "approved_for_signing" && (
         <p className="text-xs text-muted-foreground" data-testid={`text-signing-empty-${devisId}`}>
           No Archisign envelope created yet. The client will receive a signing link after sending.
         </p>
@@ -848,7 +851,7 @@ export function SigningPanel({
         expiry note. Without this OR-gate, the historical link would
         disappear silently and the architect would lose context.
       */}
-      {(d.archisignEnvelopeId || accessUrl) && (
+      {(d.archisignEnvelopeId || accessUrl || recordedSignature) && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
           <div>
             <span className="font-semibold text-muted-foreground">Client link:</span>{" "}

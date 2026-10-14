@@ -40,6 +40,19 @@ import { signedPdfFileName } from "../services/devis-signed-pdf.service";
 import type { InsertDevis } from "@shared/schema";
 
 const router = Router();
+import { recoverDevisStage, stageRecoverySchema, StageRecoveryError } from "../services/devis-stage-recovery";
+
+router.post("/api/devis/:id/stage-recovery", requireAuth, async (req, res) => {
+  const id = Number(req.params.id), parsed = stageRecoverySchema.safeParse(req.body);
+  if (!Number.isInteger(id) || id <= 0 || !parsed.success)
+    return res.status(400).json({ message: "Confirm the action and provide a reason of at least 10 characters." });
+  try {
+    return res.json(await recoverDevisStage(id, Number(req.session.userId), parsed.data));
+  } catch (err) {
+    if (err instanceof StageRecoveryError) return res.status(409).json({ message: err.message });
+    return res.status(500).json({ message: "Unable to record the workflow decision." });
+  }
+});
 
 export const MANUAL_SIGNOFF_NOTE_MIN_LEN = 10;
 
@@ -92,6 +105,9 @@ router.post(
 
       const d = await storage.getDevis(devisId);
       if (!d) return res.status(404).json({ message: "Devis not found" });
+      if (d.signedPdfStorageKey || (d.signedOffVia === "manual_upload" && d.manualSignoffAt))
+        return res.status(409).json({ code: "existing_signature_recorded",
+          message: "A signed copy is already recorded. Restore signed status instead of replacing it." });
 
       const stage = d.signOffStage ?? "";
       if (stage === "client_signed_off") {

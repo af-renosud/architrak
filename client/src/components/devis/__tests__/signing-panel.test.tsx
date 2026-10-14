@@ -36,7 +36,7 @@ vi.mock("@/lib/queryClient", () => ({
   },
 }));
 
-import { SigningPanel } from "../SigningPanel";
+import { SigningPanel, OPEN_SIGNING_SEND_EVENT } from "../SigningPanel";
 import { queryClient } from "@/lib/queryClient";
 
 function jsonResponse(body: unknown) {
@@ -125,6 +125,35 @@ beforeEach(() => {
   apiRequestMock.mockReset();
   toastSpy.mockReset();
   apiRequestMock.mockResolvedValue(jsonResponse({ ok: true }));
+});
+
+describe("SigningPanel — retained signed evidence after internal stage rollback", () => {
+  it.each(["received", "checked_internal", "approved_for_signing", "sent_to_client"])("preserves manual evidence at %s without another upload or signature request", (signOffStage) => {
+    renderWithDevis({
+      ...baseDevis, devisCode: "PB.2.RESEAUX DIVERS", signOffStage,
+      signedOffVia: "manual_upload", signedPdfStorageKey: "signed/pb-2.pdf",
+      manualSignoffAt: "2026-06-08T14:32:00Z",
+      manualSignoffNote: "Client signed the original PDF.",
+    });
+    expect(screen.getByTestId("panel-signing-42")).toBeVisible();
+    expect(screen.getByTestId("badge-manual-signoff-42")).toHaveTextContent("Signed — manual upload");
+    expect(screen.getByTestId("link-signed-pdf-42")).toHaveAttribute("href", "/api/devis/42/signed-pdf");
+    expect(screen.queryByTestId("button-send-to-signer-42")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("button-record-signed-copy-42")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("text-signing-empty-42")).not.toBeInTheDocument();
+  });
+  it("does not turn retained evidence on a void quotation into an actionable signed panel", () => {
+    renderWithDevis({ ...baseDevis, status: "void", signedOffVia: "manual_upload", signedPdfStorageKey: "signed/pb-2.pdf" });
+    expect(screen.queryByTestId("panel-signing-42")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("button-send-to-signer-42")).not.toBeInTheDocument();
+  });
+  it("ignores the stepper send event when a manual signed PDF is already recorded", async () => {
+    renderWithDevis({ ...baseDevis, signedOffVia: "manual_upload", signedPdfStorageKey: "signed/pb-2.pdf" });
+    screen.getByTestId("panel-signing-42").scrollIntoView = vi.fn();
+    fireEvent(window, new CustomEvent(OPEN_SIGNING_SEND_EVENT, { detail: { devisId: 42 } }));
+    await waitFor(() => expect(screen.queryByTestId("dialog-send-to-signer-42")).not.toBeInTheDocument());
+    expect(apiRequestMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("SigningPanel — first-send branch (two-step, Task #257)", () => {

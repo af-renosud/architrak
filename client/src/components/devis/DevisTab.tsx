@@ -57,6 +57,8 @@ import {
   type FragmentLineItemLike,
 } from "@/components/devis/draft-warnings";
 import { SigningPanel, OPEN_SIGNING_SEND_EVENT } from "@/components/devis/SigningPanel";
+import { canRestoreSignedStage, requiresStageReopenConfirmation } from "@shared/devis-stage-recovery";
+import { StageRecoveryDialog, type StageRecoveryRequest } from "@/components/devis/StageRecoveryDialog";
 import { DevisAfterSigning } from "@/components/devis/DevisAfterSigning";
 import { SupportingPdfsPanel } from "@/components/devis/SupportingPdfsPanel";
 import { ClientConversationPanel } from "@/components/devis/ClientConversationPanel";
@@ -5944,6 +5946,7 @@ function DevisDetailTabs({
 
 function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = false, onOpenInvoiceUpload, onOpenAvenantDialog, onOpenPdfPopout, hasPdf, onCreateCertificat }: { devis: Devis; projectId: string; contractors: Contractor[]; lots: Lot[]; isArchived?: boolean; onOpenInvoiceUpload: () => void; onOpenAvenantDialog: () => void; onOpenPdfPopout: () => void; hasPdf: boolean; onCreateCertificat?: (context: { contractorId: number; devisId: number }) => void }) {
   const { toast } = useToast();
+  const [stageRecoveryRequest, setStageRecoveryRequest] = useState<StageRecoveryRequest | null>(null);
   const [lineItemDialogOpen, setLineItemDialogOpen] = useState(false);
   const [addingNewLot, setAddingNewLot] = useState(false);
   const [newLotNumber, setNewLotNumber] = useState("");
@@ -6551,6 +6554,16 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
                   }`}
                 onClick={() => {
                   if (isVoid || isArchived) return;
+                  if (idx === currentStageIndex) return;
+                  if (requiresStageReopenConfirmation(devis.signOffStage, stage.key)) {
+                    setStageRecoveryRequest({
+                      action: "reopen",
+                      expectedStage: devis.signOffStage!,
+                      targetStage: stage.key,
+                      targetLabel: stage.label,
+                    });
+                    return;
+                  }
                   // IMPORTANT: do not use `disabled` for the locked-by-checks
                   // case — disabled buttons swallow the click and we lose the
                   // chance to explain why to the user via toast.
@@ -6558,7 +6571,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
                     toast({ title: "Sign-off bloqué", description: lockTitle!, variant: "destructive" });
                     return;
                   }
-                  if (signOffBlocked && idx > 0) {
+                  if (signOffBlocked && idx > currentStageIndex && idx > 0) {
                     toast({ title: "Sign-off blocked", description: "Lot assignment and English works description are required before advancing", variant: "destructive" });
                     return;
                   }
@@ -6566,7 +6579,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
                   // `client_signed_off` are sealed server-side (409): the
                   // ONLY way to send is the SigningPanel's Archisign flow,
                   // which also delivers the mandatory client-context email.
-                  // Backward clicks (corrections) still PATCH as before.
+                  // Protected backward moves use the audited recovery dialog above.
                   if (idx >= SENT_TO_CLIENT_INDEX && idx > currentStageIndex) {
                     if (stage.key === "sent_to_client" && devis.signOffStage === "approved_for_signing") {
                       toast({
@@ -6594,10 +6607,12 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
                     }
                     return;
                   }
-                  updateDevisMutation.mutate({ signOffStage: stage.key });
-                  toast({ title: `Stage: ${stage.label}` });
+                  updateDevisMutation.mutate({ signOffStage: stage.key }, {
+                    onSuccess: () => toast({ title: `Stage: ${stage.label}` }),
+                    onError: (error: Error) => toast({ title: "Could not update stage", description: error.message, variant: "destructive" }),
+                  });
                 }}
-                disabled={isVoid || isArchived || (signOffBlocked && idx > 0)}
+                disabled={isVoid || isArchived || !!stageRecoveryRequest || updateDevisMutation.isPending || (signOffBlocked && idx > currentStageIndex && idx > 0)}
                 data-testid={`button-stage-${stage.key}-${devis.id}`}
               >
                 {lockedByChecks && <Ban size={9} />}
@@ -6623,6 +6638,19 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
           </Button>
         )}
       </div>
+
+      {!isVoid && canRestoreSignedStage(devis) && (
+        <div className="flex flex-wrap items-center gap-2" data-testid={`stage-recovery-actions-${devis.id}`}>
+          <Button variant="outline" size="sm" disabled={isArchived || !!stageRecoveryRequest || updateDevisMutation.isPending}
+            onClick={() => setStageRecoveryRequest({ action: "restore", expectedStage: devis.signOffStage! })}
+            data-testid={`button-restore-signed-status-${devis.id}`}>
+            <RefreshCw className="mr-1.5 h-3.5 w-3.5" /> Restore signed status
+          </Button>
+          <p className="text-[11px] text-muted-foreground">Use the existing signed PDF. No new signature or emails; original dates and insurance checks are preserved.</p>
+        </div>
+      )}
+      {stageRecoveryRequest && <StageRecoveryDialog devisId={devis.id} projectId={projectId}
+        request={stageRecoveryRequest} onClose={() => setStageRecoveryRequest(null)} />}
 
       <WorkflowSection group="prepare" summary={`Translation · ${workflowStatus.translation.data?.status ?? readiness?.translationStatus ?? "loading"} · analysis ${workflowStatus.analysis.data?.analysis?.status ?? "not attached"}`}>
       <SupportingPdfsPanel

@@ -24,3 +24,9 @@ description: Durable rules for any ArchiDoc mirror sync or reconciliation work.
   **Why:** a seal must compare and issue against one serial readiness state, never race an assignment/banking update.
 
 **How to apply:** new sync triggers go through fullSync/incrementalSync/runContractorAutoSync (which own the lock); new sync UIs must handle failures/warnings/alreadyRunning and the explicit catalogue availability state.
+
+ArchiDoc confirmed that `/api/suppliers` is a browser-session endpoint, not a bearer integration directory. Supplier-payment-readiness is a distinct feed, not a complete directory substitute.
+
+**Why:** a supplementary directory request to this endpoint caused contractor sync to fail with a misleading credential-rejection message even when a supported integration probe authenticated successfully.
+
+**How to apply:** require an agreed supplier-directory integration contract before importing that directory; preserve suppliers and skip absence-based reconciliation on incomplete snapshots. Identify the endpoint in safe failure diagnostics rather than assuming every 401 means the selected key is wrong.

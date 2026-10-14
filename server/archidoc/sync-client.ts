@@ -13,8 +13,35 @@ import {
 } from "./supplier-payment-certificate-handoff-wire";
 
 const getBaseUrl = () => env.ARCHIDOC_BASE_URL;
+export function selectedSyncCredentialName(): "ARCHIDOC_SYNC_API_KEY_NEXT" | "ARCHIDOC_SYNC_API_KEY" {
+  return env.ARCHIDOC_SYNC_API_KEY_NEXT != null ? "ARCHIDOC_SYNC_API_KEY_NEXT" : "ARCHIDOC_SYNC_API_KEY";
+}
 const getApiKey = () =>
-  env.ARCHIDOC_SYNC_API_KEY_NEXT ?? env.ARCHIDOC_SYNC_API_KEY;
+  env[selectedSyncCredentialName()];
+
+/** Explicit diagnostic only. No imports, writes, redirects, or fallback. */
+export async function probeArchiDocSyncAuthentication(
+  credentialName: "ARCHIDOC_SYNC_API_KEY_NEXT" | "ARCHIDOC_SYNC_API_KEY",
+) {
+  const key = env[credentialName];
+  const base = getBaseUrl();
+  if (!key || !base) return { credentialName, outcome: "not_configured" };
+  let target: URL;
+  try {
+    target = new URL("/api/sync/trades", base);
+    if (target.origin !== "https://archiouvro.com")
+      return { credentialName, outcome: "configured_host_does_not_match_confirmed_production" };
+  } catch { return { credentialName, outcome: "invalid_base_url" }; }
+  try {
+    const response = await fetch(target, { method: "GET", redirect: "manual",
+      headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(10000) });
+    const type = response.headers.get("content-type") ?? "";
+    await response.body?.cancel();
+    return { credentialName, status: response.status,
+      responseType: type.includes("application/json") ? "json" : type.includes("text/html") ? "html" : "other" };
+  } catch { return { credentialName, outcome: "network_or_timeout" }; }
+}
 const TECHNICAL_LOTS_ENDPOINT = "/api/integrations/architrak/technical-lots";
 
 export function isArchidocConfigured(): boolean {
@@ -45,7 +72,7 @@ export interface ArchidocFetchDiagnostic {
 export class ArchidocFetchError extends Error {
   constructor(public readonly diagnostic: ArchidocFetchDiagnostic) {
     const status = diagnostic.status == null ? "no HTTP response" : `HTTP ${diagnostic.status}`;
-    super(`${diagnostic.code}: ${diagnostic.reason} (${status}, ${diagnostic.durationMs}ms)`);
+    super(`${diagnostic.code}: ${diagnostic.reason} [${diagnostic.endpoint}] (${status}, ${diagnostic.durationMs}ms)`);
     this.name = "ArchidocFetchError";
   }
 }
@@ -541,7 +568,9 @@ export async function fetchContractors(since?: string): Promise<{ contractors: A
 }
 
 export async function fetchSuppliers(): Promise<ArchidocSupplierData[]> {
-  return archidocFetch<ArchidocSupplierData[]>("/api/suppliers");
+  // ArchiDoc confirmed /api/suppliers requires a browser session, not a
+  // bearer integration key. Never treat its refusal as key validation.
+  throw new Error("supplier_directory_contract_unavailable: ArchiDoc has not provided a bearer-authenticated supplier-directory feed. Existing suppliers are retained; payment-readiness is not a directory replacement.");
 }
 
 export class SupplierPaymentCursorExpiredError extends Error {

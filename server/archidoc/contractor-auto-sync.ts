@@ -127,7 +127,14 @@ async function runContractorAutoSyncLocked(options: { incremental?: boolean } = 
     const syncStartedAt = new Date();
     const mirrorResult = await syncContractors(incremental);
     if (mirrorResult.error) {
-      throw new Error(mirrorResult.error);
+      const message = mirrorResult.updated > 0
+        ? `${mirrorResult.updated} contractor mirror record(s) refreshed; local import and orphan reconciliation were not run. ${mirrorResult.error}`
+        : mirrorResult.error;
+      await db.update(archidocSyncLog).set({
+        status: "failed", completedAt: new Date(), recordsUpdated: 0, errorMessage: message,
+      }).where(eq(archidocSyncLog.id, logEntry.id));
+      return { mirrorUpdated: mirrorResult.updated, created: 0, updated: 0, skipped: 0,
+        orphaned: 0, unorphaned: 0, error: message };
     }
     const supplierPaymentReadiness =
       await syncSupplierPaymentReadinessWithinHeldLock();

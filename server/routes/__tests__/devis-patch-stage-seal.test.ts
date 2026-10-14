@@ -182,17 +182,15 @@ describe("PATCH /api/devis/:id — Task #257 stage seal", () => {
     expect(updateDevis).not.toHaveBeenCalled();
   });
 
-  it("still allows the backward correction sent_to_client → approved_for_signing", async () => {
+  it("requires the confirmed recovery route for sent_to_client → approved_for_signing", async () => {
     const before = makeDevis({ signOffStage: "sent_to_client" });
     getDevis.mockResolvedValue(before);
     updateDevis.mockResolvedValue({ ...before, signOffStage: "approved_for_signing" });
 
     const res = await patchStage("approved_for_signing");
-    expect(res.status).toBe(200);
-    expect(updateDevis).toHaveBeenCalledTimes(1);
-    const [calledId, patch] = updateDevis.mock.calls[0];
-    expect(calledId).toBe(100);
-    expect(patch.signOffStage).toBe("approved_for_signing");
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("stage_reopen_confirmation_required");
+    expect(updateDevis).not.toHaveBeenCalled();
   });
 
   it("still allows a same-stage no-op PATCH mentioning the current stage", async () => {

@@ -184,6 +184,11 @@ router.post(
     const d = await storage.getDevis(devisId);
     if (!d) return res.status(404).json({ message: "Devis not found" });
 
+    if (d.signedPdfStorageKey || (d.signedOffVia === "manual_upload" && d.manualSignoffAt) ||
+      d.archisignEnvelopeStatus === "signed") {
+      return res.status(409).json({ code: "existing_signature_recorded",
+        message: "This quotation already has recorded signature evidence. Restore its signed status instead of requesting another signature." });
+    }
     // ---- Pre-condition checks ------------------------------------------
     const extractionBlocker = await quotationApprovalBlocker(devisId);
     if (extractionBlocker) return res.status(409).json({ message: extractionBlocker, code: "quotation_content_unverified" });

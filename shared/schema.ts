@@ -715,6 +715,16 @@ export const quotationArchitectState = pgTable("quotation_architect_state", {
   draft: jsonb("draft").notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
+export const devisStageDecisions = pgTable("devis_stage_decisions", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").notNull(),
+  actorId: integer("actor_id").notNull(),
+  reason: text("reason").notNull(),
+  beforeState: jsonb("before_state").notNull(),
+  afterState: jsonb("after_state").notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, table => [check("devis_stage_decisions_reason_check", sql`length(trim(${table.reason})) >= 10`)]);
+
 export const quotationArchitectAudit = pgTable("quotation_architect_audit", {
   id: serial("id").primaryKey(),
   devisId: integer("devis_id").notNull(),
