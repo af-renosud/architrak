@@ -30,3 +30,9 @@ ArchiDoc confirmed that `/api/suppliers` is a browser-session endpoint, not a be
 **Why:** a supplementary directory request to this endpoint caused contractor sync to fail with a misleading credential-rejection message even when a supported integration probe authenticated successfully.
 
 **How to apply:** require an agreed supplier-directory integration contract before importing that directory; preserve suppliers and skip absence-based reconciliation on incomplete snapshots. Identify the endpoint in safe failure diagnostics rather than assuming every 401 means the selected key is wrong.
+
+The agreed supplier-directory v1 contract uses namespaced supplier-library/F&F identities and immutable paginated snapshots. Directory identity is distinct from optional, explicitly allocated payment identity. Previously imported library identities must migrate in place, not duplicate business records.
+
+**Why:** library and F&F source IDs can collide, and the directory deliberately excludes banking/private fields. Reusing the generic contractor upsert would clear omitted fields; a directory entry does not establish payment eligibility.
+
+**How to apply:** stage all pages, validate one snapshot and unique total count, then commit and reconcile atomically within directory namespaces only. Preserve payment/historical links and fields outside this contract. A verified complete empty supplier export is valid; failed/incomplete pages never imply deletion. Require upstream publication confirmation before activation.

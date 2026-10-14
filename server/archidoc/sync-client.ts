@@ -1,4 +1,5 @@
 import { env } from "../env";
+import { stageSupplierDirectory, supplierDirectoryPageSchema, SupplierDirectoryExpiredError } from "./supplier-directory";
 import {
   supplierPaymentCursorExpiredSchema,
   supplierPaymentReadinessResponseSchema,
@@ -85,6 +86,8 @@ export class SupplierPaymentCertificateNotReadyError extends Error {
 }
 
 interface ArchidocFetchOptions<T> {
+  redirect?: RequestRedirect;
+  requireJsonContentType?: boolean;
   params?: Record<string, string>;
   connection?: {
     baseUrl: string;
@@ -177,6 +180,7 @@ async function archidocFetch<T>(
   try {
     const response = await fetch(url.toString(), {
       method: "GET",
+      redirect: options.redirect,
       headers: {
         "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json",
@@ -200,6 +204,9 @@ async function archidocFetch<T>(
 
     let raw: unknown;
     try {
+      if (options.requireJsonContentType &&
+          !response.headers.get("content-type")?.toLowerCase().includes("application/json"))
+        throw new Error("Expected JSON content type");
       raw = await response.json();
     } catch {
       const diagnostic = makeFetchDiagnostic(endpoint, startedAt, {
@@ -238,6 +245,7 @@ async function archidocFetch<T>(
   } catch (error) {
     if (
       error instanceof ArchidocFetchError ||
+      error instanceof SupplierDirectoryExpiredError ||
       (
         error instanceof Error &&
         (
@@ -571,6 +579,20 @@ export async function fetchSuppliers(): Promise<ArchidocSupplierData[]> {
   // ArchiDoc confirmed /api/suppliers requires a browser session, not a
   // bearer integration key. Never treat its refusal as key validation.
   throw new Error("supplier_directory_contract_unavailable: ArchiDoc has not provided a bearer-authenticated supplier-directory feed. Existing suppliers are retained; payment-readiness is not a directory replacement.");
+}
+
+// Deliberately NOT wired into fetchSuppliers or any scheduler. Upstream v1 is
+// not live yet, and persistence requires identity-safe transactional migration.
+export async function prepareSupplierDirectorySnapshot() {
+  return stageSupplierDirectory(params => archidocFetch(
+    "/api/integrations/architrak/v1/supplier-directory", {
+      params, redirect: "error", requireJsonContentType: true,
+      validate: raw => supplierDirectoryPageSchema.parse(raw),
+      handleErrorResponse: async response => response.status === 410
+        ? new SupplierDirectoryExpiredError("Supplier directory snapshot expired")
+        : undefined,
+    },
+  ));
 }
 
 export class SupplierPaymentCursorExpiredError extends Error {
