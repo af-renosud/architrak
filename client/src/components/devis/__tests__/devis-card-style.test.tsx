@@ -2,10 +2,48 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { LuxuryCard } from "@/components/ui/luxury-card";
-import { devisCardClassName } from "../devis-card-style";
+import { devisCardClassName, signedDevisFirst } from "../devis-card-style";
 import type { QuotationCommitmentEvidence } from "@shared/quotation-commitment";
 
 afterEach(cleanup);
+
+describe("signed-first displayed order", () => {
+  const unsigned = { id: 1, accountingState: "active", signOffStage: "sent_to_client" };
+  const integrated = { id: 2, accountingState: "active", archisignEnvelopeStatus: "signed" };
+  const manual = { id: 3, accountingState: "active", signedOffVia: "manual_upload", manualSignoffAt: "2026-06-18" };
+  const voided = { ...integrated, id: 4, status: "void" };
+  const replaced = { ...manual, id: 5, accountingState: "superseded" };
+
+  it("stably partitions mixed records without mutating the input or replacing identities", () => {
+    const input = Object.freeze([unsigned, voided, manual, replaced, integrated]);
+    const ordered = signedDevisFirst(input);
+    expect(ordered).toEqual([manual, integrated, unsigned, voided, replaced]);
+    expect(input).toEqual([unsigned, voided, manual, replaced, integrated]);
+    expect(ordered[0]).toBe(manual);
+    expect(ordered[4]).toBe(replaced);
+  });
+
+  it("preserves unsigned and inactive order, including empty lists", () => {
+    const input = Object.freeze([voided, unsigned, replaced]);
+    expect(signedDevisFirst(input)).toEqual(input);
+    expect(signedDevisFirst(input)).not.toBe(input);
+    expect(signedDevisFirst([])).toEqual([]);
+  });
+
+  it("only reorders the filtered subset, never restoring hidden records", () => {
+    const filtered = [unsigned, integrated, manual].filter(d => d.id !== manual.id);
+    expect(signedDevisFirst(filtered)).toEqual([integrated, unsigned]);
+  });
+
+  it("reclassifies refreshed signature and replacement status on the next render", () => {
+    const input = [unsigned, { ...manual, manualSignoffAt: null }, integrated];
+    expect(signedDevisFirst(input).map(d => d.id)).toEqual([2, 1, 3]);
+    const refreshed = [unsigned, manual, integrated];
+    expect(signedDevisFirst(refreshed).map(d => d.id)).toEqual([3, 2, 1]);
+    const retired = [unsigned, replaced, { ...integrated, status: "void" }];
+    expect(signedDevisFirst(retired).map(d => d.id)).toEqual([1, 5, 2]);
+  });
+});
 
 const signatures: Array<[string, QuotationCommitmentEvidence]> = [
   ["integrated envelope", { archisignEnvelopeStatus: "signed" }],

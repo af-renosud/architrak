@@ -37,6 +37,7 @@ vi.mock("@/lib/queryClient", () => ({
 }));
 
 import { SigningPanel } from "../SigningPanel";
+import { queryClient } from "@/lib/queryClient";
 
 function jsonResponse(body: unknown) {
   return {
@@ -88,6 +89,37 @@ const baseDevis = {
 };
 
 const VALID_MESSAGE = "Bonjour, voici le devis pour signature électronique.";
+
+it("manual signature invalidates the project-scoped devis list without a reload", async () => {
+  const cache = new QueryClient();
+  const projectListKey = ["/api/projects", "9", "devis"];
+  cache.setQueryData(projectListKey, [baseDevis]);
+  const invalidation = vi.mocked(queryClient.invalidateQueries);
+  invalidation.mockImplementation(options => cache.invalidateQueries(options));
+  const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    jsonResponse({ ok: true, workAuthorisationSent: false }),
+  );
+  try {
+    renderWithDevis({ ...baseDevis, projectId: 9 });
+    fireEvent.click(screen.getByTestId("button-record-signed-copy-42"));
+    fireEvent.change(screen.getByTestId("input-signed-copy-file-42"), {
+      target: { files: [new File(["signed PDF"], "signed.pdf", { type: "application/pdf" })] },
+    });
+    fireEvent.change(screen.getByTestId("input-signed-copy-note-42"), {
+      target: { value: "Client signed the paper copy." },
+    });
+    fireEvent.click(screen.getByTestId("button-record-signed-copy-confirm-42"));
+    await waitFor(() => expect(cache.getQueryState(projectListKey)?.isInvalidated).toBe(true));
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/devis/42/record-signed-copy",
+      expect.objectContaining({ method: "POST", credentials: "include" }),
+    );
+  } finally {
+    fetchSpy.mockRestore();
+    invalidation.mockReset();
+    cache.clear();
+  }
+});
 
 beforeEach(() => {
   apiRequestMock.mockReset();

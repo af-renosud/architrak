@@ -61,7 +61,7 @@ import { DevisAfterSigning } from "@/components/devis/DevisAfterSigning";
 import { SupportingPdfsPanel } from "@/components/devis/SupportingPdfsPanel";
 import { ClientConversationPanel } from "@/components/devis/ClientConversationPanel";
 import { countDevisSignOff } from "@/components/devis/devis-counters";
-import { devisCardClassName } from "@/components/devis/devis-card-style";
+import { devisCardClassName, signedDevisFirst } from "@/components/devis/devis-card-style";
 import { DuplicateExtractionCorrection } from "@/components/devis/DuplicateExtractionCorrection";
 import { ExtractionRowCorrection } from "@/components/devis/ExtractionRowCorrection";
 import { QuotationExtractionReview } from "@/components/devis/QuotationExtractionReview";
@@ -1641,6 +1641,7 @@ export function DevisTab({
     return true;
   });
   const hiddenByFilterCount = visibleBeforeFilters.length - filteredDevisList.length;
+  const displayedDevisList = signedDevisFirst(filteredDevisList);
   const bulk = useBulkDocuments({
     items: filteredDevisList.map((d) => ({ id: d.id, name: d.devisCode, eligible: canBulkVoidDevis(d, isArchived) })),
     scope: JSON.stringify(["devis", projectId, showVoid, selectedLots, searchQuery, isArchived]),
@@ -1892,7 +1893,7 @@ export function DevisTab({
         description="Mark these draft quotations void with the reason below. Their records and source PDFs are retained as evidence, not deleted. Void quotations are excluded from financial calculations." />}
       {filteredDevisList && filteredDevisList.length > 0 ? (
         <div className="space-y-3">
-          {filteredDevisList.map((d) => (
+          {displayedDevisList.map((d) => (
             <DevisRow
               key={d.id}
               bulkSelection={bulk}
