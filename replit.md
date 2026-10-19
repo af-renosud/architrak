@@ -4,7 +4,7 @@ Financial workflow app for French architectural firms (maîtres d'œuvre). Manag
 full lifecycle of construction-project finances: contracts → quotations → variations →
 progress claims → architect-verified payment instructions → fee tracking. Integrates
 with **ArchiDoc** for project/contractor data and **Archisign** for client e-signature.
-AI extraction (Gemini) parses PDF attachments arriving by Gmail.
+AI extraction (Gemini or OpenAI) parses uploaded PDFs and attachments arriving by Gmail.
 
 > Deep architectural rules, calculation invariants, and inter-app contracts live in
 > **`ARCHITECTURE.md`** ("the constitution"). Read it before changing financial logic
@@ -12,10 +12,11 @@ AI extraction (Gemini) parses PDF attachments arriving by Gmail.
 
 ## Stack
 
-- **Frontend**: React 18 + TypeScript, Vite, Tailwind, Shadcn UI, Wouter, TanStack Query
+- **Frontend**: React 18 + TypeScript, Vite 7, Tailwind 4, Shadcn UI, Wouter, TanStack Query
 - **Backend**: Node 20, Express 5, TypeScript (`tsx` in dev, `esbuild` for prod)
 - **DB**: PostgreSQL 16 + Drizzle ORM (`shared/schema.ts`), hand-tracked SQL migrations
-- **AI**: Google Gemini (`@google/generative-ai`) for PDF extraction
+- **AI**: Gemini (`@google/generative-ai`) and OpenAI; extraction provider/model
+  selection lives in `server/gmail/document-parser.ts` and database model settings
 - **Storage**: Replit Object Storage (GCS-backed) for PDFs and uploads
 - **External services**: ArchiDoc, Archisign, DocRaptor (HTML→PDF), Gmail API, Pennylane
 - **Auth**: Google Workspace OAuth 2.0 (`@renosud.com` domain-restricted)
@@ -37,6 +38,8 @@ scripts/       Ops scripts (run-migrations, post-deploy smoke, backfills)
 script/        ⚠ Build entrypoint (script/build.ts) — singular, not "scripts"
 docs/          Inter-app contract specs, wire fixtures
 tests/browser/ Playwright e2e
+artifacts/
+  mockup-sandbox/ Separate design-preview app with its own package.json and lockfile
 ```
 
 ## Dev workflow
@@ -46,45 +49,69 @@ The `Start application` workflow runs:
 PUBLIC_BASE_URL=http://localhost:5000 E2E_FAKE_GMAIL=true ENABLE_DEV_LOGIN_FOR_E2E=true npm run dev
 ```
 Server on port **5000** (Vite mounted on the same port). `E2E_FAKE_GMAIL=true` short-circuits
-outbound Gmail to an in-memory fake — real send won't fire locally.
+the Gmail client to an in-memory fake. This is not a general sandbox for external
+services or database writes; other integrations and background workers may still run.
+Plain `npm run dev` does NOT set those safety/test flags.
 
 | Command | Purpose |
 |---|---|
-| `npm run dev` | Dev server (tsx watch) |
+| `npm run dev` | Dev server (`tsx server/index.ts`; no backend watch mode) |
 | `npm run check` | TypeScript type-check (no emit) |
 | `npm run build` | Production bundle (`script/build.ts` → `dist/`) |
-| `npm run prepublish-check` | **Run before each publish** — dependency audit, type check, schema-drift check, production build, safe smoke boot of `dist/index.cjs` |
+| `npm run prepublish-check` | **Run before each publish** — root dependency audit, bare-currency check, type check, Vitest, production build (schema + applied-migration drift gates), safe smoke boot |
 | `npm run start` | Run production bundle |
 | `npm run db:generate` | Generate a new Drizzle migration |
 | `npx tsx scripts/run-migrations.mjs` | Apply migrations (also runs at deploy) |
-| `npx vitest` | Unit + integration tests |
-| `npx playwright test` | Browser e2e |
+| `npx vitest run` | Unit + integration tests, once (use a file path for targeted checks) |
+| `npx playwright test` | Browser e2e against an already-running app; `E2E_BASE_URL` overrides the target |
+| `bash scripts/check-bare-currency.sh` | Currency-formatting convention check |
+
+Restart `Start application` after backend changes. Vite handles frontend hot reload.
+Some integration tests write to the development database: inspect their setup/cleanup
+and avoid competing background syncs. Never target production with test fixtures.
+The sandbox uses its own managed preview workflow; root checks and `npm audit` do
+not cover its separate dependencies. Run sandbox checks from its directory when changing it.
+Post-merge setup is defined in `scripts/post-merge.sh`.
 
 ## Environment variables
 
 Validated via Zod in `server/env.ts` — server refuses to boot on invalid/missing required vars.
-**Required**: `DATABASE_URL`, `SESSION_SECRET`. Everything else is feature-scoped (each
-unlocks a feature when set) — full list with comments in `server/env.ts`.
+**Required**: `DATABASE_URL`, `SESSION_SECRET`. Other settings include feature-scoped
+credentials, defaults and operational flags — see `server/env.ts`. Some startup
+controls, including `RUN_MIGRATIONS_ON_START`, are read directly in `server/index.ts`.
 
 ### ⚠ Production safety flags
-`ENABLE_DEV_LOGIN_FOR_E2E` and `E2E_FAKE_GMAIL` MUST be unset in production. The boot
-sequence (`assertNoDevLoginBackdoorInProduction`) hard-fails if either is truthy with
-`NODE_ENV=production`. Never propagate them to a deployed env.
+`ENABLE_DEV_LOGIN_FOR_E2E`, `E2E_FAKE_GMAIL` and `E2E_FAKE_GEMINI` must be unset or
+false in production; `assertNoDevLoginBackdoorInProduction` hard-fails otherwise.
+Keep `E2E_ARCHIDOC_MOCK_RIB` disabled there too. Never propagate test flags to deployment.
+`SMOKE_BOOT=true` skips background workers, reconciliation and seeding; paired with
+`RUN_MIGRATIONS_ON_START=false`, it is used by the prepublish smoke check. Never enable
+`SMOKE_BOOT` in a real deployment: required background work would stop.
 
-## User preferences
+## Product conventions
 
 - French domain terms preserved verbatim: Devis, Avenant, Marché, Certificat, Honoraires,
   Lot, Situation, Retenue de Garantie, PV/MV, TVA, SIRET. All other UI in English.
 - Bilingual data fields: `description_fr` + `description_uk` for client communication.
+- All generated outbound client-email copy must be English, including subjects.
 - Projects ONLY enter the system via ArchiDoc sync — no manual project creation in UI.
 
 ## Core financial concepts
 
 - **Three buckets**: Contracted, Certified, Reste à Réaliser.
 - **Two invoicing modes**: Mode A (tick-off line items), Mode B (% completion).
-- **Retenue de garantie**: 5% holdback. **PV/MV**: variations on signed marchés.
+- **Retenue de garantie**: 5% is a calculation default, not proof of agreed retention.
+  Preserve explicit overrides and bank-guarantee rules; do not infer exemptions from
+  contractor names or service categories. **PV/MV**: variations on signed marchés.
 - **Fees**: works-percentage, conception, planning. Per-project `feePercentage`.
-- All financial math goes through `shared/financial-utils.ts` (strict 2-decimal rounding).
+- Use `shared/financial-utils.ts` for shared money calculations and rounding; preserve
+  quantity precision separately rather than treating quantities as currency.
+- **Commitments** count signed or explicitly recorded-as-signed quotations only;
+  pending quotations stay separate. Authority: `shared/quotation-commitment.ts`.
+- **External historical works** are manual reference/description/HT/TTC records, not
+  uploaded or processed Devis. Combined budget reporting lives in
+  `server/services/external-works-reporting.ts`; keep these entries distinguishable
+  from tracked quotations and certificats.
 
 ## Inter-app contract gates (full detail in `ARCHITECTURE.md`)
 
@@ -101,6 +128,11 @@ sequence (`assertNoDevLoginBackdoorInProduction`) hard-fails if either is truthy
 
 ## Key invariants (pointers, not spec — read the named files before touching)
 
+- **Quotation working edits**: architects may correct content/figures and add lines,
+  but the original contractor PDF and locked source TTC remain authoritative.
+  Preserve source evidence, audit history and signed records; see
+  `server/services/quotation-working-version.ts` and
+  `server/services/quotation-source-guards.ts`.
 - **Certificat issuance seal**: previews persist nothing; issue/send goes through
   `server/services/certificat-seal.service.ts` (version-guarded, idempotent, pins
   `pdfStorageKey` + `issuanceSnapshot` and writes `certificat_sources` in ONE tx).
@@ -142,9 +174,10 @@ Decisions and rationale in `ARCHITECTURE.md` (→ Operational Policies). The how
 4. Verify: `bash scripts/check-schema-drift.sh` and `bash scripts/check-migration-replay.sh`.
 - Scratch-only prototyping: `bash scripts/db-push-scratch.sh` (refuses hosted DBs). NEVER
   `drizzle-kit push` against dev/staging/prod.
-- If the drift check fails: review the generated SQL in `migrations/`, then commit it with
-  the updated `migrations/meta/` files — or discard with
-  `git checkout -- migrations/ && git clean -fd migrations/`.
+- If the drift check fails, inspect the generated SQL and metadata diff before deciding
+  what to keep. Preserve existing/uncommitted migration work. Never use blanket
+  `git checkout -- migrations/` or `git clean -fd migrations/` as cleanup; remove only
+  confirmed disposable files from the current check.
 
 ## Development protocols
 
