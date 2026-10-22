@@ -1251,7 +1251,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
                         <Button
                           variant="outline"
                           size="icon"
-                          className="h-8 w-8 border-[#0B2545]/20 text-[#0B2545] hover:bg-[#0B2545]/5"
+                          className="h-8 w-8 border-2 border-red-600 bg-red-50 text-red-700 hover:bg-red-100 hover:text-red-800"
                           disabled={!hasPdf}
                           onClick={(e) => {
                             e.stopPropagation();
