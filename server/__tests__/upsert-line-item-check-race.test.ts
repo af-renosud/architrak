@@ -102,10 +102,10 @@ describe("storage.upsertLineItemCheck — race safety", () => {
     // Partial-index predicate must match the schema's WHERE clause so the
     // conflict resolver actually targets the right index.
     expect(call.conflict.targetWhere).toBeDefined();
-    expect(call.conflict.set).toMatchObject({ query: "first query" });
+    expect(call.conflict.set).not.toHaveProperty("query");
   });
 
-  it("two parallel calls succeed, only one row exists, second updates the query text", async () => {
+  it("two parallel calls succeed without overwriting the original question", async () => {
     const [a, b] = await Promise.all([
       storage.upsertLineItemCheck(7, 42, "first query", 1),
       storage.upsertLineItemCheck(7, 42, "second query", 2),
@@ -118,10 +118,18 @@ describe("storage.upsertLineItemCheck — race safety", () => {
       (r) => r.devisId === 7 && r.lineItemId === 42 && r.origin === "line_item",
     );
     expect(matching).toHaveLength(1);
-    // The later upsert wins on the query text.
-    expect(matching[0].query).toBe("second query");
+    // Later flag/progress/note changes must never replace authored wording.
+    expect(matching[0].query).toBe("first query");
     // Both callers received the same row id (they collapsed to one record).
     expect(a.id).toBe(matching[0].id);
     expect(b.id).toBe(matching[0].id);
+  });
+
+  it.each(["dropped", "awaiting_contractor", "resolved"])("preserves %s question text and status on reflagging", async (status) => {
+    const row = await storage.upsertLineItemCheck(7, 42, "Authored question", 1);
+    Object.assign(row, { status });
+    const updated = await storage.upsertLineItemCheck(7, 42, "Auto suggestion", 1);
+    expect(updated.query).toBe("Authored question");
+    expect(updated.status).toBe(status);
   });
 });

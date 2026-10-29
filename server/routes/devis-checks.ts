@@ -29,6 +29,7 @@ const architectReplySchema = z.object({
 }).strict();
 
 const updateCheckQuerySchema = z.object({
+  expectedQuery: z.string().optional(),
   query: z.string().max(2000).transform((s) => s.trim()).refine((s) => s.length > 0, {
     message: "The question cannot be empty.",
   }),
@@ -183,8 +184,9 @@ router.patch(
         message: "This question has already been sent to the contractor — edit it via the message thread.",
       });
     }
-    const updated = await storage.updateDevisCheck(checkId, { query: req.body.query });
-    if (!updated) return res.status(404).json({ message: "Check not found" });
+    const updated = await storage.updateDevisCheck(checkId, { query: req.body.query },
+      { status: "open", query: req.body.expectedQuery ?? existing.query });
+    if (!updated) return res.status(409).json({ message: "This question changed or was sent. Refresh before editing." });
     res.json(updated);
   },
 );
@@ -218,8 +220,22 @@ router.post(
       status: "dropped",
       resolvedAt: new Date(),
       resolvedByUserId: userId ?? undefined,
-    });
-    if (!updated) return res.status(404).json({ message: "Check not found" });
+    }, { status: "open" });
+    if (!updated) return res.status(409).json({ message: "Only an unsent draft can be withdrawn. Sent questions must be handled in the conversation." });
+    res.json(updated);
+  },
+);
+
+router.post("/api/devis-checks/:checkId/restore",
+  validateRequest({ params: checkIdParams }),
+  async (req, res) => {
+    const checkId = Number(req.params.checkId);
+    const messages = await storage.listDevisCheckMessages(checkId);
+    const updated = await storage.updateDevisCheck(checkId, {
+      status: messages.length ? "awaiting_contractor" : "open",
+      resolvedAt: null, resolvedByUserId: null,
+    }, { status: "dropped" });
+    if (!updated) return res.status(409).json({ message: "This question is no longer withdrawn. Refresh and try again." });
     res.json(updated);
   },
 );
@@ -321,6 +337,12 @@ router.post(
       });
     }
 
+    // Freeze the exact draft snapshot before any outbound operation. Row locks
+    // and conditional updates make editing/withdrawing race safely with send.
+    // On delivery failure keep it frozen and retryable, never silently editable.
+    const claimed = await storage.freezeDevisCheckDrafts(sendable);
+    if (!claimed) return res.status(409).json({ message: "Questions changed. Review the latest list before sending." });
+
     // Issue / rotate a token for the (re-)send. Whether or not an active
     // token exists we still rotate, because the old raw value is not
     // recoverable (hash-only storage) and the new email must contain a
@@ -400,10 +422,8 @@ router.post(
       ),
     );
 
-    // Flip eligible checks to awaiting_contractor.
-    for (const c of sendable) {
-      await storage.updateDevisCheck(c.id, { status: "awaiting_contractor" });
-    }
+    // Status was frozen before dispatch. Never overwrite a reply or resolution
+    // that may have arrived while the provider was accepting the email.
 
     res.json({
       communicationId,

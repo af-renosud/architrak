@@ -21,6 +21,12 @@ Translation approval belongs to exact content. Inline changes must invalidate ap
 
 **How to apply:** Clear approval and PDF cache metadata atomically with content changes, bump the PDF version, and reject stale finalisation.
 
+Line review colours and contractor questions have independent lifecycles. Reflagging or editing a line must never replace authored question wording, and unflagging alone must never withdraw it. Withdrawal is explicit and reversible; sent wording is immutable and amendments belong in the conversation.
+
+**Why:** Operators could not readily reopen saved questions, and colour/progress/note updates could silently overwrite or hide them. A saved draft is valuable authored content even when no conversation messages exist.
+
+**How to apply:** Preserve questions across all line updates, show read/edit and withdrawn-history access, and freeze the exact question snapshot before dispatch. Treat a dispatch-frozen question as retryable but not editable, even when delivery fails.
+
 Architect source confirmation records the original PDF digest and independently transcribed TTC. Human corrections and approval are not gated by an OCR manifest or translation semantic model, including legacy illustrated evidence. Financial corrections must reconcile exact cents with actual VAT, discounts and options. Automatic extraction acceptance remains strict.
 
 **Why:** Stored parser flags survive ordinary description edits; a line-only receipt survives contradictory header edits. Neither is current approval evidence.

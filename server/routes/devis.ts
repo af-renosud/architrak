@@ -1245,12 +1245,8 @@ router.patch(
     // suggestion derived from the line description + amount so the architect
     // gets a usable starting point, refinable via the inline popover editor.
     //
-    // Un-flagging behaviour (Variant B inline-popover graduation): if the
-    // architect toggles the line back to unchecked/green AND the open
-    // line-item check is still a pure draft (status='open' with no messages
-    // exchanged yet), drop it — matches the variant's mental model where
-    // un-clicking ✕ retracts the question. Once any message has been
-    // exchanged, resolution stays manual to avoid silently losing context.
+    // Existing authored questions are never refreshed from line edits.
+    // Unflagging preserves the question; withdrawal is an explicit action.
     const becameFlagged = item.checkStatus === "red" || item.checkStatus === "amber";
     const userId = req.session?.userId ? Number(req.session.userId) : null;
     if (becameFlagged) {
@@ -1260,23 +1256,9 @@ router.patch(
         ? note
         : `Pouvez-vous préciser le détail de la ligne « ${item.description} » ? (montant ${formattedTotal} € HT)`;
       await storage.upsertLineItemCheck(item.devisId, lineItemId, query, userId);
-    } else {
-      // Un-flagged → retract any pure-draft line-item check.
-      const openChecks = await storage.listDevisChecks(item.devisId);
-      const draft = openChecks.find(
-        (c) => c.lineItemId === lineItemId && c.origin === "line_item" && c.status === "open",
-      );
-      if (draft) {
-        const messages = await storage.listDevisCheckMessages(draft.id);
-        if (messages.length === 0) {
-          await storage.updateDevisCheck(draft.id, {
-            status: "dropped",
-            resolvedAt: new Date(),
-            resolvedByUserId: userId ?? undefined,
-          });
-        }
-      }
     }
+    // Flags and questions have independent lifecycles. Only an explicit
+    // withdrawal may remove a question from the outgoing queue.
     res.json(item);
   },
 );

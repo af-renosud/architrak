@@ -1070,7 +1070,9 @@ export interface IStorage {
 
   createDevisCheck(data: InsertDevisCheck): Promise<DevisCheck>;
 
-  updateDevisCheck(id: number, data: Partial<InsertDevisCheck> & { resolvedAt?: Date | null; resolvedByUserId?: number | null }): Promise<DevisCheck | undefined>;
+  updateDevisCheck(id: number, data: Partial<InsertDevisCheck> & { resolvedAt?: Date | null; resolvedByUserId?: number | null }, expected?: { status: string; query?: string }): Promise<DevisCheck | undefined>;
+
+  freezeDevisCheckDrafts(checks: DevisCheck[]): Promise<boolean>;
 
   upsertLineItemCheck(devisId: number, lineItemId: number, query: string, userId: number | null): Promise<DevisCheck>;
 
@@ -6335,13 +6337,32 @@ export class DatabaseStorage implements IStorage {
   async updateDevisCheck(
     id: number,
     data: Partial<InsertDevisCheck> & { resolvedAt?: Date | null; resolvedByUserId?: number | null },
+    expected?: { status: string; query?: string },
   ): Promise<DevisCheck | undefined> {
     const [updated] = await db
       .update(devisChecks)
       .set({ ...data, updatedAt: new Date() })
-      .where(eq(devisChecks.id, id))
+      .where(and(eq(devisChecks.id, id),
+        expected ? eq(devisChecks.status, expected.status) : undefined,
+        expected?.query !== undefined ? eq(devisChecks.query, expected.query) : undefined))
       .returning();
     return updated;
+  }
+
+  async freezeDevisCheckDrafts(checks: DevisCheck[]): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      for (const c of [...checks].sort((a, b) => a.id - b.id)) {
+        const [row] = await tx.select().from(devisChecks)
+          .where(eq(devisChecks.id, c.id)).for("update");
+        if (!row || row.status !== c.status || row.query !== c.query) return false;
+      }
+      for (const c of checks) {
+        await tx.update(devisChecks)
+          .set({ status: "awaiting_contractor", updatedAt: new Date() })
+          .where(eq(devisChecks.id, c.id));
+      }
+      return true;
+    });
   }
 
   async upsertLineItemCheck(
@@ -6370,7 +6391,9 @@ export class DatabaseStorage implements IStorage {
       .onConflictDoUpdate({
         target: [devisChecks.devisId, devisChecks.lineItemId],
         targetWhere: sql`${devisChecks.origin} = 'line_item' AND ${devisChecks.lineItemId} IS NOT NULL`,
-        set: { query, updatedAt: new Date() },
+        // A flag is not permission to rewrite an authored (or sent) question.
+        // Keep withdrawn/resolved records intact; restoration is explicit.
+        set: { updatedAt: new Date() },
       })
       .returning();
     return row;

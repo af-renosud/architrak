@@ -3141,8 +3141,8 @@ function LineItemWithCheck({
   devisId: number;
   projectId: string;
   quotationLines: DevisLineItem[];
-  openCheck: { id: number; query: string } | null;
-  onSaveCheckQuery: (checkId: number, query: string) => Promise<unknown>;
+  openCheck: { id: number; query: string; status: string } | null;
+  onSaveCheckQuery: (checkId: number, query: string, expectedQuery: string) => Promise<unknown>;
   disabled?: boolean;
   isWorkingLine?: boolean;
   isFlashing?: boolean;
@@ -3163,14 +3163,18 @@ function LineItemWithCheck({
   // the rose "QUESTION RÉDIGÉE" pill on a line that already has a draft.
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [popoverDraft, setPopoverDraft] = useState("");
+  const [popoverOriginal, setPopoverOriginal] = useState("");
   const [pendingOpenAfterFlag, setPendingOpenAfterFlag] = useState(false);
   const [savingPopover, setSavingPopover] = useState(false);
+  const [pendingFlag, setPendingFlag] = useState<string | null>(null);
+  const [changingFlag, setChangingFlag] = useState(false);
 
   // Once the just-toggled-red check arrives via refetch, seed the draft
   // from the server's auto-suggested query and open the popover.
   useEffect(() => {
     if (pendingOpenAfterFlag && openCheck) {
       setPopoverDraft(openCheck.query);
+      setPopoverOriginal(openCheck.query);
       setPopoverOpen(true);
       setPendingOpenAfterFlag(false);
     }
@@ -3179,47 +3183,58 @@ function LineItemWithCheck({
   // Esc closes the popover.
   useEffect(() => {
     if (!popoverOpen) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setPopoverOpen(false); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !savingPopover &&
+        (popoverDraft === popoverOriginal || window.confirm("Discard your unsaved question changes?"))) setPopoverOpen(false);
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [popoverOpen]);
+  }, [popoverOpen, popoverDraft, popoverOriginal, savingPopover]);
 
   const fireUpdate = (data: Record<string, string>) => {
     void Promise.resolve(onUpdate(data)).catch(() => {});
   };
 
-  const toggleStatus = async (newStatus: string) => {
-    if (disabled) return;
-    const next = status === newStatus ? "unchecked" : newStatus;
+  const applyStatus = async (next: string, withdraw = false) => {
+    setChangingFlag(true);
     try {
-      await Promise.resolve(onUpdate({ checkStatus: next }));
-      // Always refetch checks: the backend may upsert an open draft on red,
-      // drop a message-less draft on unchecked/green, or leave checks intact
-      // on amber. Invalidating universally keeps the bottom-mirror digest,
-      // CTA count, and "QUESTION RÉDIGÉE" pill in sync regardless of which
-      // direction the toggle went.
-      await queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "checks"] });
-      if (next === "red") {
-        // Once `openCheck` populates from the refetch, the effect below
-        // seeds the draft from the server's auto-suggested query and opens
-        // the popover.
-        setPendingOpenAfterFlag(true);
-      } else {
-        setPopoverOpen(false);
-        setPopoverDraft("");
+      if (withdraw && openCheck) {
+        await apiRequest("POST", `/api/devis-checks/${openCheck.id}/drop`, {});
       }
-    } catch {
-      // Mutation already toasts via parent; nothing to do here.
+      await Promise.resolve(onUpdate({ checkStatus: next }));
+      await queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "checks"] });
+      if (next === "red" || next === "amber") setPendingOpenAfterFlag(true);
+      else setPopoverOpen(false);
+      setPendingFlag(null);
+    } catch (err) {
+      toast({ title: "Unable to update question", description: err instanceof Error ? err.message : "Please try again.", variant: "destructive" });
+    } finally {
+      setChangingFlag(false);
     }
+  };
+
+  const toggleStatus = async (newStatus: string) => {
+    if (disabled || changingFlag || savingPopover) return;
+    if (popoverOpen && popoverDraft !== popoverOriginal && !window.confirm("Discard your unsaved question changes?")) return;
+    const next = status === newStatus ? "unchecked" : newStatus;
+    if (openCheck && openCheck.status !== "dropped" && openCheck.status !== "resolved"
+      && (next === "unchecked" || next === "green")) {
+      setPendingFlag(next);
+      return;
+    }
+    await applyStatus(next);
   };
 
   const openExistingPopover = () => {
     if (!openCheck) return;
     setPopoverDraft(openCheck.query);
+    setPopoverOriginal(openCheck.query);
     setPopoverOpen(true);
   };
 
   const cancelPopover = () => {
+    if (savingPopover) return;
+    if (popoverDraft !== popoverOriginal && !window.confirm("Discard your unsaved question changes?")) return;
     setPopoverOpen(false);
     setPopoverDraft("");
   };
@@ -3233,7 +3248,7 @@ function LineItemWithCheck({
     }
     setSavingPopover(true);
     try {
-      await onSaveCheckQuery(openCheck.id, next);
+      await onSaveCheckQuery(openCheck.id, next, popoverOriginal);
       setPopoverOpen(false);
       setPopoverDraft("");
     } catch (err) {
@@ -3372,7 +3387,7 @@ function LineItemWithCheck({
                     title={openCheck.query}
                     data-testid={`badge-question-redigee-${li.id}`}
                   >
-                    <MessageSquare size={9} /> Question rédigée
+                    <MessageSquare size={9} /> {openCheck.status === "open" ? "View / edit question" : openCheck.status === "dropped" ? "Withdrawn question" : "View question"}
                   </button>
                 )}
               </div>
@@ -3390,6 +3405,24 @@ function LineItemWithCheck({
         <td className="py-1.5 px-2 text-[11px] text-right">{li.unitPriceHt ? <Amount value={parseFloat(li.unitPriceHt)} denomination="HT" /> : "-"}</td>
         <td className="py-1.5 px-2 text-[11px] text-right font-medium"><Amount value={parseFloat(li.totalHt)} denomination="HT" /></td>
         <td className="py-1.5 px-2 relative">
+          <AlertDialog open={pendingFlag !== null} onOpenChange={(open) => { if (!open && !changingFlag) setPendingFlag(null); }}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>This line has a saved contractor question</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Changing the line colour does not remove its question. Keep it linked, or explicitly withdraw an unsent draft. Withdrawn questions remain available to read and restore.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <p className="whitespace-pre-wrap text-sm">{openCheck?.query}</p>
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={changingFlag}>Cancel</AlertDialogCancel>
+                {openCheck?.status === "open" && <Button variant="destructive" disabled={changingFlag}
+                  onClick={() => pendingFlag !== null && void applyStatus(pendingFlag, true)}>Withdraw question</Button>}
+                <Button disabled={changingFlag}
+                  onClick={() => pendingFlag !== null && void applyStatus(pendingFlag)}>Keep question</Button>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
           {popoverOpen && openCheck && (
             <div
               className="absolute right-2 top-9 z-30 w-[380px] rounded-xl border-2 border-rose-300 bg-white shadow-xl p-3 text-left"
@@ -3413,6 +3446,7 @@ function LineItemWithCheck({
               </p>
               <Textarea
                 autoFocus
+                readOnly={disabled || openCheck.status !== "open"}
                 value={popoverDraft}
                 onChange={(e) => setPopoverDraft(e.target.value)}
                 onKeyDown={(e) => {
@@ -3443,15 +3477,32 @@ function LineItemWithCheck({
                   size="sm"
                   className="h-7 px-2.5 text-[10px] bg-rose-600 hover:bg-rose-700 text-white"
                   onClick={savePopover}
-                  disabled={savingPopover || !popoverDraft.trim()}
+                  disabled={disabled || openCheck.status !== "open" || savingPopover || !popoverDraft.trim()}
                   data-testid={`button-popover-save-${li.id}`}
                 >
                   {savingPopover ? <Loader2 size={10} className="animate-spin" /> : "Enregistrer"}
                 </Button>
               </div>
+              {openCheck.status === "dropped" && <Button size="sm" disabled={disabled || savingPopover} onClick={async () => {
+                setSavingPopover(true);
+                try {
+                  await apiRequest("POST", `/api/devis-checks/${openCheck.id}/restore`, {});
+                  await queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "checks"] });
+                  setPopoverOpen(false);
+                } catch (err) {
+                  toast({ title: "Unable to restore question", description: err instanceof Error ? err.message : "Please try again.", variant: "destructive" });
+                } finally { setSavingPopover(false); }
+              }}>Restore question</Button>}
+              {openCheck.status !== "open" && openCheck.status !== "dropped" &&
+                <p className="text-xs text-slate-600 mt-2">Sent questions are read-only. Add amendments in the contractor conversation below.</p>}
             </div>
           )}
           <div className="flex items-center justify-end gap-1">
+            {openCheck && <Button type="button" variant="outline" size="sm"
+              className="h-7 px-2 text-[10px] border-rose-400 text-rose-700 bg-rose-50"
+              onClick={openExistingPopover} data-testid={`button-edit-question-${li.id}`}>
+              <MessageSquare size={12} className="mr-1" />{openCheck.status === "open" ? "View / edit" : "View question"}
+            </Button>}
             <Input
               type="number"
               className="h-6 w-16 text-[10px] text-right inline-block"
@@ -3510,7 +3561,7 @@ function LineItemWithCheck({
               type="text"
               className="w-full h-7 px-3 text-[11px] rounded-lg border-2 outline-hidden transition-colors bg-white disabled:opacity-50 disabled:cursor-not-allowed"
               style={{ borderColor: "#c1a27b" }}
-              placeholder="Notes"
+              placeholder="Internal line notes — edit the contractor question using View / edit"
               defaultValue={notes}
               onBlur={(e) => {
                 if (disabled) return;
@@ -5135,6 +5186,9 @@ function ChecksPanel({
 }) {
   const { toast } = useToast();
   const [replyDrafts, setReplyDrafts] = useState<Record<number, string>>({});
+  const [editingQuestion, setEditingQuestion] = useState<CheckWithMessages | null>(null);
+  const [questionDraft, setQuestionDraft] = useState("");
+  const [savingQuestion, setSavingQuestion] = useState(false);
 
   const { data: checks = [], isLoading } = useQuery<CheckWithMessages[]>({
     queryKey: ["/api/devis", devisId, "checks"],
@@ -5225,6 +5279,15 @@ function ChecksPanel({
     onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
   });
 
+  const restoreMutation = useMutation({
+    mutationFn: async (checkId: number) => {
+      const res = await apiRequest("POST", `/api/devis-checks/${checkId}/restore`, {});
+      return res.json();
+    },
+    onSuccess: invalidate,
+    onError: (error: Error) => toast({ title: "Unable to restore question", description: error.message, variant: "destructive" }),
+  });
+
   if (isLoading) return null;
 
   // Variant B partitions checks into the "drafts going out next" set
@@ -5252,7 +5315,8 @@ function ChecksPanel({
     const trimmed = generalDraft.trim();
     if (openGeneralCheck) {
       if (!trimmed) {
-        dropMutation.mutate(openGeneralCheck.id);
+        if (window.confirm("Withdraw this saved question? It will not be sent, but you can restore it below.")) dropMutation.mutate(openGeneralCheck.id);
+        else { setGeneralDraft(openGeneralCheck.query); setGeneralDirty(false); }
       } else if (trimmed !== openGeneralCheck.query) {
         updateGeneralMutation.mutate({ checkId: openGeneralCheck.id, query: trimmed });
       } else {
@@ -5377,6 +5441,7 @@ function ChecksPanel({
                     <div className="text-[9px] font-bold uppercase tracking-widest text-rose-700">{lineLabel}</div>
                     <div className="text-slate-700 whitespace-pre-wrap">{c.query}</div>
                   </div>
+                  {!isArchived && <Button size="sm" variant="outline" onClick={() => { setEditingQuestion(c); setQuestionDraft(c.query); }}>View / edit</Button>}
                 </li>
               );
             })}
@@ -5415,6 +5480,32 @@ function ChecksPanel({
         )}
       </div>
 
+      <Dialog open={!!editingQuestion} onOpenChange={(open) => {
+        if (!open && !savingQuestion && (questionDraft === editingQuestion?.query || window.confirm("Discard your unsaved question changes?"))) setEditingQuestion(null);
+      }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Edit contractor question</DialogTitle><DialogDescription>Save changes before sending the questions to the contractor.</DialogDescription></DialogHeader>
+          <Textarea value={questionDraft} onChange={(e) => setQuestionDraft(e.target.value)} maxLength={2000} disabled={savingQuestion} />
+          <Button disabled={savingQuestion || !questionDraft.trim()} onClick={async () => {
+            if (!editingQuestion) return;
+            setSavingQuestion(true);
+            try {
+              await apiRequest("PATCH", `/api/devis-checks/${editingQuestion.id}`, { query: questionDraft.trim(), expectedQuery: editingQuestion.query });
+              invalidate(); setEditingQuestion(null);
+            } catch (err) {
+              toast({ title: "Unable to save question", description: err instanceof Error ? err.message : "Please try again.", variant: "destructive" });
+            } finally { setSavingQuestion(false); }
+          }}>Save question</Button>
+        </DialogContent>
+      </Dialog>
+      {checks.some((c) => c.status === "dropped") && <details className="rounded-lg border p-3">
+        <summary className="cursor-pointer text-sm font-semibold">Withdrawn questions ({checks.filter((c) => c.status === "dropped").length})</summary>
+        {checks.filter((c) => c.status === "dropped").map((c) => <div key={c.id} className="mt-3 flex gap-3 items-start">
+          <p className="text-sm whitespace-pre-wrap flex-1">{c.query}</p>
+          {!isArchived && <Button size="sm" variant="outline" disabled={restoreMutation.isPending} onClick={() => restoreMutation.mutate(c.id)}>Restore question</Button>}
+        </div>)}
+      </details>}
+
       {/* Conversation threads — checks already sent to (or replied by) the
           contractor. Less visually prominent than the bottom mirror; this is
           where ongoing back-and-forth lives. */}
@@ -5451,16 +5542,7 @@ function ChecksPanel({
                     data-testid={`textarea-architect-reply-${c.id}`}
                   />
                   <div className="flex items-center justify-between gap-1.5">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 text-[9px] text-slate-500 hover:text-rose-600"
-                      onClick={() => dropMutation.mutate(c.id)}
-                      disabled={dropMutation.isPending}
-                      data-testid={`button-drop-check-${c.id}`}
-                    >
-                      Abandonner
-                    </Button>
+                    <span className="text-[10px] text-slate-500">Sent question · add amendments as a follow-up</span>
                     <div className="flex items-center gap-1.5">
                       {c.status === "awaiting_architect" && (
                         <Button
@@ -5546,10 +5628,10 @@ function DevisDetailTabs({
   const { data: checksForLines = [] } = useQuery<CheckWithMessages[]>({
     queryKey: ["/api/devis", devis.id, "checks"],
   });
-  const openLineCheckMap = new Map<number, { id: number; query: string }>();
+  const openLineCheckMap = new Map<number, { id: number; query: string; status: string }>();
   for (const c of checksForLines) {
-    if (c.status === "open" && c.origin === "line_item" && c.lineItemId != null) {
-      openLineCheckMap.set(c.lineItemId, { id: c.id, query: c.query });
+    if (c.origin === "line_item" && c.lineItemId != null) {
+      openLineCheckMap.set(c.lineItemId, { id: c.id, query: c.query, status: c.status });
     }
   }
 
@@ -5557,8 +5639,8 @@ function DevisDetailTabs({
   // to contractor) and 404 (drop race) surface as toasts; the row component
   // handles user-facing errors.
   const saveCheckQueryMutation = useMutation({
-    mutationFn: async ({ checkId, query }: { checkId: number; query: string }) => {
-      const res = await apiRequest("PATCH", `/api/devis-checks/${checkId}`, { query });
+    mutationFn: async ({ checkId, query, expectedQuery }: { checkId: number; query: string; expectedQuery: string }) => {
+      const res = await apiRequest("PATCH", `/api/devis-checks/${checkId}`, { query, expectedQuery });
       return res.json();
     },
     onSuccess: () => {
@@ -5814,7 +5896,7 @@ function DevisDetailTabs({
                       projectId={String(devis.projectId)}
                       quotationLines={lineItems}
                       openCheck={openLineCheckMap.get(li.id) ?? null}
-                      onSaveCheckQuery={(checkId, query) => saveCheckQueryMutation.mutateAsync({ checkId, query })}
+                      onSaveCheckQuery={(checkId, query, expectedQuery) => saveCheckQueryMutation.mutateAsync({ checkId, query, expectedQuery })}
                       onUpdate={(data) => onUpdateLineItem(li.id, data)}
                       disabled={isArchived}
                       isWorkingLine={workingLine?.lineNumber === li.lineNumber}

@@ -85,8 +85,15 @@ const { state, storageSpy } = vi.hoisted(() => {
         .map((m) => m.id);
       return ids.length === 0 ? 0 : Math.max(...ids);
     }),
-    updateDevisCheck: vi.fn(async (id: number, data: any) => {
-      const r = state.checks.find((c) => c.id === id); if (!r) return undefined; Object.assign(r, data); return r;
+    updateDevisCheck: vi.fn(async (id: number, data: Partial<Check>, expected?: { status: string; query?: string }) => {
+      const r = state.checks.find((c) => c.id === id);
+      if (!r || (expected && (r.status !== expected.status || (expected.query !== undefined && r.query !== expected.query)))) return undefined;
+      Object.assign(r, data); return r;
+    }),
+    freezeDevisCheckDrafts: vi.fn(async (checks: Check[]) => {
+      if (checks.some((c) => !state.checks.some((r) => r.id === c.id && r.status === c.status && r.query === c.query))) return false;
+      checks.forEach((c) => { const r = state.checks.find((row) => row.id === c.id); if (r?.status === "open") r.status = "awaiting_contractor"; });
+      return true;
     }),
     getDevisCheck: vi.fn(async (id: number) => state.checks.find((c) => c.id === id)),
     createDevisCheck: vi.fn(async (data: any) => { const r = { id: nid(), ...data }; state.checks.push(r); return r; }),
@@ -735,6 +742,37 @@ describe("Devis CHECKING — issue-for-copy route", () => {
 
 describe("PATCH /api/devis-checks/:checkId — editable draft query (variant B)", () => {
   beforeAll(async () => { await withApp(); });
+
+  it("rejects an editor's stale text rather than overwriting another save", async () => {
+    state.checks.push({ id: 790, devisId: 70, status: "open", query: "Newer wording", lineItemId: 50, origin: "line_item" });
+    const res = await fetch(`${baseUrl}/api/devis-checks/790`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "Stale overwrite", expectedQuery: "Older wording" }),
+    });
+    expect(res.status).toBe(409);
+    expect(state.checks.find(c => c.id === 790)?.query).toBe("Newer wording");
+  });
+
+  it("withdraws and restores an unsent draft without losing its wording or link", async () => {
+    state.checks.push({ id: 791, devisId: 70, status: "open", query: "Saved wording", lineItemId: 50, origin: "line_item" });
+    expect((await fetch(`${baseUrl}/api/devis-checks/791/drop`, { method: "POST" })).status).toBe(200);
+    expect(state.checks.find(c => c.id === 791)?.status).toBe("dropped");
+    expect((await fetch(`${baseUrl}/api/devis-checks/791/restore`, { method: "POST" })).status).toBe(200);
+    expect(state.checks.find(c => c.id === 791)).toMatchObject({ status: "open", query: "Saved wording", lineItemId: 50 });
+  });
+
+  it("cannot withdraw a question once dispatch has frozen it", async () => {
+    state.checks.push({ id: 792, devisId: 70, status: "awaiting_contractor", query: "Frozen wording", lineItemId: 50, origin: "line_item" });
+    expect((await fetch(`${baseUrl}/api/devis-checks/792/drop`, { method: "POST" })).status).toBe(409);
+    expect(state.checks.find(c => c.id === 792)?.status).toBe("awaiting_contractor");
+  });
+
+  it("restores a historical sent question read-only, never as an editable draft", async () => {
+    state.checks.push({ id: 793, devisId: 70, status: "dropped", query: "Sent wording", lineItemId: 50, origin: "line_item" });
+    state.messages.push({ id: 794, checkId: 793, authorType: "system", body: "Dispatched", channel: "email" });
+    expect((await fetch(`${baseUrl}/api/devis-checks/793/restore`, { method: "POST" })).status).toBe(200);
+    expect(state.checks.find(c => c.id === 793)?.status).toBe("awaiting_contractor");
+  });
 
   it("200: updates query text on an open draft", async () => {
     state.checks.push({ id: 700, devisId: 70, status: "open", query: "Original?", lineItemId: null, origin: "general" });
