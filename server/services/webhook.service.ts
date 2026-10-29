@@ -39,7 +39,7 @@ export const webhookEventSchema = z.object({
     "sync.full",
   ]),
   timestamp: z.string(),
-  data: z.record(z.unknown()).optional().default({}),
+  data: z.record(z.string(), z.unknown()).optional().default({}),
 });
 
 export type WebhookEvent = z.infer<typeof webhookEventSchema>;

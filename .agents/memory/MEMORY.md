@@ -73,3 +73,4 @@
 - [Integration test worker isolation](integration-test-worker-isolation.md) — live dev-server ArchiDoc sync can invalidate integration-test fixtures; pause the workflow when testing against the shared dev DB.
 - [Production query parameters](production-query-parameters.md) — pass params even for static reads; an empty START/ROLLBACK output does not prove the query ran.
 - [Supplier portal content](supplier-portal-content.md) — verified text positions, not guessed PDF boxes; retain question paragraphs, emphasis and lists safely.
+- [Validation compatibility](zod-upgrade-compatibility.md) — upgrade form resolvers and schema adapters with Zod; test invalid submissions, not only compilation.

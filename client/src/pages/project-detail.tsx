@@ -570,7 +570,7 @@ export default function ProjectDetail() {
     enabled: !!project,
   });
 
-  const certForm = useForm<CertFormValues>({
+  const certForm = useForm<z.input<typeof certFormSchema>, unknown, CertFormValues>({
     resolver: zodResolver(certFormSchema),
     defaultValues: {
       projectId: 0, contractorId: 0, dateIssued: null,
@@ -697,7 +697,7 @@ export default function ProjectDetail() {
     totalHt: z.string().min(1, "Required"),
     totalTtc: z.string().min(1, "Required"),
   });
-  const marcheForm = useForm<z.infer<typeof marcheFormSchema>>({
+  const marcheForm = useForm<z.input<typeof marcheFormSchema>, unknown, z.output<typeof marcheFormSchema>>({
     resolver: zodResolver(marcheFormSchema),
     defaultValues: {
       projectId: parseInt(projectId!), contractorId: 0, marcheNumber: null,

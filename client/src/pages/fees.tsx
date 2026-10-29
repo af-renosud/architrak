@@ -81,7 +81,7 @@ const MILESTONE_STATUS_STYLE: Record<string, { bg: string; badge: string; label:
   paid: { bg: "bg-emerald-50 border-emerald-200", badge: "bg-emerald-100 text-emerald-900", label: "Paid" },
 };
 const feeFormSchema = insertFeeSchema.extend({
-  phase: z.enum(["conception", "chantier", "aor"], { required_error: "Phase is required" }),
+  phase: z.enum(["conception", "chantier", "aor"], { error: "Phase is required" }),
   feeAmountHt: z.string().min(1, "HT amount is required"),
   remainingAmount: z.string().min(1, "Remaining amount is required"),
 });

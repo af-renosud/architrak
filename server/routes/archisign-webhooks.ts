@@ -142,7 +142,7 @@ const signedSchema = COMMON_ENVELOPE_SHAPE.extend({
   // identityVerification is the 8-field block per §3.4. AT4 stores it
   // verbatim as jsonb; AT5 echoes it onto the work-authorisation webhook.
   // Pin a relaxed shape here (object) and let downstream consumers parse.
-  identityVerification: z.record(z.unknown()),
+  identityVerification: z.record(z.string(), z.unknown()),
 });
 
 const retentionBreachSchema = COMMON_ENVELOPE_SHAPE.extend({

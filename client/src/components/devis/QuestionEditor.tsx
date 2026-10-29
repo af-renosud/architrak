@@ -30,6 +30,6 @@ export function QuestionEditor({ value, onChange, onBlur, disabled }: {
         aria-pressed={editor?.isActive(b.active)} className="rounded px-2 py-1 text-xs hover:bg-slate-100"
         onMouseDown={e => e.preventDefault()} onClick={b.run}>{b.label}</button>)}
     </div>
-    <EditorContent editor={editor} className="p-3 text-sm [&_.tiptap]:min-h-28 [&_.tiptap]:outline-none [&_p]:mb-2 [&_ul]:list-disc [&_ol]:list-decimal [&_ul]:pl-6 [&_ol]:pl-6" />
+    <EditorContent editor={editor} className="p-3 text-sm [&_.tiptap]:min-h-28 [&_.tiptap]:outline-hidden [&_.tiptap]:focus-visible:ring-2 [&_.tiptap]:focus-visible:ring-slate-400 [&_p]:mb-2 [&_ul]:list-disc [&_ol]:list-decimal [&_ul]:pl-6 [&_ol]:pl-6" />
   </div>;
 }

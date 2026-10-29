@@ -31,7 +31,7 @@ export function validateRequest(
         });
       }
       if (schemas.params) {
-        req.params = await schemas.params.parseAsync(req.params);
+        req.params = await schemas.params.parseAsync(req.params) as Request["params"];
       }
       next();
     } catch (err) {

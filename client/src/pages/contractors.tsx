@@ -76,7 +76,7 @@ export default function Contractors() {
     return `${diffD}d ago`;
   };
 
-  const form = useForm<ContractorFormValues>({
+  const form = useForm<z.input<typeof contractorFormSchema>, unknown, ContractorFormValues>({
     resolver: zodResolver(contractorFormSchema),
     defaultValues: {
       name: "",

@@ -796,7 +796,7 @@ const saveLineContextBody = z
   .object({
     // The document is fully re-validated against the strict shared schema in
     // the service; here we only require a JSON object envelope.
-    document: z.record(z.unknown()),
+    document: z.record(z.string(), z.unknown()),
     baseRevision: z.number().int().nonnegative(),
   })
   .strict();

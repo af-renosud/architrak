@@ -138,7 +138,7 @@ export default function Certificats() {
     enabled: !!selectedProjectId,
   });
 
-  const form = useForm<CertificatFormValues>({
+  const form = useForm<z.input<typeof certificatFormSchema>, unknown, CertificatFormValues>({
     resolver: zodResolver(certificatFormSchema),
     defaultValues: {
       projectId: 0,
