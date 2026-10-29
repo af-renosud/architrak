@@ -59,6 +59,8 @@ import {
 import { SigningPanel, OPEN_SIGNING_SEND_EVENT } from "@/components/devis/SigningPanel";
 import { canRestoreSignedStage, requiresStageReopenConfirmation } from "@shared/devis-stage-recovery";
 import { StageRecoveryDialog, type StageRecoveryRequest } from "@/components/devis/StageRecoveryDialog";
+import { QuestionEditor } from "./QuestionEditor";
+import { renderQuestionHtml } from "@shared/question-format";
 import { DevisAfterSigning } from "@/components/devis/DevisAfterSigning";
 import { SupportingPdfsPanel } from "@/components/devis/SupportingPdfsPanel";
 import { ClientConversationPanel } from "@/components/devis/ClientConversationPanel";
@@ -5221,7 +5223,12 @@ function ChecksPanel({
       const res = await apiRequest("POST", `/api/devis/${devisId}/checks`, { query });
       return res.json();
     },
-    onSuccess: () => { invalidate(); setGeneralDirty(false); },
+    onSuccess: (created: CheckWithMessages) => {
+      queryClient.setQueryData<CheckWithMessages[]>(["/api/devis", devisId, "checks"],
+        (current = []) => [...current.filter(c => c.id !== created.id), { ...created, messages: created.messages ?? [] }]);
+      setGeneralDirty(false);
+      invalidate();
+    },
     onError: (error: Error) => toast({ title: "Erreur", description: error.message, variant: "destructive" }),
   });
 
@@ -5457,14 +5464,11 @@ function ChecksPanel({
               <div className="text-[9px] font-bold uppercase tracking-widest text-slate-500 mb-0.5">
                 Question générale (non liée à une ligne)
               </div>
-              <Textarea
-                className="text-[11px] min-h-[36px] bg-white"
-                placeholder="Ajouter une question générale…"
+              <QuestionEditor
                 value={generalDraft}
-                onChange={(e) => { setGeneralDraft(e.target.value); setGeneralDirty(true); }}
+                onChange={(value) => { setGeneralDraft(value); setGeneralDirty(true); }}
                 onBlur={commitGeneralDraft}
                 disabled={createGeneralMutation.isPending || updateGeneralMutation.isPending}
-                data-testid={`textarea-general-check-${devisId}`}
               />
             </div>
           </div>
@@ -5474,7 +5478,7 @@ function ChecksPanel({
             <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-slate-400 shrink-0" />
             <div className="flex-1">
               <div className="text-[9px] font-bold uppercase tracking-widest text-slate-500">Question générale</div>
-              <div className="text-slate-700 whitespace-pre-wrap">{openGeneralCheck.query}</div>
+              <div className="text-slate-700 [&_p]:mb-2 [&_ul]:list-disc [&_ol]:list-decimal [&_ul]:pl-6 [&_ol]:pl-6" dangerouslySetInnerHTML={{ __html: renderQuestionHtml(openGeneralCheck.query) }} />
             </div>
           </div>
         )}
@@ -5501,7 +5505,7 @@ function ChecksPanel({
       {checks.some((c) => c.status === "dropped") && <details className="rounded-lg border p-3">
         <summary className="cursor-pointer text-sm font-semibold">Withdrawn questions ({checks.filter((c) => c.status === "dropped").length})</summary>
         {checks.filter((c) => c.status === "dropped").map((c) => <div key={c.id} className="mt-3 flex gap-3 items-start">
-          <p className="text-sm whitespace-pre-wrap flex-1">{c.query}</p>
+          <div className="text-sm flex-1 [&_p]:mb-2 [&_ul]:list-disc [&_ol]:list-decimal [&_ul]:pl-6 [&_ol]:pl-6" dangerouslySetInnerHTML={{ __html: renderQuestionHtml(c.query) }} />
           {!isArchived && <Button size="sm" variant="outline" disabled={restoreMutation.isPending} onClick={() => restoreMutation.mutate(c.id)}>Restore question</Button>}
         </div>)}
       </details>}
@@ -5517,7 +5521,7 @@ function ChecksPanel({
           {conversationChecks.map((c) => (
             <div key={c.id} className="rounded-lg border border-slate-200 bg-white p-2.5 space-y-2" data-testid={`check-${c.id}`}>
               <div className="flex items-start justify-between gap-2">
-                <p className="text-[12px] text-slate-800 flex-1">{c.query}</p>
+                <div className="text-[12px] text-slate-800 flex-1 [&_p]:mb-2 [&_ul]:list-disc [&_ol]:list-decimal [&_ul]:pl-6 [&_ol]:pl-6" dangerouslySetInnerHTML={{ __html: renderQuestionHtml(c.query) }} />
                 <span className={`px-2 py-0.5 rounded-full border text-[9px] font-bold uppercase tracking-wide ${CHECK_STATUS_COLOR[c.status] || "bg-slate-100"}`} data-testid={`status-check-${c.id}`}>
                   {CHECK_STATUS_LABEL[c.status] || c.status}
                 </span>

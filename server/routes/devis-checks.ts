@@ -16,7 +16,7 @@ const checkIdParams = z.object({ checkId: z.coerce.number().int().positive() });
 const projectIdParams = z.object({ projectId: z.coerce.number().int().positive() });
 
 const createCheckSchema = z.object({
-  query: z.string().min(1).max(2000),
+  query: z.string().min(1).max(10000),
   lineItemId: z.number().int().positive().optional(),
 }).strict();
 
@@ -30,7 +30,7 @@ const architectReplySchema = z.object({
 
 const updateCheckQuerySchema = z.object({
   expectedQuery: z.string().optional(),
-  query: z.string().max(2000).transform((s) => s.trim()).refine((s) => s.length > 0, {
+  query: z.string().max(10000).transform((s) => s.trim()).refine((s) => s.length > 0, {
     message: "The question cannot be empty.",
   }),
 }).strict();

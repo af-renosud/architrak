@@ -6,6 +6,8 @@ import { rateLimit } from "../middleware/rate-limit";
 import { hashToken, resolveDevisCheckToken, computeTokenExpiry } from "../services/devis-checks";
 import type { DevisCheckToken, Devis, DevisCheck } from "@shared/schema";
 import { getDocumentStream } from "../storage/object-storage";
+import { PDF_LINE_LOCATOR_SCRIPT } from "../services/pdf-line-locator-script";
+import { renderQuestionHtml } from "@shared/question-format";
 
 /**
  * Shape returned by both the live (token-authed) and preview (architect-authed)
@@ -23,6 +25,7 @@ export interface PortalDataPayload {
     lineDescription: string | null;
     lineNumber: number | null;
     totalHt: string | null;
+    locatorContext?: { previousDescription: string | null; nextDescription: string | null };
     /** 1-indexed PDF page where this question's devis line appears, if
      *  known. Powers the click-to-jump-in-PDF affordance (Task #111). */
     pdfPageHint: number | null;
@@ -50,12 +53,14 @@ export async function buildPortalPayload(devis: Devis): Promise<PortalDataPayloa
   const checks = await storage.listDevisChecks(devis.id);
   const lineItems = await storage.getDevisLineItems(devis.id);
   const lineMap = new Map(lineItems.map((li) => [li.id, li]));
+  const orderedLines = [...lineItems].sort((a, b) => a.lineNumber - b.lineNumber);
 
   const enriched = await Promise.all(
     checks
       .filter((c: DevisCheck) => c.status !== "dropped" && c.status !== "resolved")
       .map(async (c: DevisCheck) => {
         const li = c.lineItemId ? lineMap.get(c.lineItemId) ?? null : null;
+        const index = li ? orderedLines.findIndex(l => l.id === li.id) : -1;
         return {
           id: c.id,
           status: c.status,
@@ -63,6 +68,10 @@ export async function buildPortalPayload(devis: Devis): Promise<PortalDataPayloa
           lineDescription: li?.description ?? null,
           lineNumber: li?.lineNumber ?? null,
           totalHt: li?.totalHt ?? null,
+          locatorContext: {
+            previousDescription: index > 0 ? orderedLines[index - 1].description : null,
+            nextDescription: index >= 0 ? orderedLines[index + 1]?.description ?? null : null,
+          },
           pdfPageHint: li?.pdfPageHint ?? null,
           pdfBbox: li?.pdfBbox ?? null,
           messages: (await storage.listDevisCheckMessages(c.id)).map((m) => ({
@@ -337,6 +346,7 @@ export function renderPortalShell(opts:
   .pdf-jump { display: inline-block; margin-top: 8px; background: transparent; color: #1d4ed8; border: 1px solid #bfdbfe; padding: 4px 10px; font-size: 12px; font-weight: 500; border-radius: 4px; cursor: pointer; }
   .pdf-jump:hover { background: #eff6ff; }
   .query { background: #fef3c7; border-left: 3px solid #f59e0b; padding: 8px 12px; margin: 0 0 12px; font-size: 14px; }
+  .query p { margin: 0 0 10px; } .query ul, .query ol { padding-left: 24px; margin: 8px 0; } .query li { margin: 5px 0; }
   .status { display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; padding: 2px 8px; border-radius: 9999px; margin-left: 8px; }
   .status-open, .status-awaiting_contractor { background: #fee2e2; color: #991b1b; }
   .status-awaiting_architect { background: #dbeafe; color: #1e40af; }
@@ -386,12 +396,15 @@ ${isPreview ? `<div class="preview-banner" data-testid="banner-preview">Aperçu 
     <span>Devis — PDF</span>
     <button id="pdfClose" type="button" aria-label="Fermer">×</button>
   </div>
+  <div id="pdfLocationStatus" role="status" style="padding:6px 10px;font-size:12px;background:#fff7df;color:#713f12" hidden></div>
   <div class="pdf-pages" id="pdfPages" data-testid="pdf-pages"><div class="pdf-loading">Chargement du PDF…</div></div>
   <iframe id="pdfFrame" class="pdf-fallback" title="Devis PDF" src="about:blank"></iframe>
   <div class="pdf-resize" id="pdfResize"></div>
 </div>
 
 <script>
+${PDF_LINE_LOCATOR_SCRIPT}
+const renderQuestionHtml = ${renderQuestionHtml.toString()};
 const DATA_URL = ${JSON.stringify(dataUrl)};
 const PDF_URL = ${JSON.stringify(pdfUrl)};
 const MESSAGES_URL = ${messagesUrl === null ? "null" : JSON.stringify(messagesUrl)};
@@ -469,13 +482,13 @@ function render(data) {
     // button as a JSON payload so the click handler can also draw the
     // highlight rectangle on top of the rendered page. Bbox absent → the
     // page-level scroll fallback from Task #111 is used.
-    const jumpButton = (c.pdfPageHint != null && c.pdfPageHint >= 1 && c.lineNumber != null)
-      ? '<button type="button" class="pdf-jump" data-jump-page="' + c.pdfPageHint + '"'
-        + (c.pdfBbox ? ' data-jump-bbox="' + escapeHtml(JSON.stringify(c.pdfBbox)) + '"' : '')
-        + ' data-testid="button-jump-page-' + c.id + '">Voir page ' + c.pdfPageHint + '</button>'
+    const jumpButton = (data.devis.hasPdf && c.lineNumber != null)
+      ? '<button type="button" class="pdf-jump" data-jump-page="' + (c.pdfPageHint || 1) + '"'
+        + ' data-locate-check="' + c.id + '"'
+        + ' data-testid="button-jump-page-' + c.id + '">Localiser dans le PDF</button>'
       : '';
     return '<section class="check" data-testid="check-' + c.id + '"><h3>' + head + '<span class="status status-' + c.status + '">' + (STATUS_LABELS[c.status] || c.status) + '</span></h3>'
-      + '<p class="query">' + escapeHtml(c.query) + '</p>'
+      + '<div class="query" style="overflow-wrap:anywhere">' + renderQuestionHtml(c.query) + '</div>'
       + jumpButton
       + '<div class="messages">' + msgs + '</div>' + replyForm + '</section>';
   }).join("");
@@ -493,13 +506,10 @@ function render(data) {
     btn.addEventListener("click", () => {
       const page = Number(btn.getAttribute("data-jump-page"));
       if (!Number.isFinite(page) || page < 1) return;
-      let bbox = null;
-      const rawBbox = btn.getAttribute("data-jump-bbox");
-      if (rawBbox) {
-        try { bbox = JSON.parse(rawBbox); } catch (_e) { bbox = null; }
-      }
+      const check = data.checks.find(c => c.id === Number(btn.getAttribute("data-locate-check")));
+      if (!check) return;
       panel.classList.add("open");
-      jumpToPage(page, bbox);
+      jumpToPage(page, check);
     });
   });
 
@@ -566,6 +576,13 @@ const PDFJS_VERSION = "3.11.174";
 const PDFJS_BASE = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/" + PDFJS_VERSION;
 const PDF_RENDER_SCALE = 1.4;
 const pageWrappers = []; // [{ pageNumber, wrapper, overlay }]
+const locatorPages = [];
+let locationRequest = 0;
+function locationStatus(message) {
+  const el = document.getElementById("pdfLocationStatus");
+  el.textContent = message;
+  el.hidden = !message;
+}
 let pdfLoadPromise = null;
 let usingFallback = false;
 
@@ -589,6 +606,8 @@ async function ensurePdfRendered() {
     lib.GlobalWorkerOptions.workerSrc = PDFJS_BASE + "/pdf.worker.min.js";
     const doc = await lib.getDocument({ url: PDF_URL, withCredentials: true }).promise;
     pagesEl.innerHTML = "";
+    pageWrappers.length = 0;
+    locatorPages.length = 0;
     for (let p = 1; p <= doc.numPages; p++) {
       const page = await doc.getPage(p);
       const viewport = page.getViewport({ scale: PDF_RENDER_SCALE });
@@ -607,6 +626,12 @@ async function ensurePdfRendered() {
       wrapper.appendChild(overlay);
       pagesEl.appendChild(wrapper);
       pageWrappers.push({ pageNumber: p, wrapper, overlay });
+      try {
+        const content = await page.getTextContent();
+        locatorPages.push({ pageNumber:p, rows:pdfLocatorRows(pdfLocatorTextBoxes(content,viewport)) });
+      } catch (_textError) {
+        locatorPages.push({ pageNumber:p, rows:[] });
+      }
       await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
     }
   })().catch((err) => {
@@ -646,20 +671,33 @@ function drawHighlight(wrapper, overlay, bbox) {
   pagesEl.scrollTo({ top: pagesEl.scrollTop + offset, behavior: "smooth" });
 }
 
-async function jumpToPage(page, bbox) {
+async function jumpToPage(page, check) {
+  const request = ++locationRequest;
+  clearHighlights();
+  locationStatus("Recherche de la ligne dans le PDF…");
   if (usingFallback) {
+    locationStatus("Position exacte indisponible — page indicative uniquement.");
     switchToIframeFallback(page);
     return;
   }
   try {
     await ensurePdfRendered();
   } catch (_err) {
+    if (request !== locationRequest) return;
+    locationStatus("Position exacte indisponible — page indicative uniquement.");
     switchToIframeFallback(page);
     return;
   }
-  const target = pageWrappers[page - 1];
+  if (request !== locationRequest) return;
+  const match = locatePdfLine(locatorPages, {
+    description:check.lineDescription, total:check.totalHt,
+    previousDescription:check.locatorContext?.previousDescription,
+    nextDescription:check.locatorContext?.nextDescription,
+  });
+  const target = pageWrappers[(match ? match.page : page) - 1] || pageWrappers[0];
   if (!target) return;
   clearHighlights();
+  const bbox = match ? match.bbox : null;
   // Defensive shape/range check before drawing (Task #113 review item).
   // Server-side coerceBbox is the primary guard, but a legacy or corrupt
   // row could still slip through; an out-of-range rectangle would
@@ -675,8 +713,10 @@ async function jumpToPage(page, bbox) {
     && bbox.x + bbox.w <= 1.0001
     && bbox.y + bbox.h <= 1.0001;
   if (isValidBbox) {
+    locationStatus("Ligne repérée dans le texte du PDF · page " + match.page);
     drawHighlight(target.wrapper, target.overlay, bbox);
   } else {
+    locationStatus("Position exacte indisponible ou ambiguë — page indicative uniquement. Vérifiez la description dans le PDF.");
     // Page-level fallback (Task #111) — no (or unusable) bbox for this line.
     target.wrapper.scrollIntoView({ behavior: "smooth", block: "start" });
   }

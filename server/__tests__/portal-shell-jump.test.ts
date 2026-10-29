@@ -39,11 +39,11 @@ describe("renderPortalShell — click-to-jump-in-PDF (Task #111 + #113)", () => 
     // Conditional render: only when both pdfPageHint != null AND a line
     // number is present. General questions and missing-hint line items
     // do not get a jump button (no broken jump targets).
-    expect(html).toContain("c.pdfPageHint != null && c.pdfPageHint >= 1 && c.lineNumber != null");
+    expect(html).toContain("data.devis.hasPdf && c.lineNumber != null");
     // The button itself: stable testid + payload + French label.
     expect(html).toContain('data-jump-page="');
     expect(html).toContain('button-jump-page-');
-    expect(html).toContain("Voir page ");
+    expect(html).toContain("Localiser dans le PDF");
   });
 
   it("attaches the per-line bbox payload to the jump button when one was captured (Task #113)", async () => {
@@ -53,8 +53,9 @@ describe("renderPortalShell — click-to-jump-in-PDF (Task #111 + #113)", () => 
     // The bbox JSON travels alongside the jump button so the click handler
     // can paint a highlight rectangle over the page canvas. Bbox is gated
     // on c.pdfBbox truthiness so absent boxes do not emit the attribute.
-    expect(html).toContain('data-jump-bbox="');
-    expect(html).toContain('c.pdfBbox ? \' data-jump-bbox="\'');
+    expect(html).not.toContain('data-jump-bbox="');
+    expect(html).toContain("page.getTextContent()");
+    expect(html).toContain("locatePdfLine(locatorPages");
   });
 
   it("wires the click handler to the pdf.js-backed viewer with bbox-aware jumping (Task #113)", async () => {
@@ -66,13 +67,13 @@ describe("renderPortalShell — click-to-jump-in-PDF (Task #111 + #113)", () => 
     // The payload is read from data-jump-page and the bbox is parsed from
     // the optional data-jump-bbox attribute.
     expect(html).toContain('btn.getAttribute("data-jump-page")');
-    expect(html).toContain('btn.getAttribute("data-jump-bbox")');
+    expect(html).toContain('btn.getAttribute("data-locate-check")');
     // Side effect: the floating PDF panel is forced open so the contractor
     // sees the jump even if they hadn't toggled the panel yet.
     expect(html).toContain('panel.classList.add("open")');
     // The handler delegates to jumpToPage(page, bbox), not direct iframe
     // src mutation — pdf.js drives the viewer.
-    expect(html).toContain("jumpToPage(page, bbox)");
+    expect(html).toContain("jumpToPage(page, check)");
   });
 
   it("bundles the pdf.js viewer with a per-line highlight overlay (Task #113)", async () => {
@@ -125,7 +126,7 @@ describe("renderPortalShell — click-to-jump-in-PDF (Task #111 + #113)", () => 
     // experience before sending the link to the contractor.
     expect(html).toContain("/api/devis/99/checks/portal-preview/pdf");
     expect(html).toContain('querySelectorAll("button[data-jump-page]")');
-    expect(html).toContain("jumpToPage(page, bbox)");
+    expect(html).toContain("jumpToPage(page, check)");
     expect(html).toContain("pdf-highlight");
   });
 });

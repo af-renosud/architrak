@@ -1,3 +1,4 @@
+import { questionPlainText } from "@shared/question-format";
 import fs from "fs";
 import path from "path";
 import { createHash } from "crypto";
@@ -1270,7 +1271,7 @@ export async function queueDevisCheckBundle(opts: {
   const itemLines = opts.checkSummaries
     .map((c) => {
       const head = formatCheckHead(c);
-      return `${head}\n   → ${c.query}`;
+      return `${head}\n   → ${questionPlainText(c.query)}`;
     })
     .join("\n\n");
 
