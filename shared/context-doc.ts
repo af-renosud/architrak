@@ -23,6 +23,13 @@ export const CONTEXT_DOC_MAX_JSON_BYTES = 60_000;
 export const CONTEXT_ASSET_MAX_BYTES = 5 * 1024 * 1024; // 5 MiB
 export const CONTEXT_ASSETS_MAX_PER_LINE = 10;
 
+export const CONTEXT_IMAGE_SIZES = ["small", "medium", "large"] as const;
+export const CONTEXT_IMAGE_BOUNDS = {
+  small: { width: 120, height: 90, pdfWidth: 20, pdfHeight: 15 },
+  medium: { width: 240, height: 180, pdfWidth: 40, pdfHeight: 30 },
+  large: { width: 480, height: 360, pdfWidth: 80, pdfHeight: 60 },
+} as const;
+
 /** MIME types accepted for context images (sniffed server-side, never trusted). */
 export const CONTEXT_ASSET_ALLOWED_MIMES = ["image/png", "image/jpeg", "image/webp"] as const;
 export type ContextAssetMime = (typeof CONTEXT_ASSET_ALLOWED_MIMES)[number];
@@ -82,6 +89,7 @@ const imageNodeSchema = z
       .object({
         assetId: z.number().int().positive(),
         alt: z.string().max(300).nullable().optional(),
+        size: z.enum(CONTEXT_IMAGE_SIZES).optional(),
       })
       .strict(),
   })

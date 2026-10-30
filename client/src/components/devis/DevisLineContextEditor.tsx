@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
-import { useEditor, EditorContent } from "@tiptap/react";
+import { useEditor, useEditorState, EditorContent } from "@tiptap/react";
 import { Node, mergeAttributes, type Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import Link from "@tiptap/extension-link";
@@ -21,6 +21,8 @@ import {
   isSafeContextHref,
   isContextDocEmpty,
   CONTEXT_ASSET_MAX_BYTES,
+  CONTEXT_IMAGE_SIZES,
+  CONTEXT_IMAGE_BOUNDS,
   type ContextDoc,
 } from "@shared/context-doc";
 import type { DevisLineContext } from "@shared/schema";
@@ -46,7 +48,7 @@ interface DevisLineContextEditorProps {
 }
 
 /** Custom atom image node — references an owned uploaded asset by id only. */
-function buildContextImageNode(devisId: number) {
+export function buildContextImageNode(devisId: number) {
   return Node.create({
     name: "image",
     group: "block",
@@ -56,6 +58,10 @@ function buildContextImageNode(devisId: number) {
       return {
         assetId: { default: null },
         alt: { default: null },
+        size: {
+          default: null,
+          parseHTML: (el: HTMLElement) => el.getAttribute("data-image-size"),
+        },
       };
     },
     parseHTML() {
@@ -70,6 +76,8 @@ function buildContextImageNode(devisId: number) {
       ];
     },
     renderHTML({ node }) {
+      const size = CONTEXT_IMAGE_SIZES.includes(node.attrs.size) ? node.attrs.size as typeof CONTEXT_IMAGE_SIZES[number] : "large";
+      const bounds = CONTEXT_IMAGE_BOUNDS[size];
       return [
         "img",
         mergeAttributes({
@@ -77,6 +85,8 @@ function buildContextImageNode(devisId: number) {
           src: `/api/devis/${devisId}/context-assets/${node.attrs.assetId}`,
           alt: node.attrs.alt ?? "",
           class: "ctx-editor-img",
+          "data-image-size": size,
+          style: `max-width:min(100%, ${bounds.width}px);max-height:${bounds.height}px;width:auto;height:auto;`,
         }),
       ];
     },
@@ -139,7 +149,8 @@ export function normalizeEditorJson(json: EditorJsonNode): ContextDoc {
         const assetId = Number(n.attrs?.assetId);
         if (!Number.isInteger(assetId) || assetId <= 0) return null;
         const alt = typeof n.attrs?.alt === "string" && n.attrs.alt ? { alt: n.attrs.alt } : {};
-        return { type: "image", attrs: { assetId, ...alt } };
+        const size = CONTEXT_IMAGE_SIZES.find((s) => s === n.attrs?.size);
+        return { type: "image", attrs: { assetId, ...alt, ...(size ? { size } : {}) } };
       }
       default:
         return null;
@@ -286,6 +297,14 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
     [devisId, lineItemId],
   );
 
+  const imageSelection = useEditorState({
+    editor,
+    selector: ({ editor: e }) => ({
+      selected: e?.isActive("image") ?? false,
+      size: e?.getAttributes("image").size ?? "large",
+    }),
+  });
+
   // Re-sync editor content when a FRESHER server snapshot arrives (revision
   // above our save baseline) — e.g. this editor remounted after a tab switch
   // while the previous instance's unmount flush was still in flight: it
@@ -398,6 +417,24 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
         {toolbarButton(editor.isActive("orderedList"), () => { editor.chain().focus().toggleOrderedList().run(); }, "Numbered list", <ListOrdered className="h-3 w-3" />, `button-context-numbers-${devisId}-${lineNumber}`)}
         {toolbarButton(editor.isActive("link"), setLink, "Add link (https or mailto)", <LinkIcon className="h-3 w-3" />, `button-context-link-${devisId}-${lineNumber}`)}
         {toolbarButton(false, () => fileInputRef.current?.click(), "Insert image (PNG, JPEG, WebP — or paste one)", <ImageIcon className="h-3 w-3" />, `button-context-image-${devisId}-${lineNumber}`)}
+        {imageSelection?.selected ? (
+          <div className="ml-2 flex items-center gap-1" role="group" aria-label="Image size">
+            <span className="text-[10px] text-muted-foreground">Image size:</span>
+            {CONTEXT_IMAGE_SIZES.map((size) => (
+              <Button key={size} type="button" size="sm"
+                variant={imageSelection.size === size ? "secondary" : "ghost"}
+                className="h-6 px-2 text-[11px]"
+                aria-pressed={imageSelection.size === size}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  editor.chain().focus().updateAttributes("image", { size }).run();
+                  scheduleSave(editor, true);
+                }}>
+                {size[0].toUpperCase() + size.slice(1)}
+              </Button>
+            ))}
+          </div>
+        ) : <span className="ml-2 text-[10px] text-muted-foreground">Select an image to resize it</span>}
         <input
           ref={fileInputRef}
           type="file"

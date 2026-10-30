@@ -5,7 +5,7 @@ import type {
   ContextListItemNode,
   ContextMark,
 } from "@shared/context-doc";
-import { isSafeContextHref } from "@shared/context-doc";
+import { isSafeContextHref, CONTEXT_IMAGE_BOUNDS } from "@shared/context-doc";
 
 /**
  * Serializes a VALIDATED per-line context document (shared/context-doc.ts)
@@ -73,7 +73,8 @@ function renderBlock(node: ContextBlockNode, assetDataUris: Map<number, string>)
         return `<p class="ctx-missing-img">[image unavailable]</p>`;
       }
       const alt = escapeHtml(node.attrs.alt ?? "");
-      return `<div class="ctx-img-wrap"><img class="ctx-img" src="${dataUri}" alt="${alt}" /></div>`;
+      const bounds = CONTEXT_IMAGE_BOUNDS[node.attrs.size ?? "large"] ?? CONTEXT_IMAGE_BOUNDS.large;
+      return `<div class="ctx-img-wrap"><img class="ctx-img" src="${dataUri}" alt="${alt}" style="max-width:${bounds.pdfWidth}mm;max-height:${bounds.pdfHeight}mm;width:auto;height:auto;" /></div>`;
     }
     default:
       // Unknown node types are impossible post-validation; render nothing.
