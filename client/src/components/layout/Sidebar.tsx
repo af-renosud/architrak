@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocation, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import type { OutstandingFeeSummary } from "@shared/fee-description";
@@ -17,12 +17,14 @@ import {
   Database,
   LogOut,
   X,
+  Calculator,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/use-auth";
 import { NotificationBell } from "./NotificationBell";
-import logoPath from "@assets/Generated_Image_February_28__2026_-_3_59PM.jpg-removebg-previe_1772291017667.png";
+import { CalculatorDialog } from "@/components/tools/CalculatorDialog";
+import logoPath from "../../../../attached_assets/Generated_Image_February_28__2026_-_3_59PM.jpg-removebg-previe_1772291017667.png";
 
 const navItems = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -38,11 +40,6 @@ const navItems = [
 
 const bottomNavItems = [
   { path: "/settings", label: "Settings", icon: Settings },
-];
-
-const toolButtons = [
-  { icon: Search, label: "Search", bg: "bg-rose-50 dark:bg-rose-950/30" },
-  { icon: HelpCircle, label: "Help", bg: "bg-emerald-50 dark:bg-emerald-950/30" },
 ];
 
 interface SidebarProps {
@@ -63,6 +60,10 @@ const FOCUSABLE_SELECTOR = [
 export function Sidebar({ mobileMode = false, mobileOpen = false, onMobileClose }: SidebarProps) {
   const [location] = useLocation();
   const sidebarRef = useRef<HTMLElement>(null);
+  const calculatorTriggerRef = useRef<HTMLButtonElement>(null);
+  const [calculatorOpen, setCalculatorOpen] = useState(false);
+  const calculatorOpenRef = useRef(calculatorOpen);
+  calculatorOpenRef.current = calculatorOpen;
   const { user, logout } = useAuth();
   const { data: outstanding } = useQuery<OutstandingFeeSummary>({
     queryKey: ["/api/fees/outstanding"],
@@ -93,12 +94,14 @@ export function Sidebar({ mobileMode = false, mobileOpen = false, onMobileClose 
       Array.from(sidebar.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
         .filter((element) => !element.hasAttribute("disabled") && element.getAttribute("aria-hidden") !== "true");
 
-    window.requestAnimationFrame(() => {
+    const frame = window.requestAnimationFrame(() => {
+      if (calculatorOpenRef.current) return;
       const closeButton = sidebar.querySelector<HTMLElement>("[data-testid='button-mobile-nav-close']");
       (closeButton ?? focusableElements()[0])?.focus();
     });
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (calculatorOpenRef.current || event.defaultPrevented) return;
       if (event.key === "Escape") {
         event.preventDefault();
         onMobileClose?.();
@@ -128,7 +131,10 @@ export function Sidebar({ mobileMode = false, mobileOpen = false, onMobileClose 
     };
 
     document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
   }, [mobileMode, mobileOpen, onMobileClose]);
 
   return (
@@ -136,7 +142,7 @@ export function Sidebar({ mobileMode = false, mobileOpen = false, onMobileClose 
       ref={sidebarRef}
       id="app-sidebar"
       className={cn(
-        "fixed left-0 top-0 z-50 flex h-screen w-64 flex-col transition-transform duration-200 ease-out lg:translate-x-0",
+        "fixed left-0 top-0 z-50 flex h-dvh w-64 flex-col overflow-y-auto overscroll-contain [&>*]:shrink-0 transition-transform duration-200 ease-out lg:translate-x-0",
         mobileOpen ? "translate-x-0" : "-translate-x-full",
       )}
       style={{ backgroundColor: "#DFE1E2" }}
@@ -220,6 +226,29 @@ export function Sidebar({ mobileMode = false, mobileOpen = false, onMobileClose 
           );
         })}
       </nav>
+
+      <div className="px-4 pb-4 pt-3" role="group" aria-label="Outils" data-testid="nav-utilities">
+        <div className="grid grid-cols-4 gap-2">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                ref={calculatorTriggerRef}
+                type="button"
+                aria-label="Ouvrir la calculatrice"
+                aria-haspopup="dialog"
+                aria-expanded={calculatorOpen}
+                onClick={() => setCalculatorOpen(true)}
+                className="flex h-12 w-full items-center justify-center rounded-xl border border-[#b9eadc] bg-[#e5fbf3] text-[#278d79] shadow-sm transition-colors hover:bg-[#d5f5e9] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#278d79] focus-visible:ring-offset-2"
+                data-testid="button-tool-calculator"
+              >
+                <Calculator size={20} strokeWidth={1.5} />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top">Calculatrice</TooltipContent>
+          </Tooltip>
+        </div>
+      </div>
+      <CalculatorDialog open={calculatorOpen} onOpenChange={setCalculatorOpen} triggerRef={calculatorTriggerRef} />
 
       <div className="px-0 pb-2">
         {bottomNavItems.map((item) => {

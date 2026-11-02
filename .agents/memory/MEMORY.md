@@ -76,3 +76,4 @@
 - [Validation compatibility](zod-upgrade-compatibility.md) — upgrade form resolvers and schema adapters with Zod; test invalid submissions, not only compilation.
 - [Quotation image controls](quotation-image-controls.md) — Small/Medium/Large presets, no resize handles; preserve proportions and sizing in translated PDFs.
 - [Intake duplicate recovery](intake-duplicate-recovery.md) — a retained upload is not proof of a live workflow record; link the destination and recover explicitly without erasing void history.
+- [Sidebar tools](sidebar-tools.md) — match Archidoc calculator styling and use uniformly sized tiles for future individually requested tools.
