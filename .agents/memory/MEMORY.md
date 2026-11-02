@@ -74,3 +74,4 @@
 - [Production query parameters](production-query-parameters.md) — pass params even for static reads; an empty START/ROLLBACK output does not prove the query ran.
 - [Supplier portal content](supplier-portal-content.md) — verified text positions, not guessed PDF boxes; retain question paragraphs, emphasis and lists safely.
 - [Validation compatibility](zod-upgrade-compatibility.md) — upgrade form resolvers and schema adapters with Zod; test invalid submissions, not only compilation.
+- [Quotation image controls](quotation-image-controls.md) — Small/Medium/Large presets, no resize handles; preserve proportions and sizing in translated PDFs.
