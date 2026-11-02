@@ -11,8 +11,10 @@ description: Constraints around attachment dedupe, echo suppression, and project
 - **Financial vocabulary emphasis:** the user confirmed the financial-only scope and specifically emphasised HT, TTC and TVA as expected financial indicators.
   **Why:** dismissing these as merely generic keywords understates their value in recognising financial content.
   **How to apply:** treat one or more as strong corroborating evidence, especially beside amounts or tax rates, while retaining exact client/project identity and financial-document-purpose checks.
-- **Echo suppression runs before all identity signals** (Docusign/DocRaptor sender domains, "electronic signature request"/"archidoc proposal" markers) — an echo parks as `low` even when it names a live project.
+- **Echo suppression must not become admission by sender:** recognise generated-document purpose/provenance; a service domain alone does not establish that every attached document is already retained.
 - **Attachment dedupe**: sha256 fingerprint with a partial UNIQUE index; capture does lookup→append-source, and on insert conflict (code 23505, unwrap pg `cause`) the loser appends itself to the winner. Appending a source never changes extractionStatus (skipped stays terminal/hidden).
-- **Auto-assignment fires only on a unique COMBINED candidate set** (client-contact sender ∪ subject/filename mentions, incl. distinctive ≥5-letter name tokens). Any conflict or ambiguity assigns nothing; confidence/status logic untouched.
+- **Identity authority:** exact PDF client/project evidence takes precedence over email context. Email body/subject may fill absent identity, not override conflicting PDF identity; sender and filename tokens are not assignment evidence.
+- **Shared clients and firm invoices:** an exact project name disambiguates a shared client name, without overriding conflicting project/client evidence. Retain Sent-folder scan coverage for firm fee invoices; content still decides admission.
+  **Why:** shared clients otherwise produce false ambiguity, and a blanket Sent exclusion loses the existing fee-invoice capture workflow.
 
 **Why:** these were the three prod noise causes (duplicate captures, self-echoes, unassigned completed docs); loosening any guard regresses Tasks #322/#425/#503 behavior.

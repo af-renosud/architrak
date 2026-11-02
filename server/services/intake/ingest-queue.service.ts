@@ -365,6 +365,15 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
     // paying for a second identical Gemini call; everything downstream
     // (dedup, routing) is agnostic to where the parse came from.
     const prior = doc.extractedData as (ParsedDocument & { preParsedFromEmail?: boolean }) | null;
+    // A parked/unsupported financial email must not be revived through an old intake mirror.
+    if (doc.sourceEmailDocumentId != null && !sourceOwnedInvoice) {
+      const email = await storage.getEmailDocument(doc.sourceEmailDocumentId);
+      const evidence = email?.extractedData as { manualFinancialRescue?: boolean; financialManualReview?: boolean; financialTriage?: { decision?: { status?: string } } } | null;
+      if (evidence?.financialManualReview || (evidence?.financialTriage && evidence.financialTriage.decision?.status !== "eligible" && !evidence.manualFinancialRescue)) {
+        await park(doc, fingerprint, "Email financial admission has not authorised automatic routing. Review the email source.");
+        return;
+      }
+    }
     const storedOwnerExtraction = sourceOwnedInvoice?.aiExtractedData;
     let parsed: ParsedDocument;
     if (sourceOwnedInvoice) {

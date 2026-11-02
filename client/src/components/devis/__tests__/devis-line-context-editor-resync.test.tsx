@@ -66,6 +66,7 @@ function makeFakeEditor(initialDoc: unknown): FakeEditor {
 }
 
 vi.mock("@tiptap/react", () => ({
+  useEditorState: ({ selector }: { selector: (state: { editor: FakeEditor }) => unknown }) => selector({ editor: fakeEditor }),
   useEditor: (cfg: typeof editorConfig) => {
     editorConfig = cfg;
     return fakeEditor;

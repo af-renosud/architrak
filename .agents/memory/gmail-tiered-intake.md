@@ -5,7 +5,7 @@ description: Evidence-tiered email intake — durable invariants for parked stat
 
 # Gmail tiered intake invariants
 
-- Only high-evidence mail may enter the AI-processed queue; every other tier parks in a visible, force-rescuable status. The background sweeper must drain ONLY the AI-eligible status — adding any new parked status requires re-checking sweeper drain, claim exclusions, retention scope, and UI default-view filters.
+- Only content-qualified financial PDFs may enter full extraction (the 2026-11-02 rule supersedes sender tiers). Admission dependency failures must remain retryable; they are not evidence of irrelevance. Re-check sweeper, retention and UI semantics when adding statuses.
 - Archived/closed-project evidence never grants processing eligibility, and archived-candidate mail never auto-expires: a late invoice for a closed project must stay visible until a human acts.
 - Low-value parked mail expires by STATUS FLIP to the terminal skipped state with a prepended French audit note — never by deletion.
 - Targeted Gmail search strings must be budgeted by serialized characters, not item count (client/project names are unconstrained text); generic construction keywords must never be used as Gmail selectors; always append the broad backstop query.

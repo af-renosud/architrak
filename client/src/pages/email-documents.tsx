@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { FINANCIAL_PARKED_STATUSES, emailNeedsAttention, emailVisibleByDefault } from "@shared/email-financial-gate";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
@@ -48,11 +49,13 @@ const statusColors: Record<string, string> = {
 
 // Task #503 — statuses parked by the deterministic pre-filter (no AI run);
 // all are rescuable via force analysis.
-const PARKED_STATUSES = new Set(["unmatched_sender", "low_relevance", "archived_project_candidate"]);
+const PARKED_STATUSES = FINANCIAL_PARKED_STATUSES;
 
 const typeLabels: Record<string, string> = {
   quotation: "Devis",
   invoice: "Facture",
+  credit_note: "Avoir",
+  final_account: "Décompte général définitif",
   situation: "Situation",
   avenant: "Avenant",
   acompte: "Acompte",
@@ -93,6 +96,15 @@ export default function EmailDocuments() {
   const dismissBusy = useRef(false);
   const [dismissFailures, setDismissFailures] = useState<string[]>([]);
   const [manualPromotionTarget, setManualPromotionTarget] = useState<ManualPromotionSource | null>(null);
+  const [triagePreview, setTriagePreview] = useState<Array<{ id: number; fileName?: string; status: string; reason: string; legacyEmailBodyUnavailable?: boolean }> | null>(null);
+  const previewMutation = useMutation({
+    mutationFn: async (ids: number[]) => {
+      const response = await apiRequest("POST", "/api/email-documents/triage-preview", { ids });
+      return response.json();
+    },
+    onSuccess: data => setTriagePreview(data.results),
+    onError: (error: Error) => toast({ title: "Preview failed", description: error.message, variant: "destructive" }),
+  });
 
   const { data: emailDocs, isLoading, isFetching, error, refresh, pollingExpired, isPolling } = useEmailDocuments();
   const viewingDoc = emailDocs?.find((doc) => doc.id === viewingDocId) ?? null;
@@ -275,7 +287,7 @@ export default function EmailDocuments() {
 
   const filtered = emailDocs?.filter(doc => {
     if (statusFilter === "needs_attention") {
-      if (doc.extractionStatus !== "pending" && doc.extractionStatus !== "needs_review") return false;
+      if (!emailNeedsAttention(doc)) return false;
     } else if (statusFilter === "needs_project") {
       if (doc.extractionStatus !== "needs_review" || doc.projectId != null) return false;
     } else if (statusFilter === "all") {
@@ -283,7 +295,7 @@ export default function EmailDocuments() {
       // they remain visible under the explicit "Skipped" filter for audit.
       // Task #503 — low-relevance and archived-project candidates live in
       // collapsed buckets below the main list, not the default view.
-      if (doc.extractionStatus === "skipped" || doc.extractionStatus === "low_relevance" || doc.extractionStatus === "archived_project_candidate") return false;
+      if (!emailVisibleByDefault(doc)) return false;
     } else if (doc.extractionStatus !== statusFilter) {
       return false;
     }
@@ -314,13 +326,13 @@ export default function EmailDocuments() {
     );
   }
 
-  const pendingCount = emailDocs?.filter(d => d.extractionStatus === "pending" || d.extractionStatus === "needs_review").length ?? 0;
+  const pendingCount = emailDocs?.filter(emailNeedsAttention).length ?? 0;
   const skippedCount = emailDocs?.filter(d => d.extractionStatus === "skipped").length ?? 0;
   // Task #503 — collapsed-bucket counts (shown as summary rows on the
   // default view; opening a bucket switches the status filter to it).
   const lowRelevanceCount = emailDocs?.filter(d => d.extractionStatus === "low_relevance").length ?? 0;
   const archivedCandidateCount = emailDocs?.filter(d => d.extractionStatus === "archived_project_candidate").length ?? 0;
-  const activeCount = (emailDocs?.length ?? 0) - skippedCount - lowRelevanceCount - archivedCandidateCount;
+  const activeCount = emailDocs?.filter(emailVisibleByDefault).length ?? 0;
 
   return (
     <AppLayout>
@@ -424,7 +436,7 @@ export default function EmailDocuments() {
               <SelectValue placeholder="Status" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Status</SelectItem>
+              <SelectItem value="all">Financial documents</SelectItem>
               <SelectItem value="pending">Pending</SelectItem>
               <SelectItem value="processing">Processing</SelectItem>
               <SelectItem value="completed">Extracted</SelectItem>
@@ -433,6 +445,9 @@ export default function EmailDocuments() {
               <SelectItem value="needs_project">Needs Project</SelectItem>
               <SelectItem value="failed">Failed</SelectItem>
               <SelectItem value="unmatched_sender">Unmatched Sender</SelectItem>
+              <SelectItem value="financial_excluded">Excluded nonfinancial</SelectItem>
+              <SelectItem value="financial_identity_review">Unresolved identity</SelectItem>
+              <SelectItem value="financial_unreadable">Text recognition failed</SelectItem>
               <SelectItem value="low_relevance">Low Relevance</SelectItem>
               <SelectItem value="archived_project_candidate">Closed Projects</SelectItem>
               <SelectItem value="skipped">Skipped</SelectItem>
@@ -446,6 +461,8 @@ export default function EmailDocuments() {
               <SelectItem value="all">All Types</SelectItem>
               <SelectItem value="quotation">Devis</SelectItem>
               <SelectItem value="invoice">Facture</SelectItem>
+              <SelectItem value="credit_note">Avoir</SelectItem>
+              <SelectItem value="final_account">Décompte final</SelectItem>
               <SelectItem value="situation">Situation</SelectItem>
               <SelectItem value="avenant">Avenant</SelectItem>
               <SelectItem value="acompte">Acompte</SelectItem>
@@ -456,6 +473,13 @@ export default function EmailDocuments() {
               <SelectItem value="unknown">Unknown</SelectItem>
             </SelectContent>
           </Select>
+          {selectedIds.size > 0 && (
+            <Button variant="outline" size="sm" disabled={previewMutation.isPending || selectedIds.size > 10}
+              onClick={() => previewMutation.mutate(Array.from(selectedIds))}
+              title="Read-only preview for up to 10 selected PDFs; no documents are changed">
+              {previewMutation.isPending ? "Checking PDF contents…" : "Preview financial filter (max 10)"}
+            </Button>
+          )}
           {selectedIds.size > 0 && (
             <Button
               variant="destructive"
@@ -588,7 +612,7 @@ export default function EmailDocuments() {
                             </div>
                           </div>
                         )}
-                        {PARKED_STATUSES.has(doc.extractionStatus) && doc.notes && (
+                        {(PARKED_STATUSES.has(doc.extractionStatus) || !!(doc.extractedData as Record<string, unknown> | null)?.financialTriage) && doc.notes && (
                           <div className="text-xs text-muted-foreground mt-1 italic" data-testid={`text-park-reason-${doc.id}`}>
                             {doc.notes}
                           </div>
@@ -641,14 +665,14 @@ export default function EmailDocuments() {
                           size="icon"
                           className="h-8 w-8"
                           title={PARKED_STATUSES.has(doc.extractionStatus) ? "Force AI analysis (bypass relevance pre-filter)" : "Re-process PDF extraction"}
-                          onClick={() => processMutation.mutate({ id: doc.id, force: PARKED_STATUSES.has(doc.extractionStatus) })}
+                          onClick={() => processMutation.mutate({ id: doc.id, force: PARKED_STATUSES.has(doc.extractionStatus) && doc.extractionStatus !== "financial_unreadable" })}
                           disabled={processMutation.isPending}
                           data-testid={`button-reprocess-${doc.id}`}
                         >
                           <RotateCcw size={14} />
                         </Button>
                       )}
-                      {doc.projectId != null && (doc.extractionStatus === "needs_review" || doc.extractionStatus === "failed" || PARKED_STATUSES.has(doc.extractionStatus)) && (
+                      {doc.projectId != null && !["credit_note", "avenant", "final_account"].includes(doc.documentType) && (doc.extractionStatus === "needs_review" || doc.extractionStatus === "failed" || PARKED_STATUSES.has(doc.extractionStatus)) && (
                         <Button
                           variant="outline"
                           size="sm"
@@ -716,6 +740,20 @@ export default function EmailDocuments() {
           </div>
         )}
 
+        <Dialog open={triagePreview !== null} onOpenChange={open => { if (!open) setTriagePreview(null); }}>
+          <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+            <DialogHeader><DialogTitle>Financial filter preview — no changes made</DialogTitle></DialogHeader>
+            <p className="text-sm text-muted-foreground">These are proposed classifications only. Existing documents, project assignments and accounting records are unchanged.</p>
+            {triagePreview?.map(row => (
+              <div key={row.id} className="border rounded-md p-3 space-y-1">
+                <p className="font-medium text-sm">{row.fileName || `Document ${row.id}`}</p>
+                <p className="text-xs font-semibold">{row.status.replaceAll("_", " ")}</p>
+                <p className="text-sm">{row.reason}</p>
+                {row.legacyEmailBodyUnavailable && <p className="text-xs text-muted-foreground">Historical email body was not stored. Identity fallback uses the subject only.</p>}
+              </div>
+            ))}
+          </DialogContent>
+        </Dialog>
         <AlertDialog open={!!confirmDismissIds} onOpenChange={(open) => { if (!open && !isDismissing) setConfirmDismissIds(null); }}>
           <AlertDialogContent>
             <AlertDialogHeader>

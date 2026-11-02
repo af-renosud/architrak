@@ -11,15 +11,14 @@
 // pass per tick (no user iteration) and label everything as user "0".
 
 import { createHash } from "crypto";
+import { emailBodyText, triageFinancialPdf, unreadableFinancialTriage } from "./financial-pdf-triage";
 import { safeErrorDiagnostic } from "../safe-error";
 import { getUncachableGmailClient, isGmailConfigured, isFakeGmailMode } from "./client";
 import { getGmailClientForUser } from "./user-client";
 import { uploadDocument, isObjectStorageConfigured } from "../storage/object-storage";
 import { getEmailIntakeCutoff } from "../services/email-intake-cutoff";
 import {
-  evaluateEmailPrefilter,
   buildTargetedGmailQueries,
-  tierToExtractionStatus,
   type PrefilterContext,
 } from "./email-prefilter";
 import { scanCertificatReplies } from "../services/certificat-payment-suggestions.service";
@@ -29,6 +28,8 @@ import type { gmail_v1 } from "googleapis";
 import type { InsertEmailDocument, User } from "@shared/schema";
 
 const LABEL_NAME = "ArchiTrak-Extracted";
+// Sent can contain genuine firm fee invoices. Content, not folder, establishes eligibility.
+export const GMAIL_PDF_QUERY = `has:attachment filename:pdf -in:drafts -label:${LABEL_NAME}`;
 // Per-user label-id cache. Cleared on stopPolling() so re-link works cleanly.
 const labelIdByUserId = new Map<number, string>();
 let isPolling = false;
@@ -415,7 +416,7 @@ async function pollOneInbox(
   let processed = 0;
   let errors = 0;
 
-  const baseQuery = `has:attachment filename:pdf -label:${LABEL_NAME}`;
+  const baseQuery = GMAIL_PDF_QUERY;
 
   // Task #503 — targeted live-client batches run FIRST (known sender
   // addresses + live project/client names) so high-confidence mail is
@@ -589,7 +590,7 @@ async function applyLabel(gmail: gmail_v1.Gmail, messageId: string, userId: numb
  * the parsed header date) so the caller can persist it with the
  * processed-message record — it feeds the durable backfill cursor.
  */
-async function processMessage(
+export async function processMessage(
   gmail: gmail_v1.Gmail,
   messageId: string,
   canModify: boolean,
@@ -633,6 +634,7 @@ async function processMessage(
   }
 
   const parts = flattenParts(msgDetail.data.payload);
+  const emailText = `${subject}\n${emailBodyText(parts)}`;
   const pdfParts = parts.filter(
     (p) =>
       p.filename &&
@@ -691,21 +693,19 @@ async function processMessage(
 
     const storageKey = await uploadDocument(null, fileName, buffer, "application/pdf");
 
-    // Task #323/#503 — cheap deterministic pre-filter at capture time, now
-    // evidence-TIERED: only high-tier docs are stored 'pending' (AI runs);
-    // generic-keyword-only mail parks as 'low_relevance', archived-project
-    // matches as 'archived_project_candidate', no-signal mail as
-    // 'unmatched_sender'. The background sweeper only drains 'pending', so
-    // none of the parked tiers ever spends AI tokens. All stay visible +
-    // rescuable in the email queue, with the reason persisted in notes.
-    const prefilter = evaluateEmailPrefilter(
-      { emailFrom: from, emailSubject: subject, attachmentFileName: fileName },
-      await getPrefilterContext(),
-    );
-    const captureStatus = tierToExtractionStatus(prefilter.tier);
-    if (!prefilter.pass) {
-      console.log(`[Gmail Monitor] User ${userId}: parking ${messageId}/${fileName} as ${captureStatus} (no AI call): ${prefilter.reason}`);
+    // Each PDF must qualify on its own contents, never its sender or a sibling attachment.
+    let financialTriage;
+    let admissionRetry = false;
+    try {
+      financialTriage = await triageFinancialPdf(buffer, emailText, await storage.getProjects({ includeArchived: true }));
+    } catch (error) {
+      console.warn("[Gmail Monitor] Financial text recognition failed:", safeErrorDiagnostic(error));
+      financialTriage = unreadableFinancialTriage(buffer, emailText);
+      // Persist the attachment and let the claimed worker retry admission.
+      // An exception is not proof that the document is unreadable or irrelevant.
+      admissionRetry = true;
     }
+    const captureStatus = admissionRetry || financialTriage.decision.status === "eligible" ? "pending" : financialTriage.decision.status;
 
     const doc: InsertEmailDocument = {
       emailMessageId: `${messageId}_${fileName}`,
@@ -718,7 +718,8 @@ async function processMessage(
       storageKey,
       documentType: "unknown",
       extractionStatus: captureStatus,
-      ...(prefilter.pass ? {} : { notes: prefilter.reason }),
+      extractedData: { financialTriage },
+      notes: admissionRetry ? "Financial admission temporarily unavailable; automatic retry pending." : financialTriage.decision.reason,
       gmailLabelApplied: canModify,
     };
 
@@ -758,8 +759,9 @@ async function processMessage(
 }
 
 interface MessagePart {
+  mimeType?: string | null;
   filename?: string | null;
-  body?: { attachmentId?: string | null } | null;
+  body?: { attachmentId?: string | null; data?: string | null } | null;
   parts?: MessagePart[] | null;
 }
 
@@ -767,9 +769,9 @@ function flattenParts(payload: MessagePart | null | undefined): MessagePart[] {
   const result: MessagePart[] = [];
   if (!payload) return result;
 
-  if (payload.filename && payload.body?.attachmentId) {
-    result.push(payload);
-  }
+  // Preserve text/plain and text/html parts as well as attachments: identity
+  // fallback must see the actual multipart body, not just filenames.
+  result.push(payload);
   if (payload.parts) {
     for (const p of payload.parts) {
       result.push(...flattenParts(p));

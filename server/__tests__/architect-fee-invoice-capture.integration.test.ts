@@ -164,6 +164,14 @@ const { state, storageSpy, objectStorageSpy, driveSpy } = vi.hoisted(() => {
 });
 
 vi.mock("../storage", () => ({ storage: storageSpy }));
+// This fixture's minimal PDF has no client text; mock OCR at the transcription boundary.
+vi.mock("../gmail/financial-pdf-triage", async importOriginal => {
+  const original = await importOriginal<typeof import("../gmail/financial-pdf-triage")>();
+  return { ...original, triageFinancialPdf: (buffer: Buffer, email: string, projects: any[], cached: unknown) =>
+    original.triageFinancialPdf(buffer, email, projects, cached, async () => ({
+      text: "FACTURE D'HONORAIRES\nClient : Heinz Hermann TRÜTKEN\nTotal HT 1000\nTotal TTC 1200", method: "ocr",
+    })) };
+});
 vi.mock("../storage/object-storage", () => objectStorageSpy);
 vi.mock("../services/drive/upload-queue.service", () => driveSpy);
 

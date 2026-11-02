@@ -19,6 +19,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { EmailDocument, ProjectDocument } from "@shared/schema";
 import type { ParsedDocument } from "../gmail/document-parser";
+const transcription = vi.hoisted(() => ({ text: "" }));
 
 // Deterministic extraction result returned by the stubbed OpenAI SDK.
 // clientName/projectAddress line up with the seeded project so
@@ -148,6 +149,14 @@ const { state, storageSpy, objectStorageSpy, driveSpy } = vi.hoisted(() => {
 });
 
 vi.mock("../storage", () => ({ storage: storageSpy }));
+// Transcription is mocked, not admission: exercise the real gate with exact PDF identity.
+vi.mock("../gmail/financial-pdf-triage", async importOriginal => {
+  const original = await importOriginal<typeof import("../gmail/financial-pdf-triage")>();
+  return { ...original, triageFinancialPdf: (buffer: Buffer, email: string, projects: any[], cached: unknown) =>
+    original.triageFinancialPdf(buffer, email, projects, cached, async () => ({
+      text: transcription.text, method: "ocr",
+    })) };
+});
 vi.mock("../storage/object-storage", () => objectStorageSpy);
 vi.mock("../services/drive/upload-queue.service", () => driveSpy);
 
@@ -175,6 +184,7 @@ function seedEmailDoc(overrides: Partial<EmailDocument> = {}): void {
 }
 
 beforeEach(() => {
+  transcription.text = "DEVIS 42\nClient : Famille Smith\nTotal HT 1000\nTVA 200\nTotal TTC 1200";
   Object.assign(PARSED_FIXTURE, DEFAULT_PARSED_FIXTURE);
   state.emailDocs.clear();
   state.projectDocs.length = 0;
@@ -184,6 +194,22 @@ beforeEach(() => {
 });
 
 describe("processEmailDocument — double-filing guards (Task #312)", () => {
+  it("does not file a known sender's priced technical sheet", async () => {
+    transcription.text = "FICHE TECHNIQUE\nFamille Smith\nPrix TTC 120\nVoir devis";
+    seedEmailDoc({ emailFrom: "contact@at-piscines.fr" });
+    await processEmailDocument(1);
+    expect(state.emailDocs.get(1)?.extractionStatus).toBe("financial_excluded");
+    expect(storageSpy.createProjectDocument).not.toHaveBeenCalled();
+    expect(objectStorageSpy.uploadDocument).not.toHaveBeenCalled();
+  });
+  it("keeps an avoir typed and out of invoice processing even on force rescue", async () => {
+    transcription.text = "FACTURE D'AVOIR 123\nFamille Smith\nTotal TTC 120";
+    seedEmailDoc();
+    await processEmailDocument(1, { bypassPrefilter: true });
+    expect(state.emailDocs.get(1)?.documentType).toBe("credit_note");
+    expect(state.emailDocs.get(1)?.extractionStatus).toBe("needs_review");
+    expect(storageSpy.createProjectDocument).not.toHaveBeenCalled();
+  });
   it("files the attachment exactly once when two servers race on the same doc", async () => {
     seedEmailDoc();
 

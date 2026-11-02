@@ -16,7 +16,8 @@ import { illustratedEvidence, sourceRowsReconcile, acceptIllustratedRecovery } f
 import { collectSectionInventory } from "../services/quotation-section-inventory";
 import { verifyQuotationManifest, compareInitialQuotation, type QuotationSourceManifest } from "../services/quotation-source-manifest";
 import { decideEmailDocRetry, EMAIL_DOC_MAX_ATTEMPTS } from "../services/email-doc-retry";
-import { evaluateEmailPrefilter, tierToExtractionStatus } from "./email-prefilter";
+import { triageFinancialPdf, type FinancialTriage } from "./financial-pdf-triage";
+import { safeErrorDiagnostic } from "../safe-error";
 import {
   countItemRowCandidates,
   mergeContinuationFragments,
@@ -28,6 +29,7 @@ const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 export function isTransientGeminiError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   if (!msg) return false;
+  if (msg.startsWith("Financial admission context temporarily unavailable")) return true;
   // If the error message embeds an explicit HTTP status, trust it: transient
   // statuses retry, all other statuses (esp. 4xx like 400/401/403/404) fail
   // fast even if the message happens to contain a transient-sounding phrase.
@@ -1354,7 +1356,7 @@ function upgradeRetiredModel(provider: string, modelId: string): string {
   return modelId;
 }
 
-async function getActiveModel(): Promise<{ provider: string; modelId: string }> {
+export async function getActiveModel(): Promise<{ provider: string; modelId: string }> {
   try {
     const setting = await storage.getAiModelSetting("document_parsing");
     if (setting) {
@@ -3276,57 +3278,47 @@ export async function processEmailDocument(
       throw new Error("No storage key for document");
     }
 
-    const projects = await storage.getProjects({ includeArchived: true });
+    const projects = await storage.getProjects({ includeArchived: true }).catch(error => {
+      throw new Error(`Financial admission context temporarily unavailable (${safeErrorDiagnostic(error)})`);
+    });
     const contractors = await storage.getContractors();
 
-    // Task #323/#503 — cheap deterministic pre-filter BEFORE any AI call,
-    // now evidence-tiered: docs whose only signal is a generic construction
-    // keyword park as 'low_relevance'; archived-project-only matches park
-    // as 'archived_project_candidate'; no-signal docs as 'unmatched_sender'.
-    // All are visible + rescuable in the email queue, none spends extraction
-    // tokens. Enforced at the processing boundary so every caller respects
-    // it; the manual re-analyze route can bypass it explicitly (operator
-    // judgement wins).
-    if (!opts?.bypassPrefilter) {
-      // Linked inboxes are a nice-to-have signal — never let their lookup
-      // failure (or absence in a test double) fail the whole document.
-      const linkedUsers = await Promise.resolve()
-        .then(() => storage.listGmailPollingUsers())
-        .catch(() => [] as { email: string | null }[]);
-      // Task #425 — the firm's own identity is a first-class prefilter
-      // signal: mail from a firm domain, or mentioning a firm legal name,
-      // must reach classification so outbound honoraires invoices are
-      // caught (the issuer gate downstream decides what the doc really is).
-      const { getFirmProfile, getFirmEmailDomains } = await import(
-        "../services/architect-fee-invoice.service"
-      );
-      const pre = evaluateEmailPrefilter(emailDoc, {
-        contractors,
-        // Task #503 — live vs archived split: only live projects grant
-        // high-tier evidence; archived matches quarantine instead.
-        projects: projects.filter((p) => p.archivedAt == null),
-        archivedProjects: projects.filter((p) => p.archivedAt != null),
-        knownEmails: linkedUsers.map((u) => u.email),
-        firm: {
-          legalNames: getFirmProfile().legalNames,
-          domains: getFirmEmailDomains(),
-        },
+    const buffer = await getDocumentBuffer(emailDoc.storageKey);
+    const previousTriage = (emailDoc.extractedData as { financialTriage?: FinancialTriage } | null)?.financialTriage;
+    const financialTriage = await triageFinancialPdf(
+      buffer, previousTriage?.emailText ?? emailDoc.emailSubject ?? "", projects, previousTriage,
+    );
+    // Save evidence without assigning a project (assignment itself creates an intake mirror).
+    await storage.updateEmailDocument(emailDocumentId, {
+      extractedData: { financialTriage },
+      notes: financialTriage.decision.reason,
+    });
+    const protectedIdentity = financialTriage.decision.status === "archived_project_candidate"
+      || (financialTriage.decision.status === "financial_identity_review" && financialTriage.decision.identitySource === "pdf");
+    if (financialTriage.decision.status !== "eligible" && (!opts?.bypassPrefilter || protectedIdentity)) {
+      await storage.setEmailDocumentRetryState(emailDocumentId, {
+        extractionStatus: financialTriage.decision.status,
+        processingAttempts: emailDoc.processingAttempts ?? 0,
+        nextProcessAttemptAt: null,
+        notes: financialTriage.decision.reason,
       });
-      if (!pre.pass) {
-        const parkStatus = tierToExtractionStatus(pre.tier);
-        await storage.setEmailDocumentRetryState(emailDocumentId, {
-          extractionStatus: parkStatus,
-          processingAttempts: emailDoc.processingAttempts ?? 0,
-          nextProcessAttemptAt: null,
-          notes: pre.reason,
-        });
-        console.log(`[DocumentParser] Document ${emailDocumentId} parked as ${parkStatus} (no AI call): ${pre.reason}`);
-        return;
-      }
+      return;
     }
 
-    const buffer = await getDocumentBuffer(emailDoc.storageKey);
+    // Unsupported accounting types must never enter the ordinary invoice path.
+    if (financialTriage && ["credit_note", "avenant", "final_account"].includes(financialTriage.decision.kind!)) {
+      await storage.updateEmailDocument(emailDocumentId, {
+        documentType: financialTriage.decision.kind!,
+        extractionStatus: "needs_review",
+        projectId: financialTriage.decision.projectId,
+        extractedData: { financialTriage, financialManualReview: true },
+        notes: `${financialTriage.decision.reason} Financial document retained for manual review; automatic accounting is not supported for this type.`,
+      });
+      return;
+    }
     const parsed = await parseDocument(buffer, emailDoc.attachmentFileName || "document.pdf");
+    // Keep audit evidence attached through downstream filing.
+    Object.assign(parsed, { financialTriage, ...(opts?.bypassPrefilter ? { manualFinancialRescue: true } : {}) });
     const noExtractedSignal =
       parsed.documentType === "unknown"
       && !parsed.amountHt
@@ -3334,6 +3326,16 @@ export async function processEmailDocument(
       && !parsed.lineItems?.length;
     if (noExtractedSignal && isTransientParseFailure(parsed)) {
       throw new Error(getParseFailureMessage(parsed) ?? "Transient document extraction failure");
+    }
+    if (!opts?.bypassPrefilter && ["other", "unknown"].includes(parsed.documentType)) {
+      await storage.updateEmailDocument(emailDocumentId, {
+        extractionStatus: parsed.documentType === "unknown" ? "failed" : "financial_excluded",
+        extractedData: { ...parsed, financialTriage }, documentType: parsed.documentType,
+        notes: parsed.documentType === "unknown"
+          ? "Financial PDF passed admission but extraction failed; retry or inspect the original."
+          : "Full extraction identified a nonfinancial document; excluded from automatic filing.",
+      });
+      return;
     }
 
     // Task #425 — deterministic firm-identity gate. Rewrites documentType in
@@ -3380,6 +3382,20 @@ export async function processEmailDocument(
     }
 
     const match = await matchToProject(parsed, projects, contractors);
+    if (financialTriage.decision.status === "eligible") {
+      // Do not allow fuzzy extraction matching to replace the exact content-gate identity.
+      const explicit = resolveLabelledProjectIdentity(parsed, projects);
+      if (explicit.kind !== "none" && (explicit.kind !== "matched" || explicit.project.id !== financialTriage.decision.projectId)) {
+        await storage.updateEmailDocument(emailDocumentId, {
+          extractionStatus: "financial_identity_review", extractedData: { ...parsed, financialTriage },
+          notes: "Extracted project identity conflicts with the exact PDF admission evidence; no automatic filing.",
+        });
+        return;
+      }
+      match.projectId = financialTriage.decision.projectId;
+      match.confidence = 100;
+      match.matchedFields.financialIdentity = financialTriage.decision.reason;
+    }
 
     // Task #531 — deterministic single-candidate fallback. When AI-based
     // matching produced no project, but the capture evidence (client-contact

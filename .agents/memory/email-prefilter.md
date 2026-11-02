@@ -1,13 +1,13 @@
 ---
 name: Email sender pre-filter
-description: Deterministic pre-filter that gates AI extraction of Gmail-captured PDFs
+description: Financial PDF admission supersedes historical sender-based filtering
 ---
-Rule: any path that can trigger AI extraction of an email document must respect the deterministic sender/subject pre-filter; docs with no contractor/client/project signal are parked as `unmatched_sender` (visible in the queue, rescuable via project assignment or force re-analyze).
+Current rule: automatic email admission is financial-PDF content evidence plus exact client/project identity, not sender/subject reputation. The user superseded sender-based eligibility on 2026-11-02; see `email-intake-noise-cuts.md`. The older sender filter and its tests are historical/search-prioritisation context, not authority to admit an attachment.
 
-**Why:** unrelated PDFs (newsletters, receipts) were burning full vision tokens and clogging needs_review. The filter is enforced both at Gmail capture (monitor stores unmatched docs directly, so the sweeper never picks them) and at the processing boundary (protects manual/other callers).
+**Why:** unrelated PDFs were burning full vision tokens and increasing manual review; sender recognition alone did not establish financial purpose.
 
 **How to apply:**
-- Freemail domains (gmail.com, orange.fr, …) are excluded from domain-level matching — one gmail contact must never whitelist all of Gmail; exact-address matches still pass.
-- Construction keywords (devis, facture, …) pass on purpose so a brand-new contractor's first devis isn't dropped.
-- Operator bypass = `force: true` on the manual process route → `bypassPrefilter` option; also pass automatically when projectId/contractorId already set.
-- Test doubles of the storage layer may lack newer methods — optional-signal lookups must tolerate a synchronous throw (`Promise.resolve().then(...)`), not just a rejected promise.
+- Do not restore automatic known-sender, firm-domain or assigned-project bypasses. Document purpose is distinct from incidental financial words; quotations can legitimately include plans as priced line items.
+- Known addresses/domains and existing assignments do not admit documents. A first-time contractor qualifies through exact client/project and PDF financial evidence.
+- Manual rescue is explicit and must not override conflicting PDF identity or reopen an archived project automatically.
+- Capture errors must preserve a retryable attachment, not permanently dispose of a message. Distinguish a temporary dependency failure from evidence of unreadable/irrelevant content.

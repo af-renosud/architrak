@@ -1,4 +1,7 @@
 import { Router } from "express";
+import { emailNeedsAttention } from "@shared/email-financial-gate";
+import { triageFinancialPdf, type FinancialTriage } from "../gmail/financial-pdf-triage";
+import { getDocumentBuffer } from "../storage/object-storage";
 import { safeErrorDiagnostic } from "../safe-error";
 import { z } from "zod";
 import { storage } from "../storage";
@@ -26,7 +29,7 @@ const idParams = z.object({ id: z.coerce.number().int().positive() });
 // would let a caller revive a dumped ('skipped') document back to 'pending'
 // and defeat the beta reset. Omit from the schema AND delete from the body
 // (devis state-machine seal pattern).
-const updateEmailDocSchema = insertEmailDocumentSchema.partial().omit({ extractionStatus: true });
+const updateEmailDocSchema = insertEmailDocumentSchema.pick({ projectId: true, contractorId: true, notes: true }).partial().strict();
 const emailDocsQuerySchema = z.object({
   projectId: z.coerce.number().int().positive().optional(),
   status: z.string().optional(),
@@ -83,8 +86,9 @@ router.get("/api/gmail/status", async (_req, res) => {
   let needsProjectCount = 0;
   let needsAttentionCount = 0;
   try {
-    const needsReview = await storage.getEmailDocuments({ status: "needs_review" });
-    needsAttentionCount = needsReview.length;
+    const allDocuments = await storage.getEmailDocuments({});
+    const needsReview = allDocuments.filter((d) => d.extractionStatus === "needs_review");
+    needsAttentionCount = allDocuments.filter(emailNeedsAttention).length;
     needsProjectCount = needsReview.filter((d) => d.projectId == null).length;
   } catch (err) {
     console.error("[Gmail] needs-project count failed:", safeErrorDiagnostic(err));
@@ -188,6 +192,32 @@ router.put(
   },
 );
 
+// Dry run only: never updates dispositions, assignments, files or financial records.
+router.post("/api/email-documents/triage-preview", requireAuth,
+  validateRequest({ body: z.object({ ids: z.array(z.number().int().positive()).min(1).max(10) }).strict() }),
+  async (req, res) => {
+    const projects = await storage.getProjects({ includeArchived: true });
+    const results = [];
+    for (const id of Array.from(new Set<number>(req.body.ids))) {
+      const doc = await storage.getEmailDocument(id);
+      if (!doc?.storageKey) {
+        results.push({ id, status: "financial_unreadable", reason: "Source PDF is unavailable." });
+        continue;
+      }
+      try {
+        const cached = (doc.extractedData as { financialTriage?: FinancialTriage } | null)?.financialTriage;
+        const triage = await triageFinancialPdf(await getDocumentBuffer(doc.storageKey),
+          cached?.emailText ?? doc.emailSubject ?? "", projects, cached);
+        results.push({ id, fileName: doc.attachmentFileName, currentStatus: doc.extractionStatus,
+          ...triage.decision, legacyEmailBodyUnavailable: !cached });
+      } catch {
+        results.push({ id, fileName: doc.attachmentFileName, status: "financial_unreadable",
+          reason: "Text recognition failed. No change proposed; inspect or retry the original." });
+      }
+    }
+    res.json({ dryRun: true, results });
+  });
+
 router.get("/api/email-documents/:id", requireAuth, validateRequest({ params: idParams }), async (req, res) => {
   // (was mistakenly calling update with the request body — read-only now)
   const doc = await storage.getEmailDocument(Number(req.params.id));
@@ -205,6 +235,9 @@ router.post(
       const emailDocumentId = Number(req.params.id);
       const emailDoc = await storage.getEmailDocument(emailDocumentId);
       if (!emailDoc) return res.status(404).json({ message: "Document not found", code: "not_found" });
+      if (["credit_note", "avenant", "final_account"].includes(emailDoc.documentType)) {
+        return res.status(409).json({ message: "This financial document type cannot be converted to an ordinary invoice or quotation.", code: "unsupported_financial_type" });
+      }
       const intakeDoc = await storage.getProjectIntakeDocumentByEmailDocumentId(emailDocumentId);
       if (!intakeDoc) {
         return res.status(409).json({
@@ -307,6 +340,7 @@ router.delete(
 
 router.post(
   "/api/email-documents/:id/process",
+  requireAuth,
   validateRequest({ params: idParams, body: z.object({ force: z.boolean().optional() }).optional() }),
   async (req, res) => {
     try {

@@ -4701,6 +4701,11 @@ export class DatabaseStorage implements IStorage {
    */
   private async mirrorEmailDocumentToIntake(doc: EmailDocument): Promise<void> {
     if (doc.projectId == null || !doc.storageKey) return;
+    // Assignment and triage evidence writes are not permission to start financial extraction.
+    if (!["completed", "needs_review"].includes(doc.extractionStatus)) return;
+    const financialEvidence = doc.extractedData as { manualFinancialRescue?: boolean; financialManualReview?: boolean; financialTriage?: { decision?: { status?: string } } } | null;
+    if (financialEvidence?.financialManualReview) return;
+    if (financialEvidence?.financialTriage && financialEvidence.financialTriage.decision?.status !== "eligible" && !financialEvidence.manualFinancialRescue) return;
     // Task #322 — dumped backlog documents ('skipped') were written off in
     // the beta reset; assigning them a project must not resurrect them into
     // the intake pipeline.
@@ -4783,7 +4788,7 @@ export class DatabaseStorage implements IStorage {
       .select({
         pending: sql<number>`COUNT(*) FILTER (WHERE ${emailDocuments.extractionStatus} = 'pending')`,
         processing: sql<number>`COUNT(*) FILTER (WHERE ${emailDocuments.extractionStatus} = 'processing')`,
-        needsReview: sql<number>`COUNT(*) FILTER (WHERE ${emailDocuments.extractionStatus} = 'needs_review')`,
+        needsReview: sql<number>`COUNT(*) FILTER (WHERE ${emailDocuments.extractionStatus} IN ('needs_review', 'failed', 'financial_unreadable'))`,
         oldestPendingAt: sql<Date | null>`MIN(${emailDocuments.createdAt}) FILTER (WHERE ${emailDocuments.extractionStatus} = 'pending')`,
         processedLast5Min: sql<number>`COUNT(*) FILTER (WHERE ${emailDocuments.extractionStatus} IN ('completed', 'needs_review', 'failed') AND ${emailDocuments.updatedAt} >= ${fiveMinAgo})`,
       })

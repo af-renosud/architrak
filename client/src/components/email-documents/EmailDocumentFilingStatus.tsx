@@ -16,10 +16,17 @@ const filingColors: Record<EmailDocumentWithFiling["filing"]["state"], string> =
 };
 
 export function EmailExtractionStatus({ status }: { status: string }) {
+  const financialLabels: Record<string, string> = {
+    financial_excluded: "Excluded — nonfinancial",
+    financial_identity_review: "Unresolved client/project",
+    financial_unreadable: "Text recognition failed",
+  };
   return (
     <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
       <span>Extraction:</span>
-      <StatusBadge status={status === "completed" ? "extracted" : status} size="sm" />
+      {financialLabels[status]
+        ? <span className="font-medium">{financialLabels[status]}</span>
+        : <StatusBadge status={status === "completed" ? "extracted" : status} size="sm" />}
     </span>
   );
 }
