@@ -2,6 +2,9 @@
 name: Email intake noise cuts
 description: Constraints around attachment dedupe, echo suppression, and project auto-assignment in the email intake
 ---
+- **Product constraint (2026-11-02):** the user reports that auditing irrelevant email attachments takes more work than manually uploading documents. Optimise intake for reduced human review, not merely reduced AI processing.
+  **Why:** parking documents is not enough if the ordinary list still asks an architect to inspect them.
+  **How to apply:** evaluate future intake proposals by actionable review volume and missed relevant documents; keep recovery available without making parked items routine work.
 - **Firm-domain pass is a guarantee**: mail from the firm's own domain (other than the linked inbox's exact address) must pass the prefilter unconditionally — fee-invoice capture depends on it and a test enforces it. Only the linked-inbox SELF address may be gated on keyword/live-name evidence.
 - **Echo suppression runs before all identity signals** (Docusign/DocRaptor sender domains, "electronic signature request"/"archidoc proposal" markers) — an echo parks as `low` even when it names a live project.
 - **Attachment dedupe**: sha256 fingerprint with a partial UNIQUE index; capture does lookup→append-source, and on insert conflict (code 23505, unwrap pg `cause`) the loser appends itself to the winner. Appending a source never changes extractionStatus (skipped stays terminal/hidden).
