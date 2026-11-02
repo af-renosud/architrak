@@ -41,6 +41,8 @@ interface PdfPopoutViewerProps {
   pdfUrl?: string;
   downloadUrl?: string;
   downloadName?: string;
+  /** Show the original-document choice for standalone contractor invoices. */
+  originalDocument?: boolean;
   /** Stable ID used for the window's test IDs when no devis ID exists. */
   viewerId?: string;
   /** Gives non-quotation documents their own persisted window and visual identity. */
@@ -148,6 +150,7 @@ function PdfPopoutViewerWindow({
   pdfUrl: suppliedPdfUrl,
   downloadUrl,
   downloadName,
+  originalDocument = false,
   viewerId,
   viewerKind = "source-pdf",
   onClose,
@@ -164,10 +167,10 @@ function PdfPopoutViewerWindow({
       : ["pdf-popout", idForTest],
     enabled: isDevisPdf,
   });
-  const translationReady =
+  const translationReady = isDevisPdf && (
     translation?.status === "draft" ||
     translation?.status === "edited" ||
-    translation?.status === "finalised";
+    translation?.status === "finalised");
 
   const availableVariants: PdfVariant[] = [];
   if (hasOriginal) availableVariants.push("original");
@@ -460,15 +463,16 @@ function PdfPopoutViewerWindow({
           className="ml-auto flex items-center gap-2"
           onPointerDown={(e) => e.stopPropagation()}
         >
-          {availableVariants.length > 1 && !isMinimized ? (
+          {(availableVariants.length > 1 || ((isDevisPdf || originalDocument) && hasOriginal)) && !isMinimized ? (
             <Select value={variant} onValueChange={onVariantChange}>
               <SelectTrigger
-                className="h-7 w-[140px] bg-white/10 border-white/20 text-white text-[11px] focus:ring-white/40"
+                className="h-7 w-[164px] bg-white/10 border-white/20 text-white text-[11px] focus:ring-white/40"
+                aria-label="Document version"
                 data-testid={`select-pdf-variant-${idForTest}`}
               >
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent className="z-[70]">
                 {availableVariants.map((v) => (
                   <SelectItem
                     key={v}
@@ -476,7 +480,7 @@ function PdfPopoutViewerWindow({
                     data-testid={`select-pdf-variant-${idForTest}-option-${v}`}
                   >
                     {v === "original"
-                      ? "Original (FR)"
+                      ? "Original document"
                       : v === "translation"
                         ? "Translation (EN)"
                         : "Combined (EN+FR)"}

@@ -955,6 +955,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
       {pdfInvoice && (
         <PdfPopoutViewer
           devisCode={`Facture ${pdfInvoice.invoiceNumber}`}
+          originalDocument
           pdfUrl={`/api/invoices/${pdfInvoice.id}/pdf`}
           downloadUrl={`/api/invoices/${pdfInvoice.id}/pdf`}
           downloadName={`facture-${pdfInvoice.invoiceNumber}.pdf`}
