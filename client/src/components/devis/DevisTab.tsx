@@ -1521,6 +1521,17 @@ export function DevisTab({
   const { data: devisList, isLoading, dataUpdatedAt: devisUpdatedAt } = useQuery<Devis[]>({
     queryKey: projectScopedKey(projectId, "devis"),
   });
+  useEffect(() => {
+    if (initialExpandedDevisId && devisList?.some(d => d.id === initialExpandedDevisId && d.status === "void")) setShowVoid(true);
+  }, [initialExpandedDevisId, devisList]);
+  useEffect(() => {
+    if (!initialExpandedDevisId || !devisList) return;
+    const timer = window.setTimeout(() => {
+      const node = document.querySelector(`[data-testid="detail-devis-${initialExpandedDevisId}"]`) as HTMLElement | null;
+      node?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    }, 100);
+    return () => window.clearTimeout(timer);
+  }, [initialExpandedDevisId, devisList, showVoid]);
   const { data: openChecksByDevis = {}, dataUpdatedAt: checksUpdatedAt } = useQuery<Record<number, number>>({
     queryKey: projectScopedKey(projectId, "devis-checks", "open-counts"),
   });

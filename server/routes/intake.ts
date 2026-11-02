@@ -19,6 +19,7 @@ import {
   applyProjectIntakeRelationships,
   previewProjectIntakeRelationships,
 } from "../services/intake/relationship-recovery.service";
+import { listIntakeDuplicates, recoverIntakeDuplicate, DuplicateRecoveryError } from "../services/intake/duplicate-recovery.service";
 
 /**
  * Unified document intake (Task #229) — the single "front door".
@@ -36,6 +37,20 @@ const router = Router();
 
 const projectIdParams = z.object({ projectId: z.coerce.number().int().positive() });
 const intakeIdParams = z.object({ id: z.coerce.number().int().positive() });
+router.get("/api/projects/:projectId/intake/duplicates", requireAuth,
+  validateRequest({ params: projectIdParams }), async (req, res, next) => {
+    try { res.json(await listIntakeDuplicates(Number(req.params.projectId))); } catch (error) { next(error); }
+  });
+router.post("/api/intake-documents/:id/recover-duplicate", requireAuth,
+  validateRequest({ params: intakeIdParams, body: z.object({ confirmed: z.literal(true), version: z.string().regex(/^[a-f0-9]{64}$/) }).strict() }),
+  async (req, res, next) => {
+    try {
+      res.json(await recoverIntakeDuplicate(Number(req.params.id), req.body.version, Number(req.session.userId)));
+    } catch (error) {
+      if (error instanceof DuplicateRecoveryError || error instanceof ManualPromotionError) return res.status(error.status).json({ message: error.message });
+      next(error);
+    }
+  });
 const intakeUploadBodySchema = z.object({
   uploadedBy: z.string().optional(),
   notes: z.string().optional(),

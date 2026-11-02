@@ -32,6 +32,8 @@ import { storage } from "../../storage";
 export type ManualPromotionKind = "devis" | "invoice";
 
 export interface ManualPromotionInput {
+  /** Internal only: never accepted by the generic manual-promotion route. */
+  duplicateRecoveryVersion?: string;
   intakeDocumentId: number;
   expectedFingerprint?: string | null;
   kind: ManualPromotionKind;
@@ -172,12 +174,17 @@ export async function promoteParkedFinancialDocument(
   }
 
   const transactionResult = await db.transaction(async (tx) => {
+    // Project first serializes recovery across different duplicate source rows.
+    await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, source.projectId)).for("update");
     const [doc] = await tx
       .select()
       .from(projectIntakeDocuments)
       .where(eq(projectIntakeDocuments.id, input.intakeDocumentId))
       .for("update");
     if (!doc) fail(404, "not_found", "Document not found.");
+    if (doc.projectId !== source.projectId || doc.storageKey !== source.storageKey) {
+      fail(409, "source_changed", "The source location changed. Refresh before submitting it.");
+    }
 
     const [existingAudit] = await tx
       .select()
@@ -205,7 +212,22 @@ export async function promoteParkedFinancialDocument(
       };
     }
 
-    if (!isPromotableState(doc) || doc.promotedKind != null || doc.promotedId != null) {
+    let duplicateOriginalId: number | null = null;
+    if (input.duplicateRecoveryVersion) {
+      const { prepareDuplicateDraft } = await import("./duplicate-recovery.service");
+      const recovered = await prepareDuplicateDraft(tx, doc, input.duplicateRecoveryVersion);
+      if (recovered.kind !== input.kind || recovered.target!.contractorId !== input.contractorId) {
+        fail(409, "duplicate_target_changed", "The historical target changed. Refresh before recovery.");
+      }
+      duplicateOriginalId = recovered.canonical.id;
+      const recoveredExtraction = { ...recovered.parsed };
+      for (const key of ["duplicateOfIntakeDocumentId", "duplicateOfDevisId", "duplicateOfInvoiceId", "possibleDuplicateOfDevisId", "possibleDuplicateOfInvoiceId"]) delete recoveredExtraction[key];
+      doc.extractedData = {
+        ...recoveredExtraction,
+        duplicateRecovery: { originalIntakeId: duplicateOriginalId, originalKind: recovered.kind, originalId: recovered.target!.id },
+      };
+    }
+    if ((!isPromotableState(doc) && !(input.duplicateRecoveryVersion && doc.routingState === "duplicate")) || doc.promotedKind != null || doc.promotedId != null) {
       fail(409, "source_not_parked", "Only a parked, failed, unpromoted source can be submitted manually.");
     }
     if (doc.contentFingerprint && doc.contentFingerprint !== fingerprint) {
@@ -461,6 +483,15 @@ export async function promoteParkedFinancialDocument(
       operatorNote: note,
       confirmedByUserId: input.confirmedByUserId,
     });
+    if (duplicateOriginalId != null && duplicateOriginalId !== doc.id) {
+      const [original] = await tx.select().from(projectIntakeDocuments).where(eq(projectIntakeDocuments.id, duplicateOriginalId));
+      await tx.update(projectIntakeDocuments).set({
+        extractedData: {
+          ...(original.extractedData as Record<string, unknown> ?? {}),
+          duplicateRecoveryTarget: { kind: input.kind, id: promotedId, sourceIntakeId: doc.id },
+        },
+      }).where(eq(projectIntakeDocuments.id, duplicateOriginalId));
+    }
 
     const manualNote = `Submitted manually as ${input.kind} draft by user ${input.confirmedByUserId}: ${note}`;
     await tx
@@ -471,6 +502,7 @@ export async function promoteParkedFinancialDocument(
         routingState: "routed",
         promotedKind: input.kind,
         promotedId,
+        ...(input.duplicateRecoveryVersion ? { extractedData: doc.extractedData } : {}),
         notes: doc.notes ? `${doc.notes}\n${manualNote}` : manualNote,
         updatedAt: new Date(),
       })

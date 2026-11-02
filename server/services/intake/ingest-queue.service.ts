@@ -514,6 +514,9 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
         return;
       }
       if (dedup.verdict === "review" && !sourceOwnedInvoice) {
+        await storage.updateProjectIntakeDocument(doc.id, {
+          extractedData: { ...extractedData, [dedup.matchKind === "devis" ? "possibleDuplicateOfDevisId" : "possibleDuplicateOfInvoiceId"]: dedup.matchId },
+        });
         await park(doc, fingerprint, dedup.reason);
         return;
       }

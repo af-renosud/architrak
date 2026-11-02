@@ -5,6 +5,9 @@ import { canBulkDeleteIntake } from "@/lib/bulk-document-eligibility";
 import { useEffect, useRef, useState } from "react";
 import { Upload, FileText, Download, Mail, HardDriveUpload, Inbox, ArrowRight, RotateCw, Trash2, Eye, EyeOff, Paperclip, BadgeCheck, FolderCheck } from "lucide-react";
 import { Link } from "wouter";
+import { useSearch } from "wouter";
+import { DuplicateNotice } from "./DuplicateNotice";
+import type { IntakeDuplicateSummary } from "@shared/intake-duplicate";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -443,7 +446,9 @@ function isAcceptedFile(file: File): boolean {
 
 export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
   const { toast } = useToast();
-  const [showVoid, setShowVoid] = useState(false);
+  const search = useSearch();
+  const focusedIntakeId = Number(new URLSearchParams(search).get("intake")) || null;
+  const [showVoid, setShowVoid] = useState(() => new URLSearchParams(search).get("includeVoid") === "true");
   const [isDragOver, setIsDragOver] = useState(false);
   const [acompteTarget, setAcompteTarget] = useState<ProjectIntakeDocument | null>(null);
   const [projectIdentityTarget, setProjectIdentityTarget] = useState<ProjectIntakeDocument | null>(null);
@@ -463,6 +468,27 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
       return active ? 3000 : false;
     },
   });
+  const { data: duplicateSummaries, isError: duplicateError } = useQuery<IntakeDuplicateSummary[]>({
+    queryKey: ["/api/projects", String(projectId), "intake", "duplicates"],
+    enabled: !!intakeDocs?.some(d => d.routingState === "duplicate" || d.routingState === "parked"),
+  });
+  useEffect(() => {
+    queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "intake", "duplicates"] });
+  }, [intakeDocs, projectId]);
+  useEffect(() => {
+    if (focusedIntakeId) setShowVoid(true);
+  }, [focusedIntakeId]);
+  useEffect(() => {
+    if (!focusedIntakeId || !intakeDocs) return;
+    // Duplicate summaries load separately and change row heights. Focus after
+    // that layout settles, not only after the initial (shorter) list renders.
+    const timer = window.setTimeout(() => {
+      const node = document.getElementById(`intake-${focusedIntakeId}`);
+      node?.focus({ preventScroll: true });
+      node?.scrollIntoView?.({ behavior: "auto", block: "center" });
+    }, 100);
+    return () => window.clearTimeout(timer);
+  }, [focusedIntakeId, intakeDocs, duplicateSummaries, showVoid]);
 
   // Task #418 — the app runs with staleTime: Infinity, so when the background
   // intake queue promotes an uploaded document into a devis/facture record,
@@ -758,7 +784,7 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
             return (
               <LuxuryCard key={doc.id} className="p-4" data-testid={`card-intake-doc-${doc.id}`}>
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
+                  <div className="flex items-center gap-3 min-w-0" id={`intake-${doc.id}`} tabIndex={-1}>
                     <BulkDocumentCheckbox selection={bulk} id={doc.id} name={doc.fileName} eligible={canBulkDeleteIntake(doc, isArchived)} disabled={deleteMutation.isPending} />
                     <div className="w-9 h-9 rounded-xl bg-blue-50 dark:bg-blue-950/30 flex items-center justify-center flex-shrink-0">
                       <FileText size={14} className="text-blue-600" />
@@ -805,6 +831,8 @@ export function IntakeTab({ projectId, isArchived = false }: IntakeTabProps) {
                           {doc.notes}
                         </p>
                       )}
+                      {duplicateSummaries?.find(s => s.intakeId === doc.id) && <DuplicateNotice summary={duplicateSummaries.find(s => s.intakeId === doc.id)!} projectId={projectId} />}
+                      {duplicateError && doc.routingState === "duplicate" && <p className="text-xs text-destructive mt-2">Could not load the duplicate destination. Refresh to retry.</p>}
                       {(extractedIdentity?.projectName || extractedIdentity?.projectReference) && (
                         <p className="text-[10px] text-blue-700 dark:text-blue-300 mt-1" data-testid={`text-intake-project-evidence-${doc.id}`}>
                           Project evidence: {extractedIdentity.projectName ?? extractedIdentity.projectReference}
