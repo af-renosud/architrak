@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { ActionChecklist, BlockedAction, focusActionTarget, type ActionRequirement } from "@/components/ui/blocked-action";
+import { fetchOpenQuotationChecks, quotationRequirement, readinessRequirements } from "./action-requirements";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Button } from "@/components/ui/button";
@@ -19,7 +21,7 @@ import { Send, Loader2, ExternalLink, ArrowLeft, MailWarning, FileUp, RefreshCw,
 import { Input } from "@/components/ui/input";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, projectScopedKey } from "@/lib/queryClient";
 import type { Devis, Project } from "@shared/schema";
 import {
   DEVIS_CLIENT_MESSAGE_MIN_LEN,
@@ -75,6 +77,10 @@ export function SigningPanel({
   const { toast } = useToast();
   const devisQuery = useQuery<Devis>({
     queryKey: ["/api/devis", devisId],
+  });
+  const checksQuery = useQuery<number>({
+    queryKey: ["/api/devis", devisId, "checks", "open-count"],
+    queryFn: () => fetchOpenQuotationChecks(devisId),
   });
   const signedCopyNoticeQuery = useQuery<SignedCopyNoticeResponse>({
     queryKey: ["/api/devis", devisId, "signed-copy-notice"],
@@ -362,6 +368,12 @@ export function SigningPanel({
     enabled: Boolean(d?.projectId),
   });
   const project = projectQuery.data;
+  const readinessQuery = useQuery<Record<number, { blockers: string[]; readyToSend: boolean }>>({
+    queryKey: projectScopedKey(String(d?.projectId), "devis-readiness"),
+    enabled: Boolean(d?.projectId),
+  });
+  const readiness = readinessQuery.data?.[devisId];
+  const mirrorReady = !readinessQuery.isError && !!readiness?.readyToSend && readiness.blockers.length === 0;
 
   const amountTtcLabel = useMemo(() => {
     const n = Number(d?.amountTtc);
@@ -402,14 +414,14 @@ export function SigningPanel({
     setOpenRequested(false);
     document
       .querySelector(`[data-testid="panel-signing-${devisId}"]`)
-      ?.scrollIntoView({ behavior: "smooth", block: "center" });
-    if (d.signOffStage === "approved_for_signing" && d.status !== "void" && !isArchived && !hasRecordedSignature(d)) {
-      setPersonalMessage(messageTemplate);
-      setDialogStep("compose");
+      ?.scrollIntoView({ behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
+    if (d.signOffStage === "approved_for_signing" && d.status !== "void" && !isArchived && !hasRecordedSignature(d) && !checksQuery.isError && checksQuery.data === 0 && mirrorReady) {
+      if (!personalMessage) { setPersonalMessage(messageTemplate); setDialogStep("compose"); }
       setSendDialogOpen(true);
     }
-  }, [openRequested, d, isArchived, devisId, messageTemplate]);
+  }, [openRequested, d, isArchived, devisId, messageTemplate, personalMessage, checksQuery.isError, checksQuery.data, mirrorReady]);
 
+  if (devisQuery.isError) return <LuxuryCard className="p-3 space-y-2"><p role="alert" className="text-xs text-destructive">Signing status unavailable. No signature request can be made until it is loaded.</p><Button variant="outline" onClick={() => void devisQuery.refetch()}>Retry signing status</Button></LuxuryCard>;
   if (devisQuery.isLoading || !d) {
     return (
       <LuxuryCard className="p-3" data-testid={`panel-signing-${devisId}`}>
@@ -419,18 +431,9 @@ export function SigningPanel({
     );
   }
 
-  // Hide the panel entirely until the devis has been approved for
-  // signing — earlier stages have nothing meaningful to show.
   const stage = d.signOffStage as string | null | undefined;
   const recordedSignature = hasRecordedSignature(d);
-  const stagesShowingPanel = new Set([
-    "approved_for_signing",
-    "sent_to_client",
-    "client_signed_off",
-    "void",
-  ]);
   if (d.status === "void" || stage === "void") return null;
-  if (!recordedSignature && (!stage || !stagesShowingPanel.has(stage))) return null;
 
   const envelopeStatus = d.archisignEnvelopeStatus ?? null;
   const accessUrl = d.archisignAccessUrl ?? null;
@@ -471,6 +474,33 @@ export function SigningPanel({
   //       orchestration (no new endpoints, no reminders), so the CTA
   //       reappearing IS the entire post-expiry surface.
   const canSend = stage === "approved_for_signing" && !isArchived && !recordedSignature;
+  const sendRequirements: ActionRequirement[] = [
+    ...(isArchived ? [{ id: "archived", kind: "readonly" as const, message: "This project is archived. Restore the project before sending." }] : []),
+    ...(recordedSignature ? [{ id: "signed", kind: "readonly" as const, message: "A signature is already recorded. Use the existing signed copy; do not send a new request." }] : []),
+    ...(stage !== "approved_for_signing" && !recordedSignature ? [{
+      ...quotationRequirement("stage", stage === "sent_to_client" ? "The request has already been sent. Wait for the client's signature or use the audited recovery controls." : "Reach Approved for Signing before sending a signature request.", devisId),
+      kind: stage === "sent_to_client" ? "waiting" as const : "missing" as const,
+    }] : []),
+    ...(!recordedSignature && stage !== "sent_to_client" ? checksQuery.isError || checksQuery.data == null ? [{
+      id: "checks-status", kind: checksQuery.isError ? "technical" as const : "waiting" as const,
+      message: checksQuery.isError ? "Contractor checks are unavailable. Clearance is unknown." : "Checking contractor questions before sending.",
+      onResolve: () => { void checksQuery.refetch(); }, linkLabel: "Retry checks",
+    }] : checksQuery.data > 0 ? [quotationRequirement("checks", `${checksQuery.data} contractor question(s) must be resolved before sending.`, devisId)] : [] : []),
+    ...(!recordedSignature && stage !== "sent_to_client" ? readinessQuery.isError || !readiness ? [{
+      id: "readiness", kind: readinessQuery.isError ? "technical" as const : "waiting" as const,
+      message: readinessQuery.isError ? "Pre-send readiness is unavailable. Do not send until the prerequisites can be verified." : "Checking the signature package prerequisites.",
+      onResolve: () => { void readinessQuery.refetch(); }, linkLabel: "Retry readiness",
+    }] : readinessRequirements(readiness.blockers, devisId, d.projectId) : []),
+  ].filter((requirement, index, all) => all.findIndex(item => item.id === requirement.id) === index);
+  const dialogSendRequirements = sendRequirements.map(requirement =>
+    requirement.onResolve && requirement.id !== "checks-status" && requirement.id !== "readiness"
+      ? { ...requirement, onResolve: () => {
+        // An external destination cannot receive focus behind the modal.
+        // Keep message/step state intact when leaving to fix a prerequisite.
+        setSendDialogOpen(false);
+        requestAnimationFrame(() => requirement.onResolve?.());
+      } }
+      : requirement);
   const isResume = canSend && !!d.archisignEnvelopeId;
 
   const statusLabel: Record<string, { label: string; tone: "default" | "secondary" | "destructive" }> = {
@@ -488,7 +518,11 @@ export function SigningPanel({
   const isSigned = recordedSignature;
 
   const trimmedLen = personalMessage.trim().length;
-  const composeValid = trimmedLen >= DEVIS_CLIENT_MESSAGE_MIN_LEN;
+  const composeValid = trimmedLen >= DEVIS_CLIENT_MESSAGE_MIN_LEN && trimmedLen <= DEVIS_CLIENT_MESSAGE_MAX_LEN;
+  const messageRequirements: ActionRequirement[] = composeValid ? [] : [{
+    id: "message", message: `Write at least ${DEVIS_CLIENT_MESSAGE_MIN_LEN} non-whitespace characters (maximum ${DEVIS_CLIENT_MESSAGE_MAX_LEN}).`,
+    linkLabel: "Go to message", onResolve: () => { requestAnimationFrame(() => focusActionTarget(`#textarea-send-message-${devisId}`)); },
+  }];
   const recipientName = (project?.clientContactName ?? "").trim() || project?.clientName || "—";
   const recipientEmail = (project?.clientContactEmail ?? "").trim() || "—";
   const refLabel = d.devisNumber || d.devisCode;
@@ -565,13 +599,14 @@ export function SigningPanel({
             Record signed copy
           </Button>
         )}
-        {canSend && (
-          <Button
+        {(
+          <BlockedAction
+            actionLabel="Before sending for signature"
+            requirements={sendRequirements}
             size="sm"
             variant="destructive"
             onClick={() => {
-              setPersonalMessage(messageTemplate);
-              setDialogStep("compose");
+              if (!personalMessage) { setPersonalMessage(messageTemplate); setDialogStep("compose"); }
               setSendDialogOpen(true);
             }}
             disabled={sendMutation.isPending}
@@ -588,10 +623,16 @@ export function SigningPanel({
                 {isResume ? "Retry send" : "Send for signature"}
               </>
             )}
-          </Button>
+          </BlockedAction>
         )}
         </div>
       </div>
+      <ActionChecklist label="Signature request checks" requirements={sendRequirements} reviewLinks={recordedSignature ? [] : [
+        quotationRequirement("translation", "Review the translated signature PDF.", devisId),
+        quotationRequirement("contact", "Verify the client's signing name and email.", devisId, d.projectId),
+        quotationRequirement("insurance", "Review the insurance verdict. The live check remains authoritative.", devisId),
+      ]} />
+      {canSend && <p className="text-xs text-muted-foreground">Review the pre-send checklist above, the translated PDF, client contact and insurance. Your accompanying message is required in the next step. The server rechecks all signing safeguards before sending.</p>}
 
       <AlertDialog
         open={sendDialogOpen}
@@ -633,9 +674,12 @@ export function SigningPanel({
                 onChange={(e) => setPersonalMessage(e.target.value.slice(0, DEVIS_CLIENT_MESSAGE_MAX_LEN))}
                 rows={8}
                 maxLength={DEVIS_CLIENT_MESSAGE_MAX_LEN}
+                aria-describedby={`message-validity-${devisId}`}
+                aria-invalid={!composeValid}
                 disabled={sendMutation.isPending}
                 data-testid={`textarea-send-message-${devisId}`}
               />
+              <p id={`message-validity-${devisId}`} className="text-xs text-muted-foreground">Use {DEVIS_CLIENT_MESSAGE_MIN_LEN}–{DEVIS_CLIENT_MESSAGE_MAX_LEN} characters after trimming spaces. Explain what the client is being asked to sign.</p>
               <div className="flex items-center justify-between text-xs">
                 <span
                   className={composeValid ? "text-muted-foreground" : "text-destructive"}
@@ -710,15 +754,19 @@ export function SigningPanel({
               Cancel
             </AlertDialogCancel>
             {!isResume && dialogStep === "compose" ? (
-              <Button
+              <BlockedAction
+                actionLabel="Before reviewing the signature request"
+                requirements={[...dialogSendRequirements, ...messageRequirements]}
                 onClick={() => setDialogStep("recap")}
-                disabled={!composeValid || sendMutation.isPending}
+                disabled={sendMutation.isPending}
                 data-testid={`button-send-to-signer-continue-${devisId}`}
               >
                 Continue
-              </Button>
+              </BlockedAction>
             ) : (
-              <AlertDialogAction
+              <BlockedAction
+                actionLabel="Before confirming the signature request"
+                requirements={[...dialogSendRequirements, ...(!isResume ? messageRequirements : [])]}
                 onClick={(e) => {
                   e.preventDefault();
                   sendMutation.mutate(isResume ? undefined : personalMessage);
@@ -737,7 +785,7 @@ export function SigningPanel({
                     {isResume ? "Retry send" : "Confirm and send"}
                   </>
                 )}
-              </AlertDialogAction>
+              </BlockedAction>
             )}
           </AlertDialogFooter>
         </AlertDialogContent>

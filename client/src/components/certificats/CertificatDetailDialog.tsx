@@ -1,3 +1,5 @@
+import { BlockedAction, focusActionTarget, type ActionRequirement } from "@/components/ui/blocked-action";
+import { certificateSendRequirements } from "./certificate-action-requirements";
 /**
  * Task #573 — shared CertificatDetailDialog with full payment capability.
  *
@@ -27,7 +29,6 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, invalidateCertificatPaymentData, projectScopedKey, queryClient } from "@/lib/queryClient";
 import type { Certificat, CertificatWithTvaEvidenceReference, Contractor, CertificatPaymentSuggestion } from "@shared/schema";
 import {
-  canSendCertificat,
   hasCertificatDeliveryEvidence,
   isFalseSentCertificat,
   type CertificatWithDelivery,
@@ -280,16 +281,27 @@ export function CertificatPaymentsSection({ cert, initialInvoiceId }: { cert: Ce
 
   const methodLabel: Record<string, string> = { virement: "Virement", cheque: "Chèque", autre: "Autre" };
   const locked = ledger?.fullyPaid ?? false;
+  const paymentRequirements: ActionRequirement[] = [
+    ...(!context.data || context.error || !ledger || ledgerError ? [{
+      id: "ledger", kind: context.error || ledgerError ? "technical" as const : "waiting" as const,
+      message: context.error || ledgerError ? "Payment context or ledger unavailable. No payment can be recorded until both are loaded." : "Checking the payment context and shared ledger.",
+      onResolve: () => { void context.refetch(); void refetchLedger(); }, linkLabel: "Retry payment status",
+    }] : []),
+    ...(blockedReason ? [{ id: "status", kind: "readonly" as const, message: context.data?.archived ? "The project is archived. Restore it before recording payments." : "The certificate must be issued and open for payment recording. Review its status before continuing." }] : []),
+    ...(locked ? [{ id: "paid", kind: "readonly" as const, message: "The certificate is fully paid. Monetary changes are locked; existing evidence remains available." }] : []),
+  ];
 
   return (
     <div className="space-y-3 p-4 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)]" data-testid="section-cert-payments">
       <div className="flex items-center justify-between gap-2">
         <TechnicalLabel>Paiements Client</TechnicalLabel>
-        {!locked && (
-          <Button
+        {(
+          <BlockedAction
+            actionLabel="Before recording a client payment"
+            requirements={paymentRequirements}
             variant="outline"
             size="sm"
-            disabled={!canWrite || !ledger || saveMutation.isPending}
+            disabled={saveMutation.isPending}
             onClick={() => {
               resetForm();
               setFormOpen(true);
@@ -303,7 +315,7 @@ export function CertificatPaymentsSection({ cert, initialInvoiceId }: { cert: Ce
           >
             <Plus size={11} />
             <span className="text-[8px] font-bold uppercase tracking-widest">Enregistrer un paiement client</span>
-          </Button>
+          </BlockedAction>
         )}
       </div>
       <p className="text-[11px] text-muted-foreground">Journal partagé avec le certificat. Paiements partiels possibles. Un justificatif ne confirme pas la réception des fonds par l'entreprise.</p>
@@ -422,7 +434,7 @@ export function CertificatPaymentsSection({ cert, initialInvoiceId }: { cert: Ce
             <legend className="text-[11px] font-semibold">Affectation aux factures (TTC)</legend>
             {invoices.map((invoice) => <label key={invoice.id} className="flex items-center justify-between gap-3 text-[11px]">
               <span>Facture #{invoice.invoiceNumber} · {fmt(Number(invoice.amountTtc))}</span>
-              <Input className="max-w-36" aria-label={`Affectation facture ${invoice.invoiceNumber}`} type="number" step="0.01" min="0" value={allocationAmounts[invoice.id] ?? (invoice.id === initialInvoiceId ? amount : "0")} onChange={(event) => setAllocationAmounts((previous) => ({ ...previous, [invoice.id]: event.target.value }))} />
+              <Input className="max-w-36" data-testid="input-payment-allocation" aria-label={`Affectation facture ${invoice.invoiceNumber}`} type="number" step="0.01" min="0" value={allocationAmounts[invoice.id] ?? (invoice.id === initialInvoiceId ? amount : "0")} onChange={(event) => setAllocationAmounts((previous) => ({ ...previous, [invoice.id]: event.target.value }))} />
             </label>)}
             {!allocationsValid && <p className="text-[11px] text-destructive" role="alert">La somme des affectations doit être égale au montant TTC du paiement.</p>}
           </fieldset>}
@@ -459,14 +471,22 @@ export function CertificatPaymentsSection({ cert, initialInvoiceId }: { cert: Ce
             <Button variant="ghost" size="sm" disabled={saveMutation.isPending} onClick={resetForm} data-testid="button-cancel-payment">
               <span className="text-[8px] font-bold uppercase tracking-widest">Annuler</span>
             </Button>
-            <Button
+            <BlockedAction
+              actionLabel="Before saving this payment"
+              requirements={[
+                ...paymentRequirements,
+                ...(!datePaid ? [{ id: "date", message: "Choose the payment date.", onResolve: () => focusActionTarget('[data-testid="input-payment-date"]'), linkLabel: "Go to payment date" }] : []),
+                ...(!amount || !Number.isFinite(Number(amount)) || Number(amount) <= 0 ? [{ id: "amount", message: "Enter a finite payment amount greater than zero.", onResolve: () => focusActionTarget('[data-testid="input-payment-amount"]'), linkLabel: "Go to payment amount" }] : []),
+                ...(!allocationsValid ? [{ id: "allocations", message: "Invoice allocations must match the payment amount.", onResolve: () => focusActionTarget('[data-testid="input-payment-allocation"]'), linkLabel: "Go to allocations" }] : []),
+                ...(fileError ? [{ id: "evidence", message: "Choose a valid PDF payment proof within the size limit.", onResolve: () => focusActionTarget('[data-testid="input-payment-evidence"]'), linkLabel: "Go to payment proof" }] : []),
+              ]}
               size="sm"
               onClick={() => saveMutation.mutate()}
-              disabled={!canWrite || saveMutation.isPending || !datePaid || !amount || !Number.isFinite(Number(amount)) || Number(amount) <= 0 || !allocationsValid || !!fileError}
+              disabled={saveMutation.isPending}
               data-testid="button-save-payment"
             >
               <span className="text-[8px] font-bold uppercase tracking-widest">{editingId ? "Corriger" : "Enregistrer"}</span>
-            </Button>
+            </BlockedAction>
           </div>
         </fieldset>
       )}
@@ -483,7 +503,6 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
   const deliveryCert = { ...cert, ...sentEvidence };
   const delivered = hasCertificatDeliveryEvidence(deliveryCert);
   const falseSent = isFalseSentCertificat(deliveryCert);
-  const canSend = canSendCertificat(deliveryCert);
   const isSupplier = cert.certificateTrack === "supplier_direct_payment";
   const { data: sources, isLoading: sourcesLoading, error: sourcesError } = useQuery<CertificatSource[]>({
     queryKey: ["/api/certificats", String(cert.id), "sources"],
@@ -570,7 +589,7 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
             </div>
           )}
 
-          {canSend && (
+          {(
             <div
               className="flex items-center justify-between gap-3 rounded-md border border-amber-300/70 bg-amber-50/70 px-3 py-2 dark:border-amber-500/30 dark:bg-amber-950/20"
               data-testid={`notice-cert-detail-awaiting-email-${cert.id}`}
@@ -583,7 +602,9 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
                     : "This certificat has not been emailed to the client yet."}
                 </p>
               </div>
-              <Button
+              <BlockedAction
+                actionLabel="Before sending this certificate"
+                requirements={certificateSendRequirements(deliveryCert).map(requirement => requirement.id === "ready" ? { ...requirement, href: `/certificats?projectId=${cert.projectId}&certificatId=${cert.id}`, linkLabel: "Go to certificate review" } : requirement)}
                 size="sm"
                 onClick={() => sendMutation.mutate(undefined)}
                 disabled={sendMutation.isPending}
@@ -591,7 +612,7 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
               >
                 {sendMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
                 <span className="text-[8px] font-bold uppercase tracking-widest">Send</span>
-              </Button>
+              </BlockedAction>
             </div>
           )}
 

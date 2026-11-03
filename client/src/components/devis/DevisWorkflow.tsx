@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { focusActionTarget } from "@/components/ui/blocked-action";
 import { TabsContent } from "@/components/ui/tabs";
 import { initialWorkflowGroup, workflowGroups, workflowIsOpen, workflowTarget, type WorkflowChoices, type WorkflowGroup } from "./devis-workflow-model";
 import "./devis-workflow.css";
@@ -136,7 +137,26 @@ export function DevisWorkflow({ devisId, stage, status, children }: {
       if (detail?.devisId === devisId && workflowGroups.includes(detail.group)) jumpRef.current(detail.group);
     };
     window.addEventListener("architrak:workflow-jump", reveal);
+    let focusFrame = 0;
+    const target = (event: Event) => {
+      const detail = (event as CustomEvent<{ devisId: number; group: WorkflowGroup; tab?: string; selector: string }>).detail;
+      if (detail?.devisId !== devisId || !workflowGroups.includes(detail.group)) return;
+      jumpRef.current(detail.group);
+      cancelAnimationFrame(focusFrame);
+      let attempts = 0;
+      const focus = () => {
+        // Tab owners mount lazily on the first section reveal.
+        if (detail.tab) window.dispatchEvent(new CustomEvent("architrak:workflow-tab", { detail: { devisId, tab: detail.tab } }));
+        focusFrame = requestAnimationFrame(() => {
+          if (!focusActionTarget(detail.selector) && ++attempts < 30) focusFrame = requestAnimationFrame(focus);
+        });
+      };
+      focusFrame = requestAnimationFrame(focus);
+    };
+    window.addEventListener("architrak:workflow-target", target);
     return () => {
+      cancelAnimationFrame(focusFrame);
+      window.removeEventListener("architrak:workflow-target", target);
       window.removeEventListener("popstate", revealLink);
       window.removeEventListener("architrak:open-signing-send", signing);
       window.removeEventListener("architrak:workflow-jump", reveal);

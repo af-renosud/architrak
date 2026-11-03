@@ -1,4 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
+import { BlockedAction, focusActionTarget } from "@/components/ui/blocked-action";
+import { certificateSendRequirements } from "@/components/certificats/certificate-action-requirements";
 import { ArchitectInvoiceBadge } from "@/components/certificats/ArchitectInvoiceSection";
 import { useInvoiceAwareCertificatSend } from "@/hooks/use-invoice-aware-certificat-send";
 import { AppLayout } from "@/components/layout/AppLayout";
@@ -24,7 +26,6 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import type { Project, Contractor, Certificat, CertificatPayment, Invoice, Marche, Devis } from "@shared/schema";
 import {
-  canSendCertificat,
   hasCertificatDeliveryEvidence,
   isFalseSentCertificat,
   type CertificatWithDelivery,
@@ -478,7 +479,6 @@ export default function Certificats() {
             {allCertificats.map((cert) => {
               const delivered = hasCertificatDeliveryEvidence(cert);
               const falseSent = isFalseSentCertificat(cert);
-              const canSend = canSendCertificat(cert);
               const nextStatus = getNextStatus(cert.status);
               const nextLabel = getNextStatusLabel(cert.status);
               // Task #465 — sealed certificats flip to paid via the payment
@@ -620,8 +620,10 @@ export default function Certificats() {
                           <span className="text-[8px] font-bold uppercase tracking-widest">Reissue</span>
                         </Button>
                       )}
-                      {canSend && (
-                        <Button
+                      {(
+                        <BlockedAction
+                          actionLabel="Before sending this certificate"
+                          requirements={certificateSendRequirements(cert, () => focusActionTarget(`[data-testid="button-advance-cert-${cert.id}"]`))}
                           variant="outline"
                           onClick={() => sendMutation.mutate(cert)}
                           disabled={sendMutation.isPending}
@@ -633,7 +635,7 @@ export default function Certificats() {
                             <Send size={12} />
                           )}
                           <span className="text-[8px] font-bold uppercase tracking-widest">Send to client</span>
-                        </Button>
+                        </BlockedAction>
                       )}
                       {nextStatus && nextLabel && (
                         sealedPaidFlip ? (
@@ -647,7 +649,9 @@ export default function Certificats() {
                             <span className="text-[8px] font-bold uppercase tracking-widest">Log Payment</span>
                           </Button>
                         ) : (
-                          <Button
+                          <BlockedAction
+                            actionLabel="Before marking this certificate Ready"
+                            requirements={nextStatus === "ready" && missingIban ? [{ id: "banking", message: "The contractor has no IBAN on file. Update their banking details in Archi Doc before issuing this certificate.", href: "/contractors", linkLabel: "Go to contractor details" }] : []}
                             variant="outline"
                             onClick={() => updateStatusMutation.mutate({ id: cert.id, status: nextStatus })}
                             disabled={updateStatusMutation.isPending}
@@ -655,7 +659,7 @@ export default function Certificats() {
                           >
                             <ChevronRight size={12} />
                             <span className="text-[8px] font-bold uppercase tracking-widest">{nextLabel}</span>
-                          </Button>
+                          </BlockedAction>
                         )
                       )}
                       <Button

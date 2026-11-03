@@ -65,7 +65,10 @@ describe("shared client-payment evidence", () => {
   it.each(["draft", "superseded", "archived"])("refuses changes for %s and explains why", (status) => {
     client.setQueryData(["/api/certificats", "17", "payment-context"], { cert: { ...cert, status }, archived: status === "archived", invoices: [] });
     mount();
-    expect((screen.getByTestId("button-log-payment") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("button-log-payment").getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(screen.getByTestId("button-log-payment"));
+    expect(screen.queryByTestId("form-payment")).toBeNull();
+    expect(apiRequest).not.toHaveBeenCalled();
     expect(screen.getByRole("status").textContent).toBeTruthy();
     expect(screen.queryByTestId("button-add-payment-evidence-28")).toBeNull();
     expect(screen.queryByTestId("button-edit-payment-28")).toBeNull();
@@ -74,7 +77,7 @@ describe("shared client-payment evidence", () => {
   it("blocks an issued certificate when its project is archived", () => {
     client.setQueryData(["/api/certificats", "17", "payment-context"], { cert, archived: true, invoices: [] });
     mount();
-    expect((screen.getByTestId("button-log-payment") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("button-log-payment").getAttribute("aria-disabled")).toBe("true");
     expect(screen.getByRole("status").textContent).toContain("archivé");
     expect(screen.queryByTestId("button-add-payment-evidence-28")).toBeNull();
   });
@@ -132,9 +135,11 @@ describe("shared client-payment evidence", () => {
     fillPayment();
     expect((screen.getByLabelText("Affectation facture F-009") as HTMLInputElement).value).toBe("137.29");
     fireEvent.change(screen.getByLabelText("Affectation facture F-010"), { target: { value: "20" } });
-    expect((screen.getByTestId("button-save-payment") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("button-save-payment").getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(screen.getByTestId("button-save-payment"));
+    expect(apiRequest).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText("Affectation facture F-009"), { target: { value: "117.29" } });
-    expect((screen.getByTestId("button-save-payment") as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByTestId("button-save-payment").getAttribute("aria-disabled")).toBeNull();
   });
 
   it("opens active and deleted evidence using the in-app viewer and displays audit notes", () => {

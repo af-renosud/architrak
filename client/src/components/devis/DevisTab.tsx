@@ -1,4 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import { ActionChecklist, BlockedAction, RequirementList, type ActionRequirement } from "@/components/ui/blocked-action";
+import { fetchOpenQuotationChecks, quotationRequirement, readinessRequirements, stageRequirements } from "./action-requirements";
 import { BulkDocumentActions, BulkDocumentCheckbox } from "@/components/documents/BulkDocumentActions";
 import { useBulkDocuments, type BulkDocumentsSelection } from "@/hooks/use-bulk-documents";
 import { canBulkVoidDevis } from "@/lib/bulk-document-eligibility";
@@ -938,7 +940,7 @@ const REVIEW_STAGE_LABELS: Record<string, string> = {
  * Signature) rendered under the title/contractor line of every collapsed
  * devis card. Fed by ONE project-level batch query.
  */
-function ReadinessStrip({ d, r }: { d: Devis; r: DevisReadiness }) {
+function ReadinessStrip({ d, r, onOpen }: { d: Devis; r: DevisReadiness; onOpen: () => void }) {
   // Review step
   let review: { value: string; tone: StepTone; icon?: React.ReactNode };
   if (r.openContractorChecks > 0) {
@@ -1030,7 +1032,18 @@ function ReadinessStrip({ d, r }: { d: Devis; r: DevisReadiness }) {
         <ChevronRight size={10} className="text-muted-foreground/50 shrink-0" aria-hidden />
         <ReadinessStep name="Translation" value={translation.value} tone={translation.tone} testid={`readiness-translation-${d.id}`} />
         <ChevronRight size={10} className="text-muted-foreground/50 shrink-0" aria-hidden />
-        <ReadinessStep name="Ready" value={ready.value} tone={ready.tone} testid={`readiness-ready-${d.id}`} tooltip={ready.tooltip} />
+        {r.blockers.length && !r.sent ? <Popover>
+          <PopoverTrigger asChild><button type="button" className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-800" data-testid={`readiness-ready-${d.id}`}>Ready · Blocked</button></PopoverTrigger>
+          <PopoverContent className="max-w-[360px] space-y-2">
+            <p className="text-xs font-semibold">Before sending for signature</p>
+            <RequirementList requirements={readinessRequirements(r.blockers, d.id, d.projectId).map(requirement => ({
+              ...requirement, onResolve: requirement.onResolve ? () => {
+                onOpen();
+                requestAnimationFrame(() => requestAnimationFrame(() => requirement.onResolve?.()));
+              } : undefined,
+            }))} />
+          </PopoverContent>
+        </Popover> : <ReadinessStep name="Ready" value={ready.value} tone={ready.tone} testid={`readiness-ready-${d.id}`} tooltip={ready.tooltip} />}
         <ChevronRight size={10} className="text-muted-foreground/50 shrink-0" aria-hidden />
         <ReadinessStep name="Signature" value={signature.value} tone={signature.tone} testid={`readiness-signature-${d.id}`} />
       </div>
@@ -1175,7 +1188,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
               <span className="text-[10px] text-muted-foreground">
                 {contractors.find((c) => c.id === d.contractorId)?.name ?? `#${d.contractorId}`}
               </span>
-              {readiness && !isVoid && <ReadinessStrip d={d} r={readiness} />}
+              {readiness && !isVoid && <ReadinessStrip d={d} r={readiness} onOpen={() => { if (!expanded) onToggle(); }} />}
             </div>
           </div>
           <TooltipProvider delayDuration={200}>
@@ -5203,7 +5216,7 @@ function ChecksPanel({
   const [questionDraft, setQuestionDraft] = useState("");
   const [savingQuestion, setSavingQuestion] = useState(false);
 
-  const { data: checks = [], isLoading } = useQuery<CheckWithMessages[]>({
+  const { data: checks = [], isLoading, isError: checksError, refetch: refetchChecks } = useQuery<CheckWithMessages[]>({
     queryKey: ["/api/devis", devisId, "checks"],
   });
 
@@ -5306,7 +5319,8 @@ function ChecksPanel({
     onError: (error: Error) => toast({ title: "Unable to restore question", description: error.message, variant: "destructive" }),
   });
 
-  if (isLoading) return null;
+  if (isLoading) return <div className="space-y-2"><p role="status" className="text-xs text-muted-foreground">Checking contractor questions…</p><Skeleton className="h-16 w-full" /></div>;
+  if (checksError) return <div className="space-y-2"><p role="alert" className="text-xs text-destructive">Contractor questions are unavailable. Clearance is unknown; retry before sending.</p><Button variant="outline" onClick={() => void refetchChecks()}>Retry contractor questions</Button></div>;
 
   // Variant B partitions checks into the "drafts going out next" set
   // (status='open' — included in the bottom-mirror digest) and the
@@ -6248,7 +6262,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
   };
 
   const isVoid = devis.status === "void";
-  const missingLot = !devis.lotId;
+  const missingLot = devis.lotId == null && !(devis.lotRefText ?? "").trim();
   const missingDescriptionUk = !devis.descriptionUk || devis.descriptionUk.trim() === "";
   const signOffBlocked = missingLot || missingDescriptionUk;
 
@@ -6264,21 +6278,29 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
   // Open checks must be cleared before the architect can advance the devis to
   // 'sent_to_client' or beyond. The server enforces this with a 409, but we
   // also surface the lock visually on the stepper button.
-  const { data: openChecksCountForDevis = 0 } = useQuery<number>({
+  const openChecksQuery = useQuery<number>({
     queryKey: ["/api/devis", devis.id, "checks", "open-count"],
-    queryFn: async () => {
-      const res = await fetch(`/api/devis/${devis.id}/checks`);
-      if (!res.ok) return 0;
-      const list: Array<{ status: string }> = await res.json();
-      return list.filter(c => c.status === "open" || c.status === "awaiting_contractor" || c.status === "awaiting_architect").length;
-    },
+    queryFn: () => fetchOpenQuotationChecks(devis.id),
   });
-  const checksLocked = openChecksCountForDevis > 0;
-  const { data: workflowReadiness } = useQuery<Record<number, DevisReadiness>>({
+  const openChecksCountForDevis = openChecksQuery.data;
+  const checksUnavailable = openChecksQuery.isError || openChecksCountForDevis == null;
+  const checksLocked = checksUnavailable || openChecksCountForDevis > 0;
+  const { data: workflowReadiness, isError: readinessError, refetch: refetchReadiness } = useQuery<Record<number, DevisReadiness>>({
     queryKey: projectScopedKey(projectId, "devis-readiness"),
   });
   const readiness = workflowReadiness?.[devis.id];
   const workflowStatus = useDevisWorkflowStatus(devis.id);
+  const checksRequirements: ActionRequirement[] = checksUnavailable
+    ? [{ id: "checks-status", kind: openChecksQuery.isError ? "technical" : "waiting", message: openChecksQuery.isError ? "Contractor checks could not be loaded; clearance is unknown." : "Checking contractor questions before sending.", onResolve: () => { void openChecksQuery.refetch(); }, linkLabel: "Retry checks" }]
+    : openChecksCountForDevis > 0 ? [quotationRequirement("checks", `${openChecksCountForDevis} unresolved contractor question(s).`, devis.id)] : [];
+  const sendChecklist: ActionRequirement[] = [
+    ...checksRequirements,
+    ...(readiness ? readinessRequirements(readiness.blockers, devis.id, projectId).filter(item => !checksRequirements.length || item.id !== "checks") : [{
+      id: "readiness", kind: readinessError ? "technical" as const : "waiting" as const,
+      message: readinessError ? "Pre-send readiness is unavailable." : "Checking pre-send readiness.",
+      onResolve: () => { void refetchReadiness(); }, linkLabel: "Retry readiness",
+    }]),
+  ];
 
   return (
     <div className={`ml-4 mt-1 mb-3 border-l-2 border-[rgba(0,0,0,0.08)] pl-4 space-y-4 ${isVoid ? "opacity-50" : ""}`} data-testid={`detail-devis-${devis.id}`}>
@@ -6286,10 +6308,17 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground" aria-label="Quotation workflow status">
         <span>Quoted · <Amount value={parseFloat(devis.amountHt)} denomination="HT" /> · <Amount value={parseFloat(devis.amountTtc)} denomination="TTC" /></span>
         <span>{financial ? commitmentLabel(financial) : "Commitment evidence · see financial summary"}</span>
-        <span>{openChecksCountForDevis} unresolved contractor question(s){readiness ? ` · ${readiness.openClientChecks} client question(s)` : ""}</span>
+        <span>{checksUnavailable ? (openChecksQuery.isError ? "Contractor checks unavailable" : "Checking contractor questions…") : `${openChecksCountForDevis} unresolved contractor question(s)`}{readiness ? ` · ${readiness.openClientChecks} client question(s)` : ""}</span>
       </div>
       {signOffBlocked && !isVoid && <WorkflowNotice group="review" message={`Sign-off blocked · ${missingLot ? "Lot assignment required. " : ""}${missingDescriptionUk ? "English works description required." : ""}`} />}
-      {!!readiness?.blockers.length && <div className="text-[11px] text-amber-800" data-testid={`workflow-blockers-${devis.id}`}>{readiness.blockers.join(" · ")}</div>}
+      {!isVoid && <div data-testid={`workflow-blockers-${devis.id}`}><ActionChecklist label="Before sending for signature" requirements={sendChecklist} reviewLinks={[
+        quotationRequirement("lot", "Lot reference and saved quotation details.", devis.id),
+        quotationRequirement("description", "English works description.", devis.id),
+        quotationRequirement("translation", `Translated signature PDF${readiness ? ` · ${readiness.translationStatus}` : ""}.`, devis.id),
+        quotationRequirement("checks", checksUnavailable ? "Contractor question clearance unknown." : `Contractor questions · ${openChecksCountForDevis} unresolved.`, devis.id),
+        quotationRequirement("contact", "Client signing name and email.", devis.id, projectId),
+        quotationRequirement("insurance", readiness?.insuranceOk ? "Insurance mirror check passed; live verdict is checked at send time." : "Insurance verdict and any recorded override.", devis.id),
+      ]} /></div>}
       {workflowStatus.analysis.data?.quotationChanged && <WorkflowNotice group="prepare" tab="translation" message="Stale cost analysis · quotation changed. Review before sending; stale analysis is excluded from client packages." />}
       {workflowStatus.translation.data?.status === "failed" && <WorkflowNotice group="prepare" tab="translation" error message={`Translation failed · ${workflowStatus.translation.data.errorMessage ?? "Review Prepare package to retry."}`} />}
       {(workflowStatus.analysis.isError || workflowStatus.translation.isError) && <WorkflowNotice group="prepare" error message="Package status could not be loaded. Review before sending." onRetry={() => { void workflowStatus.analysis.refetch(); void workflowStatus.translation.refetch(); }} />}
@@ -6634,12 +6663,21 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
           // stage) while there are open contractor questions.
           const lockedByChecks = checksLocked && idx >= SENT_TO_CLIENT_INDEX && currentStageIndex < SENT_TO_CLIENT_INDEX;
           const lockTitle = lockedByChecks
-            ? `Résolvez d'abord les ${openChecksCountForDevis} question(s) en cours avec l'entreprise avant l'envoi au client.`
+            ? checksUnavailable ? "Contractor check status must be available before sending." : `Resolve ${openChecksCountForDevis} contractor question(s) before sending.`
             : undefined;
+          const requirements: ActionRequirement[] = [
+            ...(isVoid || isArchived ? [{ id: "readonly", kind: "readonly" as const, message: isVoid ? "This quotation is void. Restore it before changing its stage." : "This project is archived. Restore the project before making changes." }] : []),
+            ...(idx > currentStageIndex && idx > 0 ? stageRequirements(devis) : []),
+            ...(lockedByChecks ? checksRequirements : []),
+            ...(idx >= SENT_TO_CLIENT_INDEX && idx > currentStageIndex && !requiresStageReopenConfirmation(devis.signOffStage, stage.key) && (stage.key === "client_signed_off" || devis.signOffStage !== "approved_for_signing")
+              ? [quotationRequirement("signature", stage.key === "client_signed_off" ? "A recorded client signature is required. This stage cannot be set manually here." : "Approve this quotation for signing before sending to the client.", devis.id)] : []),
+          ];
           return (
             <div key={stage.key} className="flex items-center gap-1.5 flex-1">
-              <button
+              <BlockedAction
                 type="button"
+                actionLabel={`Before ${stage.label}`}
+                requirements={requirements}
                 title={lockTitle}
                 aria-disabled={lockedByChecks ? "true" : undefined}
                 className={`flex-1 px-2 py-1.5 rounded-lg border text-[9px] font-bold uppercase tracking-wide text-center transition-all flex items-center justify-center gap-1
@@ -6713,12 +6751,12 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
                     onError: (error: Error) => toast({ title: "Could not update stage", description: error.message, variant: "destructive" }),
                   });
                 }}
-                disabled={isVoid || isArchived || !!stageRecoveryRequest || updateDevisMutation.isPending || (signOffBlocked && idx > currentStageIndex && idx > 0)}
+                disabled={!!stageRecoveryRequest || updateDevisMutation.isPending}
                 data-testid={`button-stage-${stage.key}-${devis.id}`}
               >
                 {lockedByChecks && <Ban size={9} />}
                 {stage.label}
-              </button>
+              </BlockedAction>
               {idx < SIGN_OFF_STAGES.length - 1 && (
                 <ChevronRight size={10} className={isCompleted && idx < currentStageIndex ? "text-emerald-400" : "text-slate-300"} />
               )}
@@ -6784,7 +6822,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
           summarises what will go out in the next email round. Kept above the
           sign-off stepper so checksLocked gating stays visually adjacent to
           the gated SENT_TO_CLIENT button. */}
-      <WorkflowSection group="send" summary={`${openChecksCountForDevis} contractor questions · ${readiness?.signature ?? devis.signOffStage ?? "Not sent"}`}>
+      <WorkflowSection group="send" summary={`${checksUnavailable ? openChecksQuery.isError ? "Checks unavailable" : "Checking questions…" : `${openChecksCountForDevis} contractor questions`} · ${readiness?.signature ?? devis.signOffStage ?? "Not sent"}`}>
       {!isVoid && (
         <ChecksPanel
           devisId={devis.id}

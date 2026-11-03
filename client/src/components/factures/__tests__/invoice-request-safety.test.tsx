@@ -69,17 +69,21 @@ describe("invoice request safety", () => {
     seed([draft]);
     renderTab();
     const confirm = await screen.findByTestId("button-confirm-draft-41");
-    expect(confirm).toBeDisabled();
+    expect(confirm).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(confirm);
+    expect(screen.getByText("Before confirming this invoice")).toBeVisible();
+    expectOnlyHistoryReads();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     expect(screen.getByTestId("conflict-draft-invoice-41")).toHaveTextContent(invoiceRequestConflict(draft)!);
     fireEvent.click(screen.getByTestId("checkbox-manual-invoice-review-41"));
-    expect(confirm).toBeDisabled();
+    expect(confirm).toHaveAttribute("aria-disabled", "true");
     fireEvent.click(screen.getByTestId("button-apply-requested-deposit-41"));
     expect(screen.getByTestId("input-draft-ht-41")).toHaveValue(5471.24);
     expect(screen.getByTestId("input-draft-ttc-41")).toHaveValue(6018.36);
-    expect(confirm).toBeEnabled();
+    expect(confirm).not.toHaveAttribute("aria-disabled");
     expect(screen.queryByTestId("conflict-draft-invoice-41")).toBeNull();
     fireEvent.change(screen.getByTestId("input-draft-ht-41"), { target: { value: "18237.45" } });
-    expect(confirm).toBeDisabled();
+    expect(confirm).toHaveAttribute("aria-disabled", "true");
     expectOnlyHistoryReads();
   });
 
@@ -88,7 +92,9 @@ describe("invoice request safety", () => {
     renderTab();
     const confirm = await screen.findByTestId("button-confirm-draft-41");
     fireEvent.click(screen.getByTestId("checkbox-manual-invoice-review-41"));
-    expect(confirm).toBeDisabled();
+    expect(confirm).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(confirm);
+    expectOnlyHistoryReads();
     expect(screen.getByTestId("conflict-draft-invoice-41")).toHaveTextContent("A general review acknowledgement does not resolve this conflict.");
     expect(screen.queryByTestId("button-apply-requested-deposit-41")).toBeNull();
   });
@@ -101,7 +107,10 @@ describe("invoice request safety", () => {
     expect(screen.queryByTestId("request-resolution-history-41")).toBeNull();
     expect(fetch).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId("row-facture-toggle-41"));
-    expect(await screen.findByTestId("button-approve-invoice-41")).toBeDisabled();
+    expect(await screen.findByTestId("button-approve-invoice-41")).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(screen.getByTestId("button-approve-invoice-41"));
+    expect(screen.getByText("Before approving this invoice")).toBeVisible();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     expect(screen.getByTestId("button-reopen-review-invoice-41")).toBeEnabled();
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
     expectOnlyHistoryReads();
@@ -122,9 +131,11 @@ describe("invoice request safety", () => {
     fireEvent.click(screen.getByTestId("checkbox-select-facture-41"));
     expect(screen.getByTestId("button-create-certificat-multi")).toBeEnabled();
     await act(async () => { seed([invoice(40, "approved", true), invoice(41, "approved")]); });
-    await waitFor(() => expect(screen.getByTestId("button-create-certificat-multi")).toBeDisabled());
-    expect(screen.getByTestId("button-create-certificat-facture-41")).toBeDisabled();
-    expect(screen.getByTestId("checkbox-select-facture-41")).toBeDisabled();
+    await waitFor(() => expect(screen.getByTestId("button-create-certificat-multi")).toHaveAttribute("aria-disabled", "true"));
+    expect(screen.getByTestId("button-create-certificat-facture-41")).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByTestId("checkbox-select-facture-41")).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(screen.getByTestId("button-create-certificat-multi"));
+    expect(screen.queryByTestId("dialog-create-certificat-multi")).toBeNull();
     expect(screen.getByTestId("conflict-invoice-41")).toHaveTextContent("Full quotation totals are reference information");
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -136,7 +147,9 @@ describe("invoice request safety", () => {
         <CreateMultiCertificatDialog invoices={[invoice(40, "approved", true), conflicting]} contractorName="Atelier Pierre" contractorIban="FR761234" projectId="12" onClose={vi.fn()} onCreated={vi.fn()} />
       </QueryClientProvider>,
     );
-    expect(screen.getByTestId("button-confirm-create-certificat-multi")).toBeDisabled();
+    expect(screen.getByTestId("button-confirm-create-certificat-multi")).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(screen.getByTestId("button-confirm-create-certificat-multi"));
+    expect(screen.getByText("Before creating this grouped certificate")).toBeVisible();
     expect(screen.getByTestId("conflict-create-certificat-multi-41")).toHaveTextContent(invoiceRequestConflict(conflicting)!);
     expect(fetch).not.toHaveBeenCalled();
   });

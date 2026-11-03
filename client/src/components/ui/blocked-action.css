@@ -1,0 +1,11 @@
+.blocked-action-target {
+  outline: 3px solid #b68a51 !important;
+  outline-offset: 4px;
+}
+.blocked-action-help { max-width: min(360px, calc(100vw - 32px)); }
+button[data-blocked-action="true"]:not(:disabled) { cursor: help; }
+.blocked-action-checklist { border: 1px solid hsl(var(--border)); border-radius: 8px; padding: 12px; background: hsl(var(--muted) / .35); }
+.blocked-action-checklist li + li { margin-top: 6px; }
+@media (prefers-reduced-motion: reduce) {
+  .blocked-action-target { scroll-behavior: auto !important; }
+}

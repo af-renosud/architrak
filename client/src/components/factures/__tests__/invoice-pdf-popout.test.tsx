@@ -124,7 +124,7 @@ describe("invoice source PDF popout", () => {
     renderTab();
     expect(screen.queryByTestId("input-draft-ht-40")).toBeNull();
     expect(screen.getByTestId("badge-invoice-client-payment-40")).toHaveTextContent(/317,86.*1 justificatif PDF/);
-    expect(screen.getByTestId("button-record-client-payment-41")).toBeDisabled();
+    expect(screen.getByTestId("button-record-client-payment-41")).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByTestId("payment-unavailable-41")).toHaveTextContent("Un certificat émis");
     fireEvent.click(screen.getByTestId("button-record-client-payment-40"));
     expect(screen.getByTestId("dialog-invoice-payment")).toBeInTheDocument();

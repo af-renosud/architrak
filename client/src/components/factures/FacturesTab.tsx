@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { BlockedAction, focusActionTarget, type ActionRequirement } from "@/components/ui/blocked-action";
 import { PdfPopoutViewer } from "@/components/devis/PdfPopoutViewer";
 import { InvoicePaymentDialog } from "@/components/certificats/InvoicePaymentDialog";
 import { paymentStateReason, type PaymentWithEvidence } from "@/hooks/use-certificat-payment-context";
@@ -138,7 +139,7 @@ function CreateCertificatDialog({
   const { toast } = useToast();
   const requestConflict = invoiceRequestConflict(invoice);
 
-  const { data: preview, isLoading, error } = useQuery<CertificatPreview>({
+  const { data: preview, isLoading, error, refetch } = useQuery<CertificatPreview>({
     queryKey: ["/api/invoices", invoice.id, "certificat-preview"],
     enabled: !requestConflict,
   });
@@ -260,15 +261,20 @@ function CreateCertificatDialog({
           <Button variant="outline" onClick={onClose} data-testid="button-cancel-create-certificat">
             Annuler
           </Button>
-          <Button
+          <BlockedAction
+            actionLabel="Before creating this certificate"
+            requirements={[
+              ...(requestConflict ? [{ id: "conflict", message: "Resolve the invoice request conflict with an audited decision before creating a certificate.", href: `/projets/${projectId}?tab=factures&invoice=${invoice.id}`, linkLabel: "Go to invoice review" }] : []),
+              ...(!preview || error ? [{ id: "preview", kind: error ? "technical" as const : "waiting" as const, message: error ? `Certificate preview unavailable: ${(error as Error).message}` : "Checking the server-derived certificate amounts.", onResolve: () => { void refetch(); }, linkLabel: "Retry preview" }] : []),
+            ]}
             className="bg-[#0B2545] hover:bg-[#0B2545]/90 text-white gap-1.5"
-            disabled={!preview || createMutation.isPending || !!requestConflict}
+            disabled={createMutation.isPending}
             onClick={() => createMutation.mutate()}
             data-testid={isSupplier ? "button-confirm-supplier-direct-payment" : "button-confirm-create-certificat"}
           >
             {createMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <Award size={14} />}
             {isSupplier ? "Confirmer le paiement direct fournisseur" : "Créer le certificat"}
-          </Button>
+          </BlockedAction>
         </div>
       </DialogContent>
     </Dialog>
@@ -306,7 +312,7 @@ export function CreateMultiCertificatDialog({
     return message ? [{ invoice, message }] : [];
   });
 
-  const { data: preview, isLoading, error } = useQuery<CertificatPreview & {
+  const { data: preview, isLoading, error, refetch } = useQuery<CertificatPreview & {
     derivation: CertificatPreview["derivation"] & {
        invoices: Array<{ invoiceId: number; invoiceNumber: string; periodClaimHt: number; amountHt?: number | string; tvaAmount?: number | string; amountTtc?: number | string }>;
     };
@@ -488,9 +494,14 @@ export function CreateMultiCertificatDialog({
           <Button variant="outline" onClick={onClose} data-testid="button-cancel-create-certificat-multi">
             Annuler
           </Button>
-          <Button
+          <BlockedAction
+            actionLabel="Before creating this grouped certificate"
+            requirements={[
+              ...requestConflicts.map(({ invoice }) => ({ id: `conflict-${invoice.id}`, message: `Resolve the request conflict on invoice #${invoice.invoiceNumber}.`, href: `/projets/${projectId}?tab=factures&invoice=${invoice.id}`, linkLabel: "Go to invoice review" })),
+              ...(!preview || error ? [{ id: "preview", kind: error ? "technical" as const : "waiting" as const, message: error ? `Grouped preview unavailable: ${(error as Error).message}` : "Checking the selected invoices and server-derived amounts.", onResolve: () => { void refetch(); }, linkLabel: "Retry preview" }] : []),
+            ]}
             className="bg-[#0B2545] hover:bg-[#0B2545]/90 text-white gap-1.5"
-            disabled={!preview || createMutation.isPending || requestConflicts.length > 0}
+            disabled={createMutation.isPending}
             onClick={() => createMutation.mutate()}
             data-testid={isSupplier ? "button-confirm-supplier-direct-payment-multi" : "button-confirm-create-certificat-multi"}
           >
@@ -506,7 +517,7 @@ export function CreateMultiCertificatDialog({
               : invoices.length === 1
                 ? "Créer le certificat"
                 : "Créer le certificat groupé"}
-          </Button>
+          </BlockedAction>
         </div>
       </DialogContent>
     </Dialog>
@@ -557,7 +568,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
   });
 
   // Task #496 — which invoices are already certified (live certs only).
-  const { data: certLinks } = useQuery<CertInvoiceLink[]>({
+  const { data: certLinks, isError: certLinksError, refetch: refetchCertLinks } = useQuery<CertInvoiceLink[]>({
     queryKey: projectScopedKey(projectId, "certificat-invoice-links"),
   });
   const certLinkByInvoice = new Map((certLinks ?? []).map((l) => [l.invoiceId, l]));
@@ -571,6 +582,16 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
   // Multi-facture certificats — selection of eligible factures (same contractor).
   const [selectedForCert, setSelectedForCert] = useState<Set<number>>(new Set());
   const [multiCertDialogOpen, setMultiCertDialogOpen] = useState(false);
+  const certificateStatusRequirements: ActionRequirement[] = certLinks == null || certLinksError ? [{
+    id: "certificate-status", kind: certLinksError ? "technical" : "waiting",
+    message: certLinksError ? "Linked certificate status is unavailable." : "Checking linked certificate status.",
+    onResolve: () => { void refetchCertLinks(); }, linkLabel: "Retry certificate status",
+  }] : [];
+  const revealInvoice = (invoiceId: number, testId: string) => {
+    setExpandedInvoice(invoiceId);
+    requestAnimationFrame(() => requestAnimationFrame(() => focusActionTarget(`[data-testid="${testId}"]`)));
+  };
+  const readOnlyRequirements: ActionRequirement[] = isArchived ? [{ id: "archived", kind: "readonly", message: "This project is archived. Restore the project before making changes." }] : [];
   const toggleCertSelection = (invoiceId: number) => {
     setSelectedForCert((prev) => {
       const next = new Set(prev);
@@ -721,17 +742,23 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
               <Button variant="ghost" size="sm" onClick={() => setSelectedForCert(new Set())} data-testid="button-clear-certificat-selection">
                 <span className="text-[9px] font-bold uppercase tracking-widest">Effacer</span>
               </Button>
-              <Button
+              <BlockedAction
+                actionLabel="Before creating a grouped certificate"
+                requirements={[
+                  ...readOnlyRequirements,
+                  ...certificateStatusRequirements,
+                  ...(selectedInvoices.length < 2 ? [{ id: "selection", message: "Select at least two eligible invoices from the same contractor.", onResolve: () => { const candidate = invoices?.find(invoice => invoice.status === "approved" && !certLinkByInvoice.has(invoice.id) && invoice.contractorId === selectedInvoices[0]?.contractorId && !selectedForCert.has(invoice.id)); focusActionTarget(`[data-testid="checkbox-select-facture-${candidate?.id ?? selectedInvoices[0]?.id}"]`); }, linkLabel: "Go to invoice selection" }] : []),
+                  ...(selectionHasConflict ? [{ id: "conflicts", message: "A selected invoice has an unresolved request conflict.", onResolve: () => { const invoice = selectedInvoices.find(item => invoiceRequestConflict(item)); if (invoice) revealInvoice(invoice.id, `button-resolve-invoice-request-${invoice.id}`); }, linkLabel: "Go to request conflict" }] : []),
+                ]}
                 size="sm"
                 className="bg-[#0B2545] hover:bg-[#0B2545]/90 text-white gap-1.5"
-                disabled={selectedInvoices.length < 2 || isArchived || selectionHasConflict}
                 onClick={() => setMultiCertDialogOpen(true)}
                 data-testid={contractors.find((c) => c.id === selectedInvoices[0]?.contractorId)?.archidocPartnerType === "supplier" ? "button-create-supplier-direct-payment-multi" : "button-create-certificat-multi"}
                 title={selectedInvoices.length < 2 ? "Sélectionnez au moins 2 factures" : undefined}
               >
                 <Award size={13} />
                 <span className="text-[10px] font-bold uppercase tracking-widest">{contractors.find((c) => c.id === selectedInvoices[0]?.contractorId)?.archidocPartnerType === "supplier" ? `Paiement direct fournisseur (${selectedInvoices.length})` : `Certificat groupé (${selectedInvoices.length})`}</span>
-              </Button>
+              </BlockedAction>
             </div>
           </div>
         );
@@ -768,16 +795,21 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                     <div className="flex items-center gap-3 flex-wrap min-w-0 flex-1">
                       <BulkDocumentCheckbox selection={bulk} id={inv.id} name={`draft invoice ${inv.invoiceNumber}`} eligible={canDiscard(inv)} />
                       {isEligibleForCert && (
-                        <input
-                          type="checkbox"
+                        <BlockedAction
+                          actionLabel="Before selecting this invoice"
+                          aria-label={`Select invoice ${inv.invoiceNumber} for grouped certificate`}
+                          role="checkbox"
+                          aria-checked={selectedForCert.has(inv.id)}
+                          requirements={[
+                            ...certificateStatusRequirements,
+                            ...(wrongContractor ? [{ id: "contractor", message: "A grouped certificate can cover only one contractor. Clear the current selection first.", onResolve: () => setSelectedForCert(new Set()), linkLabel: "Clear current selection" }] : []),
+                            ...(requestConflict ? [{ id: "conflict", message: "Resolve this invoice's request conflict before selecting it.", onResolve: () => revealInvoice(inv.id, `button-resolve-invoice-request-${inv.id}`), linkLabel: "Go to request conflict" }] : []),
+                          ]}
                           className="h-4 w-4 accent-[#0B2545] cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
-                          checked={selectedForCert.has(inv.id)}
-                          disabled={wrongContractor || !!requestConflict}
                           title={requestConflict ?? (wrongContractor ? "Un certificat groupé couvre les factures d'une seule entreprise" : "Sélectionner pour un certificat groupé")}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={() => toggleCertSelection(inv.id)}
+                          onClick={() => toggleCertSelection(inv.id)}
                           data-testid={`checkbox-select-facture-${inv.id}`}
-                        />
+                        >{selectedForCert.has(inv.id) && <CheckCircle2 size={12} />}</BlockedAction>
                       )}
                       {expandedInvoice === inv.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                       <div className="min-w-0">
@@ -806,9 +838,16 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                         const evidenceCount = linkedPayments.filter((payment) => payment.evidenceFileName).length;
                         return <div className="flex flex-wrap items-center gap-2" onClick={(event) => event.stopPropagation()}>
                           <div className="flex flex-col items-start gap-1">
-                            <Button variant="outline" size="sm" className="h-8 text-[10px] gap-1.5" disabled={!link || !!reason} title={reason ?? "Ouvrir le journal partagé du certificat"} onClick={() => { if (link) setPaymentInvoice({ invoice: inv, certificatId: link.certificatId }); }} data-testid={`button-record-client-payment-${inv.id}`}>
+                            <BlockedAction actionLabel="Before recording a client payment" requirements={[
+                              ...certificateStatusRequirements,
+                              ...readOnlyRequirements,
+                              ...(reason && !isArchived && !certificateStatusRequirements.length ? [{
+                                id: "certificate", message: link ? "This certificate is not open for payment recording. Review its status and shared ledger." : "An issued certificate linked to this invoice is required. Create and issue it before recording payment.",
+                                ...(link ? { href: `/certificats?projectId=${projectId}&certificatId=${link.certificatId}`, linkLabel: "Go to certificate" } : dv?.acompteInvoiceId === inv.id || inv.datePaid != null ? {} : { onResolve: () => { const target = document.querySelector(`[data-testid="button-create-certificat-facture-${inv.id}"], [data-testid="button-create-supplier-direct-payment-facture-${inv.id}"]`); if (target) focusActionTarget(`[data-testid="${target.getAttribute("data-testid")}"]`); else revealInvoice(inv.id, inv.status === "pending" ? `button-approve-invoice-${inv.id}` : `button-confirm-draft-${inv.id}`); }, linkLabel: inv.status === "approved" ? "Go to certificate creation" : "Go to invoice review" }),
+                              }] : []),
+                            ]} variant="outline" size="sm" className="h-8 text-[10px] gap-1.5" title={reason ?? "Ouvrir le journal partagé du certificat"} onClick={() => { if (link) setPaymentInvoice({ invoice: inv, certificatId: link.certificatId }); }} data-testid={`button-record-client-payment-${inv.id}`}>
                               <Receipt size={12} /> Enregistrer un paiement client
-                            </Button>
+                            </BlockedAction>
                             {reason && <span className="max-w-64 text-[9px] leading-snug text-muted-foreground" data-testid={`payment-unavailable-${inv.id}`}>{reason}</span>}
                           </div>
                           {linkedPayments.length > 0 && <Badge variant="outline" className="border-[#c1a27b]/50 bg-[#c1a27b]/10 text-[#0B2545] text-[10px]" data-testid={`badge-invoice-client-payment-${inv.id}`}>Paiement client enregistré : {fmt(recorded)} TTC · {evidenceCount ? `${evidenceCount} justificatif${evidenceCount > 1 ? "s" : ""} PDF` : "sans justificatif"}</Badge>}
@@ -839,10 +878,15 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                           inv.datePaid != null
                         ) return null;
                         return (
-                          <Button
+                          <BlockedAction
+                            actionLabel="Before creating a certificate"
+                            requirements={[
+                              ...readOnlyRequirements,
+                              ...certificateStatusRequirements,
+                              ...(requestConflict ? [{ id: "conflict", message: "Resolve the invoice request conflict before creating a certificate.", onResolve: () => revealInvoice(inv.id, `button-resolve-invoice-request-${inv.id}`), linkLabel: "Go to request conflict" }] : []),
+                            ]}
                             size="sm"
                             className="h-8 px-4 gap-1.5 bg-[#0B2545] hover:bg-[#0B2545]/90 text-white shadow-sm"
-                            disabled={isArchived || !!requestConflict}
                             onClick={(e) => {
                               e.stopPropagation();
                               setCertDialogInvoice(inv);
@@ -851,7 +895,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                           >
                             <Award size={13} />
                             <span className="text-[10px] font-bold uppercase tracking-widest">{isSupplier ? "Paiement direct fournisseur" : "Créer le certificat"}</span>
-                          </Button>
+                          </BlockedAction>
                         );
                       })()}
                       {inv.pdfPath && (
@@ -1266,18 +1310,25 @@ function DraftReviewPanel({ invoice, projectId, devis, isArchived = false, onRes
             {discardMutation.isPending ? "Deleting..." : "Discard"}
           </span>
         </Button>
-        <Button
+        <BlockedAction
+          actionLabel="Before confirming this invoice"
+          requirements={[
+            ...(isArchived ? [{ id: "archived", kind: "readonly" as const, message: "This project is archived. Restore it before confirming invoices." }] : []),
+            ...(!amountReview.validAmounts ? [{ id: "amounts", message: "Enter valid HT and TTC amounts for this invoice request.", onResolve: () => focusActionTarget(`[data-testid="input-draft-ht-${invoice.id}"]`), linkLabel: "Go to invoice amounts" }] : []),
+            ...(amountReview.requestConflict ? [{ id: "conflict", message: "Resolve the invoice request conflict with an audited decision.", onResolve: onResolveRequest, linkLabel: "Go to request resolution" }] : []),
+            ...(invoice.manualIntakeReviewRequired && !manualReviewConfirmed ? [{ id: "manual-review", message: "Review the manually submitted PDF and confirm its number, target quotation and amounts.", onResolve: () => focusActionTarget(`[data-testid="checkbox-manual-invoice-review-${invoice.id}"]`), linkLabel: "Go to manual review" }] : []),
+          ]}
           size="sm"
           className="gap-1.5"
           onClick={() => confirmMutation.mutate()}
-          disabled={confirmMutation.isPending || discardMutation.isPending || isArchived || !amountReview.validAmounts || !!amountReview.requestConflict || (invoice.manualIntakeReviewRequired && !manualReviewConfirmed)}
+          disabled={confirmMutation.isPending || discardMutation.isPending}
           data-testid={`button-confirm-draft-${invoice.id}`}
         >
           {confirmMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
           <span className="text-[9px] font-bold uppercase tracking-widest">
             {confirmMutation.isPending ? "Confirming..." : "Confirm Invoice"}
           </span>
-        </Button>
+        </BlockedAction>
       </div>
     </div>
   );
@@ -1389,9 +1440,14 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
           >
             <span className="text-[10px] font-bold uppercase tracking-widest">Reopen Review</span>
           </Button>
-          <Button
+          <BlockedAction
+            actionLabel="Before approving this invoice"
+            requirements={[
+              ...(isArchived ? [{ id: "archived", kind: "readonly" as const, message: "This project is archived. Restore it before approving invoices." }] : []),
+              ...(requestConflict ? [{ id: "conflict", message: "Resolve the invoice request conflict before approval.", onResolve: onResolveRequest, linkLabel: "Go to request resolution" }] : []),
+            ]}
             onClick={() => approveMutation.mutate()}
-            disabled={approveMutation.isPending || isArchived || !!requestConflict}
+            disabled={approveMutation.isPending}
             className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1.5"
             data-testid={`button-approve-invoice-${invoice.id}`}
           >
@@ -1399,7 +1455,7 @@ function InvoiceDetailInline({ invoice, projectId, devis, contractorName, isArch
             <span className="text-[10px] font-bold uppercase tracking-widest">
               {approveMutation.isPending ? "Approving..." : "Approve Invoice"}
             </span>
-          </Button>
+          </BlockedAction>
         </div>
       )}
 

@@ -34,6 +34,9 @@ import { IntakeTab } from "@/components/intake/IntakeTab";
 import { OutstandingFeesPanel } from "@/components/fees/OutstandingFeesPanel";
 import { OutstandingFeesBanner } from "@/components/fees/OutstandingFeesBanner";
 import { DesignContractCard } from "@/components/projects/DesignContractCard";
+import { ProjectContactEditor } from "@/components/projects/ProjectContactEditor";
+import { BlockedAction, focusActionTarget } from "@/components/ui/blocked-action";
+import { certificateSendRequirements } from "@/components/certificats/certificate-action-requirements";
 import { CreateMultiCertificatDialog, FacturesTab } from "@/components/factures/FacturesTab";
 import { NeedsReviewTab } from "@/components/reconciliation/NeedsReviewTab";
 import { AccountingStatusBadge } from "@/components/reconciliation/AccountingStatusBadge";
@@ -1408,6 +1411,7 @@ export default function ProjectDetail() {
           </Button>
         </div>
 
+        <ProjectContactEditor project={project} isArchived={isArchived} />
         <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
           <DialogContent className="max-w-sm">
             <DialogHeader>
@@ -2126,7 +2130,6 @@ export default function ProjectDetail() {
                   {certificatsList.map((c) => {
                     const delivered = hasCertificatDeliveryEvidence(c);
                     const falseSent = isFalseSentCertificat(c);
-                    const canSend = canSendCertificat(c);
                     const nextStatus = getNextCertStatus(c.status);
                     const nextLabel = getNextCertLabel(c.status);
                     return (
@@ -2191,11 +2194,16 @@ export default function ProjectDetail() {
                                 le {new Date(c.sentAt!).toLocaleDateString("fr-FR")}
                               </span>
                             )}
-                            {canSend && (
-                              <Button
+                            {(
+                              <BlockedAction
+                                actionLabel="Before sending this certificate"
+                                requirements={[
+                                  ...certificateSendRequirements(c, () => focusActionTarget(`[data-testid="button-advance-cert-tab-${c.id}"]`)),
+                                  ...(isArchived ? [{ id: "archived", kind: "readonly" as const, message: "This project is archived. Restore it before sending certificates." }] : []),
+                                ]}
                                 variant="outline"
                                 onClick={() => sendCertMutation.mutate(c.id)}
-                                disabled={sendCertMutation.isPending || isArchived}
+                                disabled={sendCertMutation.isPending}
                                 data-testid={`button-send-cert-tab-${c.id}`}
                               >
                                 {sendCertMutation.isPending ? (
@@ -2204,21 +2212,26 @@ export default function ProjectDetail() {
                                   <Send size={12} />
                                 )}
                                 <span className="text-[8px] font-bold uppercase tracking-widest">Send to client</span>
-                              </Button>
+                              </BlockedAction>
                             )}
                             {/* Task #465 — sealed certificats flip to paid via
                                 the payment ledger (Certificats page), never a
                                 manual status shortcut. */}
                             {nextStatus && nextLabel && !(nextStatus === "paid" && c.pdfStorageKey) && (
-                              <Button
+                              <BlockedAction
+                                actionLabel="Before changing this certificate's status"
+                                requirements={[
+                                  ...(isArchived ? [{ id: "archived", kind: "readonly" as const, message: "This project is archived. Restore it before changing certificates." }] : []),
+                                  ...(nextStatus === "ready" && c.certificateTrack !== "supplier_direct_payment" && contractors?.some(contractor => contractor.id === c.contractorId && !contractor.iban) ? [{ id: "banking", message: "The contractor has no IBAN on file. Update banking details in Archi Doc before issuing this certificate.", href: "/contractors", linkLabel: "Go to contractor details" }] : []),
+                                ]}
                                 variant="outline"
                                 onClick={() => updateCertStatusMutation.mutate({ id: c.id, status: nextStatus })}
-                                disabled={updateCertStatusMutation.isPending || isArchived}
+                                disabled={updateCertStatusMutation.isPending}
                                 data-testid={`button-advance-cert-tab-${c.id}`}
                               >
                                 <ChevronRight size={12} />
                                 <span className="text-[8px] font-bold uppercase tracking-widest">{nextLabel}</span>
-                              </Button>
+                              </BlockedAction>
                             )}
                             <Button
                               variant="outline"

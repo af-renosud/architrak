@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -34,6 +34,7 @@ vi.mock("@/lib/queryClient", () => ({
   queryClient: {
     invalidateQueries: vi.fn(),
   },
+  projectScopedKey: (id: string, resource: string) => ["/api/projects", id, resource],
 }));
 
 import { SigningPanel, OPEN_SIGNING_SEND_EVENT } from "../SigningPanel";
@@ -49,12 +50,14 @@ function jsonResponse(body: unknown) {
 
 function renderWithDevis(
   devis: Record<string, unknown>,
-  opts: { isArchived?: boolean; project?: Record<string, unknown> } = {},
+  opts: { isArchived?: boolean; project?: Record<string, unknown>; readiness?: { blockers: string[]; readyToSend: boolean } | null; client?: QueryClient } = {},
 ) {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
+  const client = opts.client ?? new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   });
   client.setQueryData(["/api/devis", (devis as { id: number }).id], devis);
+  client.setQueryData(["/api/devis", (devis as { id: number }).id, "checks", "open-count"], 0);
+  if (opts.readiness !== null) client.setQueryData(["/api/projects", String((devis as { projectId?: number }).projectId), "devis-readiness"], { 42: opts.readiness ?? { blockers: [], readyToSend: true } });
   if (opts.project) {
     client.setQueryData(
       ["/api/projects", String((devis as { projectId: number }).projectId)],
@@ -89,6 +92,65 @@ const baseDevis = {
 };
 
 const VALID_MESSAGE = "Bonjour, voici le devis pour signature électronique.";
+
+describe("SigningPanel — actionable send prerequisites", () => {
+  it("shows an explainable control before approval, without opening compose or sending", () => {
+    renderWithDevis({ ...baseDevis, signOffStage: "received" });
+    fireEvent.click(screen.getByTestId("button-send-to-signer-42"));
+    expect(screen.getAllByText("Reach Approved for Signing before sending a signature request.")[0]).toBeVisible();
+    expect(screen.queryByTestId("dialog-send-to-signer-42")).toBeNull();
+    expect(apiRequestMock).not.toHaveBeenCalled();
+  });
+  it("explains mirror blockers on send, with a precise translated-PDF destination", () => {
+    const target = vi.fn();
+    window.addEventListener("architrak:workflow-target", target);
+    renderWithDevis({ ...baseDevis, projectId: 9 }, { readiness: { blockers: ["Translated PDF not generated (currently missing)"], readyToSend: false } });
+    fireEvent.click(screen.getByTestId("button-send-to-signer-42"));
+    expect(screen.getByTestId("button-send-to-signer-42")).toHaveAttribute("aria-disabled", "true");
+    // The first link is in the anchored explanation, not a generic project tab.
+    fireEvent.click(screen.getAllByRole("button", { name: "Go to translation" }).at(-1)!);
+    expect(target.mock.calls[0][0].detail).toMatchObject({ devisId: 42, group: "prepare", tab: "translation", selector: '[data-testid="section-translation-42"]' });
+    expect(screen.queryByTestId("dialog-send-to-signer-42")).toBeNull();
+    expect(apiRequestMock).not.toHaveBeenCalled();
+    window.removeEventListener("architrak:workflow-target", target);
+  });
+  it("rechecks mirror blockers at final confirmation and preserves the composed message", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    renderWithDevis({ ...baseDevis, projectId: 9 }, { client });
+    fireEvent.click(screen.getByTestId("button-send-to-signer-42"));
+    fireEvent.change(screen.getByTestId("textarea-send-message-42"), { target: { value: VALID_MESSAGE } });
+    fireEvent.click(screen.getByTestId("button-send-to-signer-continue-42"));
+    await act(async () => { client.setQueryData(["/api/projects", "9", "devis-readiness"], { 42: { readyToSend: false, blockers: ["English description missing"] } }); });
+    await waitFor(() => expect(screen.getByTestId("button-send-to-signer-confirm-42")).toHaveAttribute("aria-disabled", "true"));
+    fireEvent.click(screen.getByTestId("button-send-to-signer-confirm-42"));
+    expect(screen.getByText("Before confirming the signature request")).toBeVisible();
+    expect(apiRequestMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Go to English description" }));
+    await waitFor(() => expect(screen.queryByTestId("dialog-send-to-signer-42")).toBeNull());
+    await act(async () => { client.setQueryData(["/api/projects", "9", "devis-readiness"], { 42: { readyToSend: true, blockers: [] } }); });
+    await waitFor(() => expect(screen.getByTestId("button-send-to-signer-42")).not.toHaveAttribute("aria-disabled"));
+    fireEvent.click(screen.getByTestId("button-send-to-signer-42"));
+    expect(screen.getByTestId("text-recap-message-42")).toHaveTextContent(VALID_MESSAGE);
+    await waitFor(() => expect(screen.getByTestId("button-send-to-signer-confirm-42")).not.toHaveAttribute("aria-disabled"));
+    expect(apiRequestMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("button-send-to-signer-confirm-42"));
+    await waitFor(() => expect(apiRequestMock).toHaveBeenCalledWith("POST", "/api/devis/42/send-to-signer", { message: VALID_MESSAGE }));
+  });
+  it("shows checking and unavailable states instead of allowing compose when readiness cannot be verified", async () => {
+    let fail!: (error: Error) => void;
+    const request = new Promise<never>((_, reject) => { fail = reject; });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, queryFn: () => request } } });
+    renderWithDevis({ ...baseDevis, projectId: 9 }, { client, readiness: null });
+    fireEvent.click(screen.getByTestId("button-send-to-signer-42"));
+    expect(screen.getAllByText("Checking the signature package prerequisites.")[0]).toBeVisible();
+    expect(screen.queryByTestId("dialog-send-to-signer-42")).toBeNull();
+    await act(async () => { fail(new Error("Network unavailable")); });
+    await waitFor(() => expect(screen.getAllByText("Pre-send readiness is unavailable. Do not send until the prerequisites can be verified.")[0]).toBeVisible());
+    expect(apiRequestMock).not.toHaveBeenCalled();
+    expect(screen.getAllByRole("button", { name: "Retry readiness" }).length).toBeGreaterThan(0);
+    client.clear();
+  });
+});
 
 it("manual signature invalidates the project-scoped devis list without a reload", async () => {
   const cache = new QueryClient();
@@ -138,7 +200,10 @@ describe("SigningPanel — retained signed evidence after internal stage rollbac
     expect(screen.getByTestId("panel-signing-42")).toBeVisible();
     expect(screen.getByTestId("badge-manual-signoff-42")).toHaveTextContent("Signed — manual upload");
     expect(screen.getByTestId("link-signed-pdf-42")).toHaveAttribute("href", "/api/devis/42/signed-pdf");
-    expect(screen.queryByTestId("button-send-to-signer-42")).not.toBeInTheDocument();
+    expect(screen.getByTestId("button-send-to-signer-42")).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(screen.getByTestId("button-send-to-signer-42"));
+    expect(screen.getAllByText("A signature is already recorded. Use the existing signed copy; do not send a new request.")[0]).toBeVisible();
+    expect(apiRequestMock).not.toHaveBeenCalled();
     expect(screen.queryByTestId("button-record-signed-copy-42")).not.toBeInTheDocument();
     expect(screen.queryByTestId("text-signing-empty-42")).not.toBeInTheDocument();
   });
@@ -176,21 +241,27 @@ describe("SigningPanel — first-send branch (two-step, Task #257)", () => {
     expect(screen.queryByTestId("button-send-to-signer-confirm-42")).toBeNull();
   });
 
-  it("disables Continuer and shows the min-length hint under 20 chars", () => {
+  it("explains blocked Continue and focuses the message field under 20 chars", async () => {
     renderWithDevis(baseDevis);
     fireEvent.click(screen.getByTestId("button-send-to-signer-42"));
 
     const textarea = screen.getByTestId("textarea-send-message-42");
     fireEvent.change(textarea, { target: { value: "Trop court" } });
 
-    expect(screen.getByTestId("button-send-to-signer-continue-42")).toBeDisabled();
+    expect(screen.getByTestId("button-send-to-signer-continue-42")).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByTestId("text-send-message-min-42")).toHaveTextContent(
       /Minimum 20 characters/,
     );
 
     // Whitespace padding must not count.
     fireEvent.change(textarea, { target: { value: "Court" + " ".repeat(40) } });
-    expect(screen.getByTestId("button-send-to-signer-continue-42")).toBeDisabled();
+    expect(screen.getByTestId("button-send-to-signer-continue-42")).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(screen.getByTestId("button-send-to-signer-continue-42"));
+    expect(screen.getByText("Before reviewing the signature request")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Go to message" }));
+    await waitFor(() => expect(textarea).toHaveFocus());
+    expect(textarea).toHaveClass("blocked-action-target");
+    expect(apiRequestMock).not.toHaveBeenCalled();
   });
 
   it("recap shows the message + devis ref, and confirm sends { message } trimmed", async () => {
