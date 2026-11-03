@@ -5640,7 +5640,7 @@ function DevisDetailTabs({
   // its rose "Question rédigée" pill and pre-seed the inline-popover editor
   // with the server's auto-suggested text. Single query + per-row Map lookup
   // avoids N requests when there are many flagged lines.
-  const { data: checksForLines = [] } = useQuery<CheckWithMessages[]>({
+  const { data: checksForLines = [], isLoading: checksForLinesLoading, isError: checksForLinesError, refetch: refetchChecksForLines } = useQuery<CheckWithMessages[]>({
     queryKey: ["/api/devis", devis.id, "checks"],
   });
   const openLineCheckMap = new Map<number, { id: number; query: string; status: string }>();
@@ -5933,6 +5933,10 @@ function DevisDetailTabs({
           devisId={devis.id}
           devisCode={devis.devisCode}
           lineItems={translationLineItems ?? []}
+          reviewChecks={checksForLines}
+          reviewChecksLoading={checksForLinesLoading}
+          reviewChecksError={checksForLinesError}
+          onRetryReviewChecks={() => void refetchChecksForLines()}
           workingLineNumber={workingLine?.lineNumber ?? null}
           flashLineNumber={flashLine?.tab === "translation" ? flashLine.lineNumber : null}
           onWorkingLineChange={setWorkingLineAndBroadcast}

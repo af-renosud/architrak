@@ -41,7 +41,7 @@ function jsonResponse(body: unknown) {
   });
 }
 
-function renderSection() {
+function renderSection(overrides: Partial<Parameters<typeof DevisTranslationSection>[0]> = {}) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -77,12 +77,56 @@ function renderSection() {
 
   return render(
     <QueryClientProvider client={qc}>
-      <DevisTranslationSection devisId={42} devisCode="DEV-42" lineItems={lineItems} />
+      <DevisTranslationSection devisId={42} devisCode="DEV-42" lineItems={lineItems} {...overrides} />
     </QueryClientProvider>,
   );
 }
 
 describe("DevisTranslationSection autosave (regression #146)", () => {
+  it("shows line-linked private notes without placing them in translation saves", async () => {
+    const note = "PRIVATE: inspect preparation allowance";
+    const question = "PRIVATE: contractor to confirm repairs";
+    renderSection({
+      lineItems: [{ id: 100, devisId: 42, lineNumber: 1, description: "FR ligne 1", checkNotes: note } as any],
+      reviewChecks: [
+        { id: 1, devisId: 42, lineItemId: 100, origin: "line_item", status: "awaiting_contractor", query: question },
+        { id: 2, devisId: 42, lineItemId: 101, origin: "line_item", status: "open", query: "OTHER LINE" },
+        { id: 3, devisId: 99, lineItemId: 100, origin: "line_item", status: "open", query: "OTHER QUOTATION" },
+        { id: 4, devisId: 42, lineItemId: null, origin: "manual", status: "open", query: "GENERAL QUESTION" },
+      ],
+    });
+    const toggle = await screen.findByRole("button", { name: /Notes \/ questions \(2\)/ });
+    expect(screen.queryByText(note)).toBeNull();
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText(note)).toBeTruthy();
+    expect(screen.getByText(question)).toBeTruthy();
+    expect(screen.getByText(/not included in translations or client documents/)).toBeTruthy();
+    expect(screen.queryByText("OTHER LINE")).toBeNull();
+    expect(screen.queryByText("OTHER QUOTATION")).toBeNull();
+    expect(screen.queryByText("GENERAL QUESTION")).toBeNull();
+    expect(apiRequestMock).not.toHaveBeenCalled();
+    const input = screen.getByTestId("input-translation-42-1");
+    fireEvent.change(input, { target: { value: "Public translation" } });
+    fireEvent.blur(input, { target: { value: "Public translation" } });
+    await waitFor(() => expect(apiRequestMock).toHaveBeenCalled());
+    const patch = apiRequestMock.mock.calls.find(([method]) => method === "PATCH");
+    expect(JSON.stringify(patch)).not.toContain("PRIVATE:");
+    expect(JSON.stringify(patch)).not.toContain("checkNotes");
+    expect(JSON.stringify(patch)).not.toContain("reviewChecks");
+    fireEvent.click(toggle);
+    expect(screen.queryByText(note)).toBeNull();
+  });
+
+  it("reports a question load failure instead of implying no questions exist", async () => {
+    const retry = vi.fn();
+    renderSection({ reviewChecksError: true, onRetryReviewChecks: retry });
+    expect(await screen.findByText(/questions could not be refreshed/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry notes" }));
+    expect(retry).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: /Notes \/ questions/ })).toBeNull();
+  });
+
   beforeEach(() => {
     apiRequestMock.mockReset();
     apiRequestMock.mockResolvedValue(jsonResponse({ ok: true }));

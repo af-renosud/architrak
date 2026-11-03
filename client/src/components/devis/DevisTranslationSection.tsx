@@ -24,11 +24,16 @@ import type {
 } from "@shared/schema";
 import { DevisLineContextEditor } from "./DevisLineContextEditor";
 import { DevisCostAnalysisCard } from "./DevisCostAnalysisCard";
+import { TranslationReviewNotes, type TranslationReviewCheck } from "./TranslationReviewNotes";
 
 interface DevisTranslationSectionProps {
   devisId: number;
   devisCode: string;
   lineItems: DevisLineItem[];
+  reviewChecks?: TranslationReviewCheck[];
+  reviewChecksLoading?: boolean;
+  reviewChecksError?: boolean;
+  onRetryReviewChecks?: () => void;
   /** Line number of the current "working line" (shared with the Line Items tab). */
   workingLineNumber?: number | null;
   /** Line number to briefly flash-highlight after an anchored tab switch. */
@@ -41,6 +46,10 @@ export function DevisTranslationSection({
   devisId,
   devisCode,
   lineItems,
+  reviewChecks = [],
+  reviewChecksLoading = false,
+  reviewChecksError = false,
+  onRetryReviewChecks,
   workingLineNumber = null,
   flashLineNumber = null,
   onWorkingLineChange,
@@ -50,6 +59,16 @@ export function DevisTranslationSection({
   const [localLines, setLocalLines] = useState<Map<number, DevisTranslationLine>>(new Map());
   const [localHeader, setLocalHeader] = useState<DevisTranslationHeader | null>(null);
   const initialisedFor = useRef<string | null>(null);
+  const reviewChecksByLine = useMemo(() => {
+    const map = new Map<number, TranslationReviewCheck[]>();
+    for (const check of reviewChecks) {
+      if (check.devisId !== devisId || check.lineItemId == null || check.origin !== "line_item" || !check.query.trim()) continue;
+      const entries = map.get(check.lineItemId) ?? [];
+      entries.push(check);
+      map.set(check.lineItemId, entries);
+    }
+    return map;
+  }, [devisId, reviewChecks]);
 
   // --- Serialized translation saves (Task 364) -----------------------------
   // PATCHes carry the FULL lines array, so two overlapping requests are a
@@ -573,6 +592,11 @@ export function DevisTranslationSection({
           )}
 
           <div className="space-y-3">
+            {reviewChecksLoading && <p className="text-xs text-muted-foreground">Loading internal / contractor questions…</p>}
+            {reviewChecksError && <p role="alert" className="text-xs text-destructive">
+              Internal / contractor questions could not be refreshed. Displayed questions may be out of date.
+              {onRetryReviewChecks && <Button type="button" variant="ghost" size="sm" onClick={onRetryReviewChecks}>Retry notes</Button>}
+            </p>}
             {orderedLines.length === 0 && (
               <p className="py-3 text-center text-xs text-muted-foreground">No line items to translate.</p>
             )}
@@ -608,6 +632,8 @@ export function DevisTranslationSection({
                       <p className="text-[11px] text-muted-foreground leading-snug whitespace-pre-wrap">
                         {li.description}
                       </p>
+                      <TranslationReviewNotes lineItemId={li.id} note={li.checkNotes}
+                        checks={reviewChecksByLine.get(li.id) ?? []} />
                       <div className="text-[10px] uppercase tracking-wider text-sky-700 dark:text-sky-400 pt-1">English (literal)</div>
                       <Textarea
                         value={t?.translation ?? ""}
