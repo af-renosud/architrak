@@ -25,3 +25,9 @@ Public project links are a different disclosure boundary from architect reports.
 **Why:** Even an aggregate can disclose the exact price of an unpublished draft by subtraction. Publishing one quotation to a token does not authorize showing other draft prices.
 
 **How to apply:** Keep new pending/evidence aggregates operator-only, or explicitly scope them to visible quotations published on the current token. Test with both published and unpublished quotations.
+
+Quotation list frames must distinguish signed quotations (green) from quotations sent for signature and still awaiting it (orange); unsent quotations remain neutral.
+
+**Why:** The user could identify signed quotations but could not quickly distinguish sent quotations from unsent ones.
+
+**How to apply:** Preserve the distinction when cards expand; do not imply that an expired, rejected or cancelled signature request is still awaiting signature.

@@ -68,6 +68,7 @@ describe.each([false, true])("devis card frame (expanded=%s)", (expanded) => {
     expect(element.classList.contains("border-[3px]")).toBe(true);
     expect(element.classList.contains("border-green-600")).toBe(true);
     expect(element.classList.contains("dark:border-green-600")).toBe(true);
+    expect(element.className).not.toContain("orange-600");
     expect(element.classList.contains("border-2")).toBe(false);
     expect(element.className).not.toContain("border-[#0B2545]");
     expect(element.className).not.toContain("border-[rgba");
@@ -93,11 +94,62 @@ describe.each([false, true])("devis card frame (expanded=%s)", (expanded) => {
     expect(element.className).not.toContain("border-[3px]");
   });
 
-  it.each(["received", "approved_for_signing", "sent_to_client", "client_rejected", "void"])(
+  it.each([
+    ["sent stage", { signOffStage: "sent_to_client" }],
+    ["sent envelope", { archisignEnvelopeStatus: "sent" }],
+    ["viewed envelope", { archisignEnvelopeStatus: "viewed" }],
+    ["queried envelope", { archisignEnvelopeStatus: "queried" }],
+  ] satisfies Array<[string, QuotationCommitmentEvidence]>)("uses a full 3px orange border for %s", (_, evidence) => {
+    const element = card({ accountingState: "active", ...evidence }, expanded);
+    expect(element.classList.contains("border-[3px]")).toBe(true);
+    expect(element.classList.contains("border-orange-600")).toBe(true);
+    expect(element.classList.contains("dark:border-orange-600")).toBe(true);
+    expect(element.classList.contains("border-2")).toBe(false);
+    expect(element.className).not.toContain("green-600");
+    expect(element.className).not.toContain("border-[#0B2545]");
+    expect(element.className.includes("shadow-[0_2px_8px_rgba(11,37,69,0.08)]")).toBe(expanded);
+  });
+
+  it.each(signatures)("keeps green priority over pending evidence for %s", (_, evidence) => {
+    const element = card({
+      accountingState: "active",
+      signOffStage: "sent_to_client",
+      archisignEnvelopeStatus: "viewed",
+      ...evidence,
+    }, expanded);
+    expect(element.classList.contains("border-green-600")).toBe(true);
+    expect(element.className).not.toContain("orange-600");
+  });
+
+  it.each(["inactive", "superseded", null, undefined])(
+    "does not highlight pending evidence with accounting state %s",
+    accountingState => {
+      const evidence = { accountingState, signOffStage: "sent_to_client", archisignEnvelopeStatus: "sent" };
+      expect(devisCardClassName(evidence, expanded)).toBe(devisCardClassName({ accountingState: "active" }, expanded));
+    },
+  );
+
+  describe.each(["status", "signOffStage", "archisignEnvelopeStatus"] as const)("terminal %s", field => {
+    it.each(["void", "superseded", "client_rejected", "rejected", "declined", "cancelled", "canceled", "expired"])(
+      "does not highlight %s despite stale pending evidence",
+      terminal => {
+        const evidence = {
+          accountingState: "active",
+          signOffStage: "sent_to_client",
+          archisignEnvelopeStatus: "viewed",
+          [field]: terminal,
+        };
+        expect(devisCardClassName(evidence, expanded)).toBe(devisCardClassName({ accountingState: "active" }, expanded));
+      },
+    );
+  });
+
+  it.each(["received", "checked_internal", "approved_for_signing", "client_review_in_progress", "client_agreed", "client_rejected", "void"])(
     "preserves unsigned styling at stage %s",
     (signOffStage) => {
       const element = card({ accountingState: "active", signOffStage }, expanded);
       expect(element.className).not.toContain("green-600");
+      expect(element.className).not.toContain("orange-600");
       expect(element.classList.contains("border-2")).toBe(expanded);
       expect(devisCardClassName({ accountingState: "active", signOffStage }, expanded)).toBe(
         expanded
