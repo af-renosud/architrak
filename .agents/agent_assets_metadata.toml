@@ -7,6 +7,7 @@ uri = "file://attached_assets/architrak-signing-explainer-draft.pdf"
 type = "pdf"
 title = "Client guide — How signing & payment works"
 description = "One-page A4 explainer attached to every signature-context email: sign via Archisign, don't pay at signing, pay only against Payment Certificates."
+logical_id = "f87831ce-febb-46c6-a28c-09ffa5ac77b6"
 
 [[outputs]]
 id = "iXHgK6v_LQJKRCkOHgAn4"
@@ -14,6 +15,7 @@ uri = "file://attached_assets/generated/certificat-example-redesign.pdf"
 type = "pdf"
 title = "Sample certificat — revised (English, whole-project summary)"
 description = "English throughout with French terms kept and glossed; pay-now text points to this certificate; PV/MV explained; annexe renamed Financial Summary with a new Section 3 covering all live works on the whole project."
+logical_id = "3b88db37-de47-4d8c-87cf-bfe508841443"
 
 [[outputs]]
 id = "DV30vOkOS7cPfmh4KgKqS"
@@ -21,6 +23,7 @@ uri = "file://cert-preview-task535.pdf"
 type = "pdf"
 title = "Certificat de Paiement — Sample (updated)"
 description = "Payment proposal sentence now sits inside the banking-details box, alongside the red IBAN/SWIFT — amount and recipient in one frame."
+logical_id = "43554cd9-291d-4295-a638-a7c681bc8ea6"
 
 [[outputs]]
 id = "_fNG4tl7ibvIrd3yGxCwa"
@@ -28,3 +31,18 @@ uri = "file://deliverables/archidoc-supplier-payment-contract-v1.0.zip"
 type = "unspecified"
 title = "ArchiDoc supplier-payment contract bundle"
 description = "One ZIP containing the versioned contract and all six required supplier-payment wire fixtures."
+logical_id = "a7209a46-7c24-427f-a2f8-3a232b47be39"
+
+[[outputs]]
+id = "jxiCCUQUMvA5urLyUfLIO"
+uri = "file://server/assets/how-signing-and-payment-works.pdf"
+type = "pdf"
+title = "How signing and payment works — redesigned guide"
+description = "A clean one-page architectural layout with sans-serif typography, no decorative logo, and all original payment guidance preserved."
+logical_id = "883a97ef-2a52-4e67-ab29-4b97ef8654f5"
+content_hash = "sha256:fdc1b0f5592db0b6d433c66e5bf780a039675d174b8feda697da6694ea1dcb32"
+size = 39384
+mtime_ms = 1793713746237
+storage_uri = "gcs://replit-rams-assets-spock/rams/assets/repl:6ecf2382-e4c9-46e0-8dfc-a7534763e03f/883a97ef-2a52-4e67-ab29-4b97ef8654f5/9b9be8ff-62a6-4625-9b83-4494d0032ca9"
+storage_version_token = "1793713806384133"
+content_type = "application/pdf"

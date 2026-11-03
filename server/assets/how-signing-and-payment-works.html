@@ -6,44 +6,111 @@
 <style>
   @page { size: A4; margin: 0; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 210mm; height: 297mm; }
-  body { font-family: Georgia, 'Times New Roman', serif; color: #1d2733; background: #ffffff; }
-  .page { width: 210mm; height: 297mm; padding: 14mm 16mm 12mm; display: flex; flex-direction: column; }
-  .header { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 3px solid #14314f; padding-bottom: 6mm; }
-  .brand { font-family: Helvetica, Arial, sans-serif; font-weight: 700; font-size: 15pt; letter-spacing: 0.5px; color: #14314f; }
-  .brand span { color: #b8860b; }
-  .header .doc-type { font-family: Helvetica, Arial, sans-serif; font-size: 8pt; letter-spacing: 2px; text-transform: uppercase; color: #6b7684; }
-  h1 { font-size: 21pt; font-weight: 400; color: #14314f; margin-top: 7mm; line-height: 1.2; }
-  .intro { font-size: 10.5pt; line-height: 1.55; color: #3d4a59; margin-top: 3.5mm; max-width: 165mm; }
-  .steps { margin-top: 7mm; }
-  .step { display: flex; align-items: flex-start; margin-bottom: 4.5mm; }
-  .step-num { flex: 0 0 11mm; height: 11mm; width: 11mm; border-radius: 50%; background: #14314f; color: #fff; font-family: Helvetica, Arial, sans-serif; font-size: 13pt; font-weight: 700; text-align: center; line-height: 11mm; margin-right: 5mm; }
-  .step:nth-child(3) .step-num { background: #b8860b; }
-  .step-body { flex: 1; padding-top: 0.5mm; }
-  .step-title { font-family: Helvetica, Arial, sans-serif; font-weight: 700; font-size: 11pt; color: #14314f; }
-  .step-text { font-size: 9.8pt; line-height: 1.5; color: #3d4a59; margin-top: 1mm; max-width: 158mm; }
-  .warning { margin-top: 2mm; border: 2.5px solid #b8860b; border-radius: 3mm; background: #fdf6e6; padding: 4.5mm 6mm; display: flex; align-items: center; }
-  .warning .icon { flex: 0 0 12mm; height: 12mm; width: 12mm; border-radius: 50%; background: #b8860b; color: #fff; text-align: center; line-height: 12mm; font-family: Helvetica, Arial, sans-serif; font-size: 17pt; font-weight: 700; margin-right: 5mm; }
-  .warning .w-title { font-family: Helvetica, Arial, sans-serif; font-weight: 700; font-size: 11.5pt; color: #7a5a08; }
-  .warning .w-text { font-size: 9.8pt; line-height: 1.5; color: #5a4a17; margin-top: 1mm; }
-  .cols { display: flex; margin-top: 6mm; }
-  .col { flex: 1; }
-  .col + .col { margin-left: 8mm; }
-  .col h2 { font-family: Helvetica, Arial, sans-serif; font-size: 9pt; letter-spacing: 1.5px; text-transform: uppercase; color: #14314f; border-bottom: 1.5px solid #d8dee6; padding-bottom: 1.5mm; margin-bottom: 2.5mm; }
+  :root {
+    --ink: #243c40;
+    --text: #39484b;
+    --muted: #637376;
+    --rule: #cbd5d3;
+    --accent: #346c69;
+    --wash: #edf3f1;
+  }
+  html, body { width: 210mm; min-height: 297mm; }
+  body {
+    font-family: "Aptos", "Liberation Sans", "DejaVu Sans", sans-serif;
+    color: var(--text);
+    background: #fff;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    font-kerning: normal;
+  }
+  .page {
+    width: 210mm;
+    height: 297mm;
+    padding: 15mm 17mm 12mm;
+    display: flex;
+    flex-direction: column;
+  }
+  .header { border-top: 0.5mm solid var(--ink); padding-top: 3mm; }
+  .doc-type {
+    font-size: 8pt;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  h1 {
+    font-size: 28pt;
+    font-weight: 400;
+    letter-spacing: -1.1px;
+    color: var(--ink);
+    margin-top: 7mm;
+    line-height: 1.08;
+  }
+  .intro { font-size: 10pt; line-height: 1.5; margin-top: 4mm; max-width: 170mm; }
+  .steps { margin-top: 6mm; }
+  .step {
+    display: grid;
+    grid-template-columns: 10mm 1fr;
+    column-gap: 4mm;
+    border-top: 0.25mm solid var(--rule);
+    padding: 3.5mm 0 3.8mm;
+    break-inside: avoid;
+  }
+  .step-num {
+    color: var(--accent);
+    font-size: 17pt;
+    font-weight: 400;
+    line-height: 1;
+    letter-spacing: -0.5px;
+    padding-top: 0.1mm;
+    font-variant-numeric: tabular-nums;
+  }
+  .step-title { font-weight: 700; font-size: 10.3pt; line-height: 1.3; color: var(--ink); }
+  .step-text { font-size: 9.7pt; line-height: 1.45; margin-top: 1.3mm; }
+  strong { font-weight: 700; }
+  .warning {
+    margin-top: 1mm;
+    border-left: 0.8mm solid var(--accent);
+    background: var(--wash);
+    padding: 4mm 5mm;
+    break-inside: avoid;
+  }
+  .w-title { font-weight: 700; font-size: 13pt; line-height: 1.2; color: var(--ink); letter-spacing: -0.2px; }
+  .w-text { font-size: 9.7pt; line-height: 1.45; margin-top: 1.8mm; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 8mm; margin-top: 6mm; break-inside: avoid; }
+  .col h2 {
+    font-size: 8pt;
+    font-weight: 700;
+    letter-spacing: 1.1px;
+    text-transform: uppercase;
+    color: var(--ink);
+    border-top: 0.25mm solid var(--rule);
+    padding-top: 2.5mm;
+    margin-bottom: 2.5mm;
+  }
   .col ul { list-style: none; }
-  .col li { font-size: 9.3pt; line-height: 1.45; color: #3d4a59; padding-left: 6mm; position: relative; margin-bottom: 2mm; }
-  .col.good li::before { content: "\2713"; position: absolute; left: 0; color: #2e7d4f; font-weight: 700; font-family: Helvetica, Arial, sans-serif; }
-  .col.bad li::before { content: "\2715"; position: absolute; left: 0; color: #b3261e; font-weight: 700; font-family: Helvetica, Arial, sans-serif; }
-  .footer { margin-top: auto; border-top: 1.5px solid #d8dee6; padding-top: 3mm; display: flex; justify-content: space-between; font-family: Helvetica, Arial, sans-serif; font-size: 7.8pt; color: #6b7684; }
+  .col li { font-size: 9.2pt; line-height: 1.4; padding-left: 3.5mm; position: relative; margin-bottom: 2mm; }
+  .col li::before { content: ""; position: absolute; left: 0; top: 1.7mm; width: 1mm; height: 1mm; background: var(--accent); }
+  .col.bad li::before { background: none; border: 0.25mm solid var(--muted); }
+  .footer {
+    margin-top: auto;
+    border-top: 0.25mm solid var(--rule);
+    padding-top: 3mm;
+    display: flex;
+    justify-content: space-between;
+    gap: 4mm;
+    font-size: 7pt;
+    line-height: 1.4;
+    color: var(--muted);
+  }
 </style>
 </head>
 <body>
 <div class="page">
   <div class="header">
-    <div class="brand">Archi<span>Trak</span></div>
     <div class="doc-type">Client guide &middot; Signing &amp; payments</div>
   </div>
-  <h1>How signing and payment works on your project</h1>
+  <h1>How signing and payment<br>works on your project</h1>
   <p class="intro">Your architect uses ArchiTrak to manage quotations, signatures and payments on your building project. This one-page guide explains what happens at each step &mdash; and, most importantly, when to pay and when not to.</p>
   <div class="steps">
     <div class="step">
@@ -76,7 +143,6 @@
     </div>
   </div>
   <div class="warning">
-    <div class="icon">!</div>
     <div>
       <div class="w-title">Don't pay anything now.</div>
       <p class="w-text">At the signing stage, you are only authorising the quotation. Payment instructions will follow with each Payment Certificate. If you're ever unsure whether a payment request is genuine, check with your architect first.</p>
