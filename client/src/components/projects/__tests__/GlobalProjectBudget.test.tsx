@@ -47,6 +47,61 @@ beforeEach(() => vi.mocked(apiRequest).mockReset());
 afterEach(cleanup);
 
 describe("GlobalProjectBudget", () => {
+  it("accepts pasted French amounts and sends exact canonical cents", async () => {
+    setup();
+    vi.mocked(apiRequest).mockResolvedValue({} as Response);
+    fillCreate();
+    fireEvent.paste(screen.getByLabelText("Amount HT (€) *"), { clipboardData: { getData: () => "€ 18\u202f703,07" } });
+    fireEvent.change(screen.getByLabelText("Amount TTC (€) *"), { target: { value: "22,443.68" } });
+    expect(screen.getByText(/Amount to save: 18/).textContent).toContain("18\u202f703,07");
+    fireEvent.click(screen.getByRole("button", { name: "Save external works" }));
+    await waitFor(() => expect(apiRequest).toHaveBeenCalledWith("POST", "/api/projects/12/external-works",
+      expect.objectContaining({ amountHt: "18703.07", amountTtc: "22443.68" })));
+  });
+
+  it("requires confirmation for ambiguous grouping without retyping", async () => {
+    setup();
+    vi.mocked(apiRequest).mockResolvedValue({} as Response);
+    fillCreate();
+    fireEvent.change(screen.getByLabelText("Amount HT (€) *"), { target: { value: "1,234" } });
+    fireEvent.change(screen.getByLabelText("Amount TTC (€) *"), { target: { value: "1500" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save external works" }));
+    expect(apiRequest).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /Use 1.234,00 €/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save external works" }));
+    await waitFor(() => expect(apiRequest).toHaveBeenCalledWith("POST", "/api/projects/12/external-works",
+      expect.objectContaining({ amountHt: "1234.00", amountTtc: "1500.00" })));
+  });
+
+  it("rejects multiple pasted spreadsheet cells before the input strips newlines", () => {
+    setup();
+    fillCreate();
+    fireEvent.paste(screen.getByLabelText("Amount HT (€) *"), { clipboardData: { getData: () => "10\n20" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save external works" }));
+    expect(apiRequest).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toContain("Paste one euro amount");
+  });
+
+  it("normalizes pasted amounts when editing, and preserves invalid input", async () => {
+    setup();
+    vi.mocked(apiRequest).mockResolvedValue({} as Response);
+    fireEvent.click(screen.getByRole("button", { name: "View register (1 active)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const ht = screen.getByLabelText("Amount HT (€) *") as HTMLInputElement;
+    fireEvent.change(ht, { target: { value: "12 34,56" } });
+    fireEvent.blur(ht);
+    expect(ht.value).toBe("12 34,56");
+    fireEvent.click(screen.getByLabelText(/I confirm these are agreed/));
+    fireEvent.click(screen.getByRole("button", { name: "Save external works" }));
+    expect(apiRequest).not.toHaveBeenCalled();
+    fireEvent.change(ht, { target: { value: "€ 8 740,00" } });
+    fireEvent.blur(ht);
+    expect(ht.value).toBe("8740.00");
+    fireEvent.click(screen.getByRole("button", { name: "Save external works" }));
+    await waitFor(() => expect(apiRequest).toHaveBeenCalledWith("PATCH", "/api/projects/12/external-works/24",
+      expect.objectContaining({ amountHt: "8740.00", amountTtc: "9177.00" })));
+  });
+
   it("keeps the zero-state compact and leaves managed and certified meaning explicit", () => {
     setup({ data: { entries: [], history: [] } });
     expect(screen.getByText("Combined project cost")).toBeTruthy();
@@ -195,8 +250,11 @@ describe("GlobalProjectBudget", () => {
 
 describe("external work validation", () => {
   const valid = { ...externalWorkForm(entry), confirmedCompleted: true };
-  it.each(["", "-1", "1.234", "10000000000", "1e3", "NaN", "12,50"])("rejects invalid explicit money %s", amountHt => {
+  it.each(["", "-1", "1.234", "10000000000", "1e3", "NaN", "12,5000"])("rejects invalid explicit money %s", amountHt => {
     expect(validateExternalWork({ ...valid, amountHt })).not.toBeNull();
+  });
+  it("accepts a French decimal comma without retyping", () => {
+    expect(validateExternalWork({ ...valid, amountHt: "12,50" })).toBeNull();
   });
   it("accepts zero, mixed VAT, zero VAT and the exact maximum without calculating tax", () => {
     for (const [amountHt, amountTtc] of [["0", "0"], ["8740", "9177"], ["9999999999.99", "9999999999.99"]]) {

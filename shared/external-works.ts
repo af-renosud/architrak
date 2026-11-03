@@ -1,7 +1,12 @@
 import { z } from "zod";
+import { parseMoneyInput } from "./money-input";
 
-const money = z.string().trim().regex(/^\d{1,10}(?:\.\d{1,2})?$/, "Enter an amount with at most two decimal places")
-  .transform(value => Number(value).toFixed(2));
+const money = z.string().transform((value, ctx) => {
+  const parsed = parseMoneyInput(value);
+  if (parsed.kind === "valid") return parsed.value;
+  ctx.addIssue({ code: "custom", message: parsed.message });
+  return z.NEVER;
+});
 const optionalText = (max: number) => z.string().trim().max(max).nullable().optional().transform(v => v || null);
 export const externalWorkInput = z.object({
   reference: z.string().trim().min(1).max(120),

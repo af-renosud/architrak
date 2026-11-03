@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest, projectScopedKey } from "@/lib/queryClient";
 import type { ExternalWorkForm, ExternalWorksResponse } from "@/lib/external-works";
+import { normalizeMoneyInput } from "@shared/money-input";
 
 export type ExternalWorkWrite =
   | { action: "create"; form: ExternalWorkForm; acknowledgeOverlap?: true }
@@ -31,8 +32,8 @@ export function useWriteExternalWork(projectId: number) {
           write.action === "create" ? base : `${base}/${write.id}`, {
             reference: form.reference.trim(),
             description: form.description.trim(),
-            amountHt: form.amountHt,
-            amountTtc: form.amountTtc,
+            amountHt: normalizeMoneyInput(form.amountHt),
+            amountTtc: normalizeMoneyInput(form.amountTtc),
             companyName: form.companyName.trim() || null,
             lot: form.lot.trim() || null,
             completionDate: form.completionDate || null,

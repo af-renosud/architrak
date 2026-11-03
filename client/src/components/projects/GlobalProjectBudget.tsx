@@ -12,6 +12,7 @@ import { ApiError } from "@/lib/queryClient";
 import type { FinancialSummary } from "@/lib/financial-summary";
 import { externalWorkForm, validateExternalWork, type ExternalWork, type ExternalWorkAudit, type ExternalWorksResponse } from "@/lib/external-works";
 import { useExternalWorks, useWriteExternalWork, type ExternalWorkWrite } from "@/hooks/use-external-works";
+import { ExternalMoneyInput } from "./ExternalMoneyInput";
 
 type Operation = { action: "create" } | { action: "edit" | "void" | "restore"; entry: ExternalWork };
 const scopeWarning = "Never also count the same scope in a managed Devis. These are historical completed costs, not paid or certified amounts. Fees and payment balances are unchanged.";
@@ -128,11 +129,11 @@ function ExternalWorkEditor({ projectId, operation, readOnly, onClose, reload }:
               ["companyName", "Company name", false], ["lot", "Lot", false], ["completionDate", "Completion date", false],
             ] as const).map(([key, label, required]) => <div key={key} className="space-y-1">
               <label htmlFor={`external-${key}`} className="text-xs font-medium">{label}{required ? " *" : " (optional)"}</label>
-              {key === "description" ? <Textarea id={`external-${key}`} required value={form[key]} onChange={event => changeField(key, event.target.value)} /> : <Input id={`external-${key}`} required={required} type={key === "completionDate" ? "date" : "text"}
-                inputMode={key === "amountHt" || key === "amountTtc" ? "decimal" : undefined}
+              {key === "amountHt" || key === "amountTtc" ? <ExternalMoneyInput id={`external-${key}`} value={form[key]} onChange={value => changeField(key, value)} />
+                : key === "description" ? <Textarea id={`external-${key}`} required value={form[key]} onChange={event => changeField(key, event.target.value)} /> : <Input id={`external-${key}`} required={required} type={key === "completionDate" ? "date" : "text"}
                 value={form[key]} onChange={event => changeField(key, event.target.value)} />}
             </div>)}
-            <p className="text-xs text-muted-foreground">Enter both amounts explicitly with up to two decimal places (decimal point). No VAT rate is assumed or calculated.</p>
+            <p className="text-xs text-muted-foreground">Paste French or English euro amounts, with spaces, decimal commas or points. Check the interpreted amount shown below each field. No VAT rate is assumed or calculated.</p>
             <label className="flex items-start gap-2 text-xs">
               <input type="checkbox" className="mt-0.5" checked={form.confirmedCompleted} onChange={event => setForm({ ...form, confirmedCompleted: event.target.checked })} />
               I confirm these are agreed, completed works outside ArchiTrak, not planned or partially completed works.

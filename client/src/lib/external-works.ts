@@ -1,3 +1,5 @@
+import { parseMoneyInput } from "@shared/money-input";
+
 export interface ExternalWork {
   id: number;
   projectId: number;
@@ -57,11 +59,11 @@ export function externalWorkForm(entry?: ExternalWork): ExternalWorkForm {
 
 export function validateExternalWork(form: ExternalWorkForm): string | null {
   if (!form.reference.trim() || !form.description.trim()) return "Reference and description are required.";
-  const money = /^(?:0|[1-9]\d{0,9})(?:\.\d{1,2})?$/;
-  if (!money.test(form.amountHt) || !money.test(form.amountTtc)) {
-    return "Enter both HT and TTC explicitly: 0 to 9999999999.99, with at most two decimal places.";
-  }
-  if (Number(form.amountTtc) < Number(form.amountHt)) return "TTC must be greater than or equal to HT.";
+  const ht = parseMoneyInput(form.amountHt);
+  const ttc = parseMoneyInput(form.amountTtc);
+  if (ht.kind !== "valid") return `HT: ${ht.message}`;
+  if (ttc.kind !== "valid") return `TTC: ${ttc.message}`;
+  if (Number(ttc.value) < Number(ht.value)) return "TTC must be greater than or equal to HT.";
   if (form.completionDate) {
     const date = new Date(`${form.completionDate}T00:00:00Z`);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(form.completionDate) ||
