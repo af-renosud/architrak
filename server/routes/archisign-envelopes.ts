@@ -11,7 +11,7 @@ import { translationCoverageBlocker } from "../services/quotation-translation-co
  * Pre-conditions enforced (mirroring the inline gates in
  * `server/routes/devis.ts` PATCH for signOffStage):
  *   - signOffStage MUST be `approved_for_signing` (no skip-from-earlier)
- *   - 0 open contractor checks
+ *   - 0 open contractor checks OR a current, audited architect authorization
  *   - Insurance gate: live verdict green OR override row exists (§1.3)
  *   - Translated PDF must be ready (combined or translation variant)
  *   - Client contact name + email present on the project
@@ -56,6 +56,7 @@ import {
 } from "../communications/devis-translation-generator";
 import { env } from "../env";
 import { CLIENT_NO_PAYMENT_NOTICE } from "@shared/signature-message-template";
+import { contractorQuestionSnapshot, type SignatureQuestionReceipt } from "../services/contractor-question-authorization";
 
 const router = Router();
 
@@ -67,6 +68,10 @@ const idParams = z.object({ id: z.coerce.number().int().positive() });
 // the message persisted on the devis). Trimmed and capped; empty/
 // whitespace-only is treated as absent.
 const sendBody = z.object({
+  contractorQuestionAuthorization: z.object({
+    reason: z.string().trim().min(10).max(2000),
+    snapshot: z.string().min(1).max(200),
+  }).strict().optional(),
   message: z
     .string()
     .trim()
@@ -178,11 +183,17 @@ router.post(
   async (req, res) => {
     const devisId = Number(req.params.id);
     const personalMessage = (req.body as { message?: string } | undefined)?.message;
+    const authorization = (req.body as z.infer<typeof sendBody>).contractorQuestionAuthorization;
     const userId = req.session?.userId;
     if (!userId) return res.status(401).json({ message: "Authentication required" });
 
     const d = await storage.getDevis(devisId);
     if (!d) return res.status(404).json({ message: "Devis not found" });
+
+    const project = await storage.getProject(d.projectId);
+    if (!project) return res.status(409).json({ message: "Project not found for this devis.", code: "project_missing" });
+    if (project.archivedAt) return res.status(409).json({ message: "Archived projects are read-only.", code: "project_archived" });
+    if (d.status === "void" || d.accountingState === "superseded") return res.status(409).json({ message: "This quotation is void or superseded.", code: "wrong_stage" });
 
     if (d.signedPdfStorageKey || (d.signedOffVia === "manual_upload" && d.manualSignoffAt) ||
       d.archisignEnvelopeStatus === "signed") {
@@ -235,8 +246,37 @@ router.post(
       });
     }
 
-    const openCount = await storage.countOpenDevisChecks(devisId);
-    if (openCount > 0) {
+    const questionReceipt = contractorQuestionSnapshot(devisId, await storage.listDevisChecks(devisId));
+    const openCount = questionReceipt.openCount;
+    const persistedReceipt = resumingExistingEnvelope
+      ? await storage.getSignatureQuestionReceipt(devisId, d.archisignEnvelopeId!)
+      : undefined;
+    // A fresh authorization must NEVER repurpose an already-created envelope.
+    // Legacy envelopes have no receipt: only the historical zero-question
+    // path can resume; unresolved questions require a new envelope.
+    if (resumingExistingEnvelope && (persistedReceipt
+      ? persistedReceipt.snapshot !== questionReceipt.snapshot
+      : openCount > 0)) {
+      return res.status(409).json({ code: "signature_question_snapshot_changed",
+        message: "Contractor questions changed since this envelope was created. Review the signature package before creating a new request." });
+    }
+    let authorizationAudit: SignatureQuestionReceipt["authorization"] = persistedReceipt?.authorization ?? null;
+    if (authorization) {
+      // All application users are architects (Workspace-domain OAuth); public
+      // contractor/client sessions do not have a userId. Resolve the real user
+      // rather than trusting actor details supplied in the request.
+      const architect = await storage.getUser(userId);
+      if (!architect) return res.status(403).json({ code: "architect_required", message: "An authenticated architect is required." });
+      if (authorization.snapshot !== questionReceipt.snapshot) return res.status(409).json({
+        code: "contractor_question_authorization_stale",
+        message: "Contractor questions changed. Review the current questions and authorize again.",
+      });
+      if (!resumingExistingEnvelope) authorizationAudit = {
+        reason: authorization.reason, actorId: architect.id, actorEmail: architect.email,
+        authorizedAt: new Date().toISOString(),
+      };
+    }
+    if (openCount > 0 && !authorizationAudit) {
       return res.status(409).json({
         message:
           openCount === 1
@@ -266,13 +306,6 @@ router.post(
     }
 
     // ---- Resolve project + signer -------------------------------------
-    const project = await storage.getProject(d.projectId);
-    if (!project) {
-      return res.status(409).json({
-        message: "Project not found for this devis.",
-        code: "project_missing",
-      });
-    }
     const signerName = (project.clientContactName ?? "").trim();
     const signerEmail = (project.clientContactEmail ?? "").trim();
     if (!signerName || !signerEmail) {
@@ -511,7 +544,10 @@ router.post(
       };
       subjectDrift = Boolean(persistCreate.archisignSubjectDriftAt);
       bodyDrift = Boolean(persistCreate.archisignBodyDriftAt);
-      await storage.updateDevis(devisId, persistCreate);
+      await storage.persistSignatureQuestionReceipt(devisId, persistCreate, userId, {
+        envelopeId: createResp.envelopeId, snapshot: questionReceipt.snapshot,
+        fullSnapshot: questionReceipt.fullSnapshot, authorization: authorizationAudit,
+      });
       envelopeId = createResp.envelopeId;
       accessUrl = createResp.accessUrl;
       otpDestination = createResp.otpDestination;
@@ -522,6 +558,14 @@ router.post(
       // Defensive — should be unreachable.
       return res.status(500).json({ message: "Envelope ID missing after create" });
     }
+
+    // PDF generation and /create can take time. Fail closed if a question was
+    // edited while those operations ran; never /send the now-stale package.
+    const currentQuestions = contractorQuestionSnapshot(devisId, await storage.listDevisChecks(devisId));
+    if (currentQuestions.snapshot !== questionReceipt.snapshot) return res.status(409).json({
+      code: "signature_question_snapshot_changed",
+      message: "Contractor questions changed while preparing the envelope. No signature invitation was sent.",
+    });
 
     try {
       await sendEnvelope(envelopeId);

@@ -6,6 +6,8 @@ import express from "express";
 import type { AddressInfo } from "net";
 import { hasArchitectCorrection } from "../../services/architect-quotation-correction";
 import { getValidatedCachedPdfKey } from "../../communications/devis-translation-generator";
+import { contractorQuestionSnapshot, type SignatureQuestionReceipt } from "../../services/contractor-question-authorization";
+import type { DevisCheck } from "@shared/schema";
 
 /**
  * Coverage for the architect-supplied message on
@@ -54,11 +56,17 @@ vi.mock("../../storage", async () => {
       "getLatestInsuranceOverrideForDevis",
       "getDevisTranslation",
       "updateDevis",
+      "listDevisChecks",
+      "getUser",
+      "persistSignatureQuestionReceipt",
+      "getSignatureQuestionReceipt",
+      "getDevisLineItems",
     ]),
   };
 });
 vi.mock("../../auth/middleware", () => ({
-  requireAuth: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
+  requireAuth: (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (req.header("x-test-unauthenticated")) return res.status(401).json({ message: "Authentication required" });
     (req as unknown as { session: { userId: number } }).session = { userId: 1 };
     next();
   },
@@ -167,6 +175,13 @@ function makeDevis(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  storageMock.listDevisChecks.mockResolvedValue([]);
+  storageMock.getUser.mockResolvedValue({ id: 1, email: "lea@atelier.test" });
+  storageMock.getSignatureQuestionReceipt.mockResolvedValue(undefined);
+  storageMock.getDevisLineItems.mockResolvedValue([]);
+  storageMock.persistSignatureQuestionReceipt.mockImplementation(async (id, data) => {
+    await storageMock.updateDevis(id, data);
+  });
   storageMock.getDevis.mockResolvedValue(makeDevis());
   storageMock.getProject.mockResolvedValue({
     id: 9,
@@ -199,6 +214,188 @@ async function postSend(devisId: number, body: unknown) {
     body: JSON.stringify(body),
   });
 }
+
+const question = (overrides: Partial<DevisCheck> = {}): DevisCheck => ({
+  id: 7, devisId: 100, query: "Confirm the acoustic specification",
+  status: "awaiting_contractor", origin: "general", lineItemId: null,
+  resolutionNote: null, createdByUserId: 1, resolvedAt: null, resolvedByUserId: null,
+  createdAt: new Date("2026-06-01T08:00:00Z"), updatedAt: new Date("2026-06-02T08:00:00Z"),
+  ...overrides,
+});
+const contextMessage = "Please review this quotation before signing.";
+const reason = "Reviewed with the contractor; the open point does not affect approval.";
+function authorizedBody(checks = [question()]) {
+  return { message: contextMessage, contractorQuestionAuthorization: {
+    reason, snapshot: contractorQuestionSnapshot(100, checks).snapshot,
+  } };
+}
+
+describe("contractor question authorization", () => {
+  beforeEach(() => { storageMock.listDevisChecks.mockResolvedValue([question()]); });
+
+  it("ordinary sends still block without authorization", async () => {
+    const response = await postSend(100, { message: contextMessage });
+    expect(response.status).toBe(409);
+    expect((await response.json()).code).toBe("open_contractor_checks");
+    expect(archisignMock.createEnvelope).not.toHaveBeenCalled();
+    expect(archisignMock.sendEnvelope).not.toHaveBeenCalled();
+  });
+
+  it("accepts the Zod-parsed authorization and persists identity, reason and full receipt before sending", async () => {
+    const checks = [question(), question({ id: 8, status: "awaiting_architect", query: "Confirm lead time" })];
+    storageMock.listDevisChecks.mockResolvedValue(checks);
+    expect((await postSend(100, authorizedBody(checks))).status).toBe(200);
+    expect(storageMock.persistSignatureQuestionReceipt).toHaveBeenCalledWith(100,
+      expect.objectContaining({ archisignEnvelopeId: "env_42" }), 1,
+      expect.objectContaining({
+        envelopeId: "env_42", snapshot: contractorQuestionSnapshot(100, checks).snapshot,
+        fullSnapshot: contractorQuestionSnapshot(100, checks).fullSnapshot,
+        authorization: { reason, actorId: 1, actorEmail: "lea@atelier.test", authorizedAt: expect.any(String) },
+      }));
+    expect(storageMock.persistSignatureQuestionReceipt.mock.invocationCallOrder[0])
+      .toBeLessThan(archisignMock.sendEnvelope.mock.invocationCallOrder[0]);
+  });
+
+  it.each(["short", " ".repeat(15), "x".repeat(2001)])("rejects invalid reasons without sends (%s)", async invalid => {
+    const body = authorizedBody();
+    body.contractorQuestionAuthorization.reason = invalid;
+    expect((await postSend(100, body)).status).toBe(400);
+    expect(archisignMock.createEnvelope).not.toHaveBeenCalled();
+  });
+
+  it("requires a real authenticated architect, not only supplied authorization", async () => {
+    storageMock.getUser.mockResolvedValue(undefined);
+    const response = await postSend(100, authorizedBody());
+    expect(response.status).toBe(403);
+    expect((await response.json()).code).toBe("architect_required");
+    expect(archisignMock.createEnvelope).not.toHaveBeenCalled();
+  });
+
+  it("rejects unauthenticated authorization before any storage or signature action", async () => {
+    const response = await fetch(`${baseUrl}/api/devis/100/send-to-signer`, {
+      method: "POST", headers: { "Content-Type": "application/json", "x-test-unauthenticated": "1" },
+      body: JSON.stringify(authorizedBody()),
+    });
+    expect(response.status).toBe(401);
+    expect(storageMock.getDevis).not.toHaveBeenCalled();
+    expect(archisignMock.sendEnvelope).not.toHaveBeenCalled();
+  });
+
+  it("never calls /send if the atomic envelope/audit persistence fails", async () => {
+    storageMock.persistSignatureQuestionReceipt.mockRejectedValueOnce(new Error("audit persistence unavailable"));
+    expect((await postSend(100, authorizedBody())).ok).toBe(false);
+    expect(archisignMock.sendEnvelope).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { query: "Changed wording" }, { id: 99 }, { status: "awaiting_architect" },
+    { updatedAt: new Date("2026-06-03T08:00:00Z") }, { status: "resolved" },
+  ])("rejects stale authorization after same-count changes or resolution: %o", async change => {
+    storageMock.listDevisChecks.mockResolvedValue([question(change)]);
+    const response = await postSend(100, authorizedBody());
+    expect(response.status).toBe(409);
+    expect((await response.json()).code).toBe("contractor_question_authorization_stale");
+    expect(archisignMock.createEnvelope).not.toHaveBeenCalled();
+    expect(archisignMock.sendEnvelope).not.toHaveBeenCalled();
+  });
+
+  it.each(["insurance", "translation", "archive", "contact", "stage", "signature", "message", "coverage"])(
+    "authorization does not bypass the %s gate", async gate => {
+      if (gate === "insurance") insuranceMock.evaluateInsuranceGate.mockResolvedValue({ proceed: false, overridable: false, arm: "red", reason: "expired" });
+      if (gate === "translation") {
+        storageMock.getDevis.mockResolvedValue(makeDevis({ invoicingMode: "mode_b" }));
+        storageMock.getDevisTranslation.mockResolvedValue({ status: "draft" });
+      }
+      if (gate === "archive") storageMock.getProject.mockResolvedValue({ id: 9, archivedAt: new Date() });
+      if (gate === "contact") storageMock.getProject.mockResolvedValue({ id: 9 });
+      if (gate === "stage") storageMock.getDevis.mockResolvedValue(makeDevis({ signOffStage: "received" }));
+      if (gate === "signature") storageMock.getDevis.mockResolvedValue(makeDevis({ signedPdfStorageKey: "signed.pdf" }));
+      if (gate === "coverage") storageMock.getDevis.mockResolvedValue(makeDevis({ aiExtractedData: { quotationVerification: { verified: false } } }));
+      const body = authorizedBody();
+      if (gate === "message") body.message = "";
+      const response = await postSend(100, body);
+      expect([409, 422]).toContain(response.status);
+      expect(archisignMock.createEnvelope).not.toHaveBeenCalled();
+      expect(archisignMock.sendEnvelope).not.toHaveBeenCalled();
+      expect(storageMock.persistSignatureQuestionReceipt).not.toHaveBeenCalled();
+    },
+  );
+
+  async function failedSend() {
+    let devis = makeDevis();
+    let receipt: SignatureQuestionReceipt | undefined;
+    storageMock.getDevis.mockImplementation(async () => devis);
+    storageMock.updateDevis.mockImplementation(async (_id, changes) => {
+      devis = { ...devis, ...changes }; return devis;
+    });
+    storageMock.persistSignatureQuestionReceipt.mockImplementation(async (_id, changes, _actor, value) => {
+      devis = { ...devis, ...changes }; receipt = value;
+    });
+    storageMock.getSignatureQuestionReceipt.mockImplementation(async () => receipt);
+    archisignMock.sendEnvelope.mockRejectedValueOnce(new Error("temporary failure"));
+    expect((await postSend(100, authorizedBody())).status).toBe(502);
+    return () => devis;
+  }
+
+  it("retries the same envelope using its persisted authorization without creating another or rewriting the audit", async () => {
+    const getDevis = await failedSend();
+    expect(getDevis().archisignEnvelopeId).toBe("env_42");
+    expect((await postSend(100, {})).status).toBe(200);
+    expect(archisignMock.createEnvelope).toHaveBeenCalledTimes(1);
+    expect(storageMock.persistSignatureQuestionReceipt).toHaveBeenCalledTimes(1);
+    expect(archisignMock.sendEnvelope).toHaveBeenCalledTimes(2);
+    expect((await postSend(100, {})).status).toBe(409);
+    expect(archisignMock.sendEnvelope).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([false, true])("never re-sends a persisted envelope after drift, even with fresh authorization (%s)", async fresh => {
+    await failedSend();
+    const changed = [question({ query: "Revised specification?" })];
+    storageMock.listDevisChecks.mockResolvedValue(changed);
+    const response = await postSend(100, fresh ? authorizedBody(changed) : {});
+    expect((await response.json()).code).toBe("signature_question_snapshot_changed");
+    expect(archisignMock.createEnvelope).toHaveBeenCalledTimes(1);
+    expect(archisignMock.sendEnvelope).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not resume an authorized envelope after its questions are resolved", async () => {
+    await failedSend();
+    storageMock.listDevisChecks.mockResolvedValue([question({ status: "resolved" })]);
+    const response = await postSend(100, {});
+    expect((await response.json()).code).toBe("signature_question_snapshot_changed");
+    expect(archisignMock.sendEnvelope).toHaveBeenCalledTimes(1);
+  });
+
+  it("also prevents newly opened questions from repurposing an originally clear envelope", async () => {
+    storageMock.listDevisChecks.mockResolvedValue([]);
+    await failedSendWithNoQuestions();
+    storageMock.listDevisChecks.mockResolvedValue([question()]);
+    const response = await postSend(100, authorizedBody());
+    expect((await response.json()).code).toBe("signature_question_snapshot_changed");
+    expect(archisignMock.sendEnvelope).toHaveBeenCalledTimes(1);
+    expect(archisignMock.createEnvelope).toHaveBeenCalledTimes(1);
+  });
+
+  async function failedSendWithNoQuestions() {
+    let devis = makeDevis();
+    let receipt: SignatureQuestionReceipt | undefined;
+    storageMock.getDevis.mockImplementation(async () => devis);
+    storageMock.persistSignatureQuestionReceipt.mockImplementation(async (_id, changes, _actor, value) => {
+      devis = { ...devis, ...changes }; receipt = value;
+    });
+    storageMock.getSignatureQuestionReceipt.mockImplementation(async () => receipt);
+    archisignMock.sendEnvelope.mockRejectedValueOnce(new Error("temporary failure"));
+    expect((await postSend(100, { message: contextMessage })).status).toBe(502);
+  }
+
+  it("detects question edits during preparation before the first /send", async () => {
+    storageMock.listDevisChecks.mockResolvedValueOnce([question()])
+      .mockResolvedValue([question({ query: "Edited during PDF generation" })]);
+    const response = await postSend(100, authorizedBody());
+    expect((await response.json()).code).toBe("signature_question_snapshot_changed");
+    expect(archisignMock.sendEnvelope).not.toHaveBeenCalled();
+  });
+});
 
 describe("POST /api/devis/:id/send-to-signer — personalised message", () => {
   it("fails closed for a corrected quotation if its combined original-containing package cannot be generated", async () => {

@@ -3716,6 +3716,8 @@ export const CLIENT_PROJECT_SHARE_AUDIT_ACTIONS = [
   // Task #409 — ArchiDoc fetched the live link server-to-server (read-only;
   // logged at most once per token per day).
   "archidoc_lookup",
+  // Signature-package receipt; detail is a structured JSON audit snapshot.
+  "signature_question_authorization",
 ] as const;
 /**
  * insurance_overrides — captured at the moment an architect manually

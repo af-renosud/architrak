@@ -1,6 +1,7 @@
 import { storage } from "../storage";
 import { evaluateInsuranceMirrorPreloaded } from "./insurance-verdict";
 import type { Devis } from "@shared/schema";
+import { contractorQuestionSnapshot } from "./contractor-question-authorization";
 
 /**
  * Task #374 — batch, read-only readiness derivation for the devis list
@@ -36,6 +37,7 @@ export interface DevisReadiness {
   /** Raw translation status ("missing" when no row exists). */
   translationStatus: string;
   openContractorChecks: number;
+  contractorQuestionAuthorizationSnapshot?: string;
   openClientChecks: number;
   envelopeStatus: string | null;
   signature: SignatureState;
@@ -174,7 +176,7 @@ export async function getProjectDevisReadiness(
       storage.getDevisByProject(projectId),
       storage.getProject(projectId),
       storage.getDevisTranslationStatusesByProject(projectId),
-      storage.countOpenDevisChecksForProject(projectId),
+      storage.listDevisChecksForProject(projectId),
       storage.countOpenClientChecksForProject(projectId),
       storage.getLotsByProject(projectId),
     ]);
@@ -193,6 +195,7 @@ export async function getProjectDevisReadiness(
   );
   const out: Record<number, DevisReadiness> = {};
   for (const d of devisList) {
+    const receipt = contractorQuestionSnapshot(d.id, contractorChecks.filter(c => c.devisId === d.id));
     const insurance = evaluateInsuranceMirrorPreloaded(
       contractorById.get(d.contractorId),
       mirrorLotContractors,
@@ -201,12 +204,15 @@ export async function getProjectDevisReadiness(
     out[d.id] = deriveDevisReadiness({
       devis: d,
       translationStatus: translations[d.id] ?? null,
-      openContractorChecks: contractorChecks[d.id] ?? 0,
+      openContractorChecks: receipt.openCount,
       openClientChecks: clientChecks[d.id] ?? 0,
       clientContactPresent,
       insurance,
       insuranceOverridden: overrides.has(d.id),
     });
+    // Snapshot and count share the same batch read, including every unresolved
+    // question, whether sent to the contractor yet or still internal.
+    out[d.id].contractorQuestionAuthorizationSnapshot = receipt.snapshot;
   }
   return out;
 }

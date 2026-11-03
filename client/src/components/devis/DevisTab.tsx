@@ -6661,7 +6661,10 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
           const isCurrent = idx === currentStageIndex && !isVoid;
           // Checks gate: we cannot advance to 'sent_to_client' (or any later
           // stage) while there are open contractor questions.
-          const lockedByChecks = checksLocked && idx >= SENT_TO_CLIENT_INDEX && currentStageIndex < SENT_TO_CLIENT_INDEX;
+          // Opening the send composer is not a send. It must remain reachable
+          // for an explicit architect authorization; the panel/server own it.
+          const opensSendComposer = stage.key === "sent_to_client" && devis.signOffStage === "approved_for_signing";
+          const lockedByChecks = checksLocked && !opensSendComposer && idx >= SENT_TO_CLIENT_INDEX && currentStageIndex < SENT_TO_CLIENT_INDEX;
           const lockTitle = lockedByChecks
             ? checksUnavailable ? "Contractor check status must be available before sending." : `Resolve ${openChecksCountForDevis} contractor question(s) before sending.`
             : undefined;

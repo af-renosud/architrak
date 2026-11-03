@@ -2,6 +2,12 @@ import type { ActionRequirement } from "@/components/ui/blocked-action";
 import type { WorkflowGroup } from "./devis-workflow-model";
 
 export type QuotationTarget = "lot" | "description" | "stage" | "checks" | "translation" | "source" | "insurance" | "contact" | "signature";
+export type ContractorQuestionAuthorization = { reason: string; snapshot: string };
+
+/** Only the contractor-question blocker can be waived; unknown blockers fail closed. */
+export function signatureSendRequirements(requirements: ActionRequirement[], authorized: boolean): ActionRequirement[] {
+  return authorized ? requirements.filter(requirement => requirement.id !== "checks") : requirements;
+}
 export function goToQuotationTarget(devisId: number, target: QuotationTarget, projectId?: number | string) {
   if (target === "contact") {
     window.dispatchEvent(new CustomEvent("architrak:edit-project-contact", { detail: { projectId } }));

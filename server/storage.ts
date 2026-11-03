@@ -1009,6 +1009,9 @@ export interface IStorage {
   getLot(id: number): Promise<import("@shared/schema").Lot | undefined>;
 
   getUser(id: number): Promise<User | undefined>;
+  /** Envelope binding and append-only authorization receipt commit together. */
+  persistSignatureQuestionReceipt(devisId: number, data: Partial<InsertDevis>, actorId: number, receipt: import("./services/contractor-question-authorization").SignatureQuestionReceipt): Promise<void>;
+  getSignatureQuestionReceipt(devisId: number, envelopeId: string): Promise<import("./services/contractor-question-authorization").SignatureQuestionReceipt | undefined>;
 
   getUserByGoogleId(googleId: string): Promise<User | undefined>;
 
@@ -1065,6 +1068,7 @@ export interface IStorage {
   aggregateBenchmarkPrices(filters: BenchmarkSearchFilters): Promise<BenchmarkAggregateRow[]>;
 
   listDevisChecks(devisId: number): Promise<DevisCheck[]>;
+  listDevisChecksForProject(projectId: number): Promise<DevisCheck[]>;
 
   getDevisCheck(id: number): Promise<DevisCheck | undefined>;
 
@@ -6129,6 +6133,34 @@ export class DatabaseStorage implements IStorage {
     return user;
   }
 
+  async persistSignatureQuestionReceipt(devisId: number, data: Partial<InsertDevis>, actorId: number, receipt: import("./services/contractor-question-authorization").SignatureQuestionReceipt): Promise<void> {
+    await db.transaction(async tx => {
+      const [quotation] = await tx.update(devis).set(data).where(eq(devis.id, devisId)).returning();
+      if (!quotation) throw new Error("Quotation disappeared while persisting envelope");
+      // The existing project-sharing audit is append-only by convention and
+      // accepts new action names. Keep this separate from correction history
+      // (whose DB operation constraint only permits baseline/correction).
+      await tx.insert(clientProjectShareAudit).values({
+        projectId: quotation.projectId, devisId, actorUserId: actorId,
+        action: "signature_question_authorization", detail: JSON.stringify(receipt),
+      });
+    });
+  }
+
+  async getSignatureQuestionReceipt(devisId: number, envelopeId: string): Promise<import("./services/contractor-question-authorization").SignatureQuestionReceipt | undefined> {
+    // Select by devis/action before parsing: other sharing audit detail is
+    // deliberately human-readable text, not necessarily JSON.
+    const rows = await db.select().from(clientProjectShareAudit).where(and(
+      eq(clientProjectShareAudit.devisId, devisId),
+      eq(clientProjectShareAudit.action, "signature_question_authorization"),
+    )).orderBy(desc(clientProjectShareAudit.id));
+    for (const row of rows) {
+      const receipt = JSON.parse(row.detail) as import("./services/contractor-question-authorization").SignatureQuestionReceipt;
+      if (receipt.envelopeId === envelopeId) return receipt;
+    }
+    return undefined;
+  }
+
   async getUserByGoogleId(googleId: string): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.googleId, googleId));
     return user;
@@ -6327,6 +6359,13 @@ export class DatabaseStorage implements IStorage {
 
   async listDevisChecks(devisId: number): Promise<DevisCheck[]> {
     return db.select().from(devisChecks).where(eq(devisChecks.devisId, devisId)).orderBy(asc(devisChecks.createdAt));
+  }
+
+  async listDevisChecksForProject(projectId: number): Promise<DevisCheck[]> {
+    const rows = await db.select({ check: devisChecks }).from(devisChecks)
+      .innerJoin(devis, eq(devis.id, devisChecks.devisId))
+      .where(eq(devis.projectId, projectId));
+    return rows.map(row => row.check);
   }
 
   async getDevisCheck(id: number): Promise<DevisCheck | undefined> {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ActionChecklist, BlockedAction, focusActionTarget, type ActionRequirement } from "@/components/ui/blocked-action";
-import { fetchOpenQuotationChecks, quotationRequirement, readinessRequirements } from "./action-requirements";
+import { fetchOpenQuotationChecks, quotationRequirement, readinessRequirements, signatureSendRequirements, type ContractorQuestionAuthorization } from "./action-requirements";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Button } from "@/components/ui/button";
@@ -131,6 +131,10 @@ export function SigningPanel({
   const [personalMessage, setPersonalMessage] = useState("");
   const [dialogStep, setDialogStep] = useState<"compose" | "recap">("compose");
   const [openRequested, setOpenRequested] = useState(false);
+  const [authorization, setAuthorization] = useState<ContractorQuestionAuthorization | null>(null);
+  const [authorizationDialogOpen, setAuthorizationDialogOpen] = useState(false);
+  const [authorizationReason, setAuthorizationReason] = useState("");
+  const [reviewedSnapshot, setReviewedSnapshot] = useState<string | null>(null);
 
   // Manual signed-copy pathway — secondary to Archisign. Dialog state for
   // "Record signed copy": the operator uploads the signed PDF, writes a
@@ -188,7 +192,10 @@ export function SigningPanel({
   const sendMutation = useMutation({
     mutationFn: async (message: string | undefined) => {
       const trimmed = (message ?? "").trim();
-      const body = trimmed.length > 0 ? { message: trimmed } : {};
+      const body = {
+        ...(trimmed.length > 0 ? { message: trimmed } : {}),
+        ...(authorization ? { contractorQuestionAuthorization: authorization } : {}),
+      };
       const res = await apiRequest("POST", `/api/devis/${devisId}/send-to-signer`, body);
       return res.json() as Promise<{
         contextEmail?: { status?: "sent" | "failed" | "already_sent"; error?: string };
@@ -243,6 +250,8 @@ export function SigningPanel({
         });
       }
       setSendDialogOpen(false);
+      setAuthorization(null);
+      setAuthorizationReason("");
       setPersonalMessage("");
       setDialogStep("compose");
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId] });
@@ -257,6 +266,16 @@ export function SigningPanel({
       // wrong with the app or its configuration.
       const data = (error as { data?: { code?: string; detail?: string } }).data;
       const code = data?.code;
+      setAuthorization(null);
+      setAuthorizationDialogOpen(false);
+      if (code === "contractor_question_authorization_stale" || code === "open_contractor_checks" || code === "signature_question_snapshot_changed") {
+        setAuthorization(null);
+        void readinessQuery.refetch();
+        void checksQuery.refetch();
+      }
+      // A partial failure may already have created an envelope. Refresh so
+      // retries use the persisted message rather than suggesting it is editable.
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId], exact: true });
       // Task #440 — surface what Archisign ACTUALLY said (the server
       // echoes the upstream error body in `detail`) as secondary,
       // technical text so an outage can be diagnosed from the toast
@@ -368,12 +387,20 @@ export function SigningPanel({
     enabled: Boolean(d?.projectId),
   });
   const project = projectQuery.data;
-  const readinessQuery = useQuery<Record<number, { blockers: string[]; readyToSend: boolean }>>({
+  const readinessQuery = useQuery<Record<number, { blockers: string[]; readyToSend: boolean; contractorQuestionAuthorizationSnapshot?: string }>>({
     queryKey: projectScopedKey(String(d?.projectId), "devis-readiness"),
     enabled: Boolean(d?.projectId),
   });
   const readiness = readinessQuery.data?.[devisId];
-  const mirrorReady = !readinessQuery.isError && !!readiness?.readyToSend && readiness.blockers.length === 0;
+  const questionSnapshot = readiness?.contractorQuestionAuthorizationSnapshot;
+  const authorizationValid = Boolean(authorization && questionSnapshot && authorization.snapshot === questionSnapshot && !readinessQuery.isError && !checksQuery.isError);
+  const mirrorReady = !readinessQuery.isError && !!readiness &&
+    (readiness.readyToSend || (Boolean(questionSnapshot) && (checksQuery.data ?? 0) > 0 && readiness.blockers.length > 0)) &&
+    readinessRequirements(readiness.blockers, devisId).every(requirement => requirement.id === "checks");
+
+  useEffect(() => {
+    if (authorization && questionSnapshot !== authorization.snapshot) setAuthorization(null);
+  }, [questionSnapshot, authorization]);
 
   const amountTtcLabel = useMemo(() => {
     const n = Number(d?.amountTtc);
@@ -415,7 +442,7 @@ export function SigningPanel({
     document
       .querySelector(`[data-testid="panel-signing-${devisId}"]`)
       ?.scrollIntoView({ behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
-    if (d.signOffStage === "approved_for_signing" && d.status !== "void" && !isArchived && !hasRecordedSignature(d) && !checksQuery.isError && checksQuery.data === 0 && mirrorReady) {
+    if (d.signOffStage === "approved_for_signing" && d.status !== "void" && !isArchived && !hasRecordedSignature(d) && !checksQuery.isError && checksQuery.data != null && mirrorReady) {
       if (!personalMessage) { setPersonalMessage(messageTemplate); setDialogStep("compose"); }
       setSendDialogOpen(true);
     }
@@ -485,14 +512,15 @@ export function SigningPanel({
       id: "checks-status", kind: checksQuery.isError ? "technical" as const : "waiting" as const,
       message: checksQuery.isError ? "Contractor checks are unavailable. Clearance is unknown." : "Checking contractor questions before sending.",
       onResolve: () => { void checksQuery.refetch(); }, linkLabel: "Retry checks",
-    }] : checksQuery.data > 0 ? [quotationRequirement("checks", `${checksQuery.data} contractor question(s) must be resolved before sending.`, devisId)] : [] : []),
+    }] : checksQuery.data > 0 ? [quotationRequirement("checks", `${checksQuery.data} contractor question(s) remain unresolved. Resolve them or explicitly authorize this send in Electronic signature.`, devisId)] : [] : []),
     ...(!recordedSignature && stage !== "sent_to_client" ? readinessQuery.isError || !readiness ? [{
       id: "readiness", kind: readinessQuery.isError ? "technical" as const : "waiting" as const,
       message: readinessQuery.isError ? "Pre-send readiness is unavailable. Do not send until the prerequisites can be verified." : "Checking the signature package prerequisites.",
       onResolve: () => { void readinessQuery.refetch(); }, linkLabel: "Retry readiness",
     }] : readinessRequirements(readiness.blockers, devisId, d.projectId) : []),
   ].filter((requirement, index, all) => all.findIndex(item => item.id === requirement.id) === index);
-  const dialogSendRequirements = sendRequirements.map(requirement =>
+  const effectiveSendRequirements = signatureSendRequirements(sendRequirements, authorizationValid);
+  const dialogSendRequirements = effectiveSendRequirements.map(requirement =>
     requirement.onResolve && requirement.id !== "checks-status" && requirement.id !== "readiness"
       ? { ...requirement, onResolve: () => {
         // An external destination cannot receive focus behind the modal.
@@ -502,6 +530,13 @@ export function SigningPanel({
       } }
       : requirement);
   const isResume = canSend && !!d.archisignEnvelopeId;
+  const canAuthorize = canSend && !checksQuery.isError && (checksQuery.data ?? 0) > 0;
+  const beginAuthorization = () => {
+    setReviewedSnapshot(questionSnapshot ?? null);
+    setAuthorizationDialogOpen(true);
+    if (!personalMessage) { setPersonalMessage(messageTemplate); setDialogStep("compose"); }
+    setSendDialogOpen(true);
+  };
 
   const statusLabel: Record<string, { label: string; tone: "default" | "secondary" | "destructive" }> = {
     sent: { label: "Sent", tone: "default" },
@@ -602,7 +637,7 @@ export function SigningPanel({
         {(
           <BlockedAction
             actionLabel="Before sending for signature"
-            requirements={sendRequirements}
+             requirements={effectiveSendRequirements}
             size="sm"
             variant="destructive"
             onClick={() => {
@@ -633,6 +668,17 @@ export function SigningPanel({
         quotationRequirement("insurance", "Review the insurance verdict. The live check remains authoritative.", devisId),
       ]} />
       {canSend && <p className="text-xs text-muted-foreground">Review the pre-send checklist above, the translated PDF, client contact and insurance. Your accompanying message is required in the next step. The server rechecks all signing safeguards before sending.</p>}
+      {canAuthorize && (
+        <div className="rounded-md border border-amber-300 bg-amber-50/70 p-3 text-xs text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100" data-testid={`question-authorization-help-${devisId}`}>
+          <p className="font-semibold">Unresolved contractor questions normally block sending.</p>
+          <p className="mt-1 leading-relaxed">As architect, you can explicitly authorize this signature request despite those questions. Questions stay open. All other signing safeguards still apply.</p>
+          <Button size="sm" variant="outline" className="mt-2" onClick={beginAuthorization} disabled={sendMutation.isPending || !questionSnapshot || readinessQuery.isError} data-testid={`button-authorize-signing-${devisId}`}>
+            {authorizationValid ? "Review authorization" : "Authorize sending with open questions"}
+          </Button>
+          {!questionSnapshot && <p className="mt-2">Authorization is unavailable until the server provides a current question snapshot.</p>}
+          {authorizationValid && <p className="mt-2 font-medium">Authorized for this question snapshot only. Confirm and send is still required.</p>}
+        </div>
+      )}
 
       <AlertDialog
         open={sendDialogOpen}
@@ -642,7 +688,7 @@ export function SigningPanel({
           }
         }}
       >
-        <AlertDialogContent data-testid={`dialog-send-to-signer-${devisId}`}>
+        <AlertDialogContent className="max-h-[90dvh] overflow-y-auto" data-testid={`dialog-send-to-signer-${devisId}`}>
           <AlertDialogHeader>
             <AlertDialogTitle>
               {isResume
@@ -653,12 +699,44 @@ export function SigningPanel({
             </AlertDialogTitle>
             <AlertDialogDescription>
               {isResume
-                ? "The envelope has already been created at Archisign — retrying only re-triggers delivery to the signer, then resends the accompanying email if needed. The message entered when the envelope was first created cannot be changed."
+                ? "The envelope has already been created at Archisign. Retry resumes that same envelope; it does not create a second signature request. The original message cannot be changed. If the question snapshot has changed, the server will stop the retry rather than reuse an envelope with outdated context."
                 : dialogStep === "compose"
                   ? "Write the accompanying message the client will receive by email (required). The signing link will be sent to them separately by Archisign."
                   : "Review what the client will receive. Sending will create the Archisign envelope and deliver this message to the client."}
             </AlertDialogDescription>
           </AlertDialogHeader>
+
+          {canAuthorize && (
+            <div className="space-y-2 rounded-md border border-amber-300 bg-amber-50/70 p-3 text-xs text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">
+              <p className="font-semibold">{checksQuery.data} unresolved contractor question(s)</p>
+              <p>Sending now asks the client to sign while these questions remain unresolved. This does not resolve, withdraw or close any question, and does not waive insurance, translation or other signing requirements.</p>
+              {authorizationValid ? (
+                <>
+                  <p className="font-medium" data-testid={`text-signing-authorized-${devisId}`}>Authorized for this send, subject to the server's final validation.</p>
+                  <p className="whitespace-pre-wrap break-words">Reason: {authorization?.reason}</p>
+                  <Button size="sm" variant="outline" onClick={() => { setAuthorization(null); setAuthorizationDialogOpen(false); }} disabled={sendMutation.isPending}>Remove authorization</Button>
+                </>
+              ) : authorizationDialogOpen ? (
+                <>
+                  <label htmlFor={`authorization-reason-${devisId}`} className="block font-semibold">Why is it appropriate to request signature now?</label>
+                  <Textarea id={`authorization-reason-${devisId}`} value={authorizationReason} onChange={event => setAuthorizationReason(event.target.value)} maxLength={2000} rows={3} disabled={sendMutation.isPending} aria-describedby={`authorization-warning-${devisId}`} data-testid={`input-signing-authorization-reason-${devisId}`} />
+                  <p id={`authorization-warning-${devisId}`}>Enter 10–2,000 characters. Your authenticated identity, the time, this reason and the question snapshot will be audited when you send. Changes, new questions or reopened questions require a fresh authorization.</p>
+                  {(!reviewedSnapshot || reviewedSnapshot !== questionSnapshot) && <p role="alert">The question snapshot is unavailable or has changed. Review the current questions and start authorization again.</p>}
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" variant="outline" onClick={() => setAuthorizationDialogOpen(false)}>Cancel authorization</Button>
+                    <Button size="sm" variant="destructive" disabled={sendMutation.isPending || !reviewedSnapshot || reviewedSnapshot !== questionSnapshot || readinessQuery.isError || authorizationReason.trim().length < 10} onClick={() => {
+                      if (reviewedSnapshot && reviewedSnapshot === questionSnapshot) {
+                        setAuthorization({ reason: authorizationReason.trim(), snapshot: reviewedSnapshot });
+                        setAuthorizationDialogOpen(false);
+                      }
+                    }} data-testid={`button-confirm-signing-authorization-${devisId}`}>I authorize sending with unresolved questions</Button>
+                  </div>
+                </>
+              ) : (
+                <Button size="sm" variant="outline" onClick={beginAuthorization} disabled={!questionSnapshot || readinessQuery.isError} data-testid={`button-authorize-in-composer-${devisId}`}>Authorize sending with open questions</Button>
+              )}
+            </div>
+          )}
 
           {!isResume && dialogStep === "compose" && (
             <div className="space-y-2">

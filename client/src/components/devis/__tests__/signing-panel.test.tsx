@@ -50,13 +50,13 @@ function jsonResponse(body: unknown) {
 
 function renderWithDevis(
   devis: Record<string, unknown>,
-  opts: { isArchived?: boolean; project?: Record<string, unknown>; readiness?: { blockers: string[]; readyToSend: boolean } | null; client?: QueryClient } = {},
+  opts: { isArchived?: boolean; project?: Record<string, unknown>; openChecks?: number; readiness?: { blockers: string[]; readyToSend: boolean; contractorQuestionAuthorizationSnapshot?: string } | null; client?: QueryClient } = {},
 ) {
   const client = opts.client ?? new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   });
   client.setQueryData(["/api/devis", (devis as { id: number }).id], devis);
-  client.setQueryData(["/api/devis", (devis as { id: number }).id, "checks", "open-count"], 0);
+  client.setQueryData(["/api/devis", (devis as { id: number }).id, "checks", "open-count"], opts.openChecks ?? 0);
   if (opts.readiness !== null) client.setQueryData(["/api/projects", String((devis as { projectId?: number }).projectId), "devis-readiness"], { 42: opts.readiness ?? { blockers: [], readyToSend: true } });
   if (opts.project) {
     client.setQueryData(
@@ -187,6 +187,94 @@ beforeEach(() => {
   apiRequestMock.mockReset();
   toastSpy.mockReset();
   apiRequestMock.mockResolvedValue(jsonResponse({ ok: true }));
+});
+
+describe("SigningPanel — explicit contractor-question authorization", () => {
+  const snapshot = "server-bound-quotation-42-question-set-v1";
+  const readiness = {
+    readyToSend: false,
+    blockers: ["2 contractor checks are still open"],
+    contractorQuestionAuthorizationSnapshot: snapshot,
+  };
+  function openAuthorization() {
+    fireEvent.click(screen.getByTestId("button-authorize-signing-42"));
+    fireEvent.change(screen.getByTestId("input-signing-authorization-reason-42"), {
+      target: { value: "The remaining questions concern scheduling, not the signed scope." },
+    });
+    fireEvent.click(screen.getByTestId("button-confirm-signing-authorization-42"));
+  }
+
+  it("retains the default block and never silently authorizes a send", () => {
+    renderWithDevis({ ...baseDevis, projectId: 9 }, { openChecks: 2, readiness });
+    fireEvent.click(screen.getByTestId("button-send-to-signer-42"));
+    expect(screen.queryByTestId("dialog-send-to-signer-42")).toBeNull();
+    expect(screen.getByTestId("button-authorize-signing-42")).toBeEnabled();
+    expect(apiRequestMock).not.toHaveBeenCalled();
+  });
+
+  it("requires a reason and separate confirmation, then submits only an explicit per-send snapshot", async () => {
+    renderWithDevis({ ...baseDevis, projectId: 9 }, { openChecks: 2, readiness });
+    fireEvent.click(screen.getByTestId("button-authorize-signing-42"));
+    expect(screen.getByTestId("button-confirm-signing-authorization-42")).toBeDisabled();
+    expect(screen.getByText(/does not resolve, withdraw or close any question/)).toBeVisible();
+    fireEvent.change(screen.getByTestId("input-signing-authorization-reason-42"), {
+      target: { value: "  Scheduling details can remain open pending signature.  " },
+    });
+    fireEvent.click(screen.getByTestId("button-confirm-signing-authorization-42"));
+    expect(apiRequestMock).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByTestId("textarea-send-message-42"), { target: { value: VALID_MESSAGE } });
+    fireEvent.click(screen.getByTestId("button-send-to-signer-continue-42"));
+    fireEvent.click(screen.getByTestId("button-send-to-signer-confirm-42"));
+    await waitFor(() => expect(apiRequestMock).toHaveBeenCalledWith("POST", "/api/devis/42/send-to-signer", {
+      message: VALID_MESSAGE,
+      contractorQuestionAuthorization: { reason: "Scheduling details can remain open pending signature.", snapshot },
+    }));
+    expect(apiRequestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("never bypasses translation or unknown readiness blockers", () => {
+    renderWithDevis({ ...baseDevis, projectId: 9 }, {
+      openChecks: 2,
+      readiness: { ...readiness, blockers: [...readiness.blockers, "Translated PDF not generated (currently missing)", "Future mandatory gate"] },
+    });
+    openAuthorization();
+    fireEvent.change(screen.getByTestId("textarea-send-message-42"), { target: { value: VALID_MESSAGE } });
+    fireEvent.click(screen.getByTestId("button-send-to-signer-continue-42"));
+    expect(screen.getByTestId("button-send-to-signer-continue-42")).toHaveAttribute("aria-disabled", "true");
+    expect(screen.queryByTestId("recap-send-to-signer-42")).toBeNull();
+    expect(apiRequestMock).not.toHaveBeenCalled();
+  });
+
+  it("invalidates authorization on a changed snapshot and preserves the unsaved client message", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    renderWithDevis({ ...baseDevis, projectId: 9 }, { client, openChecks: 2, readiness });
+    openAuthorization();
+    fireEvent.change(screen.getByTestId("textarea-send-message-42"), { target: { value: VALID_MESSAGE } });
+    await act(async () => {
+      client.setQueryData(["/api/projects", "9", "devis-readiness"], { 42: { ...readiness, contractorQuestionAuthorizationSnapshot: "changed-same-count" } });
+    });
+    await waitFor(() => expect(screen.queryByTestId("text-signing-authorized-42")).toBeNull());
+    expect(screen.getByTestId("textarea-send-message-42")).toHaveValue(VALID_MESSAGE);
+    expect(screen.getByTestId("button-send-to-signer-continue-42")).toHaveAttribute("aria-disabled", "true");
+    expect(apiRequestMock).not.toHaveBeenCalled();
+  });
+
+  it("opens the composer from a stage event despite only the question blocker", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    renderWithDevis({ ...baseDevis, projectId: 9 }, { openChecks: 2, readiness });
+    act(() => { window.dispatchEvent(new CustomEvent(OPEN_SIGNING_SEND_EVENT, { detail: { devisId: 42 } })); });
+    expect(await screen.findByTestId("dialog-send-to-signer-42")).toBeVisible();
+    expect(screen.getByTestId("button-send-to-signer-continue-42")).toHaveAttribute("aria-disabled", "true");
+    expect(apiRequestMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed without a server snapshot and hides authorization for archived projects", () => {
+    const view = renderWithDevis({ ...baseDevis, projectId: 9 }, { openChecks: 2, readiness: { ...readiness, contractorQuestionAuthorizationSnapshot: undefined } });
+    expect(screen.getByTestId("button-authorize-signing-42")).toBeDisabled();
+    view.unmount();
+    renderWithDevis({ ...baseDevis, projectId: 9 }, { openChecks: 2, readiness, isArchived: true });
+    expect(screen.queryByTestId("button-authorize-signing-42")).toBeNull();
+  });
 });
 
 describe("SigningPanel — retained signed evidence after internal stage rollback", () => {
