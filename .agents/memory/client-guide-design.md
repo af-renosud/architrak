@@ -4,6 +4,10 @@ description: Visual direction for the client signing and payment guide.
 ---
 Use a modern, clean architectural layout with sans-serif typography for the client signing and payment guide. Do not add invented or stylized logos at the top.
 
+The supplied Architects-France company logo is authorized in the top-right corner.
+
+**Why:** The user explicitly supplied the real company logo and its placement after rejecting invented branding.
+
 Use Nimbus Sans for this guide.
 
 **Why:** The user requested Helvetica / Helvetica Now, then explicitly chose Nimbus Sans as the available alternative without needing licensed Helvetica files.

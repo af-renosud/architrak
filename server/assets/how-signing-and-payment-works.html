@@ -28,6 +28,7 @@
     font-kerning: normal;
   }
   .page {
+    position: relative;
     width: 210mm;
     height: 297mm;
     padding: 15mm 17mm 12mm;
@@ -35,6 +36,7 @@
     flex-direction: column;
   }
   .header { border-top: 0.5mm solid var(--ink); padding-top: 3mm; }
+  .company-logo { position: absolute; top: 20mm; right: 17mm; width: 36mm; height: auto; }
   .doc-type {
     font-size: 8pt;
     font-weight: 600;
@@ -43,6 +45,7 @@
     color: var(--muted);
   }
   h1 {
+    max-width: 136mm;
     font-size: 28pt;
     font-weight: 400;
     letter-spacing: -1.1px;
@@ -114,6 +117,7 @@
   <div class="header">
     <div class="doc-type">Client guide &middot; Signing &amp; payments</div>
   </div>
+  <img class="company-logo" src="architects-france-logo.jpg" alt="Architects-France">
   <h1>How signing and payment<br>works on your project</h1>
   <p class="intro">Your architect uses ArchiTrak to manage quotations, signatures and payments on your building project. This one-page guide explains what happens at each step &mdash; and, most importantly, when to pay and when not to.</p>
   <div class="steps">
