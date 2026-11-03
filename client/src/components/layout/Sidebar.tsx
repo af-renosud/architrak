@@ -238,7 +238,7 @@ export function Sidebar({ mobileMode = false, mobileOpen = false, onMobileClose 
                 aria-haspopup="dialog"
                 aria-expanded={calculatorOpen}
                 onClick={() => setCalculatorOpen(true)}
-                className="flex h-12 w-full items-center justify-center rounded-xl border border-[#b9eadc] bg-[#e5fbf3] text-[#278d79] shadow-sm transition-colors hover:bg-[#d5f5e9] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#278d79] focus-visible:ring-offset-2"
+                className="flex h-12 w-full items-center justify-center rounded-xl border border-[#b9eadc] bg-[#e5fbf3] text-[#278d79] shadow-sm transition-colors hover:bg-[#d5f5e9] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-[#278d79] focus-visible:ring-offset-2"
                 data-testid="button-tool-calculator"
               >
                 <Calculator size={20} strokeWidth={1.5} />
