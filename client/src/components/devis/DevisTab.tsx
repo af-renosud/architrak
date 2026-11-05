@@ -4952,9 +4952,11 @@ type InsuranceOverrideWire = {
 
 function InsurancePanel({
   devisId,
+  projectId,
   isArchived,
 }: {
   devisId: number;
+  projectId: string;
   isArchived: boolean;
 }) {
   const { toast } = useToast();
@@ -4973,6 +4975,9 @@ function InsurancePanel({
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "insurance-verdict"] });
     queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "insurance-overrides"] });
+    // Readiness is cached indefinitely and drives the signing button separately
+    // from this panel. Refresh it only after the override has been saved.
+    queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis-readiness") });
   };
 
   const overrideMutation = useMutation({
@@ -5368,7 +5373,7 @@ function ChecksPanel({
       <ClientPortalPanel devisId={devisId} projectId={projectId} isArchived={isArchived} />
       <ClientConversationPanel devisId={devisId} lineItems={lineItems} isArchived={isArchived} />
       <ProjectSharePublishControl projectId={projectId} devisId={devisId} isArchived={isArchived} />
-      <InsurancePanel devisId={devisId} isArchived={isArchived} />
+      <InsurancePanel devisId={devisId} projectId={projectId} isArchived={isArchived} />
       <SigningPanel devisId={devisId} isArchived={isArchived} />
 
       {/* Bottom mirror — variant B "Inline composer + bottom mirror".
