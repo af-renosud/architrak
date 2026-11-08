@@ -47,6 +47,7 @@ import { AdvisoriesList, AdvisoryBadge } from "@/components/advisories/Advisorie
 import { DevisTranslationSection } from "@/components/devis/DevisTranslationSection";
 import { SituationsSection } from "@/components/devis/SituationsSection";
 import { PdfPopoutViewer } from "@/components/devis/PdfPopoutViewer";
+import { SignedPdfQuickLink } from "@/components/devis/SignedPdfQuickLink";
 import { ContractorSelect } from "@/components/ui/contractor-select";
 import { TvaDerivedHint } from "@/components/ui/tva-derived-hint";
 import {
@@ -1260,6 +1261,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
 
                 {/* Icon-only action cluster */}
                 <div className="flex items-center gap-1">
+                  <SignedPdfQuickLink devisId={d.id} available={!!d.signedPdfStorageKey} />
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <span className="inline-flex">
