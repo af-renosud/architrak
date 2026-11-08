@@ -1,7 +1,7 @@
-import type { ActionRequirement } from "@/components/ui/blocked-action";
+import { focusActionTarget, type ActionRequirement } from "@/components/ui/blocked-action";
 import type { WorkflowGroup } from "./devis-workflow-model";
 
-export type QuotationTarget = "lot" | "description" | "stage" | "checks" | "translation" | "source" | "insurance" | "contact" | "signature";
+export type QuotationTarget = "lot" | "description" | "stage" | "checks" | "translation" | "source" | "insurance" | "contact" | "signature" | "deposit";
 export type ContractorQuestionAuthorization = { reason: string; snapshot: string };
 
 /** Only the contractor-question blocker can be waived; unknown blockers fail closed. */
@@ -13,7 +13,14 @@ export function goToQuotationTarget(devisId: number, target: QuotationTarget, pr
     window.dispatchEvent(new CustomEvent("architrak:edit-project-contact", { detail: { projectId } }));
     return;
   }
-  const targets: Record<Exclude<QuotationTarget, "contact">, { group: WorkflowGroup; testId: string; tab?: string }> = {
+  if (target === "deposit") {
+    // AcompteBadge is in the quotation header, outside the workflow root.
+    // Focus the exact existing control; never click it or open another section.
+    const root = document.querySelector(`[data-testid="card-devis-${devisId}"]`) ?? document;
+    focusActionTarget(`[data-testid="button-acompte-generate-cert-${devisId}"]`, root);
+    return;
+  }
+  const targets: Record<Exclude<QuotationTarget, "contact" | "deposit">, { group: WorkflowGroup; testId: string; tab?: string }> = {
     lot: { group: "review", testId: `select-lot-${devisId}` },
     description: { group: "review", testId: `input-description-uk-${devisId}` },
     stage: { group: "review", testId: `stepper-signoff-${devisId}` },

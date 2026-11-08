@@ -10,6 +10,7 @@ import lotsRouter from "./lots";
 import lotCatalogRouter from "./lot-catalog";
 import wishListRouter from "./wishlist";
 import devisRouter from "./devis";
+import quotationNextActionsRouter from "./quotation-next-actions";
 import supportingPdfsRouter from "./supporting-pdfs";
 import acompteRouter from "./acompte";
 import devisChecksRouter from "./devis-checks";
@@ -108,6 +109,7 @@ export async function registerRoutes(
   app.use(lotCatalogRouter);
   app.use(wishListRouter);
   app.use(devisRouter);
+  app.use(quotationNextActionsRouter);
   app.use(architectQuotationCorrectionRouter);
   app.use(supportingPdfsRouter);
   app.use(devisManualSignoffRouter);

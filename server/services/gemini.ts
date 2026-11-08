@@ -37,6 +37,7 @@ export function isGeminiConfigured(): boolean {
 export async function generateWithGemini(input: {
   systemPrompt: string;
   userContent: string;
+  timeoutMs?: number;
 }): Promise<{ text: string; modelId: string }> {
   if (env.E2E_FAKE_GEMINI) {
     return { text: FAKE_GEMINI_COST_ANALYSIS, modelId: "fake-gemini-e2e" };
@@ -54,7 +55,7 @@ export async function generateWithGemini(input: {
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, GEMINI_TIMEOUT_MS);
+  }, input.timeoutMs ?? GEMINI_TIMEOUT_MS);
   let resp: Response;
   try {
     resp = await fetch(url, {

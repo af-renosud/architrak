@@ -1,4 +1,8 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import { QuotationNextActionFlag } from "./QuotationNextActionFlag";
+import { QuotationNextActionsSummary } from "./QuotationNextActionsSummary";
+import { useQuotationNextActions, type QuotationNextActionsController } from "@/hooks/use-quotation-next-actions";
+import { matchesNextActionFilter, nextActionEligible } from "@/lib/quotation-next-actions";
 import { ActionChecklist, BlockedAction, RequirementList, type ActionRequirement } from "@/components/ui/blocked-action";
 import { fetchOpenQuotationChecks, quotationRequirement, readinessRequirements, stageRequirements } from "./action-requirements";
 import { BulkDocumentActions, BulkDocumentCheckbox } from "@/components/documents/BulkDocumentActions";
@@ -687,6 +691,8 @@ function AvenantDialog({
 }
 
 interface DevisRowProps {
+  nextActions: QuotationNextActionsController;
+  onExpandForAction: () => void;
   bulkSelection: BulkDocumentsSelection;
   d: Devis;
   projectId: string;
@@ -1051,7 +1057,7 @@ function ReadinessStrip({ d, r, onOpen }: { d: Devis; r: DevisReadiness; onOpen:
   );
 }
 
-function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openChecks, readiness, onToggle, onEditRefs, onReviewDraft, onGoToIntake, onCreateCertificat, sameRefPeer, bulkSelection }: DevisRowProps) {
+function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openChecks, readiness, onToggle, onEditRefs, onReviewDraft, onGoToIntake, onCreateCertificat, sameRefPeer, bulkSelection, nextActions, onExpandForAction }: DevisRowProps) {
   const { toast } = useToast();
   const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [avenantOpen, setAvenantOpen] = useState(false);
@@ -1193,6 +1199,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
           </div>
           <TooltipProvider delayDuration={200}>
             <div className="flex items-center gap-3 flex-wrap justify-end">
+              {nextActionEligible(d, isArchived) && <QuotationNextActionFlag devisId={d.id} projectId={projectId} controller={nextActions} onExpand={onExpandForAction} />}
               {/* Compact toolbar: status + mode + advisory + actions, with hairline dividers */}
               <div className="flex items-center gap-2 min-[900px]:gap-2.5">
                 {/* Task #374 — the generic PENDING chip is de-emphasised now
@@ -1490,6 +1497,9 @@ export function DevisTab({
 }: DevisTabProps) {
   const { toast } = useToast();
   const [expandedDevis, setExpandedDevis] = useState<number | null>(initialExpandedDevisId);
+  const nextActionsQuery = useQuotationNextActions(projectId, !isArchived);
+  const [actionNeededOnly, setActionNeededOnly] = useState(false);
+  useEffect(() => { setActionNeededOnly(false); }, [projectId, isArchived]);
 
   useEffect(() => {
     if (initialExpandedDevisId) setExpandedDevis(initialExpandedDevisId);
@@ -1537,6 +1547,11 @@ export function DevisTab({
   const { data: devisList, isLoading, dataUpdatedAt: devisUpdatedAt } = useQuery<Devis[]>({
     queryKey: projectScopedKey(projectId, "devis"),
   });
+  const nextActions = {
+    ...nextActionsQuery,
+    unknown: nextActionsQuery.unknown || !devisList || devisList.some(d =>
+      nextActionEligible(d, isArchived) && !nextActionsQuery.data?.quotations[d.id]),
+  };
   useEffect(() => {
     if (initialExpandedDevisId && devisList?.some(d => d.id === initialExpandedDevisId && d.status === "void")) setShowVoid(true);
   }, [initialExpandedDevisId, devisList]);
@@ -1664,6 +1679,7 @@ export function DevisTab({
   }, [devisList]);
 
   const filteredDevisList = visibleBeforeFilters.filter((d) => {
+    if (!matchesNextActionFilter(d, isArchived, actionNeededOnly, nextActions.data, nextActions.unknown)) return false;
     if (selectedLots.length > 0) {
       const lr = (d.lotRefText ?? "").toUpperCase();
       if (!selectedLots.includes(lr)) return false;
@@ -1675,7 +1691,7 @@ export function DevisTab({
   const displayedDevisList = signedDevisFirst(filteredDevisList);
   const bulk = useBulkDocuments({
     items: filteredDevisList.map((d) => ({ id: d.id, name: d.devisCode, eligible: canBulkVoidDevis(d, isArchived) })),
-    scope: JSON.stringify(["devis", projectId, showVoid, selectedLots, searchQuery, isArchived]),
+    scope: JSON.stringify(["devis", projectId, showVoid, selectedLots, searchQuery, isArchived, actionNeededOnly]),
     execute: (id, reason) => apiRequest("PATCH", `/api/devis/${id}`, { status: "void", voidReason: reason }),
     onSettled: async () => {
       await Promise.all(["devis", "devis-readiness", "financial-summary", "accounting-status", "intake"].map((list) =>
@@ -1683,12 +1699,13 @@ export function DevisTab({
       await queryClient.invalidateQueries({ predicate: (query) => query.queryKey[0] === "/api/devis" });
     },
   });
-  const filtersActive = selectedLots.length > 0 || searchQuery.trim().length > 0;
+  const filtersActive = selectedLots.length > 0 || searchQuery.trim().length > 0 || actionNeededOnly;
 
   const toggleLotFilter = (lot: string) => {
     setSelectedLots((prev) => (prev.includes(lot) ? prev.filter((l) => l !== lot) : [...prev, lot]));
   };
   const clearFilters = () => {
+    setActionNeededOnly(false);
     setSelectedLots([]);
     setSearchQuery("");
   };
@@ -1831,6 +1848,7 @@ export function DevisTab({
         )}
       </div>
 
+      {!isArchived && <QuotationNextActionsSummary rows={devisList ?? []} controller={nextActions} selected={actionNeededOnly} onToggle={() => setActionNeededOnly(value => !value)} />}
       {(lotOptions.length > 0 || filtersActive || (visibleBeforeFilters.length > 0)) && (
         <div className="flex items-center gap-2 flex-wrap" data-testid="row-devis-filters">
           <Input
@@ -1928,6 +1946,8 @@ export function DevisTab({
             <DevisRow
               key={d.id}
               bulkSelection={bulk}
+              nextActions={nextActions}
+              onExpandForAction={() => setExpandedDevis(d.id)}
               d={d}
               projectId={projectId}
               contractors={contractors}
@@ -1962,7 +1982,7 @@ export function DevisTab({
           <LuxuryCard data-testid="card-empty-devis-filtered">
             <div className="text-center py-6 space-y-2">
               <p className="text-[12px] text-muted-foreground">
-                No devis match the current filters.
+                {actionNeededOnly && nextActions.unknown ? "Action-needed filtering cannot be verified. Retry guidance or clear filters to view quotations." : "No devis match the current filters."}
               </p>
               <Button
                 variant="outline"
