@@ -70,6 +70,8 @@ export interface MigrationArtifact {
  * migration. Set the flag on every new data-only DML backfill.
  */
 export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
+  { tag: "0148_manual_upload_signed_copies", artifact: { kind: "data_only", rerunnable: true,
+    reason: "Idempotently drop envelope NOT NULL and reassert manual-upload provenance CHECK; existing automatic envelopes remain mandatory" } },
   { tag:"0147_payment_evidence",artifact:{kind:"all",artifacts:[
     {kind:"column",table:"certificat_payments",column:"note"},
     {kind:"column",table:"certificat_payments",column:"invoice_allocations"},

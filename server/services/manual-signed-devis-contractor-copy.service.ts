@@ -11,6 +11,7 @@ import {
   type SignedDevisCopyNotice,
 } from "@shared/schema";
 import { isValidRecipientEmail } from "../communications/email-sender";
+import { manualSignedCopyAttestation, signedCopyEnvelope, signedCopyInactive, signedCopyContentHash } from "./signed-copy-provenance";
 import {
   assertSignedCopyDispatchValid,
   dispatchSignedCopyNotice,
@@ -30,9 +31,12 @@ export interface SignedCopyConfirmationSnapshot {
   recipientEmail: string;
   quotationRef: string;
   projectName: string;
-  archisignEnvelopeId: string;
+  archisignEnvelopeId: string | null;
   signedPdfStorageKeyHash: string;
-  signedPdfArchisignEnvelopeId: string;
+  signedPdfArchisignEnvelopeId: string | null;
+  signatureSource?: "archisign" | "manual_upload";
+  manualAttestationHash?: string | null;
+  signedPdfContentHash?: string;
   latestDeliveryId: number | null;
   latestDeliverySource: string | null;
   latestDeliveryStatus: string | null;
@@ -52,6 +56,7 @@ interface SignedCopyCurrentState {
   recipientEmail: string;
   quotationRef: string;
   latestDelivery: SignedDevisCopyNotice | null;
+  signedPdfContentHash?: string;
 }
 
 function confirmationTokenSecret(): string {
@@ -138,13 +143,17 @@ async function loadSignedCopyCurrentState(
     latestDelivery: latestDelivery ?? null,
   };
   let reason: string | null = null;
-  if (d.signOffStage !== "client_signed_off" || (d.signedOffVia !== "archisign" && d.signedOffVia !== null)) {
+  if (signedCopyInactive(d)) {
+    reason = "Voided or superseded quotations cannot send a contractor copy";
+  } else if (d.signedOffVia === "manual_upload" && !manualSignedCopyAttestation(d)) {
+    reason = "The manually recorded signature or its stored signed PDF is incomplete";
+  } else if (d.signedOffVia !== "manual_upload" && (d.signOffStage !== "client_signed_off" || (d.signedOffVia !== "archisign" && d.signedOffVia !== null))) {
     reason = "Devis is not a verified Archisign completion";
-  } else if (!d.archisignEnvelopeId) {
+  } else if (d.signedOffVia !== "manual_upload" && !d.archisignEnvelopeId) {
     reason = "Archisign envelope is unavailable";
-  } else if (!d.signedPdfStorageKey || d.signedPdfArchisignEnvelopeId !== d.archisignEnvelopeId) {
+  } else if (d.signedOffVia !== "manual_upload" && (!d.signedPdfStorageKey || d.signedPdfArchisignEnvelopeId !== d.archisignEnvelopeId)) {
     reason = "Verified Archisign signed PDF is unavailable or has mismatched provenance";
-  } else if (!hasVerifiedArchisignSignOff(d)) {
+  } else if (d.signedOffVia !== "manual_upload" && !hasVerifiedArchisignSignOff(d)) {
     reason = "Verified Archisign signed PDF is unavailable or has mismatched provenance";
   } else if (project.archivedAt) {
     reason = "Project is archived; signed-copy delivery is blocked";
@@ -160,9 +169,11 @@ async function loadSignedCopyCurrentState(
       // The provenance columns prove which PDF may be sent; this final
       // object-store read proves that the bytes are still available before
       // offering an operator a confirmation action.
-      await getDocumentBuffer(d.signedPdfStorageKey);
+       const bytes = await getDocumentBuffer(d.signedPdfStorageKey);
+       if (d.signedOffVia === "manual_upload" && !bytes.subarray(0, 5).equals(Buffer.from("%PDF-"))) throw new Error("Not a PDF");
+       state.signedPdfContentHash = signedCopyContentHash(bytes);
     } catch {
-      reason = "Verified Archisign signed PDF bytes are unavailable";
+      reason = "Stored signed PDF bytes are unavailable or invalid";
     }
   }
   return { state, reason };
@@ -184,9 +195,12 @@ function confirmationSnapshotFor(
     recipientEmail: state.recipientEmail,
     quotationRef: state.quotationRef,
     projectName: project.name,
-    archisignEnvelopeId: d.archisignEnvelopeId!,
+    archisignEnvelopeId: signedCopyEnvelope(d),
     signedPdfStorageKeyHash: storageKeyHash(d.signedPdfStorageKey!),
-    signedPdfArchisignEnvelopeId: d.signedPdfArchisignEnvelopeId!,
+    signedPdfArchisignEnvelopeId: d.signedPdfArchisignEnvelopeId,
+    signatureSource: d.signedOffVia === "manual_upload" ? "manual_upload" : "archisign",
+    manualAttestationHash: manualSignedCopyAttestation(d),
+    signedPdfContentHash: state.signedPdfContentHash!,
     latestDeliveryId: latestDelivery?.id ?? null,
     latestDeliverySource: latestDelivery?.source ?? null,
     latestDeliveryStatus: latestDelivery?.status ?? null,
@@ -219,7 +233,10 @@ function currentMatchesSnapshot(
     && snapshot.recipientEmail === state.recipientEmail
     && snapshot.quotationRef === state.quotationRef
     && snapshot.projectName === project.name
-    && snapshot.archisignEnvelopeId === d.archisignEnvelopeId
+    && snapshot.archisignEnvelopeId === signedCopyEnvelope(d)
+    && snapshot.signatureSource === (d.signedOffVia === "manual_upload" ? "manual_upload" : "archisign")
+    && snapshot.manualAttestationHash === manualSignedCopyAttestation(d)
+    && snapshot.signedPdfContentHash === state.signedPdfContentHash
     && snapshot.signedPdfStorageKeyHash === storageKeyHash(d.signedPdfStorageKey ?? "")
     && snapshot.signedPdfArchisignEnvelopeId === d.signedPdfArchisignEnvelopeId
     && snapshot.latestDeliveryId === (latestDelivery?.id ?? null)
@@ -229,6 +246,7 @@ function currentMatchesSnapshot(
 }
 
 export interface SignedCopyContractorCopyPayload {
+  signatureSource: "archisign" | "manual_upload" | null;
   canSend: boolean;
   reason: string | null;
   contractorName: string | null;
@@ -244,6 +262,7 @@ export interface SignedCopyContractorCopyPayload {
     communicationId: number | null;
     canRetry: boolean;
     source: string;
+    signatureSource: "archisign" | "manual_upload";
   }>;
 }
 
@@ -265,6 +284,7 @@ async function deliveryResponse(
       row.status === "reconciling"
       || (row.status === "failed" && !providerSending),
     source: row.source,
+    signatureSource: (row.confirmationSnapshot as Partial<SignedCopyConfirmationSnapshot> | null)?.signatureSource === "manual_upload" ? "manual_upload" : "archisign",
   };
 }
 
@@ -288,7 +308,7 @@ export async function getSignedCopyContractorCopyPayload(
         : Promise.resolve(undefined),
     ));
     const inFlightIndex = deliveries.findIndex((delivery, index) =>
-      delivery.archisignEnvelopeId === state!.devis.archisignEnvelopeId
+      delivery.archisignEnvelopeId === signedCopyEnvelope(state!.devis)
       && (
       ["pending_pdf", "queued", "sending", "reconciling"].includes(delivery.status)
       || communicationStates[index]?.status === "sending"
@@ -308,6 +328,7 @@ export async function getSignedCopyContractorCopyPayload(
     confirmationToken = mintSignedCopyConfirmationToken(tokenSnapshotFrom(snapshot));
   }
   return {
+    signatureSource: state?.devis.signedOffVia === "manual_upload" ? "manual_upload" : state && hasVerifiedArchisignSignOff(state.devis) ? "archisign" : null,
     canSend,
     reason,
     contractorName,
@@ -363,7 +384,7 @@ export async function createManualSignedCopyDelivery(options: {
         : Promise.resolve(undefined),
     ));
     const unresolvedIndex = deliveries.findIndex((delivery, index) =>
-      delivery.archisignEnvelopeId === state.devis.archisignEnvelopeId
+      delivery.archisignEnvelopeId === signedCopyEnvelope(state.devis)
       && (
         ["pending_pdf", "queued", "sending", "reconciling"].includes(delivery.status)
         || communicationStates[index]?.status === "sending"
@@ -377,8 +398,8 @@ export async function createManualSignedCopyDelivery(options: {
           : "A signed-copy delivery is already in progress",
       );
     }
-    if (!state.devis.contractorId || !state.devis.archisignEnvelopeId || !state.devis.signedPdfStorageKey) {
-      throw new Error("Verified Archisign signed PDF is unavailable");
+    if (!state.devis.contractorId || !state.devis.signedPdfStorageKey) {
+      throw new Error("Stored signed PDF is unavailable");
     }
 
     const snapshot = confirmationSnapshotFor(state, latestDelivery, options.requestedByUserId);
@@ -431,9 +452,9 @@ export async function createManualSignedCopyDelivery(options: {
     const [inserted] = await tx.insert(signedDevisCopyNotices).values({
       devisId: state.devis.id,
       projectId: state.devis.projectId,
-      archisignEnvelopeId: state.devis.archisignEnvelopeId,
+      archisignEnvelopeId: signedCopyEnvelope(state.devis),
       intendedContractorId: state.devis.contractorId,
-      signedAt: latestDelivery?.signedAt ?? new Date(),
+      signedAt: state.devis.signedOffVia === "manual_upload" ? new Date(state.devis.manualSignoffAt!) : latestDelivery?.signedAt ?? new Date(),
       source: SIGNED_COPY_MANUAL_SOURCE,
       requestId: options.requestId,
       requestedByUserId: options.requestedByUserId,

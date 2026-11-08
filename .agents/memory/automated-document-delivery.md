@@ -20,3 +20,9 @@ Explicit contractor re-requests are new delivery intentions, not retries of a su
 **Why:** Reopening a sent row loses audit history and permits duplicate sends from stale tabs. Suppressing a manual/automatic race at DV level rather than envelope level can also suppress a later, genuinely different signed quotation.
 
 **How to apply:** Keep each confirmed resend append-only, make retries idempotent within that intention, and scope cross-source duplicate prevention to the same envelope.
+
+Manually uploaded signed quotations may be forwarded only on explicit operator confirmation. Their provenance is the recorded manual attestation, not a synthetic Archisign envelope. Pin the original PDF's content hash as well as its storage key, and verify the actual MIME attachment against that hash.
+
+**Why:** A retained signed upload must be usable without restarting signing, but must never masquerade as cryptographically verified Archisign evidence. Deterministic object keys alone cannot detect replacement bytes.
+
+**How to apply:** Preserve automatic Archisign-only delivery and work-authorisation boundaries. Keep manual-upload notices envelope-less, preserve their original attestation and operator audit, and use the existing accepted-send reconciliation instead of blind retries.

@@ -779,6 +779,7 @@ export async function sendCommunication(
 
   let requiredSupplierAttachmentKeys: [string, string] | null = null;
   let requiredSignedCopyAttachmentKey: string | null = null;
+  let requiredSignedCopyContentHash: string | undefined;
   let requiredArchitectInvoiceKey: string | null = null;
   let architectInvoiceName: string | null = null;
   let relatedSupplierCert: Certificat | null = null;
@@ -822,6 +823,7 @@ export async function sendCommunication(
       );
       const valid = await assertSignedCopyDispatchValid(communicationId);
       requiredSignedCopyAttachmentKey = valid.storageKey;
+      requiredSignedCopyContentHash = valid.contentHash;
       if (comm.recipientEmail !== valid.recipientEmail) {
         await storage.updateProjectCommunication(communicationId, {
           recipientEmail: valid.recipientEmail,
@@ -1031,6 +1033,10 @@ export async function sendCommunication(
       }
       try {
         const buffer = await getDocumentBuffer(key);
+        if (key === requiredSignedCopyAttachmentKey && requiredSignedCopyContentHash &&
+            createHash("sha256").update(buffer).digest("hex") !== requiredSignedCopyContentHash) {
+          throw new Error("Signed PDF content changed since confirmation");
+        }
         const filename = key === requiredArchitectInvoiceKey
           ? `Architect-invoice-${architectInvoiceName ?? "invoice.pdf"}`
           : key.split("/").pop() || "attachment";

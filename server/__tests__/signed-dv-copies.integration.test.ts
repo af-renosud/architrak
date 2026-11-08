@@ -15,6 +15,7 @@ const gmail = vi.hoisted(() => ({
 }));
 
 const documents = vi.hoisted(() => new Map<string, Buffer>());
+const documentRead = vi.hoisted(() => vi.fn());
 
 vi.mock("../gmail/client", () => ({
   isFakeGmailMode: () => gmail.fakeMode,
@@ -43,6 +44,7 @@ vi.mock("../storage/object-storage", async (importOriginal) => {
   return {
     ...actual,
     getDocumentBuffer: async (key: string) => {
+      documentRead(key);
       const bytes = documents.get(key);
       if (!bytes) throw new Error(`test object missing: ${key}`);
       return bytes;
@@ -68,6 +70,7 @@ import {
   materializeSignedCopyOutbox,
   recordEligibleSignedCopyIntent,
   sweepSignedCopyNotices,
+  assertSignedCopyDispatchValid,
 } from "../services/signed-devis-contractor-copy.service";
 import { errorHandler } from "../middleware/error-handler";
 import { MAX_SIGNED_PDF_RETRY_ATTEMPTS } from "../services/signed-pdf-retry-policy";
@@ -188,7 +191,124 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
 
+describe("operator sending of manually uploaded signed PDFs", () => {
+  async function uploaded() {
+    await putSetting(false);
+    const key = `${PREFIX}/${randomUUID()}-uploaded.pdf`;
+    documents.set(key, Buffer.from("%PDF-1.7\noriginal wet-signed contractor quotation"));
+    const f = await fixture({ signedOffVia: "manual_upload", signedPdfStorageKey: key });
+    await storage.updateDevis(f.row.id, {
+      archisignEnvelopeId: null, archisignEnvelopeStatus: null,
+      manualSignoffAt: new Date(), manualSignoffBy: "1",
+      manualSignoffNote: "Architect checked the original wet signature",
+    });
+    return { ...f, key };
+  }
+  async function preview(id: number) {
+    return (await fetch(`${baseUrl}/api/devis/${id}/contractor-copy`)).json();
+  }
+  async function send(id: number, token: string, requestId = randomUUID()) {
+    return fetch(`${baseUrl}/api/devis/${id}/contractor-copy`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ requestId, confirmationToken: token }),
+    });
+  }
+
+  it("sends exact uploaded bytes once under concurrent confirmation, with no envelope or automatic intent", async () => {
+    const { row, key } = await uploaded();
+    const p = await preview(row.id);
+    expect(p).toMatchObject({ canSend: true, signatureSource: "manual_upload" });
+    expect(gmail.send).not.toHaveBeenCalled();
+    const requestId = randomUUID();
+    const results = await Promise.all(Array.from({ length: 4 }, () => send(row.id, p.confirmationToken, requestId)));
+    expect(results.every(r => r.status === 200)).toBe(true);
+    expect(gmail.send).toHaveBeenCalledTimes(1);
+    expect(rawMessages()[0]).toContain(documents.get(key)!.toString("base64"));
+    const notices = await db.select().from(signedDevisCopyNotices).where(eq(signedDevisCopyNotices.devisId, row.id));
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({
+      archisignEnvelopeId: null, source: "manual", requestedByUserId: 1, status: "sent",
+      confirmationSnapshot: expect.objectContaining({
+        signatureSource: "manual_upload", manualAttestationHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        signedPdfContentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    });
+    const after = await storage.getDevis(row.id);
+    expect(after).toMatchObject({ signedOffVia: "manual_upload", archisignEnvelopeId: null, signedPdfStorageKey: key });
+    expect((await preview(row.id)).deliveries[0].signatureSource).toBe("manual_upload");
+  });
+
+  it.each(["recipient", "bytes", "attestation", "document-key"])("requires reconfirmation after %s changes", async change => {
+    const { row, key, contractorId } = await uploaded();
+    const p = await preview(row.id);
+    if (change === "recipient") await db.update(contractors).set({ email: "changed@example.test" }).where(eq(contractors.id, contractorId));
+    if (change === "bytes") documents.set(key, Buffer.from("%PDF-1.7\nreplacement bytes"));
+    if (change === "attestation") await storage.updateDevis(row.id, { manualSignoffNote: "A changed attestation for testing" });
+    if (change === "document-key") {
+      documents.set(`${key}.new.pdf`, documents.get(key)!);
+      await storage.updateDevis(row.id, { signedPdfStorageKey: `${key}.new.pdf` });
+    }
+    expect((await send(row.id, p.confirmationToken)).status).toBe(409);
+    expect(gmail.send).not.toHaveBeenCalled();
+  });
+
+  it.each(["unsigned", "void", "archived", "missing-bytes", "missing-attestation", "invalid-email"])("blocks %s without sending", async change => {
+    const { row, key, projectId, contractorId } = await uploaded();
+    if (change === "unsigned") await storage.updateDevis(row.id, { signOffStage: "approved_for_signing" });
+    if (change === "void") await storage.updateDevis(row.id, { status: "void" });
+    if (change === "archived") await db.update(projects).set({ archivedAt: new Date() }).where(eq(projects.id, projectId));
+    if (change === "missing-bytes") documents.delete(key);
+    if (change === "missing-attestation") await storage.updateDevis(row.id, { manualSignoffBy: null });
+    if (change === "invalid-email") await db.update(contractors).set({ email: "invalid" }).where(eq(contractors.id, contractorId));
+    const p = await preview(row.id);
+    expect(p.canSend).toBe(false);
+    expect(p.confirmationToken).toBeNull();
+    expect(gmail.send).not.toHaveBeenCalled();
+  });
+
+  it("rechecks confirmed content on dispatch and retry", async () => {
+    const { row, key } = await uploaded();
+    const p = await preview(row.id);
+    let reads = 0;
+    documentRead.mockImplementation(() => {
+      if (++reads === 2) throw new Error("Storage unavailable before provider");
+    });
+    expect((await send(row.id, p.confirmationToken)).status).toBe(200);
+    const [notice] = await db.select().from(signedDevisCopyNotices).where(eq(signedDevisCopyNotices.devisId, row.id));
+    expect(notice.status).toBe("failed");
+    documents.set(key, Buffer.from("%PDF-1.7\nchanged after failure"));
+    await expect(assertSignedCopyDispatchValid(notice.communicationId!)).rejects.toThrow("content changed");
+    const retry = await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy/${notice.id}/retry`, { method: "POST" });
+    expect(retry.status).toBe(409);
+    expect(gmail.send).not.toHaveBeenCalled();
+  });
+  it("checks the actual MIME attachment bytes, not just the earlier read", async () => {
+    const { row, key } = await uploaded();
+    const p = await preview(row.id);
+    let reads = 0;
+    documentRead.mockImplementation(() => {
+      if (++reads === 3) documents.set(key, Buffer.from("%PDF-1.7\nreplaced during assembly"));
+    });
+    await send(row.id, p.confirmationToken);
+    const [notice] = await db.select().from(signedDevisCopyNotices).where(eq(signedDevisCopyNotices.devisId, row.id));
+    expect(notice.status).toBe("failed");
+    expect(gmail.send).not.toHaveBeenCalled();
+  });
+  it("reconciles uncertain provider sends rather than blindly resending", async () => {
+    const { row } = await uploaded();
+    const p = await preview(row.id);
+    gmail.send.mockRejectedValueOnce(new Error("Provider connection lost"));
+    await send(row.id, p.confirmationToken);
+    const current = await preview(row.id);
+    expect(current).toMatchObject({ canSend: false, deliveries: [expect.objectContaining({ status: "reconciling" })] });
+    const retry = await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy/${current.deliveries[0].id}/retry`, { method: "POST" });
+    expect(retry.status).toBe(200);
+    expect(gmail.send).toHaveBeenCalledTimes(1);
+  });
+});
+
 beforeEach(() => {
+  documentRead.mockReset();
   gmail.fakeMode = true;
   gmail.send.mockClear();
   gmail.list.mockClear();

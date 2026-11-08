@@ -15,9 +15,11 @@ type ContractorCopyDelivery = {
   communicationId: number | null;
   canRetry: boolean;
   source: string;
+  signatureSource?: "archisign" | "manual_upload";
 };
 
 type ContractorCopyResponse = {
+  signatureSource?: "archisign" | "manual_upload" | null;
   canSend: boolean;
   reason: string | null;
   contractorName: string | null;
@@ -269,7 +271,7 @@ export function ContractorCopySend({
   const unavailableReason = isArchived
     ? "Archived projects cannot send a contractor copy."
     : !isSigned
-      ? "The quotation must have a verified completed Archisign signature and stored signed PDF."
+      ? "The quotation must be recorded as signed and have a stored signed PDF."
     : contractorCopyQuery.isLoading
       ? "Checking signed-document and recipient eligibility…"
       : contractorCopyQuery.error
@@ -299,7 +301,7 @@ export function ContractorCopySend({
         <div className="min-w-0">
           <p className="text-sm font-semibold">Contractor copy</p>
           <p className="text-xs text-muted-foreground">
-            Send the verified Archisign-signed quotation without changing signature settings.
+            Send the stored signed quotation without changing signature settings.
           </p>
         </div>
         <Button
@@ -360,6 +362,7 @@ export function ContractorCopySend({
                     <span className="font-medium">
                       {delivery.source.toLowerCase() === "manual" ? "Manual" : "Automatic"}
                     </span>
+                    {delivery.signatureSource === "manual_upload" && <span>Signed — manual upload</span>}
                     <span className={contractorCopyStatusClass(delivery.status)}>
                       {contractorCopyStatusLabel(delivery.status)}
                     </span>
@@ -445,6 +448,16 @@ export function ContractorCopySend({
                 </div>
               </div>
 
+              <p className="text-xs font-medium" data-testid={`text-contractor-copy-provenance-${devisId}`}>
+                {dialogData.signatureSource === "manual_upload"
+                  ? "Signed — manual upload. Recorded by an architect; not verified through Archisign."
+                  : dialogData.signatureSource === "archisign"
+                    ? "Signed — verified Archisign completion."
+                    : "Signature provenance unavailable."}
+              </p>
+              {dialogData.canSend && <a className="text-xs underline" href={`/api/devis/${devisId}/signed-pdf`} target="_blank" rel="noopener noreferrer">
+                Open the signed PDF to be attached
+              </a>}
               {previousAcceptedDelivery && (
                 <div
                   className="flex items-start gap-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"
@@ -459,7 +472,7 @@ export function ContractorCopySend({
               )}
 
               <p className="text-xs text-muted-foreground">
-                The verified signed PDF for quotation {dialogData.quotationRef || "—"} will be
+                The stored signed PDF for quotation {dialogData.quotationRef || "—"} will be
                 attached. This does not restart signature collection, authorise work, or request
                 payment.
               </p>

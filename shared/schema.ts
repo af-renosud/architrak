@@ -2584,7 +2584,8 @@ export const signedDevisCopyNotices = pgTable("signed_devis_copy_notices", {
   id: serial("id").primaryKey(),
   devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
   projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
-  archisignEnvelopeId: text("archisign_envelope_id").notNull(),
+  // No envelope exists for an operator-attested uploaded signed PDF.
+  archisignEnvelopeId: text("archisign_envelope_id"),
   intendedContractorId: integer("intended_contractor_id").notNull().references(() => contractors.id),
   signedAt: timestamp("signed_at", { withTimezone: true }).notNull(),
   // `automatic` is the one callback-created delivery for a completed

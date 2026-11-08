@@ -12,6 +12,8 @@ import {
 } from "@shared/schema";
 import { isValidRecipientEmail } from "../communications/email-sender";
 import { MAX_SIGNED_PDF_RETRY_ATTEMPTS } from "./signed-pdf-retry-policy";
+import { manualSignedCopyAttestation, signedCopyEnvelope, signedCopyInactive, signedCopyContentHash } from "./signed-copy-provenance";
+import { getDocumentBuffer } from "../storage/object-storage";
 import type { SignedCopyConfirmationSnapshot } from "./manual-signed-devis-contractor-copy.service";
 
 export const SIGNED_COPY_SETTING_KEY = "automatic_signed_devis_contractor_copies";
@@ -359,7 +361,7 @@ export async function materializeSignedCopyNotice(noticeId: number): Promise<Sig
 /** Fail-closed checks run immediately before MIME assembly/provider use. */
 export async function assertSignedCopyDispatchValid(
   communicationId: number,
-): Promise<{ notice: SignedDevisCopyNotice; storageKey: string; recipientEmail: string }> {
+): Promise<{ notice: SignedDevisCopyNotice; storageKey: string; recipientEmail: string; contentHash?: string }> {
   const [notice] = await db.select().from(signedDevisCopyNotices)
     .where(eq(signedDevisCopyNotices.communicationId, communicationId)).limit(1);
   if (!notice) throw new Error("Signed devis copy has no durable delivery intent");
@@ -377,19 +379,26 @@ export async function assertSignedCopyDispatchValid(
     : undefined;
   if (!d || !project || !contractor) throw new Error("Signed-copy devis, project, or intended contractor is unavailable");
   if (d.projectId !== notice.projectId) throw new Error("Project mismatch; signed-copy delivery is blocked");
-  if (d.signOffStage !== "client_signed_off" || (d.signedOffVia !== "archisign" && d.signedOffVia !== null))
+  if (signedCopyInactive(d)) throw new Error("Voided or superseded quotations cannot send a contractor copy");
+  const snapshot = notice.confirmationSnapshot as Partial<SignedCopyConfirmationSnapshot> | null;
+  const manualUpload = notice.source === SIGNED_COPY_MANUAL_SOURCE && snapshot?.signatureSource === "manual_upload";
+  if (manualUpload) {
+    if (!manualSignedCopyAttestation(d) || snapshot?.manualAttestationHash !== manualSignedCopyAttestation(d) ||
+        notice.archisignEnvelopeId !== null || !snapshot.signedPdfContentHash ||
+        !/^[a-f0-9]{64}$/.test(snapshot.signedPdfContentHash))
+      throw new Error("Manually recorded signed PDF provenance no longer matches the confirmation");
+  } else if (d.signOffStage !== "client_signed_off" || (d.signedOffVia !== "archisign" && d.signedOffVia !== null))
     throw new Error("Devis is not a verified Archisign completion");
-  if (!hasVerifiedArchisignSignOff(d))
+  if (!manualUpload && !hasVerifiedArchisignSignOff(d))
     throw new Error("Verified Archisign signed PDF is unavailable or has mismatched provenance");
   const signedPdfStorageKey = d.signedPdfStorageKey;
   if (!signedPdfStorageKey) throw new Error("Verified Archisign signed PDF is unavailable");
   if (project.archivedAt) throw new Error("Project is archived; signed-copy delivery is blocked");
-  if (d.archisignEnvelopeId !== notice.archisignEnvelopeId)
+  if (signedCopyEnvelope(d) !== notice.archisignEnvelopeId)
     throw new Error("Archisign envelope mismatch; signed-copy delivery is blocked");
   if (d.contractorId !== notice.intendedContractorId)
     throw new Error("Contractor assignment changed; signed-copy delivery is blocked");
   if (notice.source === SIGNED_COPY_MANUAL_SOURCE) {
-    const snapshot = notice.confirmationSnapshot as Partial<SignedCopyConfirmationSnapshot> | null;
     if (
       !snapshot
       || snapshot.devisId !== d.id
@@ -397,7 +406,7 @@ export async function assertSignedCopyDispatchValid(
       || snapshot.contractorId !== contractor.id
       || snapshot.contractorName !== contractor.name
       || snapshot.recipientEmail !== (contractor.email ?? "").trim()
-      || snapshot.archisignEnvelopeId !== d.archisignEnvelopeId
+      || snapshot.archisignEnvelopeId !== signedCopyEnvelope(d)
       || snapshot.signedPdfArchisignEnvelopeId !== d.signedPdfArchisignEnvelopeId
        || snapshot.signedPdfStorageKeyHash !== storageKeyHash(signedPdfStorageKey)
     ) {
@@ -408,7 +417,10 @@ export async function assertSignedCopyDispatchValid(
   if (!keys) throw new Error("Signed-copy communication is unavailable");
   const attachments = Array.isArray(keys?.attachmentStorageKeys) ? keys.attachmentStorageKeys : [];
   if (attachments.length !== 1 || attachments[0] !== signedPdfStorageKey)
-    throw new Error("Signed-copy attachment does not match the verified Archisign PDF");
+    throw new Error("Signed-copy attachment does not match the recorded signed PDF");
+  const contentHash = notice.source === SIGNED_COPY_MANUAL_SOURCE ? snapshot?.signedPdfContentHash : undefined;
+  if (contentHash && signedCopyContentHash(await getDocumentBuffer(signedPdfStorageKey)) !== contentHash)
+    throw new Error("Signed PDF content changed since confirmation; sending is blocked");
   const recipientEmail = (contractor.email ?? "").trim();
   if (!isValidRecipientEmail(recipientEmail)) throw new Error("Contractor email is missing or invalid");
   const ref = d.devisNumber || d.devisCode || `DV-${d.id}`;
@@ -435,7 +447,7 @@ export async function assertSignedCopyDispatchValid(
   ) {
     throw new Error("Signed-copy communication immutable identity or content does not match its intent");
   }
-  return { notice, storageKey: signedPdfStorageKey, recipientEmail };
+  return { notice, storageKey: signedPdfStorageKey, recipientEmail, contentHash };
 }
 
 async function markNoticeFailure(notice: SignedDevisCopyNotice, error: unknown): Promise<void> {
@@ -478,6 +490,7 @@ export async function dispatchSignedCopyNotice(
     // claim while a stale operator tab was confirming a resend.
     await tx.execute(sql`SELECT id FROM devis WHERE id = ${candidate.devisId} FOR UPDATE`);
     if (candidate.source === SIGNED_COPY_AUTOMATIC_SOURCE) {
+      if (!candidate.archisignEnvelopeId) throw new Error("Automatic signed-copy envelope is unavailable");
       const manualDeliveries = await tx.select({
         id: signedDevisCopyNotices.id,
         status: signedDevisCopyNotices.status,
@@ -668,6 +681,7 @@ export async function retrySignedCopyNotice(devisId: number): Promise<SignedDevi
       throw new Error("Contractor email is missing or invalid");
     }
     const dueAt = new Date();
+    if (!notice.archisignEnvelopeId) throw new Error("Archisign envelope is unavailable");
     const armed = await storage.resetSignedPdfPersistRetry(
       d.id,
       notice.archisignEnvelopeId,
