@@ -1275,7 +1275,21 @@ export default function ProjectDetail() {
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 flex-wrap">
               <h1 className="text-[22px] font-light uppercase tracking-tight text-foreground" data-testid="text-project-name">
-                {project.name}
+                <Link
+                  href={`/projets/${projectId}`}
+                  title="View project financial summary"
+                  className="rounded-sm hover:underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-4"
+                  data-testid="link-project-summary"
+                  onClick={(event) => {
+                    // Tab changes are local state: navigating to the same URL
+                    // alone would not reset a manually selected tab.
+                    if (event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+                      setActiveTab("resume");
+                    }
+                  }}
+                >
+                  {project.name}
+                </Link>
               </h1>
               <StatusBadge status={isArchived ? "archived" : project.status} />
               {accountingStatus && accountingStatus.status === "needs_review" && (
