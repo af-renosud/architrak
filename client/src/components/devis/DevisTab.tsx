@@ -1261,7 +1261,9 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
 
                 {/* Icon-only action cluster */}
                 <div className="flex items-center gap-1">
-                  <SignedPdfQuickLink devisId={d.id} available={!!d.signedPdfStorageKey} />
+                  <SignedPdfQuickLink devisId={d.id} available={!!d.signedPdfStorageKey}
+                    signed={d.signOffStage === "client_signed_off" || d.archisignEnvelopeStatus === "signed"
+                      || d.status === "signed" || (d.signedOffVia === "manual_upload" && !!d.manualSignoffAt)} />
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <span className="inline-flex">
