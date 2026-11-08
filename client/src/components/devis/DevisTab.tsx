@@ -48,6 +48,7 @@ import { DevisTranslationSection } from "@/components/devis/DevisTranslationSect
 import { SituationsSection } from "@/components/devis/SituationsSection";
 import { PdfPopoutViewer } from "@/components/devis/PdfPopoutViewer";
 import { SignedPdfQuickLink } from "@/components/devis/SignedPdfQuickLink";
+import { GenerateDepositCertificateButton } from "@/components/devis/GenerateDepositCertificateButton";
 import { ContractorSelect } from "@/components/ui/contractor-select";
 import { TvaDerivedHint } from "@/components/ui/tva-derived-hint";
 import {
@@ -731,7 +732,7 @@ function AcompteBadge({ devis }: { devis: Devis }) {
   );
   const hasLiveAcompteCert = !!liveAcompteCert;
   const canMarkPaid = state === "invoiced";
-  // Task #491 — one-click acompte certificat, only on a client-signed devis
+  // Deposit certificate generation, only on a client-signed devis
   // whose deposit is still pending.
   const canGenerateCert = state === "pending" && devis.signOffStage === "client_signed_off";
   const tone =
@@ -793,6 +794,7 @@ function AcompteBadge({ devis }: { devis: Devis }) {
   });
 
   return (
+    <>
     <span
       className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-semibold ${tone}`}
       data-testid={`badge-acompte-${devis.id}`}
@@ -810,18 +812,6 @@ function AcompteBadge({ devis }: { devis: Devis }) {
           {liveAcompteCert.certificateRef ?? "Voir certificat"} →
         </a>
       )}
-      {canGenerateCert && !hasLiveAcompteCert && (
-        <button
-          type="button"
-          className="rounded bg-white/60 px-1 text-[10px] font-bold hover:bg-white"
-          onClick={(e) => { e.stopPropagation(); generateCert.mutate(); }}
-          disabled={generateCert.isPending}
-          title="Générer le certificat d'acompte (sans facture fournisseur)"
-          data-testid={`button-acompte-generate-cert-${devis.id}`}
-        >
-          {generateCert.isPending ? "…" : "Certificat"}
-        </button>
-      )}
       {canMarkPaid && (
         <button
           type="button"
@@ -835,6 +825,15 @@ function AcompteBadge({ devis }: { devis: Devis }) {
         </button>
       )}
     </span>
+    {canGenerateCert && !hasLiveAcompteCert && (
+      <GenerateDepositCertificateButton
+        devisId={devis.id}
+        quotation={[devis.devisCode, devis.devisNumber].filter(Boolean).join(" · ")}
+        deposit={label}
+        onConfirm={() => generateCert.mutateAsync()}
+      />
+    )}
+    </>
   );
 }
 
