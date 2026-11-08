@@ -6319,7 +6319,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
         <span>{checksUnavailable ? (openChecksQuery.isError ? "Contractor checks unavailable" : "Checking contractor questions…") : `${openChecksCountForDevis} unresolved contractor question(s)`}{readiness ? ` · ${readiness.openClientChecks} client question(s)` : ""}</span>
       </div>
       {signOffBlocked && !isVoid && <WorkflowNotice group="review" message={`Sign-off blocked · ${missingLot ? "Lot assignment required. " : ""}${missingDescriptionUk ? "English works description required." : ""}`} />}
-      {!isVoid && <div data-testid={`workflow-blockers-${devis.id}`}><ActionChecklist label="Before sending for signature" requirements={sendChecklist} reviewLinks={[
+      {!isVoid && <div data-testid={`workflow-blockers-${devis.id}`}><ActionChecklist collapsible label="Before sending for signature" requirements={sendChecklist} reviewLinks={[
         quotationRequirement("lot", "Lot reference and saved quotation details.", devis.id),
         quotationRequirement("description", "English works description.", devis.id),
         quotationRequirement("translation", `Translated signature PDF${readiness ? ` · ${readiness.translationStatus}` : ""}.`, devis.id),

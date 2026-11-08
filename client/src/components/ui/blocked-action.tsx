@@ -1,6 +1,7 @@
 import { useId, useRef, useState } from "react";
 import { Button, type ButtonProps } from "./button";
 import { Popover, PopoverContent, PopoverTrigger } from "./popover";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import "./blocked-action.css";
 
 export interface ActionRequirement {
@@ -68,10 +69,21 @@ export function BlockedAction({ requirements = [], actionLabel, disabled, onClic
   </Popover>;
 }
 
-export function ActionChecklist({ label, requirements, reviewLinks = [] }: { label: string; requirements: ActionRequirement[]; reviewLinks?: ActionRequirement[] }) {
+export function ActionChecklist({ label, requirements, reviewLinks = [], collapsible = false }: { label: string; requirements: ActionRequirement[]; reviewLinks?: ActionRequirement[]; collapsible?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const contentId = useId();
+  const visible = !collapsible || expanded;
   return <div className="blocked-action-checklist space-y-2" aria-label={label}>
-    <p className="text-xs font-semibold">{label}</p>
+    {collapsible ? <button type="button" className="flex w-full items-center gap-2 rounded-sm text-left text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2"
+      aria-expanded={expanded} aria-controls={contentId}
+      onClick={event => { event.stopPropagation(); setExpanded(value => !value); }}>
+      {expanded ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
+      <span>{label}</span>
+      <span className="ml-auto text-[11px] font-normal text-muted-foreground">{expanded ? "Hide checklist" : "Show checklist"}</span>
+    </button> : <p className="text-xs font-semibold">{label}</p>}
+    <div id={contentId} hidden={!visible} className={visible ? "space-y-2" : undefined}>
     {requirements.length ? <RequirementList requirements={requirements} /> : <p className="text-xs text-muted-foreground">Local checks complete. The server verifies safeguards again when you submit.</p>}
     {reviewLinks.length > 0 && <div className="border-t border-border pt-2"><p className="text-[11px] text-muted-foreground mb-1">Review before sending</p><RequirementList requirements={reviewLinks} /></div>}
+    </div>
   </div>;
 }
