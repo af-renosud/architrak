@@ -13,6 +13,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Contractor, Devis, Invoice, Project } from "@shared/schema";
 
 import { Amount } from "@/components/ui/amount";
+import { ContractorBankingDetails } from "@/components/contractors/ContractorBankingDetails";
 
 export default function ContractorDetail() {
   const params = useParams<{ id: string }>();
@@ -335,6 +336,8 @@ export default function ContractorDetail() {
             </div>
           </div>
         </div>
+
+        <ContractorBankingDetails contractor={contractor} />
 
         <LuxuryCard data-testid="card-contractor-devis">
           <div className="flex items-center gap-2 mb-4">

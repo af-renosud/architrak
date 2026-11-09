@@ -506,9 +506,9 @@ export default function Certificats() {
                     >
                       <AlertTriangle size={12} className="mt-0.5 shrink-0 text-red-600 dark:text-red-400" />
                       <p className="text-[11px] text-red-800 dark:text-red-300 leading-snug">
-                        <span className="font-semibold">{certContractor.name}</span> n&apos;a pas d&apos;IBAN enregistré — la prévisualisation et l&apos;émission du certificat seront bloquées.{" "}
-                        <a href="/contractors" className="underline font-semibold hover:opacity-80">
-                          Gérer les coordonnées bancaires
+                        <span className="font-semibold">{certContractor.name}</span> : IBAN indisponible dans le dossier ArchiTrak — la prévisualisation et l&apos;émission du certificat seront bloquées. Enregistrez les coordonnées dans ArchiDoc, puis laissez la synchronisation se terminer.{" "}
+                        <a href={`/entreprises/${cert.contractorId}#banking`} className="underline font-semibold hover:opacity-80">
+                          Voir les coordonnées bancaires
                         </a>
                       </p>
                     </div>
@@ -520,10 +520,10 @@ export default function Certificats() {
                     >
                       <AlertTriangle size={12} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
                       <p className="text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
-                        <span className="font-semibold">{certContractor.name}</span> has no SWIFT/BIC on file — the
+                        <span className="font-semibold">{certContractor.name}</span> has no SWIFT/BIC available in the ArchiTrak record — the
                         certificat will print &quot;NON COMMUNIQUÉ PAR L&apos;ÉTABLISSEMENT&quot;.{" "}
-                        <a href="/contractors" className="underline font-semibold hover:opacity-80">
-                          Manage banking details
+                        <a href={`/entreprises/${cert.contractorId}#banking`} className="underline font-semibold hover:opacity-80">
+                          View banking details
                         </a>
                       </p>
                     </div>
@@ -651,7 +651,7 @@ export default function Certificats() {
                         ) : (
                           <BlockedAction
                             actionLabel="Before marking this certificate Ready"
-                            requirements={nextStatus === "ready" && missingIban ? [{ id: "banking", message: "The contractor has no IBAN on file. Update their banking details in Archi Doc before issuing this certificate.", href: "/contractors", linkLabel: "Go to contractor details" }] : []}
+                            requirements={nextStatus === "ready" && missingIban ? [{ id: "banking", message: "No IBAN is available in the ArchiTrak record. Save banking details in ArchiDoc and allow synchronisation before issuing this certificate.", href: `/entreprises/${cert.contractorId}#banking`, linkLabel: "View banking details" }] : []}
                             variant="outline"
                             onClick={() => updateStatusMutation.mutate({ id: cert.id, status: nextStatus })}
                             disabled={updateStatusMutation.isPending}
@@ -790,14 +790,14 @@ export default function Certificats() {
                   >
                     <AlertTriangle size={13} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
                     <p className="text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
-                      <span className="font-semibold">{selectedContractor.name}</span> has no SWIFT/BIC on file — the
+                      <span className="font-semibold">{selectedContractor.name}</span> has no SWIFT/BIC available in the ArchiTrak record — the
                       certificat will print &quot;NON COMMUNIQUÉ PAR L&apos;ÉTABLISSEMENT&quot; in the payment panel.{" "}
                       <a
-                        href="/contractors"
+                        href={`/entreprises/${selectedContractor.id}#banking`}
                         className="underline font-semibold hover:opacity-80"
                         data-testid="link-bic-missing-contractors"
                       >
-                        Manage banking details
+                        View banking details
                       </a>
                     </p>
                   </div>

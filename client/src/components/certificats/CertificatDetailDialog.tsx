@@ -648,14 +648,14 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
             >
               <AlertTriangle size={13} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
               <p className="text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
-                <span className="font-semibold">{contractor.name}</span> has no SWIFT/BIC on file — the certificat
+                <span className="font-semibold">{contractor.name}</span> has no SWIFT/BIC available in the ArchiTrak record — the certificat
                 prints &quot;NON COMMUNIQUÉ PAR L&apos;ÉTABLISSEMENT&quot; in the payment panel.{" "}
                 <a
-                  href="/contractors"
+                  href={`/entreprises/${contractor.id}#banking`}
                   className="underline font-semibold hover:opacity-80"
                   data-testid="link-bic-missing-detail"
                 >
-                  Manage banking details
+                  View banking details
                 </a>
               </p>
             </div>

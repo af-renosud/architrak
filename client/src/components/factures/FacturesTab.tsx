@@ -482,10 +482,10 @@ export function CreateMultiCertificatDialog({
           >
             <AlertTriangle size={14} className="text-destructive mt-0.5 shrink-0" />
             <p className="text-[12px] text-destructive leading-snug">
-              Aucun IBAN renseigné pour cette entreprise — l'émission du certificat sera bloquée.{" "}
-              <Link href="/contractors" className="underline font-medium">
-                Mettre à jour
-              </Link>
+              IBAN indisponible dans le dossier ArchiTrak — l'émission du certificat sera bloquée. Enregistrez les coordonnées dans ArchiDoc, puis laissez la synchronisation se terminer.{" "}
+              <a href={invoices[0] ? `/entreprises/${invoices[0].contractorId}#banking` : "/entreprises"} className="underline font-medium">
+                Voir les coordonnées bancaires
+              </a>
             </p>
           </div>
         )}

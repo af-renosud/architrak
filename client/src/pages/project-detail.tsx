@@ -2159,9 +2159,9 @@ export default function ProjectDetail() {
                             >
                               <AlertTriangle size={12} className="mt-0.5 shrink-0 text-red-600 dark:text-red-400" />
                               <p className="text-[11px] text-red-800 dark:text-red-300 leading-snug">
-                                <span className="font-semibold">{certContractor.name}</span> n&apos;a pas d&apos;IBAN enregistré — la prévisualisation et l&apos;émission du certificat seront bloquées.{" "}
-                                <a href="/contractors" className="underline font-semibold hover:opacity-80">
-                                  Gérer les coordonnées bancaires
+                                <span className="font-semibold">{certContractor.name}</span> : IBAN indisponible dans le dossier ArchiTrak — la prévisualisation et l&apos;émission du certificat seront bloquées. Enregistrez les coordonnées dans ArchiDoc, puis laissez la synchronisation se terminer.{" "}
+                                <a href={`/entreprises/${c.contractorId}#banking`} className="underline font-semibold hover:opacity-80">
+                                  Voir les coordonnées bancaires
                                 </a>
                               </p>
                             </div>
@@ -2236,7 +2236,7 @@ export default function ProjectDetail() {
                                 actionLabel="Before changing this certificate's status"
                                 requirements={[
                                   ...(isArchived ? [{ id: "archived", kind: "readonly" as const, message: "This project is archived. Restore it before changing certificates." }] : []),
-                                  ...(nextStatus === "ready" && c.certificateTrack !== "supplier_direct_payment" && contractors?.some(contractor => contractor.id === c.contractorId && !contractor.iban) ? [{ id: "banking", message: "The contractor has no IBAN on file. Update banking details in Archi Doc before issuing this certificate.", href: "/contractors", linkLabel: "Go to contractor details" }] : []),
+                                  ...(nextStatus === "ready" && c.certificateTrack !== "supplier_direct_payment" && contractors?.some(contractor => contractor.id === c.contractorId && !contractor.iban) ? [{ id: "banking", message: "No IBAN is available in the ArchiTrak record. Save banking details in ArchiDoc and allow synchronisation before issuing this certificate.", href: `/entreprises/${c.contractorId}#banking`, linkLabel: "View banking details" }] : []),
                                 ]}
                                 variant="outline"
                                 onClick={() => updateCertStatusMutation.mutate({ id: c.id, status: nextStatus })}
