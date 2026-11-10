@@ -16,7 +16,10 @@ description: Constraints around attachment dedupe, echo suppression, and project
   **How to apply:** search throughout the PDF; preserve explicit nonfinancial-title exclusions and client identity safeguards. Recognition alone is not project assignment.
 - **Echo suppression must not become admission by sender:** recognise generated-document purpose/provenance; a service domain alone does not establish that every attached document is already retained.
 - **Attachment dedupe**: sha256 fingerprint with a partial UNIQUE index; capture does lookup→append-source, and on insert conflict (code 23505, unwrap pg `cause`) the loser appends itself to the winner. Appending a source never changes extractionStatus (skipped stays terminal/hidden).
-- **Identity authority:** exact PDF client/project evidence takes precedence over email context. Email body/subject may fill absent identity, not override conflicting PDF identity; sender and filename tokens are not assignment evidence.
+- **Client name order (2026-11-10):** the user explicitly rejects first-name/last-name reversal as a reason for identity review. A full name in either order is equivalent, including compound given names and surnames.
+  **Why:** surname-first formatting is common in contractor PDFs and must not create unnecessary manual review.
+  **How to apply:** accept complete contiguous name groups in either order in PDF/email evidence and labelled-client checks; keep genuine conflicting names, incomplete names, shared-client project ambiguity and archived-project protections.
+- **Identity authority:** exact PDF client/project evidence (allowing first-name/last-name reversal) takes precedence over email context. Email body/subject may fill absent identity, not override conflicting PDF identity; sender and filename tokens are not assignment evidence.
 - **Shared clients and firm invoices:** an exact project name disambiguates a shared client name, without overriding conflicting project/client evidence. Retain Sent-folder scan coverage for firm fee invoices; content still decides admission.
   **Why:** shared clients otherwise produce false ambiguity, and a blanket Sent exclusion loses the existing fee-invoice capture workflow.
 

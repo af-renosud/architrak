@@ -34,6 +34,27 @@ describe("strict financial content admission", () => {
     expect(evaluateFinancialPdf("FACTURE 123\nClient : Alice Durand", "Jean Martin", projects).projectId).toBe(2);
     expect(evaluateFinancialPdf("FACTURE 123\nClient : Unrelated Person", "Jean Martin", projects).status).toBe("financial_identity_review");
   });
+  it.each(["Martin Jean", "MARTIN, JEAN", "Martin\nJean"])("accepts surname-first client %s in PDF and email", name => {
+    expect(evaluateFinancialPdf(`DEVIS 123\n${name}\nTTC 120`, "", projects)).toMatchObject({ status: "eligible", projectId: 1, identitySource: "pdf" });
+    expect(evaluateFinancialPdf("FACTURE 123\nTTC 120", `Pour ${name}`, projects)).toMatchObject({ status: "eligible", projectId: 1, identitySource: "email" });
+  });
+  it("accepts reversed labelled names and compound first/last names", () => {
+    expect(evaluateFinancialPdf("DEVIS 123\nClient : MARTIN Jean\nTTC 120", "", projects).status).toBe("eligible");
+    const compound = [{ id: 4, name: "Villa du Parc", clientName: "Jean-Pierre de la Tour" }];
+    expect(evaluateFinancialPdf("DEVIS 123\nClient : DE LA TOUR Jean-Pierre\nTTC 120", "", compound).projectId).toBe(4);
+  });
+  it("keeps ambiguity, conflicts, partial names and archived projects protected with reversed names", () => {
+    const shared = [...projects, { id: 3, name: "Autre villa", clientName: "Martin Jean", code: "789" }];
+    expect(evaluateFinancialPdf("DEVIS 123\nClient : Martin Jean", "", shared).status).toBe("financial_identity_review");
+    expect(evaluateFinancialPdf("DEVIS 123\nClient : Martin Jean\nProjet : Autre villa", "", shared).projectId).toBe(3);
+    expect(evaluateFinancialPdf("DEVIS 123\nClient : Martin Jean\nCode projet : 789", "", shared).projectId).toBe(3);
+    expect(evaluateFinancialPdf("DEVIS 123\nClient : Martin Jean\nClient : Durand Alice", "", projects).status).toBe("financial_identity_review");
+    expect(evaluateFinancialPdf("DEVIS 123\nClient : Durand Alice", "Martin Jean", projects).projectId).toBe(2);
+    for (const name of ["Martin", "Martine Jean", "Martin Paul Jean"]) {
+      expect(evaluateFinancialPdf(`DEVIS 123\nClient : ${name}`, "Jean Martin", projects).status).toBe("financial_identity_review");
+    }
+    expect(evaluateFinancialPdf("DEVIS 123\nClient : Martin Jean", "", [{ ...projects[0], archivedAt: "2026-01-01" }]).status).toBe("archived_project_candidate");
+  });
   it("does not fuzzy-match or match fragments", () => {
     expect(evaluateFinancialPdf("DEVIS 123\nJean Martine\nHT 100", "", projects).status).toBe("financial_identity_review");
     expect(evaluateFinancialPdf("DEVIS 123\nMartin\nHT 100", "", projects).status).toBe("financial_identity_review");

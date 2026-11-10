@@ -1,5 +1,5 @@
 /** Content-only email admission. Sender identity deliberately is not an input. */
-export const EMAIL_FINANCIAL_GATE_VERSION = 2;
+export const EMAIL_FINANCIAL_GATE_VERSION = 3;
 export interface FinancialProject {
   id: number;
   name: string;
@@ -27,6 +27,17 @@ const hasPhrase = (text: string, phrase: string) => {
   const p = normalizeFinancialText(phrase);
   return p.length > 0 && ` ${normalizeFinancialText(text)} `.includes(` ${p} `);
 };
+// Client names have no structured first/last-name fields. Try each split into
+// two intact groups so surname-first forms also support compound names. Require
+// the complete contiguous name, never a surname alone or scattered tokens.
+function clientNameForms(name: string): string[] {
+  const words = normalizeFinancialText(name).split(" ").filter(Boolean);
+  return words.map((_, split) => [...words.slice(split), ...words.slice(0, split)].join(" "));
+}
+const hasClientName = (text: string, name: string) =>
+  clientNameForms(name).some(form => hasPhrase(text, form));
+const sameClientName = (a: string, b: string) =>
+  clientNameForms(a).includes(normalizeFinancialText(b));
 const headingRules: Array<[FinancialKind, RegExp]> = [
   ["credit_note", /^(?:facture d avoir|facture avoir|avoir)(?: |$)/],
   ["avenant", /^avenant(?: |$)/],
@@ -40,11 +51,11 @@ const headingRules: Array<[FinancialKind, RegExp]> = [
 const nonFinancialHeading = /^(?:plan(?:s)?(?: |$)|fiche technique|fiche produit|detail(?:s)? technique|catalogue|notice technique|certificat de paiement|payment certificate|certificate of payment|demande de signature|electronic signature request)/;
 function identity(text: string, projects: FinancialProject[]) {
   const exactProjects = projects.filter(p => hasPhrase(text, p.name));
-  const named = projects.filter(p => hasPhrase(text, p.name) || hasPhrase(text, p.clientName));
+  const named = projects.filter(p => hasPhrase(text, p.name) || hasClientName(text, p.clientName));
   // Explicit unknown/conflicting client or project labels cannot be replaced by email context.
   const labels = text.split(/\r?\n/).map(l => l.match(/^\s*(?:client|ma[iî]tre d['’]ouvrage|projet|chantier|op[eé]ration)\s*:\s*(.+)$/i)?.[1])
     .filter((s): s is string => !!s?.trim());
-  const invalidLabel = labels.some(label => !projects.some(p => hasPhrase(label, p.name) || hasPhrase(label, p.clientName)));
+  const invalidLabel = labels.some(label => !projects.some(p => hasPhrase(label, p.name) || hasClientName(label, p.clientName)));
   const codes = text.split(/\r?\n/).map(l => l.match(/^\s*(?:r[eé]f(?:[eé]rence)?\.?\s*(?:projet|chantier)|code\s*(?:projet|chantier|op[eé]ration))\s*:\s*(.+)$/i)?.[1])
     .filter((s): s is string => !!s);
   const codeMatches = codes.length ? projects.filter(p => p.code && codes.every(c => normalizeFinancialText(c) === normalizeFinancialText(p.code!))) : [];
@@ -53,13 +64,13 @@ function identity(text: string, projects: FinancialProject[]) {
     return { matches: named, conflict: true };
   }
   // A code can disambiguate identical client names, not contradictory named clients.
-  if (codeMatches.length === 1 && named.every(p => normalizeFinancialText(p.clientName) === normalizeFinancialText(codeMatches[0].clientName))) {
+  if (codeMatches.length === 1 && named.every(p => sameClientName(p.clientName, codeMatches[0].clientName))) {
     return { matches: codeMatches, conflict: invalidLabel };
   }
   // The exact project name disambiguates a shared client, but never another
   // explicitly named project or a conflicting client identity.
   if (exactProjects.length === 1 && named.every(p =>
-    normalizeFinancialText(p.clientName) === normalizeFinancialText(exactProjects[0].clientName))) {
+    sameClientName(p.clientName, exactProjects[0].clientName))) {
     return { matches: exactProjects, conflict: invalidLabel };
   }
   return { matches: named, conflict: invalidLabel };
