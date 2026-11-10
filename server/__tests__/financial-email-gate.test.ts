@@ -22,8 +22,12 @@ describe("strict financial content admission", () => {
   it.each(["PLAN RDC", "FICHE TECHNIQUE", "CATALOGUE", "CERTIFICAT DE PAIEMENT"])("excludes %s despite financial references", heading => {
     expect(evaluateFinancialPdf(`${heading}\nJean Martin\nDEVIS 42\nHT 100 TTC 120 TVA 20`, "", projects).status).toBe("financial_excluded");
   });
-  it("requires document purpose, not prices or prose", () => {
-    expect(evaluateFinancialPdf("Jean Martin\nVoir devis joint\nTotal TTC 120", "", projects).status).toBe("financial_excluded");
+  it("recognises the whole word devis anywhere in the PDF", () => {
+    for (const title of ["Réf. Devis : DV261082", "Objet du devis", "Voir devis joint", "DEVIS N° 42"]) {
+      expect(evaluateFinancialPdf(`Jean Martin\n${"Company information\n".repeat(50)}${title}\nTotal TTC 120`, "", projects).status).toBe("eligible");
+    }
+    expect(evaluateFinancialPdf("Jean Martin\nDevise EUR\nTotal TTC 120", "", projects).status).toBe("financial_excluded");
+    expect(evaluateFinancialPdf("Réf. Devis : 42\nUnknown client\nTotal TTC 120", "", projects).status).toBe("financial_identity_review");
   });
   it("accepts email identity only when missing in PDF", () => {
     expect(evaluateFinancialPdf("FACTURE 123\nTotal TTC 120", "Pour Jean Martin", projects).projectId).toBe(1);

@@ -1,5 +1,5 @@
 /** Content-only email admission. Sender identity deliberately is not an input. */
-export const EMAIL_FINANCIAL_GATE_VERSION = 1;
+export const EMAIL_FINANCIAL_GATE_VERSION = 2;
 export interface FinancialProject {
   id: number;
   name: string;
@@ -81,17 +81,26 @@ export function evaluateFinancialPdf(text: string, emailText: string, projects: 
   };
   if (text.replace(/\s/g, "").length < 15) return { ...result, status: "financial_unreadable", reason: "PDF text could not be read reliably; retry text recognition or inspect the original." };
   // Layout-preserving text often places the title to the right of company details.
-  const header = lines.slice(0, 45).flatMap(line => line.split(/\t+| {3,}/).map(part => part.trim()).filter(Boolean));
+  const header = lines.flatMap(line => line.split(/\t+| {3,}/).map(part => part.trim()).filter(Boolean));
+  // Devis may be prefixed ("Réf. Devis") or appear later in a multi-page PDF.
+  // Match a whole word, not "devise", while retaining explicit nonfinancial titles.
+  const quotationLine = header.findIndex(line => /(?:^| )devis(?: |$)/.test(normalizeFinancialText(line)));
   const firstFinancialHeading = header.findIndex(line => headingRules.some(([, pattern]) =>
     pattern.test(normalizeFinancialText(line).replace(/^document /, ""))));
   const firstNonfinancialHeading = header.findIndex(l => !/@|https?:\/\/|www\./i.test(l) && nonFinancialHeading.test(normalizeFinancialText(l)));
   // A quotation can legitimately contain a priced "Plan ..." line after its title.
-  if (firstNonfinancialHeading >= 0 && (firstFinancialHeading < 0 || firstNonfinancialHeading < firstFinancialHeading)) {
+  const firstPurpose = firstFinancialHeading < 0 ? quotationLine
+    : quotationLine < 0 ? firstFinancialHeading : Math.min(firstFinancialHeading, quotationLine);
+  if (firstNonfinancialHeading >= 0 && (firstPurpose < 0 || firstNonfinancialHeading < firstPurpose)) {
     return { ...result, reason: "Nonfinancial document or application certificate; incidental prices and financial references do not qualify." };
   }
   for (const [kind, pattern] of headingRules) {
     const heading = header.find(l => pattern.test(normalizeFinancialText(l).replace(/^document /, "")));
     if (heading) { result.kind = kind; result.heading = heading.slice(0, 240); break; }
+  }
+  if (!result.kind && quotationLine >= 0) {
+    result.kind = "quotation";
+    result.heading = header[quotationLine].slice(0, 240);
   }
   if (!result.kind) return { ...result, reason: "No financial document heading in the PDF. HT/TTC/TVA alone cannot admit plans or technical documents." };
   const pdf = identity(text, projects);
