@@ -216,6 +216,8 @@ function PdfPopoutViewerWindow({
   const containerRef = useRef<HTMLDivElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     saveFrame(frame, frameStorageKey);
@@ -368,13 +370,30 @@ function PdfPopoutViewerWindow({
 
   useEffect(() => {
     openerRef.current = document.activeElement as HTMLElement | null;
+    const root = containerRef.current;
+    const timer = window.setTimeout(() => {
+      // Do not steal focus if the architect already resumed editing.
+      if (document.activeElement === openerRef.current) root?.focus({ preventScroll: true });
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      const active = document.activeElement;
+      const opener = openerRef.current;
+      // Closing while editing elsewhere must not move focus away from that field.
+      if (opener?.isConnected && (active === document.body || (active && root?.contains(active)))) {
+        opener.focus({ preventScroll: true });
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         const root = containerRef.current;
         const active = document.activeElement as HTMLElement | null;
         if (root && active && root.contains(active)) {
           e.stopPropagation();
-          onClose();
+          onCloseRef.current();
         }
         return;
       }
@@ -407,20 +426,10 @@ function PdfPopoutViewerWindow({
       }
     };
     window.addEventListener("keydown", onKey, true);
-    const t = window.setTimeout(() => containerRef.current?.focus(), 0);
     return () => {
       window.removeEventListener("keydown", onKey, true);
-      window.clearTimeout(t);
-      const opener = openerRef.current;
-      if (opener && typeof opener.focus === "function") {
-        try {
-          opener.focus();
-        } catch {
-          // opener may have unmounted
-        }
-      }
     };
-  }, [onClose, nudgePosition]);
+  }, [nudgePosition]);
 
   const resolvedDownloadName = downloadName ?? `DEVIS-${devisCode}-${variant}.pdf`;
   const resolvedDownloadUrl = downloadUrl ?? pdfUrl;
@@ -623,13 +632,6 @@ function PdfPopoutViewerWindow({
               title={`${isFloorPlan ? "Floor plan" : "PDF"} — ${devisCode}${isFloorPlan ? "" : ` (${variant})`}`}
               className="w-full h-full border-0"
               data-testid={`pdf-popout-iframe-${idForTest}`}
-              onLoad={() => {
-                try {
-                  iframeRef.current?.focus();
-                } catch {
-                  // ignore — focus may fail on cross-origin frames
-                }
-              }}
             />
           )}
         </div>
