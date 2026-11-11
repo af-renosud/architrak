@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { FINANCIAL_PARKED_STATUSES, emailNeedsAttention, emailVisibleByDefault } from "@shared/email-financial-gate";
+import { matchesEmailDocumentFilters } from "@/lib/email-document-filters";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
@@ -87,6 +88,7 @@ export default function EmailDocuments() {
     return param === "needs_project" || param === "needs_attention" ? param : "all";
   });
   const [typeFilter, setTypeFilterState] = useState<string>("all");
+  const [showRemoved, setShowRemoved] = useState(false);
   const [searchQuery, setSearchQueryState] = useState("");
   const [viewingDocId, setViewingDocId] = useState<number | null>(null);
   // Task #421 — "not relevant" removal: per-row and bulk dismissal.
@@ -285,30 +287,9 @@ export default function EmailDocuments() {
   const projectMap = new Map<number, Project>();
   projects?.forEach(p => projectMap.set(p.id, p));
 
-  const filtered = emailDocs?.filter(doc => {
-    if (statusFilter === "needs_attention") {
-      if (!emailNeedsAttention(doc)) return false;
-    } else if (statusFilter === "needs_project") {
-      if (doc.extractionStatus !== "needs_review" || doc.projectId != null) return false;
-    } else if (statusFilter === "all") {
-      // Task #424 — removed (skipped) docs are hidden from the default view;
-      // they remain visible under the explicit "Skipped" filter for audit.
-      // Task #503 — low-relevance and archived-project candidates live in
-      // collapsed buckets below the main list, not the default view.
-      if (!emailVisibleByDefault(doc)) return false;
-    } else if (doc.extractionStatus !== statusFilter) {
-      return false;
-    }
-    if (typeFilter !== "all" && doc.documentType !== typeFilter) return false;
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      const match = (doc.emailSubject?.toLowerCase().includes(q)) ||
-        (doc.emailFrom?.toLowerCase().includes(q)) ||
-        (doc.attachmentFileName?.toLowerCase().includes(q));
-      if (!match) return false;
-    }
-    return true;
-  }) ?? [];
+  const filtered = emailDocs?.filter(doc =>
+    matchesEmailDocumentFilters(doc, statusFilter, typeFilter, searchQuery, showRemoved),
+  ) ?? [];
   const visibleIdKey = JSON.stringify(filtered.map((doc) => doc.id));
   useEffect(() => {
     const visibleIds = new Set<number>(JSON.parse(visibleIdKey));
@@ -436,6 +417,7 @@ export default function EmailDocuments() {
               <SelectValue placeholder="Status" />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="all_statuses">All statuses</SelectItem>
               <SelectItem value="all">Financial documents</SelectItem>
               <SelectItem value="pending">Pending</SelectItem>
               <SelectItem value="processing">Processing</SelectItem>
@@ -495,6 +477,19 @@ export default function EmailDocuments() {
         </div>
 
         <div className="flex items-center justify-between flex-wrap gap-3 px-1">
+          {statusFilter === "all_statuses" && (
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Checkbox
+                checked={showRemoved}
+                onCheckedChange={(checked) => {
+                  clearDismissSelection();
+                  setShowRemoved(checked === true);
+                }}
+                data-testid="checkbox-show-removed"
+              />
+              Show removed (skipped)
+            </label>
+          )}
           {filtered.length > 0 ? (
             <div className="flex items-center gap-2">
               <Checkbox
