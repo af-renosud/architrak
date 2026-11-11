@@ -29,14 +29,14 @@ describe("strict financial content admission", () => {
     expect(evaluateFinancialPdf("Jean Martin\nDevise EUR\nTotal TTC 120", "", projects).status).toBe("financial_excluded");
     expect(evaluateFinancialPdf("Réf. Devis : 42\nUnknown client\nTotal TTC 120", "", projects).status).toBe("financial_identity_review");
   });
-  it("accepts email identity only when missing in PDF", () => {
-    expect(evaluateFinancialPdf("FACTURE 123\nTotal TTC 120", "Pour Jean Martin", projects).projectId).toBe(1);
+  it("never substitutes email identity for absent PDF identity", () => {
+    expect(evaluateFinancialPdf("FACTURE 123\nTotal TTC 120", "Pour Jean Martin", projects)).toMatchObject({ status: "financial_identity_review", projectId: null, identitySource: null });
     expect(evaluateFinancialPdf("FACTURE 123\nClient : Alice Durand", "Jean Martin", projects).projectId).toBe(2);
     expect(evaluateFinancialPdf("FACTURE 123\nClient : Unrelated Person", "Jean Martin", projects).status).toBe("financial_identity_review");
   });
-  it.each(["Martin Jean", "MARTIN, JEAN", "Martin\nJean"])("accepts surname-first client %s in PDF and email", name => {
+  it.each(["Martin Jean", "MARTIN, JEAN", "Martin\nJean"])("accepts surname-first client %s only inside PDF", name => {
     expect(evaluateFinancialPdf(`DEVIS 123\n${name}\nTTC 120`, "", projects)).toMatchObject({ status: "eligible", projectId: 1, identitySource: "pdf" });
-    expect(evaluateFinancialPdf("FACTURE 123\nTTC 120", `Pour ${name}`, projects)).toMatchObject({ status: "eligible", projectId: 1, identitySource: "email" });
+    expect(evaluateFinancialPdf("FACTURE 123\nTTC 120", `Pour ${name}`, projects)).toMatchObject({ status: "financial_identity_review", projectId: null });
   });
   it("accepts reversed labelled names and compound first/last names", () => {
     expect(evaluateFinancialPdf("DEVIS 123\nClient : MARTIN Jean\nTTC 120", "", projects).status).toBe("eligible");
@@ -82,6 +82,23 @@ describe("strict financial content admission", () => {
   });
 });
 describe("PDF triage boundary", () => {
+  it("does not reuse an old email-qualified admission", async () => {
+    const buffer = Buffer.from("%PDF-1.7 legacy");
+    const reader = vi.fn().mockResolvedValue({ text: "FACTURE 123\nTotal TTC 120", method: "text" });
+    const previous = await triageFinancialPdf(buffer, "Jean Martin", projects, undefined, reader);
+    const legacy = { ...previous, version: 3, decision: { ...previous.decision, status: "eligible", projectId: 1, identitySource: "email" } };
+    const next = await triageFinancialPdf(buffer, "Jean Martin", projects, legacy, reader);
+    expect(next.decision).toMatchObject({ status: "financial_identity_review", projectId: null, identitySource: null });
+    expect(reader).toHaveBeenCalledTimes(2);
+  });
+  it("reports normalized PDF name evidence and accepts project-only identity", () => {
+    const result = evaluateFinancialPdf("DEVIS 42\nVILLA MARTIN\nTTC 120", "", projects);
+    expect(result).toMatchObject({ status: "eligible", projectId: 1, identitySource: "pdf" });
+    expect(result.reason).toContain('PDF name match: "Villa Martin"');
+    expect(evaluateFinancialPdf("FACTURE 42\nÉlodie, DUPRÉ\nTTC 120", "", [
+      { id: 3, name: "Maison Est", clientName: "Elodie Dupre" },
+    ]).status).toBe("eligible");
+  });
   it("rejects fake PDFs without calling recognition", async () => {
     const reader = vi.fn();
     const r = await triageFinancialPdf(Buffer.from("not PDF"), "", projects, undefined, reader);

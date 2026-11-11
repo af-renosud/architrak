@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { gmail_v1 } from "googleapis";
 const fixture = vi.hoisted(() => ({
   text: "FACTURE 123\nTotal HT 1000\nTotal TTC 1200",
+  attachmentTexts: {} as Record<string, string>,
   ocrFailure: false, lookupFailure: false,
   saved: [] as any[],
 }));
@@ -25,13 +26,13 @@ vi.mock("../gmail/financial-pdf-triage", async importOriginal => {
   return { ...original, triageFinancialPdf: (buffer: Buffer, email: string, projects: any[], cached: unknown) =>
     original.triageFinancialPdf(buffer, email, projects, cached, async () => {
       if (fixture.ocrFailure) throw new Error("[503] OCR temporarily unavailable");
-      return { text: fixture.text, method: "ocr" };
+      return { text: fixture.attachmentTexts[buffer.toString()] ?? fixture.text, method: "ocr" };
     }) };
 });
 import { processMessage, GMAIL_PDF_QUERY } from "../gmail/monitor";
 import { triageFinancialPdf } from "../gmail/financial-pdf-triage";
 
-function gmail(htmlOnly = false, sent = false): gmail_v1.Gmail {
+function gmail(htmlOnly = false, sent = false, multiple = false): gmail_v1.Gmail {
   const textPart = { mimeType: htmlOnly ? "text/html" : "text/plain", body: {
     data: Buffer.from(htmlOnly ? "<p>Pour Jean Martin</p>" : "Pour Jean Martin").toString("base64url"),
   } };
@@ -43,17 +44,27 @@ function gmail(htmlOnly = false, sent = false): gmail_v1.Gmail {
         { name: "From", value: sent ? "compta@renosud.com" : "new-contractor@example.fr" }, { name: "Subject", value: "Document joint" },
       ], parts: [
         { mimeType: "multipart/alternative", parts: [textPart] },
-        { mimeType: "application/pdf", filename: "piece.pdf", body: { attachmentId: "attachment" } },
+        { mimeType: "application/pdf", filename: "Jean Martin devis.pdf", body: { attachmentId: "attachment" } },
+        ...(multiple ? [{ mimeType: "application/pdf", filename: "Villa Martin facture.pdf", body: { attachmentId: "other" } }] : []),
       ] },
     } })),
-    attachments: { get: vi.fn(async () => ({ data: { data: Buffer.from("%PDF-1.7 fixture").toString("base64url") } })) },
+    attachments: { get: vi.fn(async ({ id }: { id: string }) => ({ data: { data: Buffer.from(`%PDF-1.7 ${id}`).toString("base64url") } })) },
   } } } as unknown as gmail_v1.Gmail;
 }
 beforeEach(() => {
   fixture.saved.length = 0; fixture.ocrFailure = false; fixture.lookupFailure = false;
+  fixture.attachmentTexts = {};
   fixture.text = "FACTURE 123\nTotal HT 1000\nTotal TTC 1200";
 });
 describe("real multipart capture boundary", () => {
+  it("qualifies each attachment separately despite shared email and named filenames", async () => {
+    fixture.attachmentTexts["%PDF-1.7 attachment"] = "DEVIS 123\nJean Martin\nTTC 120";
+    fixture.attachmentTexts["%PDF-1.7 other"] = "FACTURE 456\nTotal TTC 300";
+    await processMessage(gmail(false, false, true), "mixed", false, 1);
+    expect(fixture.saved.map(doc => doc.extractionStatus)).toEqual(["pending", "financial_identity_review"]);
+    expect(fixture.saved[1].extractedData.financialTriage.decision.projectId).toBeNull();
+    expect(fixture.saved.every(doc => doc.storageKey)).toBe(true);
+  });
   it("keeps Sent fee-invoice coverage and applies the same content gate", async () => {
     expect(GMAIL_PDF_QUERY).not.toContain("-in:sent");
     fixture.text = "FACTURE D'HONORAIRES\nClient : Jean Martin\nTotal HT 1000\nTTC 1200";
@@ -64,12 +75,14 @@ describe("real multipart capture boundary", () => {
     await processMessage(gmail(false, true), "sent-echo", false, 1);
     expect(fixture.saved[1].extractionStatus).toBe("financial_excluded");
   });
-  it.each([false, true])("admits PDF with identity only in multipart email body (HTML=%s)", async htmlOnly => {
+  it.each([false, true])("parks PDF with identity only in multipart email body (HTML=%s)", async htmlOnly => {
     await processMessage(gmail(htmlOnly), "message", false, 1);
     expect(fixture.saved).toHaveLength(1);
-    expect(fixture.saved[0].extractionStatus).toBe("pending");
-    expect(fixture.saved[0].extractedData.financialTriage.decision.identitySource).toBe("email");
-    expect(fixture.saved[0].extractedData.financialTriage.decision.projectId).toBe(1);
+    expect(fixture.saved[0].extractionStatus).toBe("financial_identity_review");
+    expect(fixture.saved[0].extractedData.financialTriage.decision.identitySource).toBeNull();
+    expect(fixture.saved[0].extractedData.financialTriage.decision.projectId).toBeNull();
+    expect(fixture.saved[0].storageKey).toBe("email/retained.pdf");
+    expect(fixture.saved[0].notes).toContain("inside the PDF");
   });
   it.each(["ocr", "projects"])("retains attachment for automatic retry after a temporary %s outage", async dependency => {
     fixture.ocrFailure = dependency === "ocr"; fixture.lookupFailure = dependency === "projects";
@@ -82,7 +95,7 @@ describe("real multipart capture boundary", () => {
     const recovered = await triageFinancialPdf(Buffer.from("%PDF-1.7 fixture"),
       doc.extractedData.financialTriage.emailText, [{ id: 1, name: "Villa Martin", clientName: "Jean Martin" }],
       doc.extractedData.financialTriage);
-    expect(recovered.decision.status).toBe("eligible");
+    expect(recovered.decision.status).toBe("financial_identity_review");
   });
   it("parks actual unreadable text, rather than treating it as irrelevant", async () => {
     fixture.text = "";

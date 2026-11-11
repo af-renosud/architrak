@@ -1,5 +1,5 @@
 /** Content-only email admission. Sender identity deliberately is not an input. */
-export const EMAIL_FINANCIAL_GATE_VERSION = 3;
+export const EMAIL_FINANCIAL_GATE_VERSION = 4;
 export interface FinancialProject {
   id: number;
   name: string;
@@ -75,7 +75,7 @@ function identity(text: string, projects: FinancialProject[]) {
   }
   return { matches: named, conflict: invalidLabel };
 }
-export function evaluateFinancialPdf(text: string, emailText: string, projects: FinancialProject[]): FinancialDecision {
+export function evaluateFinancialPdf(text: string, _emailText: string, projects: FinancialProject[]): FinancialDecision {
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   const markerPatterns: Array<[string, RegExp]> = [
     ["HT", /\b(?:h\s*\.?\s*t\.?|hors taxes)\b/i],
@@ -114,16 +114,21 @@ export function evaluateFinancialPdf(text: string, emailText: string, projects: 
     result.heading = header[quotationLine].slice(0, 240);
   }
   if (!result.kind) return { ...result, reason: "No financial document heading in the PDF. HT/TTC/TVA alone cannot admit plans or technical documents." };
-  const pdf = identity(text, projects);
-  const chosen = pdf.matches.length || pdf.conflict ? pdf : identity(emailText, projects);
-  result.identitySource = pdf.matches.length || pdf.conflict ? "pdf" : "email";
+  // Email context is retained for audit, never used to admit an attachment.
+  const chosen = identity(text, projects);
+  result.identitySource = chosen.matches.length || chosen.conflict ? "pdf" : null;
   if (chosen.conflict || chosen.matches.length !== 1) {
-    return { ...result, status: "financial_identity_review", reason: "Financial PDF, but client/project identity is missing, conflicting or matches multiple projects. No automatic assignment." };
+    const reason = chosen.conflict
+      ? "Conflicting or unrecognised client/project identity inside the PDF. Resolve the identity before filing."
+      : chosen.matches.length > 1
+        ? "The name inside the PDF matches multiple projects. An explicit project identity is required."
+        : "No matching project name or complete client name found inside the PDF. Email, sender and filename cannot qualify it. Retained for deliberate manual recovery.";
+    return { ...result, status: "financial_identity_review", reason };
   }
   const project = chosen.matches[0];
   if (project.archivedAt) return { ...result, status: "archived_project_candidate", reason: "Exact identity belongs to a closed project; retained for manual recovery." };
   return { ...result, status: "eligible", projectId: project.id,
-    reason: `Exact ${result.identitySource} client/project match; ${result.heading}; financial evidence: ${markers.join(", ") || "document heading (no tax markers)"}.` };
+    reason: `PDF name match: "${hasPhrase(text, project.name) ? project.name : project.clientName}" → project "${project.name}"; ${result.heading}; financial evidence: ${markers.join(", ") || "document heading (no tax markers)"}.` };
 }
 
 export const FINANCIAL_PARKED_STATUSES = new Set([
