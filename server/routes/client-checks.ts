@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { CLIENT_LINK_MESSAGE_MAX_LENGTH } from "../../shared/client-link-limits";
 import { z } from "zod";
 import { storage } from "../storage";
 import { validateRequest } from "../middleware/validate";
@@ -26,7 +27,7 @@ const checkIdParams = z.object({ checkId: z.coerce.number().int().positive() });
 const sendToClientSchema = z.object({
   clientEmail: z.string().email(),
   clientName: z.string().trim().max(200).optional(),
-  message: z.string().trim().min(10).max(2000),
+  message: z.string().trim().min(10).max(CLIENT_LINK_MESSAGE_MAX_LENGTH),
 }).strict();
 
 const architectReplySchema = z.object({

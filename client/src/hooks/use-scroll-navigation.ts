@@ -10,8 +10,8 @@ export interface ScrollNavigationState {
 }
 
 const CONTROL = "[data-scroll-navigation]";
-const MODAL = '[role="dialog"], [role="alertdialog"]';
-const EXCLUDED = '#app-sidebar, [role="menu"], [role="listbox"], [data-scroll-navigation-ignore]';
+const MODAL = '[role="dialog"]:not([aria-modal="false"]), [role="alertdialog"]';
+const EXCLUDED = '#app-sidebar, [role="menu"], [role="listbox"], [data-scroll-navigation-ignore], textarea, input, [contenteditable]:not([contenteditable="false"])';
 const LIMIT = 2; // Browser rounding and fractional zoom.
 
 /** One initial discovery; later only changed subtrees are inspected. Scroll
@@ -42,6 +42,10 @@ export function useScrollNavigation() {
       frame = 0;
       if (disposed) return;
       const dialog = Array.from(dialogs).filter(visible).at(-1) ?? null;
+      if (dialog?.matches("[data-scroll-navigation-ignore]")) {
+        setState(previous => previous === null ? previous : null);
+        return;
+      }
       const eligible = Array.from(candidates).filter(element =>
         visible(element) && element.clientHeight >= 120 && scrollable(element)
         && (dialog ? dialog.contains(element) : !!element.closest("[data-scroll-navigation-scope]"))

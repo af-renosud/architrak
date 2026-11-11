@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PdfPopoutViewer } from "../PdfPopoutViewer";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 vi.mock("@tanstack/react-query", () => ({
   useQuery: () => ({ data: { status: "finalised" } }),
@@ -23,6 +24,33 @@ beforeEach(() => {
 afterEach(() => { cleanup(); opener.remove(); editor.remove(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("non-modal PDF focus", () => {
+  it("yields to a compose modal and resumes without stealing its focus", async () => {
+    const content = (open: boolean) => <>
+      {viewer(vi.fn())}
+      <Dialog open={open}><DialogContent aria-describedby={undefined}>
+        <DialogTitle>Compose email</DialogTitle>
+        <textarea aria-label="Message" />
+      </DialogContent></Dialog>
+    </>;
+    const view = render(content(false));
+    const pdf = screen.getByTestId("dialog-pdf-popout-42");
+    await waitFor(() => expect(document.activeElement).toBe(pdf));
+    view.rerender(content(true));
+    const message = screen.getByLabelText("Message");
+    message.focus();
+    fireEvent.change(message, { target: { value: "A".repeat(3000) } });
+    await waitFor(() => expect(pdf.inert).toBe(true));
+    expect(pdf.style.zIndex).toBe("40");
+    expect(pdf.style.pointerEvents).toBe("none");
+    expect(document.activeElement).toBe(message);
+    fireEvent.load(await screen.findByTestId("pdf-popout-iframe-42"));
+    expect(document.activeElement).toBe(message);
+    expect((message as HTMLTextAreaElement).value).toHaveLength(3000);
+    view.rerender(content(false));
+    await waitFor(() => expect(pdf.inert).toBe(false));
+    expect(pdf.style.zIndex).toBe("60");
+  });
+
   it("focuses once without scrolling and does not grab focus on parent refresh", async () => {
     const view = render(viewer(vi.fn()));
     const dialog = screen.getByRole("dialog");

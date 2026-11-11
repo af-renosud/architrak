@@ -178,6 +178,24 @@ async function post(path: string, body: unknown = {}) {
 }
 
 describe("per-devis client link email", () => {
+  it("accepts a full 10,000-character message without truncation", async () => {
+    const message = "A".repeat(10_000);
+    const response = await post("/api/devis/100/client-check-token/issue", {
+      clientEmail: "marie@example.test", message,
+    });
+    expect(response.status).toBe(200);
+    expect(serviceMock.issueClientCheckTokenEmail).toHaveBeenCalledWith(expect.objectContaining({ message }));
+  });
+
+  it("rejects messages above 10,000 characters before issuing or sending", async () => {
+    const response = await post("/api/devis/100/client-check-token/issue", {
+      clientEmail: "marie@example.test", message: "A".repeat(10_001),
+    });
+    expect(response.status).toBe(400);
+    expect(serviceMock.issueClientCheckTokenEmail).not.toHaveBeenCalled();
+    expect(emailMock.sendCommunication).not.toHaveBeenCalled();
+  });
+
   it("validates the custom message and strict single recipient before issuing a link", async () => {
     const short = await post("/api/devis/100/client-check-token/issue", {
       clientEmail: "marie@example.test",

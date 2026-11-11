@@ -54,6 +54,23 @@ afterEach(() => {
 });
 
 describe("global scroll navigation", () => {
+  it("does not add floating arrows for overflowing message textareas", async () => {
+    render(<><div role="dialog"><textarea aria-label="Message" style={{ overflowY: "auto" }} /></div><ScrollNavigation /></>);
+    dimensions(screen.getByLabelText("Message"));
+    await flush();
+    fireEvent.focus(screen.getByLabelText("Message"));
+    await flush();
+    expect(screen.queryByRole("group")).toBeNull();
+  });
+
+  it("keeps floating controls out of opted-out compose dialogs", async () => {
+    documentHeight = 1800;
+    render(<><div role="dialog" data-scroll-navigation-ignore="" data-testid="compose" style={{ overflowY: "auto" }}>Compose</div><ScrollNavigation /></>);
+    dimensions(screen.getByTestId("compose"));
+    await flush();
+    expect(screen.queryByRole("group")).toBeNull();
+  });
+
   it("hides on short pages, detects resized content, disables boundaries and respects reduced motion", async () => {
     render(<ScrollNavigation />);
     await flush();

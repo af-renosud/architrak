@@ -26,6 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useQuery } from "@tanstack/react-query";
+import { useBlockingModal } from "@/hooks/use-blocking-modal";
 
 export type PdfVariant = "original" | "translation" | "combined";
 
@@ -156,6 +157,7 @@ function PdfPopoutViewerWindow({
   onClose,
 }: PdfPopoutViewerProps) {
   const isDevisPdf = typeof devisId === "number";
+  const blockedByModal = useBlockingModal();
   const idForTest = viewerId ?? String(devisId ?? "document");
   const frameStorageKey = viewerKind === "floor-plan"
     ? `architrak.floorPlanPopout.frame.${idForTest}`
@@ -218,6 +220,11 @@ function PdfPopoutViewerWindow({
   const openerRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const blockedRef = useRef(blockedByModal);
+  blockedRef.current = blockedByModal;
+  useEffect(() => {
+    if (containerRef.current) containerRef.current.inert = blockedByModal;
+  }, [blockedByModal]);
 
   useEffect(() => {
     saveFrame(frame, frameStorageKey);
@@ -373,14 +380,14 @@ function PdfPopoutViewerWindow({
     const root = containerRef.current;
     const timer = window.setTimeout(() => {
       // Do not steal focus if the architect already resumed editing.
-      if (document.activeElement === openerRef.current) root?.focus({ preventScroll: true });
+      if (!blockedRef.current && document.activeElement === openerRef.current) root?.focus({ preventScroll: true });
     }, 0);
     return () => {
       window.clearTimeout(timer);
       const active = document.activeElement;
       const opener = openerRef.current;
       // Closing while editing elsewhere must not move focus away from that field.
-      if (opener?.isConnected && (active === document.body || (active && root?.contains(active)))) {
+      if (!blockedRef.current && opener?.isConnected && (active === document.body || (active && root?.contains(active)))) {
         opener.focus({ preventScroll: true });
       }
     };
@@ -388,6 +395,7 @@ function PdfPopoutViewerWindow({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (blockedRef.current) return;
       if (e.key === "Escape") {
         const root = containerRef.current;
         const active = document.activeElement as HTMLElement | null;
@@ -447,6 +455,8 @@ function PdfPopoutViewerWindow({
       data-minimized={isMinimized ? "true" : "false"}
       className={`fixed z-[60] flex flex-col bg-white dark:bg-neutral-900 border rounded-lg shadow-2xl overflow-hidden focus:outline-hidden ${isFloorPlan ? "border-[#32656a]/40 dark:border-[#5d9698]/40" : "border-[#0B2545]/30 dark:border-neutral-700"}`}
       style={{
+        zIndex: blockedByModal ? 40 : 60,
+        pointerEvents: blockedByModal ? "none" : undefined,
         left: frame.x,
         top: frame.y,
         width: frame.w,

@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import { CLIENT_LINK_MESSAGE_MAX_LENGTH } from "@shared/client-link-limits";
 import { QuotationNextActionFlag } from "./QuotationNextActionFlag";
 import { QuotationNextActionsSummary } from "./QuotationNextActionsSummary";
 import { useQuotationNextActions, type QuotationNextActionsController } from "@/hooks/use-quotation-next-actions";
@@ -4315,8 +4316,9 @@ export function ClientPortalPanel({
 
       <Dialog open={issueOpen} onOpenChange={(o) => { if (!issueMutation.isPending) { setIssueOpen(o); if (!o) setDialogStep("compose"); } }}>
         <DialogContent
-          className="max-w-lg"
+          className="max-w-lg max-h-[90dvh] overflow-y-auto"
           data-testid={`dialog-send-to-client-${devisId}`}
+          data-scroll-navigation-ignore=""
           // Translation/dictation extensions mount their widgets outside this
           // portal. Interacting with them must not dismiss the message draft.
           onInteractOutside={(event) => event.preventDefault()}
@@ -4371,9 +4373,9 @@ export function ClientPortalPanel({
             <div className="space-y-1">
               <div className="flex items-center justify-between">
                 <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">Message to client</label>
-                <span className="text-[10px] text-slate-400">{messageDraft.length}/2000</span>
+                <span className="text-[10px] text-slate-400">{messageDraft.length}/{CLIENT_LINK_MESSAGE_MAX_LENGTH.toLocaleString("en-GB")}</span>
               </div>
-              <Textarea value={messageDraft} onChange={(e) => { setMessageDraft(e.target.value.slice(0, 2000)); if (messageErr) setMessageErr(null); }} placeholder="Explain what you would like the client to review." rows={6} maxLength={2000} disabled={issueMutation.isPending} data-testid={`textarea-client-link-message-${devisId}`} />
+              <Textarea value={messageDraft} onChange={(e) => { setMessageDraft(e.target.value); if (messageErr) setMessageErr(null); }} placeholder="Explain what you would like the client to review." rows={8} className="min-h-48 resize-y" maxLength={CLIENT_LINK_MESSAGE_MAX_LENGTH} disabled={issueMutation.isPending} data-testid={`textarea-client-link-message-${devisId}`} />
               {messageErr && <p className="text-[10px] text-rose-700" data-testid={`text-client-message-error-${devisId}`}>{messageErr}</p>}
             </div>
           </div> : <div className="space-y-4" data-testid={`review-client-link-email-${devisId}`}>
