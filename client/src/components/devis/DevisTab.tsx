@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { QuotationNextActionFlag } from "./QuotationNextActionFlag";
 import { QuotationNextActionsSummary } from "./QuotationNextActionsSummary";
 import { useQuotationNextActions, type QuotationNextActionsController } from "@/hooks/use-quotation-next-actions";
+import { useQuotationOpeningScroll } from "@/hooks/use-quotation-opening-scroll";
 import { matchesNextActionFilter, nextActionEligible } from "@/lib/quotation-next-actions";
 import { ActionChecklist, BlockedAction, RequirementList, type ActionRequirement } from "@/components/ui/blocked-action";
 import { fetchOpenQuotationChecks, quotationRequirement, readinessRequirements, stageRequirements } from "./action-requirements";
@@ -1555,14 +1556,13 @@ export function DevisTab({
   useEffect(() => {
     if (initialExpandedDevisId && devisList?.some(d => d.id === initialExpandedDevisId && d.status === "void")) setShowVoid(true);
   }, [initialExpandedDevisId, devisList]);
-  useEffect(() => {
-    if (!initialExpandedDevisId || !devisList) return;
-    const timer = window.setTimeout(() => {
-      const node = document.querySelector(`[data-testid="detail-devis-${initialExpandedDevisId}"]`) as HTMLElement | null;
-      node?.scrollIntoView?.({ behavior: "smooth", block: "start" });
-    }, 100);
-    return () => window.clearTimeout(timer);
-  }, [initialExpandedDevisId, devisList, showVoid]);
+  useQuotationOpeningScroll(
+    projectId,
+    initialExpandedDevisId,
+    expandedDevis === initialExpandedDevisId && !!devisList?.some(d =>
+      d.id === initialExpandedDevisId && (d.status !== "void" || showVoid)),
+    initialFocusedCheckId,
+  );
   const { data: openChecksByDevis = {}, dataUpdatedAt: checksUpdatedAt } = useQuery<Record<number, number>>({
     queryKey: projectScopedKey(projectId, "devis-checks", "open-counts"),
   });
