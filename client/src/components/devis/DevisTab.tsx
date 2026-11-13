@@ -1,4 +1,8 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import type { QuotationReplacementHistory as ReplacementHistoryEntry } from "@shared/quotation-replacement";
+import { ReplaceQuotationDialog } from "./ReplaceQuotationDialog";
+import { QuotationReplacementHistory } from "./QuotationReplacementHistory";
+import { replacementBlockedReason, useQuotationReplacementHistory } from "./use-quotation-replacement";
 import { CLIENT_LINK_MESSAGE_MAX_LENGTH } from "@shared/client-link-limits";
 import { QuotationNextActionFlag } from "./QuotationNextActionFlag";
 import { QuotationNextActionsSummary } from "./QuotationNextActionsSummary";
@@ -693,6 +697,7 @@ function AvenantDialog({
 }
 
 interface DevisRowProps {
+  replacementHistory: ReplacementHistoryEntry[];
   nextActions: QuotationNextActionsController;
   onExpandForAction: () => void;
   bulkSelection: BulkDocumentsSelection;
@@ -1059,7 +1064,7 @@ function ReadinessStrip({ d, r, onOpen }: { d: Devis; r: DevisReadiness; onOpen:
   );
 }
 
-function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openChecks, readiness, onToggle, onEditRefs, onReviewDraft, onGoToIntake, onCreateCertificat, sameRefPeer, bulkSelection, nextActions, onExpandForAction }: DevisRowProps) {
+function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openChecks, readiness, onToggle, onEditRefs, onReviewDraft, onGoToIntake, onCreateCertificat, sameRefPeer, bulkSelection, nextActions, onExpandForAction, replacementHistory }: DevisRowProps) {
   const { toast } = useToast();
   const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [avenantOpen, setAvenantOpen] = useState(false);
@@ -1089,40 +1094,8 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
     },
   });
 
-  // Task #593 — mark THIS devis as replaced by its same-reference peer.
-  const markReplacedMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", `/api/devis/${d.id}/mark-replaced`, {
-        replacementDevisId: sameRefPeer?.id,
-      });
-      return res.json();
-    },
-    onSuccess: (data: { linked?: { invoices: number; situations: number; marcheDocuments: number } }) => {
-      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "devis") });
-      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "financial-summary") });
-      queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "accounting-status") });
-      setMarkReplacedOpen(false);
-      const l = data.linked;
-      const dangling = l ? l.invoices + l.situations + l.marcheDocuments : 0;
-      toast({
-        title: "Devis marked as replaced",
-        description:
-          dangling > 0
-            ? `Warning — documents still linked to the replaced devis: ${[
-                l!.invoices > 0 ? `${l!.invoices} invoice(s)` : null,
-                l!.situations > 0 ? `${l!.situations} situation(s)` : null,
-                l!.marcheDocuments > 0 ? `${l!.marcheDocuments} marché document(s)` : null,
-              ].filter(Boolean).join(", ")}. Review and re-link them manually if needed.`
-            : "It no longer counts toward Contracted totals.",
-      });
-    },
-    onError: (error: Error) => {
-      setMarkReplacedOpen(false);
-      toast({ title: "Cannot mark as replaced", description: error.message, variant: "destructive" });
-    },
-  });
-
   const isReplaced = d.accountingState === "superseded";
+  const replacementBlock = replacementBlockedReason(d, isArchived);
 
   return (
     <div>
@@ -1142,7 +1115,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
             onClick={(e) => { e.stopPropagation(); setMarkReplacedOpen(true); }}
             data-testid={`button-mark-replaced-${d.id}`}
           >
-            Mark this devis as replaced
+            Replace quotation
           </Button>
         </div>
       )}
@@ -1201,6 +1174,20 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
           </div>
           <TooltipProvider delayDuration={200}>
             <div className="flex items-center gap-3 flex-wrap justify-end">
+              <div className="max-w-[19rem]" onClick={event => event.stopPropagation()}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="border-[#0B2545]/40 font-semibold text-[#0B2545]"
+                  onClick={event => { event.stopPropagation(); setMarkReplacedOpen(true); }}
+                  data-testid={`button-replace-quotation-${d.id}`}
+                  aria-describedby={replacementBlock ? `replacement-block-${d.id}` : undefined}
+                >
+                  Replace quotation
+                </Button>
+                {replacementBlock && <p id={`replacement-block-${d.id}`} className="mt-1 text-[10px] text-muted-foreground">{replacementBlock}</p>}
+              </div>
               {nextActionEligible(d, isArchived) && <QuotationNextActionFlag devisId={d.id} projectId={projectId} controller={nextActions} onExpand={onExpandForAction} />}
               {/* Compact toolbar: status + mode + advisory + actions, with hairline dividers */}
               <div className="flex items-center gap-2 min-[900px]:gap-2.5">
@@ -1396,6 +1383,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
         </div>
       </LuxuryCard>
 
+      <QuotationReplacementHistory entries={replacementHistory} devisId={d.id} projectId={projectId} />
       <VisitedDetail open={expanded} onReveal={onToggle}>
         <DevisDetailInline
           devis={d}
@@ -1413,29 +1401,12 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
         />
       </VisitedDetail>
 
-      <AlertDialog open={markReplacedOpen} onOpenChange={setMarkReplacedOpen}>
-        <AlertDialogContent data-testid={`dialog-mark-replaced-${d.id}`}>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Mark {d.devisCode} as replaced?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This devis will be marked as replaced{sameRefPeer ? ` by ${sameRefPeer.devisCode}` : ""} and will no
-              longer count toward Contracted totals. Invoices, situations and marché documents already linked to it
-              are NOT re-linked automatically — you will get a warning listing them. This is recorded in the audit
-              trail.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-cancel-mark-replaced">Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => markReplacedMutation.mutate()}
-              disabled={markReplacedMutation.isPending}
-              data-testid="button-confirm-mark-replaced"
-            >
-              Mark as replaced
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {markReplacedOpen && <ReplaceQuotationDialog
+        devisId={d.id}
+        projectId={projectId}
+        localBlockedReason={replacementBlock}
+        onClose={() => setMarkReplacedOpen(false)}
+      />}
       <AlertDialog open={reopenConfirmOpen} onOpenChange={setReopenConfirmOpen}>
         <AlertDialogContent data-testid={`dialog-reopen-review-${d.id}`}>
           <AlertDialogHeader>
@@ -1500,6 +1471,7 @@ export function DevisTab({
   const { toast } = useToast();
   const [expandedDevis, setExpandedDevis] = useState<number | null>(initialExpandedDevisId);
   const nextActionsQuery = useQuotationNextActions(projectId, !isArchived);
+  const replacementHistory = useQuotationReplacementHistory(projectId);
   const [actionNeededOnly, setActionNeededOnly] = useState(false);
   useEffect(() => { setActionNeededOnly(false); }, [projectId, isArchived]);
 
@@ -1941,11 +1913,15 @@ export function DevisTab({
       {(!!filteredDevisList.length || bulk.result) && <BulkDocumentActions selection={bulk} action="Void" requireReason disabled={isArchived}
         eligibilityHint="Draft quotations only. Signed, signing-locked, replaced and live quotations are excluded."
         description="Mark these draft quotations void with the reason below. Their records and source PDFs are retained as evidence, not deleted. Void quotations are excluded from financial calculations." />}
+      {replacementHistory.isError && <div role="alert" className="mb-3 rounded-md border p-3 text-xs text-destructive">
+        Replacement history could not be loaded. <Button variant="outline" size="sm" disabled={replacementHistory.isFetching} onClick={() => { void replacementHistory.refetch(); }}>Retry history</Button>
+      </div>}
       {filteredDevisList && filteredDevisList.length > 0 ? (
         <div className="space-y-3">
           {displayedDevisList.map((d) => (
             <DevisRow
               key={d.id}
+              replacementHistory={replacementHistory.data ?? []}
               bulkSelection={bulk}
               nextActions={nextActions}
               onExpandForAction={() => setExpandedDevis(d.id)}

@@ -2352,6 +2352,26 @@ export const accountingStateChanges = pgTable("accounting_state_changes", {
   index("accounting_state_changes_case_idx").on(table.overlapCaseId),
 ]);
 
+// Internal, explicit architect decisions. No public insert schema or generic CRUD.
+export const devisReplacements = pgTable("devis_replacements", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "restrict" }),
+  oldDevisId: integer("old_devis_id").notNull().references(() => devis.id, { onDelete: "restrict" }),
+  newDevisId: integer("new_devis_id").notNull().references(() => devis.id, { onDelete: "restrict" }),
+  actorId: integer("actor_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  actorName: text("actor_name").notNull(),
+  note: text("note").notNull(),
+  oldLabel: text("old_label").notNull(),
+  newLabel: text("new_label").notNull(),
+  snapshot: jsonb("snapshot").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, table => [
+  uniqueIndex("devis_replacements_old_unique").on(table.oldDevisId),
+  uniqueIndex("devis_replacements_new_unique").on(table.newDevisId),
+  index("devis_replacements_project_idx").on(table.projectId),
+  check("devis_replacements_valid", sql`${table.oldDevisId} <> ${table.newDevisId} AND length(trim(${table.note})) BETWEEN 1 AND 2000`),
+]);
+
 export const insertAccountingStateChangeSchema = createInsertSchema(accountingStateChanges).omit({
   id: true,
   createdAt: true,

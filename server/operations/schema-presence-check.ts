@@ -70,6 +70,18 @@ export interface MigrationArtifact {
  * migration. Set the flag on every new data-only DML backfill.
  */
 export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
+  { tag: "0149_devis_replacements", artifact: { kind: "all", artifacts: [
+    { kind: "table", table: "devis_replacements" },
+    { kind: "constraint", table: "devis_replacements", constraint: "devis_replacements_pkey" },
+    { kind: "constraint", table: "devis_replacements", constraint: "devis_replacements_project_id_fkey" },
+    { kind: "constraint", table: "devis_replacements", constraint: "devis_replacements_old_devis_id_fkey" },
+    { kind: "constraint", table: "devis_replacements", constraint: "devis_replacements_new_devis_id_fkey" },
+    { kind: "constraint", table: "devis_replacements", constraint: "devis_replacements_actor_id_fkey" },
+    { kind: "constraint", table: "devis_replacements", constraint: "devis_replacements_valid" },
+    { kind: "index", index: "devis_replacements_old_unique" },
+    { kind: "index", index: "devis_replacements_new_unique" },
+    { kind: "index", index: "devis_replacements_project_idx" },
+  ] } },
   { tag: "0148_manual_upload_signed_copies", artifact: { kind: "data_only", rerunnable: true,
     reason: "Idempotently drop envelope NOT NULL and reassert manual-upload provenance CHECK; existing automatic envelopes remain mandatory" } },
   { tag:"0147_payment_evidence",artifact:{kind:"all",artifacts:[

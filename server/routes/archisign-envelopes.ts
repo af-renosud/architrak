@@ -1,4 +1,5 @@
 import { quotationApprovalBlocker } from "../services/quotation-approval-guard";
+import { withQuotationSignatureLock } from "../services/quotation-signature-lock";
 import { hasArchitectCorrection } from "../services/architect-quotation-correction";
 import { translationCoverageBlocker } from "../services/quotation-translation-coverage";
 /**
@@ -180,7 +181,7 @@ router.post(
   "/api/devis/:id/send-to-signer",
   requireAuth,
   validateRequest({ params: idParams, body: sendBody }),
-  async (req, res) => {
+  withQuotationSignatureLock(async (req, res) => {
     const devisId = Number(req.params.id);
     const personalMessage = (req.body as { message?: string } | undefined)?.message;
     const authorization = (req.body as z.infer<typeof sendBody>).contractorQuestionAuthorization;
@@ -668,7 +669,7 @@ router.post(
       subjectDrift,
       bodyDrift,
     });
-  },
+  }),
 );
 
 export default router;

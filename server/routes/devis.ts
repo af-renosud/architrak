@@ -77,6 +77,7 @@ import {
 } from "../services/devis-line-context";
 import { CONTEXT_ASSET_MAX_BYTES } from "@shared/context-doc";
 import { architectFinancialBoundary, hasArchitectCorrection } from "../services/architect-quotation-correction";
+import { getReplacementHistory, getReplacementOptions, replaceQuotation, replaceQuotationSchema, ReplacementError } from "../services/quotation-replacement.service";
 
 const router = Router();
 
@@ -338,99 +339,29 @@ router.post(
   },
 );
 
-// Task #593 — explicitly mark a devis as replaced by a revised same-reference
-// devis. Uses the accounting-state machinery (CAS + append-only audit row,
-// reason `human_replace`) and returns linked-artifact counts so the client can
-// warn about dangling invoices/situations/marché documents (warn only — no
-// auto re-linking).
-const markReplacedBody = z.object({
-  replacementDevisId: z.number().int().positive(),
-  note: z.string().max(500).optional(),
-});
-router.post("/api/devis/:id/mark-replaced", requireAuth, async (req, res) => {
+router.get("/api/projects/:projectId/devis-replacements", requireAuth,
+  validateRequest({ params: projectIdParams }), async (req, res) => {
+    try { res.json(await getReplacementHistory(Number(req.params.projectId))); }
+    catch { res.status(500).json({ message: "Could not load replacement history." }); }
+  });
+router.get("/api/devis/:id/replacement-options", requireAuth,
+  validateRequest({ params: idParams }), async (req, res) => {
+    try { res.json(await getReplacementOptions(Number(req.params.id))); }
+    catch (err) {
+      res.status(err instanceof ReplacementError ? err.status : 500)
+        .json({ message: err instanceof ReplacementError ? err.message : "Could not load replacement options." });
+    }
+  });
+router.post("/api/devis/:id/mark-replaced", requireAuth,
+  validateRequest({ params: idParams, body: replaceQuotationSchema }), async (req, res) => {
   try {
-    const devisId = Number(req.params.id);
-    if (!Number.isInteger(devisId) || devisId <= 0) return res.status(400).json({ message: "Invalid devis id" });
-    const parsedBody = markReplacedBody.safeParse(req.body ?? {});
-    if (!parsedBody.success) return res.status(400).json({ message: "Invalid body", errors: parsedBody.error.flatten() });
-    const { replacementDevisId, note } = parsedBody.data;
-
-    const devis = await storage.getDevis(devisId);
-    if (!devis) return res.status(404).json({ message: "Devis not found" });
-    if (devis.accountingState === "superseded") {
-      return res.status(409).json({ message: "This devis is already marked as replaced.", code: "ALREADY_REPLACED" });
-    }
-
-    const replacement = await storage.getDevis(replacementDevisId);
-    if (!replacement || replacement.projectId !== devis.projectId) {
-      return res.status(400).json({ message: "Replacement devis not found in the same project." });
-    }
-    if (replacement.id === devis.id) {
-      return res.status(400).json({ message: "A devis cannot replace itself." });
-    }
-    if (replacement.status === "void" || replacement.accountingState === "superseded") {
-      return res.status(400).json({ message: "The replacement devis must be a live (non-void, non-replaced) devis." });
-    }
-    // Server-authoritative same-reference check: replacement must share a
-    // normalized reference (devisNumber or devisCode) with the devis being
-    // replaced — the banner is a hint, this invariant is enforced here.
-    const { normalizeRef } = await import("@shared/intake-dedup");
-    const oldRefs = [devis.devisNumber, devis.devisCode].map(normalizeRef).filter((r) => r.length > 0);
-    const newRefs = [replacement.devisNumber, replacement.devisCode].map(normalizeRef).filter((r) => r.length > 0);
-    if (!oldRefs.some((r) => newRefs.includes(r))) {
-      return res.status(400).json({
-        message: "The replacement devis does not share a reference with this devis — replacement is only for revised same-reference devis.",
-        code: "REF_MISMATCH",
-      });
-    }
-    const replacementLabel = replacement.devisCode + (replacement.devisNumber ? ` (N° ${replacement.devisNumber})` : "");
-
-    const composedNote = [
-      `Replaced by ${replacementLabel}.`,
-      note?.trim() || null,
-    ].filter(Boolean).join(" ");
-
-    await storage.applyAccountingStateTransitions([
-      {
-        devisId: devis.id,
-        projectId: devis.projectId,
-        fromState: devis.accountingState,
-        toState: "superseded",
-        reason: "human_replace",
-        actorUserId: req.session?.userId ?? null,
-        note: composedNote,
-      },
-    ]);
-
-    // Linked downstream artifacts still pointing at the replaced devis —
-    // surfaced as a warning; re-linking stays a human decision.
-    const [invoices, situations, marcheDocuments] = await Promise.all([
-      storage.getInvoicesByDevis(devis.id),
-      storage.getSituationsByDevis(devis.id),
-      storage.getMarcheDocumentsByDevis(devis.id),
-    ]);
-
-    // Re-run per-project reconciliation so any overlap detection involving
-    // the now-superseded devis is re-evaluated (fire-and-forget, idempotent).
-    void enqueueReconciliation(devis.projectId);
-
-    const updated = await storage.getDevis(devis.id);
-    res.json({
-      devis: updated,
-      linked: {
-        invoices: invoices.length,
-        situations: situations.length,
-        marcheDocuments: marcheDocuments.length,
-      },
-    });
+    if (!req.session?.userId) return res.status(401).json({ message: "Sign in to record a replacement." });
+    const result = await replaceQuotation(Number(req.params.id), req.body, req.session.userId);
+    void enqueueReconciliation(result.projectId);
+    res.json({ ok: true });
   } catch (err) {
-    const { AccountingStateConflictError } = await import("../storage");
-    if (err instanceof AccountingStateConflictError) {
-      return res.status(409).json({ message: "The devis state changed concurrently — reload and retry.", code: "STATE_CONFLICT" });
-    }
-    const message = err instanceof Error ? err.message : String(err);
-    console.error("[Devis Mark-Replaced] Error:", message);
-    res.status(500).json({ message: `Mark-replaced failed: ${message}` });
+    if (err instanceof ReplacementError) return res.status(err.status).json({ message: err.message, code: err.code });
+    res.status(500).json({ message: "Could not record the replacement. No partial replacement was saved." });
   }
 });
 

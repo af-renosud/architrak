@@ -46,6 +46,11 @@ const { archisignMock, insuranceMock, tokenMock, emailMock } = vi.hoisted(() => 
   },
 }));
 
+// Lock lifecycle has its own unit and database integration tests. This suite
+// stubs all persistence and uses a deliberately non-connectable database URL.
+vi.mock("../../services/quotation-signature-lock", () => ({
+  withQuotationSignatureLock: (handler: express.RequestHandler) => handler,
+}));
 vi.mock("../../storage", async () => {
   const { createStorageMock } = await import("./helpers/mock-storage");
   return {
