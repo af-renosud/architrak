@@ -80,3 +80,4 @@
 - [Translation review note privacy](translation-review-note-privacy.md) — item-review notes shown beside translations stay internal/contractor-only, never client content.
 - [Client guide design](client-guide-design.md) — clean architectural sans-serif layout; no invented top logos; preserve payment safeguards.
 - [Workflow blocker guidance](workflow-blocker-guidance.md) — blocked actions explain prerequisites and link to their resolution; never bypass safeguards or auto-submit.
+- [Architect-selected replacements](architect-quotation-replacement.md) — architect chooses old/new quotations and records context; no AI or same-reference requirement.
