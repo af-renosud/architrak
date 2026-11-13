@@ -6,6 +6,7 @@ export interface FinancialProject {
   clientName: string;
   code?: string | null;
   archivedAt?: Date | string | null;
+  status?: string;
 }
 export type FinancialKind = "quotation" | "invoice" | "credit_note" | "avenant" | "situation" | "commande" | "final_account" | "payment_confirmation";
 export interface FinancialDecision {
@@ -117,6 +118,9 @@ export function evaluateFinancialPdf(text: string, _emailText: string, projects:
   // Email context is retained for audit, never used to admit an attachment.
   const chosen = identity(text, projects);
   result.identitySource = chosen.matches.length || chosen.conflict ? "pdf" : null;
+  if (chosen.matches.length === 0) {
+    return { ...result, status: "financial_excluded", reason: "No registered client/project name inside the PDF; irrelevant to active project intake." };
+  }
   if (chosen.conflict || chosen.matches.length !== 1) {
     const reason = chosen.conflict
       ? "Conflicting or unrecognised client/project identity inside the PDF. Resolve the identity before filing."
@@ -126,9 +130,13 @@ export function evaluateFinancialPdf(text: string, _emailText: string, projects:
     return { ...result, status: "financial_identity_review", reason };
   }
   const project = chosen.matches[0];
-  if (project.archivedAt) return { ...result, status: "archived_project_candidate", reason: "Exact identity belongs to a closed project; retained for manual recovery." };
+  if (project.archivedAt || (project.status != null && project.status !== "active")) return { ...result, status: "archived_project_candidate", reason: "Exact identity belongs to an inactive project; excluded from intake." };
   return { ...result, status: "eligible", projectId: project.id,
     reason: `PDF name match: "${hasPhrase(text, project.name) ? project.name : project.clientName}" → project "${project.name}"; ${result.heading}; financial evidence: ${markers.join(", ") || "document heading (no tax markers)"}.` };
+}
+
+export function discardIrrelevantFinancialDecision(decision: FinancialDecision): boolean {
+  return decision.status === "financial_excluded" || decision.status === "archived_project_candidate";
 }
 
 export const FINANCIAL_PARKED_STATUSES = new Set([

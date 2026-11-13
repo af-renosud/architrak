@@ -29,6 +29,9 @@ const { storageSpy, parserState } = vi.hoisted(() => {
 });
 
 vi.mock("../storage", () => ({ storage: storageSpy }));
+vi.mock("../services/irrelevant-email-cleanup", () => ({
+  cleanupIrrelevantEmailDocuments: vi.fn(async () => undefined),
+}));
 
 vi.mock("../gmail/document-parser", () => ({
   processEmailDocument: vi.fn(async (id: number) => {

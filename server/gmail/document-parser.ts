@@ -3294,6 +3294,7 @@ export async function processEmailDocument(
       notes: financialTriage.decision.reason,
     });
     const protectedIdentity = financialTriage.decision.status === "archived_project_candidate"
+      || financialTriage.decision.status === "financial_excluded"
       || (financialTriage.decision.status === "financial_identity_review" && financialTriage.decision.identitySource === "pdf");
     if (financialTriage.decision.status !== "eligible" && (!opts?.bypassPrefilter || protectedIdentity)) {
       await storage.setEmailDocumentRetryState(emailDocumentId, {
@@ -3302,6 +3303,10 @@ export async function processEmailDocument(
         nextProcessAttemptAt: null,
         notes: financialTriage.decision.reason,
       });
+      if (["financial_excluded", "archived_project_candidate"].includes(financialTriage.decision.status)) {
+        const { discardIrrelevantEmailDocument } = await import("../services/irrelevant-email-cleanup");
+        await discardIrrelevantEmailDocument(emailDocumentId);
+      }
       return;
     }
 

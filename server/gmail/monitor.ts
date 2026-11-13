@@ -691,8 +691,6 @@ export async function processMessage(
       continue;
     }
 
-    const storageKey = await uploadDocument(null, fileName, buffer, "application/pdf");
-
     // Each PDF must qualify on its own contents, never its sender or a sibling attachment.
     let financialTriage;
     let admissionRetry = false;
@@ -706,6 +704,12 @@ export async function processMessage(
       admissionRetry = true;
     }
     const captureStatus = admissionRetry || financialTriage.decision.status === "eligible" ? "pending" : financialTriage.decision.status;
+
+    // No object or intake row for confirmed irrelevant documents. The caller's
+    // durable processed-message receipt prevents repeated capture from Gmail.
+    if (financialTriage.decision.status === "financial_excluded" ||
+        financialTriage.decision.status === "archived_project_candidate") continue;
+    const storageKey = await uploadDocument(null, fileName, buffer, "application/pdf");
 
     const doc: InsertEmailDocument = {
       emailMessageId: `${messageId}_${fileName}`,

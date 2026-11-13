@@ -4,6 +4,10 @@ description: Financial PDF admission supersedes historical sender-based filterin
 ---
 Current rule: automatic email admission is financial-PDF content evidence plus exact client/project identity, not sender/subject reputation. The user superseded sender-based eligibility on 2026-11-02; see `email-intake-noise-cuts.md`. The older sender filter and its tests are historical/search-prioritisation context, not authority to admit an attachment.
 
+Confirmed irrelevant PDFs must not be retained in excluded/skipped lists. The user approved this on 2026-11-13, including cleanup of existing unfiled records. Keep unreadable/uncertain documents for review; do not delete Gmail originals or filed project evidence.
+
+**Why:** even excluded documents consume the architect's attention and deletion time. Failure to read a PDF is not proof of irrelevance.
+
 **Why:** unrelated PDFs were burning full vision tokens and increasing manual review; sender recognition alone did not establish financial purpose.
 
 **How to apply:**

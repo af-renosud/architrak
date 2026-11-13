@@ -27,6 +27,7 @@
 import pLimit from "p-limit";
 import { storage } from "../storage";
 import { getEmailIntakeCutoff } from "./email-intake-cutoff";
+import { cleanupIrrelevantEmailDocuments } from "./irrelevant-email-cleanup";
 
 const SWEEP_INTERVAL_MS = 60_000;
 const SWEEP_BATCH_SIZE = 5;
@@ -48,6 +49,11 @@ export async function sweepPendingEmailDocuments(): Promise<void> {
   if (sweeping) return;
   sweeping = true;
   try {
+    try {
+      await cleanupIrrelevantEmailDocuments();
+    } catch {
+      console.warn("[EmailDocProcessor] Irrelevant-document cleanup deferred; retry next sweep.");
+    }
     const reclaimed = await storage.reclaimStaleProcessingEmailDocuments(PROCESSING_STALE_MS);
     if (reclaimed > 0) {
       console.warn(`[EmailDocProcessor] Reclaimed ${reclaimed} document(s) wedged on 'processing' back to 'pending'.`);

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import { db } from "../db";
 import { storage } from "../storage";
-import { emailDocuments, projectIntakeDocuments, projects, architectFeeInvoices, projectDocuments, situations, marcheDocuments, devis, contractors } from "@shared/schema";
+import { appSettings, emailDocuments, projectIntakeDocuments, projects, architectFeeInvoices, projectDocuments, situations, marcheDocuments, devis, contractors } from "@shared/schema";
 import { eq, inArray } from "drizzle-orm";
 
 // Task #550 — permanent purge of skipped email documents + bulk dismissal
@@ -43,6 +43,25 @@ afterAll(async () => {
 });
 
 describe("purgeExpiredSkippedEmailDocuments", () => {
+  it("discards proven irrelevant PDFs but preserves unreadable, active and assigned documents", async () => {
+    const evidence = (text: string, method = "text") => ({ financialTriage: { text, method } });
+    const irrelevant = await insertDoc({ storageKey: "test-only/nonexistent.pdf", extractionStatus: "financial_identity_review", extractedData: evidence("FACTURE 123\nUnregistered Client ZXYQT\nTTC 120") });
+    expect(await storage.purgeSkippedEmailDocumentAtomically(irrelevant, undefined, true)).not.toBeNull();
+    const cleanupKey = `irrelevant_pdf_cleanup:${irrelevant}`;
+    const [receipt] = await db.select().from(appSettings).where(eq(appSettings.key, cleanupKey));
+    expect(JSON.parse(receipt.value).storageKey).toBe("test-only/nonexistent.pdf");
+    await db.delete(appSettings).where(eq(appSettings.key, cleanupKey));
+    const unreadable = await insertDoc({ extractionStatus: "financial_excluded", extractedData: evidence("", "unreadable") });
+    expect(await storage.purgeSkippedEmailDocumentAtomically(unreadable, undefined, true)).toBeNull();
+    const active = await insertDoc({ extractionStatus: "financial_excluded", extractedData: evidence("DEVIS 123\nT550 Client\nTTC 120") });
+    expect(await storage.purgeSkippedEmailDocumentAtomically(active, undefined, true)).toBeNull();
+    const assigned = await insertDoc({ projectId, extractionStatus: "financial_excluded", extractedData: evidence("PLAN TECHNIQUE\nUnrelated document text") });
+    expect(await storage.purgeSkippedEmailDocumentAtomically(assigned, undefined, true)).toBeNull();
+    const dismissed = await insertDoc({ extractionStatus: "skipped", intakeDeletedAt: new Date() });
+    expect(await storage.purgeSkippedEmailDocumentAtomically(dismissed, undefined, true)).not.toBeNull();
+    const merelySkipped = await insertDoc({ extractionStatus: "skipped" });
+    expect(await storage.purgeSkippedEmailDocumentAtomically(merelySkipped, undefined, true)).toBeNull();
+  });
   it("purges old skipped rows but keeps fresh ones", async () => {
     const oldId = await insertDoc();
     const freshId = await insertDoc({ updatedAt: FRESH });

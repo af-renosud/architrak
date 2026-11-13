@@ -18,6 +18,7 @@ vi.mock("../../storage", () => ({
     updateEmailDocument: vi.fn(async () => undefined),
     setEmailDocumentRetryState: vi.fn(async () => undefined),
     createProjectDocument: vi.fn(),
+    purgeSkippedEmailDocumentAtomically: vi.fn(async () => ({ id: 901, storageKey: null })),
   },
 }));
 vi.mock("../../storage/object-storage", () => ({
@@ -42,7 +43,7 @@ describe("claimed processing document identity boundary", () => {
     fixture.doc.extractionStatus = status;
     await processEmailDocument(901);
     expect(storage.setEmailDocumentRetryState).toHaveBeenCalledWith(901, expect.objectContaining({
-      extractionStatus: "financial_identity_review", nextProcessAttemptAt: null,
+      extractionStatus: "financial_excluded", nextProcessAttemptAt: null,
       notes: expect.stringContaining("inside the PDF"),
     }));
     expect(storage.updateEmailDocument).toHaveBeenCalledTimes(1);
@@ -54,14 +55,15 @@ describe("claimed processing document identity boundary", () => {
       }),
     }));
     expect(storage.createProjectDocument).not.toHaveBeenCalled();
+    expect(storage.purgeSkippedEmailDocumentAtomically).toHaveBeenCalledWith(901, undefined, true);
     expect(uploadDocument).not.toHaveBeenCalled();
   });
   it("does not let force processing override conflicting PDF identity", async () => {
     fixture.text = "FACTURE 123\nClient : Unknown Person\nTotal TTC 120";
     await processEmailDocument(901, { bypassPrefilter: true });
     expect(storage.setEmailDocumentRetryState).toHaveBeenCalledWith(901, expect.objectContaining({
-      extractionStatus: "financial_identity_review",
-      notes: expect.stringContaining("Conflicting or unrecognised"),
+      extractionStatus: "financial_excluded",
+      notes: expect.stringContaining("No registered"),
     }));
     expect(storage.createProjectDocument).not.toHaveBeenCalled();
     expect(uploadDocument).not.toHaveBeenCalled();
