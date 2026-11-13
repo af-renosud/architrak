@@ -76,6 +76,10 @@ const { state, storageSpy, objectStorageSpy, driveSpy } = vi.hoisted(() => {
       Object.assign(doc, data);
       return { ...doc };
     }),
+    purgeSkippedEmailDocumentAtomically: vi.fn(async (id: number) => {
+      state.emailDocs.delete(id);
+      return { id, storageKey: null };
+    }),
     setEmailDocumentRetryState: vi.fn(async (id: number, data: Record<string, unknown>) => {
       state.retryWrites.push({ id, ...data });
       const doc = state.emailDocs.get(id);
@@ -198,7 +202,8 @@ describe("processEmailDocument — double-filing guards (Task #312)", () => {
     transcription.text = "FICHE TECHNIQUE\nFamille Smith\nPrix TTC 120\nVoir devis";
     seedEmailDoc({ emailFrom: "contact@at-piscines.fr" });
     await processEmailDocument(1);
-    expect(state.emailDocs.get(1)?.extractionStatus).toBe("financial_excluded");
+    expect(state.emailDocs.has(1)).toBe(false);
+    expect(storageSpy.purgeSkippedEmailDocumentAtomically).toHaveBeenCalledWith(1, undefined, true);
     expect(storageSpy.createProjectDocument).not.toHaveBeenCalled();
     expect(objectStorageSpy.uploadDocument).not.toHaveBeenCalled();
   });
