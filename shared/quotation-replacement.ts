@@ -36,6 +36,7 @@ export interface QuotationReplacementHistory {
   createdAt: string;
 }
 export interface ReplaceQuotationRequest {
+  carryForward?: import("./quotation-carry-forward").CarryForwardSelection;
   replacementDevisId: number;
   note: string;
   sourceVersion: string;

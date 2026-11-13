@@ -5,6 +5,8 @@ import { db } from "../db";
 import { accountingStateChanges, contractors, devis, devisReplacements, projects, users, type Devis } from "@shared/schema";
 import type { DbTransaction } from "../storage";
 import type { ReplacementOptions, ReplacementQuotation, QuotationReplacementHistory } from "@shared/quotation-replacement";
+import { carryForwardSchema } from "@shared/quotation-carry-forward";
+import { applyCarryForward, cleanupCarryObjects } from "./quotation-carry-forward";
 
 export const REPLACEMENT_LOCK_NAMESPACE = 80101;
 export const replaceQuotationSchema = z.object({
@@ -14,6 +16,7 @@ export const replaceQuotationSchema = z.object({
   targetVersion: z.string().min(1),
   impactVersion: z.string().min(1),
   differentContractorAcknowledged: z.boolean().default(false),
+  carryForward: carryForwardSchema.optional(),
 }).strict();
 
 export class ReplacementError extends Error {
@@ -111,7 +114,9 @@ export async function getReplacementHistory(projectId: number): Promise<Quotatio
 export async function replaceQuotation(id: number, input: z.infer<typeof replaceQuotationSchema>, actorId: number) {
   const data = replaceQuotationSchema.parse(input);
   if (id === data.replacementDevisId) throw new ReplacementError(400, "SELF_REPLACEMENT", "Choose a different quotation.");
-  return db.transaction(async tx => {
+  const uploaded: string[] = [];
+  try {
+  return await db.transaction(async tx => {
     // Signature sending holds these same locks across external calls. Try, never
     // queue a replacement that could execute unexpectedly after a long send.
     for (const lockedId of [id, data.replacementDevisId].sort((a, b) => a - b)) {
@@ -154,15 +159,18 @@ export async function replaceQuotation(id: number, input: z.infer<typeof replace
     if (impact.impactVersion !== data.impactVersion) throw new ReplacementError(409, "STALE_IMPACT", "Linked financial records changed. Review the impact again before confirming.");
     const [actor] = await tx.select().from(users).where(eq(users.id, actorId));
     if (!actor) throw new ReplacementError(401, "ACTOR_REQUIRED", "Sign in again before recording a replacement.");
+    if (data.carryForward) await applyCarryForward(tx, source, target, data.carryForward, actorId, uploaded);
+    const [retainedTarget] = await tx.select().from(devis).where(eq(devis.id, target.id));
     await tx.update(devis).set({ accountingState: "superseded", updatedAt: new Date() }).where(eq(devis.id, source.id));
     await tx.insert(devisReplacements).values({
       projectId: source.projectId, oldDevisId: source.id, newDevisId: target.id,
       actorId, actorName: [actor.firstName, actor.lastName].filter(Boolean).join(" ") || actor.email, note: data.note,
-      oldLabel: label(source), newLabel: label(target),
+      oldLabel: label(source), newLabel: label(retainedTarget),
       snapshot: {
         old: { label: label(source), amountHt: source.amountHt, amountTtc: source.amountTtc, contractorId: source.contractorId, stage: source.signOffStage },
         replacement: { label: label(target), amountHt: target.amountHt, amountTtc: target.amountTtc, contractorId: target.contractorId, stage: target.signOffStage },
         impact: impact.impact, differentContractorAcknowledged: data.differentContractorAcknowledged,
+        carryForward: data.carryForward ?? null,
       },
     });
     await tx.insert(accountingStateChanges).values({
@@ -171,4 +179,8 @@ export async function replaceQuotation(id: number, input: z.infer<typeof replace
     });
     return { ok: true as const, projectId: source.projectId };
   });
+  } catch (error) {
+    await cleanupCarryObjects(uploaded);
+    throw error;
+  }
 }

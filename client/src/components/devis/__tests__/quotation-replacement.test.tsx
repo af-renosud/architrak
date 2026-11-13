@@ -38,13 +38,17 @@ async function choose() {
 async function review() {
   await choose();
   fireEvent.change(screen.getByLabelText("Internal context (required)"), { target: { value: "Revised scope agreed at site meeting." } });
+  fireEvent.click(screen.getByTestId("button-retain-previous-work"));
+  fireEvent.click(screen.getByLabelText(/Proceed without copying previous work/));
   fireEvent.click(screen.getByTestId("button-review-replacement"));
 }
+
+const emptyCarry = { version: "carry-v1", sourceId: 12, targetId: 19, blockedReason: null, setup: [], sourceLines: [], targetLines: [], header: { source: "", target: "", available: false }, supportingPdfs: [] };
 
 beforeEach(() => {
   vi.clearAllMocks();
   data = { source, candidates: [candidate], impact: { invoices: 2, situations: 1, marcheDocuments: 1, certificates: 3, payments: 2 }, impactVersion: "opaque-impact", blockedReason: null };
-  request.mockImplementation(async () => ({ json: async () => data }) as Response);
+  request.mockImplementation(async (_method, url) => ({ json: async () => url.includes("carry-forward") ? emptyCarry : data }) as Response);
 });
 afterEach(cleanup);
 
@@ -58,15 +62,15 @@ describe("quotation replacement", () => {
     mount();
     await screen.findByTestId("replacement-select");
     expect(screen.getByTestId("replacement-select")).toHaveTextContent("Search processed quotations");
-    expect(screen.getByTestId("button-review-replacement")).toBeDisabled();
+    expect(screen.getByTestId("button-retain-previous-work")).toBeDisabled();
     await choose();
-    expect(screen.getByTestId("button-review-replacement")).toBeDisabled();
+    expect(screen.getByTestId("button-retain-previous-work")).toBeDisabled();
     const note = screen.getByLabelText("Internal context (required)");
     expect(note).toHaveAttribute("maxlength", "2000");
     fireEvent.change(note, { target: { value: "   " } });
-    expect(screen.getByTestId("button-review-replacement")).toBeDisabled();
+    expect(screen.getByTestId("button-retain-previous-work")).toBeDisabled();
     fireEvent.change(note, { target: { value: "Revised scope." } });
-    expect(screen.getByTestId("button-review-replacement")).toBeEnabled();
+    expect(screen.getByTestId("button-retain-previous-work")).toBeEnabled();
   });
 
   it("searches by contractor and shows a composed no-match state", async () => {
@@ -84,17 +88,17 @@ describe("quotation replacement", () => {
     expect(screen.getByText("Confirm quotation replacement")).toBeInTheDocument();
     expect(screen.getByText(/Prior signatures, documents and payments remain/)).toHaveTextContent("a new unsigned quotation is not committed");
     expect(screen.getByText("Marché documents")).toBeInTheDocument();
-    expect(request).toHaveBeenCalledTimes(1);
+    expect(request.mock.calls.filter(([method]) => method === "POST")).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(close).toHaveBeenCalledOnce();
-    expect(request).toHaveBeenCalledTimes(1);
+    expect(request.mock.calls.filter(([method]) => method === "POST")).toHaveLength(0);
   });
 
   it("explains how to obtain a replacement when candidates are empty", async () => {
     data.candidates = [];
     mount();
     expect(await screen.findByTestId("replacement-empty")).toHaveTextContent("Upload and process the revised PDF");
-    expect(screen.getByTestId("button-review-replacement")).toBeDisabled();
+    expect(screen.getByTestId("button-retain-previous-work")).toBeDisabled();
   });
 
   it("requires acknowledgement for a different contractor", async () => {
@@ -102,9 +106,9 @@ describe("quotation replacement", () => {
     mount();
     await choose();
     fireEvent.change(screen.getByLabelText("Internal context (required)"), { target: { value: "New contractor." } });
-    expect(screen.getByTestId("button-review-replacement")).toBeDisabled();
+    expect(screen.getByTestId("button-retain-previous-work")).toBeDisabled();
     fireEvent.click(screen.getByRole("checkbox"));
-    expect(screen.getByTestId("button-review-replacement")).toBeEnabled();
+    expect(screen.getByTestId("button-retain-previous-work")).toBeEnabled();
   });
 
   it("disables signature-blocked candidates with the reason visible", async () => {
@@ -128,27 +132,27 @@ describe("quotation replacement", () => {
   });
 
   it("refreshes after 409, keeps the note and requires a fresh selection and review", async () => {
-    request.mockImplementation(async method => {
+    request.mockImplementation(async (method, url) => {
       if (method === "POST") throw new ApiError(409, "Stale quotation", {});
-      return { json: async () => ({ ...data }) } as Response;
+      return { json: async () => url.includes("carry-forward") ? emptyCarry : ({ ...data }) } as Response;
     });
     mount();
     await review();
     fireEvent.click(screen.getByTestId("button-confirm-mark-replaced"));
-    await screen.findByText(/The quotation data changed/);
+    await screen.findByText(/The quotation or previous work changed/);
     expect(screen.getByLabelText("Internal context (required)")).toHaveValue("Revised scope agreed at site meeting.");
     expect(screen.getByTestId("replacement-select")).toHaveTextContent("Search processed quotations");
-    expect(screen.getByTestId("button-review-replacement")).toBeDisabled();
+    expect(screen.getByTestId("button-retain-previous-work")).toBeDisabled();
     expect(screen.queryByTestId("button-confirm-mark-replaced")).not.toBeInTheDocument();
     expect(close).not.toHaveBeenCalled();
-    await waitFor(() => expect(request.mock.calls.filter(([method]) => method === "GET")).toHaveLength(2));
+    await waitFor(() => expect(request.mock.calls.filter(([method, url]) => method === "GET" && url.endsWith("replacement-options"))).toHaveLength(2));
   });
 
   it("prevents double submit and dismissal while the save is pending", async () => {
     let resolveSave!: (response: Response) => void;
-    request.mockImplementation(async method => {
+    request.mockImplementation(async (method, url) => {
       if (method === "POST") return new Promise<Response>(resolve => { resolveSave = resolve; });
-      return { json: async () => data } as Response;
+      return { json: async () => url.includes("carry-forward") ? emptyCarry : data } as Response;
     });
     mount();
     await review();

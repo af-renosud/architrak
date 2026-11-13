@@ -1,11 +1,15 @@
+import { useState } from "react";
 import { Link } from "wouter";
+import { Button } from "@/components/ui/button";
 import type { QuotationReplacementHistory as HistoryEntry } from "@shared/quotation-replacement";
+import { ReviewPreviousQuotationWorkDialog } from "./ReviewPreviousQuotationWorkDialog";
 
 export function QuotationReplacementHistory({ entries, devisId, projectId }: {
   entries: HistoryEntry[];
   devisId: number;
   projectId: string;
 }) {
+  const [reviewEntry, setReviewEntry] = useState<HistoryEntry | null>(null);
   const related = entries.filter(entry => entry.oldDevisId === devisId || entry.newDevisId === devisId);
   if (!related.length) return null;
   return (
@@ -18,6 +22,11 @@ export function QuotationReplacementHistory({ entries, devisId, projectId }: {
               <Link className="font-semibold underline underline-offset-2" href={`/projets/${projectId}?tab=devis&devis=${outgoing ? entry.newDevisId : entry.oldDevisId}`}>
                 {outgoing ? entry.newLabel : entry.oldLabel}
               </Link>
+               <div className="mt-2 rounded-md border bg-background p-2">
+                 <p className="font-semibold">Previous context awaiting assignment</p>
+                 <p className="mt-1 text-muted-foreground">Original context, images and translations remain available. Review what can be carried forward.</p>
+                 <Button size="sm" variant="outline" className="mt-2" onClick={() => setReviewEntry(entry)}>Review previous work</Button>
+               </div>
               <details className="mt-1">
                 <summary className="cursor-pointer text-muted-foreground">Replacement details · actor, date &amp; internal context</summary>
                 <p className="mt-1 text-muted-foreground">
@@ -28,6 +37,8 @@ export function QuotationReplacementHistory({ entries, devisId, projectId }: {
             </div>
           );
         })}
+        {reviewEntry && <ReviewPreviousQuotationWorkDialog sourceId={reviewEntry.oldDevisId} targetId={reviewEntry.newDevisId}
+          sourceLabel={reviewEntry.oldLabel} targetLabel={reviewEntry.newLabel} projectId={projectId} onClose={() => setReviewEntry(null)} />}
     </div>
   );
 }

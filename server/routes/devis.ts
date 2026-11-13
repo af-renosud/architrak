@@ -78,6 +78,8 @@ import {
 import { CONTEXT_ASSET_MAX_BYTES } from "@shared/context-doc";
 import { architectFinancialBoundary, hasArchitectCorrection } from "../services/architect-quotation-correction";
 import { getReplacementHistory, getReplacementOptions, replaceQuotation, replaceQuotationSchema, ReplacementError } from "../services/quotation-replacement.service";
+import { getCarryForwardPreview, recoverCarryForward } from "../services/quotation-carry-forward";
+import { carryForwardSchema } from "@shared/quotation-carry-forward";
 
 const router = Router();
 
@@ -350,6 +352,24 @@ router.get("/api/devis/:id/replacement-options", requireAuth,
     catch (err) {
       res.status(err instanceof ReplacementError ? err.status : 500)
         .json({ message: err instanceof ReplacementError ? err.message : "Could not load replacement options." });
+    }
+  });
+router.get("/api/devis/:id/carry-forward", requireAuth,
+  validateRequest({ params: idParams, query: z.object({ targetId: z.coerce.number().int().positive() }) }), async (req, res) => {
+    try { res.json(await getCarryForwardPreview(Number(req.params.id), Number(req.query.targetId))); }
+    catch (error) {
+      res.status(error instanceof ReplacementError ? error.status : 500)
+        .json({ message: error instanceof ReplacementError ? error.message : "Could not load previous work. Nothing has been changed." });
+    }
+  });
+router.post("/api/devis/:id/carry-forward", requireAuth,
+  validateRequest({ params: idParams, body: z.object({ targetId: z.number().int().positive(), selection: carryForwardSchema }).strict() }), async (req, res) => {
+    try {
+      if (!req.session?.userId) return res.status(401).json({ message: "Sign in to retain previous work." });
+      res.json(await recoverCarryForward(Number(req.params.id), req.body.targetId, req.body.selection, req.session.userId));
+    } catch (error) {
+      res.status(error instanceof ReplacementError ? error.status : 500)
+        .json({ message: error instanceof ReplacementError ? error.message : "Could not retain previous work. No partial copy was saved." });
     }
   });
 router.post("/api/devis/:id/mark-replaced", requireAuth,
