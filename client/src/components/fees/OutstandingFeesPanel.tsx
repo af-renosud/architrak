@@ -207,7 +207,7 @@ function MarkInvoicedAction({
 
   return (
     <form
-      className="flex items-center gap-1"
+      className="flex min-w-0 max-w-full flex-wrap items-center gap-1"
       onSubmit={(e) => {
         e.preventDefault();
         mutation.mutate();
@@ -219,7 +219,7 @@ function MarkInvoicedAction({
         value={ref}
         onChange={(e) => setRef(e.target.value)}
         placeholder="Penny Lane ref (optional)"
-        className="h-7 w-44 text-[11px]"
+        className="h-7 w-44 max-w-full min-w-0 text-[11px]"
         data-testid={`input-pennylane-ref-${entry.entryId}`}
       />
       <Button
@@ -244,6 +244,7 @@ function MarkInvoicedAction({
         }}
         disabled={mutation.isPending}
         data-testid={`button-cancel-mark-invoiced-${entry.entryId}`}
+        aria-label="Cancel reference entry"
       >
         <X size={12} />
       </Button>
@@ -256,7 +257,7 @@ export function OutstandingFeesPanel({ scope, projectId, compact }: Props) {
     ? ["/api/fees/outstanding"]
     : ["/api/projects", projectId !== undefined ? String(projectId) : "", "fees", "outstanding"];
 
-  const { data, isLoading } = useQuery<OutstandingFeeSummary>({
+  const { data, isLoading, error, refetch } = useQuery<OutstandingFeeSummary>({
     queryKey,
     enabled: scope === "global" || (projectId !== undefined && projectId > 0),
   });
@@ -270,6 +271,15 @@ export function OutstandingFeesPanel({ scope, projectId, compact }: Props) {
     );
   }
 
+  if (error) {
+    return (
+      <LuxuryCard data-testid="card-outstanding-fees-error">
+        <p role="alert" className="text-xs text-destructive">Unable to load accounting references: {error.message}</p>
+        <Button variant="outline" size="sm" className="mt-2" onClick={() => refetch()}>Retry</Button>
+      </LuxuryCard>
+    );
+  }
+
   if (!data || data.totalCount === 0) {
     return (
       <LuxuryCard data-testid="card-outstanding-fees-empty">
@@ -279,7 +289,7 @@ export function OutstandingFeesPanel({ scope, projectId, compact }: Props) {
           </div>
           <div>
             <p className="text-[12px] font-semibold text-foreground">
-              No outstanding architect fees
+              No missing accounting references
             </p>
             <p className="text-[10px] text-muted-foreground">
               Every approved invoice has its commission entry invoiced in Penny Lane.
@@ -299,7 +309,7 @@ export function OutstandingFeesPanel({ scope, projectId, compact }: Props) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="text-[14px] font-black uppercase tracking-tight text-foreground" data-testid="text-outstanding-fees-title">
-              Outstanding Architect Fees
+              Accounting references to reconcile
             </h3>
             <span
               className="inline-flex items-center justify-center min-w-[20px] h-[18px] px-1.5 rounded-full bg-amber-500 text-white text-[10px] font-bold"
@@ -309,7 +319,7 @@ export function OutstandingFeesPanel({ scope, projectId, compact }: Props) {
             </span>
           </div>
           <p className="text-[11px] text-muted-foreground mt-0.5">
-            Approved invoices missing a Penny Lane commission reference. Total fees:{" "}
+            Approved invoices missing a Penny Lane commission reference (not payment status). Total fees:{" "}
             <span className="font-semibold text-foreground" data-testid="text-outstanding-total">
               <Amount value={data.totalFeeHt} denomination="HT" />
             </span>
@@ -413,7 +423,7 @@ export function OutstandingFeesPanel({ scope, projectId, compact }: Props) {
                   {" · "}<Amount value={e.amountTtc} denomination="TTC" />
                 </p>
               </div>
-              <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+              <div className="flex w-full min-w-0 max-w-full items-center gap-2 flex-wrap justify-start">
                 <span className="text-[12px] font-semibold text-amber-600 dark:text-amber-400" data-testid={`text-outstanding-fee-${e.entryId}`}>
                   <Amount value={e.feeAmountHt} denomination="HT" />
                 </span>

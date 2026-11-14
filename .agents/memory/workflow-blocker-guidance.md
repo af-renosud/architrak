@@ -31,3 +31,9 @@ Review-source actions must be visually separate from explanations and audit reco
 **Why:** The user approved the action-first redesign because dense descriptive and historical content obscured quick decisions.
 
 **How to apply:** Keep actual pending approvals and safety warnings visible, retain all evidence behind disclosures, and distinguish recording a review from correcting quotation rows.
+
+The dashboard prioritises urgent work and certificate dispatch over activity history; supporting sections are collapsible with visible summaries.
+
+**Why:** The user approved an action-first dashboard to reduce scanning and make the next step obvious.
+
+**How to apply:** Keep intake failures visible, distinguish architect actions from waiting, never equate missing accounting references with unpaid invoices, and preserve unfinished inputs when collapsing sections.
