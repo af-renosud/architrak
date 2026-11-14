@@ -1,0 +1,143 @@
+import { useState } from "react";
+import { AlertTriangle, Copy, Check, Coins, CheckCircle2, X } from "lucide-react";
+import { Amount, Button, Input, LuxuryCard, Skeleton, TechnicalLabel } from "./ui";
+import { Link, sandboxNotice, useQuery } from "./stubs";
+import type { FeeEntry, outstandingSample } from "./fixtures";
+
+type Props = { scope: "global" | "project"; projectId?: number; compact?: boolean };
+// Actual fee-panel JSX/classes extracted; clipboard and invoice side effects
+// deliberately stop at labelled local demonstrations.
+function CopyButton({ entry }: { entry: FeeEntry }) {
+  const [copied, setCopied] = useState(false);
+  const onCopy = () => {
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1800);
+    sandboxNotice(`Copy invoice description ${entry.invoiceNumber}`);
+  };
+  return (
+    <Button variant="outline" size="sm" className="h-7 px-2 border-[#c1a27b]/40 text-[#0B2545] hover:bg-[#c1a27b]/10" onClick={onCopy} data-testid={`button-copy-fee-desc-${entry.entryId}`} title="Copy invoice description for accounting">
+      {copied ? <Check size={12} className="mr-1" /> : <Copy size={12} className="mr-1" />}
+      <span className="text-[9px] font-bold uppercase tracking-widest">{copied ? "Copied" : "Copy"}</span>
+    </Button>
+  );
+}
+function InvoiceNowAction({ entry, dryRun }: { entry: FeeEntry; dryRun: boolean }) {
+  return <Button variant="outline" size="sm" className="h-7 px-2 border-emerald-500/40 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/10" onClick={() => sandboxNotice(`Invoice fees ${entry.invoiceNumber}`)} disabled={false} data-testid={`button-invoice-now-${entry.entryId}`} title={dryRun ? "Dry-run: log payload only (Pennylane API NOT contacted)" : "Create Pennylane customer + invoice and auto-email the client"}>
+    <CheckCircle2 size={12} className="mr-1" /><span className="text-[9px] font-bold uppercase tracking-widest">{dryRun ? "Invoice (dry-run)" : "Invoice fees now"}</span>
+  </Button>;
+}
+function MarkInvoicedAction({ entry }: { entry: FeeEntry; scope: "global" | "project"; projectId?: number }) {
+  const [open, setOpen] = useState(false);
+  const [ref, setRef] = useState("");
+  const flagsQuery = useQuery<{ configured: boolean; pushEnabled: boolean; dryRun: boolean }>({ queryKey: ["/api/pennylane/feature-flags"], staleTime: 60_000 });
+  if (flagsQuery.data?.pushEnabled) return <InvoiceNowAction entry={entry} dryRun={flagsQuery.data.dryRun} />;
+  if (!open) {
+    return <Button variant="outline" size="sm" className="h-7 px-2 border-emerald-500/40 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/10" onClick={() => setOpen(true)} data-testid={`button-mark-invoiced-${entry.entryId}`} title="Mark this commission as invoiced in Penny Lane">
+      <CheckCircle2 size={12} className="mr-1" /><span className="text-[9px] font-bold uppercase tracking-widest">Mark Invoiced</span>
+    </Button>;
+  }
+  return <form className="flex items-center gap-1" onSubmit={(e) => { e.preventDefault(); sandboxNotice(`Save Penny Lane reference for ${entry.invoiceNumber}`); }} data-testid={`form-mark-invoiced-${entry.entryId}`}>
+    <Input autoFocus value={ref} onChange={(e) => setRef(e.target.value)} placeholder="Penny Lane ref (optional)" className="h-7 w-44 text-[11px]" data-testid={`input-pennylane-ref-${entry.entryId}`} />
+    <Button type="submit" size="sm" className="h-7 px-2 bg-emerald-600 hover:bg-emerald-700 text-white" disabled={false} data-testid={`button-confirm-mark-invoiced-${entry.entryId}`}><span className="text-[9px] font-bold uppercase tracking-widest">Save</span></Button>
+    <Button type="button" variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => { setOpen(false); setRef(""); }} disabled={false} data-testid={`button-cancel-mark-invoiced-${entry.entryId}`}><X size={12} /></Button>
+  </form>;
+}
+export function OutstandingFeesPanel({ scope, projectId, compact }: Props) {
+  const queryKey = scope === "global" ? ["/api/fees/outstanding"] : ["/api/projects", projectId !== undefined ? String(projectId) : "", "fees", "outstanding"];
+  const { data, isLoading } = useQuery<typeof outstandingSample>({ queryKey, enabled: scope === "global" || (projectId !== undefined && projectId > 0) });
+  if (isLoading) return <LuxuryCard data-testid="card-outstanding-fees-loading"><Skeleton className="h-4 w-48 mb-2" /><Skeleton className="h-3 w-32" /></LuxuryCard>;
+  if (!data || data.totalCount === 0) {
+    return <LuxuryCard data-testid="card-outstanding-fees-empty">
+      <div className="flex items-center gap-3">
+        <div className="p-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/30"><Check size={14} className="text-emerald-600 dark:text-emerald-400" /></div>
+        <div><p className="text-[12px] font-semibold text-foreground">No outstanding architect fees</p><p className="text-[10px] text-muted-foreground">Every approved invoice has its commission entry invoiced in Penny Lane.</p></div>
+      </div>
+    </LuxuryCard>;
+  }
+  return (
+    <LuxuryCard data-testid="card-outstanding-fees">
+      <div className="flex items-start gap-3 mb-4 flex-wrap">
+        <div className="p-1.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 shrink-0"><Coins size={14} className="text-amber-600 dark:text-amber-400" /></div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="text-[14px] font-black uppercase tracking-tight text-foreground" data-testid="text-outstanding-fees-title">Outstanding Architect Fees</h3>
+            <span className="inline-flex items-center justify-center min-w-[20px] h-[18px] px-1.5 rounded-full bg-amber-500 text-white text-[10px] font-bold" data-testid="badge-outstanding-count">{data.totalCount}</span>
+          </div>
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            Approved invoices missing a Penny Lane commission reference. Total fees:{" "}
+            <span className="font-semibold text-foreground" data-testid="text-outstanding-total"><Amount value={data.totalFeeHt} denomination="HT" /></span>
+          </p>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4" data-testid="grid-outstanding-buckets">
+        {data.buckets.map((b) => (
+          <div key={b.label} className={`rounded-xl border p-2.5 ${b.label === "90+" ? "border-red-300 bg-red-50/60 dark:border-red-800 dark:bg-red-950/30" : b.label === "61-90" ? "border-amber-300 bg-amber-50/60 dark:border-amber-800 dark:bg-amber-950/30" : "border-border bg-muted/30"}`} data-testid={`bucket-${b.label}`}>
+            <TechnicalLabel>{b.label} days</TechnicalLabel>
+            <p className="text-[16px] font-light text-foreground mt-1" data-testid={`bucket-count-${b.label}`}>{b.count}</p>
+            <p className="text-[10px] text-muted-foreground"><Amount value={b.totalFeeHt} denomination="HT" /></p>
+          </div>
+        ))}
+      </div>
+      {scope === "global" && data.byProject.length > 0 && (
+        <div className="mb-4" data-testid="section-outstanding-by-project">
+          <TechnicalLabel>By Project</TechnicalLabel>
+          <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {data.byProject.map((p) => (
+              <Link key={p.projectId} href={`/projets/${p.projectId}?tab=honoraires&filter=outstanding`}>
+                <div className="rounded-lg border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] p-2 hover-elevate cursor-pointer" data-testid={`row-outstanding-project-${p.projectId}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold uppercase tracking-widest text-[#0B2545] truncate">{p.projectCode}</span>
+                    <span className="text-[11px] font-semibold text-amber-600 dark:text-amber-400"><Amount value={p.totalFeeHt} denomination="HT" /></span>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground truncate">{p.count} entry{p.count === 1 ? "" : "s"} · oldest {p.oldestAgeDays}d</p>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+      {!compact && (
+        <div className="space-y-2" data-testid="list-outstanding-entries">
+          {data.entries.map((e) => (
+            <div key={e.entryId} className="p-3 rounded-xl border border-[rgba(0,0,0,0.05)] dark:border-[rgba(255,255,255,0.06)] flex items-center justify-between gap-3 flex-wrap" data-testid={`row-outstanding-entry-${e.entryId}`}>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  {scope === "global" && <Link href={`/projets/${e.projectId}`}><span className="text-[10px] font-bold uppercase tracking-widest text-[#0B2545] hover:underline cursor-pointer" data-testid={`link-outstanding-project-${e.entryId}`}>{e.projectCode}</span></Link>}
+                  <span className="text-[12px] font-semibold text-foreground truncate" data-testid={`text-outstanding-contractor-${e.entryId}`}>{e.contractorName ?? "Unknown contractor"}</span>
+                  <span className={`inline-flex items-center gap-1 text-[10px] font-semibold ${e.ageDays > 90 ? "text-red-600 dark:text-red-400" : e.ageDays > 60 ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}`} data-testid={`text-outstanding-age-${e.entryId}`}>
+                    {e.ageDays > 60 && <AlertTriangle size={10} />}{e.ageDays}d
+                  </span>
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-0.5 truncate">
+                  Facture {e.invoiceNumber ?? "—"}{e.devisCode ? ` · Devis ${e.devisCode}` : ""}
+                  {" · "}<Amount value={e.amountHt} denomination="HT" />{" · "}<Amount value={e.amountTtc} denomination="TTC" />
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+                <span className="text-[12px] font-semibold text-amber-600 dark:text-amber-400" data-testid={`text-outstanding-fee-${e.entryId}`}><Amount value={e.feeAmountHt} denomination="HT" /></span>
+                <CopyButton entry={e} /><MarkInvoicedAction entry={e} scope={scope} projectId={projectId} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </LuxuryCard>
+  );
+}
+export function OutstandingFeesBanner({ scope, projectId, href, dismissKey, onView }: { scope: "global" | "project"; projectId?: number; href: string; dismissKey?: string; onView?: () => void }) {
+  const queryKey = scope === "global" ? ["/api/fees/outstanding"] : ["/api/projects", projectId !== undefined ? String(projectId) : "", "fees", "outstanding"];
+  const { data } = useQuery<typeof outstandingSample>({ queryKey, enabled: scope === "global" || (projectId !== undefined && projectId > 0), refetchInterval: 60_000 });
+  const [dismissed, setDismissed] = useState(false);
+  if (!data || data.totalCount === 0 || dismissed) return null;
+  return <div className="rounded-xl border border-amber-300 bg-amber-50/80 dark:border-amber-800 dark:bg-amber-950/30 px-3 py-2 flex items-center gap-3 flex-wrap" data-testid={`banner-outstanding-fees-${scope}`}>
+    <AlertTriangle size={14} className="text-amber-600 dark:text-amber-400 shrink-0" />
+    <div className="flex-1 min-w-0 text-[12px] text-foreground">
+      <span className="font-semibold" data-testid="text-banner-outstanding-count">{data.totalCount} outstanding architect fee{data.totalCount === 1 ? "" : "s"}</span>
+      <span className="text-muted-foreground">{" "}· total {" "}<span className="font-semibold text-foreground" data-testid="text-banner-outstanding-total"><Amount value={data.totalFeeHt} denomination="HT" /></span></span>
+    </div>
+    <Link href={href}>
+      <Button size="sm" variant="outline" className="h-7 px-2 border-amber-400 text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/40" onClick={onView} data-testid={`button-banner-view-${scope}`}><span className="text-[10px] font-bold uppercase tracking-widest">View</span></Button>
+    </Link>
+    {dismissKey && <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setDismissed(true)} data-testid={`button-banner-dismiss-${scope}`} title="Hide for this session"><X size={12} /></Button>}
+  </div>;
+}

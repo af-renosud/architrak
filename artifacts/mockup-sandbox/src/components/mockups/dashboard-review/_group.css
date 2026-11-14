@@ -1,0 +1,143 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap");
+
+/* Main application :root / .dark tokens, kept out of sandbox global CSS. */
+:root {
+  --button-outline: rgba(0,0,0,.10);
+  --badge-outline: rgba(0,0,0,.05);
+  --opaque-button-border-intensity: -8;
+  --elevate-1: rgba(0,0,0,.03);
+  --elevate-2: rgba(0,0,0,.08);
+  --background: 210 17% 98%;
+  --foreground: 20 10% 4%;
+  --border: 210 11% 90%;
+  --card: 0 0% 100%;
+  --card-foreground: 20 10% 4%;
+  --card-border: 210 11% 93%;
+  --sidebar: 210 7% 87%;
+  --sidebar-foreground: 20 10% 4%;
+  --sidebar-border: 210 7% 82%;
+  --sidebar-primary: 213 74% 16%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 33 32% 62%;
+  --sidebar-accent-foreground: 0 0% 100%;
+  --sidebar-ring: 213 74% 16%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 20 10% 4%;
+  --popover-border: 210 11% 93%;
+  --primary: 213 74% 16%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 33 32% 62%;
+  --secondary-foreground: 0 0% 100%;
+  --muted: 210 11% 93%;
+  --muted-foreground: 240 1% 50%;
+  --accent: 33 32% 62%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 349 77% 62%;
+  --destructive-foreground: 0 0% 100%;
+  --input: 210 11% 90%;
+  --ring: 213 74% 16%;
+  --chart-1: 213 74% 16%;
+  --chart-2: 33 32% 62%;
+  --chart-3: 160 59% 46%;
+  --chart-4: 349 77% 62%;
+  --chart-5: 33 100% 75%;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-serif: Georgia, serif;
+  --font-mono: Menlo, monospace;
+  --radius: .5rem;
+  --shadow-2xs: 0px 1px 2px 0px rgba(0,0,0,0.03);
+  --shadow-xs: 0px 1px 2px 0px rgba(0,0,0,0.04);
+  --shadow-sm: 0px 1px 3px 0px rgba(0,0,0,0.04), 0px 1px 2px -1px rgba(0,0,0,0.03);
+  --shadow: 0px 1px 3px 0px rgba(0,0,0,0.04), 0px 1px 2px -1px rgba(0,0,0,0.03);
+  --shadow-md: 0px 2px 4px 0px rgba(0,0,0,0.04), 0px 2px 4px -1px rgba(0,0,0,0.03);
+  --shadow-lg: 0px 4px 6px 0px rgba(0,0,0,0.04), 0px 4px 6px -1px rgba(0,0,0,0.03);
+  --shadow-xl: 0px 8px 10px 0px rgba(0,0,0,0.04), 0px 8px 10px -1px rgba(0,0,0,0.03);
+  --shadow-2xl: 0px 12px 16px 0px rgba(0,0,0,0.05);
+  --tracking-normal: 0em;
+  --spacing: .25rem;
+  --sidebar-primary-border: hsl(var(--sidebar-primary));
+  --sidebar-primary-border: hsl(from hsl(var(--sidebar-primary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --sidebar-accent-border: hsl(var(--sidebar-accent));
+  --sidebar-accent-border: hsl(from hsl(var(--sidebar-accent)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --primary-border: hsl(var(--primary));
+  --primary-border: hsl(from hsl(var(--primary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --secondary-border: hsl(var(--secondary));
+  --secondary-border: hsl(from hsl(var(--secondary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --muted-border: hsl(var(--muted));
+  --muted-border: hsl(from hsl(var(--muted)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --accent-border: hsl(var(--accent));
+  --accent-border: hsl(from hsl(var(--accent)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --destructive-border: hsl(var(--destructive));
+  --destructive-border: hsl(from hsl(var(--destructive)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+}
+.dark {
+  --button-outline: rgba(255,255,255,.10);
+  --badge-outline: rgba(255,255,255,.05);
+  --opaque-button-border-intensity: 9;
+  --elevate-1: rgba(255,255,255,.04);
+  --elevate-2: rgba(255,255,255,.09);
+  --background: 220 15% 8%;
+  --foreground: 210 17% 95%;
+  --border: 220 10% 18%;
+  --card: 220 12% 11%;
+  --card-foreground: 210 17% 95%;
+  --card-border: 220 10% 16%;
+  --sidebar: 220 14% 10%;
+  --sidebar-foreground: 210 17% 90%;
+  --sidebar-border: 220 10% 16%;
+  --sidebar-primary: 213 60% 35%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 33 40% 50%;
+  --sidebar-accent-foreground: 0 0% 100%;
+  --sidebar-ring: 213 60% 35%;
+  --popover: 220 12% 11%;
+  --popover-foreground: 210 17% 95%;
+  --popover-border: 220 10% 16%;
+  --primary: 213 60% 35%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 33 40% 50%;
+  --secondary-foreground: 0 0% 100%;
+  --muted: 220 10% 16%;
+  --muted-foreground: 220 5% 55%;
+  --accent: 33 40% 50%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 349 70% 55%;
+  --destructive-foreground: 0 0% 100%;
+  --input: 220 10% 20%;
+  --ring: 213 60% 35%;
+  --chart-1: 213 60% 45%;
+  --chart-2: 33 50% 55%;
+  --chart-3: 160 50% 40%;
+  --chart-4: 349 70% 55%;
+  --chart-5: 33 90% 65%;
+  --shadow-2xs: 0px 2px 0px 0px rgba(0,0,0,0);
+  --shadow-xs: 0px 2px 0px 0px rgba(0,0,0,0);
+  --shadow-sm: 0px 2px 0px 0px rgba(0,0,0,0), 0px 1px 2px -1px rgba(0,0,0,0);
+  --shadow: 0px 2px 0px 0px rgba(0,0,0,0), 0px 1px 2px -1px rgba(0,0,0,0);
+  --shadow-md: 0px 2px 0px 0px rgba(0,0,0,0), 0px 2px 4px -1px rgba(0,0,0,0);
+  --shadow-lg: 0px 2px 0px 0px rgba(0,0,0,0), 0px 4px 6px -1px rgba(0,0,0,0);
+  --shadow-xl: 0px 2px 0px 0px rgba(0,0,0,0), 0px 8px 10px -1px rgba(0,0,0,0);
+  --shadow-2xl: 0px 2px 0px 0px rgba(0,0,0,0);
+}
+/* Main app Tailwind compatibility values, scoped to this extraction. */
+.dashboard-review, [data-dashboard-portal] {
+  font-family: var(--font-sans);
+  --radius-sm: .1875rem;
+  --radius-md: .375rem;
+  --radius-lg: .5625rem;
+  --radius-xl: .75rem;
+}
+@theme inline {
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / .05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / .1), 0 2px 4px -2px rgb(0 0 0 / .1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / .1), 0 4px 6px -4px rgb(0 0 0 / .1);
+  --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / .1), 0 8px 10px -6px rgb(0 0 0 / .1);
+  --shadow-2xl: 0 25px 50px -12px rgb(0 0 0 / .25);
+}
+.hover-elevate:not(.no-default-hover-elevate), .active-elevate-2:not(.no-default-active-elevate) { position: relative; z-index: 0; }
+.hover-elevate:not(.no-default-hover-elevate)::after, .active-elevate-2:not(.no-default-active-elevate)::after {
+  content: ""; pointer-events: none; position: absolute; inset: 0; border-radius: inherit; z-index: 999;
+}
+.hover-elevate:hover:not(.no-default-hover-elevate)::after { background-color: var(--elevate-1); }
+.active-elevate-2:active:not(.no-default-active-elevate)::after { background-color: var(--elevate-2); }
+.border.hover-elevate:not(.no-hover-interaction-elevate)::after, .border.active-elevate-2:not(.no-active-interaction-elevate)::after { inset: -1px; }
