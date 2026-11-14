@@ -13,22 +13,22 @@ export function QuotationReplacementHistory({ entries, devisId, projectId }: {
   const related = entries.filter(entry => entry.oldDevisId === devisId || entry.newDevisId === devisId);
   if (!related.length) return null;
   return (
-    <div className="mt-2 space-y-2 rounded-md border bg-muted/30 px-3 py-2 text-xs" data-testid={`replacement-history-${devisId}`}>
+    <div className="quotation-list-history mt-2 space-y-2 rounded-lg border bg-muted/30 px-4 py-3 text-xs" data-testid={`replacement-history-${devisId}`}>
         {related.map(entry => {
           const outgoing = entry.oldDevisId === devisId;
           return (
             <div key={entry.id} className="border-t pt-2 first:border-t-0 first:pt-0">
-              <span>{outgoing ? "Replaced by" : "Replaces"} </span>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+              <p className="min-w-0 flex-1 break-words"><span>{outgoing ? "Replaced by" : "Replaces"} </span>
               <Link className="font-semibold underline underline-offset-2" href={`/projets/${projectId}?tab=devis&devis=${outgoing ? entry.newDevisId : entry.oldDevisId}`}>
                 {outgoing ? entry.newLabel : entry.oldLabel}
               </Link>
-               <div className="mt-2 rounded-md border bg-background p-2">
-                 <p className="font-semibold">Previous context awaiting assignment</p>
-                 <p className="mt-1 text-muted-foreground">Original context, images and translations remain available. Review what can be carried forward.</p>
-                 <Button size="sm" variant="outline" className="mt-2" onClick={() => setReviewEntry(entry)}>Review previous work</Button>
-               </div>
+              </p>
+              <Button size="sm" variant="outline" className="shrink-0" onClick={() => setReviewEntry(entry)}>Review previous work</Button>
+              </div>
               <details className="mt-1">
                 <summary className="cursor-pointer text-muted-foreground">Replacement details · actor, date &amp; internal context</summary>
+                <p className="mt-2 text-muted-foreground">Original context, images and translations remain available. Review what can be carried forward.</p>
                 <p className="mt-1 text-muted-foreground">
                   {entry.actorName} · <time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString("fr-FR")}</time>
                 </p>

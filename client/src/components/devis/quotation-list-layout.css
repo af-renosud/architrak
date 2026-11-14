@@ -1,0 +1,29 @@
+/* One shared inset for supporting records, independent of card status. */
+.quotation-list-entry {
+  min-width: 0;
+}
+.quotation-list-entry > .quotation-list-history,
+.quotation-list-entry > .quotation-list-notice,
+.quotation-list-entry > .devis-workflow__attention {
+  margin-left: 1.5rem;
+  margin-right: 1.5rem;
+}
+.quotation-list-entry > .devis-workflow__attention {
+  margin-top: .5rem;
+  border: 1px solid hsl(var(--border));
+  border-radius: .5rem;
+  padding: .75rem 1rem;
+  background: hsl(var(--muted));
+  overflow-wrap: anywhere;
+}
+.quotation-list-entry [data-testid^="row-devis-actions-"] > * {
+  max-width: 100%;
+}
+@media (max-width: 639px) {
+  .quotation-list-entry > .quotation-list-history,
+  .quotation-list-entry > .quotation-list-notice,
+  .quotation-list-entry > .devis-workflow__attention {
+    margin-left: .75rem;
+    margin-right: .75rem;
+  }
+}

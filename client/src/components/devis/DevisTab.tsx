@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import "./quotation-list-layout.css";
 import type { QuotationReplacementHistory as ReplacementHistoryEntry } from "@shared/quotation-replacement";
 import { ReplaceQuotationDialog } from "./ReplaceQuotationDialog";
 import { QuotationReplacementHistory } from "./QuotationReplacementHistory";
@@ -1098,10 +1099,10 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
   const replacementBlock = replacementBlockedReason(d, isArchived);
 
   return (
-    <div>
+    <div className="quotation-list-entry">
       {sameRefPeer && !isReplaced && !isVoid && !isArchived && (
         <div
-          className="mb-1.5 flex items-center gap-2 flex-wrap rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-1.5"
+          className="quotation-list-notice mb-2 flex items-center justify-between gap-2 flex-wrap rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-4 py-3"
           data-testid={`banner-same-ref-${d.id}`}
         >
           <span className="text-[11px] text-amber-800 dark:text-amber-300">
@@ -1137,7 +1138,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-[16px] font-black text-[#0B2545] tracking-tight break-words min-w-0" data-testid={`text-devis-code-${d.id}`}>{d.devisCode}</span>
+                <span className="text-[16px] leading-6 font-black text-[#0B2545] tracking-tight break-words min-w-0" data-testid={`text-devis-code-${d.id}`}>{d.devisCode}</span>
                 {d.devisNumber && <span className="text-[11px] text-muted-foreground" data-testid={`text-devis-number-${d.id}`}>N° {d.devisNumber}</span>}
                 {d.ref2 && <span className="text-[11px] text-muted-foreground" data-testid={`text-devis-ref2-${d.id}`}>Ref {d.ref2}</span>}
                 {!isVoid && !isArchived && (
@@ -1186,7 +1187,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
           </div>
           <TooltipProvider delayDuration={200}>
             <div className="sm:col-span-2 min-w-0 ml-[4.625rem] flex items-start gap-3 flex-wrap border-t border-border/50 pt-3" data-testid={`row-devis-actions-${d.id}`} onClick={event => event.stopPropagation()}>
-              <div className="max-w-[19rem]" onClick={event => event.stopPropagation()}>
+              <div className="min-w-0 max-w-full sm:max-w-[19rem]" onClick={event => event.stopPropagation()}>
                 <Button
                   type="button"
                   variant="outline"
@@ -1267,7 +1268,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
                 <span className="hidden min-[900px]:block h-4 w-px bg-border" aria-hidden />
 
                 {/* Icon-only action cluster */}
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 flex-wrap">
                   <SignedPdfQuickLink devisId={d.id} available={!!d.signedPdfStorageKey}
                     signed={d.signOffStage === "client_signed_off" || d.archisignEnvelopeStatus === "signed"
                       || d.status === "signed" || (d.signedOffVia === "manual_upload" && !!d.manualSignoffAt)} />
