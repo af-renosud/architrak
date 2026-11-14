@@ -18,6 +18,7 @@ import { verifyQuotationManifest, compareInitialQuotation, type QuotationSourceM
 import { decideEmailDocRetry, EMAIL_DOC_MAX_ATTEMPTS } from "../services/email-doc-retry";
 import { triageFinancialPdf, type FinancialTriage } from "./financial-pdf-triage";
 import { safeErrorDiagnostic } from "../safe-error";
+import { emailHasFinancialAdmission } from "@shared/email-financial-gate";
 import {
   countItemRowCandidates,
   mergeContinuationFragments,
@@ -3273,6 +3274,7 @@ export async function processEmailDocument(
     return;
   }
 
+  let financiallyAdmitted = emailHasFinancialAdmission(emailDoc);
   try {
     if (!emailDoc.storageKey) {
       throw new Error("No storage key for document");
@@ -3288,19 +3290,31 @@ export async function processEmailDocument(
     const financialTriage = await triageFinancialPdf(
       buffer, previousTriage?.emailText ?? emailDoc.emailSubject ?? "", projects, previousTriage,
     );
+    if (financiallyAdmitted && financialTriage.decision.status !== "eligible") {
+      // A later project/archive or recognition change must not erase positive
+      // admission evidence. Keep its original triage and retain it for review.
+      await storage.setEmailDocumentRetryState(emailDocumentId, {
+        extractionStatus: "needs_review",
+        processingAttempts: (emailDoc.processingAttempts ?? 0) + 1,
+        nextProcessAttemptAt: null,
+        notes: `Previously admitted financial PDF retained for review: ${financialTriage.decision.reason}`,
+      });
+      return;
+    }
+    financiallyAdmitted = financialTriage.decision.status === "eligible";
     // Save evidence without assigning a project (assignment itself creates an intake mirror).
     await storage.updateEmailDocument(emailDocumentId, {
       extractedData: { financialTriage },
       notes: financialTriage.decision.reason,
     });
-    const protectedIdentity = financialTriage.decision.status === "archived_project_candidate"
-      || financialTriage.decision.status === "financial_excluded"
-      || (financialTriage.decision.status === "financial_identity_review" && financialTriage.decision.identitySource === "pdf");
-    if (financialTriage.decision.status !== "eligible" && (!opts?.bypassPrefilter || protectedIdentity)) {
+    // Manual retry may retry recognition, but may never bypass positive PDF admission.
+    if (financialTriage.decision.status !== "eligible") {
+      const attempts = (emailDoc.processingAttempts ?? 0) + 1;
+      const retryRecognition = financialTriage.decision.status === "financial_unreadable" && attempts < 3;
       await storage.setEmailDocumentRetryState(emailDocumentId, {
-        extractionStatus: financialTriage.decision.status,
-        processingAttempts: emailDoc.processingAttempts ?? 0,
-        nextProcessAttemptAt: null,
+        extractionStatus: retryRecognition ? "pending" : financialTriage.decision.status,
+        processingAttempts: attempts,
+        nextProcessAttemptAt: retryRecognition ? new Date(Date.now() + 15 * 60_000) : null,
         notes: financialTriage.decision.reason,
       });
       if (["financial_excluded", "archived_project_candidate"].includes(financialTriage.decision.status)) {
@@ -3550,7 +3564,9 @@ export async function processEmailDocument(
     // dedicated storage write instead of updateEmailDocument.
     const attempts = (emailDoc.processingAttempts ?? 0) + 1;
     const transient = !isPasswordProtected && isTransientGeminiError(err);
-    const decision = decideEmailDocRetry(attempts, transient);
+    const decision = financiallyAdmitted ? decideEmailDocRetry(attempts, transient)
+      : { status: attempts < 3 && transient ? "pending" : "financial_unreadable",
+        retryInMs: attempts < 3 && transient ? 15 * 60_000 : null };
     await storage.setEmailDocumentRetryState(emailDocumentId, {
       extractionStatus: decision.status,
       processingAttempts: attempts,

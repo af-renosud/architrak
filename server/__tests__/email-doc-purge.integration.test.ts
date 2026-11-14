@@ -62,6 +62,18 @@ describe("purgeExpiredSkippedEmailDocuments", () => {
     const merelySkipped = await insertDoc({ extractionStatus: "skipped" });
     expect(await storage.purgeSkippedEmailDocumentAtomically(merelySkipped, undefined, true)).toBeNull();
   });
+  it("expires only unverified unlinked copies and retains positively admitted failures", async () => {
+    const old = await insertDoc({ extractionStatus: "financial_unreadable", createdAt: OLD });
+    expect(await storage.purgeSkippedEmailDocumentAtomically(old, undefined, false, true)).not.toBeNull();
+    const fresh = await insertDoc({ extractionStatus: "financial_unreadable", createdAt: new Date() });
+    expect(await storage.purgeSkippedEmailDocumentAtomically(fresh, undefined, false, true)).toBeNull();
+    const admitted = await insertDoc({ extractionStatus: "failed", createdAt: OLD,
+      extractedData: { financialTriage: { decision: { status: "eligible", identitySource: "pdf", projectId, kind: "quotation" } } } });
+    expect(await storage.purgeSkippedEmailDocumentAtomically(admitted, undefined, false, true)).toBeNull();
+    const assigned = await insertDoc({ extractionStatus: "financial_unreadable", createdAt: OLD, projectId });
+    expect(await storage.purgeSkippedEmailDocumentAtomically(assigned, undefined, false, true)).toBeNull();
+  });
+
   it("purges old skipped rows but keeps fresh ones", async () => {
     const oldId = await insertDoc();
     const freshId = await insertDoc({ updatedAt: FRESH });

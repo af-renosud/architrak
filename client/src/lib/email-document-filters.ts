@@ -1,6 +1,9 @@
-import { emailNeedsAttention, emailVisibleByDefault } from "@shared/email-financial-gate";
+import { emailHasFinancialAdmission, emailNeedsAttention, emailVisibleByDefault } from "@shared/email-financial-gate";
 
 interface FilterableDocument {
+  extractedData?: unknown;
+  devisId?: number | null;
+  invoiceId?: number | null;
   extractionStatus: string;
   projectId: number | null;
   documentType: string;
@@ -16,6 +19,7 @@ export function matchesEmailDocumentFilters(
   search: string,
   showRemoved = false,
 ): boolean {
+  if (!emailHasFinancialAdmission(doc)) return false;
   if (status === "all_statuses") {
     if (doc.extractionStatus === "skipped" && !showRemoved) return false;
   } else if (status === "all") {

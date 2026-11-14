@@ -8,6 +8,7 @@ const fixture = vi.hoisted(() => ({
 }));
 vi.mock("../storage", () => ({
   storage: {
+    getAppSetting: vi.fn(async () => null),
     getEmailDocumentByMessageId: vi.fn(async () => undefined),
     getEmailDocumentByFingerprint: vi.fn(async () => undefined),
     getProjects: vi.fn(async () => {
@@ -98,6 +99,7 @@ describe("real multipart capture boundary", () => {
   it("parks actual unreadable text, rather than treating it as irrelevant", async () => {
     fixture.text = "";
     await processMessage(gmail(), "message", false, 1);
-    expect(fixture.saved[0].extractionStatus).toBe("financial_unreadable");
+    expect(fixture.saved[0].extractionStatus).toBe("pending");
+    expect(fixture.saved[0].extractedData.financialTriage.decision.status).toBe("financial_unreadable");
   });
 });

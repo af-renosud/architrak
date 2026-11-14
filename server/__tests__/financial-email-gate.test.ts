@@ -81,7 +81,7 @@ describe("strict financial content admission", () => {
       expect(emailVisibleByDefault({ extractionStatus: status })).toBe(false);
       expect(emailNeedsAttention({ extractionStatus: status })).toBe(false);
     }
-    expect(emailNeedsAttention({ extractionStatus: "financial_unreadable" })).toBe(true);
+    expect(emailNeedsAttention({ extractionStatus: "financial_unreadable" })).toBe(false);
   });
 });
 describe("PDF triage boundary", () => {

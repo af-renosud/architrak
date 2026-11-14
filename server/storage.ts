@@ -1,7 +1,8 @@
 import { PaymentInputError, validatePaymentAllocation, type PaymentEvidence } from "./services/payment-allocation";
 import { invoiceRequestConflict } from "../shared/invoice-request-guard";
 import { db } from "./db";
-import { evaluateFinancialPdf, discardIrrelevantFinancialDecision } from "@shared/email-financial-gate";
+import { evaluateFinancialPdf, discardIrrelevantFinancialDecision, emailHasFinancialAdmission } from "@shared/email-financial-gate";
+import { unverifiedPdfCleanupReason } from "@shared/email-admission-retention";
 import { createHash, randomUUID } from "node:crypto";
 import { computeCertificatPaymentState, type CertificatPaymentState } from "@shared/financial-utils";
 import { translationEditInvalidation } from "./services/translation-edit-invalidation";
@@ -818,7 +819,7 @@ export interface IStorage {
   // docs and promoted mirrors are never purged). Returns purged ids and
   // their storage keys for post-commit object cleanup.
   purgeExpiredSkippedEmailDocuments(maxAgeMs: number, limit?: number): Promise<Array<{ id: number; storageKey: string | null }>>;
-  purgeSkippedEmailDocumentAtomically(id: number, threshold?: Date, irrelevant?: boolean): Promise<{ id: number; storageKey: string | null } | null>;
+  purgeSkippedEmailDocumentAtomically(id: number, threshold?: Date, irrelevant?: boolean, admissionRetention?: boolean): Promise<{ id: number; storageKey: string | null } | null>;
 
   // Task #550 — key/value operator settings.
   getAppSetting(key: string): Promise<string | null>;
@@ -4797,7 +4798,12 @@ export class DatabaseStorage implements IStorage {
         oldestPendingAt: sql<Date | null>`MIN(${emailDocuments.createdAt}) FILTER (WHERE ${emailDocuments.extractionStatus} = 'pending')`,
         processedLast5Min: sql<number>`COUNT(*) FILTER (WHERE ${emailDocuments.extractionStatus} IN ('completed', 'needs_review', 'failed') AND ${emailDocuments.updatedAt} >= ${fiveMinAgo})`,
       })
-      .from(emailDocuments);
+      .from(emailDocuments)
+      .where(sql`(${emailDocuments.devisId} IS NOT NULL OR ${emailDocuments.invoiceId} IS NOT NULL OR
+        (${emailDocuments.extractedData}->'financialTriage'->'decision'->>'status' = 'eligible'
+        AND ${emailDocuments.extractedData}->'financialTriage'->'decision'->>'identitySource' = 'pdf'
+        AND ${emailDocuments.extractedData}->'financialTriage'->'decision'->>'projectId' IS NOT NULL
+        AND ${emailDocuments.extractedData}->'financialTriage'->'decision'->>'kind' IS NOT NULL))`);
     return {
       pending: Number(row?.pending ?? 0),
       processing: Number(row?.processing ?? 0),
@@ -5259,6 +5265,7 @@ export class DatabaseStorage implements IStorage {
     id: number,
     threshold?: Date,
     irrelevant = false,
+    admissionRetention = false,
   ): Promise<{ id: number; storageKey: string | null } | null> {
     // Task #550 — hard-delete ONE skipped row under FOR UPDATE guards:
     // never a doc linked to a devis/facture, never one whose intake mirror
@@ -5268,13 +5275,17 @@ export class DatabaseStorage implements IStorage {
       const [doc] = await tx.select().from(emailDocuments)
         .where(eq(emailDocuments.id, id)).for("update");
       if (!doc) return null;
-      if (irrelevant) {
+      const retentionReason = admissionRetention ? unverifiedPdfCleanupReason(doc) : null;
+      if (admissionRetention) {
+        if (!retentionReason) return null;
+      } else if (irrelevant) {
         if (doc.projectId != null || !["skipped", "financial_excluded", "financial_identity_review", "archived_project_candidate"].includes(doc.extractionStatus)) return null;
         const triage = (doc.extractedData as any)?.financialTriage;
         // Never decide deletion from filenames, subjects, stale status alone,
         // or text that could not be read completely.
         const explicitlyDismissed = doc.extractionStatus === "skipped" && doc.intakeDeletedAt != null;
         if (!explicitlyDismissed) {
+          if (emailHasFinancialAdmission(doc)) return null;
           if (!triage || !["text", "ocr"].includes(triage.method) || typeof triage.text !== "string") return null;
           const currentProjects = await tx.select().from(projects);
           if (!discardIrrelevantFinancialDecision(evaluateFinancialPdf(triage.text, "", currentProjects))) return null;
@@ -5304,7 +5315,13 @@ export class DatabaseStorage implements IStorage {
           .where(and(eq(projectIntakeDocuments.id, mirror.id), isNull(projectIntakeDocuments.promotedId)));
       }
       await tx.delete(emailDocuments).where(eq(emailDocuments.id, id));
-      if (irrelevant && doc.storageKey) {
+      if (admissionRetention && doc.contentFingerprint) {
+        await tx.insert(appSettings).values({
+          key: `pdf_admission_receipt:${doc.contentFingerprint}`,
+          value: JSON.stringify({ outcome: retentionReason, at: new Date().toISOString() }),
+        }).onConflictDoNothing();
+      }
+      if ((irrelevant || admissionRetention) && doc.storageKey) {
         await tx.insert(appSettings).values({
           key: `irrelevant_pdf_cleanup:${id}`, value: JSON.stringify({ id, storageKey: doc.storageKey }),
         }).onConflictDoNothing();

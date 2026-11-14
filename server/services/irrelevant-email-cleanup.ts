@@ -3,6 +3,7 @@ import { db } from "../db";
 import { appSettings, emailDocuments } from "@shared/schema";
 import { storage } from "../storage";
 import { deleteDocument } from "../storage/object-storage";
+import { unverifiedPdfCleanupReason } from "@shared/email-admission-retention";
 
 /** Delete only conclusively irrelevant, unfiled PDFs; storage revalidates under
  * row locks and protects every retained provenance consumer. */
@@ -11,6 +12,15 @@ export async function discardIrrelevantEmailDocument(id: number): Promise<boolea
 }
 
 export async function cleanupIrrelevantEmailDocuments(): Promise<void> {
+  const unverified = await db.select().from(emailDocuments).where(and(
+    isNull(emailDocuments.projectId), isNull(emailDocuments.devisId), isNull(emailDocuments.invoiceId),
+    inArray(emailDocuments.extractionStatus, ["failed", "financial_unreadable", "pending"]),
+  ));
+  for (const doc of unverified) {
+    if (!unverifiedPdfCleanupReason(doc)) continue;
+    try { await storage.purgeSkippedEmailDocumentAtomically(doc.id, undefined, false, true); }
+    catch { console.warn(`[email-cleanup] Admission retention cleanup ${doc.id} deferred.`); }
+  }
   const rows = await db.select({ id: emailDocuments.id }).from(emailDocuments).where(and(
     isNull(emailDocuments.projectId), isNull(emailDocuments.devisId), isNull(emailDocuments.invoiceId),
     inArray(emailDocuments.extractionStatus, ["skipped", "financial_excluded", "financial_identity_review", "archived_project_candidate"]),

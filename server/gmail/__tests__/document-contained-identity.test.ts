@@ -7,6 +7,7 @@ const fixture = vi.hoisted(() => ({
     emailReceivedAt: new Date("2026-11-11"), emailSubject: "Jean Martin Villa Martin",
     attachmentFileName: "Jean Martin.pdf", emailFrom: "jean@example.test",
     extractedData: null,
+    processingAttempts: 0,
   },
 }));
 vi.mock("../../storage", () => ({
@@ -37,8 +38,24 @@ import { processEmailDocument } from "../document-parser";
 beforeEach(() => {
   vi.clearAllMocks();
   fixture.text = "FACTURE 123\nTotal TTC 120";
+  fixture.doc.processingAttempts = 0;
 });
 describe("claimed processing document identity boundary", () => {
+  it("bounds pre-admission recognition retries without full extraction, even on manual force", async () => {
+    fixture.text = "";
+    fixture.doc.processingAttempts = 0;
+    await processEmailDocument(901, { bypassPrefilter: true });
+    expect(storage.setEmailDocumentRetryState).toHaveBeenLastCalledWith(901, expect.objectContaining({
+      extractionStatus: "pending", processingAttempts: 1, nextProcessAttemptAt: expect.any(Date),
+    }));
+    fixture.doc.processingAttempts = 2;
+    await processEmailDocument(901, { bypassPrefilter: true });
+    expect(storage.setEmailDocumentRetryState).toHaveBeenLastCalledWith(901, expect.objectContaining({
+      extractionStatus: "financial_unreadable", processingAttempts: 3, nextProcessAttemptAt: null,
+    }));
+    expect(uploadDocument).not.toHaveBeenCalled();
+    expect(storage.createProjectDocument).not.toHaveBeenCalled();
+  });
   it.each(["pending", "failed"])("parks %s email-only documents before extraction or filing", async status => {
     fixture.doc.extractionStatus = status;
     await processEmailDocument(901);

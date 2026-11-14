@@ -691,6 +691,9 @@ export async function processMessage(
       continue;
     }
 
+    // Only a minimal fingerprint receipt survives expired pre-admission retention.
+    // Deliberate recovery remains possible by uploading the original from Gmail.
+    if (await storage.getAppSetting(`pdf_admission_receipt:${fingerprint}`)) continue;
     // Each PDF must qualify on its own contents, never its sender or a sibling attachment.
     let financialTriage;
     let admissionRetry = false;
@@ -703,7 +706,7 @@ export async function processMessage(
       // An exception is not proof that the document is unreadable or irrelevant.
       admissionRetry = true;
     }
-    const captureStatus = admissionRetry || financialTriage.decision.status === "eligible" ? "pending" : financialTriage.decision.status;
+    const captureStatus = admissionRetry || ["eligible", "financial_unreadable"].includes(financialTriage.decision.status) ? "pending" : financialTriage.decision.status;
 
     // No object or intake row for confirmed irrelevant documents. The caller's
     // durable processed-message receipt prevents repeated capture from Gmail.

@@ -143,10 +143,22 @@ export const FINANCIAL_PARKED_STATUSES = new Set([
   "financial_excluded", "financial_identity_review", "financial_unreadable",
   "unmatched_sender", "low_relevance", "archived_project_candidate",
 ]);
-export function emailNeedsAttention(doc: { extractionStatus: string }): boolean {
-  return ["pending", "needs_review", "failed", "financial_unreadable"].includes(doc.extractionStatus);
+export interface FinancialEmailEvidence {
+  extractionStatus: string;
+  extractedData?: unknown;
+  devisId?: number | null;
+  invoiceId?: number | null;
 }
-export function emailVisibleByDefault(doc: { extractionStatus: string }): boolean {
-  return doc.extractionStatus !== "skipped"
-    && (!FINANCIAL_PARKED_STATUSES.has(doc.extractionStatus) || doc.extractionStatus === "financial_unreadable");
+export function emailHasFinancialAdmission(doc: FinancialEmailEvidence): boolean {
+  const data = doc.extractedData as { financialTriage?: { decision?: Partial<FinancialDecision> } } | null;
+  const decision = data?.financialTriage?.decision;
+  return !!doc.devisId || !!doc.invoiceId ||
+    (decision?.status === "eligible" && decision.identitySource === "pdf" && !!decision.projectId && !!decision.kind);
+}
+export function emailNeedsAttention(doc: FinancialEmailEvidence): boolean {
+  return emailHasFinancialAdmission(doc) && ["pending", "needs_review", "failed"].includes(doc.extractionStatus);
+}
+export function emailVisibleByDefault(doc: FinancialEmailEvidence): boolean {
+  return emailHasFinancialAdmission(doc) && doc.extractionStatus !== "skipped"
+    && !FINANCIAL_PARKED_STATUSES.has(doc.extractionStatus);
 }

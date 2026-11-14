@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { emailNeedsAttention } from "@shared/email-financial-gate";
+import { emailNeedsAttention, emailHasFinancialAdmission } from "@shared/email-financial-gate";
 import { triageFinancialPdf, type FinancialTriage } from "../gmail/financial-pdf-triage";
 import { getDocumentBuffer } from "../storage/object-storage";
 import { safeErrorDiagnostic } from "../safe-error";
@@ -87,7 +87,7 @@ router.get("/api/gmail/status", async (_req, res) => {
   let needsAttentionCount = 0;
   try {
     const allDocuments = await storage.getEmailDocuments({});
-    const needsReview = allDocuments.filter((d) => d.extractionStatus === "needs_review");
+    const needsReview = allDocuments.filter((d) => emailHasFinancialAdmission(d) && d.extractionStatus === "needs_review");
     needsAttentionCount = allDocuments.filter(emailNeedsAttention).length;
     needsProjectCount = needsReview.filter((d) => d.projectId == null).length;
   } catch (err) {
@@ -169,7 +169,7 @@ router.get(
       status: q.status,
       documentType: q.documentType,
     });
-    res.json(await enrichEmailDocumentsWithFiling(docs));
+    res.json(await enrichEmailDocumentsWithFiling(docs.filter(emailHasFinancialAdmission)));
   },
 );
 
@@ -344,9 +344,7 @@ router.post(
   validateRequest({ params: idParams, body: z.object({ force: z.boolean().optional() }).optional() }),
   async (req, res) => {
     try {
-      // Task #323 — `force: true` bypasses the deterministic sender
-      // pre-filter so an operator can rescue a doc parked as
-      // 'unmatched_sender' and run the AI extraction anyway.
+      // Explicit retry still requires financial evidence and identity in the PDF.
       await processEmailDocument(Number(req.params.id), {
         bypassPrefilter: (req.body as { force?: boolean } | undefined)?.force === true,
       });

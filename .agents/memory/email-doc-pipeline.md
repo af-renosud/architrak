@@ -12,6 +12,14 @@ description: How captured Gmail attachments flow into intake, and the concurrenc
 **Why:** the original outage was captured-but-never-processed docs piling up silently; the fixes above are the load-bearing guarantees.
 **How to apply:** any new code path that processes or re-processes an email document must claim first and respect the attempt bound.
 
+## Financial admission is separate from recognition failure
+Financial review and its counters require positive financial evidence and active-project identity inside the PDF, or existing linked financial provenance. A recognition failure before that evidence exists must not become a financial task. Manual retry is not permission to bypass admission. Failures after successful admission remain actionable.
+
+Unverified technical copies have bounded retries and retention; expiry means unverified, not proven irrelevant. Preserve earlier positive admission across retries and project archival. All automatic cleanup paths must protect that evidence under locks, even before a quotation or invoice has been linked.
+
+**Why:** unreadable architectural plans previously entered attention as generic extraction failures, defeating the client's financial-only intake policy.
+**How to apply:** keep list filters, API responses, queue counters and worker admission consistent; never erase financial evidence because a later OCR attempt fails.
+
 ## Intake watermark & terminal skipped state
 - An intake watermark (env-configurable minimum received-at) is enforced in FOUR places: Gmail capture, sweeper selection, the processEmailDocument boundary, AND the atomic claim's SQL predicate — a boundary-only check can be raced or bypassed by future callers.
 - 'skipped' is a terminal email-doc status: unclaimable at the SQL level, immutable via the generic PATCH (schema omit + body delete + storage guard), never mirrored into intake, and retry bookkeeping only applies to rows currently 'processing'.

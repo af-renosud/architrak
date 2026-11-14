@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { matchesEmailDocumentFilters } from "../email-document-filters";
 
 const doc = {
+  extractedData: { financialTriage: { decision: { status: "eligible", identitySource: "pdf", projectId: 12, kind: "quotation" } } },
   extractionStatus: "financial_excluded",
   projectId: null,
   documentType: "unknown",

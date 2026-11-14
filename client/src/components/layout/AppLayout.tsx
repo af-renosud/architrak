@@ -118,7 +118,7 @@ export function AppLayout({ children }: AppLayoutProps) {
             aria-controls="app-sidebar"
             aria-expanded={false}
             onClick={toggleDesktopNav}
-            className="inline-flex min-h-9 items-center gap-2 rounded-lg px-3 text-sm text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="inline-flex min-h-9 items-center gap-2 rounded-lg px-3 text-sm text-foreground hover:bg-muted focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
           >
             <PanelLeftOpen size={16} aria-hidden="true" />
             Show menu

@@ -15,6 +15,7 @@ vi.mock("@/components/intake/ManualPromotionDialog", () => ({ ManualPromotionDia
 function document(filing: Partial<EmailDocumentWithFiling["filing"]> = {}): EmailDocumentWithFiling {
   return {
     id: 898,
+    extractedData: { financialTriage: { decision: { status: "eligible", identitySource: "pdf", projectId: 12, kind: "quotation" } } },
     attachmentFileName: "Devis n260309.pdf",
     extractionStatus: "completed",
     documentType: "quotation",

@@ -13,6 +13,7 @@ vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: vi.fn() }) }));
 function doc(id: number, name: string) {
   return {
     id, attachmentFileName: name, extractionStatus: "completed", documentType: "quotation", projectId: null,
+    extractedData: { financialTriage: { decision: { status: "eligible", identitySource: "pdf", projectId: 12, kind: "quotation" } } },
     emailFrom: "atelier@example.test", emailSubject: "Plans à vérifier",
     filing: { state: "not_filed", label: "Not filed", reason: null, intakeId: null, projectId: null, promotedKind: null, promotedId: null, destination: null, isActive: false },
   } as EmailDocumentWithFiling;

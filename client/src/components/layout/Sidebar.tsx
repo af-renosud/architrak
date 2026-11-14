@@ -171,7 +171,7 @@ export function Sidebar({ desktopCollapsed = false, onDesktopCollapse, collapseM
         aria-controls="app-sidebar"
         aria-expanded={true}
         onClick={onDesktopCollapse}
-        className="mx-4 mt-3 hidden min-h-9 items-center gap-2 rounded-lg px-2 text-xs text-[#34312D] hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:inline-flex"
+        className="mx-4 mt-3 hidden min-h-9 items-center gap-2 rounded-lg px-2 text-xs text-[#34312D] hover:bg-black/5 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring lg:inline-flex"
       >
         <PanelLeftClose size={16} aria-hidden="true" />
         Collapse menu

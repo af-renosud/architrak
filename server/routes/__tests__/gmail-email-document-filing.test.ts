@@ -65,7 +65,8 @@ beforeEach(() => {
   mocks.authenticated = true;
 });
 
-const doc = { id: 898, projectId: 12, extractionStatus: "completed", devisId: null };
+const doc = { id: 898, projectId: 12, extractionStatus: "completed", devisId: null,
+  extractedData: { financialTriage: { decision: { status: "eligible", identitySource: "pdf", projectId: 12, kind: "quotation" } } } };
 const enriched = {
   ...doc,
   filing: {
