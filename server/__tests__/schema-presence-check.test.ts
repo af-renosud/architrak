@@ -560,6 +560,17 @@ describe.skipIf(skipModule !== null)("schema-presence check (Task #136)", () => 
     expect(total.rows[0].n).toBe(journal.entries.length);
   }, 60_000);
 
+  it("fee visibility migration repairs missing audit protections without dropping history", async (t) => {
+    if (ctx.skipReason || !ctx.replayPool) { t.skip(); return; }
+    await ctx.replayPool.query("DROP TRIGGER IF EXISTS fee_visibility_events_immutable ON fee_visibility_events");
+    await ctx.replayPool.query("ALTER TABLE fee_visibility_events DROP CONSTRAINT IF EXISTS fee_visibility_events_reason_check");
+    await ctx.replayPool.query(fs.readFileSync(path.join(migrationsFolder, "0150_fee_visibility_events.sql"), "utf8"));
+    const trigger = await ctx.replayPool.query("SELECT 1 FROM pg_trigger WHERE tgrelid='fee_visibility_events'::regclass AND tgname='fee_visibility_events_immutable'");
+    const constraint = await ctx.replayPool.query("SELECT 1 FROM pg_constraint WHERE conrelid='fee_visibility_events'::regclass AND conname='fee_visibility_events_reason_check'");
+    expect(trigger.rowCount).toBe(1);
+    expect(constraint.rowCount).toBe(1);
+  });
+
   it("MIGRATION_ARTIFACTS covers every journal entry exactly once", () => {
     const journalPath = path.join(migrationsFolder, "meta", "_journal.json");
     const journal = JSON.parse(fs.readFileSync(journalPath, "utf-8")) as {

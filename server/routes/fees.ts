@@ -22,11 +22,40 @@ import {
 import { roundCurrency } from "@shared/financial-utils";
 import { validateRequest } from "../middleware/validate";
 import { getMilestonesWithPennylane } from "../services/design-contract-read.service";
+import { changeFeeVisibility, FeeVisibilityError, getFeeVisibility } from "../services/fee-visibility.service";
 
 const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
 const feeIdParams = z.object({ feeId: z.coerce.number().int().positive() });
 const projectIdParams = z.object({ projectId: z.coerce.number().int().positive() });
+
+router.get("/api/projects/:projectId/fee-visibility",
+  validateRequest({ params: projectIdParams }), async (req, res, next) => {
+    try { res.json(await getFeeVisibility(Number(req.params.projectId))); }
+    catch (error) {
+      if (error instanceof FeeVisibilityError) return res.status(error.status).json({ message: error.message });
+      next(error);
+    }
+  });
+
+router.post("/api/projects/:projectId/fee-visibility/:kind/:id",
+  validateRequest({
+    params: projectIdParams.extend({ kind: z.enum(["fee", "entry"]), id: z.coerce.number().int().positive() }),
+    body: z.object({ action: z.enum(["archive", "restore"]), reason: z.string().trim().min(1).max(2000) }).strict(),
+  }), async (req, res, next) => {
+    try {
+      const user = req.session?.userId ? await storage.getUser(req.session.userId) : undefined;
+      const actor = user?.email;
+      if (!actor) return res.status(401).json({ message: "Sign in before changing archive visibility." });
+      res.json(await changeFeeVisibility({
+        projectId: Number(req.params.projectId), kind: req.params.kind as "fee" | "entry",
+        id: Number(req.params.id), action: req.body.action, reason: req.body.reason, actor,
+      }));
+    } catch (error) {
+      if (error instanceof FeeVisibilityError) return res.status(error.status).json({ message: error.message });
+      next(error);
+    }
+  });
 
 router.get("/api/fees/outstanding", async (_req, res) => {
   const summary = await getOutstandingFeesGlobal();

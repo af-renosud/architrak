@@ -1,0 +1,7 @@
+.fee-register-filters { background: hsl(var(--muted) / .35); border: 1px solid hsl(var(--border)); border-radius: .65rem; padding: 1rem; }
+.fee-register-tabs { display: flex; gap: .5rem; flex-wrap: wrap; border-bottom: 1px solid hsl(var(--border)); padding-bottom: .75rem; }
+.fee-register-disclosure > summary { cursor: pointer; padding: .85rem 0; color: hsl(var(--foreground)); font-size: .8rem; font-weight: 600; }
+.fee-register-disclosure > summary::marker { color: #c1a27b; }
+.fee-register-row { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 1rem; text-align: left; padding: 1rem; border-bottom: 1px solid hsl(var(--border)); }
+.fee-register-row:hover, .fee-register-row[aria-current="true"] { background: hsl(var(--muted) / .5); }
+@media (max-width: 767px) { .fee-register-row { align-items: flex-start; flex-direction: column; gap: .5rem; } }

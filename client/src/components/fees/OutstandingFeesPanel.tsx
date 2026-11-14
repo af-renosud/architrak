@@ -15,6 +15,7 @@ import {
   type OutstandingFeeSummary,
 } from "@shared/fee-description";
 import { Amount } from "@/components/ui/amount";
+import { invalidateFeeReads } from "@/hooks/use-fee-visibility";
 
 interface Props {
   scope: "global" | "project";
@@ -94,6 +95,7 @@ function InvoiceNowAction({
       queryClient.invalidateQueries({ queryKey: ["/api/fees/outstanding"] });
       const pid = scope === "project" ? projectId : entry.projectId;
       if (pid !== undefined) {
+        invalidateFeeReads(String(pid));
         const pidStr = String(pid); // project-key-string-ok
         queryClient.invalidateQueries({
           queryKey: ["/api/projects", pidStr, "fees", "outstanding"], // project-key-string-ok
@@ -159,6 +161,7 @@ function MarkInvoicedAction({
       queryClient.invalidateQueries({ queryKey: ["/api/fees/outstanding"] });
       const pid = scope === "project" ? projectId : entry.projectId;
       if (pid !== undefined) {
+        invalidateFeeReads(String(pid));
         const pidStr = String(pid); // project-key-string-ok
         queryClient.invalidateQueries({
           queryKey: ["/api/projects", pidStr, "fees", "outstanding"], // project-key-string-ok
@@ -292,7 +295,7 @@ export function OutstandingFeesPanel({ scope, projectId, compact }: Props) {
               No missing accounting references
             </p>
             <p className="text-[10px] text-muted-foreground">
-              Every approved invoice has its commission entry invoiced in Penny Lane.
+              No approved invoice commission is currently missing an accounting reference in this scope. This does not establish payment or complete documentary evidence.
             </p>
           </div>
         </div>

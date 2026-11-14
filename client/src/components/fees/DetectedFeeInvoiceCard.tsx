@@ -16,6 +16,7 @@ import { useState } from "react";
 import { FileText, ExternalLink, XCircle } from "lucide-react";
 import type { ArchitectFeeInvoice } from "@shared/schema";
 import { Amount } from "@/components/ui/amount";
+import { invalidateFeeReads } from "@/hooks/use-fee-visibility";
 
 export interface RankedProject {
   projectId: number;
@@ -77,13 +78,9 @@ export function usePendingFeeInvoices() {
 
 export function ConfirmControls({ row, candidates }: { row: ArchitectFeeInvoice; candidates: CandidatesPayload }) {
   const { toast } = useToast();
-  const [projectId, setProjectId] = useState<string>(() =>
-    candidates.highConfidenceProjectId != null
-      ? String(candidates.highConfidenceProjectId)
-      : candidates.projects.length === 1
-        ? String(candidates.projects[0].projectId)
-        : "",
-  );
+  // Suggestions are not assignments. Always require explicit project choice,
+  // including when the detector ranks a single or amount-only candidate.
+  const [projectId, setProjectId] = useState<string>("");
   const milestonesForProject = projectId ? (candidates.milestones[projectId] ?? []) : [];
   const worksForProject = projectId ? (candidates.worksFees?.[projectId] ?? []) : [];
   // Binding value: "m:<milestoneId>" (jalon) or "w:<feeEntryId>" (commission travaux).
@@ -100,6 +97,10 @@ export function ConfirmControls({ row, candidates }: { row: ArchitectFeeInvoice;
       return res.json();
     },
     onSuccess: (data: { reconciliation: string; feeEntryId: number; milestoneId: number | null }) => {
+      invalidateFeeReads(String(projectId));
+      // Reviewing an original can change conservative archive blockers on
+      // other candidate projects as well as the explicitly selected project.
+      void queryClient.invalidateQueries({ predicate: query => query.queryKey.includes("fee-visibility") });
       queryClient.invalidateQueries({ queryKey: ["/api/architect-fee-invoices"] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "design-contract"] }); // project-key-string-ok
       const how =
@@ -190,9 +191,10 @@ export function ConfirmControls({ row, candidates }: { row: ArchitectFeeInvoice;
   );
 }
 
-export function DetectedFeeInvoiceCard({ row, compact = false }: { row: ArchitectFeeInvoice; compact?: boolean }) {
+export function DetectedFeeInvoiceCard({ row, compact = false, scopeProjectId }: { row: ArchitectFeeInvoice; compact?: boolean; scopeProjectId?: string }) {
   const { toast } = useToast();
-  const candidates = (row.candidates ?? { projects: [], highConfidenceProjectId: null, milestones: {} }) as CandidatesPayload;
+  const allCandidates = (row.candidates ?? { projects: [], highConfidenceProjectId: null, milestones: {} }) as CandidatesPayload;
+  const candidates = scopeProjectId ? { ...allCandidates, projects: allCandidates.projects.filter(project => String(project.projectId) === scopeProjectId) } : allCandidates;
 
   const dismissMutation = useMutation({
     mutationFn: async () => {
@@ -201,6 +203,7 @@ export function DetectedFeeInvoiceCard({ row, compact = false }: { row: Architec
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/architect-fee-invoices"] });
+      void queryClient.invalidateQueries({ predicate: query => query.queryKey.includes("fee-visibility") });
       toast({ title: "Facture écartée", description: "Cette facture d'honoraires ne sera plus proposée." });
     },
     onError: (err: Error) => {

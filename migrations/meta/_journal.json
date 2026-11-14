@@ -1051,6 +1051,13 @@
       "when": 1794585600000,
       "tag": "0149_devis_replacements",
       "breakpoints": true
+    },
+    {
+      "idx": 150,
+      "version": "7",
+      "when": 1794660000000,
+      "tag": "0150_fee_visibility_events",
+      "breakpoints": true
     }
   ]
 }

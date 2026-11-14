@@ -1,11 +1,17 @@
 import { useState } from "react";
+import "@/components/fees/fee-register.css";
+import { FeeProjectRegister } from "@/components/fees/FeeProjectRegister";
+import { FeeDisclosure } from "@/components/fees/FeeDisclosure";
+import { FeeVisibilityAction, FeeHistory, FeePortfolioHistory } from "@/components/fees/FeeVisibility";
+import { useFeeVisibility, invalidateFeeReads } from "@/hooks/use-fee-visibility";
+import { detectedForProject, unassignedDetected, feeGroupMatchesVisibility, feeEntryMatchesVisibility, registerTotals, type VisibilityFilter } from "@/lib/fee-register";
+import type { OutstandingFeeSummary } from "@shared/fee-description";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { SectionHeader } from "@/components/ui/section-header";
 import { LuxuryCard } from "@/components/ui/luxury-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalLabel } from "@/components/ui/technical-label";
 import { Badge } from "@/components/ui/badge";
-import { Coins, Plus, Pencil, Copy, Check, ReceiptEuro, AlertTriangle } from "lucide-react";
+import { Plus, Pencil, Copy, Check, ReceiptEuro, AlertTriangle } from "lucide-react";
 import { Link } from "wouter";
 import { OutstandingFeesPanel } from "@/components/fees/OutstandingFeesPanel";
 import { DetectedFeeInvoiceCard, usePendingFeeInvoices } from "@/components/fees/DetectedFeeInvoiceCard";
@@ -21,7 +27,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { insertFeeSchema, insertFeeEntrySchema } from "@shared/schema";
-import type { Project, Fee, FeeEntry, ArchitectFeeInvoice } from "@shared/schema";
+import type { Project, Fee, FeeEntry } from "@shared/schema";
 import { z } from "zod";
 
 import { Amount } from "@/components/ui/amount";
@@ -149,24 +155,32 @@ export default function Fees() {
   const [selectedFeeId, setSelectedFeeId] = useState<number | null>(null);
   const [editingEntryId, setEditingEntryId] = useState<number | null>(null);
   const [phaseFilter, setPhaseFilter] = useState<string>("all");
+  const [visibilityFilter, setVisibilityFilter] = useState<VisibilityFilter>("active");
+  const [activeTab, setActiveTab] = useState("register");
+  const [collapseVersion, setCollapseVersion] = useState(0);
+  const visibility = useFeeVisibility(selectedProjectId);
   const { toast } = useToast();
 
-  const { data: projects, isLoading: loadingProjects } = useQuery<Project[]>({
+  const { data: projects, isLoading: loadingProjects, error: projectsError, refetch: retryProjects } = useQuery<Project[]>({
     queryKey: ["/api/projects"],
   });
 
-  const { data: pendingDetected } = usePendingFeeInvoices();
-  const { data: feesList, isLoading: loadingFees } = useQuery<Fee[]>({
+  const detection = usePendingFeeInvoices();
+  const pendingDetected = detection.data;
+  const attention = useQuery<OutstandingFeeSummary>({
+    queryKey: selectedProjectId ? ["/api/projects", String(selectedProjectId), "fees", "outstanding"] : ["/api/fees/outstanding"],
+  });
+  const { data: feesList, isLoading: loadingFees, error: feesError, refetch: retryFees } = useQuery<Fee[]>({
     queryKey: ["/api/projects", String(selectedProjectId), "fees"],
     enabled: !!selectedProjectId,
   });
 
-  const { data: feeEntries } = useQuery<FeeEntry[]>({
+  const { data: feeEntries, isLoading: loadingEntries, error: entriesError, refetch: retryEntries } = useQuery<FeeEntry[]>({
     queryKey: ["/api/projects", String(selectedProjectId), "fee-entries"],
     enabled: !!selectedProjectId,
   });
 
-  const { data: phaseData } = useQuery<PhaseByData>({
+  const { data: phaseData, isLoading: loadingPhase, error: phaseError, refetch: retryPhase } = useQuery<PhaseByData>({
     queryKey: ["/api/projects", String(selectedProjectId), "fees", "by-phase"],
     enabled: !!selectedProjectId,
   });
@@ -208,6 +222,7 @@ export default function Fees() {
       return res.json();
     },
     onSuccess: () => {
+      invalidateFeeReads(selectedProjectId);
       queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "fees"] });
       setFeeDialogOpen(false);
       feeForm.reset();
@@ -224,6 +239,7 @@ export default function Fees() {
       return res.json();
     },
     onSuccess: () => {
+      invalidateFeeReads(selectedProjectId);
       queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "fees"] });
       toast({ title: "Fee updated" });
     },
@@ -238,6 +254,7 @@ export default function Fees() {
       return res.json();
     },
     onSuccess: () => {
+      invalidateFeeReads(selectedProjectId);
       queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "fee-entries"] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "fees"] });
       setEntryDialogOpen(false);
@@ -255,6 +272,7 @@ export default function Fees() {
       return res.json();
     },
     onSuccess: () => {
+      invalidateFeeReads(selectedProjectId);
       queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "fee-entries"] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects", String(selectedProjectId), "fees"] });
       setEntryDialogOpen(false);
@@ -361,47 +379,21 @@ export default function Fees() {
   const designContract = phaseData?.designContract ?? null;
   const coveredFeeIds = new Set(designContract?.coveredFeeIds ?? []);
 
-  // Legacy conception/planning fee rows merely mirror the design-contract
-  // totals — when a contract exists, the contract figures replace them in
-  // the summary tiles (never both, or the total would double-count).
-  const uncoveredFees = (feesList ?? []).filter((f) => !coveredFeeIds.has(f.id));
-  const uncoveredEarned = uncoveredFees.reduce((sum, f) => sum + parseFloat(f.feeAmountHt), 0);
-  const uncoveredInvoiced = uncoveredFees.reduce((sum, f) => sum + parseFloat(f.invoicedAmount ?? "0"), 0);
+  // Full records, never visibility-filtered. Contract replaces covered mirrors;
+  // documentary HT remains unknown unless supplied by the contract.
+  const { totalFeeEarnedTtc, totalInvoicedTtc, totalRemainingTtc, totalFeeEarned, totalInvoiced, totalRemaining } = registerTotals(feesList ?? [], designContract);
 
-  // HT figures come only from contract-supplied data (documentary HT or
-  // stated TVA rate, resolved server-side). If the contract carries
-  // neither, HT is unknown — never guessed with a hard-coded rate.
-  const contractHtKnown = !designContract || designContract.totalHt != null;
-
-  const totalFeeEarnedTtc = uncoveredEarned * (1 + FEE_TVA_RATE) + (designContract?.totalTtc ?? 0);
-  const totalInvoicedTtc = uncoveredInvoiced * (1 + FEE_TVA_RATE) + (designContract?.invoicedTtc ?? 0);
-  const totalRemainingTtc = totalFeeEarnedTtc - totalInvoicedTtc;
-
-  const totalFeeEarned = contractHtKnown ? uncoveredEarned + (designContract?.totalHt ?? 0) : null;
-  const totalInvoiced = contractHtKnown ? uncoveredInvoiced + (designContract?.invoicedHt ?? 0) : null;
-  const totalRemaining = totalFeeEarned != null && totalInvoiced != null ? totalFeeEarned - totalInvoiced : null;
-
-  const filteredFees = phaseFilter === "all"
-    ? (feesList ?? [])
-    : (feesList ?? []).filter(f => (f.phase ?? "unassigned") === phaseFilter);
-
-  const isLoading = loadingProjects || loadingFees;
-
-  // Task #639 — pending detected invoices that plausibly belong to the
-  // currently-selected project (same matching logic as DesignContractCard).
-  const uninvoicedMilestoneAmounts = new Set(
-    (designContract?.milestones ?? [])
-      .filter((m) => m.status === "pending" || m.status === "reached")
-      .map((m) => Number(m.amountTtc).toFixed(2)),
-  );
-  const matchingPendingForProject: ArchitectFeeInvoice[] = selectedProjectId
-    ? (pendingDetected ?? []).filter((inv) => {
-        const cand = inv.candidates as { projects?: { projectId: number }[] } | null;
-        if (cand?.projects?.some((p) => p.projectId === parseInt(selectedProjectId))) return true;
-        if (inv.amountTtc != null && uninvoicedMilestoneAmounts.has(Number(inv.amountTtc).toFixed(2))) return true;
-        return false;
-      })
-    : [];
+  const recordFor = (kind: "fee" | "entry", id: number) => visibility.data?.records.find(record => record.kind === kind && record.id === id);
+  const filteredFees = (feesList ?? []).filter(f => {
+    if (phaseFilter !== "all" && (f.phase ?? "unassigned") !== phaseFilter) return false;
+    return feeGroupMatchesVisibility(recordFor("fee", f.id),
+      (feeEntries ?? []).filter(entry => entry.feeId === f.id).map(entry => recordFor("entry", entry.id)), visibilityFilter);
+  });
+  const isLoading = loadingProjects || loadingFees || loadingEntries || loadingPhase || (!!selectedProjectId && visibility.isLoading);
+  const projectError = feesError || entriesError || phaseError || visibility.error;
+  const matchingPendingForProject = detectedForProject(pendingDetected ?? [], selectedProjectId);
+  const unassigned = unassignedDetected(pendingDetected ?? []);
+  const attentionCount = attention.data && detection.data ? attention.data.totalCount + matchingPendingForProject.length : null;
 
   return (
     <AppLayout>
@@ -410,131 +402,93 @@ export default function Fees() {
           <h1 className="text-[22px] font-light uppercase tracking-tight text-foreground" data-testid="text-page-title">
             Honoraires
           </h1>
-          <Button onClick={openCreateFee} data-testid="button-new-fee">
+          <Button onClick={openCreateFee} disabled={!selectedProjectId} data-testid="button-new-fee">
             <Plus size={14} />
             <span className="text-[9px] font-bold uppercase tracking-widest">New Fee</span>
           </Button>
         </div>
 
-        <SectionHeader
-          icon={Coins}
-          title="Honoraires Tracking"
-          subtitle="Works percentage, conception & planning"
-          actions={
-            <Link href="/honoraires/factures-detectees">
-              <Button variant="outline" size="sm" data-testid="button-fee-invoice-review-queue">
-                <ReceiptEuro className="w-4 h-4 mr-1" />
-                Factures détectées
-                {(pendingDetected?.length ?? 0) > 0 && (
-                  <Badge className="ml-2" data-testid="badge-pending-fee-invoices-count">
-                    {pendingDetected!.length}
-                  </Badge>
-                )}
-              </Button>
-            </Link>
-          }
-        />
-
-        {(pendingDetected?.length ?? 0) > 0 && (
+        <p className="text-sm text-muted-foreground">Fee work and invoicing, backed by original external accounting documents. An accounting reference is not proof of payment.</p>
+        <div className="fee-register-filters flex flex-wrap gap-4 items-end">
+          <div className="w-full md:w-72">
+            <TechnicalLabel>Project</TechnicalLabel>
+            <Select value={selectedProjectId || "all"} onValueChange={value => setSelectedProjectId(value === "all" ? "" : value)}>
+              <SelectTrigger data-testid="select-fee-project-filter"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All projects</SelectItem>
+                {(projects ?? []).map(project => <SelectItem key={project.id} value={String(project.id)}>{project.code} — {project.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="w-full md:w-48">
+            <TechnicalLabel>Phase · register</TechnicalLabel>
+            <Select value={phaseFilter} onValueChange={setPhaseFilter}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All phases</SelectItem>
+                {PHASE_OPTIONS.map(phase => <SelectItem key={phase.value} value={phase.value}>{phase.label}</SelectItem>)}
+                <SelectItem value="unassigned">Unassigned</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="w-full md:w-44">
+            <TechnicalLabel>Visibility · register</TechnicalLabel>
+            <Select value={visibilityFilter} onValueChange={value => setVisibilityFilter(value as VisibilityFilter)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent><SelectItem value="active">Active</SelectItem><SelectItem value="archived">Archived</SelectItem><SelectItem value="all">All</SelectItem></SelectContent>
+            </Select>
+          </div>
+          <Button variant="ghost" onClick={() => { setSelectedProjectId(""); setPhaseFilter("all"); setVisibilityFilter("active"); }}>Reset filters</Button>
+        </div>
+        <div className="fee-register-tabs" role="tablist" aria-label="Honoraires views">
+          {[["register", "Fee register"], ["attention", `Needs attention (${attentionCount ?? "…"})`], ["history", "History"]].map(([value, label]) =>
+            <Button key={value} role="tab" aria-selected={activeTab === value} variant={activeTab === value ? "default" : "ghost"} onClick={() => setActiveTab(value)}>{label}</Button>)}
+        </div>
+        {projectsError && <LuxuryCard><p role="alert" className="text-sm text-destructive">Unable to load projects: {projectsError.message}</p><Button variant="outline" onClick={() => retryProjects()}>Retry projects</Button></LuxuryCard>}
+        {detection.error && <LuxuryCard><p role="alert" className="text-sm text-destructive">Detected invoices unavailable: {detection.error.message}</p><Button variant="outline" onClick={() => detection.refetch()}>Retry detection</Button></LuxuryCard>}
+        {attention.error && <LuxuryCard><p role="alert" className="text-sm text-destructive">Attention count unavailable: {attention.error.message}</p><Button variant="outline" onClick={() => attention.refetch()}>Retry accounting queue</Button></LuxuryCard>}
+        <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+          <AlertTriangle size={14} />
+          <span>{attention.data?.totalCount ?? "…"} accounting references to reconcile · {detection.data ? matchingPendingForProject.length : "…"} detected originals in scope</span>
+          {attention.data?.buckets.map(bucket => <span key={bucket.label}>{bucket.label} days: {bucket.count}</span>)}
+          {selectedProjectId && <span>{unassigned.length} unassigned detected originals in global review</span>}
+          <Link href="/honoraires/factures-detectees" className="underline">Global document review ({pendingDetected?.length ?? "…"})</Link>
+        </div>
+        {activeTab === "attention" && <p className="text-xs text-muted-foreground">Attention includes all phases and archived work. Project candidates are suggestions only; amounts never assign a document. Unassigned originals are available in global review.</p>}
+        {activeTab === "attention" && detection.isLoading && <Skeleton className="h-24" />}
+        {activeTab === "attention" && detection.data && !matchingPendingForProject.length && <LuxuryCard><p className="text-sm text-muted-foreground">No detected originals awaiting review in this project scope. This is not a completeness or payment check.</p></LuxuryCard>}
+        {activeTab === "attention" && matchingPendingForProject.length > 0 && (
           <div className="space-y-2" data-testid="banner-pending-fee-invoices">
             <div className="flex items-center gap-2 rounded border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-3 py-2">
               <AlertTriangle size={14} className="text-amber-600 shrink-0" />
               <p className="text-xs text-amber-900 dark:text-amber-200">
-                {pendingDetected!.length === 1
+                {matchingPendingForProject.length === 1
                   ? "1 facture d'honoraires détectée dans Gmail attend votre vérification."
-                  : `${pendingDetected!.length} factures d'honoraires détectées dans Gmail attendent votre vérification.`}
+                  : `${matchingPendingForProject.length} factures d'honoraires détectées dans Gmail attendent votre vérification.`}
               </p>
             </div>
             <div className="space-y-3">
-              {pendingDetected!.map((row) => (
-                <DetectedFeeInvoiceCard key={row.id} row={row} compact />
+              {matchingPendingForProject.map((row) => (
+                <div key={row.id}>
+                  {unassigned.some(item => item.id === row.id) && <p className="text-xs text-amber-800 mb-1">Unassigned · global review required</p>}
+                  <DetectedFeeInvoiceCard row={row} compact scopeProjectId={selectedProjectId || undefined} />
+                </div>
               ))}
             </div>
           </div>
         )}
 
-        <OutstandingFeesPanel
+        {activeTab === "attention" && <OutstandingFeesPanel
           scope={selectedProjectId ? "project" : "global"}
           projectId={selectedProjectId ? parseInt(selectedProjectId) : undefined}
-        />
-
-        <div className="max-w-xs">
-          <TechnicalLabel>Filter by project</TechnicalLabel>
-          <Select value={selectedProjectId} onValueChange={setSelectedProjectId}>
-            <SelectTrigger className="mt-1" data-testid="select-fee-project-filter">
-              <SelectValue placeholder="Select a project" />
-            </SelectTrigger>
-            <SelectContent>
-              {(projects ?? []).map((p) => (
-                <SelectItem key={p.id} value={String(p.id)}>
-                  {p.code} — {p.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        {selectedProjectId && !isLoading && (
-          <div className="flex items-center gap-2 flex-wrap" data-testid="phase-filter-tabs">
-            {[
-              { value: "all", label: "All" },
-              { value: "conception", label: "Conception" },
-              { value: "chantier", label: "Chantier" },
-              { value: "aor", label: "AOR" },
-            ].map((tab) => (
-              <Button
-                key={tab.value}
-                variant={phaseFilter === tab.value ? "default" : "outline"}
-                onClick={() => setPhaseFilter(tab.value)}
-                data-testid={`tab-phase-${tab.value}`}
-                className={phaseFilter === tab.value ? "bg-[#0B2545] text-white" : ""}
-              >
-                <span className="text-[9px] font-bold uppercase tracking-widest">{tab.label}</span>
-              </Button>
-            ))}
-          </div>
-        )}
-
-        {selectedProjectId && !isLoading && phaseData && phaseData.phases.length > 0 && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4" data-testid="phase-summary-cards">
-            {phaseData.phases.filter(p => p.phase !== "unassigned").map((phaseGroup) => {
-              const progress = phaseGroup.totalHt > 0 ? Math.min((phaseGroup.totalInvoiced / phaseGroup.totalHt) * 100, 100) : 0;
-              const phaseLabel = PHASE_OPTIONS.find(o => o.value === phaseGroup.phase)?.label ?? phaseGroup.phase;
-              return (
-                <LuxuryCard key={phaseGroup.phase} data-testid={`card-phase-summary-${phaseGroup.phase}`}>
-                  <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
-                    <TechnicalLabel>{phaseLabel}</TechnicalLabel>
-                    <PhaseBadge phase={phaseGroup.phase} />
-                  </div>
-                  <p className="text-[16px] font-light text-foreground" data-testid={`text-phase-total-${phaseGroup.phase}`}>
-                    <Amount value={phaseGroup.totalHt} denomination="HT" />
-                  </p>
-                  <p className="text-[12px] text-muted-foreground" data-testid={`text-phase-total-ttc-${phaseGroup.phase}`}>
-                    <Amount value={phaseGroup.totalTtc} denomination="TTC" />
-                  </p>
-                  <div className="h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800 mt-2 mb-1">
-                    <div
-                      className="h-full rounded-full bg-[#c1a27b] transition-all"
-                      style={{ width: `${progress}%` }}
-                      data-testid={`progress-phase-${phaseGroup.phase}`}
-                    />
-                  </div>
-                  <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <div className="text-[10px] text-muted-foreground">
-                      <div>Invoiced: <Amount value={phaseGroup.totalInvoiced} denomination="HT" /></div>
-                      <div><Amount value={phaseGroup.totalInvoicedTtc} denomination="TTC" /></div>
-                    </div>
-                    <span className="text-[10px] font-semibold text-foreground">
-                      {progress.toFixed(0)}%
-                    </span>
-                  </div>
-                </LuxuryCard>
-              );
-            })}
-          </div>
-        )}
-
-        {selectedProjectId && !isLoading && designContract && (
+        />}
+        {activeTab === "history" && (!selectedProjectId ? <FeePortfolioHistory projects={projects ?? []} /> : visibility.isLoading ? <Skeleton className="h-24" /> : visibility.data && <FeeHistory events={visibility.data.events} />)}
+        {selectedProjectId && projectError && <LuxuryCard><p role="alert" className="text-sm text-destructive">Project data unavailable. Totals and visibility cannot be verified: {projectError.message}</p><Button variant="outline" onClick={() => { void retryFees(); void retryEntries(); void retryPhase(); void visibility.refetch(); }}>Retry project data</Button></LuxuryCard>}
+        {activeTab === "register" && <>
+        {loadingProjects ? <Skeleton className="h-24" /> : <FeeProjectRegister projects={(projects ?? []).filter(project => !selectedProjectId || String(project.id) === selectedProjectId)} selectedProjectId={selectedProjectId} onSelect={setSelectedProjectId} phase={phaseFilter} visibility={visibilityFilter} />}
+        {selectedProjectId && <div className="flex justify-between gap-3 items-center"><p className="text-xs text-muted-foreground">Project totals include archives and every phase. Remaining means not yet invoiced, not unpaid.</p><Button variant="outline" size="sm" onClick={() => setCollapseVersion(value => value + 1)}>Collapse all</Button></div>}
+        {selectedProjectId && !isLoading && !projectError && designContract && (
+          <FeeDisclosure key={`contract-${selectedProjectId}`} collapseVersion={collapseVersion} summary={<>Design contract · {designContract.milestones.length} milestones · <Amount value={designContract.totalTtc} denomination="TTC" /></>}>
           <LuxuryCard data-testid="card-design-contract-milestones">
             <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
               <TechnicalLabel>
@@ -660,6 +614,7 @@ export default function Fees() {
               })}
             </div>
           </LuxuryCard>
+          </FeeDisclosure>
         )}
 
         {!selectedProjectId ? (
@@ -677,7 +632,7 @@ export default function Fees() {
               </LuxuryCard>
             ))}
           </div>
-        ) : (
+        ) : projectError ? null : (
           <>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <LuxuryCard data-testid="card-total-fee-earned">
@@ -694,7 +649,7 @@ export default function Fees() {
                 </p>
               </LuxuryCard>
               <LuxuryCard data-testid="card-total-invoiced">
-                <TechnicalLabel>Total Invoiced (Penny Lane)</TechnicalLabel>
+                <TechnicalLabel>Total Invoiced</TechnicalLabel>
                 <p className="text-[20px] font-light text-emerald-600 dark:text-emerald-400 mt-2" data-testid="text-total-invoiced">
                   {totalInvoiced != null
                     ? <Amount value={totalInvoiced} denomination="HT" />
@@ -724,7 +679,9 @@ export default function Fees() {
             {filteredFees && filteredFees.length > 0 ? (
               <div className="space-y-4">
                 {filteredFees.map((fee) => {
-                  const entries = (feeEntries ?? []).filter((e) => e.feeId === fee.id);
+                  const parentVisibility = recordFor("fee", fee.id);
+                  const entries = (feeEntries ?? []).filter((e) => e.feeId === fee.id && feeEntryMatchesVisibility(parentVisibility, recordFor("entry", e.id), visibilityFilter));
+                  const archiveContextOnly = visibilityFilter === "archived" && parentVisibility?.archived === false;
                   const feeHt = parseFloat(fee.feeAmountHt);
                   const feeTtc = feeHt * (1 + FEE_TVA_RATE);
                   const invoiced = parseFloat(fee.invoicedAmount ?? "0");
@@ -734,7 +691,9 @@ export default function Fees() {
                   const progress = feeHt > 0 ? Math.min((invoiced / feeHt) * 100, 100) : 0;
 
                   return (
-                    <LuxuryCard key={fee.id} data-testid={`card-fee-${fee.id}`}>
+                    <FeeDisclosure key={`${selectedProjectId}-${fee.id}`} collapseVersion={collapseVersion} summary={<span className="inline-flex flex-wrap gap-3 items-center"><FeeTypeLabel type={fee.feeType} /><PhaseBadge phase={fee.phase} /><span className="font-normal text-muted-foreground">{coveredFeeIds.has(fee.id) ? "Contract mirror · see milestones" : <Amount value={feeHt} denomination="HT" />} · {entries.length} entries · {parentVisibility?.archived ? "Archived fee · all children shown" : archiveContextOnly ? "Active fee · context for archived entries only" : "Active"}</span></span>}>
+                    <LuxuryCard data-testid={`card-fee-${fee.id}`}>
+                      {archiveContextOnly && <p className="text-xs text-muted-foreground mb-3">This fee is active. It appears here only as context for its independently archived entries.</p>}
                       <div className="flex items-start justify-between gap-3 mb-4 flex-wrap">
                         <div>
                           <div className="flex items-center gap-2 flex-wrap">
@@ -775,9 +734,11 @@ export default function Fees() {
                           <Plus size={12} />
                           <span className="text-[8px] font-bold uppercase tracking-widest">Add Entry</span>
                         </Button>
+                        <FeeVisibilityAction projectId={selectedProjectId} record={recordFor("fee", fee.id)} />
                       </div>
 
-                      <div className="grid grid-cols-3 gap-4 mb-3">
+                      {coveredFeeIds.has(fee.id) && <p className="text-xs text-muted-foreground mb-3">Legacy contract mirror. These figures are not added to project totals; the contract above is authoritative.</p>}
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-3">
                         <div>
                           <TechnicalLabel>Amount HT</TechnicalLabel>
                           <p className="text-[13px] font-semibold text-foreground mt-0.5" data-testid={`text-fee-amount-${fee.id}`}>
@@ -809,7 +770,7 @@ export default function Fees() {
 
                       <div className="h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800 mb-4">
                         <div
-                          className="h-full rounded-full bg-emerald-500 transition-all"
+                          className="h-full rounded-full bg-emerald-500"
                           style={{ width: `${progress}%` }}
                         />
                       </div>
@@ -860,6 +821,7 @@ export default function Fees() {
                                   >
                                     <Pencil size={12} />
                                   </Button>
+                                  <FeeVisibilityAction projectId={selectedProjectId} record={recordFor("entry", entry.id)} />
                                 </div>
                               </div>
                             ))}
@@ -867,18 +829,20 @@ export default function Fees() {
                         </div>
                       )}
                     </LuxuryCard>
+                    </FeeDisclosure>
                   );
                 })}
               </div>
             ) : (
               <LuxuryCard data-testid="card-empty-fees">
                 <p className="text-[12px] text-muted-foreground text-center py-8">
-                  No Honoraires defined for this project.
+                  No fee groups match these filters. Project totals still include all phases and archives.
                 </p>
               </LuxuryCard>
             )}
           </>
         )}
+        </>}
 
         <Dialog open={feeDialogOpen} onOpenChange={setFeeDialogOpen}>
           <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">

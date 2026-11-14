@@ -81,3 +81,4 @@
 - [Client guide design](client-guide-design.md) — clean architectural sans-serif layout; no invented top logos; preserve payment safeguards.
 - [Workflow blocker guidance](workflow-blocker-guidance.md) — blocked actions explain prerequisites and link to their resolution; never bypass safeguards or auto-submit.
 - [Architect-selected replacements](architect-quotation-replacement.md) — architect chooses old/new quotations and records context; no AI or same-reference requirement.
+- [Honoraires archive semantics](honoraires-archive-semantics.md) — reversible visibility only; retain financial totals and audit history, resurface unresolved work.

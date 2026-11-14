@@ -1434,6 +1434,22 @@ export const feeEntries = pgTable("fee_entries", {
 
 // -----------------------------------------------------------------------------
 // Design contracts — uploaded PDF design contract per project,
+// Visibility history is separate from every financial state and calculation.
+export const feeVisibilityEvents = pgTable("fee_visibility_events", {
+  id: serial("id").primaryKey(),
+  feeId: integer("fee_id").notNull().references(() => fees.id),
+  entryId: integer("entry_id").references(() => feeEntries.id),
+  action: text("action").notNull(),
+  reason: text("reason").notNull(),
+  actor: text("actor").notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, table => [
+  index("fee_visibility_events_record_idx").on(table.feeId, table.entryId, table.id),
+  check("fee_visibility_events_action_check", sql`${table.action} IN ('archive','restore')`),
+  check("fee_visibility_events_reason_check", sql`length(trim(${table.reason})) BETWEEN 1 AND 2000`),
+]);
+
+// Design contracts — uploaded PDF design contract per project,
 // extracted by Gemini into totals + payment milestones. Replaces the manual
 // conception/planning numeric inputs in the New Project dialog. One contract
 // per project (UNIQUE projectId); re-upload archives the previous PDF and
