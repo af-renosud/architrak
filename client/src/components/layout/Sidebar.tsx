@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { useLocation, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import type { OutstandingFeeSummary } from "@shared/fee-description";
@@ -18,6 +18,7 @@ import {
   LogOut,
   X,
   Calculator,
+  PanelLeftClose,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -43,6 +44,9 @@ const bottomNavItems = [
 ];
 
 interface SidebarProps {
+  desktopCollapsed?: boolean;
+  onDesktopCollapse?: () => void;
+  collapseMenuRef?: RefObject<HTMLButtonElement>;
   mobileMode?: boolean;
   mobileOpen?: boolean;
   onMobileClose?: () => void;
@@ -57,7 +61,7 @@ const FOCUSABLE_SELECTOR = [
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
 
-export function Sidebar({ mobileMode = false, mobileOpen = false, onMobileClose }: SidebarProps) {
+export function Sidebar({ desktopCollapsed = false, onDesktopCollapse, collapseMenuRef, mobileMode = false, mobileOpen = false, onMobileClose }: SidebarProps) {
   const [location] = useLocation();
   const sidebarRef = useRef<HTMLElement>(null);
   const calculatorTriggerRef = useRef<HTMLButtonElement>(null);
@@ -70,6 +74,7 @@ export function Sidebar({ mobileMode = false, mobileOpen = false, onMobileClose 
     refetchInterval: 60_000,
   });
   const outstandingCount = outstanding?.totalCount ?? 0;
+  const hidden = mobileMode ? !mobileOpen : desktopCollapsed;
 
   const isActive = (path: string) => {
     if (path === "/") return location === "/";
@@ -79,11 +84,11 @@ export function Sidebar({ mobileMode = false, mobileOpen = false, onMobileClose 
   useEffect(() => {
     const sidebar = sidebarRef.current;
     if (!sidebar) return;
-    sidebar.inert = mobileMode && !mobileOpen;
+    sidebar.inert = hidden;
     return () => {
       sidebar.inert = false;
     };
-  }, [mobileMode, mobileOpen]);
+  }, [hidden]);
 
   useEffect(() => {
     if (!mobileMode || !mobileOpen) return;
@@ -92,7 +97,7 @@ export function Sidebar({ mobileMode = false, mobileOpen = false, onMobileClose 
 
     const focusableElements = () =>
       Array.from(sidebar.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
-        .filter((element) => !element.hasAttribute("disabled") && element.getAttribute("aria-hidden") !== "true");
+        .filter((element) => !element.hidden && !element.hasAttribute("disabled") && element.getAttribute("aria-hidden") !== "true");
 
     const frame = window.requestAnimationFrame(() => {
       if (calculatorOpenRef.current) return;
@@ -142,7 +147,8 @@ export function Sidebar({ mobileMode = false, mobileOpen = false, onMobileClose 
       ref={sidebarRef}
       id="app-sidebar"
       className={cn(
-        "fixed left-0 top-0 z-50 flex h-dvh w-64 flex-col overflow-y-auto overscroll-contain [&>*]:shrink-0 transition-transform duration-200 ease-out lg:translate-x-0",
+        "fixed left-0 top-0 z-50 flex h-dvh w-64 flex-col overflow-y-auto overscroll-contain [&>*]:shrink-0 transition-transform duration-200 ease-out motion-reduce:transition-none",
+        desktopCollapsed ? "lg:-translate-x-full" : "lg:translate-x-0",
         mobileOpen ? "translate-x-0" : "-translate-x-full",
       )}
       style={{ backgroundColor: "#DFE1E2" }}
@@ -150,12 +156,26 @@ export function Sidebar({ mobileMode = false, mobileOpen = false, onMobileClose 
       role={mobileMode ? "dialog" : undefined}
       aria-modal={mobileMode && mobileOpen ? true : undefined}
       aria-label="Main navigation"
-      aria-hidden={mobileMode && !mobileOpen ? true : undefined}
+      aria-hidden={hidden ? true : undefined}
       tabIndex={mobileMode ? -1 : undefined}
       onClick={(event) => {
         if ((event.target as HTMLElement).closest("a")) onMobileClose?.();
       }}
     >
+      <button
+        ref={collapseMenuRef}
+        type="button"
+        hidden={mobileMode}
+        aria-label="Collapse menu"
+        title="Collapse menu"
+        aria-controls="app-sidebar"
+        aria-expanded={true}
+        onClick={onDesktopCollapse}
+        className="mx-4 mt-3 hidden min-h-9 items-center gap-2 rounded-lg px-2 text-xs text-[#34312D] hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:inline-flex"
+      >
+        <PanelLeftClose size={16} aria-hidden="true" />
+        Collapse menu
+      </button>
       <button
         type="button"
         aria-label="Close navigation"
