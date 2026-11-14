@@ -19,3 +19,9 @@ Next-action guidance must distinguish architect actions from waiting on the clie
 **Why:** The user approved prominent next-action flags to reduce visual clutter, especially for opening deposits, without accidental financial actions.
 
 **How to apply:** Keep links navigational and retain separate generation/send/payment confirmations. Separate draft, actual email delivery, pending payment evidence and ledger coverage. Unknown evidence must not look like clearance or a new payment demand.
+
+Source-dependent correction forms must let architects consult the original PDF while editing, without closing the form.
+
+**Why:** The floating viewer deliberately yields to modal forms to prevent focus stealing; relying on it for required source evidence made correction unnecessarily difficult.
+
+**How to apply:** Place source viewing within the correction dialog, preserve edits across responsive panel switches, and retain global floating-viewer focus protections. Always offer a separate-tab original link without requiring a page number first.

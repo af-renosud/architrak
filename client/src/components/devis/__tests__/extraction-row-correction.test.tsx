@@ -54,6 +54,76 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("audited extraction row correction", () => {
+  it("shows the original inside the dialog and offers a new-tab fallback before a page is entered", () => {
+    mount(); open();
+    const dialog = screen.getByRole("dialog");
+    const pdf = within(dialog).getByTitle("Original contractor PDF");
+    expect(pdf).toHaveAttribute("src", "/api/devis/42/pdf?variant=original");
+    const link = within(dialog).getByRole("link", { name: /Review original PDF.*open in new tab/ });
+    expect(link).toHaveAttribute("href", "/api/devis/42/pdf?variant=original");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    edit("Original PDF page (required)", "4");
+    expect(pdf).toHaveAttribute("src", "/api/devis/42/pdf?variant=original#page=4");
+    expect(link).toHaveAttribute("href", "/api/devis/42/pdf?variant=original#page=4");
+    edit("Original PDF page (required)", "");
+    expect(link).toHaveAttribute("href", "/api/devis/42/pdf?variant=original");
+  });
+
+  it("keeps mobile panels mounted and preserves edits, preview and review when switching tabs", async () => {
+    mount(); open(); fillMissing(); await getPreview(); attest();
+    const pdf = screen.getByTitle("Original contractor PDF");
+    const reason = screen.getByLabelText(reasonLabel);
+    const formTab = screen.getByRole("tab", { name: "Correction form" });
+    const pdfTab = screen.getByRole("tab", { name: "Original PDF" });
+    expect(formTab).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(pdfTab);
+    expect(pdfTab).toHaveAttribute("aria-selected", "true");
+    expect(pdf.parentElement).not.toHaveClass("hidden");
+    expect(document.getElementById(formTab.getAttribute("aria-controls")!)).toHaveClass("hidden");
+    expect(reason).toBeInTheDocument();
+    expect(reason).toHaveValue("Row printed on page two was omitted from extraction.");
+    fireEvent.keyDown(pdfTab, { key: "ArrowRight" });
+    expect(formTab).toHaveFocus();
+    expect(formTab).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByLabelText(reasonLabel)).toBe(reason);
+    expect(screen.getByTitle("Original contractor PDF")).toBe(pdf);
+    expect(screen.getByRole("checkbox")).toBeChecked();
+    expect(screen.getByRole("button", { name: confirmName })).toBeEnabled();
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each(["0", "-2", "1.5", "abc", "9007199254740992"])("explains invalid evidence page %s inline without hiding the original", (value) => {
+    mount(); open(); fillMissing();
+    edit("Original PDF page (required)", value);
+    expect(screen.getByLabelText("Original PDF page (required)")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("Original PDF page (required)")).toHaveAccessibleDescription("Enter a whole page number greater than 0 (for example, 2).");
+    expect(screen.getByRole("button", { name: "Preview extraction correction" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Preview extraction correction" })).toHaveAccessibleDescription(/whole page number greater than 0/);
+    expect(screen.getByRole("button", { name: confirmName })).toHaveAccessibleDescription(/Complete the required correction/);
+    expect(screen.getByRole("link", { name: /Review original PDF/ })).toHaveAttribute("href", "/api/devis/42/pdf?variant=original");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("explains each gate from correction through preview to reviewed confirmation", async () => {
+    mount(); open();
+    expect(screen.getByRole("list", { name: "Correction steps" })).toHaveTextContent("1. Correct2. Preview3. Confirm");
+    expect(screen.getByRole("button", { name: "Preview extraction correction" })).toHaveAccessibleDescription(/Enter the row description/);
+    fillMissing();
+    expect(screen.getByRole("button", { name: "Preview extraction correction" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: confirmName })).toHaveAccessibleDescription("Generate a financial preview before confirming.");
+    await getPreview();
+    expect(screen.getByRole("button", { name: confirmName })).toBeDisabled();
+    expect(screen.getByRole("button", { name: confirmName })).toHaveAccessibleDescription(/tick the review confirmation/);
+    attest();
+    expect(screen.getByRole("button", { name: confirmName })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: confirmName }));
+    await waitFor(() => expect(correctionCalls()).toHaveLength(1));
+    expect(JSON.parse(correctionCalls()[0][1].body)).toEqual(expect.objectContaining({
+      fingerprint: preview.fingerprint, confirmed: true,
+    }));
+  });
+
   it("works with zero rows, requires typed evidence, financial preview and original-review attestation", async () => {
     const { invalidate } = mount([]);
     open();
