@@ -18,11 +18,11 @@ const preview = {
 const fetchMock = vi.fn();
 const confirmName = "Confirm extraction correction";
 const reasonLabel = "Typed reason for correcting this extraction (required)";
-function mount(lines = [line, foreign], disabled = false) {
+function mount(lines = [line, foreign], disabled = false, compact = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const invalidate = vi.spyOn(client, "invalidateQueries");
   const rendered = render(<QueryClientProvider client={client}>
-    <ExtractionRowCorrection devisId={42} projectId="7" lines={lines} disabled={disabled} />
+    <ExtractionRowCorrection devisId={42} projectId="7" lines={lines} disabled={disabled} compact={compact} />
   </QueryClientProvider>);
   return { client, invalidate, ...rendered };
 }
@@ -54,6 +54,15 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("audited extraction row correction", () => {
+  it("opens the same guarded correction form from its compact trigger", () => {
+    mount([line], false, true);
+    expect(screen.getByTestId("extraction-row-correction-42")).toHaveClass("review-source-correction-trigger");
+    open();
+    expect(screen.getByTitle("Original contractor PDF")).toHaveAttribute("src", "/api/devis/42/pdf?variant=original");
+    expect(screen.getByRole("button", { name: confirmName })).toBeDisabled();
+    expect(screen.getByLabelText(reasonLabel)).toHaveValue("");
+    expect(correctionCalls()).toHaveLength(0);
+  });
   it("shows the original inside the dialog and offers a new-tab fallback before a page is entered", () => {
     mount(); open();
     const dialog = screen.getByRole("dialog");

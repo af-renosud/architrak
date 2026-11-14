@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { QuotationExtractionReview } from "../QuotationExtractionReview";
+import { DevisWorkflow, WorkflowSection } from "../DevisWorkflow";
 import { compareInitialQuotation } from "../../../../../server/services/quotation-source-manifest";
 
 const fetchMock = vi.fn();
@@ -64,17 +65,22 @@ it("labels the actual comparison response as OCR versus independently collected 
 function response(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status });
 }
-function mount(disabled = false) {
+function mount(disabled = false, slots: Partial<Parameters<typeof QuotationExtractionReview>[0]> = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const invalidate = vi.spyOn(client, "invalidateQueries");
-  render(<QueryClientProvider client={client}><QuotationExtractionReview devisId={42} projectId="7" disabled={disabled} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><QuotationExtractionReview devisId={42} projectId="7" disabled={disabled} {...slots} /></QueryClientProvider>);
   return { client, invalidate };
 }
 async function ready() {
   await screen.findByRole("link", { name: "Open original contractor PDF" });
 }
+it("does not offer a broken original link when the quotation has no PDF", async () => {
+  mount(false, { hasPdf: false });
+  await screen.findByText("Source PDF link unavailable.");
+  expect(screen.queryByRole("link", { name: "Open original contractor PDF" })).not.toBeInTheDocument();
+});
 function openForm() {
-  fireEvent.click(screen.getByText("Record a review outcome"));
+  fireEvent.click(screen.getByRole("button", { name: "Record review" }));
 }
 function edit(label: string, value: string) {
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
@@ -89,6 +95,86 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("quotation extraction review", () => {
+  it("separates document actions from correction actions and puts actions before descriptions in document order", async () => {
+    mount(false, {
+      documentLabel: "D-42",
+      viewPdfAction: <button type="button">View PDF</button>,
+      documentActions: <a href="/devis/42/document-chain">Chain</a>,
+      rescrapeAction: <button type="button">Re-scrape</button>,
+      workingQuotationAction: <button type="button">Edit working quotation</button>,
+      extractionCorrectionAction: <button type="button">Correct missing / misread extraction</button>,
+    });
+    await ready();
+    const toolbar = screen.getByRole("navigation", { name: "Source document actions" });
+    expect(within(toolbar).getByRole("button", { name: "View PDF" })).toBeVisible();
+    expect(within(toolbar).getByRole("link", { name: "Open original contractor PDF" })).toBeVisible();
+    expect(within(toolbar).getByRole("link", { name: "Chain" })).toHaveAttribute("href", "/devis/42/document-chain");
+    expect(within(toolbar).getByRole("button", { name: "Re-scrape" }).parentElement).toHaveClass("review-source-rescrape");
+    const rail = screen.getByRole("complementary", { name: "Review and correction actions" });
+    expect(within(rail).getAllByRole("button")).toHaveLength(3);
+    expect(within(toolbar).queryByRole("button", { name: "Edit working quotation" })).not.toBeInTheDocument();
+    expect(rail.compareDocumentPosition(screen.getByText("Architect’s working version")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("uses actual review event kinds for the recorded-review badge without claiming verification", async () => {
+    fetchMock.mockImplementation((url: string) => Promise.resolve(response(url.includes("summary") ? summary :
+      { ...data, events: [{ id: 9, kind: "review", outcome: "unresolved", category: "other",
+        reason: "Needs another comparison.", effort_minutes: 2, created_at: "2026-01-01T12:00:00Z" }] })));
+    mount();
+    await ready();
+    expect(screen.getByText("Review recorded")).toBeVisible();
+    expect(screen.queryByText("Not yet reviewed")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Amendments & history"));
+    expect(screen.getByText("Needs another comparison.")).toBeVisible();
+  });
+
+  it("starts with compact candidate absence and collapsed history, evidence and monitoring", async () => {
+    mount();
+    await ready();
+    expect(screen.getByText("No prepared candidate")).toBeVisible();
+    expect(screen.queryByText(/^Prepared candidate ·/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Approve and apply prepared candidate")).not.toBeInTheDocument();
+    for (const text of ["Amendments & history", "Source inventory & discrepancy evidence · 1 segments", "Extraction monitoring"]) {
+      expect(screen.getByText(text).closest("details")).not.toHaveAttribute("open");
+    }
+    expect(screen.getByRole("complementary", { name: "Review and correction actions" })).toBeVisible();
+  });
+
+  it("preserves every unsaved review field across dialog close and source-section disclosures", async () => {
+    window.history.replaceState({}, "", "/");
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><DevisWorkflow devisId={42} stage="draft">
+      <WorkflowSection group="review" summary="Source"><QuotationExtractionReview devisId={42} projectId="7" /></WorkflowSection>
+    </DevisWorkflow></QueryClientProvider>);
+    await ready();
+    openForm();
+    edit("Review reason (required)", "Unsaved comparison against page two.");
+    edit("Review effort (minutes)", "17");
+    edit("Review category", "wrong_association");
+    edit("Review outcome", "confirmed_inaccurate");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    const heading = screen.getByRole("button", { name: /Review source/ });
+    fireEvent.click(heading);
+    fireEvent.click(heading);
+    fireEvent.click(screen.getByText("Source inventory & discrepancy evidence · 1 segments"));
+    fireEvent.click(screen.getByText("Amendments & history"));
+    openForm();
+    expect(screen.getByLabelText("Review reason (required)")).toHaveValue("Unsaved comparison against page two.");
+    expect(screen.getByLabelText("Review effort (minutes)")).toHaveValue(17);
+    expect(screen.getByLabelText("Review category")).toHaveValue("wrong_association");
+    expect(screen.getByLabelText("Review outcome")).toHaveValue("confirmed_inaccurate");
+    expect(fetchMock.mock.calls.filter(([, options]) => options.method === "POST")).toHaveLength(0);
+  });
+
+  it("never exposes cross-origin original links or enables candidate application without a safe source", async () => {
+    fetchMock.mockImplementation((url: string) => Promise.resolve(response(url.includes("summary") ? summary :
+      { ...candidateData, sourcePdfUrl: "https://untrusted.example/quotation.pdf" })));
+    mount();
+    await screen.findByText("Source PDF link unavailable.");
+    expect(screen.queryByRole("link", { name: "Open original contractor PDF" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve and apply prepared candidate" })).toBeDisabled();
+    expect(screen.getByText("Prepared candidate · Pending approval (attempt 81)")).toBeVisible();
+  });
   it("shows authenticated PDF, source inventory and discrepancies without trusting an automated verified flag", async () => {
     mount();
     await ready();
@@ -99,8 +185,9 @@ describe("quotation extraction review", () => {
     expect(discrepancies.getByText("Unreconciled source section door")).toBeVisible();
     expect(discrepancies.getByText("missing")).toBeVisible();
     expect(screen.getByText(/Matching TTC totals do not establish/)).toBeVisible();
+    fireEvent.click(screen.getByText("Extraction monitoring"));
     expect(screen.getByText(/Unreviewed extractions are not verified/)).toBeVisible();
-    fireEvent.click(screen.getByText("Review history · 0 events"));
+    fireEvent.click(screen.getByText("Amendments & history"));
     expect(screen.getByText(/No review events recorded/)).toBeVisible();
     expect(fetchMock.mock.calls.every(([, options]) => options.credentials === "include")).toBe(true);
   });
@@ -137,6 +224,7 @@ describe("quotation extraction review", () => {
   it("selects 7/30/90-day monitoring and shows empty monitoring", async () => {
     mount();
     await ready();
+    fireEvent.click(screen.getByText("Extraction monitoring"));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/extraction-review/summary?days=30", expect.anything()));
     edit("Period", "7");
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/extraction-review/summary?days=7", expect.anything()));
@@ -246,6 +334,23 @@ describe("quotation extraction review", () => {
     expect(screen.getByRole("button", { name: "Approve and apply prepared candidate" })).toBeEnabled();
     expect(screen.getByText("Prepared candidate · Pending approval (attempt 81)")).toBeVisible();
     expect(invalidate).not.toHaveBeenCalled();
+  });
+
+  it("preserves candidate approval declarations and reason across its disclosure", async () => {
+    fetchMock.mockImplementation((url: string) => Promise.resolve(response(url.includes("summary") ? summary : candidateData)));
+    mount();
+    await ready();
+    edit("Candidate approval reason (at least 12 characters)", "Page two confirms the complete description.");
+    fireEvent.click(screen.getByRole("checkbox", { name: /I have reviewed the original source PDF/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /The differing initial OCR passages/ }));
+    const disclosure = screen.getByText("Prepared candidate · Pending approval (attempt 81)");
+    fireEvent.click(disclosure);
+    fireEvent.click(disclosure);
+    expect(screen.getByLabelText("Candidate approval reason (at least 12 characters)")).toHaveValue("Page two confirms the complete description.");
+    expect(screen.getByRole("checkbox", { name: /I have reviewed the original source PDF/ })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /The differing initial OCR passages/ })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Approve and apply prepared candidate" })).toBeEnabled();
+    expect(fetchMock.mock.calls.filter(([, options]) => options.method === "POST")).toHaveLength(0);
   });
 
   it("keeps candidate approval read-only for archived projects", async () => {

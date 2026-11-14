@@ -6344,10 +6344,11 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
         </div>
       )}
       <WorkflowSection group="review" summary={`${devis.status === "draft" ? "Draft · review required" : "Source & extraction"} · ${lineItems?.length ?? translationLineItems?.length ?? 0} lines`}>
-      <div className="flex items-center justify-between gap-2 pt-1" data-testid={`header-devis-detail-${devis.id}`}>
-        <TechnicalLabel>Devis Document</TechnicalLabel>
-        <TooltipProvider delayDuration={200}>
-          <div className="flex items-center gap-2">
+      <div data-testid={`header-devis-detail-${devis.id}`}>
+      <QuotationExtractionReview key={`review-${devis.id}`} devisId={devis.id} projectId={projectId} disabled={isArchived}
+        hasPdf={hasPdf}
+        documentLabel={devis.devisCode ?? undefined}
+        rescrapeAction={<TooltipProvider delayDuration={200}>
             <Tooltip>
               <TooltipTrigger asChild>
                 <span className="inline-flex">
@@ -6375,7 +6376,8 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
                   : "No PDF on file"}
               </TooltipContent>
             </Tooltip>
-            <Tooltip>
+        </TooltipProvider>}
+        viewPdfAction={<TooltipProvider delayDuration={200}><Tooltip>
               <TooltipTrigger asChild>
                 <span className="inline-flex">
                   <Button
@@ -6395,7 +6397,8 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
               {!hasPdf && (
                 <TooltipContent side="top" className="text-[10px]">No PDF on file</TooltipContent>
               )}
-            </Tooltip>
+            </Tooltip></TooltipProvider>}
+        documentActions={<TooltipProvider delayDuration={200}>
             {/* Task #451 — read-only Document Chain audit view. */}
             <Tooltip>
               <TooltipTrigger asChild>
@@ -6429,15 +6432,12 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
                 <TooltipContent side="top" className="text-[10px]">Open in Renosud shared Drive</TooltipContent>
               </Tooltip>
             )}
-          </div>
-        </TooltipProvider>
+        </TooltipProvider>}
+        workingQuotationAction={<ArchitectQuotationEditor key={`architect-editor-${devis.id}`} devisId={devis.id} projectId={projectId} disabled={isArchived} compact />}
+        extractionCorrectionAction={<ExtractionRowCorrection key={devis.id} devisId={devis.id} projectId={projectId} lines={lineItems ?? []} disabled={isArchived} compact />}
+        correctionHistory={<DuplicateExtractionHistory key={devis.id} devisId={devis.id} />}
+      />
       </div>
-      <DuplicateExtractionHistory key={devis.id} devisId={devis.id} />
-      <ArchitectQuotationEditor key={`architect-editor-${devis.id}`} devisId={devis.id} projectId={projectId} disabled={isArchived} />
-      <div className="flex justify-end px-3 py-2 border-b border-border/40">
-        <ExtractionRowCorrection key={devis.id} devisId={devis.id} projectId={projectId} lines={lineItems ?? []} disabled={isArchived} />
-      </div>
-      <QuotationExtractionReview key={`review-${devis.id}`} devisId={devis.id} projectId={projectId} disabled={isArchived} />
       {devis.notes && (
         <div
           className="rounded border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-[12px] text-amber-900 dark:text-amber-200 whitespace-pre-wrap"

@@ -1,9 +1,11 @@
-import { useId, useRef, useState, type FormEvent } from "react";
-import { ClipboardCheck, ExternalLink } from "lucide-react";
+import { useId, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { AlertCircle, ClipboardCheck, ExternalLink, Pencil, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import "./review-source.css";
 import {
   reviewCategories, reviewOutcomes, useQuotationExtractionReview,
   type ExtractionReviewRequest, type ExtractionCandidateApplyRequest,
@@ -95,7 +97,24 @@ function CandidateApproval({ attemptId, disabled, archived, pending, error, onAp
   </form>;
 }
 
-export function QuotationExtractionReview({ devisId, projectId, disabled = false }: { devisId: number; projectId: string; disabled?: boolean }) {
+interface ReviewProps {
+  devisId: number;
+  projectId: string;
+  disabled?: boolean;
+  documentLabel?: string;
+  hasPdf?: boolean;
+  viewPdfAction?: ReactNode;
+  documentActions?: ReactNode;
+  rescrapeAction?: ReactNode;
+  workingQuotationAction?: ReactNode;
+  extractionCorrectionAction?: ReactNode;
+  correctionHistory?: ReactNode;
+}
+
+export function QuotationExtractionReview({
+  devisId, projectId, disabled = false, documentLabel, hasPdf = true, viewPdfAction, documentActions,
+  rescrapeAction, workingQuotationAction, extractionCorrectionAction, correctionHistory,
+}: ReviewProps) {
   const id = useId();
   const [days, setDays] = useState<7 | 30 | 90>(30);
   const [outcome, setOutcome] = useState<ExtractionReviewRequest["outcome"]>("unresolved");
@@ -103,6 +122,7 @@ export function QuotationExtractionReview({ devisId, projectId, disabled = false
   const [reason, setReason] = useState("");
   const [effort, setEffort] = useState("0");
   const [saved, setSaved] = useState(false);
+  const [recordOpen, setRecordOpen] = useState(false);
   const submitLock = useRef(false);
   const [appliedAttemptId, setAppliedAttemptId] = useState<number | null>(null);
   const { review, summary, record, apply } = useQuotationExtractionReview(devisId, days, projectId);
@@ -146,25 +166,61 @@ export function QuotationExtractionReview({ devisId, projectId, disabled = false
   const editing = () => { setSaved(false); record.reset(); };
 
   return <section aria-label="Quotation extraction review" data-testid={`quotation-extraction-review-${devisId}`}
-    className="border-b border-border/40 px-3 py-3 text-xs space-y-3">
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <h3 className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-[#0B2545]">
-        <ClipboardCheck className="h-4 w-4" />Extraction review
-      </h3>
-      {sourceUrl && <a href={sourceUrl} target="_blank" rel="noopener noreferrer"
-        className="inline-flex items-center gap-1 underline text-[#0B2545]">Open original contractor PDF<ExternalLink className="h-3 w-3" /></a>}
+    className="review-source">
+    <div className="review-source-top">
+      <div><p className="review-source-eyebrow">Devis document{documentLabel ? ` · ${documentLabel}` : ""}</p>
+        <h2>Check the source. Then decide.</h2>
+        <p className="review-source-subtitle">The contractor’s original PDF remains the legal reference.</p>
+      </div>
+      {review.data && <span className="review-source-badge"><AlertCircle size={12} />
+        {review.data.events.some(event => event.kind === "review") ? "Review recorded" : "Not yet reviewed"}
+      </span>}
     </div>
-    <p className="rounded-lg border border-[#c1a27b]/40 bg-[#c1a27b]/10 p-3 text-muted-foreground">
+    <nav className="review-source-toolbar" aria-label="Source document actions">
+      {viewPdfAction}
+      {hasPdf && sourceUrl && <a href={sourceUrl} target="_blank" rel="noopener noreferrer"
+        className="review-source-original">Open original contractor PDF<ExternalLink className="h-3 w-3" /></a>}
+      {documentActions && <div className="review-source-document-links">{documentActions}</div>}
+      {rescrapeAction && <div className="review-source-rescrape">{rescrapeAction}</div>}
+    </nav>
+    <aside className="review-source-notice"><ShieldCheck size={17} /><div>
+      <strong>Matching totals are not a verified extraction.</strong><p>
       Matching TTC totals do not establish that descriptions, quantities or their associations are correct.
       Compare with the original PDF. Recording a review does not change quotation rows, commercial terms or permissions.
       Use the existing extraction correction controls or approve a prepared candidate below to repair rows;
       “Corrected” in the review form records a review outcome only.
-    </p>
+    </p></div></aside>
+    <div className="review-source-work">
+      <aside className="review-source-action-rail" aria-label="Review and correction actions">
+        <p className="review-source-eyebrow">Choose an action</p>
+        <Button type="button" size="sm" className="review-source-primary"
+          disabled={review.isPending || review.isError || !review.data || record.isPending || apply.isPending}
+          onClick={() => setRecordOpen(true)}><ClipboardCheck size={14} />Record review</Button>
+        {workingQuotationAction}
+        {extractionCorrectionAction}
+        <small>Review records document your decision.<br />Correction actions repair the working rows.</small>
+      </aside>
+      <div className="review-source-descriptions">
+        <h3>Review &amp; corrections</h3>
+        <div className="review-source-description"><Pencil size={15} /><div><h4>Architect’s working version</h4>
+          <p>Correct descriptions, translations and figures without changing the contractor’s original PDF.</p></div></div>
+        <div className="review-source-description"><ClipboardCheck size={15} /><div><h4>Extraction accuracy</h4>
+          <p>Restore a missing row or repair a misread row using the source. “Corrected” is a review outcome only, not a row correction.</p></div></div>
+        {review.data && <div className="review-source-statusline">
+          <span>{candidatePending ? `Candidate pending · attempt ${candidateAttemptId}` :
+            appliedAttemptId !== null ? `Candidate applied · attempt ${appliedAttemptId}` : "No prepared candidate"}</span>
+          <span>{segments.length ? `${segments.length} source segments` : "No independent source segments supplied"}</span>
+        </div>}
+        {(failures.length > 0 || issues.length > 0) && <p className="mt-3 text-[11px] text-[#7b6547]">
+          {failures.length} source / extraction findings · {issues.length} coverage findings. Source failures cannot be waived by candidate approval. Open evidence below.
+        </p>}
+      </div>
+    </div>
     {review.isPending ? <Loading title="Loading extraction evidence" /> : review.isError ?
       <Retry error={review.error} onRetry={() => void review.refetch()} /> : review.data && <>
-        {!sourceUrl && <p className="text-muted-foreground">Source PDF link unavailable.</p>}
+        {(!hasPdf || !sourceUrl) && <p className="text-muted-foreground">Source PDF link unavailable.</p>}
         {review.data?.running && <p role="status">Checking source sections. The original quotation remains unchanged until the candidate passes review.</p>}
-        <details className="rounded-lg border border-[#c1a27b]/40 bg-[#c1a27b]/[0.04] p-3" open={candidatePending}>
+        {(candidatePending || appliedAttemptId !== null) && <details className="review-source-candidate rounded-lg border border-[#c1a27b]/40 bg-[#c1a27b]/[0.04] p-3" open={candidatePending}>
           <summary className="cursor-pointer font-semibold">
             Prepared candidate · {candidatePending ? `Pending approval (attempt ${candidateAttemptId})` :
               appliedAttemptId !== null ? `Applied (attempt ${appliedAttemptId})` : "No pending candidate"}
@@ -217,7 +273,7 @@ export function QuotationExtractionReview({ devisId, projectId, disabled = false
             {sourceFindings != null && <div><h4 className="font-semibold">Independent source findings</h4><EvidenceValue value={sourceFindings} /></div>}
             {candidatePending && <CandidateApproval key={candidateAttemptId} attemptId={candidateAttemptId}
               archived={disabled}
-              disabled={disabled || !proposedRows.length || !sourceUrl || review.isError || record.isPending}
+              disabled={disabled || !hasPdf || !proposedRows.length || !sourceUrl || review.isError || record.isPending}
               pending={apply.isPending} error={apply.error} onApply={async (request) => {
                 if (disabled || review.isError || record.isPending) return;
                 await apply.mutateAsync(request);
@@ -225,36 +281,12 @@ export function QuotationExtractionReview({ devisId, projectId, disabled = false
               }} />}
             {appliedAttemptId !== null && <p role="status">Prepared candidate attempt {appliedAttemptId} applied. The original source PDF is unchanged.</p>}
           </div>
-        </details>
-        <details className="rounded-lg border border-border p-3">
-          <summary className="cursor-pointer font-semibold">Source inventory & discrepancy evidence · {segments.length} segments</summary>
-          <div className="mt-3 space-y-4">
-            <p className="text-muted-foreground">Automated evidence is not a human verification of the extraction.</p>
-            <section aria-label="Source inventory" className="space-y-2">
-              <h4 className="font-semibold">Source inventory</h4>
-              {!segments.length && <p className="text-muted-foreground">No source segments supplied. Review the original PDF directly.</p>}
-              {segments.map((segment, index) => {
-                const item = object(segment);
-                return <article key={index} className="rounded-md border border-border p-2 space-y-1">
-                  <p className="font-mono text-[10px]">Segment {String(item.id ?? index + 1)} · Page {String(item.page ?? "not stated")} · Section {String(item.section ?? "not stated")}</p>
-                  <p className="text-muted-foreground">Classification: {String(item.disposition ?? "not stated")}</p>
-                  <EvidenceValue value={item.text ?? segment} />
-                  {item.classificationReason != null && <p className="text-muted-foreground">Classification reason: <EvidenceValue value={item.classificationReason} /></p>}
-                </article>;
-              })}
-              {!!sections.length && <details><summary className="cursor-pointer">Source sections & price regions</summary><EvidenceValue value={sections} /></details>}
-              {manifest.inventoriedPages != null && <div>Inventoried pages: <EvidenceValue value={manifest.inventoriedPages} /></div>}
-            </section>
-            <section aria-label="Discrepancy details" className="space-y-2">
-              <h4 className="font-semibold">Discrepancy details</h4>
-              {!failures.length && !issues.length && <p className="text-muted-foreground">No discrepancies supplied. This does not establish that the extraction is accurate.</p>}
-              {!!failures.length && <div><p className="font-semibold mb-1">Failures</p><EvidenceValue value={failures} /></div>}
-              {!!issues.length && <div><p className="font-semibold mb-1">Coverage issues</p><EvidenceValue value={issues} /></div>}
-            </section>
-          </div>
-        </details>
-        <details className="rounded-lg border border-border p-3">
-          <summary className="cursor-pointer font-semibold">Record a review outcome</summary>
+        </details>}
+        <Dialog open={recordOpen} onOpenChange={next => { if (!record.isPending && !apply.isPending) setRecordOpen(next); }}>
+          <DialogContent className="max-h-[88dvh] overflow-y-auto">
+          <DialogHeader><DialogTitle>Record a review outcome</DialogTitle>
+            <DialogDescription>Recording a review does not repair quotation rows or change commercial terms or permissions.</DialogDescription>
+          </DialogHeader>
           <form onSubmit={submit} className="mt-3 space-y-3">
             <fieldset disabled={disabled || record.isPending || apply.isPending} className="space-y-3">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -280,26 +312,64 @@ export function QuotationExtractionReview({ devisId, projectId, disabled = false
                   onChange={(event) => { editing(); setEffort(event.target.value); }} className="md:max-w-48" />
                 {!validEffort && <p className="text-destructive">Enter a nonnegative whole number of minutes.</p>}
               </div>
-              <Button type="submit" size="sm" disabled={!valid || disabled || record.isPending}>{record.isPending ? "Recording review…" : "Record review"}</Button>
+              <div className="flex justify-end gap-2 border-t border-border pt-3">
+                <Button type="button" size="sm" variant="outline" onClick={() => setRecordOpen(false)}>Cancel</Button>
+                <Button type="submit" size="sm" disabled={!valid || disabled || record.isPending || apply.isPending}>{record.isPending ? "Recording review…" : "Record review"}</Button>
+              </div>
             </fieldset>
             {disabled && <p className="text-muted-foreground">Review recording is unavailable while this project is archived. Existing permissions still apply.</p>}
             {record.isError && <p role="alert" className="text-destructive">{record.error.message} Your entries are preserved. Retry recording the review.</p>}
             {saved && <p role="status">Review recorded. Quotation rows and source totals are unchanged.</p>}
           </form>
-        </details>
-        <details className="rounded-lg border border-border p-3">
-          <summary className="cursor-pointer font-semibold">Review history · {review.data.events.length} events</summary>
-          <div className="mt-3 space-y-2">
-            {!review.data.events.length && <p className="text-muted-foreground">No review events recorded. This extraction has not been marked as reviewed.</p>}
-            {review.data.events.map((event) => <article key={event.id} className="border-l-2 border-[#c1a27b]/60 pl-3 space-y-1">
-              <p className="font-semibold">{label(event.outcome, reviewOutcomes)} · {label(event.category, reviewCategories)}</p>
-              <p className="text-muted-foreground">{event.kind} · {Number.isNaN(Date.parse(event.created_at)) ? event.created_at : new Date(event.created_at).toLocaleString()} · {event.effort_minutes ?? 0} min</p>
-              <p className="whitespace-pre-wrap break-words">{event.reason || "No reason supplied."}</p>
-            </article>)}
-          </div>
-        </details>
+          </DialogContent>
+        </Dialog>
       </>}
-    <section aria-label="Extraction monitoring" className="rounded-lg border border-[#0B2545]/15 bg-[#0B2545]/[0.03] p-3 space-y-3">
+    <details className="review-source-disclosure">
+      <summary className="cursor-pointer font-semibold">Amendments &amp; history <span>· {review.data?.events.length ?? "—"} review events</span></summary>
+      <div className="mt-3 space-y-2">
+        <h4 className="font-semibold">Review history · {review.data?.events.length ?? "—"} events</h4>
+        {review.isError && <p className="text-destructive">Review history is unavailable: {review.error.message}</p>}
+        {review.data && !review.data.events.length && <p className="text-muted-foreground">No review events recorded. This extraction has not been marked as reviewed.</p>}
+        {review.data?.events.map((event) => <article key={event.id} className="border-l-2 border-[#c1a27b]/60 pl-3 space-y-1">
+          <p className="font-semibold">{label(event.outcome, reviewOutcomes)} · {label(event.category, reviewCategories)}</p>
+          <p className="text-muted-foreground">{event.kind} · {Number.isNaN(Date.parse(event.created_at)) ? event.created_at : new Date(event.created_at).toLocaleString()} · {event.effort_minutes ?? 0} min</p>
+          <p className="whitespace-pre-wrap break-words">{event.reason || "No reason supplied."}</p>
+        </article>)}
+        {correctionHistory}
+      </div>
+    </details>
+    {review.data && !review.isError && <details className="review-source-disclosure">
+      <summary className="cursor-pointer font-semibold">Source inventory & discrepancy evidence · {segments.length} segments</summary>
+      <div className="mt-3 space-y-4">
+        <p className="text-muted-foreground">Automated evidence is not a human verification of the extraction.</p>
+        <section aria-label="Source inventory" className="space-y-2">
+          <h4 className="font-semibold">Source inventory</h4>
+          {!segments.length && <p className="text-muted-foreground">No source segments supplied. Review the original PDF directly.</p>}
+          {segments.map((segment, index) => {
+            const item = object(segment);
+            return <article key={index} className="rounded-md border border-border p-2 space-y-1">
+              <p className="font-mono text-[10px]">Segment {String(item.id ?? index + 1)} · Page {String(item.page ?? "not stated")} · Section {String(item.section ?? "not stated")}</p>
+              <p className="text-muted-foreground">Classification: {String(item.disposition ?? "not stated")}</p>
+              <EvidenceValue value={item.text ?? segment} />
+              {item.classificationReason != null && <p className="text-muted-foreground">Classification reason: <EvidenceValue value={item.classificationReason} /></p>}
+            </article>;
+          })}
+          {!!sections.length && <details><summary className="cursor-pointer">Source sections & price regions</summary><EvidenceValue value={sections} /></details>}
+          {manifest.inventoriedPages != null && <div>Inventoried pages: <EvidenceValue value={manifest.inventoriedPages} /></div>}
+        </section>
+        <section aria-label="Discrepancy details" className="space-y-2">
+          <h4 className="font-semibold">Discrepancy details</h4>
+          {!failures.length && !issues.length && <p className="text-muted-foreground">No discrepancies supplied. This does not establish that the extraction is accurate.</p>}
+          {!!failures.length && <div><p className="font-semibold mb-1">Failures</p><EvidenceValue value={failures} /></div>}
+          {!!issues.length && <div><p className="font-semibold mb-1">Coverage issues</p><EvidenceValue value={issues} /></div>}
+          {sourceFindings != null && <div><h4 className="font-semibold">Independent source findings</h4><EvidenceValue value={sourceFindings} /></div>}
+          {!candidatePending && <p className="text-muted-foreground">No pending candidate. Candidate application is unavailable.</p>}
+        </section>
+      </div>
+    </details>}
+    <details className="review-source-disclosure">
+      <summary className="cursor-pointer font-semibold">Extraction monitoring <span>· Accessible quotations</span></summary>
+    <section aria-label="Extraction monitoring" className="space-y-3 py-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h4 className="font-semibold">Extraction monitoring · accessible quotations</h4>
         <div className="flex items-center gap-2"><label htmlFor={`${id}-days`}>Period</label>
@@ -328,5 +398,7 @@ export function QuotationExtractionReview({ devisId, projectId, disabled = false
           <p className="text-muted-foreground">Unreviewed extractions are not verified. Counts reflect recorded reviews, not proof of accuracy; permissions are unchanged.</p>
         </>}
     </section>
+    </details>
+    <footer className="review-source-foot">Original PDF preserved · Existing permissions apply</footer>
   </section>;
 }

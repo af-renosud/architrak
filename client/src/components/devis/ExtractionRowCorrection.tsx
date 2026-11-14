@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { ExternalLink, ShieldCheck } from "lucide-react";
+import { ExternalLink, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import type { DevisLineItem } from "@shared/schema";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,7 @@ interface Props {
   projectId: string;
   lines: CorrectionLine[];
   disabled?: boolean;
+  compact?: boolean;
 }
 const blankRow = { lineNumber: "", description: "", quantity: "", unit: "", unitPriceHt: "", totalHt: "" };
 const fields = [
@@ -34,7 +35,7 @@ function RowEvidence({ title, row }: { title: string; row: ExtractionRow | null 
   </section>;
 }
 
-export function ExtractionRowCorrection({ devisId, projectId, lines, disabled = false }: Props) {
+export function ExtractionRowCorrection({ devisId, projectId, lines, disabled = false, compact = false }: Props) {
   const [open, setOpen] = useState(false);
   const [kind, setKind] = useState<ExtractionRowRequest["kind"]>("missing");
   const [lineId, setLineId] = useState<number | null>(null);
@@ -163,7 +164,8 @@ export function ExtractionRowCorrection({ devisId, projectId, lines, disabled = 
 
   return <>
     <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => changeOpen(true)}
-      data-testid={`extraction-row-correction-${devisId}`}>Correct missing / misread extraction</Button>
+      className={compact ? "review-source-correction-trigger" : undefined}
+      data-testid={`extraction-row-correction-${devisId}`}>{compact && <SlidersHorizontal size={13} />}Correct missing / misread extraction</Button>
     <Dialog open={open} onOpenChange={changeOpen}>
       <DialogContent className="w-[calc(100%-1rem)] max-w-7xl sm:max-w-7xl h-[94dvh] max-h-[94dvh] flex flex-col overflow-hidden gap-3 p-4 sm:p-6"
         onEscapeKeyDown={(event) => { if (submitLock.current) event.preventDefault(); }}

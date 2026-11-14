@@ -25,3 +25,9 @@ Source-dependent correction forms must let architects consult the original PDF w
 **Why:** The floating viewer deliberately yields to modal forms to prevent focus stealing; relying on it for required source evidence made correction unnecessarily difficult.
 
 **How to apply:** Place source viewing within the correction dialog, preserve edits across responsive panel switches, and retain global floating-viewer focus protections. Always offer a separate-tab original link without requiring a page number first.
+
+Review-source actions must be visually separate from explanations and audit records; history, evidence and monitoring start collapsed.
+
+**Why:** The user approved the action-first redesign because dense descriptive and historical content obscured quick decisions.
+
+**How to apply:** Keep actual pending approvals and safety warnings visible, retain all evidence behind disclosures, and distinguish recording a review from correcting quotation rows.

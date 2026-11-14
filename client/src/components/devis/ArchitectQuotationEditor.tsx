@@ -13,7 +13,7 @@ import { correctionCents, correctionMoney, correctionProduct, createCorrectionLi
 import type { ArchitectCorrectionDraft, ArchitectCorrectionLine, ArchitectCorrectionSnapshot } from "./architect-correction-model";
 import "./architect-correction.css";
 
-interface Props { devisId: number; projectId: string; disabled?: boolean }
+interface Props { devisId: number; projectId: string; disabled?: boolean; compact?: boolean }
 const euro = (decimal: string) => `${decimal.replace(".", ",")} €`;
 
 function DraftField({ label, value, onChange, multiline = false, disabled = false, numeric = false }: {
@@ -30,7 +30,7 @@ function DraftField({ label, value, onChange, multiline = false, disabled = fals
   </div>;
 }
 
-export function ArchitectQuotationEditor({ devisId, projectId, disabled = false }: Props) {
+export function ArchitectQuotationEditor({ devisId, projectId, disabled = false, compact = false }: Props) {
   const [open, setOpen] = useState(false);
   const [discardOpen, setDiscardOpen] = useState(false);
   const [draft, setDraft] = useState<ArchitectCorrectionDraft | null>(null);
@@ -184,16 +184,16 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false 
   };
 
   return <>
-    <div className="architect-correction px-3 py-3" data-testid={`architect-correction-entry-${devisId}`}>
+    <div className={compact ? "architect-correction review-source-editor-trigger" : "architect-correction px-3 py-3"} data-testid={`architect-correction-entry-${devisId}`}>
       {error && <p role="alert" className="mb-2 text-xs text-destructive">{stale ? "Stale working quotation · your draft is preserved. " : "Working quotation save failed · your draft is preserved. "}{error}</p>}
       {(dirty || pending) && <p data-workflow-attention className="mb-2 text-[11px] text-muted-foreground">{pending ? "Working quotation · save or update in progress. Keep this project open." : "Working quotation · unsaved correction draft."}</p>}
-      <div className="correction-banner rounded-lg flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-        <div className="flex items-start gap-3">
+      <div className={compact ? "" : "correction-banner rounded-lg flex flex-wrap items-center justify-between gap-3 px-4 py-3"}>
+        {!compact && <div className="flex items-start gap-3">
           <Pencil size={15} className="mt-0.5 shrink-0" />
           <div><p className="text-xs font-semibold">Architect’s working version</p>
             <p className="text-[11px] text-muted-foreground mt-1">Correct descriptions, translations and figures. The contractor’s original PDF remains the legal reference.</p>
           </div>
-        </div>
+        </div>}
         <Button type="button" size="sm" variant="outline" onClick={() => setOpen(true)} disabled={disabled}
           className="border-[#94734c]/40 bg-[#f8f5ef] text-[#0b2545] text-[11px] gap-2 shrink-0">
           <Pencil size={13} /> Edit working quotation

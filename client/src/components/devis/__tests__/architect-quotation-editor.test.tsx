@@ -32,9 +32,9 @@ const fixture = (): ArchitectCorrectionSnapshot => ({
 const response = (data: unknown, status = 200) => ({
   ok: status >= 200 && status < 300, status, json: async () => data, text: async () => JSON.stringify(data),
 });
-function mount() {
+function mount(compact = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><ArchitectQuotationEditor devisId={42} projectId="8" /></QueryClientProvider>);
+  return render(<QueryClientProvider client={client}><ArchitectQuotationEditor devisId={42} projectId="8" compact={compact} /></QueryClientProvider>);
 }
 async function open() {
   fireEvent.click(screen.getByRole("button", { name: "Edit working quotation" }));
@@ -70,6 +70,15 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
 
 describe("architect editor persistence and source authority", () => {
+  it("reuses the real editor and original PDF from the compact action-rail trigger", async () => {
+    mount(true);
+    expect(screen.queryByText("Architect’s working version")).not.toBeInTheDocument();
+    expect(screen.getByTestId("architect-correction-entry-42")).toHaveClass("review-source-editor-trigger");
+    await open();
+    expect(screen.getByLabelText("French header")).toHaveValue("Menuiseries sur mesure");
+    expect(screen.getByRole("link", { name: "Open original contractor PDF" })).toHaveAttribute("href", "/api/devis/42/pdf?variant=original");
+    expect(saves).toHaveLength(0);
+  });
   it("uses unsaved corrected French for suggestions, fills only blank English and never saves automatically", async () => {
     const fallback = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation(async (url: string, options?: RequestInit) => url.endsWith("/translation-suggestions")
