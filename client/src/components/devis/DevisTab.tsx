@@ -3,6 +3,8 @@ import "./quotation-list-layout.css";
 import type { QuotationReplacementHistory as ReplacementHistoryEntry } from "@shared/quotation-replacement";
 import { ReplaceQuotationDialog } from "./ReplaceQuotationDialog";
 import { QuotationReplacementHistory } from "./QuotationReplacementHistory";
+import { QuotationVersionGroup } from "./QuotationVersionGroup";
+import { filterQuotationVersionGroups, groupQuotationVersions, isReplacedQuotation } from "./quotation-version-groups";
 import { replacementBlockedReason, useQuotationReplacementHistory } from "./use-quotation-replacement";
 import { CLIENT_LINK_MESSAGE_MAX_LENGTH } from "@shared/client-link-limits";
 import { QuotationNextActionFlag } from "./QuotationNextActionFlag";
@@ -701,7 +703,7 @@ interface DevisRowProps {
   replacementHistory: ReplacementHistoryEntry[];
   nextActions: QuotationNextActionsController;
   onExpandForAction: () => void;
-  bulkSelection: BulkDocumentsSelection;
+  bulkSelection?: BulkDocumentsSelection;
   d: Devis;
   projectId: string;
   contractors: Contractor[];
@@ -1095,7 +1097,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
     },
   });
 
-  const isReplaced = d.accountingState === "superseded";
+  const isReplaced = isReplacedQuotation(d);
   const replacementBlock = replacementBlockedReason(d, isArchived);
 
   return (
@@ -1131,7 +1133,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
         >
           <div className="grid grid-cols-[2.25rem_0.875rem_minmax(0,1fr)] items-start gap-3 min-w-0">
             <div className="-mt-2">
-            <BulkDocumentCheckbox selection={bulkSelection} id={d.id} name={d.devisCode} eligible={canBulkVoidDevis(d, isArchived)} />
+            {bulkSelection && <BulkDocumentCheckbox selection={bulkSelection} id={d.id} name={d.devisCode} eligible={!isReplaced && canBulkVoidDevis(d, isArchived)} />}
             </div>
             <div className="pt-1" aria-hidden="true">
             {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
@@ -1210,7 +1212,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
                 {d.status === "pending" && readiness ? null : <StatusBadge status={d.status} />}
                 {isReplaced && (
                   <span data-testid={`badge-devis-replaced-${d.id}`}>
-                    <StatusBadge status="superseded" />
+                    <Badge variant="outline">Replaced—not current</Badge>
                   </span>
                 )}
 
@@ -1536,7 +1538,7 @@ export function DevisTab({
   useQuotationOpeningScroll(
     projectId,
     initialExpandedDevisId,
-    expandedDevis === initialExpandedDevisId && !!devisList?.some(d =>
+    !replacementHistory.isPending && expandedDevis === initialExpandedDevisId && !!devisList?.some(d =>
       d.id === initialExpandedDevisId && (d.status !== "void" || showVoid)),
     initialFocusedCheckId,
   );
@@ -1574,7 +1576,11 @@ export function DevisTab({
   const [selectedLots, setSelectedLots] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const contractorById = new Map<number, Contractor>(contractors.map((c) => [c.id, c]));
-  const visibleBeforeFilters = showVoid ? (devisList ?? []) : (devisList ?? []).filter(d => d.status !== "void");
+  const versionGroups = groupQuotationVersions(devisList ?? [], replacementHistory.data, {
+    historyAvailable: replacementHistory.isSuccess && !replacementHistory.isError,
+    showVoid,
+  });
+  const visibleBeforeFilters = versionGroups.flatMap(group => [group.current, ...group.previous]);
   // Build the lot filter options + tag each one as catalog vs custom
   // (custom = free-text). A lot is considered catalog-backed if at least
   // one currently-visible devis with that ref carries a `lotCatalogId`.
@@ -1655,7 +1661,7 @@ export function DevisTab({
     return map;
   }, [devisList]);
 
-  const filteredDevisList = visibleBeforeFilters.filter((d) => {
+  const matchesFilters = (d: Devis) => {
     if (!matchesNextActionFilter(d, isArchived, actionNeededOnly, nextActions.data, nextActions.unknown)) return false;
     if (selectedLots.length > 0) {
       const lr = (d.lotRefText ?? "").toUpperCase();
@@ -1663,11 +1669,49 @@ export function DevisTab({
     }
     if (!matchesSearch(d)) return false;
     return true;
-  });
-  const hiddenByFilterCount = visibleBeforeFilters.length - filteredDevisList.length;
+  };
+  const filteredVersionGroups = filterQuotationVersionGroups(versionGroups, matchesFilters, initialExpandedDevisId);
+  const filteredDevisList = filteredVersionGroups.map(group => group.current);
+  const hiddenByFilterCount = versionGroups.length - filteredVersionGroups.length;
   const displayedDevisList = signedDevisFirst(filteredDevisList);
+  const displayedVersionGroups = new Map(filteredVersionGroups.map(group => [group.current.id, group]));
+  const renderDevisRow = (d: Devis, historical: boolean) => (
+    <DevisRow
+      key={d.id}
+      replacementHistory={replacementHistory.data ?? []}
+      bulkSelection={historical ? undefined : bulk}
+      nextActions={nextActions}
+      onExpandForAction={() => setExpandedDevis(d.id)}
+      d={d}
+      projectId={projectId}
+      contractors={contractors}
+      lots={lots}
+      isArchived={isArchived}
+      expanded={expandedDevis === d.id}
+      openChecks={openChecksByDevis[d.id] ?? 0}
+      readiness={readinessByDevis[d.id]}
+      sameRefPeer={sameRefPeerById.get(d.id) ?? null}
+      onToggle={() => setExpandedDevis(expandedDevis === d.id ? null : d.id)}
+      onEditRefs={setEditRefsFor}
+      onGoToIntake={onGoToIntake}
+      onCreateCertificat={onCreateCertificat}
+      onReviewDraft={(dev) => setDraftReviewData({
+        devisId: dev.id,
+        extraction: {
+          contractorName: contractors.find(c => c.id === dev.contractorId)?.name ?? "Unknown",
+          contractorId: dev.contractorId,
+        },
+        validation: {
+          isValid: !(dev.validationWarnings as any[])?.some((w: any) => w.severity === "error"),
+          warnings: (dev.validationWarnings as any[]) || [],
+          confidenceScore: dev.aiConfidence ?? 50,
+        },
+        devis: dev,
+      })}
+    />
+  );
   const bulk = useBulkDocuments({
-    items: filteredDevisList.map((d) => ({ id: d.id, name: d.devisCode, eligible: canBulkVoidDevis(d, isArchived) })),
+    items: filteredDevisList.map((d) => ({ id: d.id, name: d.devisCode, eligible: !isReplacedQuotation(d) && canBulkVoidDevis(d, isArchived) })),
     scope: JSON.stringify(["devis", projectId, showVoid, selectedLots, searchQuery, isArchived, actionNeededOnly]),
     execute: (id, reason) => apiRequest("PATCH", `/api/devis/${id}`, { status: "void", voidReason: reason }),
     onSettled: async () => {
@@ -1918,45 +1962,25 @@ export function DevisTab({
         eligibilityHint="Draft quotations only. Signed, signing-locked, replaced and live quotations are excluded."
         description="Mark these draft quotations void with the reason below. Their records and source PDFs are retained as evidence, not deleted. Void quotations are excluded from financial calculations." />}
       {replacementHistory.isError && <div role="alert" className="mb-3 rounded-md border p-3 text-xs text-destructive">
-        Replacement history could not be loaded. <Button variant="outline" size="sm" disabled={replacementHistory.isFetching} onClick={() => { void replacementHistory.refetch(); }}>Retry history</Button>
+        Replacement history could not be loaded. Quotations are shown separately so no records are hidden. <Button variant="outline" size="sm" disabled={replacementHistory.isFetching} onClick={() => { void replacementHistory.refetch(); }}>Retry history</Button>
       </div>}
       {filteredDevisList && filteredDevisList.length > 0 ? (
         <div className="space-y-3">
-          {displayedDevisList.map((d) => (
-            <DevisRow
-              key={d.id}
-              replacementHistory={replacementHistory.data ?? []}
-              bulkSelection={bulk}
-              nextActions={nextActions}
-              onExpandForAction={() => setExpandedDevis(d.id)}
-              d={d}
-              projectId={projectId}
-              contractors={contractors}
-              lots={lots}
-              isArchived={isArchived}
-              expanded={expandedDevis === d.id}
-              openChecks={openChecksByDevis[d.id] ?? 0}
-              readiness={readinessByDevis[d.id]}
-              sameRefPeer={sameRefPeerById.get(d.id) ?? null}
-              onToggle={() => setExpandedDevis(expandedDevis === d.id ? null : d.id)}
-              onEditRefs={setEditRefsFor}
-              onGoToIntake={onGoToIntake}
-              onCreateCertificat={onCreateCertificat}
-              onReviewDraft={(dev) => setDraftReviewData({
-                devisId: dev.id,
-                extraction: {
-                  contractorName: contractors.find(c => c.id === dev.contractorId)?.name ?? "Unknown",
-                  contractorId: dev.contractorId,
-                },
-                validation: {
-                  isValid: !(dev.validationWarnings as any[])?.some((w: any) => w.severity === "error"),
-                  warnings: (dev.validationWarnings as any[]) || [],
-                  confidenceScore: dev.aiConfidence ?? 50,
-                },
-                devis: dev,
-              })}
-            />
-          ))}
+          {displayedDevisList.map((d) => {
+            const group = displayedVersionGroups.get(d.id)!;
+            const linkedPrevious = group.previous.some(row => row.id === initialExpandedDevisId);
+            const matchedPrevious = filtersActive && group.previous.some(matchesFilters);
+            return (
+              <QuotationVersionGroup
+                key={`${projectId}-${d.id}`}
+                group={group}
+                renderRow={renderDevisRow}
+                revealKey={linkedPrevious || matchedPrevious
+                  ? JSON.stringify([projectId, initialExpandedDevisId, selectedLots, searchQuery, actionNeededOnly])
+                  : ""}
+              />
+            );
+          })}
         </div>
       ) : !uploading ? (
         filtersActive && visibleBeforeFilters.length > 0 ? (

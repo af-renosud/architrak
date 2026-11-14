@@ -20,6 +20,12 @@ Translation context, especially embedded images, is the user's highest-value aut
 
 **How to apply:** Treat the selection as an explicit relationship, preserve originals and financial history, and keep replacement context internal. Do not infer replacement automatically or require identical references.
 
+Replaced quotations belong in collapsed previous-version history beneath the latest quotation, not as competing main-list cards.
+
+**Why:** The user found separate superseded cards confusing even with status badges.
+
+**How to apply:** Follow only explicit replacement links, keep old references searchable and directly accessible, and leave incomplete or unavailable relationships visible rather than hiding evidence.
+
 Replacement must serialize against the entire external signature-send operation, not just inspect an envelope ID.
 
 **Why:** Sending includes PDF preparation and an external create call before the envelope ID is persisted. A replacement during that interval could retire the quotation while its signature invitation is still being issued.
