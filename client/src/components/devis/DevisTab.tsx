@@ -2359,7 +2359,7 @@ function EditDevisRefsDialog({ devis, projectId, contractors, onClose }: EditDev
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !mutation.isPending) onClose(); }}>
-      <DialogContent className="max-w-md" data-testid="dialog-edit-devis-refs">
+      <DialogContent className="max-w-md max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] overflow-y-auto overscroll-contain" data-testid="dialog-edit-devis-refs">
         <DialogHeader>
           <DialogTitle className="text-[14px] font-black uppercase tracking-tight">Edit References</DialogTitle>
           <DialogDescription className="text-[11px]">
@@ -2928,7 +2928,7 @@ function DraftReviewPanel({ data, projectId, contractors, onClose, isArchived = 
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !confirmMutation.isPending && !discardMutation.isPending) onClose(); }}>
-      <DialogContent className="max-w-lg" data-testid="dialog-draft-review">
+      <DialogContent className="max-w-lg max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] overflow-y-auto overscroll-contain" data-testid="dialog-draft-review">
         <DialogHeader>
           <DialogTitle className="text-[16px] font-black uppercase tracking-tight flex items-center gap-3 flex-wrap">
             Review AI Extraction
