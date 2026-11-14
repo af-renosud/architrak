@@ -1124,16 +1124,20 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
         className={devisCardClassName(d, expanded)}
       >
         <div
-          className={`flex items-center justify-between gap-3 flex-wrap cursor-pointer ${isVoid ? "opacity-50" : ""}`}
+          className={`grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-3 cursor-pointer ${isVoid ? "opacity-50" : ""}`}
           onClick={onToggle}
           data-testid={`row-devis-toggle-${d.id}`}
         >
-          <div className="flex items-center gap-3 flex-wrap min-w-0 flex-1">
+          <div className="grid grid-cols-[2.25rem_0.875rem_minmax(0,1fr)] items-start gap-3 min-w-0">
+            <div className="-mt-2">
             <BulkDocumentCheckbox selection={bulkSelection} id={d.id} name={d.devisCode} eligible={canBulkVoidDevis(d, isArchived)} />
+            </div>
+            <div className="pt-1" aria-hidden="true">
             {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-[16px] font-black text-[#0B2545] tracking-tight" data-testid={`text-devis-code-${d.id}`}>{d.devisCode}</span>
+                <span className="text-[16px] font-black text-[#0B2545] tracking-tight break-words min-w-0" data-testid={`text-devis-code-${d.id}`}>{d.devisCode}</span>
                 {d.devisNumber && <span className="text-[11px] text-muted-foreground" data-testid={`text-devis-number-${d.id}`}>N° {d.devisNumber}</span>}
                 {d.ref2 && <span className="text-[11px] text-muted-foreground" data-testid={`text-devis-ref2-${d.id}`}>Ref {d.ref2}</span>}
                 {!isVoid && !isArchived && (
@@ -1172,8 +1176,16 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
               {readiness && !isVoid && <ReadinessStrip d={d} r={readiness} onOpen={() => { if (!expanded) onToggle(); }} />}
             </div>
           </div>
+          <div className="ml-[4.625rem] sm:ml-0 sm:col-start-2 sm:row-start-1 sm:min-w-[10rem] sm:pl-4 sm:border-l-2 border-[#0B2545]/20 sm:text-right tabular-nums">
+            <div className="text-[18px] font-black tracking-tight leading-none text-[#0B2545]" data-testid={`text-devis-ttc-${d.id}`}>
+              <Amount value={parseFloat(d.amountTtc)} denomination="TTC" />
+            </div>
+            <span className="text-[10px] text-muted-foreground" data-testid={`text-devis-ht-${d.id}`}>
+              <Amount value={parseFloat(d.amountHt)} denomination="HT" />
+            </span>
+          </div>
           <TooltipProvider delayDuration={200}>
-            <div className="flex items-center gap-3 flex-wrap justify-end">
+            <div className="sm:col-span-2 min-w-0 ml-[4.625rem] flex items-start gap-3 flex-wrap border-t border-border/50 pt-3" data-testid={`row-devis-actions-${d.id}`} onClick={event => event.stopPropagation()}>
               <div className="max-w-[19rem]" onClick={event => event.stopPropagation()}>
                 <Button
                   type="button"
@@ -1190,7 +1202,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
               </div>
               {nextActionEligible(d, isArchived) && <QuotationNextActionFlag devisId={d.id} projectId={projectId} controller={nextActions} onExpand={onExpandForAction} />}
               {/* Compact toolbar: status + mode + advisory + actions, with hairline dividers */}
-              <div className="flex items-center gap-2 min-[900px]:gap-2.5">
+              <div className="flex items-center gap-2 min-[900px]:gap-2.5 flex-wrap min-w-0 sm:ml-auto">
                 {/* Task #374 — the generic PENDING chip is de-emphasised now
                     that the readiness strip carries the real state; keep the
                     badge for meaningful statuses (draft/void/…). */}
@@ -1369,15 +1381,6 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
                 </div>
               </div>
 
-              {/* Slot: Totals — anchored hard right with navy left rule */}
-              <div className="pl-4 border-l-2 border-[#0B2545]/20 min-w-[10rem] text-right tabular-nums">
-                <div className="text-[18px] font-black tracking-tight leading-none text-[#0B2545]" data-testid={`text-devis-ttc-${d.id}`}>
-                  <Amount value={parseFloat(d.amountTtc)} denomination="TTC" />
-                </div>
-                <span className="text-[10px] text-muted-foreground" data-testid={`text-devis-ht-${d.id}`}>
-                  <Amount value={parseFloat(d.amountHt)} denomination="HT" />
-                </span>
-              </div>
             </div>
           </TooltipProvider>
         </div>
