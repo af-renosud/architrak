@@ -1,0 +1,163 @@
+/* Fonts: client/index.html; tokens: client/src/index.css :root and .dark.
+   Group-local stylesheet only; sandbox index.css is deliberately untouched. */
+@import url("https://fonts.googleapis.com/css2?family=Architects+Daughter&family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Fira+Code:wght@300..700&family=Geist+Mono:wght@100..900&family=Geist:wght@100..900&family=IBM+Plex+Mono:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;1,100;1,200;1,300;1,400;1,500;1,600;1,700&family=IBM+Plex+Sans:ital,wght@0,100..700;1,100..700&family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Lora:ital,wght@0,400..700;1,400..700&family=Merriweather:ital,opsz,wght@0,18..144,300..900;1,18..144,300..900&family=Montserrat:ital,wght@0,100..900;1,100..900&family=Open+Sans:ital,wght@0,300..800;1,300..800&family=Outfit:wght@100..900&family=Oxanium:wght@200..800&family=Playfair+Display:ital,wght@0,400..900;1,400..900&family=Plus+Jakarta+Sans:ital,wght@0,200..800;1,200..800&family=Poppins:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&family=Roboto+Mono:ital,wght@0,100..700;1,100..700&family=Roboto:ital,wght@0,100..900;1,100..900&family=Source+Code+Pro:ital,wght@0,200..900;1,200..900&family=Source+Serif+4:ital,opsz,wght@0,8..60,200..900;1,8..60,200..900&family=Space+Grotesk:wght@300..700&family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap");
+
+:root {
+  --button-outline: rgba(0,0,0, .10);
+  --badge-outline: rgba(0,0,0, .05);
+  --opaque-button-border-intensity: -8;
+  --elevate-1: rgba(0,0,0, .03);
+  --elevate-2: rgba(0,0,0, .08);
+  --background: 210 17% 98%;
+  --foreground: 20 10% 4%;
+  --border: 210 11% 90%;
+  --card: 0 0% 100%;
+  --card-foreground: 20 10% 4%;
+  --card-border: 210 11% 93%;
+  --sidebar: 210 7% 87%;
+  --sidebar-foreground: 20 10% 4%;
+  --sidebar-border: 210 7% 82%;
+  --sidebar-primary: 213 74% 16%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 33 32% 62%;
+  --sidebar-accent-foreground: 0 0% 100%;
+  --sidebar-ring: 213 74% 16%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 20 10% 4%;
+  --popover-border: 210 11% 93%;
+  --primary: 213 74% 16%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 33 32% 62%;
+  --secondary-foreground: 0 0% 100%;
+  --muted: 210 11% 93%;
+  --muted-foreground: 240 1% 50%;
+  --accent: 33 32% 62%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 349 77% 62%;
+  --destructive-foreground: 0 0% 100%;
+  --input: 210 11% 90%;
+  --ring: 213 74% 16%;
+  --chart-1: 213 74% 16%;
+  --chart-2: 33 32% 62%;
+  --chart-3: 160 59% 46%;
+  --chart-4: 349 77% 62%;
+  --chart-5: 33 100% 75%;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-serif: Georgia, serif;
+  --font-mono: Menlo, monospace;
+  --radius: .5rem;
+  --shadow-2xs: 0px 1px 2px 0px rgba(0,0,0,0.03);
+  --shadow-xs: 0px 1px 2px 0px rgba(0,0,0,0.04);
+  --shadow-sm: 0px 1px 3px 0px rgba(0,0,0,0.04), 0px 1px 2px -1px rgba(0,0,0,0.03);
+  --shadow: 0px 1px 3px 0px rgba(0,0,0,0.04), 0px 1px 2px -1px rgba(0,0,0,0.03);
+  --shadow-md: 0px 2px 4px 0px rgba(0,0,0,0.04), 0px 2px 4px -1px rgba(0,0,0,0.03);
+  --shadow-lg: 0px 4px 6px 0px rgba(0,0,0,0.04), 0px 4px 6px -1px rgba(0,0,0,0.03);
+  --shadow-xl: 0px 8px 10px 0px rgba(0,0,0,0.04), 0px 8px 10px -1px rgba(0,0,0,0.03);
+  --shadow-2xl: 0px 12px 16px 0px rgba(0,0,0,0.05);
+  --tracking-normal: 0em;
+  --spacing: 0.25rem;
+  --sidebar-primary-border: hsl(var(--sidebar-primary));
+  --sidebar-primary-border: hsl(from hsl(var(--sidebar-primary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --sidebar-accent-border: hsl(var(--sidebar-accent));
+  --sidebar-accent-border: hsl(from hsl(var(--sidebar-accent)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --primary-border: hsl(var(--primary));
+  --primary-border: hsl(from hsl(var(--primary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --secondary-border: hsl(var(--secondary));
+  --secondary-border: hsl(from hsl(var(--secondary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --muted-border: hsl(var(--muted));
+  --muted-border: hsl(from hsl(var(--muted)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --accent-border: hsl(var(--accent));
+  --accent-border: hsl(from hsl(var(--accent)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --destructive-border: hsl(var(--destructive));
+  --destructive-border: hsl(from hsl(var(--destructive)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+}
+
+.dark {
+  --button-outline: rgba(255,255,255, .10);
+  --badge-outline: rgba(255,255,255, .05);
+  --opaque-button-border-intensity: 9;
+  --elevate-1: rgba(255,255,255, .04);
+  --elevate-2: rgba(255,255,255, .09);
+  --background: 220 15% 8%;
+  --foreground: 210 17% 95%;
+  --border: 220 10% 18%;
+  --card: 220 12% 11%;
+  --card-foreground: 210 17% 95%;
+  --card-border: 220 10% 16%;
+  --sidebar: 220 14% 10%;
+  --sidebar-foreground: 210 17% 90%;
+  --sidebar-border: 220 10% 16%;
+  --sidebar-primary: 213 60% 35%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 33 40% 50%;
+  --sidebar-accent-foreground: 0 0% 100%;
+  --sidebar-ring: 213 60% 35%;
+  --popover: 220 12% 11%;
+  --popover-foreground: 210 17% 95%;
+  --popover-border: 220 10% 16%;
+  --primary: 213 60% 35%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 33 40% 50%;
+  --secondary-foreground: 0 0% 100%;
+  --muted: 220 10% 16%;
+  --muted-foreground: 220 5% 55%;
+  --accent: 33 40% 50%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 349 70% 55%;
+  --destructive-foreground: 0 0% 100%;
+  --input: 220 10% 20%;
+  --ring: 213 60% 35%;
+  --chart-1: 213 60% 45%;
+  --chart-2: 33 50% 55%;
+  --chart-3: 160 50% 40%;
+  --chart-4: 349 70% 55%;
+  --chart-5: 33 90% 65%;
+  --shadow-2xs: 0px 2px 0px 0px rgba(0,0,0,0.00);
+  --shadow-xs: 0px 2px 0px 0px rgba(0,0,0,0.00);
+  --shadow-sm: 0px 2px 0px 0px rgba(0,0,0,0.00), 0px 1px 2px -1px rgba(0,0,0,0.00);
+  --shadow: 0px 2px 0px 0px rgba(0,0,0,0.00), 0px 1px 2px -1px rgba(0,0,0,0.00);
+  --shadow-md: 0px 2px 0px 0px rgba(0,0,0,0.00), 0px 2px 4px -1px rgba(0,0,0,0.00);
+  --shadow-lg: 0px 2px 0px 0px rgba(0,0,0,0.00), 0px 4px 6px -1px rgba(0,0,0,0.00);
+  --shadow-xl: 0px 2px 0px 0px rgba(0,0,0,0.00), 0px 8px 10px -1px rgba(0,0,0,0.00);
+  --shadow-2xl: 0px 2px 0px 0px rgba(0,0,0,0.00);
+}
+
+/* The application's Tailwind configuration uses these exact radii. */
+@theme inline {
+  --radius-sm: .1875rem;
+  --radius-md: .375rem;
+  --radius-lg: .5625rem;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: Menlo, monospace;
+  --color-primary-border: var(--primary-border);
+}
+.review-source { font-family: var(--font-sans); }
+
+/* Source: client/src/components/devis/architect-correction.css (entry-banner rules). */
+.architect-correction {
+  --correction-ink: #0b2545;
+  --correction-paper: #f8f5ef;
+  --correction-rule: #d8cbb9;
+  --correction-accent: #94734c;
+  color: var(--correction-ink);
+}
+.architect-correction .correction-banner {
+  background: var(--correction-paper);
+  border: 1px solid var(--correction-rule);
+  border-left: 3px solid var(--correction-accent);
+}
+
+/* Source: client/src/components/devis/devis-workflow.css (review group). */
+.devis-workflow__group { min-width: 0; border: 1px solid #d8cbb9; border-radius: .65rem; background: #f8f5ef; }
+.devis-workflow__group[data-group="review"] { order: 10; }
+.devis-workflow__heading { display: flex; width: 100%; align-items: center; gap: .65rem; padding: .7rem .85rem; text-align: left; color: #0b2545; }
+.devis-workflow__heading strong { font-size: 12px; }
+.devis-workflow__heading small { margin-left: auto; text-align: right; font-size: 10px; color: #6c716f; }
+.devis-workflow__number { color: #94734c; font-size: 10px; font-variant-numeric: tabular-nums; }
+.devis-workflow__body { padding: .75rem; border-top: 1px solid #d8cbb9; }
+.devis-workflow__body[hidden] { display: none !important; }
+@media (max-width: 767px) {
+  .devis-workflow__heading { flex-wrap: wrap; gap: .4rem; }
+  .devis-workflow__heading small { flex-basis: 100%; margin-left: 1.8rem; text-align: left; }
+  .devis-workflow__body { padding: .5rem; }
+}
