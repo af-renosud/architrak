@@ -74,6 +74,24 @@ describe("purgeExpiredSkippedEmailDocuments", () => {
     expect(await storage.purgeSkippedEmailDocumentAtomically(assigned, undefined, false, true)).toBeNull();
   });
 
+  it.each([true, false])("retains admitted skipped evidence after dismissal=%s across all purge paths", async dismissed => {
+    const id = await insertDoc({
+      extractionStatus: "skipped", intakeDeletedAt: dismissed ? OLD : null,
+      storageKey: "test-only/admitted-retained.pdf", createdAt: OLD, updatedAt: OLD,
+      extractedData: { financialTriage: { decision: { status: "eligible", identitySource: "pdf", projectId, kind: "quotation" } } },
+    });
+    expect(await storage.purgeSkippedEmailDocumentAtomically(id, undefined, true)).toBeNull();
+    expect(await storage.purgeSkippedEmailDocumentAtomically(id)).toBeNull();
+    expect(await storage.purgeSkippedEmailDocumentAtomically(id, undefined, false, true)).toBeNull();
+    const purged = await storage.purgeExpiredSkippedEmailDocuments(30 * 24 * 60 * 60 * 1000, 500);
+    expect(purged.map(row => row.id)).not.toContain(id);
+    const retained = await storage.getEmailDocument(id);
+    expect(retained?.storageKey).toBe("test-only/admitted-retained.pdf");
+    expect(retained?.extractedData).toBeDefined();
+    const receipts = await db.select().from(appSettings).where(eq(appSettings.key, `irrelevant_pdf_cleanup:${id}`));
+    expect(receipts).toHaveLength(0);
+  });
+
   it("purges old skipped rows but keeps fresh ones", async () => {
     const oldId = await insertDoc();
     const freshId = await insertDoc({ updatedAt: FRESH });

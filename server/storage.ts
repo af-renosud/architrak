@@ -5275,6 +5275,9 @@ export class DatabaseStorage implements IStorage {
       const [doc] = await tx.select().from(emailDocuments)
         .where(eq(emailDocuments.id, id)).for("update");
       if (!doc) return null;
+      // Dismissal changes visibility, not permission to destroy admitted
+      // financial evidence. Protect every hard-delete entry point under lock.
+      if (emailHasFinancialAdmission(doc)) return null;
       const retentionReason = admissionRetention ? unverifiedPdfCleanupReason(doc) : null;
       if (admissionRetention) {
         if (!retentionReason) return null;
@@ -5285,7 +5288,6 @@ export class DatabaseStorage implements IStorage {
         // or text that could not be read completely.
         const explicitlyDismissed = doc.extractionStatus === "skipped" && doc.intakeDeletedAt != null;
         if (!explicitlyDismissed) {
-          if (emailHasFinancialAdmission(doc)) return null;
           if (!triage || !["text", "ocr"].includes(triage.method) || typeof triage.text !== "string") return null;
           const currentProjects = await tx.select().from(projects);
           if (!discardIrrelevantFinancialDecision(evaluateFinancialPdf(triage.text, "", currentProjects))) return null;
