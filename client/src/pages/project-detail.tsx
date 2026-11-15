@@ -9,6 +9,7 @@ import { TechnicalLabel } from "@/components/ui/technical-label";
 import { CertificateRefBadge } from "@/components/ui/certificate-ref-badge";
 import { FolderOpen, ArrowLeft, MapPin, User, FileText, Layers, ScrollText, Award, Coins, BarChart3, Plus, Eye, EyeOff, ChevronRight, Pencil, Upload, Download, ExternalLink, MessageSquare, Send, Clock, RefreshCw, FileCheck, AlertTriangle, Settings, Loader2, FolderDown, Archive, ArchiveRestore, Mail, Phone, Lock, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -219,6 +220,7 @@ function ClientCard({
   refreshing: boolean;
   disabled: boolean;
 }) {
+  const [open, setOpen] = useState(false);
   const archidocId = project.archidocId;
   const archidocClientsRaw: unknown = project.archidocClients;
   const archidocClients: ArchidocClientEntry[] = Array.isArray(archidocClientsRaw)
@@ -238,9 +240,16 @@ function ClientCard({
     archidocClients.length > 0 ? archidocClients : fallbackEntry ? [fallbackEntry] : [];
 
   return (
-    <LuxuryCard data-testid="card-client-record">
-      <div className="flex items-start justify-between gap-3 flex-wrap mb-4">
-        <div className="flex items-center gap-3 min-w-0">
+    <LuxuryCard className="py-3" data-testid="card-client-record">
+      <Collapsible open={open} onOpenChange={setOpen}>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className="flex flex-1 items-center gap-3 min-w-0 rounded-lg text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-4"
+          data-testid="button-toggle-client-record"
+        >
+          <ChevronRight size={16} aria-hidden="true" className={`shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
           <div className="w-9 h-9 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0">
             <Users size={16} className="text-primary" />
           </div>
@@ -259,7 +268,11 @@ function ClientCard({
               )}
             </div>
           </div>
-        </div>
+          <span className="ml-auto text-xs text-muted-foreground whitespace-nowrap">
+            {open ? "Hide details" : "Show details"}
+          </span>
+        </button>
+        </CollapsibleTrigger>
         <div className="flex items-center gap-2 flex-wrap">
           {lastSyncedAt && (
             <span className="text-[9px] text-muted-foreground" data-testid="text-client-last-synced">
@@ -290,6 +303,7 @@ function ClientCard({
         </div>
       </div>
 
+      <CollapsibleContent className="pt-4" data-testid="client-record-details">
       {entries.length === 0 ? (
         <div className="text-center py-6" data-testid="empty-client-record">
           <p className="text-[11px] text-muted-foreground">
@@ -369,6 +383,8 @@ function ClientCard({
           })}
         </div>
       )}
+      </CollapsibleContent>
+      </Collapsible>
     </LuxuryCard>
   );
 }
