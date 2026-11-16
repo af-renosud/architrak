@@ -56,6 +56,23 @@ function preview(
 }
 
 describe("AutomaticTvaFields", () => {
+  it("clearly labels editable amounts and shows only a current net payment", () => {
+    const props = {
+      enteredAmount: "4600", basis: "ht" as const, preview: preview(),
+      isLoading: false, onEdit: vi.fn(), testIdPrefix: "clarity",
+    };
+    const { rerender } = render(<AutomaticTvaFields {...props} />);
+    expect(screen.getByLabelText("Gross Works HT (Cumulative)")).toHaveValue(4600);
+    expect(screen.getByLabelText("Gross Works TTC (Cumulative)")).toBeEnabled();
+    expect(screen.getByText("Enter total works to date")).toBeInTheDocument();
+    expect(screen.getByTestId("clarity-net-payable")).toBeInTheDocument();
+    rerender(<AutomaticTvaFields {...props} isLoading />);
+    expect(screen.queryByTestId("clarity-net-payable")).not.toBeInTheDocument();
+    expect(screen.getByText("Updating payment calculation…")).toBeInTheDocument();
+    rerender(<AutomaticTvaFields {...props} error={new Error("Evidence unavailable")} />);
+    expect(screen.queryByTestId("clarity-net-payable")).not.toBeInTheDocument();
+  });
+
   it("distinguishes gross TVA from the net payable TVA", () => {
     render(
       <AutomaticTvaFields
