@@ -44,6 +44,8 @@
   background: #f8f5ef;
   border-top: 1px solid var(--correction-rule);
   z-index: 2;
+  /* Reserve the modal's contextual scroll-control rail beside the actions. */
+  padding-right: 5rem;
 }
 .architect-correction textarea {
   min-height: 110px;

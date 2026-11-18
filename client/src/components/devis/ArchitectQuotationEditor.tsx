@@ -132,7 +132,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
     if (result.conflicts.length) {
       setLatest(snapshot.data); setMergeChoices({}); setStale(true);
     } else {
-      setOriginal(snapshot.data); setDraft(result.draft); setStale(false); setLatest(null);
+      setOriginal(snapshot.data); setDraft(result.draft); setStale(false); setLatest(null); setError(null);
     }
     // Snapshot identity alone triggers reconciliation; typing must not reset conflict choices.
     // eslint-disable-next-line react-hooks/exhaustive-deps
