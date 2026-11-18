@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useEditor, useEditorState, EditorContent } from "@tiptap/react";
 import { Node, mergeAttributes, type Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
@@ -27,6 +27,8 @@ import {
 } from "@shared/context-doc";
 import type { DevisLineContext } from "@shared/schema";
 import { useContextSaveQueue } from "./useContextSaveQueue";
+import { setQuotationWork } from "./quotation-review-state";
+import { ContextDocumentPreview } from "./ContextDocumentPreview";
 
 /**
  * Rich-text "context" editor for one devis line item. Content is persisted
@@ -163,13 +165,22 @@ export function normalizeEditorJson(json: EditorJsonNode): ContextDoc {
 
 export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, context, readOnly = false }: DevisLineContextEditorProps) {
   const { toast } = useToast();
-  const { saveState, setSaveState, enqueue, revisionRef, hasPendingSave, adoptServerState } = useContextSaveQueue(
+  const { saveState, setSaveState, enqueue, revisionRef, hasPendingSave, adoptServerState, conflict, resolveConflict, retry, restoredDocument, rememberDraft } = useContextSaveQueue(
     devisId,
     lineItemId,
     context,
+    !readOnly,
   );
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const uploads = useRef(0);
+  const [uploading, setUploading] = useState(false);
+  const [failedUpload, setFailedUpload] = useState<File | null>(null);
+  const workKey = `context-debounce:${lineItemId}`;
+  const uploadKey = `context-upload:${lineItemId}`;
+  useEffect(() => {
+    if (restoredDocument) setQuotationWork(devisId, workKey, false);
+  }, [devisId, workKey, restoredDocument]);
 
   const extensions = useMemo(
     () => [
@@ -198,11 +209,13 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
   // revision re-sync from fresher server data, duplicate-flush dedupe, and
   // 409 self-conflict reconciliation (Task 364).
   const enqueueFromEditor = (editor: Editor) => {
+    setQuotationWork(devisId, workKey, false);
     const doc = normalizeEditorJson(editor.getJSON() as EditorJsonNode);
     // Don't create a row for a line whose context was never used.
     if (revisionRef.current === 0 && isContextDocEmpty(doc) && !hasPendingSave()) return;
     const check = contextDocSchema.safeParse(doc);
     if (!check.success) {
+      setQuotationWork(devisId, workKey, true, "Context is invalid and has not been saved.");
       setSaveState("error");
       toast({
         title: "Context not saved",
@@ -212,9 +225,11 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
       return;
     }
     enqueue(check.data);
+    setQuotationWork(devisId, workKey, false);
   };
 
   const scheduleSave = (editor: Editor, immediate = false) => {
+    if (readOnly) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (immediate) {
       // The ref doubles as an "edit waiting in the debounce window" signal
@@ -222,6 +237,7 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
       debounceRef.current = null;
       enqueueFromEditor(editor);
     } else {
+      setQuotationWork(devisId, workKey, true, "Context has unsaved changes.");
       debounceRef.current = setTimeout(() => {
         debounceRef.current = null;
         enqueueFromEditor(editor);
@@ -230,6 +246,7 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
   };
 
   const uploadImage = async (editor: Editor, file: File) => {
+    if (readOnly || conflict || uploads.current > 0) return;
     if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
       toast({ title: "Unsupported image", description: "Only PNG, JPEG and WebP images are accepted.", variant: "destructive" });
       return;
@@ -238,6 +255,11 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
       toast({ title: "Image too large", description: "Images must be 5 MB or smaller.", variant: "destructive" });
       return;
     }
+    uploads.current++;
+    const requestKey = `image-request:${lineItemId}:${crypto.randomUUID()}`;
+    setQuotationWork(devisId, requestKey, true, "An owned context image is uploading.");
+    setUploading(true); setFailedUpload(null);
+    setQuotationWork(devisId, uploadKey, true, "Context image upload is pending.");
     try {
       const res = await fetch(`/api/devis/${devisId}/line-contexts/${lineItemId}/assets`, {
         method: "POST",
@@ -253,11 +275,17 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
       editor.chain().focus().insertContent({ type: "image", attrs: { assetId: asset.id } }).run();
       scheduleSave(editor, true);
     } catch (err) {
+      setFailedUpload(file);
+      setQuotationWork(devisId, uploadKey, true, "Image upload failed. Retry or remove the pending image before approval.");
       toast({
         title: "Image upload failed",
         description: err instanceof Error ? err.message : String(err),
         variant: "destructive",
       });
+    } finally {
+      setQuotationWork(devisId, requestKey, false);
+      uploads.current--;
+      setUploading(uploads.current > 0);
     }
   };
 
@@ -265,7 +293,7 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
     {
       extensions,
       editable: !readOnly,
-      content: (context?.document as ContextDoc | undefined) ?? { type: "doc", content: [] },
+      content: restoredDocument ?? (context?.document as ContextDoc | undefined) ?? { type: "doc", content: [] },
       editorProps: {
         attributes: {
           class:
@@ -289,6 +317,7 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
         },
       },
       onUpdate: ({ editor: e }) => {
+        rememberDraft(normalizeEditorJson(e.getJSON() as EditorJsonNode));
         setSaveState("idle");
         scheduleSave(e as Editor);
       },
@@ -296,6 +325,12 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
     },
     [devisId, lineItemId],
   );
+  useEffect(() => {
+    editor?.setEditable?.(!readOnly && !conflict, false);
+  }, [editor, readOnly, conflict]);
+  useEffect(() => {
+    if (!uploading && !failedUpload) setQuotationWork(devisId, uploadKey, false);
+  }, [uploading, failedUpload, devisId, uploadKey]);
 
   const imageSelection = useEditorState({
     editor,
@@ -390,6 +425,7 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
       className="h-6 w-6"
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
+      disabled={!!conflict || uploading}
       title={label}
       data-testid={testId}
     >
@@ -399,6 +435,24 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
 
   return (
     <div className="space-y-1" data-testid={`section-context-${devisId}-${lineNumber}`}>
+      {uploading && <p role="status" className="text-xs" data-workflow-attention>Uploading image · keep this workspace open.</p>}
+      {failedUpload && <div role="alert" className="text-xs space-x-2"><span>Image not uploaded: {failedUpload.name}</span>
+        <Button type="button" size="sm" variant="outline" onClick={() => void uploadImage(editor, failedUpload)}>Retry image upload</Button>
+        <Button type="button" size="sm" variant="outline" onClick={() => setFailedUpload(null)}>Remove pending image</Button></div>}
+      {saveState === "error" && <Button type="button" size="sm" variant="outline" onClick={retry}>Retry context save</Button>}
+      {saveState === "conflict" && !conflict && <Button type="button" size="sm" variant="outline" onClick={retry}>Compare latest context</Button>}
+      {conflict && <section aria-label="Compare context changes" className="border rounded p-3 space-y-3">
+        <h4 className="text-xs font-semibold">Context changed elsewhere · nothing has been overwritten</h4>
+        <details><summary className="text-xs">Previous context</summary><ContextDocumentPreview devisId={devisId} document={conflict.base} /></details>
+        <div className="grid md:grid-cols-2 gap-3">
+          <div><p className="text-xs font-semibold">My context draft</p><ContextDocumentPreview devisId={devisId} document={conflict.mine} /></div>
+          <div><p className="text-xs font-semibold">Latest saved context</p><ContextDocumentPreview devisId={devisId} document={conflict.document} /></div>
+        </div>
+        {(["mine", "latest"] as const).map(choice => <Button key={choice} type="button" variant="outline" size="sm" onClick={() => {
+          const chosen = resolveConflict(choice);
+          if (chosen) editor.commands.setContent(chosen, { emitUpdate: false });
+        }}>{choice === "mine" ? "Use my context and save" : "Use latest saved context"}</Button>)}
+      </section>}
       <div className="flex items-center gap-1">
         <div className="text-[10px] uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
           Context (shown in the translated PDF)
@@ -422,6 +476,7 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
             <span className="text-[10px] text-muted-foreground">Image size:</span>
             {CONTEXT_IMAGE_SIZES.map((size) => (
               <Button key={size} type="button" size="sm"
+                disabled={!!conflict || uploading}
                 variant={imageSelection.size === size ? "secondary" : "ghost"}
                 className="h-6 px-2 text-[11px]"
                 aria-pressed={imageSelection.size === size}
@@ -438,6 +493,7 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
         <input
           ref={fileInputRef}
           type="file"
+          disabled={!!conflict || uploading}
           accept="image/png,image/jpeg,image/webp"
           className="hidden"
           onChange={(e) => {

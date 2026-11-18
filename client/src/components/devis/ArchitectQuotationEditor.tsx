@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Check, Copy, ExternalLink, FileText, Languages, LockKeyhole, Pencil, Plus, Save, Scissors, ShieldCheck, Trash2, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,6 +12,13 @@ import { useToast } from "@/hooks/use-toast";
 import { useArchitectCorrection } from "./use-architect-correction";
 import { correctionCents, correctionMoney, correctionProduct, correctionFinancialIssues, createCorrectionLine, financialProjection, previewCorrectionTotals, reorderCorrectionLine, transferCorrectionPassage } from "./architect-correction-model";
 import type { ArchitectCorrectionDraft, ArchitectCorrectionLine, ArchitectCorrectionSnapshot } from "./architect-correction-model";
+import type { DevisLineContext } from "@shared/schema";
+import { DevisLineContextEditor } from "./DevisLineContextEditor";
+import { QuotationApprovalReview } from "./QuotationApprovalReview";
+import { QuotationConflictReview } from "./QuotationConflictReview";
+import { mergeQuotationDraft, type MergeChoices } from "./quotation-three-way";
+import { quotationWorkBlocked, setQuotationWork, useQuotationWork } from "./quotation-review-state";
+import { keepQuotationDraft, readQuotationDraft } from "./quotation-draft-backup";
 import "./architect-correction.css";
 
 interface Props { devisId: number; projectId: string; disabled?: boolean; compact?: boolean }
@@ -46,6 +54,10 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
   const [target, setTarget] = useState("");
   const [selection, setSelection] = useState<{ start: number; end: number } | null>(null);
   const [savedMessage, setSavedMessage] = useState(false);
+  const [latest, setLatest] = useState<ArchitectCorrectionSnapshot | null>(null);
+  const [mergeChoices, setMergeChoices] = useState<MergeChoices>({});
+  useQuotationWork(devisId);
+  const workKey = `working-draft:${devisId}`;
   const initialized = useRef(false);
   const submitLock = useRef(false);
   const mounted = useRef(true);
@@ -55,15 +67,34 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
   const { toast } = useToast();
   const { snapshot, save, baseline, suggest } = useArchitectCorrection(devisId, projectId, open);
   const pending = save.isPending || baseline.isPending || suggest.isPending || recoveringVat;
+  const contexts = useQuery<{ contexts: DevisLineContext[] }>({
+    queryKey: ["/api/devis", devisId, "line-contexts"], enabled: open,
+    queryFn: async () => {
+      const result = await (await apiRequest("GET", `/api/devis/${devisId}/line-contexts`)).json();
+      if (!result || !Array.isArray(result.contexts)) throw new Error("Line context could not be loaded.");
+      return result;
+    }, retry: false,
+  });
+  useEffect(() => {
+    const openWorkspace = (event: Event) => {
+      if ((event as CustomEvent<number>).detail === devisId) setOpen(true);
+    };
+    window.addEventListener("quotation-review-open", openWorkspace);
+    return () => window.removeEventListener("quotation-review-open", openWorkspace);
+  }, [devisId]);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
     if (!open || !snapshot.data || snapshot.isFetching || initialized.current) return;
     initialized.current = true;
-    setOriginal(snapshot.data);
-    setDraft(structuredClone(snapshot.data.draft));
+    const backup = readQuotationDraft(devisId);
+    const recovered = backup ? mergeQuotationDraft(backup.original.draft, backup.draft, snapshot.data.draft) : null;
+    setOriginal(structuredClone(backup && recovered?.conflicts.length ? backup.original : snapshot.data));
+    setDraft(structuredClone(backup && recovered?.conflicts.length ? backup.draft : recovered?.draft ?? snapshot.data.draft));
     setSelected("header");
-    setError(null); setStale(false); setSavedMessage(false); setVatRecoveryMessage(null);
-  }, [open, snapshot.data, snapshot.isFetching]);
+    setError(backup ? "Your unsaved working draft was restored in this tab. Review it before saving." : null);
+    setStale(!!recovered?.conflicts.length); setSavedMessage(false); setVatRecoveryMessage(null);
+    setLatest(recovered?.conflicts.length ? snapshot.data : null); setMergeChoices({});
+  }, [open, snapshot.data, snapshot.isFetching, devisId]);
   const financialIssues = useMemo(() => draft ? correctionFinancialIssues(draft) : [], [draft]);
   const totals = useMemo(() => {
     if (!draft) return { value: null, error: null };
@@ -79,6 +110,35 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
   const headerReconciliation = !!(financialAllowed && totals.value && original?.workingTotals && difference === "0.00"
     && (totals.value.ht !== original.workingTotals.ht || totals.value.ttc !== original.workingTotals.ttc));
   const dirty = headerReconciliation || !!draft && !!original && JSON.stringify(draft) !== JSON.stringify(original.draft);
+  useEffect(() => {
+    if (original && draft) keepQuotationDraft(devisId, dirty || stale ? { original, draft } : null);
+  }, [devisId, draft, original, dirty, stale]);
+  useEffect(() => {
+    setQuotationWork(devisId, workKey, dirty || pending || stale, pending ? "Working quotation is saving or updating." :
+      stale ? "Compare concurrent changes before saving." : dirty ? "Working quotation has unsaved changes." : "");
+  }, [devisId, workKey, dirty, pending, stale]);
+  useEffect(() => {
+    if (!open) return;
+    const protect = (event: BeforeUnloadEvent) => {
+      if (quotationWorkBlocked(devisId)) { event.preventDefault(); event.returnValue = ""; }
+    };
+    window.addEventListener("beforeunload", protect);
+    return () => window.removeEventListener("beforeunload", protect);
+  }, [open, devisId]);
+  // Context saves also advance the working version. Rebase our local draft, never reset it.
+  useEffect(() => {
+    if (!initialized.current || !snapshot.data || !original || !draft || pending || snapshot.data.version === original.version) return;
+    const result = mergeQuotationDraft(original.draft, draft, snapshot.data.draft);
+    if (result.conflicts.length) {
+      setLatest(snapshot.data); setMergeChoices({}); setStale(true);
+    } else {
+      setOriginal(snapshot.data); setDraft(result.draft); setStale(false); setLatest(null);
+    }
+    // Snapshot identity alone triggers reconciliation; typing must not reset conflict choices.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshot.data]);
+  const comparison = useMemo(() => latest && original && draft
+    ? mergeQuotationDraft(original.draft, draft, latest.draft) : null, [latest, original, draft]);
   const financialDirty = headerReconciliation || !!draft && !!original && financialProjection(draft) !== financialProjection(original.draft);
   const editable = !pending && !disabled && !original?.blockedReason;
   const currentIndex = draft?.lines.findIndex(line => line.clientKey === selected) ?? -1;
@@ -104,7 +164,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
     setSelected(line.clientKey); setSavedMessage(false); setSelection(null);
   };
   const dismiss = () => {
-    if (submitLock.current || pending) return;
+    if (submitLock.current || pending || quotationWorkBlocked(devisId, workKey)) return;
     if (dirty) setDiscardOpen(true);
     else { setOpen(false); initialized.current = false; }
   };
@@ -114,18 +174,33 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
     if (cause instanceof ApiError && cause.status === 409) {
       setStale(true);
       // Refresh the cached snapshot for a later reopen, never the active draft.
-      void snapshot.refetch();
+      void snapshot.refetch().then(result => {
+        if (result.data) { setLatest(result.data); setMergeChoices({}); }
+      });
     }
   };
   const saveDraft = async () => {
-    if (!draft || !original || !editable || !dirty || validationMessage || submitLock.current || stale) return;
+    if (!draft || !original || !editable || !dirty || validationMessage || submitLock.current || stale || quotationWorkBlocked(devisId, workKey)) return;
     submitLock.current = true;
     setError(null);
     const submitted = structuredClone(draft);
     try {
       const result = await save.mutateAsync({ ...submitted, expectedVersion: original.version });
+      // A request can finish after route unmount. Do not recover an already-persisted new row as a duplicate.
+      const backup = readQuotationDraft(devisId);
+      if (backup?.original.version === original.version && JSON.stringify(backup.draft) === JSON.stringify(submitted)) {
+        keepQuotationDraft(devisId, null);
+        setQuotationWork(devisId, workKey, false);
+      }
       if (!mounted.current) return;
-      setOriginal(result); setDraft(structuredClone(result.draft)); setSavedMessage(true);
+      setOriginal(result); setDraft(structuredClone(result.draft)); setSavedMessage(true); setLatest(null);
+      const selectedIndex = submitted.lines.findIndex(line => line.clientKey === selected);
+      if (selectedIndex >= 0) {
+        const submittedLine = submitted.lines[selectedIndex];
+        const persistedLine = result.draft.lines.find(line => line.clientKey === selected ||
+          submittedLine.id !== null && line.id === submittedLine.id) ?? result.draft.lines[selectedIndex];
+        if (persistedLine) setSelected(persistedLine.clientKey);
+      }
       toast({ title: "Architect correction saved", description: "Original PDF and source TTC are unchanged. Previous translation approval has been cleared." });
     } catch (cause) { reportError(cause); }
     finally { submitLock.current = false; }
@@ -218,11 +293,11 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
       </div>
     </div>
     <Dialog open={open} onOpenChange={next => { if (!next) dismiss(); }}>
-      <DialogContent className="architect-correction max-w-[1120px] w-[calc(100vw-24px)] max-h-[94dvh] overflow-y-auto p-0 gap-0"
+      <DialogContent className="architect-correction max-w-[1540px] w-[calc(100vw-24px)] max-h-[94dvh] overflow-y-auto p-0 gap-0"
         onEscapeKeyDown={event => { if (dirty || pending) { event.preventDefault(); dismiss(); } }}
         onPointerDownOutside={event => { if (dirty || pending) { event.preventDefault(); dismiss(); } }}>
         <DialogHeader className="px-5 pt-6 pb-4 md:px-7 border-b border-[#d8cbb9]">
-          <div className="flex items-center gap-2 text-[#94734c]"><ShieldCheck size={14} /><span className="text-[10px] uppercase tracking-[.15em] font-semibold">Architect-controlled correction</span></div>
+          <div className="flex items-center gap-2 text-[#94734c]"><ShieldCheck size={14} /><span className="text-[10px] uppercase tracking-[.15em] font-semibold">Review/edit → Save → Review and approve</span></div>
           <DialogTitle className="text-xl tracking-tight text-[#0b2545]">Review the interpretation. Keep the original.</DialogTitle>
           <DialogDescription className="text-xs leading-relaxed max-w-[700px]">
             Save French and English content without OCR or model approval. Financial corrections apply as one batch only when the computed TTC matches the independently locked source TTC.
@@ -236,8 +311,14 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
           : snapshot.isError && !draft ? <div className="p-7 space-y-3" role="alert"><p className="text-sm font-semibold">The working quotation could not be loaded.</p>
             <p className="text-xs text-muted-foreground">{snapshot.error.message}</p>
             <Button type="button" variant="outline" size="sm" onClick={() => void snapshot.refetch()}>Retry loading</Button></div>
-          : draft && original ? <>
+          : draft && original ? <><div className="review-split"><div className="min-w-0">
             <div className="px-5 py-4 md:px-7 space-y-3">
+              <QuotationApprovalReview devisId={devisId} disabled={disabled || pending || dirty || stale || snapshot.isFetching || contexts.isFetching || contexts.isError}
+                onRefreshWorking={async () => {
+                  const result = await snapshot.refetch();
+                  if (result.isError) throw result.error;
+                }}
+                onLocate={key => { setSelected(key === "source" || key === "translation" ? "header" : key); }} />
               {vatRecoveryMessage && <p role="status" className="rounded-md border p-3 text-sm">{vatRecoveryMessage}</p>}
               {(financialIssues.length > 0 || vatRecoveryMessage) && <section className="rounded-lg border border-amber-300 p-4 space-y-3" aria-label="Financial checks">
                 <h3 className="font-semibold text-sm">{financialIssues.length ? `Financial checks — ${financialIssues.length} fields need attention` : "Recovered VAT — review before saving"}</h3>
@@ -284,7 +365,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
               </details>}
               {error && <div role="alert" className="rounded-lg border border-rose-300 bg-rose-50 text-rose-900 p-3 text-xs space-y-2">
                 <p className="font-semibold">{stale ? "The quotation changed. Your draft has not been overwritten." : "Save failed. Your draft is still here."}</p>
-                <p>{error}</p>{stale && <p>Copy your draft before discarding it, then reopen the editor to compare against the latest saved version. Stale batches cannot be forced through.</p>}
+                <p>{error}</p>{stale && <p>Compare your draft with the latest saved changes below. Choose overlapping values, then rebase and save in this workspace.</p>}
                 <Button type="button" size="sm" variant="outline" onClick={() => {
                   const blob = new Blob([JSON.stringify(draft, null, 2)], { type: "application/json" });
                   const url = URL.createObjectURL(blob); const link = document.createElement("a");
@@ -292,6 +373,13 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                 }}>Download draft backup</Button>
               </div>}
             </div>
+            {latest && comparison && <QuotationConflictReview conflicts={comparison.conflicts} choices={mergeChoices}
+              onChoice={(key, choice) => setMergeChoices(previous => ({ ...previous, [key]: choice }))}
+              onApply={() => {
+                const merged = mergeQuotationDraft(original.draft, draft, latest.draft, mergeChoices);
+                if (merged.conflicts.length) return;
+                setOriginal(latest); setDraft(merged.draft); setLatest(null); setStale(false); setError(null); setSavedMessage(false);
+              }} />}
             <div className="grid md:grid-cols-[230px_minmax(0,1fr)] border-t border-[#d8cbb9]">
               <nav className="p-3 md:border-r border-[#d8cbb9] bg-[#f8f5ef]" aria-label="Working quotation sections">
                 <button type="button" className={`text-left w-full p-3 rounded-md text-xs ${selected === "header" ? "bg-[#0b2545] text-[#f8f5ef]" : "hover:bg-[#ece6db]"}`}
@@ -396,6 +484,14 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                       <p className="text-[10px] text-muted-foreground">Amounts may be edited explicitly to represent the contractor’s actual line rounding. Enter 0% for exempt or reverse-charge VAT; an empty VAT rate is not assumed to be 20%.</p>
                     </div>}
                 </section> : null}
+                {contexts.isLoading && <Skeleton className="h-24 w-full mt-5" />}
+                {contexts.isError && <div role="alert" className="text-xs mt-5">Context could not be loaded. <Button type="button" size="sm" variant="outline" onClick={() => void contexts.refetch()}>Retry context</Button></div>}
+                {contexts.data && draft.lines.map((line, index) => <div key={line.clientKey} hidden={selected !== line.clientKey} className="border-t mt-5 pt-5">
+                  {line.id === null ? <p className="text-xs">Save this new line before adding rich context or images. Saving assigns its stable identity; wording above stays in your draft.</p> :
+                    <DevisLineContextEditor devisId={devisId} lineItemId={line.id} lineNumber={index + 1}
+                      context={contexts.data.contexts?.find(context => context.devisLineItemId === line.id) ?? null}
+                      readOnly={disabled || !!original.blockedReason} />}
+                </div>)}
               </main>
             </div>
             {original.history.length > 0 && <details className="mx-5 my-4 border border-[#d8cbb9] rounded-lg p-3 text-[11px]">
@@ -403,6 +499,9 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
               <ol className="mt-3 space-y-3">{original.history.map(entry => <li key={entry.id}><p>{entry.summary}</p>
                 <p className="text-muted-foreground mt-1">{entry.actor} · {entry.savedAt}</p></li>)}</ol>
             </details>}
+            </div><aside className="review-pdf" aria-label="Original contractor PDF alongside working quotation">
+              <iframe title="Original contractor PDF" src={`/api/devis/${devisId}/pdf?variant=original`} />
+            </aside></div>
             <footer className="correction-toolbar px-5 py-4 md:px-7">
               <div className="flex flex-wrap justify-between gap-4 items-center">
                 <div className="min-w-0">
@@ -413,12 +512,12 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                   </div>
                   {validationMessage && <p className="text-[11px] text-amber-900 mt-1 flex gap-1"><TriangleAlert size={12} className="shrink-0 mt-0.5" />{validationMessage}</p>}
                   {totals.error && !financialDirty && <p className="text-[10px] text-muted-foreground mt-1">VAT treatment is incomplete. Text-only corrections remain available; complete figures before a financial batch.</p>}
-                  {savedMessage && <p role="status" className="text-[11px] text-emerald-800 mt-1">Saved. Review and approve the new translation version in the quotation’s Translation tab.</p>}
+                  {savedMessage && <p role="status" className="text-[11px] text-emerald-800 mt-1">Saved. Review and approve the latest checklist above.</p>}
                   <p className="text-[10px] text-muted-foreground mt-1">No automatic save. Original PDF, locked TTC and signed evidence are not rewritten.</p>
                 </div>
                 <div className="flex gap-2">
-                  <Button type="button" variant="outline" size="sm" disabled={pending} onClick={dismiss}>{dirty ? "Close editor…" : "Close"}</Button>
-                  <Button type="button" size="sm" onClick={() => void saveDraft()} disabled={!editable || !dirty || !!validationMessage || stale}
+                  <Button type="button" variant="outline" size="sm" disabled={pending || quotationWorkBlocked(devisId, workKey)} onClick={dismiss}>{dirty ? "Close editor…" : "Close"}</Button>
+                  <Button type="button" size="sm" onClick={() => void saveDraft()} disabled={!editable || !dirty || !!validationMessage || stale || quotationWorkBlocked(devisId, workKey)}
                     className="gap-2 bg-[#0b2545] hover:bg-[#173657] text-[#f8f5ef]"><Save size={13} />{save.isPending ? "Saving batch…" : "Save correction"}</Button>
                 </div>
               </div>
@@ -431,7 +530,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
         <AlertDialogHeader><AlertDialogTitle>Keep your unsaved correction?</AlertDialogTitle>
           <AlertDialogDescription>Closing without saving discards this local draft. The saved quotation and contractor PDF will not change.</AlertDialogDescription></AlertDialogHeader>
         <AlertDialogFooter><AlertDialogCancel>Keep editing</AlertDialogCancel>
-          <AlertDialogAction onClick={() => { setOpen(false); setDiscardOpen(false); initialized.current = false; setDraft(null); setOriginal(null); }}>Discard draft</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogAction onClick={() => { setOpen(false); setDiscardOpen(false); initialized.current = false; setDraft(null); setOriginal(null); setLatest(null); setStale(false); setError(null); keepQuotationDraft(devisId, null); setQuotationWork(devisId, workKey, false); }}>Discard draft</AlertDialogAction></AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
   </>;

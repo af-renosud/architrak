@@ -3,6 +3,8 @@ import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/queryClient";
 import type { ContextDoc } from "@shared/context-doc";
 import type { DevisLineContext } from "@shared/schema";
+import { setQuotationWork } from "./quotation-review-state";
+import { keepContextDraft, readContextDraft } from "./context-draft-backup";
 
 export type ContextSaveState = "idle" | "saving" | "saved" | "conflict" | "error";
 
@@ -25,26 +27,40 @@ export type ContextSaveState = "idle" | "saving" | "saved" | "conflict" | "error
  *          mark saved, no toast.
  *      * server holds what we last saved → our baseRevision was merely
  *        stale: rebase and retry silently.
- *      * anything else → genuine cross-window edit: rebase ONCE and retry
- *        with a notice (deliberate last-writer-wins); a second consecutive
- *        409 surfaces the conflict instead of looping.
+ *      * anything else → pause and compare; never overwrite a foreign edit.
  */
 export function useContextSaveQueue(
   devisId: number,
   lineItemId: number,
   context: DevisLineContext | null,
+  enabled = true,
 ) {
   const { toast } = useToast();
-  const revisionRef = useRef<number>(context?.revision ?? 0);
+  const recovered = useRef(enabled ? readContextDraft(devisId, lineItemId) : null);
+  const revisionRef = useRef<number>(recovered.current?.baseRevision ?? context?.revision ?? 0);
   const [saveState, setSaveState] = useState<ContextSaveState>("idle");
+  const [conflict, setConflict] = useState<{ revision: number; document: ContextDoc; mine: ContextDoc; base: ContextDoc | null } | null>(null);
+  const pausedRef = useRef(false);
+  const workKey = `context:${lineItemId}`;
+  const markWork = (blocked: boolean, message = "") => setQuotationWork(devisId, workKey, blocked, message);
 
-  const pendingDocRef = useRef<ContextDoc | null>(null);
+  const pendingDocRef = useRef<ContextDoc | null>(recovered.current?.document ?? null);
   const inFlightRef = useRef(false);
   const inFlightDocStrRef = useRef<string | null>(null);
   const rebasedRef = useRef(false);
   const lastSavedStrRef = useRef<string | null>(
-    context ? JSON.stringify(context.document) : null,
+    recovered.current ? recovered.current.baseDocument ? JSON.stringify(recovered.current.baseDocument) : null :
+      context ? JSON.stringify(context.document) : null,
   );
+  const rememberDraft = (document: ContextDoc) => keepContextDraft(devisId, lineItemId, {
+    document, baseRevision: revisionRef.current,
+    baseDocument: lastSavedStrRef.current ? JSON.parse(lastSavedStrRef.current) : null,
+  });
+  const settleBackup = (document: ContextDoc, revision: number) => {
+    const backup = readContextDraft(devisId, lineItemId);
+    if (!backup || JSON.stringify(backup.document) === JSON.stringify(document)) keepContextDraft(devisId, lineItemId, null);
+    else keepContextDraft(devisId, lineItemId, { ...backup, baseDocument: document, baseRevision: revision });
+  };
 
   // Re-sync the revision baseline when fresher data arrives from the server
   // (e.g. a query refetch after our own save). Only adopt the newer revision
@@ -89,38 +105,48 @@ export function useContextSaveQueue(
   };
 
   const pumpSaves = async () => {
-    if (inFlightRef.current) return;
+    if (inFlightRef.current || pausedRef.current) return;
     const doc = pendingDocRef.current;
     if (!doc) return;
     pendingDocRef.current = null;
     const docStr = JSON.stringify(doc);
     inFlightRef.current = true;
+    const requestKey = `context-request:${lineItemId}:${crypto.randomUUID()}`;
+    setQuotationWork(devisId, requestKey, true, "A context save request is in progress.");
     inFlightDocStrRef.current = docStr;
     setSaveState("saving");
+    markWork(true, "Line context is saving.");
     try {
       const saved = await putDocument(doc);
       revisionRef.current = saved.revision;
       lastSavedStrRef.current = docStr;
+      settleBackup(doc, saved.revision);
       rebasedRef.current = false;
       setSaveState("saved");
+      if (!pendingDocRef.current) markWork(false);
       // Keep the query cache fresh (staleTime is Infinity): without this, an
       // editor remounted after a tab switch initialises from the stale cached
       // document and the just-saved content silently vanishes from the UI
       // until a full reload.
       queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "line-contexts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "architect-correction"] });
     } catch (err) {
       const status = (err as Error & { status?: number }).status;
       if (status === 409 && !rebasedRef.current) {
         try {
           const latest = await fetchLatest();
-          revisionRef.current = latest?.revision ?? 0;
           const latestStr = latest ? JSON.stringify(latest.document) : null;
           if (latestStr !== null && latestStr === docStr) {
             // Self-conflict: the server already holds exactly this content
             // (a duplicate save landed first). Nothing to redo.
             lastSavedStrRef.current = docStr;
+            revisionRef.current = latest!.revision;
+            settleBackup(doc, latest!.revision);
             rebasedRef.current = false;
             setSaveState("saved");
+            if (!pendingDocRef.current) markWork(false);
+            queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "line-contexts"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "architect-correction"] });
           } else {
             rebasedRef.current = true;
             // Retry with the user's content unless they typed something newer.
@@ -129,28 +155,40 @@ export function useContextSaveQueue(
               latestStr !== null &&
               lastSavedStrRef.current !== null &&
               latestStr === lastSavedStrRef.current;
-            if (!selfStale) {
-              toast({
-                title: "Context edited elsewhere",
-                description:
-                  "This line was updated in another window — your version is being saved over it.",
-              });
+            if (selfStale) revisionRef.current = latest!.revision;
+            else {
+              pausedRef.current = true;
+              setSaveState("conflict");
+              markWork(true, "Context changed elsewhere. Compare both versions before saving.");
+              setConflict({ revision: latest?.revision ?? 0,
+                document: (latest?.document ?? { type: "doc", content: [] }) as ContextDoc,
+                mine: pendingDocRef.current ?? doc,
+                base: lastSavedStrRef.current ? JSON.parse(lastSavedStrRef.current) : null });
             }
           }
         } catch {
+          pausedRef.current = true;
+          if (!pendingDocRef.current) pendingDocRef.current = doc;
+          markWork(true, "Context could not be refreshed. Retry saving.");
           setSaveState("error");
         }
       } else if (status === 409) {
+        pausedRef.current = true;
+        if (!pendingDocRef.current) pendingDocRef.current = doc;
+        markWork(true, "Context changed again. Retry to compare the latest version.");
         rebasedRef.current = false;
         setSaveState("conflict");
         queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "line-contexts"] });
         toast({
           title: "Context changed elsewhere",
           description:
-            "This line's context keeps changing in another window. Reload the page before editing further.",
+            "Your context draft is preserved. Compare the latest context here before saving again.",
           variant: "destructive",
         });
       } else {
+        pausedRef.current = true;
+        if (!pendingDocRef.current) pendingDocRef.current = doc;
+        markWork(true, "Context save failed. Your draft is preserved; retry saving.");
         setSaveState("error");
         toast({
           title: "Context save failed",
@@ -159,9 +197,10 @@ export function useContextSaveQueue(
         });
       }
     } finally {
+      setQuotationWork(devisId, requestKey, false);
       inFlightRef.current = false;
       inFlightDocStrRef.current = null;
-      if (pendingDocRef.current) void pumpSaves();
+      if (pendingDocRef.current && !pausedRef.current) void pumpSaves();
     }
   };
 
@@ -176,10 +215,37 @@ export function useContextSaveQueue(
       return;
     }
     pendingDocRef.current = doc;
+    rememberDraft(doc);
+    markWork(true, "Unsaved line context.");
     void pumpSaves();
   };
 
-  const hasPendingSave = () => pendingDocRef.current !== null;
+  const hasPendingSave = () => pendingDocRef.current !== null || inFlightRef.current || pausedRef.current;
+  const retry = () => { pausedRef.current = false; rebasedRef.current = false; void pumpSaves(); };
+  const resolveConflict = (choice: "mine" | "latest") => {
+    if (!conflict) return null;
+    revisionRef.current = conflict.revision;
+    lastSavedStrRef.current = JSON.stringify(conflict.document);
+    const chosen = choice === "mine" ? pendingDocRef.current ?? conflict.mine : conflict.document;
+    pendingDocRef.current = null; pausedRef.current = false; rebasedRef.current = false;
+    setConflict(null);
+    if (choice === "mine") enqueue(chosen);
+    else {
+      setSaveState("saved"); markWork(false);
+      keepContextDraft(devisId, lineItemId, null);
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "line-contexts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "architect-correction"] });
+    }
+    return chosen;
+  };
+  useEffect(() => {
+    if (recovered.current && enabled) {
+      markWork(true, "Recovered unsaved context is being checked and saved.");
+      void pumpSaves();
+    }
+    // Recover once per mounted editor; the existing revision guard handles duplicate unmount flushes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /**
    * Adopt a fresh server snapshot as the new save baseline (revision + last
@@ -189,11 +255,12 @@ export function useContextSaveQueue(
    * the baseline must never move under an unsettled save.
    */
   const adoptServerState = (c: DevisLineContext): boolean => {
-    if (inFlightRef.current || pendingDocRef.current) return false;
+    if (inFlightRef.current || pendingDocRef.current || pausedRef.current) return false;
     revisionRef.current = c.revision;
     lastSavedStrRef.current = JSON.stringify(c.document);
     return true;
   };
 
-  return { saveState, setSaveState, enqueue, revisionRef, hasPendingSave, adoptServerState };
+  return { saveState, setSaveState, enqueue, revisionRef, hasPendingSave, adoptServerState, conflict, resolveConflict, retry,
+    restoredDocument: recovered.current?.document, rememberDraft };
 }

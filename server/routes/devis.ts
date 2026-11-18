@@ -18,6 +18,8 @@ import { startQuotationRescrape } from "../services/quotation-rescrape-jobs";
 import { quotationApprovalBlocker } from "../services/quotation-approval-guard";
 import { translationCoverageBlocker } from "../services/quotation-translation-coverage";
 import { commitTranslationApproval } from "../services/translation-approval-commit";
+import { quotationReviewReadiness } from "../services/quotation-review-readiness";
+import { quotationWorkingVersion } from "../services/quotation-working-version";
 import { duplicateCorrection, getDuplicateCorrectionHistory, CorrectionError } from "../services/duplicate-extraction";
 import { extractionRowCorrection } from "../services/extraction-row-correction";
 import { extractionCorrectionSchema } from "../../shared/extraction-row-correction";
@@ -627,6 +629,14 @@ router.post(
   },
 );
 
+router.get("/api/devis/:id/translation/readiness", requireAuth, validateRequest({ params: idParams }), async (req, res, next) => {
+  try {
+    const result = await quotationReviewReadiness(Number(req.params.id));
+    if (!result) return res.status(404).json({ message: "Quotation not found." });
+    res.json(result);
+  } catch (error) { next(error); }
+});
+
 router.post(
   "/api/devis/:id/translation/finalise",
   requireAuth,
@@ -637,6 +647,10 @@ router.post(
     const [quotation, lines, existing] = await Promise.all([
       storage.getDevis(devisId), storage.getDevisLineItems(devisId), storage.getDevisTranslation(devisId),
     ]);
+    if (req.body?.expectedVersion !== undefined && (
+      typeof req.body.expectedVersion !== "string"
+      || req.body.expectedVersion !== quotationWorkingVersion(quotation, lines, existing)
+    )) return res.status(409).json({ message: "The quotation changed after your review. Refresh the approval checks; your edits are preserved.", code: "REVIEW_VERSION_CHANGED" });
     // This endpoint is explicit human approval, not automatic extraction
     // acceptance. OCR/semantic observations must not veto the architect.
     const financialBlocker = await architectFinancialBoundary(devisId);

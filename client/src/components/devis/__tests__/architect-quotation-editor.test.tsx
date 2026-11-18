@@ -75,6 +75,7 @@ it("recovers VAT into a reviewable draft and saves only on explicit confirmation
   expect(saves[0].lines[0].descriptionEn).toBe("Door A — human translation");
 });
 beforeEach(() => {
+  sessionStorage.clear();
   persisted = fixture(); saveError = null; saves = [];
   vi.stubGlobal("fetch", fetchMock);
   fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
@@ -83,7 +84,8 @@ beforeEach(() => {
       saves.push(request);
       if (saveError) return response({ message: saveError.message, code: "STALE_VERSION" }, saveError.status);
       const { expectedVersion: _, ...draft } = request;
-      persisted = { ...persisted, version: "working-v2", draft,
+      persisted = { ...persisted, version: "working-v2", draft: { ...draft, lines: draft.lines.map((line, index) => line.id === null
+        ? { ...line, id: 500 + index, clientKey: `line-${500 + index}` } : line) },
         history: [{ id: 1, actor: "Camille Laurent", savedAt: "2026-10-05T10:17:31Z", summary: "Human correction saved" }] };
       return response(persisted);
     }
@@ -93,6 +95,8 @@ beforeEach(() => {
       return response(persisted);
     }
     if (url === path) return response(persisted);
+    if (url === "/api/devis/42/translation/readiness") return response({ version: persisted.version, status: "draft", blockers: [] });
+    if (url === "/api/devis/42/line-contexts") return response({ contexts: [] });
     return response([]);
   });
 });
@@ -176,6 +180,37 @@ describe("architect editor persistence and source authority", () => {
     expect(persisted.draft.lines[3]).toMatchObject({ kind: "context", totalHt: "0.00", included: false });
     expect(persisted.draft.lines[4].kind).toBe("priced");
   });
+  it("assigns a new context row identity before assets and blocks approval during the real upload and context save", async () => {
+    const fallback = fetchMock.getMockImplementation()!;
+    let finishUpload!: (value: ReturnType<typeof response>) => void;
+    let finishContext!: (value: ReturnType<typeof response>) => void;
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+      if (url.endsWith("/line-contexts/503/assets")) return new Promise(resolve => { finishUpload = resolve; });
+      if (url.endsWith("/line-contexts/503") && options?.method === "PUT") return new Promise(resolve => { finishContext = resolve; });
+      return fallback(url, options);
+    });
+    mount(); await open();
+    fireEvent.click(screen.getByRole("button", { name: "Add context-only line" }));
+    fireEvent.change(screen.getByLabelText("Full French description"), { target: { value: "Détail de finition" } });
+    fireEvent.change(screen.getByLabelText("English translation"), { target: { value: "Finish detail" } });
+    expect(screen.getByText(/Save this new line before adding rich context/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+    await waitFor(() => expect(screen.getByTestId("input-context-file-42-4")).toBeInTheDocument());
+    expect(persisted.draft.lines[3].id).toBe(503);
+    fireEvent.change(screen.getByTestId("input-context-file-42-4"), { target: { files: [new File(["owned image"], "finish.jpg", { type: "image/jpeg" })] } });
+    await screen.findByText("Uploading image · keep this workspace open.");
+    expect(screen.getByRole("button", { name: "Approve reviewed quotation" })).toBeDisabled();
+    expect(screen.getAllByRole("button", { name: /^Close$/ })[0]).toBeDisabled();
+    finishUpload(response({ id: 887 }));
+    await waitFor(() => expect(finishContext).toBeDefined());
+    expect(screen.getByRole("button", { name: "Approve reviewed quotation" })).toBeDisabled();
+    const put = fetchMock.mock.calls.find(([url, options]) => String(url).endsWith("/line-contexts/503") && options?.method === "PUT");
+    const document = JSON.parse(String(put![1].body)).document;
+    expect(JSON.stringify(document)).toContain('"assetId":887');
+    finishContext(response({ id: 5, devisId: 42, devisLineItemId: 503, revision: 1, document }));
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /I reviewed the original PDF/ })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Approve reviewed quotation" })).toBeDisabled();
+  });
   it("preserves a stale draft on 409 and background reload, disabling force-save", async () => {
     mount(); await open();
     fireEvent.change(screen.getByLabelText("French header"), { target: { value: "My unsaved draft" } });
@@ -186,6 +221,37 @@ describe("architect editor persistence and source authority", () => {
     expect(screen.getByLabelText("French header")).toHaveValue("My unsaved draft");
     expect(screen.getByRole("button", { name: "Save correction" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Download draft backup" })).toBeVisible();
+  });
+  it("restores an unsaved session draft after remount without replacing newer foreign fields", async () => {
+    const view = mount(); await open();
+    fireEvent.change(screen.getByLabelText("French header"), { target: { value: "Recovered French draft" } });
+    view.unmount();
+    persisted = structuredClone(persisted);
+    persisted.version = "foreign-v2"; persisted.draft.summaryEn = "Foreign summary after navigation";
+    mount(); await open();
+    expect(screen.getByLabelText("French header")).toHaveValue("Recovered French draft");
+    expect(screen.getByLabelText("English overview")).toHaveValue("Foreign summary after navigation");
+    expect(saves).toHaveLength(0);
+  });
+  it("compares a stale draft in place, requires conflict choices and retains foreign non-overlapping changes on rebase", async () => {
+    mount(); await open();
+    fireEvent.change(screen.getByLabelText("French header"), { target: { value: "My corrected French" } });
+    persisted.draft.headerFr = "Foreign corrected French";
+    persisted.draft.lines[1].descriptionEn = "Foreign updated second item";
+    persisted.version = "concurrent-v2";
+    saveError = { status: 409, message: "Expected version no longer matches." };
+    fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+    await screen.findByRole("region", { name: "Compare concurrent changes" });
+    expect(screen.getByRole("button", { name: "Rebase draft onto latest" })).toBeDisabled();
+    expect(screen.getByLabelText("French header")).toHaveValue("My corrected French");
+    fireEvent.click(screen.getByRole("radio", { name: /My draft/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Rebase draft onto latest" }));
+    saveError = null;
+    fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+    await waitFor(() => expect(saves).toHaveLength(2));
+    expect(saves[1].expectedVersion).toBe("concurrent-v2");
+    expect(saves[1].headerFr).toBe("My corrected French");
+    expect(saves[1].lines[1]).toMatchObject({ id: 102, descriptionEn: "Foreign updated second item" });
   });
   it("preserves unsaved text while establishing a PDF-backed missing source baseline", async () => {
     persisted.baseline = null;

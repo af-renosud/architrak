@@ -3212,9 +3212,6 @@ function LineItemWithCheck({
   const notes = li.checkNotes || "";
   const colors = CHECK_COLORS[status] || CHECK_COLORS.unchecked;
   const [notesOpen, setNotesOpen] = useState(!!notes);
-  const [editingDesc, setEditingDesc] = useState(false);
-  const [draftDesc, setDraftDesc] = useState(li.description);
-  const [savingDesc, setSavingDesc] = useState(false);
 
   // Variant B inline-popover state. Opens when the architect clicks the red
   // status button (after the line PATCH auto-creates the check server-side
@@ -3322,43 +3319,8 @@ function LineItemWithCheck({
   };
 
   const enterDescEdit = () => {
-    if (disabled || savingDesc) return;
-    setDraftDesc(li.description);
-    setEditingDesc(true);
-  };
-
-  const cancelDescEdit = () => {
-    setDraftDesc(li.description);
-    setEditingDesc(false);
-  };
-
-  const saveDescEdit = async () => {
-    if (savingDesc) return;
-    const next = draftDesc.trim();
-    if (!next) {
-      cancelDescEdit();
-      return;
-    }
-    if (next === li.description) {
-      setEditingDesc(false);
-      return;
-    }
-    setSavingDesc(true);
-    try {
-      await Promise.resolve(onUpdate({ description: next }));
-      toast({ title: "Description updated" });
-      setEditingDesc(false);
-    } catch (err) {
-      setDraftDesc(li.description);
-      setEditingDesc(false);
-      toast({
-        title: "Couldn't update description",
-        description: err instanceof Error ? err.message : "Please try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setSavingDesc(false);
-    }
+    if (disabled) return;
+    window.dispatchEvent(new CustomEvent("quotation-review-open", { detail: devisId }));
   };
 
   return (
@@ -3367,60 +3329,12 @@ function LineItemWithCheck({
         id={`line-anchor-lines-${devisId}-${li.lineNumber}`}
         onClick={() => onActivateLine?.(li.lineNumber, li.id)}
         onFocusCapture={() => onActivateLine?.(li.lineNumber, li.id)}
-        className={`border-l-[3px] ${colors.border} ${colors.row} ${savingDesc ? "opacity-60" : ""} transition-colors duration-500 ${
+        className={`border-l-[3px] ${colors.border} ${colors.row} transition-colors duration-500 ${
           isFlashing ? "bg-[#C1A27B]/25" : isWorkingLine ? "bg-[#C1A27B]/[0.08]" : ""
         }`}
       >
         <td className="py-1.5 px-2 text-[11px] align-top">{li.lineNumber}</td>
         <td className="py-1.5 px-2 text-[11px] align-top">
-          {editingDesc ? (
-            <div className="flex flex-col gap-1">
-              <Textarea
-                autoFocus
-                value={draftDesc}
-                onChange={(e) => setDraftDesc(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    cancelDescEdit();
-                  } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                    e.preventDefault();
-                    saveDescEdit();
-                  }
-                }}
-                onBlur={() => { if (editingDesc) saveDescEdit(); }}
-                rows={2}
-                className="text-[11px] min-h-[44px] py-1.5"
-                disabled={savingDesc}
-                data-testid={`textarea-line-description-${li.id}`}
-              />
-              <div className="flex items-center gap-1">
-                <Button
-                  type="button"
-                  size="sm"
-                  className="h-6 px-2 text-[10px]"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={saveDescEdit}
-                  disabled={savingDesc}
-                  data-testid={`button-save-line-description-${li.id}`}
-                >
-                  {savingDesc ? <Loader2 size={10} className="animate-spin" /> : "Save"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-6 px-2 text-[10px]"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={cancelDescEdit}
-                  disabled={savingDesc}
-                  data-testid={`button-cancel-line-description-${li.id}`}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          ) : (
             <div
               role={disabled ? undefined : "button"}
               tabIndex={disabled ? -1 : 0}
@@ -3432,8 +3346,8 @@ function LineItemWithCheck({
                   enterDescEdit();
                 }
               }}
-              className={`whitespace-pre-wrap rounded px-1 -mx-1 outline-hidden ${disabled ? "" : "cursor-text hover:bg-[#c1a27b]/10 focus:ring-2 focus:ring-[#c1a27b]/40"}`}
-              title={disabled ? undefined : "Click to edit"}
+              className={`whitespace-pre-wrap rounded px-1 -mx-1 outline-hidden ${disabled ? "" : "cursor-pointer hover:bg-[#c1a27b]/10 focus:ring-2 focus:ring-[#c1a27b]/40"}`}
+              title={disabled ? undefined : "Review/edit in working quotation"}
               data-testid={`cell-line-description-${li.id}`}
             >
               <div className="flex items-center gap-2 flex-wrap">
@@ -3451,13 +3365,12 @@ function LineItemWithCheck({
                 )}
               </div>
             </div>
-          )}
           <DuplicateExtractionCorrection
             devisId={devisId}
             projectId={projectId}
             line={li}
             lines={quotationLines}
-            disabled={disabled || editingDesc || savingDesc || popoverOpen || savingPopover}
+            disabled={disabled || popoverOpen || savingPopover}
           />
         </td>
         <td className="py-1.5 px-2 text-[11px] text-right">{li.quantity}</td>

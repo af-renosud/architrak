@@ -43,6 +43,7 @@ function jsonRes(body: unknown, status = 200) {
 }
 
 beforeEach(() => {
+  sessionStorage.clear();
   toastMock.mockReset();
   fetchMock.mockReset();
   vi.stubGlobal("fetch", fetchMock);
@@ -71,6 +72,31 @@ describe("useContextSaveQueue (Task 364)", () => {
     const [, init] = putCalls()[0];
     expect(JSON.parse((init as RequestInit).body as string).baseRevision).toBe(3);
     expect(result.current.revisionRef.current).toBe(4);
+  });
+  it("keeps failed context pending and retries the exact draft instead of dropping it", async () => {
+    fetchMock.mockResolvedValueOnce(jsonRes({ message: "Temporary failure" }, 503))
+      .mockResolvedValueOnce(jsonRes(ctx(4, doc("retain this context"))));
+    const { result } = renderHook(() => useContextSaveQueue(7, 100, ctx(3, doc("old"))));
+    act(() => result.current.enqueue(doc("retain this context")));
+    await waitFor(() => expect(result.current.saveState).toBe("error"));
+    expect(result.current.hasPendingSave()).toBe(true);
+    act(() => result.current.retry());
+    await waitFor(() => expect(result.current.saveState).toBe("saved"));
+    expect(JSON.parse(putCalls()[1][1].body)).toMatchObject({ baseRevision: 3, document: doc("retain this context") });
+  });
+  it("recovers a failed context draft after remount and still compares a newer foreign document", async () => {
+    fetchMock.mockResolvedValueOnce(jsonRes({ message: "Network unavailable" }, 503));
+    const first = renderHook(() => useContextSaveQueue(7, 100, ctx(3, doc("base"))));
+    act(() => first.result.current.enqueue(doc("my recoverable context")));
+    await waitFor(() => expect(first.result.current.saveState).toBe("error"));
+    first.unmount();
+    fetchMock.mockResolvedValueOnce(jsonRes({ message: "stale" }, 409))
+      .mockResolvedValueOnce(jsonRes({ contexts: [ctx(4, doc("foreign context"))] }));
+    const next = renderHook(() => useContextSaveQueue(7, 100, ctx(4, doc("foreign context"))));
+    await waitFor(() => expect(next.result.current.saveState).toBe("conflict"));
+    expect(next.result.current.restoredDocument).toEqual(doc("my recoverable context"));
+    expect(next.result.current.conflict).toMatchObject({ mine: doc("my recoverable context"), base: doc("base"), document: doc("foreign context") });
+    expect(putCalls()).toHaveLength(2);
   });
 
   it("re-syncs the revision when fresher server data matching our last save arrives", async () => {
@@ -154,7 +180,7 @@ describe("useContextSaveQueue (Task 364)", () => {
     expect(toastMock).not.toHaveBeenCalled();
   });
 
-  it("still surfaces the toast for a genuine two-window conflict", async () => {
+  it("pauses on a genuine two-window conflict and saves only after an explicit comparison choice", async () => {
     const foreign = doc("someone else's content");
     fetchMock
       .mockResolvedValueOnce(jsonRes({ message: "stale" }, 409))
@@ -163,12 +189,14 @@ describe("useContextSaveQueue (Task 364)", () => {
     const { result } = renderHook(() => useContextSaveQueue(7, 100, ctx(2, doc("base"))));
 
     act(() => result.current.enqueue(doc("mine")));
+    await waitFor(() => expect(result.current.saveState).toBe("conflict"));
+    expect(putCalls()).toHaveLength(1);
+    expect(result.current.revisionRef.current).toBe(2);
+    expect(result.current.conflict).toMatchObject({ document: foreign, mine: doc("mine"), base: doc("base") });
+    act(() => { result.current.resolveConflict("mine"); });
     await waitFor(() => expect(result.current.saveState).toBe("saved"));
-
-    expect(toastMock).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "Context edited elsewhere" }),
-    );
-    expect(putCalls()).toHaveLength(2); // rebase + retry (deliberate LWW with notice)
+    expect(putCalls()).toHaveLength(2);
+    expect(JSON.parse(putCalls()[1][1].body).baseRevision).toBe(4);
   });
 
   it("declares a hard conflict after two consecutive genuine 409s", async () => {
@@ -183,9 +211,10 @@ describe("useContextSaveQueue (Task 364)", () => {
     act(() => result.current.enqueue(doc("mine")));
     await waitFor(() => expect(result.current.saveState).toBe("conflict"));
 
-    expect(toastMock).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "Context changed elsewhere", variant: "destructive" }),
-    );
+    expect(putCalls()).toHaveLength(1);
+    act(() => { result.current.resolveConflict("latest"); });
+    expect(result.current.saveState).toBe("saved");
+    expect(putCalls()).toHaveLength(1);
     void foreign2;
   });
 });

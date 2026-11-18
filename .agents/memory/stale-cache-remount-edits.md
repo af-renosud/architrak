@@ -36,3 +36,14 @@ reload, even though the underlying list has refreshed.
 **How to apply:** when adding a create, issue/send, status, reissue/supersede,
 payment, or deposit-lifecycle action, identify every aggregate query derived
 from that record and invalidate it on success through its canonical query key.
+
+Quotation approval must wait for every wording/context debounce, request and
+image upload to settle, then bind approval to the reviewed server revision.
+Foreign context conflicts must pause for explicit comparison, not automatically
+rebase and overwrite the other editor.
+
+**Why:** separate context and wording saves can otherwise approve older content
+or silently erase another author's work while presenting a reassuring saved state.
+
+**How to apply:** keep recoverable local drafts, coordinate all pending work,
+and refresh the approval revision after saves or explicit conflict resolution.
