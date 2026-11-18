@@ -3,6 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import { storage } from "../storage";
 import { getDocumentBuffer } from "../storage/object-storage";
+import { matchesCurrentSignedCopy } from "./contractor-copy-card-status";
 import {
   projectCommunications,
   signedDevisCopyNotices,
@@ -262,12 +263,14 @@ export interface SignedCopyContractorCopyPayload {
     communicationId: number | null;
     canRetry: boolean;
     source: string;
+    currentDocument: boolean;
     signatureSource: "archisign" | "manual_upload";
   }>;
 }
 
 async function deliveryResponse(
   row: SignedDevisCopyNotice,
+  d?: Devis,
 ): Promise<SignedCopyContractorCopyPayload["deliveries"][number]> {
   const communication = row.communicationId
     ? await storage.getProjectCommunication(row.communicationId)
@@ -284,6 +287,7 @@ async function deliveryResponse(
       row.status === "reconciling"
       || (row.status === "failed" && !providerSending),
     source: row.source,
+    currentDocument: Boolean(d && matchesCurrentSignedCopy(d, row, communication)),
     signatureSource: (row.confirmationSnapshot as Partial<SignedCopyConfirmationSnapshot> | null)?.signatureSource === "manual_upload" ? "manual_upload" : "archisign",
   };
 }
@@ -335,7 +339,7 @@ export async function getSignedCopyContractorCopyPayload(
     recipientEmail,
     quotationRef,
     confirmationToken,
-    deliveries: await Promise.all(deliveries.map(deliveryResponse)),
+    deliveries: await Promise.all(deliveries.map(row => deliveryResponse(row, state?.devis))),
   };
 }
 

@@ -15,6 +15,7 @@ type ContractorCopyDelivery = {
   communicationId: number | null;
   canRetry: boolean;
   source: string;
+  currentDocument?: boolean;
   signatureSource?: "archisign" | "manual_upload";
 };
 
@@ -85,7 +86,6 @@ export function ContractorCopySend({
   const contractorCopyQuery = useQuery<ContractorCopyResponse>({
     queryKey: ["/api/devis", devisId, "contractor-copy"],
     refetchOnMount: "always",
-    enabled: !isArchived,
     refetchInterval: (query) => {
       const deliveries = query.state.data?.deliveries ?? [];
       return deliveries.some((delivery) => isContractorCopyPending(delivery.status))
@@ -105,6 +105,7 @@ export function ContractorCopySend({
 
   const contractorCopyQueryKey = ["/api/devis", devisId, "contractor-copy"];
   const invalidateContractorCopyData = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "contractor-copy-status"] });
     queryClient.invalidateQueries({ queryKey: contractorCopyQueryKey });
     queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "signed-copy-notice"] });
     queryClient.invalidateQueries({ queryKey: ["/api/communications"] });
@@ -322,7 +323,7 @@ export function ContractorCopySend({
           ) : (
             <>
               <Send className="mr-1.5 h-4 w-4" />
-              Send to Contractor
+              {deliveries.some(d => d.status === "sent") ? "Resend signed copy" : "Send to Contractor"}
             </>
           )}
         </Button>
@@ -363,6 +364,9 @@ export function ContractorCopySend({
                       {delivery.source.toLowerCase() === "manual" ? "Manual" : "Automatic"}
                     </span>
                     {delivery.signatureSource === "manual_upload" && <span>Signed — manual upload</span>}
+                    {delivery.currentDocument !== undefined && <span className="text-muted-foreground">
+                      {delivery.currentDocument ? "Current signed document" : "Previous document / signature record"}
+                    </span>}
                     <span className={contractorCopyStatusClass(delivery.status)}>
                       {contractorCopyStatusLabel(delivery.status)}
                     </span>

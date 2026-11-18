@@ -61,6 +61,7 @@ import { DevisTranslationSection } from "@/components/devis/DevisTranslationSect
 import { SituationsSection } from "@/components/devis/SituationsSection";
 import { PdfPopoutViewer } from "@/components/devis/PdfPopoutViewer";
 import { SignedPdfQuickLink } from "@/components/devis/SignedPdfQuickLink";
+import { ContractorCopyCardStatus } from "@/components/devis/ContractorCopyCardStatus";
 import { GenerateDepositCertificateButton } from "@/components/devis/GenerateDepositCertificateButton";
 import { ContractorSelect } from "@/components/ui/contractor-select";
 import { TvaDerivedHint } from "@/components/ui/tva-derived-hint";
@@ -1161,6 +1162,10 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
                   <AcompteBadge devis={d} />
                 )}
                 <FeeOverrideBadge devis={d} />
+                <ContractorCopyCardStatus devisId={d.id} projectId={d.projectId} isArchived={isArchived}
+                  inactive={isVoid || isReplaced}
+                  isSigned={d.signOffStage === "client_signed_off" || d.archisignEnvelopeStatus === "signed"
+                    || d.status === "signed" || (d.signedOffVia === "manual_upload" && !!d.manualSignoffAt)} />
                 {d.notes && (
                   <span
                     className="inline-flex items-center gap-0.5 rounded bg-amber-100 dark:bg-amber-900/40 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-widest text-amber-700 dark:text-amber-400"

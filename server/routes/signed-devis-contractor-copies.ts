@@ -8,7 +8,9 @@ import {
   getSignedCopySetting,
   retrySignedCopyNotice,
   setSignedCopyEnabled,
+  listSignedCopyDeliveriesForDevis,
 } from "../services/signed-devis-contractor-copy.service";
+import { matchesCurrentSignedCopy } from "../services/contractor-copy-card-status";
 import {
   createManualSignedCopyDelivery,
   getSignedCopyContractorCopyPayload,
@@ -26,6 +28,24 @@ const manualDeliveryBody = z.object({
   requestId: z.string().uuid(),
   confirmationToken: z.string().min(1),
 }).strict();
+
+// Lightweight card read: no PDF downloads, confirmation tokens or send side effects.
+router.get("/api/devis/:id/contractor-copy-status", requireAuth,
+  validateRequest({ params: idParams }), async (req, res) => {
+    const d = await storage.getDevis(Number(req.params.id));
+    if (!d) return res.status(404).json({ message: "Devis not found" });
+    const notices = await listSignedCopyDeliveriesForDevis(d.id);
+    const deliveries = await Promise.all(notices.map(async notice => {
+      const comm = notice.communicationId ? await storage.getProjectCommunication(notice.communicationId) : undefined;
+      return {
+        id: notice.id, status: notice.status,
+        currentDocument: matchesCurrentSignedCopy(d, notice, comm),
+        recipientEmail: comm?.recipientEmail ?? null,
+        sentAt: notice.sentAt ?? comm?.sentAt ?? null,
+      };
+    }));
+    res.json({ deliveries });
+  });
 
 router.get("/api/settings/signed-dv-copies", requireAuth, async (_req, res) => {
   res.json(await getSignedCopySetting());
