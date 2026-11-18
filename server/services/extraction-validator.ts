@@ -71,6 +71,11 @@ function detectVatInclusiveLineTotal(
 // only and never persisted; we don't validate it as a separate equation.
 export function validateExtraction(parsed: ParsedDocument): ValidationResult {
   const warnings: ValidationWarning[] = [];
+  for (const issue of parsed.pricedItemVerification?.issues ?? []) {
+    warnings.push({ field: "pricedSourceEvidence", severity: "warning",
+      expected: "Source-supported description and charge", actual: "unverified", lines: [issue.line],
+      message: `Item ${issue.line}${issue.page ? `, PDF page ${issue.page}` : ""}: ${issue.reason}` });
+  }
   if (parsed.quotationVerification && !parsed.quotationVerification.verified) {
     warnings.push({ field: "quotationContentCoverage", expected: "Complete source-linked specifications",
       actual: "unverified", severity: "error",

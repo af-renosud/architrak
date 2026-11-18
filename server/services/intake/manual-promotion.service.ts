@@ -28,6 +28,7 @@ import { enqueueReconciliation } from "../reconciliation/reconciliation-queue.se
 import { reconcileAdvisories } from "../advisory-reconciler";
 import { enqueueDriveUpload } from "../drive/upload-queue.service";
 import { storage } from "../../storage";
+import { collectPricedEvidence } from "../quotation-priced-evidence";
 
 export type ManualPromotionKind = "devis" | "invoice";
 
@@ -296,6 +297,10 @@ export async function promoteParkedFinancialDocument(
 
     const reason = parkReason(doc);
     const parsed = asParsedDocument(doc.extractedData, input.kind);
+    if (input.kind === "devis" && (!parsed.pricedItemVerification
+      || parsed.pricedItemVerification.sourceDigest !== fingerprint)) {
+      parsed.pricedItemVerification = collectPricedEvidence(parsed, buffer);
+    }
     const validation = validateExtraction(parsed);
     const corrected = { ...parsed, ...validation.correctedValues };
     const requested = input.kind === "invoice" ? invoiceRequestAmounts(corrected) : corrected;

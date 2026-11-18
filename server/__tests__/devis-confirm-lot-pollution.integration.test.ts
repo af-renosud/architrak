@@ -1,3 +1,8 @@
+// Source approval is covered by quotation-human-approval and source-evidence
+// tests; these in-memory fixtures exercise only lot assignment invariants.
+vi.mock("../services/quotation-approval-guard", () => ({
+  quotationApprovalBlocker: vi.fn(async () => null),
+}));
 vi.mock("../services/architect-quotation-correction", () => ({
   hasArchitectCorrection: vi.fn(async () => false), architectFinancialBoundary: vi.fn(async () => null),
 }));

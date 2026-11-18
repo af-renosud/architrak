@@ -31,6 +31,7 @@ export interface ExtractionReviewEvent {
   effort_minutes: number | null;
 }
 export interface ExtractionReviewResponse {
+  humanWorkingVersion?: boolean;
   running?: boolean;
   events: ExtractionReviewEvent[];
   evidence: unknown;

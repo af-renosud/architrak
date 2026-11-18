@@ -149,6 +149,18 @@ async function patchStage(stage: string) {
 }
 
 describe("PATCH /api/devis/:id — Task #257 stage seal", () => {
+  it("blocks approval when a newly ingested charge lacks original-source support", async () => {
+    getDevis.mockResolvedValue(makeDevis({ signOffStage: "received", aiExtractedData: {
+      documentType: "quotation", pricedItemVerification: {
+        parser: "priced-source-v1", sourceDigest: "source", rowsDigest: "rows",
+        issues: [{ line: 14, page: 5, reason: "Unsupported charge" }],
+      },
+    } }));
+    const res = await patchStage("approved_for_signing");
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("quotation_source_review_required");
+    expect(updateDevis).not.toHaveBeenCalled();
+  });
   it("409s a forward jump approved_for_signing → sent_to_client with code + currentStage", async () => {
     getDevis.mockResolvedValue(makeDevis({ signOffStage: "approved_for_signing" }));
 

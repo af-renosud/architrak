@@ -5,6 +5,7 @@ import { requireAuth } from "../auth/middleware";
 import { storage } from "../storage";
 import { rescrapeDevis } from "../services/devis-rescrape.service";
 import { isQuotationRescrapeRunning } from "../services/quotation-rescrape-jobs";
+import { hasArchitectCorrection } from "../services/architect-quotation-correction";
 
 const router = Router();
 const review = z.object({
@@ -27,6 +28,7 @@ router.get("/api/devis/:id/extraction-review", requireAuth, async (req, res, nex
           OR applied.snapshot->'humanReview'->>'attemptId'=quotation_extraction_events.id::text))
       ORDER BY id DESC LIMIT 1`, [id]);
     res.json({ events: rows, running: isQuotationRescrapeRunning(id), candidateAttemptId: candidates[0]?.id ?? null,
+      humanWorkingVersion: await hasArchitectCorrection(id),
       evidence: candidates[0]?.snapshot?.extraction ?? quotation.aiExtractedData,
       sourcePdfUrl: `/api/devis/${id}/pdf?variant=original` });
   } catch (error) { next(error); }

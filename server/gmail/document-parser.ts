@@ -19,6 +19,8 @@ import { decideEmailDocRetry, EMAIL_DOC_MAX_ATTEMPTS } from "../services/email-d
 import { triageFinancialPdf, type FinancialTriage } from "./financial-pdf-triage";
 import { safeErrorDiagnostic } from "../safe-error";
 import { emailHasFinancialAdmission } from "@shared/email-financial-gate";
+import { recoverPosteTable } from "../services/quotation-poste-table";
+import { collectPricedEvidence, type PricedEvidence } from "../services/quotation-priced-evidence";
 import {
   countItemRowCandidates,
   mergeContinuationFragments,
@@ -56,6 +58,16 @@ function getGeminiClient() {
 }
 
 export interface ParsedDocument {
+  pricedItemVerification?: PricedEvidence;
+  /** Native table recovery, never model-authored or a human approval. */
+  nativeTableRecovery?: {
+    parser: "poste-table-v1";
+    sourceDigest: string;
+    initialLineItems: ParsedDocument["lineItems"];
+    evidence: Array<{ pages: number[]; priceText: string; sourceText: string }>;
+    amountHt: number;
+    amountTtc: number;
+  };
   quotationVerification?: {
     manifest?: QuotationSourceManifest;
     verified: boolean;
@@ -320,6 +332,8 @@ Domain Knowledge:
 - Document identity and relationships: reference, invoiceNumber, and devisNumber are this PDF's own document identifiers. relatedDocumentReferences is ONLY for a different document explicitly named in this PDF. Each related reference requires an exact printed identifier and a short verbatim evidenceText containing the identifier; use kind "quotation" for a devis, "order" for a bon de commande, and "invoice" for a facture/facture d'acompte/situation. Do not infer a relationship from matching amounts, contractor/project identity, filenames, document type, or generic words such as "commande" or "acompte". If an invoice says "Acompte sur la commande n° CM00000195", record CM00000195 as a related order reference, but keep this invoice's own number in invoiceNumber. Never put a parent order or quotation number in devisNumber. Never put this PDF's own identifier in relatedDocumentReferences. When a request contains a chunk of pages, page is the 1-indexed image number within that chunk. If there is no exact, visible related identifier, omit the row.
 
 Extraction Rules:
+- Transcribe contractor wording literally. Do not expand specifications, add typical installation tasks, invent optional equipment, or put explanations in source descriptions. Translation and explanation are separate later steps.
+- Across page boundaries, an unfinished description continues until its printed charge or the next explicit item reference. A repeated heading or continuation is never a second charge. If evidence is unclear, omit the uncertain value rather than reconstructing it from domain knowledge.
 - All monetary amounts must be numbers with exactly 2 decimal precision (e.g., 15000.00 not 15000).
 - TVA rate must be a percentage number (e.g., 20 for 20%, not 0.20).
 - If auto-liquidation applies, set tvaRate to 0 and autoLiquidation to true.
@@ -2744,6 +2758,8 @@ export async function parseDocument(
   }
 
   if (parsed) {
+    delete parsed.pricedItemVerification;
+    delete parsed.nativeTableRecovery;
     delete parsed.quotationVerification;
     delete parsed.illustratedRecovery;
     const evidence = parsed.documentType === "quotation" ? illustratedEvidence(pageTexts) : undefined;
@@ -2853,6 +2869,23 @@ export async function parseDocument(
         parsed.lineItems = foldedItems;
       }
     }
+    // Recover complete native sections independently of AI chunk boundaries.
+    // This runs only on fresh parser output, never persisted working rows.
+    if (parsed.documentType === "quotation") {
+      const native = recoverPosteTable(pageTexts);
+      if (native && pageTexts.length === images.length && pdfPageCount === images.length) {
+        parsed.nativeTableRecovery = {
+          parser: "poste-table-v1",
+          sourceDigest: quotationHash("sha256").update(pdfBuffer).digest("hex"),
+          initialLineItems: structuredClone(parsed.lineItems),
+          evidence: native.evidence, amountHt: native.amountHt, amountTtc: native.amountTtc,
+        };
+        parsed.lineItems = native.rows;
+        parsed.amountHt = native.amountHt;
+        parsed.amountTtc = native.amountTtc;
+        parsed.tvaAmount = Math.round((native.amountTtc - native.amountHt) * 100) / 100;
+      }
+    }
     // Task #350 — stamp deterministic coverage metadata (persisted via
     // aiExtractedData) so completeness validation is auditable downstream.
     parsed.extractionCoverage = {
@@ -2865,6 +2898,7 @@ export async function parseDocument(
     // digits off page images. Cross-check (and correct) against the PDF's
     // deterministic text layer before anything downstream matches on it.
     await crossCheckSiretAgainstTextLayer(parsed, pdfBuffer);
+    if (parsed.documentType === "quotation") parsed.pricedItemVerification = collectPricedEvidence(parsed, pdfBuffer);
     console.log(`[DocumentParser] Extracted: type=${parsed.documentType}, contractor=${parsed.contractorName}, siret=${parsed.siret}, HT=${parsed.amountHt}, TTC=${parsed.amountTtc}, autoLiq=${parsed.autoLiquidation}, lines=${parsed.lineItems?.length ?? 0}`);
     return parsed;
   }

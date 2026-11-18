@@ -33,4 +33,18 @@ describe("human approval authority, separate from automatic quality diagnostics"
     mocks.lines.mockResolvedValue([]);
     expect(await quotationApprovalBlocker(42)).toContain("unverified");
   });
+  it("does not let translation approval waive newly recorded unsupported charges", async () => {
+    mocks.get.mockResolvedValue({ aiExtractedData: { pricedItemVerification: {
+      parser: "priced-source-v1", sourceDigest: "source", rowsDigest: "rows",
+      issues: [{ line: 14, page: 5, reason: "Unsupported charge" }],
+    } } });
+    mocks.lines.mockResolvedValue([]);
+    mocks.translation.mockResolvedValue({ status: "finalised", headerTranslated: { humanReviewed: true } });
+    expect(await quotationApprovalBlocker(42)).toContain("item 14 (PDF page 5)");
+  });
+  it("asks for scoped review of a historical extraction with no receipt", async () => {
+    mocks.get.mockResolvedValue({ aiExtractedData: { documentType: "quotation" } });
+    mocks.translation.mockResolvedValue(null);
+    expect(await quotationApprovalBlocker(42)).toContain("no source-verification receipt");
+  });
 });

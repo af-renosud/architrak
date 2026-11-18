@@ -640,6 +640,8 @@ router.post(
     // acceptance. OCR/semantic observations must not veto the architect.
     const financialBlocker = await architectFinancialBoundary(devisId);
     if (financialBlocker) return res.status(409).json({ message: financialBlocker, code: "SOURCE_TTC_RECONCILIATION_REQUIRED" });
+    const sourceBlocker = await quotationApprovalBlocker(devisId);
+    if (sourceBlocker) return res.status(409).json({ message: sourceBlocker, code: "quotation_source_review_required" });
     if (!existing) return res.status(404).json({ message: "No translation to finalise" });
     if (existing.status !== "draft" && existing.status !== "edited") {
       return res.status(409).json({ message: `Cannot finalise translation in status ${existing.status}` });
@@ -911,6 +913,10 @@ router.patch(
           code: sealViolation.code,
           currentStage: before.signOffStage,
         });
+      }
+      if (nextIdx >= STAGE_ORDER.indexOf("approved_for_signing") && nextIdx > prevIdx) {
+        const sourceBlocker = await quotationApprovalBlocker(id);
+        if (sourceBlocker) return res.status(409).json({ code: "quotation_source_review_required", message: sourceBlocker });
       }
 
       if (nextIdx >= SENT_INDEX && nextIdx > prevIdx) {
@@ -1322,6 +1328,13 @@ router.post(
       if (devis.status !== "draft") return res.status(400).json({ message: "Only draft devis can be confirmed" });
 
       const corrections = { ...req.body };
+      const sourceBlocker = await quotationApprovalBlocker(devis.id);
+      if (sourceBlocker) return res.status(409).json({ code: "quotation_source_review_required", message: sourceBlocker });
+      if ((devis.aiExtractedData as any)?.pricedItemVerification && (
+        corrections.amountHt != null && roundCurrency(corrections.amountHt) !== roundCurrency(Number(devis.amountHt))
+        || corrections.amountTtc != null && roundCurrency(corrections.amountTtc) !== roundCurrency(Number(devis.amountTtc))))
+        return res.status(409).json({ code: "quotation_source_review_required",
+          message: "Use Edit working quotation to reconcile changed figures with the original PDF before confirming." });
       if (await hasArchitectCorrection(devis.id)) {
         const financialBlocker = await architectFinancialBoundary(devis.id);
         if (financialBlocker) return res.status(409).json({ code: "source_ttc_reconciliation_required",message: financialBlocker });

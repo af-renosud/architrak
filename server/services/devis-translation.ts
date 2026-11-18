@@ -1,5 +1,6 @@
 import { verifyTranslationCoverage } from "./quotation-translation-coverage";
 import { quotationApprovalBlocker } from "./quotation-approval-guard";
+import type { ParsedDocument } from "../gmail/document-parser";
 import OpenAI from "openai";
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 import { storage } from "../storage";
@@ -186,7 +187,12 @@ export async function translateDevis(
     return { translation: { header: (saved.headerTranslated ?? {}) as DevisTranslationHeader,
       lines: (saved.lineTranslations ?? []) as DevisTranslationLine[] }, provider: saved.provider ?? "architect", modelId: saved.modelId ?? "human" };
   }
-  const blocker = await quotationApprovalBlocker(devisId);
+  // A draft translation is useful while reviewing unverified extraction.
+  // Approval and outbound routes enforce source receipts; generation must not
+  // force the architect to lose this aid while comparing with the original.
+  const extraction = devis.aiExtractedData as ParsedDocument | null;
+  const blocker = !extraction?.pricedItemVerification && (extraction?.illustratedRecovery || extraction?.quotationVerification)
+    ? await quotationApprovalBlocker(devisId) : null;
   if (blocker) throw new Error(blocker);
 
   const existing = await storage.getDevisTranslation(devisId);

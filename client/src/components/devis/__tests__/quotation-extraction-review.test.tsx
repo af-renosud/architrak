@@ -62,6 +62,17 @@ it("labels the actual comparison response as OCR versus independently collected 
     .toHaveAttribute("href", "/api/devis/42/pdf?variant=original");
 });
 
+it("links unverified charges to the affected original PDF page", async () => {
+  fetchMock.mockImplementation((url: string) => Promise.resolve(response(url.startsWith("/api/extraction-review/summary")
+    ? summary : { ...data, evidence: { pricedItemVerification: {
+      issues: [{ line: 14, page: 5, reason: "The charge is not independently verified." }],
+    } } })));
+  mount(); await ready();
+  expect(screen.getByText("Item 14")).toBeVisible();
+  expect(screen.getByRole("link", { name: "Open original PDF · page 5" }))
+    .toHaveAttribute("href", "/api/devis/42/pdf?variant=original#page=5");
+});
+
 function response(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status });
 }

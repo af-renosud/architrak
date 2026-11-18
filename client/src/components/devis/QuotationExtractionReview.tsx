@@ -127,6 +127,9 @@ export function QuotationExtractionReview({
   const [appliedAttemptId, setAppliedAttemptId] = useState<number | null>(null);
   const { review, summary, record, apply } = useQuotationExtractionReview(devisId, days, projectId);
   const verification = object(object(review.data?.evidence).quotationVerification);
+  const pricedEvidence = object(object(review.data?.evidence).pricedItemVerification);
+  const pricedIssues = entries(pricedEvidence.issues).map(object);
+  const nativeEvidence = entries(object(object(review.data?.evidence).nativeTableRecovery).evidence).map(object);
   const manifest = object(verification.manifest);
   const segments = entries(manifest.segments);
   const sections = entries(manifest.sections);
@@ -183,6 +186,29 @@ export function QuotationExtractionReview({
       {documentActions && <div className="review-source-document-links">{documentActions}</div>}
       {rescrapeAction && <div className="review-source-rescrape">{rescrapeAction}</div>}
     </nav>
+    {nativeEvidence.length > 0 && <details className="border rounded-md p-3 text-sm">
+      <summary className="cursor-pointer font-semibold">Original PDF evidence · {nativeEvidence.length} source-backed items</summary>
+      <p className="text-muted-foreground my-2">Descriptions and charges recovered from the original text table. This is not architect approval; review the original layout before signing.</p>
+      <ol className="space-y-2">{nativeEvidence.map((entry, index) => <li key={index}>
+        <details><summary className="cursor-pointer">Item {index + 1} · PDF pages {entries(entry.pages).join(", ")}</summary>
+          <p className="whitespace-pre-wrap">{String(entry.sourceText ?? "")}</p>
+          <p className="font-mono text-xs">{String(entry.priceText ?? "")}</p>
+          {sourceUrl && entries(entry.pages).filter(page => typeof page === "number" && page > 0).map(page =>
+            <a key={String(page)} className="underline mr-3" href={`${sourceUrl}#page=${page}`} target="_blank" rel="noopener noreferrer">Original page {String(page)}</a>)}
+        </details>
+      </li>)}</ol>
+    </details>}
+    {pricedIssues.length > 0 && <details className="review-source-notice" open={!review.data?.humanWorkingVersion}>
+      <summary className="font-semibold cursor-pointer">{review.data?.humanWorkingVersion ? "Historical extraction findings" : "Original-source review required"} · {pricedIssues.length} items</summary>
+      <p>{review.data?.humanWorkingVersion
+        ? "An audited architect working version exists. These are historical machine findings, not a verdict on your corrections. The working version still needs to reconcile with the confirmed original total before approval."
+        : "These charges are not yet source-verified. Compare the listed items with the original PDF, then use Edit working quotation to record your interpretation and confirm the source total. Saving a draft is still allowed."}</p>
+      <ul className="space-y-2 mt-2">{pricedIssues.map((issue, index) => <li key={index}>
+        <strong>Item {String(issue.line)}</strong> — {String(issue.reason ?? "Source evidence is unavailable.")}
+        {sourceUrl && <a className="underline ml-2" href={`${sourceUrl}#page=${typeof issue.page === "number" && issue.page > 0 ? issue.page : 1}`}
+          target="_blank" rel="noopener noreferrer">Open original PDF{typeof issue.page === "number" ? ` · page ${issue.page}` : ""}</a>}
+      </li>)}</ul>
+    </details>}
     <aside className="review-source-notice"><ShieldCheck size={17} /><div>
       <strong>Matching totals are not a verified extraction.</strong><p>
       Matching TTC totals do not establish that descriptions, quantities or their associations are correct.
