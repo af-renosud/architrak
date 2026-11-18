@@ -10,6 +10,8 @@ import { PDFDocument } from "pdf-lib";
 import { recoverPosteTable } from "../server/services/quotation-poste-table";
 import { collectPricedEvidence } from "../server/services/quotation-priced-evidence";
 import { createHash } from "node:crypto";
+import { readSourceVat } from "../server/services/quotation-vat-recovery";
+import type { ArchitectCorrectionSnapshot } from "../shared/architect-quotation";
 
 async function main() {
   const path = process.argv[2];
@@ -41,6 +43,21 @@ async function main() {
     },
   }, bytes);
   assert.equal(audit.issues.length, 0);
+  const snapshot: ArchitectCorrectionSnapshot = {
+    version: "read-only-verification", blockedReason: null, financialBlockedReason: null, advisoryMessages: [], history: [],
+    baseline: { ttc: "75059.00", sourceDigest: createHash("sha256").update(bytes).digest("hex"),
+      sourceFileName: "private-original.pdf", confirmedAt: "", confirmedBy: "" },
+    draft: { headerFr: "", headerEn: "", explanationFr: "", explanationEn: "", summaryEn: "", discountHt: "0.00",
+      lines: result.rows.map((row, index) => ({ id: index + 1, clientKey: `row-${index}`, kind: "priced",
+        descriptionFr: row.description, descriptionEn: "Reviewed content retained", explanationFr: "", explanationEn: "",
+        quantity: String(row.quantity), unit: "", unitPriceHt: String(row.unitPrice), totalHt: String(row.total),
+        vatRate: "", included: true })) },
+  };
+  const before = JSON.stringify(snapshot);
+  const recovery = await readSourceVat(bytes, snapshot);
+  assert.deepEqual(recovery.rates.map(row => row.vatRate), [...Array(3).fill("10.00"), ...Array(13).fill("20.00")]);
+  assert.equal(recovery.totals.ttc, "75059.00");
+  assert.equal(JSON.stringify(snapshot), before, "VAT suggestions must not mutate reviewed content");
   console.log("PASS: seven-page source, all 16 ordered prices, complete cross-page heat pump, no PS.28, independent HT/TTC totals and source receipt.");
 }
 main().catch(error => { console.error(error.message); process.exitCode = 1; });

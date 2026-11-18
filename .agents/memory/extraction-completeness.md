@@ -41,7 +41,7 @@ Rule: A recovery gate must reject unaccounted monetary rows even when amounts ar
 
 **Why:** A zero-net delivery/credit pair can disappear without changing the sum; agreeing model totals can also disagree with the PDF. Neither arithmetic check alone proves completeness.
 
-**How to apply:** Include integer-currency, credit/fee and conflicting/duplicate printed-total fixtures whenever widening illustrated source evidence.
+**How to apply:** Include integer-currency, credit/fee and conflicting/duplicate printed-total fixtures whenever widening illustrated source evidence. Check monetary content before every skipped-region branch, not only parsed item rows; LOT bodies and pre-table/footer regions can hide cancelling charges. Inspect descriptions even beside zero-valued columns, and recognize amounts with trailing HT/TTC or commentary. Treat numeric tax summaries as metadata only when their rate/base totals reconcile to the recovered charges.
 
 Rule: Independent source transcription is not an OCR accuracy certificate. A whole-document, verbatim region inventory can exceed the provider timeout even when ordinary structured extraction succeeds.
 
