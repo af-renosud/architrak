@@ -15,6 +15,10 @@ describe("certificate signed commitment disclosure", () => {
     expect(signed).toContain("69\u202f674,00");
     expect(excluded).toContain("MN.1.ALU");
     expect(excluded).toContain("Not signed — excluded from commitment");
+    expect(html).toContain("Whole Project — Certificates Issued");
+    expect(html).toContain("These figures do not confirm receipt of payment");
+    expect(html).toContain("not an unpaid balance");
+    expect(html).not.toContain("contractor invoices plus outstanding deposit certificates");
   });
   it("shows an unsigned-only project and its financial evidence without claiming commitment", () => {
     const html = buildProjectSummaryHtml({rows:[],totalContractedHt:0,totalContractedTtc:0,

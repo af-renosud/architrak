@@ -6,6 +6,7 @@ import { externalOverviewFromSummary, externalWorksOverviewHtml } from "../servi
 import type { ExternalCostOverview, ExternalCostRow } from "@shared/external-works";
 import { excludedCommitmentsHtml, type ExcludedCommitmentRow } from "../services/commitment-reporting";
 import { roundCurrency } from "@shared/financial-utils";
+import { certificateAuthorisationSummary } from "../services/certificate-authorisation-summary";
 import type { Certificat, Project, Contractor, Devis, Lot, Invoice, Avenant } from "@shared/schema";
 import { formatLotDescription } from "@shared/lot-label";
 import { ibansMatch, normaliseIban } from "@shared/iban";
@@ -164,10 +165,8 @@ interface ProjectSummaryRow {
   resteARealiser: number;
 }
 
-/** Task #485 — whole-project financial position (all live works, every
- * contractor), sourced verbatim from the financial-summary service so the
- * certificat can never disagree with the dashboard or the project overview
- * PDF (which use the same service). */
+/** Whole-project signed contract values and issued contractor authorisations.
+ * Invoice-based dashboard measures are not proof of issued authorisation. */
 interface ProjectSummarySection {
   externalOverview?: ExternalCostOverview | null;
   excludedRows?: ExcludedCommitmentRow[];
@@ -421,7 +420,10 @@ async function buildAnnexeData(
   // Task #457 — superseded certificats were corrected by a reissue: keeping
   // them in the previous-certificat rows would double-count the replaced
   // payment in the annexe history and cumulative totals.
-  const previousCerts = allCertificats.filter((c) => c.id !== certificat.id && c.status !== "superseded");
+  const previousCerts = allCertificats.filter((c) =>
+    c.id !== certificat.id && c.id !== certificat.reissuedFromCertificatId &&
+    c.status !== "superseded" && c.issuedAt &&
+    (!certificat.issuedAt || new Date(c.issuedAt) <= new Date(certificat.issuedAt)));
 
   const previousCertificats: PreviousCertificatRow[] = previousCerts.map((c) => ({
     certificateRef: c.certificateRef,
@@ -452,9 +454,8 @@ async function buildAnnexeData(
   const resteARealiserHt = roundCurrency(grandTotalAdjustedHt - cumulativeTotalHt);
   const resteARealiserTtc = roundCurrency(grandTotalAdjustedTtc - cumulativeTotalTtc);
 
-  // Task #485 — whole-project section: every live devis across ALL
-  // contractors, from the same service that powers the in-app dashboard
-  // and the project overview PDF. Never recomputed locally.
+  // Obtain signed contract values from the shared financial summary.
+  // Issued authorisations below come from certificates, not invoice totals.
   //
   // INTENTIONAL DESIGN: this section is deliberately NOT scoped to the
   // selected invoice set (activeDevis). The financial-summary annexe is
@@ -482,6 +483,7 @@ async function buildAnnexeData(
     totalCombinedCostHt?: number;
     totalCombinedCostTtc?: number;
     devis: Array<{
+      contractorId: number;
       devisCode: string;
       descriptionFr: string | null;
       descriptionUk: string | null;
@@ -503,24 +505,25 @@ async function buildAnnexeData(
     totalResteARealiser: number;
     totalResteARealiserTtc: number;
   };
+  const issued = certificateAuthorisationSummary(
+    summary.devis,
+    await storage.getCertificatsByProject(certificat.projectId),
+    certificat,
+  );
+  const issuedRows = await Promise.all(issued.rows.map(async r => ({
+    devisCode: r.codes.join(" / ") || "No active signed quotation",
+    description: (await storage.getContractor(r.contractorId))?.name || "Contractor",
+    adjustedHt: r.adjustedHt,
+    certifiedHt: r.certifiedHt,
+    resteARealiser: r.resteARealiser,
+  })));
   const projectSummary: ProjectSummarySection = {
+    ...issued,
     externalOverview: externalOverviewFromSummary(summary),
-    excludedRows: summary.devis.filter(d => d.commitmentStatus === "unsigned" || (!d.commitmentEligible && d.hasFinancialEvidence)),
-    rows: summary.devis
-      .filter((d) => d.commitmentEligible)
-      .map((d) => ({
-        devisCode: d.devisCode,
-        description: d.descriptionUk || d.descriptionFr || "\u2014",
-        adjustedHt: d.adjustedHt,
-        certifiedHt: d.certifiedHt,
-        resteARealiser: d.resteARealiser,
-      })),
-    totalContractedHt: summary.totalContractedHt,
-    totalContractedTtc: summary.totalContractedTtc,
-    totalCertifiedHt: summary.totalCertifiedHt,
-    totalCertifiedTtc: summary.totalCertifiedTtc,
-    totalResteARealiser: summary.totalResteARealiser,
-    totalResteARealiserTtc: summary.totalResteARealiserTtc,
+    excludedRows: summary.devis.filter(d => d.commitmentStatus === "unsigned").map(d => ({
+      ...d, certifiedHt: 0, certifiedTtc: 0, hasFinancialEvidence: false,
+    })),
+    rows: issuedRows,
   };
 
   return {
@@ -653,8 +656,9 @@ function buildAnnexeHtml(data: AnnexeData): string {
     </div>
 
     <div style="font-size:10pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#0B2545;margin-bottom:3mm;padding-bottom:1.5mm;border-bottom:1px solid #E6E6E6;">
-      2. This Contract — Payment History
+      2. This Contractor — Certificates Issued
     </div>
+    <p style="font-size:7pt;color:#7E7F83;">Issued authorisations, not confirmation of payment or contractor receipt. Payment confirmation is optional and does not affect these totals.</p>
     <table class="annexe-table" style="width:100%;border-collapse:collapse;margin-bottom:4mm;font-size:7pt;">
       <thead>
         <tr>
@@ -691,7 +695,7 @@ function buildAnnexeHtml(data: AnnexeData): string {
           <td style="text-align:right;font-weight:700;font-size:7pt;color:#0B2545;padding:6px;">${fmtNum(data.grandTotalAdjustedTtc)}</td>
         </tr>
         <tr style="background:#FDF8F3;border-top:1px solid #C1A27B;">
-          <td colspan="2" style="font-weight:800;font-size:7pt;color:#C1A27B;text-transform:uppercase;padding:6px;">RESTE \u00C0 R\u00C9ALISER (WORKS REMAINING)</td>
+          <td colspan="2" style="font-weight:800;font-size:7pt;color:#C1A27B;text-transform:uppercase;padding:6px;">REMAINING VALUE TO CERTIFY</td>
           <td style="text-align:right;font-weight:800;font-size:7pt;color:#C1A27B;padding:6px;">${fmtNum(data.resteARealiserHt)}</td>
           <td style="text-align:right;font-weight:800;font-size:7pt;color:#C1A27B;padding:6px;">${fmtNum(data.resteARealiserTtc)}</td>
         </tr>
@@ -716,7 +720,7 @@ export function buildProjectSummaryHtml(ps: ProjectSummarySection): string {
   ps.rows.forEach((r, i) => {
     const zebra = i % 2 === 1 ? ' style="background:#F8F9FA;"' : "";
     rows += `<tr${zebra}>
-      <td style="font-weight:700;color:#0B2545;white-space:nowrap;">${escapeHtml(r.devisCode)}</td>
+      <td style="font-weight:700;color:#0B2545;overflow-wrap:break-word;">${escapeHtml(r.devisCode)}</td>
       <td>${escapeHtml(r.description)}</td>
       <td style="text-align:right;font-weight:600;">${fmtNum(r.adjustedHt)}</td>
       <td style="text-align:right;">${fmtNum(r.certifiedHt)}</td>
@@ -729,19 +733,19 @@ export function buildProjectSummaryHtml(ps: ProjectSummarySection): string {
 
   return `
     <div style="font-size:10pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#0B2545;margin-bottom:3mm;padding-bottom:1.5mm;border-bottom:1px solid #E6E6E6;">
-      3. Whole Project — Signed Commitments
+      3. Whole Project — Certificates Issued
     </div>
     <div style="font-size:6.5pt;color:#7E7F83;margin-bottom:2mm;">
-      Signed or explicitly recorded-as-signed quotations currently active on the project, across every contractor \u2014 signed commitment, certified amounts against those quotations (contractor invoices plus outstanding deposit certificates, including this one), and the remaining signed balance. Unsigned quotations are disclosed separately and excluded.
+      Signed contract values and issued contractor payment authorisations, including this certificate, grouped by contractor. Each certificate is counted once; invoices are not added again. These figures do not confirm receipt of payment. Remaining value is the signed contract value less authorisations issued, not an unpaid balance or a measure of work completed. Contractor grouping avoids assuming how multi-quotation or historical certificates were allocated.
     </div>
     <table class="annexe-table" style="width:100%;border-collapse:collapse;margin-bottom:4mm;font-size:7pt;">
       <thead>
         <tr>
           ${th("Devis", "left")}
-          ${th("Description", "left")}
+          ${th("Contractor", "left")}
           ${th("Contract Value HT", "right")}
-          ${th("Certified HT", "right")}
-          ${th("Remaining HT", "right")}
+          ${th("Authorisations issued HT", "right")}
+          ${th("Value less authorisations HT", "right")}
         </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -1504,7 +1508,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
           <td class="num">${formatCurrencyNoSymbol(invoicedTtc)}</td>
         </tr>
         <tr style="border-top:1px solid #E6E6E6;">
-          <td style="padding:5px 0 3px;font-size:9pt;font-weight:700;color:#0B2545;">Remaining</td>
+          <td style="padding:5px 0 3px;font-size:9pt;font-weight:700;color:#0B2545;">Not yet invoiced</td>
           <td class="num" style="font-weight:700;color:#0B2545;">${formatCurrencyNoSymbol(remaining)}</td>
         </tr>
       </table>
@@ -2109,7 +2113,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
             <td style="text-align:right;color:#B23A48;">- ${formatCurrencyNoSymbol(periodAcompteRecoupment)}</td>
           </tr>` : ""}
           <tr>
-            <td>Previous Payments (cumulative)</td>
+            <td>Previously certified HT (cumulative)</td>
             <td style="text-align:right;color:#B23A48;">- ${formatCurrencyNoSymbol(previousPaymentsHt)}</td>
           </tr>
           ${isSolde && retenueReleased ? `<tr>
@@ -2148,9 +2152,9 @@ function buildCertificatHtml(data: CertificatPdfData): string {
       ${tvaAutoliquidation ? `<div class="warning-note">Autoliquidation \u2014 TVA due par le preneur (art. 283 CGI)</div>` : ""}
 
       ${devisDetails.length > 0 ? `
-      <div class="section-title" style="margin-top:4mm;">Summary by Devis Code</div>
+      <div class="section-title" style="margin-top:4mm;">Contractor Invoice Record by Devis</div>
       ${devisSummaryRows}
-      <div class="warning-note">ATTENTION : Includes all invoices to date. May not reflect actual monies received.</div>
+      <div class="warning-note">Invoice records only — not certificates issued or payments received. See the Financial Summary for issued authorisations, including manual certificates without an invoice.</div>
       ` : ""}
     </div>
   </div>
@@ -2190,7 +2194,7 @@ function buildCertificatHtml(data: CertificatPdfData): string {
         <div class="explain-card-text">The compte prorata is each contractor's contribution to the shared costs of the site (water, electricity, cleaning, common facilities). This deduction is paid to the site's prorata account manager, who settles those shared expenses on behalf of all the contractors.</div>
       </div>`}
     </div>
-    <div class="explain-annexe-pointer">The Financial Summary on the following page shows the position of the whole project: total value of the works, amounts certified to date and works remaining.</div>
+    <div class="explain-annexe-pointer">The Financial Summary on the following page shows signed contract values and payment authorisations issued, including this certificate. It does not confirm payment or receipt of funds.</div>
   </div>
 
   <div class="doc-footer">
