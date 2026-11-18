@@ -5,6 +5,12 @@ description: Scope dependency remediation across independently installed artifac
 
 Audit every independently installed package tree when fixing project-wide dependency findings.
 
+Temporary security exceptions must identify the exact advisory and known dependency chains, expire automatically, and remain visibly labelled as accepted risk—not a fixed vulnerability.
+
+**Why:** The user approved a narrowly scoped, time-limited exception for build/test-only exposure rather than disabling all high-severity checks. A package-name-wide exemption could silently admit unrelated future vulnerabilities.
+
+**How to apply:** Preserve fail-closed handling of new advisories, critical escalation and invalid reports; verify production runtime exclusion and review the documented exception before its expiry.
+
 **Why:** The project dependency scanner includes artifact lockfiles. A clean root npm audit can coexist with vulnerable versions in the mockup sandbox.
 
 **How to apply:** Locate tracked lockfiles, inspect all nested occurrences of affected packages, and run scoped audits/build checks for each package tree. Report unrelated remaining findings separately rather than claiming the whole project is vulnerability-free.

@@ -4,9 +4,9 @@
  * Runs the known publish blockers locally in one command so failures are
  * caught in ~a minute instead of after a failed deployment build:
  *
- *   1. Dependency audit  — `npm audit` must report 0 critical/high
- *      vulnerabilities (the deployment security scan blocks on these;
- *      it blocked the 2026-08-15 publish).
+ *   1. Dependency audit — critical/high findings block unless covered by an
+ *      explicit, unexpired advisory-specific exception. See audit-policy.ts.
+ *      Platform publishing security policy is separate.
  *   2. Type check        — `tsc`.
  *   3. Unit / convention tests — `npx vitest run --no-file-parallelism`.
  *      Serialised because several integration tests share the dev database
@@ -29,6 +29,7 @@
  */
 import { spawn, spawnSync } from "child_process";
 import http from "http";
+import { assessAudit, PICOMATCH_EXCEPTION } from "./audit-policy";
 
 // Smoke-boot bounds. Side-effect safety comes from SMOKE_BOOT mode in the
 // server (all background workers skipped), NOT from timing; these bounds
@@ -73,38 +74,27 @@ function runStreaming(name: string, cmd: string, args: string[]): boolean {
 }
 
 function checkAudit(): boolean {
-  heading("Dependency audit (blocks publish on critical/high)");
-  const res = spawnSync("npm", ["audit", "--json"], {
-    encoding: "utf-8",
-    env: process.env,
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  // npm audit exits non-zero whenever ANY vulnerability exists, so parse
-  // the JSON instead of trusting the exit code.
-  let meta: { critical?: number; high?: number; moderate?: number; low?: number; total?: number };
-  try {
-    meta = JSON.parse(res.stdout).metadata.vulnerabilities;
-  } catch {
-    results.push({ name: "Dependency audit", ok: false, detail: "could not parse `npm audit --json` output" });
-    console.error(res.stderr || res.stdout);
-    return false;
+  let accepted = 0;
+  for (const directory of [".", "artifacts/mockup-sandbox"]) {
+    const res = spawnSync("npm", ["audit", "--json"], {
+      cwd: directory, encoding: "utf-8", env: process.env, maxBuffer: 64 * 1024 * 1024,
+    });
+    try {
+      if (res.error || res.signal || ![0, 1].includes(res.status ?? -1)) throw new Error("npm audit failed to execute");
+      const report = JSON.parse(res.stdout);
+      const assessment = assessAudit(report);
+      console.log(`${directory}: ${JSON.stringify(report.metadata.vulnerabilities)}`);
+      if (assessment.blocking.length) throw new Error(`Blocking findings: ${assessment.blocking.join(", ")}`);
+      if (assessment.accepted.length) {
+        accepted += assessment.accepted.length;
+        console.warn(`TEMPORARY RISK ACCEPTANCE: ${PICOMATCH_EXCEPTION.url}; expires ${PICOMATCH_EXCEPTION.expiresAt}; packages: ${assessment.accepted.join(", ")}. Vulnerability is NOT fixed.`);
+      }
+    } catch (error) {
+      results.push({ name: "Dependency audit", ok: false, detail: `${directory}: ${String(error)}` });
+      return false;
+    }
   }
-  const blocking = (meta.critical ?? 0) + (meta.high ?? 0);
-  console.log(
-    `vulnerabilities: critical=${meta.critical ?? 0} high=${meta.high ?? 0} moderate=${meta.moderate ?? 0} low=${meta.low ?? 0}`,
-  );
-  if (blocking > 0) {
-    console.error(
-      `\n${blocking} critical/high vulnerabilities — the deployment security scan will block the publish.` +
-        `\nRun \`npm audit\` for details and \`npm audit fix\` to apply non-breaking fixes.`,
-    );
-    results.push({ name: "Dependency audit", ok: false, detail: `${blocking} critical/high vulnerabilities` });
-    return false;
-  }
-  if ((meta.moderate ?? 0) + (meta.low ?? 0) > 0) {
-    console.log("(moderate/low advisories present — these do not block publishing)");
-  }
-  results.push({ name: "Dependency audit", ok: true });
+  results.push({ name: "Dependency audit", ok: true, detail: accepted ? `WITH EXCEPTION: ${accepted} package findings; expires ${PICOMATCH_EXCEPTION.expiresAt}` : undefined });
   return true;
 }
 

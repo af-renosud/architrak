@@ -97,7 +97,7 @@ async function buildAll() {
   ];
   const externals = allDeps.filter((dep) => !allowlist.includes(dep));
 
-  await esbuild({
+  const serverBuild = await esbuild({
     entryPoints: ["server/index.ts"],
     platform: "node",
     bundle: true,
@@ -109,7 +109,52 @@ async function buildAll() {
     minify: true,
     external: externals,
     logLevel: "info",
+    metafile: true,
   });
+
+  // Trace external packages too: absence from bundled inputs alone is not proof
+  // of absence from the production dependency graph.
+  const { createRequire } = await import("node:module");
+  const { join, dirname } = await import("node:path");
+  const visited = new Set<string>();
+  const forbidden = new Set(["picomatch", "tinyglobby", "fdir", "vite", "vitest"]);
+  async function checkRuntimePackage(name: string, from: string) {
+    const packageName = name.startsWith("@") ? name.split("/").slice(0, 2).join("/") : name.split("/")[0];
+    if (forbidden.has(packageName)) throw new Error(`Unsafe production dependency: ${packageName}`);
+    if (name.startsWith("node:") || (await import("node:module")).builtinModules.includes(name)) return;
+    // Read manifests through Node's package search paths, independently of
+    // package exports (some dependencies are ESM-only or hide package.json).
+    const localRequire = createRequire(join(from, "__runtime_check.cjs"));
+    let path: string | undefined;
+    for (const directory of localRequire.resolve.paths(packageName) || []) {
+      const candidate = join(directory, packageName, "package.json");
+      try { await access(candidate); path = candidate; break; }
+      catch (error: any) { if (error.code !== "ENOENT") throw error; }
+    }
+    if (!path) {
+      // An absent optional module cannot carry this dependency. Smoke boot
+      // separately verifies that the production server starts successfully.
+      console.log(`Runtime dependency inspection: ${name} not installed.`);
+      return;
+    }
+    if (visited.has(path)) return;
+    visited.add(path);
+    const pkg = JSON.parse(await readFile(path, "utf8"));
+    for (const dep of Object.keys({ ...pkg.dependencies, ...pkg.optionalDependencies, ...pkg.peerDependencies })) {
+      await checkRuntimePackage(dep, dirname(path));
+    }
+  }
+  for (const input of Object.keys(serverBuild.metafile.inputs)) {
+    if (/node_modules\/(picomatch|tinyglobby|fdir|vite|vitest)\//.test(input)) {
+      throw new Error(`Unsafe production bundle input: ${input}`);
+    }
+  }
+  for (const output of Object.values(serverBuild.metafile.outputs)) {
+    for (const imp of output.imports) {
+      if (imp.external) await checkRuntimePackage(imp.path, process.cwd());
+    }
+  }
+  console.log("Production dependency check passed: affected build/test packages are not in the server runtime graph.");
 
   // Task #443 — bundled email attachments (server/assets) must ship with
   // the compiled output: the runtime resolver checks dist/assets first via
