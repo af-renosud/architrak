@@ -560,7 +560,8 @@ router.post(
 router.get("/api/devis/:id/translation", validateRequest({ params: idParams }), async (req, res) => {
   const t = await storage.getDevisTranslation(Number(req.params.id));
   if (!t) return res.json({ status: "missing" });
-  res.json(t);
+  const devis = await storage.getDevis(Number(req.params.id));
+  res.json({ ...t, architectControlled: await hasArchitectCorrection(Number(req.params.id)), projectId: devis?.projectId });
 });
 
 const translateBodySchema = z

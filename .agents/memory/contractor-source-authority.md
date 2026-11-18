@@ -22,6 +22,12 @@ Removal of an item absent from the PDF is an extraction correction, not a commer
 
 ## Source baseline and interpretation
 
+Missing line VAT on an already corrected quotation should be recovered as a reviewable financial draft, never by re-scraping or replacing the user's descriptions and context.
+
+**Why:** A mixed-rate quotation can have correct header totals but blank per-row VAT; generic decimal errors then trap the operator despite successful text corrections.
+
+**How to apply:** Offer all missing fields together. Source-backed recovery must uniquely match item identity and amount, preserve explicit operator rates, verify source bytes and reconcile independent totals before suggesting rates. Saving remains an audited, version-checked action.
+
 Missing or misread intake totals are not authoritative source figures. Provide a straightforward original-PDF transcription/confirmation path to establish the baseline; preserve its provenance independently of the working quotation.
 
 **Why:** Freezing a placeholder would prevent legitimate correction, while deriving the baseline from edited rows would defeat the TTC backstop.

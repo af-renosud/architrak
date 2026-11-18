@@ -33,6 +33,9 @@ export function recoverPosteTable(pages: Array<string | null>) {
   };
   for (let index = 0; index < pages.length; index++) {
     const page = pages[index];
+    // Unsupported headerless pages may contain continuation specifications or
+    // cancelling adjustments. Never certify a partially accounted document.
+    if (!/Description\s+Qté\s+P\.U\. HT\s+Montant HT\s+Montant TTC\s+TVA/i.test(page!)) return null;
     inTable = false;
     for (const raw of page!.split(/\r?\n/)) {
       const text = raw.trim();
@@ -51,6 +54,8 @@ export function recoverPosteTable(pages: Array<string | null>) {
       const match = raw.match(columns);
       const description = (match?.[1] ?? text).trim();
       if (/^-{5,}$|^LOT\s/i.test(description)) {
+        if (match && match.slice(2).some(value => number(value) !== 0)) invalid = true;
+        if (!match && /\s{2,}-?\d[\d ,.]*\s*(?:€|EUR)?\s*$/.test(raw)) invalid = true;
         if (pending.length) invalid = true;
         current = null;
         lotHeading = /^LOT\s/i.test(description);

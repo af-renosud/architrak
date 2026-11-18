@@ -24,6 +24,14 @@ describe("native terminating-price quotation tables", () => {
   it("refuses missing or unreadable pages", () => {
     expect(recoverPosteTable([source[0], null, source[2]])).toBeNull();
   });
+  it("refuses headerless specification-only continuation pages", () => {
+    expect(recoverPosteTable([source[0], "Additional mandatory installation specifications", ...source.slice(1)])).toBeNull();
+  });
+  it("refuses nonzero LOT rows even when they cancel", () => {
+    const pages = [...source];
+    pages[1] = pages[1].replace("Siret", `${price("LOT fee", "10,00", "12,00")}\n${price("LOT discount", "-10,00", "-12,00")}\nSiret`);
+    expect(recoverPosteTable(pages)).toBeNull();
+  });
   it("refuses unsupported non-zero rows even when their amounts cancel", () => {
     const pages = [...source];
     pages[1] = pages[1].replace("Siret", `${price("Fee", "10,00", "12,00")}\nAdjustment     -10,00\nSiret`);

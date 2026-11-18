@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { correctionCents, correctionMoney, correctionProduct, createCorrectionLine, previewCorrectionTotals, reorderCorrectionLine, transferCorrectionPassage } from "../architect-correction-model";
+import { correctionCents, correctionMoney, correctionProduct, correctionFinancialIssues, createCorrectionLine, previewCorrectionTotals, reorderCorrectionLine, transferCorrectionPassage } from "../architect-correction-model";
 import type { ArchitectCorrectionDraft, ArchitectCorrectionLine } from "../architect-correction-model";
 
 const line = (id: number, amount: string, vat: string): ArchitectCorrectionLine => ({
@@ -10,6 +10,13 @@ const draft = (lines: ArchitectCorrectionLine[], discountHt = "0.00"): Architect
   ({ headerFr: "", headerEn: "", explanationFr: "", explanationEn: "", summaryEn: "", discountHt, lines });
 
 describe("architect correction exact-cent advisory arithmetic", () => {
+  it("identifies all missing rates by item without inventing a default", () => {
+    const input = draft([line(790, "4680.00", ""), line(791, "2730.00", "")]);
+    expect(correctionFinancialIssues(input).map(issue => issue.key)).toEqual(["line-790", "line-791"]);
+    expect(() => previewCorrectionTotals(input)).toThrow("Item 1: VAT rate is missing");
+    expect(correctionFinancialIssues(input)[1].message).toContain("Item 2");
+    expect(input.lines.every(row => row.vatRate === "")).toBe(true);
+  });
   it("calculates fractional quantities without float drift", () => {
     expect(correctionProduct("0.125", "119.96")).toBe("15.00");
     expect(correctionProduct("1.5", "0.01")).toBe("0.02");
@@ -28,7 +35,7 @@ describe("architect correction exact-cent advisory arithmetic", () => {
       .toEqual({ ht: "102.13", vat: "5.62", ttc: "107.75" });
   });
   it("never assumes 20% for missing VAT or adds a balancing adjustment", () => {
-    expect(() => previewCorrectionTotals(draft([line(1, "0.10", "")]))).toThrow("valid decimal");
+    expect(() => previewCorrectionTotals(draft([line(1, "0.10", "")]))).toThrow("Item 1: VAT rate is missing");
     expect(() => previewCorrectionTotals(draft([line(1, "0.10", "10")], "0.11"))).toThrow("discount");
     expect(previewCorrectionTotals(draft([line(1, "0.05", "10"), line(2, "0.05", "10")])))
       .toEqual({ ht: "0.10", vat: "0.01", ttc: "0.11" });

@@ -3,12 +3,28 @@ import { requireAuth } from "../auth/middleware";
 import { ArchitectCorrectionError, architectCorrectionService } from "../services/architect-quotation-correction";
 import { architectCorrectionSaveSchema } from "../../shared/architect-quotation";
 import { suggestArchitectTranslation } from "../services/devis-translation";
+import { readSourceVat } from "../services/quotation-vat-recovery";
+import { storage } from "../storage";
+import { getDocumentBuffer } from "../storage/object-storage";
 
 export function createArchitectCorrectionRouter(service = architectCorrectionService) {
 const router = Router();
 // This is a single-firm deployment: all session-authenticated Renosud operators
 // have project access (same perimeter as the other project/devis routes).
 router.use("/api/devis/:id/architect-correction", requireAuth);
+router.post("/api/devis/:id/architect-correction/source-vat", async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ message: "Invalid quotation ID." });
+    const snapshot = await service.get(id);
+    if (snapshot.blockedReason || snapshot.financialBlockedReason) return res.status(409).json({ message: snapshot.blockedReason || snapshot.financialBlockedReason });
+    if (snapshot.version !== req.body?.expectedVersion) return res.status(409).json({ message: "Quotation changed. Reopen the editor before recovering VAT." });
+    const devis = await storage.getDevis(id);
+    if (!devis?.pdfStorageKey) return res.status(422).json({ message: "Original PDF is unavailable." });
+    try { res.json(await readSourceVat(await getDocumentBuffer(devis.pdfStorageKey), snapshot)); }
+    catch (error) { res.status(422).json({ message: error instanceof Error ? error.message : "VAT recovery failed." }); }
+  } catch (error) { next(error); }
+});
 for (const operation of ["get", "save", "confirm"] as const) {
   const path = `/api/devis/:id/architect-correction${operation === "confirm" ? "/source-baseline" : ""}`;
   const method = operation === "get" ? "get" : operation === "save" ? "put" : "post";

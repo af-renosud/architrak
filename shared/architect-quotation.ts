@@ -53,11 +53,33 @@ export function correctionProduct(q: string, p: string) {
   const a = decimal(q), b = decimal(p);
   return correctionMoney(divide(a.n * b.n * HUNDRED, a.d * b.d));
 }
+/** Report every missing financial input, with a stable destination in the editor. */
+export function correctionFinancialIssues(draft: ArchitectCorrectionDraft) {
+  const issues: Array<{ key: string; message: string }> = [];
+  draft.lines.forEach((line, index) => {
+    if (line.kind !== "priced" || !line.included) return;
+    const label = `Item ${index + 1}`;
+    if (!line.vatRate.trim()) issues.push({ key: line.clientKey, message: `${label}: VAT rate is missing. Copy the rate printed in the original PDF.` });
+    else {
+      try {
+        const rate = decimal(line.vatRate);
+        if (rate.n < ZERO || rate.n > HUNDRED * rate.d) throw new Error();
+      } catch { issues.push({ key: line.clientKey, message: `${label}: VAT rate must be a number from 0 to 100.` }); }
+    }
+    try { correctionCents(line.totalHt); }
+    catch { issues.push({ key: line.clientKey, message: `${label}: line amount HT is missing or invalid.` }); }
+  });
+  try { correctionCents(draft.discountHt); }
+  catch { issues.push({ key: "header", message: "Document discount HT is missing or invalid. Enter 0 if there is no discount." }); }
+  return issues;
+}
 /** Exact cents, explicit VAT, net buckets, proportional HT discount with
  * largest-remainder cent allocation. No header totals or inferred 20% rate.
  * Optional line rounding is available for source PDFs using line-level VAT.
  */
 export function previewCorrectionTotals(draft: ArchitectCorrectionDraft) {
+  const issues = correctionFinancialIssues(draft);
+  if (issues.length) throw new Error(issues.map(issue => issue.message).join("\n"));
   const buckets = new Map<string, { ht: bigint; rate: { n: bigint; d: bigint } }>();
   for (let index = 0; index < draft.lines.length; index++) {
     const line = draft.lines[index];

@@ -41,7 +41,7 @@ function jsonResponse(body: unknown) {
   });
 }
 
-function renderSection(overrides: Partial<Parameters<typeof DevisTranslationSection>[0]> = {}) {
+function renderSection(overrides: Partial<Parameters<typeof DevisTranslationSection>[0]> = {}, architectControlled = false) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -50,6 +50,8 @@ function renderSection(overrides: Partial<Parameters<typeof DevisTranslationSect
   // textareas immediately without needing the network on mount.
   qc.setQueryData(["/api/devis", 42, "translation"], {
     id: 1,
+    architectControlled,
+    projectId: 8,
     devisId: 42,
     status: "draft",
     headerTranslated: { summary: "Original summary" },
@@ -83,6 +85,14 @@ function renderSection(overrides: Partial<Parameters<typeof DevisTranslationSect
 }
 
 describe("DevisTranslationSection autosave (regression #146)", () => {
+  it("routes corrected wording to the working editor without firing rejected blur saves", async () => {
+    renderSection({}, true);
+    const textarea = await screen.findByTestId("input-translation-42-1");
+    expect(textarea).toHaveAttribute("readonly");
+    fireEvent.blur(textarea);
+    expect(apiRequestMock.mock.calls.filter(([method]) => method === "PATCH")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Edit working quotation" })).toBeInTheDocument();
+  });
   it("shows line-linked private notes without placing them in translation saves", async () => {
     const note = "PRIVATE: inspect preparation allowance";
     const question = "PRIVATE: contractor to confirm repairs";

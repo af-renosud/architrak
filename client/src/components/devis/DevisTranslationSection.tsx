@@ -23,6 +23,7 @@ import type {
   DevisLineContext,
 } from "@shared/schema";
 import { DevisLineContextEditor } from "./DevisLineContextEditor";
+import { ArchitectQuotationEditor } from "./ArchitectQuotationEditor";
 import { DevisCostAnalysisCard } from "./DevisCostAnalysisCard";
 import { TranslationReviewNotes, type TranslationReviewCheck } from "./TranslationReviewNotes";
 
@@ -166,7 +167,7 @@ export function DevisTranslationSection({
     [],
   );
 
-  const { data: translation, isLoading } = useQuery<DevisTranslation>({
+  const { data: translation, isLoading } = useQuery<DevisTranslation & { architectControlled?: boolean; projectId?: number }>({
     queryKey: ["/api/devis", devisId, "translation"],
     refetchInterval: (q) => {
       const status = (q.state.data as DevisTranslation | undefined)?.status;
@@ -204,7 +205,8 @@ export function DevisTranslationSection({
   const status = translation?.status ?? "missing";
   const isProcessing = status === "processing" || status === "pending";
   const isFinalised = status === "finalised";
-  const canEdit = status === "draft" || status === "edited";
+  const architectControlled = translation?.architectControlled === true;
+  const canEdit = !architectControlled && (status === "draft" || status === "edited");
 
   const translateMutation = useMutation({
     mutationFn: async (force: boolean) => {
@@ -311,6 +313,9 @@ export function DevisTranslationSection({
   // against the SERVER snapshot (`translation.lineTranslations` /
   // `translation.headerTranslated`), never against the local edit buffer.
   const persistLine = (lineNumber: number, originalDescription: string, patch: Partial<DevisTranslationLine>) => {
+    if (architectControlled) return;
+    const saved = (translation?.lineTranslations as DevisTranslationLine[] | undefined)?.find(line => line.lineNumber === lineNumber);
+    if (saved && Object.entries(patch).every(([key, value]) => (saved as any)[key] === value)) return;
     const current = localLines.get(lineNumber);
     const next: DevisTranslationLine = {
       lineNumber,
@@ -328,6 +333,8 @@ export function DevisTranslationSection({
   };
 
   const persistHeader = (patch: Partial<DevisTranslationHeader>) => {
+    if (architectControlled) return;
+    if (Object.entries(patch).every(([key, value]) => (translation?.headerTranslated as any)?.[key] === value)) return;
     const next: DevisTranslationHeader = { ...(localHeader || {}), ...patch };
     setLocalHeader(next);
     markDirty();
@@ -392,7 +399,7 @@ export function DevisTranslationSection({
               size="sm"
               variant="outline"
               onClick={() => translateMutation.mutate(false)}
-              disabled={translateMutation.isPending || isProcessing}
+              disabled={translateMutation.isPending || isProcessing || architectControlled}
               data-testid={`button-translate-${devisId}`}
             >
               {translateMutation.isPending || isProcessing ? (
@@ -410,7 +417,7 @@ export function DevisTranslationSection({
                 size="sm"
                 variant="outline"
                 onClick={() => translateMutation.mutate(false)}
-                disabled={translateMutation.isPending || isProcessing}
+                disabled={translateMutation.isPending || isProcessing || architectControlled}
                 data-testid={`button-regenerate-${devisId}`}
                 title="Re-run AI translation while keeping any lines you've edited."
               >
@@ -425,7 +432,7 @@ export function DevisTranslationSection({
                 size="sm"
                 variant="outline"
                 onClick={() => translateMutation.mutate(true)}
-                disabled={translateMutation.isPending || isProcessing}
+                disabled={translateMutation.isPending || isProcessing || architectControlled}
                 data-testid={`button-retranslate-all-${devisId}`}
                 title="Re-run AI translation and overwrite all lines — including any manual edits."
               >
@@ -479,7 +486,7 @@ export function DevisTranslationSection({
               size="sm"
               variant="outline"
               onClick={() => translateMutation.mutate(true)}
-              disabled={translateMutation.isPending || isProcessing}
+              disabled={translateMutation.isPending || isProcessing || architectControlled}
               data-testid={`button-retranslate-all-${devisId}`}
               title="Re-run AI translation and unlock the approved translation. All manual edits and the approval will be cleared."
             >
@@ -510,14 +517,14 @@ export function DevisTranslationSection({
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => downloadPdf("translation")}
-                disabled={!canEdit && !isFinalised}
+                disabled={!canEdit && !isFinalised && !architectControlled}
                 data-testid={`menu-pdf-translation-${devisId}`}
               >
                 Translation only (English)
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => downloadPdf("combined")}
-                disabled={!canEdit && !isFinalised}
+                disabled={!canEdit && !isFinalised && !architectControlled}
                 data-testid={`menu-pdf-combined-${devisId}`}
               >
                 French + English (combined)
@@ -529,6 +536,11 @@ export function DevisTranslationSection({
 
       {translationSaveError && <p role="alert" className="text-xs text-destructive">Translation save failed · your local edits are preserved. {translationSaveError}</p>}
       {(isSavingTranslation || dirtyRef.current) && <p data-workflow-attention className="text-xs text-muted-foreground">{isSavingTranslation ? "Translation · saving edits." : "Translation · unsaved edits."}</p>}
+      {architectControlled && <div className="rounded-md border p-3 space-y-2" role="status">
+        <p className="text-sm font-medium">Edit this corrected quotation in one place</p>
+        <p className="text-xs text-muted-foreground">Use the working editor for wording, translations and financial checks. Context and images below still save separately. Your original PDF is unchanged.</p>
+        {translation.projectId != null && <ArchitectQuotationEditor devisId={devisId} projectId={String(translation.projectId)} />}
+      </div>}
       {status === "failed" && translation?.errorMessage && (
         <p role="alert" className="text-xs text-destructive" data-testid={`text-translation-error-${devisId}`}>
           {translation.errorMessage}
@@ -552,7 +564,7 @@ export function DevisTranslationSection({
         </p>
       )}
 
-      {(canEdit || isFinalised) && (
+      {(canEdit || isFinalised || architectControlled) && (
         <>
           {(localHeader?.summary || (showExplanations && localHeader?.descriptionExplanation)) && (
             <div className="rounded-sm border-l-2 border-primary bg-muted/40 p-3 space-y-2">
@@ -561,7 +573,7 @@ export function DevisTranslationSection({
                   <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Document overview</div>
                   <Textarea
                     value={localHeader.summary || ""}
-                    readOnly={false}
+                    readOnly={architectControlled}
                     onChange={(e) => {
                       markDirty();
                       setLocalHeader({ ...(localHeader || {}), summary: e.target.value });
@@ -577,7 +589,7 @@ export function DevisTranslationSection({
                   <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Plain-English note</div>
                   <Textarea
                     value={localHeader.descriptionExplanation || ""}
-                    readOnly={false}
+                    readOnly={architectControlled}
                     onChange={(e) => {
                       markDirty();
                       setLocalHeader({ ...(localHeader || {}), descriptionExplanation: e.target.value });
@@ -637,7 +649,7 @@ export function DevisTranslationSection({
                       <div className="text-[10px] uppercase tracking-wider text-sky-700 dark:text-sky-400 pt-1">English (literal)</div>
                       <Textarea
                         value={t?.translation ?? ""}
-                        readOnly={false}
+                        readOnly={architectControlled}
                         onChange={(e) => {
                           markDirty();
                           const newMap = new Map(localLines);
@@ -662,7 +674,7 @@ export function DevisTranslationSection({
                           </div>
                           <Textarea
                             value={t?.explanation ?? ""}
-                            readOnly={false}
+                            readOnly={architectControlled}
                             onChange={(e) => {
                               markDirty();
                               const newMap = new Map(localLines);
@@ -697,7 +709,7 @@ export function DevisTranslationSection({
                         </div>
                       )}
                     </div>
-                    {!isFinalised && (
+                    {!isFinalised && !architectControlled && (
                       <Button
                         size="icon"
                         variant="ghost"

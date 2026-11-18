@@ -6,10 +6,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { ApiError } from "@/lib/queryClient";
+import { ApiError, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useArchitectCorrection } from "./use-architect-correction";
-import { correctionCents, correctionMoney, correctionProduct, createCorrectionLine, financialProjection, previewCorrectionTotals, reorderCorrectionLine, transferCorrectionPassage } from "./architect-correction-model";
+import { correctionCents, correctionMoney, correctionProduct, correctionFinancialIssues, createCorrectionLine, financialProjection, previewCorrectionTotals, reorderCorrectionLine, transferCorrectionPassage } from "./architect-correction-model";
 import type { ArchitectCorrectionDraft, ArchitectCorrectionLine, ArchitectCorrectionSnapshot } from "./architect-correction-model";
 import "./architect-correction.css";
 
@@ -32,6 +32,8 @@ function DraftField({ label, value, onChange, multiline = false, disabled = fals
 
 export function ArchitectQuotationEditor({ devisId, projectId, disabled = false, compact = false }: Props) {
   const [open, setOpen] = useState(false);
+  const [recoveringVat, setRecoveringVat] = useState(false);
+  const [vatRecoveryMessage, setVatRecoveryMessage] = useState<string | null>(null);
   const [discardOpen, setDiscardOpen] = useState(false);
   const [draft, setDraft] = useState<ArchitectCorrectionDraft | null>(null);
   const [original, setOriginal] = useState<ArchitectCorrectionSnapshot | null>(null);
@@ -52,16 +54,17 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
   const targetId = useId();
   const { toast } = useToast();
   const { snapshot, save, baseline, suggest } = useArchitectCorrection(devisId, projectId, open);
-  const pending = save.isPending || baseline.isPending || suggest.isPending;
+  const pending = save.isPending || baseline.isPending || suggest.isPending || recoveringVat;
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
-    if (!open || !snapshot.data || initialized.current) return;
+    if (!open || !snapshot.data || snapshot.isFetching || initialized.current) return;
     initialized.current = true;
     setOriginal(snapshot.data);
     setDraft(structuredClone(snapshot.data.draft));
     setSelected("header");
-    setError(null); setStale(false); setSavedMessage(false);
-  }, [open, snapshot.data]);
+    setError(null); setStale(false); setSavedMessage(false); setVatRecoveryMessage(null);
+  }, [open, snapshot.data, snapshot.isFetching]);
+  const financialIssues = useMemo(() => draft ? correctionFinancialIssues(draft) : [], [draft]);
   const totals = useMemo(() => {
     if (!draft) return { value: null, error: null };
     try { return { value: previewCorrectionTotals(draft), error: null }; }
@@ -126,6 +129,20 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
       toast({ title: "Architect correction saved", description: "Original PDF and source TTC are unchanged. Previous translation approval has been cleared." });
     } catch (cause) { reportError(cause); }
     finally { submitLock.current = false; }
+  };
+  const recoverVat = async () => {
+    if (!original || !draft || pending || stale || financialDirty) return;
+    setRecoveringVat(true); setError(null);
+    try {
+      const response = await apiRequest("POST", `/api/devis/${devisId}/architect-correction/source-vat`, { expectedVersion: original.version });
+      const result = await response.json() as { expectedVersion: string; rates: Array<{ clientKey: string; vatRate: string }> };
+      if (result.expectedVersion !== original.version) throw new Error("Quotation changed. No rates were applied.");
+      updateDraft({ lines: draft.lines.map(line => ({ ...line,
+        vatRate: line.vatRate || result.rates.find(rate => rate.clientKey === line.clientKey)?.vatRate || "",
+      })) });
+      setVatRecoveryMessage("Missing VAT rates recovered from the original PDF. Review the working TTC below, then Save correction. Your wording and context have not been changed.");
+    } catch (cause) { reportError(cause); }
+    finally { setRecoveringVat(false); }
   };
   const establishBaseline = async () => {
     if (!original || !pdfConfirmed || !baselineTtc || !/^[1-9]\d*$/.test(baselinePage)
@@ -194,7 +211,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
             <p className="text-[11px] text-muted-foreground mt-1">Correct descriptions, translations and figures. The contractor’s original PDF remains the legal reference.</p>
           </div>
         </div>}
-        <Button type="button" size="sm" variant="outline" onClick={() => setOpen(true)} disabled={disabled}
+        <Button type="button" size="sm" variant="outline" onClick={() => { setDraft(null); setOriginal(null); initialized.current = false; setOpen(true); }} disabled={disabled}
           className="border-[#94734c]/40 bg-[#f8f5ef] text-[#0b2545] text-[11px] gap-2 shrink-0">
           <Pencil size={13} /> Edit working quotation
         </Button>
@@ -221,6 +238,26 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
             <Button type="button" variant="outline" size="sm" onClick={() => void snapshot.refetch()}>Retry loading</Button></div>
           : draft && original ? <>
             <div className="px-5 py-4 md:px-7 space-y-3">
+              {vatRecoveryMessage && <p role="status" className="rounded-md border p-3 text-sm">{vatRecoveryMessage}</p>}
+              {(financialIssues.length > 0 || vatRecoveryMessage) && <section className="rounded-lg border border-amber-300 p-4 space-y-3" aria-label="Financial checks">
+                <h3 className="font-semibold text-sm">{financialIssues.length ? `Financial checks — ${financialIssues.length} fields need attention` : "Recovered VAT — review before saving"}</h3>
+                <p className="text-xs">Your wording and context can still be saved. Approval requires the actual VAT and amounts from the original PDF; no rates are assumed.</p>
+                <a className="text-xs underline" href={`/api/devis/${devisId}/pdf?variant=original`} target="_blank" rel="noreferrer">Open original PDF alongside this editor</a>
+                {original.baseline && <div><Button type="button" size="sm" variant="outline" disabled={!numericEditable || stale || financialDirty} onClick={() => void recoverVat()}>
+                  {recoveringVat ? "Reading original PDF…" : "Recover missing VAT from original PDF"}
+                </Button><p className="text-xs text-muted-foreground mt-1">Only uniquely matched source items with reconciled totals are accepted. Rates are added to this draft for your review, not saved automatically.</p></div>}
+                <div className="max-h-64 overflow-y-auto space-y-2">
+                  {draft.lines.map((line, index) => (financialIssues.some(issue => issue.key === line.clientKey) || vatRecoveryMessage && line.kind === "priced" && line.included) && <div key={line.clientKey} className="grid grid-cols-[1fr_100px] gap-3 items-center border-t pt-2">
+                    <button type="button" className="text-left text-xs underline" onClick={() => setSelected(line.clientKey)}>
+                      Item {index + 1} · {line.descriptionFr.slice(0, 85)}
+                      {financialIssues.filter(issue => issue.key === line.clientKey).map(issue => <span key={issue.message} className="block text-amber-900">{issue.message}</span>)}
+                    </button>
+                    <DraftField label={`Item ${index + 1} VAT (%)`} value={line.vatRate} numeric disabled={!numericEditable || stale}
+                      onChange={vatRate => updateDraft({ lines: draft.lines.map(row => row.clientKey === line.clientKey ? { ...row, vatRate } : row) })} />
+                  </div>)}
+                  {financialIssues.filter(issue => issue.key === "header").map(issue => <button key={issue.message} type="button" className="block text-xs underline" onClick={() => setSelected("header")}>{issue.message}</button>)}
+                </div>
+              </section>}
               {original.blockedReason && <div role="alert" className="correction-banner rounded-lg p-3 text-xs flex items-start gap-2"><LockKeyhole size={14} className="shrink-0" />{original.blockedReason}</div>}
               {original.financialBlockedReason && !original.blockedReason && <div className="correction-banner rounded-lg p-3 text-xs flex items-start gap-2"><LockKeyhole size={14} className="shrink-0" /><div>{original.financialBlockedReason}<p className="mt-1 text-muted-foreground">Content may be edited; committed financial identities and figures are protected.</p></div></div>}
               {original.baseline ? <div className="correction-banner rounded-lg px-4 py-3 flex flex-wrap justify-between gap-3">

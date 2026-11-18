@@ -45,6 +45,35 @@ async function row(index: number) {
   fireEvent.click(screen.getByRole("button", { name }));
   await screen.findByRole("textbox", { name: "Full French description" });
 }
+it("shows missing VAT together and lets the user repair it without losing wording", async () => {
+  persisted = fixture();
+  persisted.draft.lines[0].vatRate = "";
+  persisted.draft.lines[1].vatRate = "";
+  mount(); await open();
+  expect(screen.getByRole("region", { name: "Financial checks" })).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Item 1 VAT (%)"), { target: { value: "10" } });
+  fireEvent.change(screen.getByLabelText("Item 2 VAT (%)"), { target: { value: "10" } });
+  expect(screen.queryByRole("region", { name: "Financial checks" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+  await waitFor(() => expect(saves).toHaveLength(1));
+  expect(saves[0].lines[0].descriptionEn).toBe("Door A — human translation");
+});
+it("recovers VAT into a reviewable draft and saves only on explicit confirmation", async () => {
+  persisted = fixture();
+  persisted.draft.lines.forEach(line => { line.vatRate = ""; });
+  const fallback = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (url: string, options?: RequestInit) => url.endsWith("/source-vat")
+    ? response({ expectedVersion: "working-v1", rates: persisted.draft.lines.map(line => ({ clientKey: line.clientKey, vatRate: "10.00" })) })
+    : fallback(url, options));
+  mount(); await open();
+  fireEvent.click(screen.getByRole("button", { name: "Recover missing VAT from original PDF" }));
+  await screen.findByText("Recovered VAT — review before saving");
+  expect(saves).toHaveLength(0);
+  expect(screen.getByLabelText("Item 1 VAT (%)")).toHaveValue("10.00");
+  fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+  await waitFor(() => expect(saves).toHaveLength(1));
+  expect(saves[0].lines[0].descriptionEn).toBe("Door A — human translation");
+});
 beforeEach(() => {
   persisted = fixture(); saveError = null; saves = [];
   vi.stubGlobal("fetch", fetchMock);
