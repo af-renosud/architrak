@@ -82,3 +82,4 @@
 - [Workflow blocker guidance](workflow-blocker-guidance.md) — blocked actions explain prerequisites and link to their resolution; never bypass safeguards or auto-submit.
 - [Architect-selected replacements](architect-quotation-replacement.md) — architect chooses old/new quotations and records context; no AI or same-reference requirement.
 - [Honoraires archive semantics](honoraires-archive-semantics.md) — reversible visibility only; retain financial totals and audit history, resurface unresolved work.
+- [Issued, not paid](certificate-issued-not-paid.md) — certificate summaries report issued authorisations; contractor receipt confirmation is optional, never presumed.
