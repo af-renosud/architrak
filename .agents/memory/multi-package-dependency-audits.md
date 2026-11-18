@@ -13,7 +13,7 @@ Temporary security exceptions must identify the exact advisory and known depende
 
 **Why:** The project dependency scanner includes artifact lockfiles. A clean root npm audit can coexist with vulnerable versions in the mockup sandbox.
 
-**How to apply:** Locate tracked lockfiles, inspect all nested occurrences of affected packages, and run scoped audits/build checks for each package tree. Report unrelated remaining findings separately rather than claiming the whole project is vulnerability-free.
+**How to apply:** Enumerate manifests and lockfiles with a filesystem walk that prunes dependency/VCS/build directories, including untracked files; inspect all nested occurrences and run scoped audits/build checks for each package tree. Report unrelated remaining findings separately rather than claiming the whole project is vulnerability-free.
 
 The package installation callback rejects an empty package list and directory-selection flags such as `--prefix`.
 
