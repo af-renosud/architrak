@@ -1,5 +1,43 @@
 # Temporary picomatch risk acceptance
 
+## Current status — advisory withdrawn on 18 November 2026
+
+GitHub withdrew [GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf)
+at **15:38:56 UTC on 18 November 2026**. The
+[maintainer's explanation](https://github.com/micromatch/picomatch/pull/235#issuecomment-6315749381)
+rejects the report as a vulnerability and advises against accepting untrusted
+glob patterns. The earlier recheck below predates that withdrawal.
+
+A fresh filesystem walk found both application npm manifest/lockfile pairs
+and the two platform skill templates described below. `npm audit fix` was run
+independently in both application directories; neither tracked lockfile
+changed. The auth template again returned `ENOLOCK`; the Windows template
+has no npm dependencies.
+
+**No patched release was installed.** The registry still lists 4.0.7 as the
+latest picomatch release, and both application lockfiles still resolve to
+4.0.7. This finding is resolved by upstream withdrawal, not by changing or
+removing that version. Both fresh npm audits and the project dependency
+scanner no longer report this advisory. The root npm audit still reports
+five moderate findings representing the unrelated glob/minimatch chain;
+the sandbox audit reports zero findings.
+
+Application code does not import picomatch, fdir or tinyglobby, and the
+production build's bundle and external-dependency checks confirm their
+absence from the server runtime. Replacing Vite/Vitest or using an unverified
+fork solely to remove 4.0.7 would add compatibility risk without an upstream
+security fix. Keep untrusted glob patterns out of build/test tooling.
+
+Both application type checks, both production builds, and the 16 targeted
+dependency-security/audit-policy tests passed after the recheck. The sandbox
+build requires its configured `BASE_PATH=/__mockup/`.
+
+The historical exception below has **not** been extended or broadened. It
+is not exercised by current audit results; its fail-closed handling remains
+in place in case the advisory is reinstated.
+
+## Historical risk acceptance and pre-withdrawal recheck
+
 Approved on 18 November 2026; expires **2 December 2026 at 00:00 UTC**.
 
 This is a temporary risk acceptance, not a fix or a clean security audit.
