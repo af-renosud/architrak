@@ -9,7 +9,7 @@ export const correctionRowSchema = z.object({
   unitPriceHt: decimal(2).nullable(),
   totalHt: decimal(2),
 }).strict();
-export const extractionCorrectionSchema = z.object({
+const transcribedCorrectionSchema = z.object({
   kind: z.enum(["missing", "misread"]),
   lineId: z.number().int().positive().optional(),
   row: correctionRowSchema,
@@ -36,4 +36,15 @@ export const extractionCorrectionSchema = z.object({
       ctx.addIssue({ code: "custom", message: `${key} must appear in the quoted original PDF evidence.` });
   }
 });
+export const extractionCorrectionSchema = z.union([
+  transcribedCorrectionSchema,
+  z.object({
+    kind: z.literal("unsupported"),
+    lineId: z.number().int().positive(),
+    evidence: z.object({
+      reviewedEntirePdf: z.literal(true),
+    }).strict(),
+    reason: z.string().trim().min(10).max(2000),
+  }).strict(),
+]);
 export type ExtractionCorrection = z.infer<typeof extractionCorrectionSchema>;

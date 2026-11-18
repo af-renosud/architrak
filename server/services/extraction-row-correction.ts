@@ -37,8 +37,8 @@ export async function extractionRowCorrection(devisId: number, input: Extraction
     const { rows: [project] } = await client.query("SELECT archived_at FROM projects WHERE id=$1 FOR UPDATE", [devis.project_id]);
     const { rows: lines } = await client.query("SELECT * FROM devis_line_items WHERE devis_id=$1 ORDER BY id FOR UPDATE", [devisId]);
     const { rows: [translation] } = await client.query("SELECT * FROM devis_translations WHERE devis_id=$1 FOR UPDATE", [devisId]);
-    const before = request.kind === "misread" ? lines.find(l => l.id === request.lineId) : null;
-    if (request.kind === "misread" && !before) throw new CorrectionError("Line does not belong to this quotation.", 400);
+    const before = request.kind !== "missing" ? lines.find(l => l.id === request.lineId) : null;
+    if (request.kind !== "missing" && !before) throw new CorrectionError("Line does not belong to this quotation.", 400);
     if (!devis.pdf_storage_key) throw new CorrectionError("An original contractor PDF is required.");
     let blockedReason: string | null = null;
     if (hasSignedOrClosedEvidence(devis) || devis.archisign_envelope_id ||
@@ -49,12 +49,16 @@ export async function extractionRowCorrection(devisId: number, input: Extraction
     if (project?.archived_at) blockedReason = "Archived projects are read-only.";
     if (translation && ["processing", "finalised"].includes(translation.status))
       blockedReason = "Translation must be unlocked and not processing before correction.";
-    if (lines.some(l => l.id !== before?.id && l.line_number === request.row.lineNumber))
+    if (request.kind !== "unsupported" && lines.some(l => l.id !== before?.id && l.line_number === request.row.lineNumber))
       blockedReason = "Line number already exists. Select the misread row or use an unused line number.";
-    if (before && before.line_number !== request.row.lineNumber)
+    if (request.kind !== "unsupported" && before && before.line_number !== request.row.lineNumber)
       blockedReason = "A misread correction cannot change line identity.";
+    if (before && lines.filter(l => l.line_number === before.line_number).length !== 1)
+      blockedReason = "Duplicate line numbering prevents safe translation cleanup.";
     const { rows: [linked] } = await client.query(`SELECT
       EXISTS(SELECT 1 FROM invoices WHERE devis_id=$1) OR
+      EXISTS(SELECT 1 FROM situations WHERE devis_id=$1) OR
+      EXISTS(SELECT 1 FROM acompte_no_invoice_payments WHERE devis_id=$1) OR
       EXISTS(SELECT 1 FROM situation_lines WHERE devis_line_item_id=ANY($2::int[])) OR
       EXISTS(SELECT 1 FROM certificats c WHERE c.project_id=$3 AND c.contractor_id=$4 AND c.status<>'superseded') AS protected`,
     [devisId, lines.map(l => l.id), devis.project_id, devis.contractor_id]);
@@ -75,14 +79,18 @@ export async function extractionRowCorrection(devisId: number, input: Extraction
     const pdf = Buffer.concat(chunks);
     const sourceDigest = createHash("sha256").update(pdf).digest("hex");
     const pages = (await PDFDocument.load(pdf)).getPageCount();
-    if (request.evidence.page > pages) throw new CorrectionError("Evidence page is outside the original PDF.", 400);
-    const corroboration = await corroborateCorrectionEvidence(pdf, request);
+    if (request.kind !== "unsupported" && request.evidence.page > pages) throw new CorrectionError("Evidence page is outside the original PDF.", 400);
+    // Absence cannot be proved by a fabricated excerpt or by OCR alone.
+    // Record an explicit human review of the entire, digest-bound source instead.
+    const corroboration = request.kind === "unsupported"
+      ? { mode: "human_confirmed_absence", reviewedEntirePdf: true }
+      : await corroborateCorrectionEvidence(pdf, request);
     const beforeSum = lines.reduce((sum, l) => sum + cents(l.total_ht), 0);
-    const afterSum = beforeSum - (before ? cents(before.total_ht) : 0) + cents(request.row.totalHt);
+    const afterSum = beforeSum - (before ? cents(before.total_ht) : 0) + (request.kind === "unsupported" ? 0 : cents(request.row.totalHt));
     const source = cents(devis.amount_ht);
     const preview = {
       fingerprint: hash({ devis, lines, translation, request, sourceDigest }),
-      blockedReason, before: before ? rowView(before) : null, after: request.row,
+      blockedReason, before: before ? rowView(before) : null, after: request.kind === "unsupported" ? null : request.row,
       beforeSumHt: amount(beforeSum), afterSumHt: amount(afterSum),
       sourceTotalHt: devis.amount_ht, sourceTotalTtc: devis.amount_ttc,
       discrepancyBeforeHt: amount(beforeSum - source), discrepancyAfterHt: amount(afterSum - source),
@@ -91,27 +99,33 @@ export async function extractionRowCorrection(devisId: number, input: Extraction
       if (confirmation.confirmed !== true) throw new CorrectionError("Human source confirmation is required.", 400);
       if (blockedReason) throw new CorrectionError(blockedReason);
       if (confirmation.fingerprint !== preview.fingerprint) throw new CorrectionError("Quotation or source changed. Review a fresh preview.");
+      let corrected: any = null;
+      if (request.kind !== "unsupported") {
       const r = request.row;
       const values = [r.lineNumber, r.description, r.quantity, r.unit, r.unitPriceHt, r.totalHt, request.evidence.page];
-      const { rows: [corrected] } = before
+      const result = before
         ? await client.query(`UPDATE devis_line_items SET line_number=$1,description=$2,quantity=$3,unit=$4,
           unit_price_ht=$5,total_ht=$6,pdf_page_hint=$7,pdf_bbox=NULL WHERE id=$8 RETURNING *`, [...values, before.id])
         : await client.query(`INSERT INTO devis_line_items
           (line_number,description,quantity,unit,unit_price_ht,total_ht,pdf_page_hint,devis_id)
           VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`, [...values, devisId]);
+      corrected = result.rows[0];
+      }
       await client.query(`INSERT INTO extraction_row_corrections(devis_id,line_id,actor_id,reason,fingerprint,snapshot)
-        VALUES($1,$2,$3,$4,$5,$6)`, [devisId, corrected.id, confirmation.actorId, request.reason, preview.fingerprint,
+        VALUES($1,$2,$3,$4,$5,$6)`, [devisId, corrected?.id ?? before.id, confirmation.actorId, request.reason, preview.fingerprint,
         JSON.stringify({ request, preview, originalRow: before, correctedRow: corrected,
           source: { storageKey: devis.pdf_storage_key, sha256: sourceDigest, pages,
             corroboration, rawExtraction: devis.ai_extracted_data },
           confirmed: true })]);
+      if (request.kind === "unsupported")
+        await client.query("DELETE FROM devis_line_items WHERE id=$1 AND devis_id=$2", [before.id, devisId]);
       // Changed text and prices need fresh translation/review, not an old generated PDF.
       await client.query(`UPDATE devis_translations SET line_translations=(
         SELECT COALESCE(jsonb_agg(value),'[]'::jsonb) FROM jsonb_array_elements(COALESCE(line_translations,'[]'::jsonb))
         WHERE (value->>'lineNumber')::int <> $2), approved_at=NULL,approved_by=NULL,approved_by_email=NULL,
         contexts_version=contexts_version+1,translated_pdf_storage_key=NULL,combined_pdf_storage_key=NULL,
-        updated_at=now() WHERE devis_id=$1`, [devisId, r.lineNumber]);
-      const workingLines = [...lines.filter(l => l.id !== before?.id), corrected];
+        updated_at=now() WHERE devis_id=$1`, [devisId, request.kind === "unsupported" ? before.line_number : request.row.lineNumber]);
+      const workingLines = [...lines.filter(l => l.id !== before?.id), ...(corrected ? [corrected] : [])];
       const validation = validateExtraction({
         ...(devis.ai_extracted_data ?? {}), amountHt: Number(devis.amount_ht), amountTtc: Number(devis.amount_ttc),
         lineItems: workingLines.map(l => ({ lineNumber: l.line_number, description: l.description,

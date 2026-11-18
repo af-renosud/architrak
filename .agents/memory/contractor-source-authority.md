@@ -12,6 +12,14 @@ The architect may rearrange, replace and create working descriptions, translatio
 
 This supersedes the former ban on manual description realignment, the prohibition on editing individual working figures, and the conditional-only proposal for full editing. It does not authorize rewriting signed evidence, invoices, certificates or payment history. Distinguish human-reviewed contextual content from machine-verified extraction.
 
+## Unsupported extracted items
+
+Removal of an item absent from the PDF is an extraction correction, not a commercial scope change or an unaccepted option.
+
+**Why:** An invented priced item cannot supply a truthful verbatim source excerpt. Merely excluding its price would leave invented content in client-facing descriptions.
+
+**How to apply:** Require explicit human review of the whole original PDF, a reason and a separate financial-impact confirmation; bind the audit to source bytes and preserve linked human/financial evidence rather than silently deleting it.
+
 ## Source baseline and interpretation
 
 Missing or misread intake totals are not authoritative source figures. Provide a straightforward original-PDF transcription/confirmation path to establish the baseline; preserve its provenance independently of the working quotation.

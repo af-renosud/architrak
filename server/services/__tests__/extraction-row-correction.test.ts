@@ -45,6 +45,34 @@ async function confirm() {
   return extractionRowCorrection(1, input, { fingerprint: preview.fingerprint, actorId: 8, confirmed: true });
 }
 describe("source-backed row correction", () => {
+  it("previews and audits removal without inventing evidence or rewriting source figures", async () => {
+    input = { kind: "unsupported", lineId: 10, evidence: { reviewedEntirePdf: true },
+      reason: "This item is absent from the complete original PDF." };
+    const p: any = await extractionRowCorrection(1, input);
+    expect(p).toMatchObject({ before: { totalHt: "100.00" }, after: null, afterSumHt: "0.00" });
+    expect(query.mock.calls.some(([sql]) => /^(INSERT|UPDATE|DELETE)/.test(sql))).toBe(false);
+    await confirm();
+    const calls = query.mock.calls;
+    const audit = calls.find(([sql]) => sql.startsWith("INSERT INTO extraction_row_corrections"))!;
+    expect(JSON.parse(audit[1][5])).toMatchObject({
+      originalRow: lines[0], correctedRow: null,
+      source: { corroboration: { mode: "human_confirmed_absence" }, rawExtraction: { immutable: true } },
+    });
+    expect(calls.findIndex(([sql]) => sql.startsWith("INSERT INTO extraction_row_corrections")))
+      .toBeLessThan(calls.findIndex(([sql]) => sql.startsWith("DELETE FROM devis_line_items")));
+    expect(calls.find(([sql]) => sql.startsWith("DELETE FROM devis_line_items"))?.[1]).toEqual([10, 1]);
+    expect(calls.some(([sql]) => /UPDATE devis SET.*(?:amount_ht|amount_ttc|ai_extracted_data|pdf_storage_key)=/.test(sql))).toBe(false);
+  });
+  it("refuses unsupported removal with missing attestation, invented row values, linked evidence or foreign identity", async () => {
+    input = { kind: "unsupported", lineId: 10, evidence: { reviewedEntirePdf: true },
+      reason: "Confirmed absent from the source PDF." };
+    expect(extractionCorrectionSchema.safeParse({ ...input, evidence: { reviewedEntirePdf: false } }).success).toBe(false);
+    expect(extractionCorrectionSchema.safeParse({ ...input, row: {} }).success).toBe(false);
+    await expect(extractionRowCorrection(1, { ...input, lineId: 99 })).rejects.toThrow("does not belong");
+    evidence = true;
+    await expect(confirm()).rejects.toThrow("evidence");
+    expect(query.mock.calls.some(([sql]) => sql.startsWith("DELETE"))).toBe(false);
+  });
   it("previews a missing row without writing and exposes unchanged source totals", async () => {
     const preview = await extractionRowCorrection(1, input);
     expect(preview).toMatchObject({ before: null, after: input.row, beforeSumHt: "100.00",

@@ -26,7 +26,7 @@ function mount(lines = [line, foreign], disabled = false, compact = false) {
   </QueryClientProvider>);
   return { client, invalidate, ...rendered };
 }
-function open() { fireEvent.click(screen.getByRole("button", { name: "Correct missing / misread extraction" })); }
+function open() { fireEvent.click(screen.getByRole("button", { name: "Correct extraction" })); }
 function edit(label: string, value: string) { fireEvent.change(screen.getByLabelText(label), { target: { value } }); }
 function fillEvidence() {
   edit("Original PDF page (required)", "2");
@@ -54,6 +54,29 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("audited extraction row correction", () => {
+  it("removes an unsupported item only after whole-PDF review and a separate financial confirmation", async () => {
+    fetchMock.mockImplementation((url) => Promise.resolve(respond(url.endsWith("/extraction-corrections") ? {} : {
+      ...preview, before: row, after: null, afterSumHt: "348.67",
+    })));
+    mount(); open();
+    edit("Correction type", "unsupported");
+    edit("Extracted row to correct (same quotation)", "18");
+    expect(screen.queryByLabelText("Verbatim excerpt from the original PDF (required)")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Total HT (required)")).not.toBeInTheDocument();
+    edit(reasonLabel, "This standalone item does not exist anywhere in the original PDF.");
+    expect(screen.getByRole("button", { name: "Preview extraction correction" })).toBeDisabled();
+    fireEvent.click(screen.getByLabelText(/I reviewed the entire original PDF/));
+    await getPreview();
+    expect(screen.getByText(/Removed from the active quotation/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: confirmName })).toBeDisabled();
+    fireEvent.click(screen.getByLabelText(/I have reviewed the removal/));
+    fireEvent.click(screen.getByRole("button", { name: confirmName }));
+    await waitFor(() => expect(correctionCalls()).toHaveLength(1));
+    expect(JSON.parse(correctionCalls()[0][1].body)).toMatchObject({
+      kind: "unsupported", lineId: 18, evidence: { reviewedEntirePdf: true }, confirmed: true,
+    });
+    expect(JSON.parse(correctionCalls()[0][1].body)).not.toHaveProperty("row");
+  });
   it("opens the same guarded correction form from its compact trigger", () => {
     mount([line], false, true);
     expect(screen.getByTestId("extraction-row-correction-42")).toHaveClass("review-source-correction-trigger");
@@ -290,6 +313,6 @@ describe("audited extraction row correction", () => {
     expect(correctionCalls()).toHaveLength(0);
     cleanup();
     mount([], true);
-    expect(screen.getByRole("button", { name: "Correct missing / misread extraction" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Correct extraction" })).toBeDisabled();
   });
 });

@@ -31,7 +31,7 @@ function RowEvidence({ title, row }: { title: string; row: ExtractionRow | null 
     {row ? <dl className="space-y-2">{fields.map(([key, label]) => <div key={key}>
       <dt className="text-muted-foreground">{label}</dt>
       <dd className="whitespace-pre-wrap break-words">{row[key] ?? "Not stated"}</dd>
-    </div>)}</dl> : <p className="text-muted-foreground">No extracted row (missing from extraction).</p>}
+    </div>)}</dl> : <p className="text-muted-foreground">{title === "After correction" ? "Removed from the active quotation and translated output. Retained in the correction audit." : "No extracted row (missing from extraction)."}</p>}
   </section>;
 }
 
@@ -43,6 +43,7 @@ export function ExtractionRowCorrection({ devisId, projectId, lines, disabled = 
   const [page, setPage] = useState("");
   const [excerpt, setExcerpt] = useState("");
   const [reason, setReason] = useState("");
+  const [reviewedEntirePdf, setReviewedEntirePdf] = useState(false);
   const [reviewed, setReviewed] = useState(false);
   const [data, setData] = useState<ExtractionRowPreview | null>(null);
   const [error, setError] = useState("");
@@ -83,7 +84,11 @@ export function ExtractionRowCorrection({ devisId, projectId, lines, disabled = 
     setOpen(next);
   };
   const pageError = page !== "" && !positiveInteger(page) ? "Enter a whole page number greater than 0 (for example, 2)." : "";
-  const validationReasons = [
+  const validationReasons = kind === "unsupported" ? [
+    !quotationLines.some((line) => line.id === lineId) ? "Choose the unsupported extracted row." : "",
+    !reviewedEntirePdf ? "Review the entire original PDF and confirm that this item is absent." : "",
+    reason.trim().length < 10 ? "Explain why this item is unsupported (at least 10 characters)." : "",
+  ].filter(Boolean) : [
     kind === "misread" && !quotationLines.some((line) => line.id === lineId) ? "Choose the extracted row to correct." : "",
     !positiveInteger(row.lineNumber) ? "Enter a whole line number greater than 0." : "",
     !row.description.trim() ? "Enter the row description." : "",
@@ -108,7 +113,9 @@ export function ExtractionRowCorrection({ devisId, projectId, lines, disabled = 
     !data ? "Generate a financial preview before confirming." :
     data.blockedReason !== null ? `Confirmation unavailable: ${data.blockedReason}` :
     !reviewed ? "Review the original PDF and financial preview, then tick the review confirmation." : "";
-  const request = (): ExtractionRowRequest => ({
+  const request = (): ExtractionRowRequest => kind === "unsupported" ? ({
+    kind, lineId: lineId!, evidence: { reviewedEntirePdf: true }, reason: reason.trim(),
+  }) : ({
     kind,
     ...(kind === "misread" && lineId !== null ? { lineId } : {}),
     row: {
@@ -148,7 +155,7 @@ export function ExtractionRowCorrection({ devisId, projectId, lines, disabled = 
       if (mounted.current) {
         setOpen(false);
         invalidate();
-        setRow(blankRow); setLineId(null); setKind("missing"); setPage(""); setExcerpt(""); setReason("");
+        setRow(blankRow); setLineId(null); setKind("missing"); setPage(""); setExcerpt(""); setReason(""); setReviewedEntirePdf(false);
         toast({ title: "Extraction corrected", description: "The original contractor PDF and source quotation totals are unchanged." });
       }
     } catch (cause) {
@@ -165,14 +172,14 @@ export function ExtractionRowCorrection({ devisId, projectId, lines, disabled = 
   return <>
     <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => changeOpen(true)}
       className={compact ? "review-source-correction-trigger" : undefined}
-      data-testid={`extraction-row-correction-${devisId}`}>{compact && <SlidersHorizontal size={13} />}Correct missing / misread extraction</Button>
+      data-testid={`extraction-row-correction-${devisId}`}>{compact && <SlidersHorizontal size={13} />}Correct extraction</Button>
     <Dialog open={open} onOpenChange={changeOpen}>
       <DialogContent className="w-[calc(100%-1rem)] max-w-7xl sm:max-w-7xl h-[94dvh] max-h-[94dvh] flex flex-col overflow-hidden gap-3 p-4 sm:p-6"
         onEscapeKeyDown={(event) => { if (submitLock.current) event.preventDefault(); }}
         onInteractOutside={(event) => { if (submitLock.current) event.preventDefault(); }}>
         <DialogHeader>
           <DialogTitle className="text-base font-black uppercase tracking-tight">Correct extracted quotation row</DialogTitle>
-          <DialogDescription>Restore a missing row or repair a misread row using the original contractor PDF. This is not a commercial amendment.</DialogDescription>
+          <DialogDescription>Restore a missing row, repair a misread row, or remove an item absent from the original contractor PDF. This is not a commercial amendment.</DialogDescription>
         </DialogHeader>
         <div className="rounded-lg border border-[#c1a27b]/40 bg-[#c1a27b]/10 p-3 text-xs flex gap-2">
           <ShieldCheck className="h-4 w-4 shrink-0 text-[#0B2545]" />
@@ -221,27 +228,39 @@ export function ExtractionRowCorrection({ devisId, projectId, lines, disabled = 
             <div className="space-y-1">
               <label htmlFor={`${id}-kind`} className="font-semibold">Correction type</label>
               <select id={`${id}-kind`} className="w-full rounded-md border border-input bg-background p-2" value={kind}
-                onChange={(event) => { invalidate(); setKind(event.target.value as ExtractionRowRequest["kind"]); setLineId(null); setRow(blankRow); }}>
+                onChange={(event) => { invalidate(); setKind(event.target.value as ExtractionRowRequest["kind"]); setLineId(null); setRow(blankRow); setReviewedEntirePdf(false); }}>
                 <option value="missing">Missing row</option>
                 <option value="misread">Misread row</option>
+                <option value="unsupported">Remove item not present in original PDF</option>
               </select>
             </div>
-            {kind === "misread" && <div className="space-y-1">
+            {kind !== "missing" && <div className="space-y-1">
               <label htmlFor={`${id}-line`} className="font-semibold">Extracted row to correct (same quotation)</label>
               <select id={`${id}-line`} className="w-full rounded-md border border-input bg-background p-2" value={lineId ?? ""}
                 onChange={(event) => {
                   invalidate();
                   const line = quotationLines.find((item) => item.id === Number(event.target.value));
                   setLineId(line?.id ?? null);
+                  setReviewedEntirePdf(false);
                   setRow(line ? { lineNumber: String(line.lineNumber), description: line.description, quantity: line.quantity ?? "",
                     unit: line.unit ?? "", unitPriceHt: line.unitPriceHt ?? "", totalHt: line.totalHt } : blankRow);
                 }}>
-                <option value="">Choose the misread row…</option>
+                <option value="">Choose the extracted row…</option>
                 {quotationLines.map((line) => <option key={line.id} value={line.id}>#{line.lineNumber} · {line.description}</option>)}
               </select>
               {!quotationLines.length && <p>No extracted rows are available. Choose “Missing row” to restore a row from the PDF.</p>}
             </div>}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {kind === "unsupported" ? <div className="space-y-3 rounded-md border p-3">
+              <p>Only remove an extraction error—not work genuinely quoted by the contractor. The original PDF and source totals will not change. Linked review, context or financial evidence may prevent removal.</p>
+              {lineId !== null && <RowEvidence title="Selected item to remove" row={{
+                lineNumber: Number(row.lineNumber), description: row.description, quantity: row.quantity || null,
+                unit: row.unit || null, unitPriceHt: row.unitPriceHt || null, totalHt: row.totalHt,
+              }} />}
+              <label className="flex items-start gap-2">
+                <input type="checkbox" checked={reviewedEntirePdf} onChange={e => { invalidate(); setReviewedEntirePdf(e.target.checked); }} />
+                I reviewed the entire original PDF and confirm this standalone item is not present.
+              </label>
+            </div> : <><div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {fields.map(([key, label]) => <div key={key} className={`space-y-1 ${key === "description" ? "sm:col-span-2" : ""}`}>
                 <label htmlFor={`${id}-${key}`} className="font-semibold">{label}{["lineNumber", "description", "totalHt"].includes(key) ? " (required)" : " (optional)"}</label>
                 {key === "description" ? <Textarea id={`${id}-${key}`} rows={3} value={row[key]} onChange={(event) => { invalidate(); setRow({ ...row, [key]: event.target.value }); }} /> :
@@ -250,7 +269,9 @@ export function ExtractionRowCorrection({ devisId, projectId, lines, disabled = 
               </div>)}
             </div>
             <p className="text-muted-foreground">Copy values as stated in the PDF. Use a decimal point for numbers; leave unstated optional fields blank. No price or total is inferred.</p>
+            </>}
             <div className="space-y-2 border-t border-border pt-3">
+              {kind !== "unsupported" && <>
               <label htmlFor={`${id}-page`} className="font-semibold block">Original PDF page (required)</label>
               <Input id={`${id}-page`} inputMode="numeric" value={page} aria-invalid={!!pageError}
                 aria-describedby={`${id}-page-help`} onChange={(event) => { invalidate(); setPage(event.target.value); }} />
@@ -259,6 +280,7 @@ export function ExtractionRowCorrection({ devisId, projectId, lines, disabled = 
               </p>
               <label htmlFor={`${id}-excerpt`} className="font-semibold block">Verbatim excerpt from the original PDF (required)</label>
               <Textarea id={`${id}-excerpt`} value={excerpt} rows={3} onChange={(event) => { invalidate(); setExcerpt(event.target.value); }} />
+              </>}
               <label htmlFor={`${id}-reason`} className="font-semibold block">Typed reason for correcting this extraction (required)</label>
               <Textarea id={`${id}-reason`} value={reason} rows={3} onChange={(event) => { invalidate(); setReason(event.target.value); }} />
             </div>
@@ -289,7 +311,9 @@ export function ExtractionRowCorrection({ devisId, projectId, lines, disabled = 
             <label className="flex gap-2 items-start">
               <input type="checkbox" checked={reviewed} disabled={submitting || disabled || data.blockedReason !== null}
                 onChange={(event) => setReviewed(event.target.checked)} className="mt-0.5" />
-              <span>I have reviewed the original contractor PDF, checked the page, verbatim excerpt and all before/after fields. This only corrects the extraction and is not a commercial amendment.</span>
+              <span>{kind === "unsupported"
+                ? "I have reviewed the removal and financial impact. This item is absent from the original PDF, not a change to the contractor's scope. I confirm its removal from the active quotation."
+                : "I have reviewed the original contractor PDF, checked the page, verbatim excerpt and all before/after fields. This only corrects the extraction and is not a commercial amendment."}</span>
             </label>
           </section>}
           <h3 className="font-semibold text-sm">3. Confirm · record the correction</h3>

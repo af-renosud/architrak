@@ -8,7 +8,7 @@ import { CorrectionError } from "./duplicate-extraction";
 const normalize = (text: string) => text.normalize("NFKC").replace(/\s+/g, " ").trim();
 
 /** Corroborate text PDFs deterministically; scans remain explicitly human-transcribed evidence. */
-export async function corroborateCorrectionEvidence(pdf: Buffer, input: ExtractionCorrection) {
+export async function corroborateCorrectionEvidence(pdf: Buffer, input: Exclude<ExtractionCorrection, { kind: "unsupported" }>) {
   const dir = await mkdtemp(join(tmpdir(), "quotation-evidence-"));
   try {
     const path = join(dir, "source.pdf");

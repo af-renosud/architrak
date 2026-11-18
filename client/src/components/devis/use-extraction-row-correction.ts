@@ -14,7 +14,7 @@ const previewSchema = z.object({
   fingerprint: z.string().min(1),
   blockedReason: z.string().nullable(),
   before: rowSchema.nullable(),
-  after: rowSchema,
+  after: rowSchema.nullable(),
   beforeSumHt: z.string(),
   afterSumHt: z.string(),
   sourceTotalHt: z.string(),
@@ -24,13 +24,19 @@ const previewSchema = z.object({
 });
 export type ExtractionRow = z.infer<typeof rowSchema>;
 export type ExtractionRowPreview = z.infer<typeof previewSchema>;
-export interface ExtractionRowRequest {
+interface TranscribedRowRequest {
   kind: "missing" | "misread";
   lineId?: number;
   row: ExtractionRow;
   evidence: { page: number; excerpt: string };
   reason: string;
 }
+export type ExtractionRowRequest = TranscribedRowRequest | {
+  kind: "unsupported";
+  lineId: number;
+  evidence: { reviewedEntirePdf: true };
+  reason: string;
+};
 
 export function useExtractionRowCorrection(devisId: number, projectId: string) {
   const client = useQueryClient();
