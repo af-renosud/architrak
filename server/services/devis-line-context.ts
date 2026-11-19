@@ -71,6 +71,8 @@ export interface SaveLineContextInput {
    * first save (no row yet) the client sends 0.
    */
   baseRevision: number;
+  /** Internal-only generation binding; never taken from the public save body. */
+  generatedFromDescription?: string;
 }
 
 export async function saveLineContext(input: SaveLineContextInput): Promise<DevisLineContext> {
@@ -109,7 +111,9 @@ export async function saveLineContext(input: SaveLineContextInput): Promise<Devi
   // against a concurrent finalise by the translation-row lock. The
   // rejectWhenFinalised() pre-check above is only a fast path — this is the
   // authoritative guard.
-  const result = await storage.saveDevisLineContextGuarded(devisId, devisLineItemId, doc, baseRevision);
+  const result = input.generatedFromDescription === undefined
+    ? await storage.saveDevisLineContextGuarded(devisId, devisLineItemId, doc, baseRevision)
+    : await storage.saveDevisLineContextGuarded(devisId, devisLineItemId, doc, baseRevision, input.generatedFromDescription);
   switch (result.outcome) {
     case "finalised":
       throw new LineContextError(

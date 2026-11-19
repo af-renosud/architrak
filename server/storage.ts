@@ -923,7 +923,7 @@ export interface IStorage {
     devisLineItemId: number,
     document: unknown,
     baseRevision: number,
-
+    generatedFromDescription?: string,
   ): Promise<
     | { outcome: "finalised" }
     | { outcome: "stale_create" }
@@ -5826,6 +5826,7 @@ export class DatabaseStorage implements IStorage {
     devisLineItemId: number,
     document: unknown,
     baseRevision: number,
+    generatedFromDescription?: string,
   ): Promise<
     | { outcome: "finalised" }
     | { outcome: "stale_create" }
@@ -5845,6 +5846,26 @@ export class DatabaseStorage implements IStorage {
         .for("update");
       if (translation?.status === "finalised") {
         return { outcome: "finalised" as const };
+      }
+
+      if (generatedFromDescription !== undefined) {
+        // The model ran outside this transaction. Bind its result to the
+        // still-current source, and never replace concurrent uploads/edits.
+        const current = await tx.execute(sql`
+          SELECT l.description, d.status, p.archived_at
+          FROM devis_line_items l JOIN devis d ON d.id=l.devis_id
+          JOIN projects p ON p.id=d.project_id
+          WHERE l.id=${devisLineItemId} AND d.id=${devisId}
+          FOR SHARE OF l,d,p`);
+        const source = current.rows[0] as any;
+        if (!source || source.description !== generatedFromDescription || source.archived_at ||
+            ["void", "superseded"].includes(source.status) ||
+            !translation || !["draft", "edited"].includes(translation.status)) {
+          return { outcome: "stale_update" as const };
+        }
+        const assets = await tx.select({ id: devisLineContextAssets.id }).from(devisLineContextAssets)
+          .where(eq(devisLineContextAssets.devisLineItemId, devisLineItemId)).limit(1);
+        if (assets.length) return { outcome: "stale_update" as const };
       }
 
       let row: DevisLineContext | undefined;

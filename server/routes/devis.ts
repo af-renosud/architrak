@@ -1,6 +1,8 @@
 import express, { Router } from "express";
 import { z } from "zod";
 import { storage } from "../storage";
+import { contextGenerationStatus, startContextGeneration, generateEmptyLineContext } from "../services/quotation-context-generation";
+import { ContextResearchError } from "../services/quotation-context-research";
 import { requireAuth } from "../auth/middleware";
 import {
   insertDevisSchema,
@@ -770,6 +772,23 @@ const saveLineContextBody = z
     baseRevision: z.number().int().nonnegative(),
   })
   .strict();
+
+router.get("/api/devis/:id/context-generation", requireAuth, validateRequest({ params: idParams }), async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json(contextGenerationStatus(Number(req.params.id)));
+});
+router.post("/api/devis/:id/context-generation", requireAuth, validateRequest({ params: idParams, body: z.object({}).strict() }), async (req, res) => {
+  try { res.json(await startContextGeneration(Number(req.params.id))); }
+  catch (error) {
+    res.status(error instanceof LineContextError ? error.status : 502).json({ message: error instanceof LineContextError ? error.message : "Context research could not start. Please retry." });
+  }
+});
+router.post("/api/devis/:id/line-contexts/:lineItemId/generate", requireAuth, validateRequest({ params: lineContextParams, body: z.object({}).strict() }), async (req, res) => {
+  try { res.json(await generateEmptyLineContext(Number(req.params.id), Number(req.params.lineItemId))); }
+  catch (error) {
+    res.status(error instanceof LineContextError ? error.status : 502).json({ message: error instanceof LineContextError || error instanceof ContextResearchError ? error.message : "Gemini research failed. Your context is unchanged; please retry." });
+  }
+});
 
 router.get(
   "/api/devis/:id/line-contexts",

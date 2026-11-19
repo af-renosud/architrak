@@ -197,7 +197,9 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
         link: false,
       }),
       Link.configure({
-        openOnClick: false,
+        // Saved source links work normally in the approved/read-only view.
+        // While editing, modifier-click opens a source without losing selection.
+        openOnClick: "whenNotEditable",
         autolink: true,
         protocols: ["https", "mailto"],
         shouldAutoLink: (url) => isSafeContextHref(url),
@@ -316,6 +318,15 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
             }
           }
           return false;
+        },
+        handleClick: (_view, _pos, event) => {
+          if (!(event.ctrlKey || event.metaKey)) return false;
+          const target = event.target;
+          const href = target instanceof Element ? target.closest("a")?.getAttribute("href") : null;
+          if (!href || !isSafeContextHref(href)) return false;
+          event.preventDefault();
+          window.open(href, "_blank", "noopener,noreferrer");
+          return true;
         },
       },
       onUpdate: ({ editor: e }) => {
@@ -507,6 +518,7 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
         />
       </div>
       <EditorContent editor={editor} />
+      <p className="text-[10px] text-muted-foreground">Ctrl/⌘-click a source link to open it while editing.</p>
     </div>
   );
 }

@@ -258,6 +258,9 @@ export async function translateDevis(
       combinedPdfStorageKey: null,
     });
 
+    // Enrichment never turns a successful translation into a failure.
+    void import("./quotation-context-generation").then(module => module.startContextGeneration(devisId))
+      .catch(() => console.warn(`[DevisTranslation] Context prefilling unavailable for devis ${devisId}; empty fields can be retried manually.`));
     return { translation: { header: finalHeader || {}, lines: mergedLines }, provider, modelId };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

@@ -40,6 +40,7 @@ let fakeEditor: FakeEditor;
 let editorConfig: {
   onUpdate?: (p: { editor: unknown }) => void;
   onBlur?: (p: { editor: unknown }) => void;
+  editorProps?: { handleClick?: (view: unknown, pos: number, event: MouseEvent) => boolean };
 } = {};
 const setContentCalls: unknown[] = [];
 
@@ -105,6 +106,7 @@ function renderEditor(context: DevisLineContext | null) {
 describe("DevisLineContextEditor server re-sync", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    sessionStorage.clear();
     setContentCalls.length = 0;
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
@@ -197,5 +199,48 @@ describe("DevisLineContextEditor server re-sync", () => {
     });
     expect(putBodies).toHaveLength(1);
     expect(JSON.parse(putBodies[0]).baseRevision).toBe(4);
+  });
+
+  it("keeps a new unsaved draft when generated context arrives for a previously empty line", async () => {
+    fakeEditor = makeFakeEditor({ type: "doc", content: [] });
+    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) => new Response(JSON.stringify({
+      ...ctx(2, ""), document: JSON.parse(init?.body as string).document,
+    }), { status: 200 }));
+    const view = renderEditor(null);
+    act(() => {
+      fakeEditor.doc = doc("Architect's unsaved explanation");
+      editorConfig.onUpdate!({ editor: fakeEditor });
+    });
+    view.rerender(<DevisLineContextEditor devisId={42} lineItemId={100} lineNumber={1}
+      context={ctx(1, "AI-generated explanation with sources")} />);
+    expect(setContentCalls).toHaveLength(0);
+    expect(JSON.stringify(fakeEditor.doc)).toContain("Architect's unsaved explanation");
+    await act(async () => { view.unmount(); });
+  });
+
+  it("adopts generated context for an idle empty line without emitting an autosave", () => {
+    fakeEditor = makeFakeEditor({ type: "doc", content: [] });
+    const view = renderEditor(null);
+    view.rerender(<DevisLineContextEditor devisId={42} lineItemId={100} lineNumber={1}
+      context={ctx(1, "AI-generated explanation with sources")} />);
+    expect(setContentCalls).toHaveLength(1);
+    expect(JSON.stringify(fakeEditor.doc)).toContain("AI-generated explanation with sources");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("opens safe source links on modifier-click without opening unsafe URLs", () => {
+    fakeEditor = makeFakeEditor(doc("Explanation with a source"));
+    renderEditor(ctx(1, "Explanation with a source"));
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const link = document.createElement("a");
+    link.href = "https://example.org/technical-sheet";
+    const event = new MouseEvent("click", { ctrlKey: true, cancelable: true });
+    Object.defineProperty(event, "target", { value: link });
+    expect(editorConfig.editorProps?.handleClick?.(null, 0, event)).toBe(true);
+    expect(open).toHaveBeenCalledWith("https://example.org/technical-sheet", "_blank", "noopener,noreferrer");
+    link.href = "javascript:alert(1)";
+    expect(editorConfig.editorProps?.handleClick?.(null, 0, event)).toBe(false);
+    expect(open).toHaveBeenCalledTimes(1);
+    open.mockRestore();
   });
 });

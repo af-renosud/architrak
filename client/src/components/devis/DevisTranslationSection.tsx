@@ -11,6 +11,7 @@ import { DevisCostAnalysisCard } from "./DevisCostAnalysisCard";
 import { TranslationReviewNotes, type TranslationReviewCheck } from "./TranslationReviewNotes";
 import { quotationWorkBlocked, useQuotationWork } from "./quotation-review-state";
 import { QuotationApprovalReview } from "./QuotationApprovalReview";
+import { ContextGenerationActions, LineContextGenerationAction } from "./ContextGenerationActions";
 
 interface DevisTranslationSectionProps {
   devisId: number; devisCode: string; lineItems: DevisLineItem[];
@@ -107,6 +108,8 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems, reviewC
     {reviewChecksLoading && <Skeleton className="h-8 w-full" />}
     {reviewChecksError && <p role="alert" className="text-xs">Questions may be out of date. {onRetryReviewChecks && <Button size="sm" variant="outline" onClick={onRetryReviewChecks}>Retry notes</Button>}</p>}
     {contexts.isError && <p role="alert" className="text-xs">Context could not be loaded. <Button size="sm" variant="outline" onClick={() => void contexts.refetch()}>Retry context</Button></p>}
+    <ContextGenerationActions devisId={devisId} disabled={contextReadOnly || translation.isError || !contexts.data || contexts.isError}
+      translationStatus={status} hasLines={ordered.length > 0} />
     {!ordered.length && <div className="rounded border border-dashed p-6"><p className="text-sm font-semibold">No working rows yet</p><p className="text-xs mt-2">Open Review/edit quotation to add a priced item or a context-only line.</p></div>}
     {ordered.map(line => {
       const english = lines?.find(item => item.lineNumber === line.lineNumber);
@@ -122,6 +125,9 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems, reviewC
         {explanations && english?.explanation && <p className="text-xs whitespace-pre-wrap">{english.explanation}</p>}
         <TranslationReviewNotes lineItemId={line.id} note={line.checkNotes}
           checks={reviewChecks.filter(check => check.devisId === devisId && check.lineItemId === line.id && check.origin === "line_item" && check.query.trim())} />
+        {contexts.data && <LineContextGenerationAction devisId={devisId} lineItemId={line.id}
+          context={contexts.data.contexts.find(context => context.devisLineItemId === line.id) ?? null}
+          disabled={contextReadOnly || translation.isError || contexts.isError} />}
         {contexts.data && <DevisLineContextEditor devisId={devisId} lineItemId={line.id} lineNumber={line.lineNumber}
           context={contexts.data.contexts.find(context => context.devisLineItemId === line.id) ?? null} readOnly={contextReadOnly} workScope="inline" />}
       </article>;

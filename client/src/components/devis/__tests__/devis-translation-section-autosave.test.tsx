@@ -48,6 +48,8 @@ describe("saved package preview replaces unsafe competing autosave paths", () =>
   it.each(["finalised", "processing", "pending"])("keeps context protected while %s", status => {
     mount(true, status);
     expect(screen.getByText("Context read-only")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate explanation" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Fill empty contexts" })).toBeDisabled();
     if (status === "finalised") {
       expect(screen.getByRole("button", { name: "Reopen for review" })).toBeEnabled();
       expect(screen.getByText(/To change context here, reopen for review first/)).toBeInTheDocument();
@@ -56,6 +58,7 @@ describe("saved package preview replaces unsafe competing autosave paths", () =>
   it("does not permit edits or reopening for archived/inactive records", () => {
     mount(true, "finalised", true);
     expect(screen.getByText("Context read-only")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate explanation" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Reopen for review" })).toBeDisabled();
   });
   it("retains line-linked internal notes separately from the client wording", () => {
