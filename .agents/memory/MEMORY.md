@@ -83,3 +83,4 @@
 - [Architect-selected replacements](architect-quotation-replacement.md) — architect chooses old/new quotations and records context; no AI or same-reference requirement.
 - [Honoraires archive semantics](honoraires-archive-semantics.md) — reversible visibility only; retain financial totals and audit history, resurface unresolved work.
 - [Issued, not paid](certificate-issued-not-paid.md) — certificate summaries report issued authorisations; contractor receipt confirmation is optional, never presumed.
+- [Inline quotation context](inline-quotation-context.md) — context text/images stay editable beneath translated items; preserve autosave and approval safeguards.

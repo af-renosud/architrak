@@ -12,14 +12,15 @@ import { quotationWorkBlocked, useQuotationWork } from "./quotation-review-state
 
 interface DevisTranslationSectionProps {
   devisId: number; devisCode: string; lineItems: DevisLineItem[];
+  readOnly?: boolean;
   reviewChecks?: TranslationReviewCheck[]; reviewChecksLoading?: boolean; reviewChecksError?: boolean;
   onRetryReviewChecks?: () => void; workingLineNumber?: number | null; flashLineNumber?: number | null;
   onWorkingLineChange?: (lineNumber: number, lineItemId: number) => void;
 }
-/** Saved-package preview only. All wording, financial and context edits share the working workspace. */
+/** Saved wording preview with inline context editing; financial/wording edits stay in the workspace. */
 export function DevisTranslationSection({ devisId, devisCode, lineItems, reviewChecks = [],
   reviewChecksLoading, reviewChecksError, onRetryReviewChecks, workingLineNumber, flashLineNumber,
-  onWorkingLineChange }: DevisTranslationSectionProps) {
+  onWorkingLineChange, readOnly = false }: DevisTranslationSectionProps) {
   const client = useQueryClient();
   const work = useQuotationWork(devisId);
   const [explanations, setExplanations] = useState(false);
@@ -46,6 +47,7 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems, reviewC
   });
   const data = translation.data;
   const status = data?.status ?? "missing";
+  const contextReadOnly = readOnly || status === "finalised" || ["processing", "pending"].includes(status);
   const header = data?.headerTranslated as DevisTranslationHeader | undefined;
   const lines = data?.lineTranslations as DevisTranslationLine[] | undefined;
   const open = () => window.dispatchEvent(new CustomEvent("quotation-review-open", { detail: devisId }));
@@ -55,7 +57,8 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems, reviewC
   return <section className="space-y-4 rounded-md border bg-card p-4" data-testid={`section-translation-${devisId}`}>
     <header className="flex flex-wrap items-start justify-between gap-4">
       <div><h4 className="text-sm font-semibold inline-flex gap-2 items-center"><Languages size={16} />English client package · {devisCode}</h4>
-        <p className="text-xs text-muted-foreground mt-1">{status === "finalised" ? "Approved saved version" : "Saved preview"} · edit and approve in the working quotation.</p></div>
+        <p className="text-xs text-muted-foreground mt-1">{status === "finalised" ? "Approved saved version" : "Saved wording"} · use Review/edit quotation for wording and approval.</p>
+        {!contextReadOnly && <p className="text-xs text-emerald-700 mt-1">Edit context text and images directly below each item. Changes save automatically; wait for Saved.</p>}</div>
       <Button size="sm" onClick={open}>Review/edit quotation</Button>
     </header>
     <div className="flex flex-wrap gap-2 items-center">
@@ -66,11 +69,12 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems, reviewC
     </div>
     {(status === "missing" || status === "failed") && <div className="border rounded p-4 space-y-3">
       <p className="text-xs">{status === "failed" ? data?.errorMessage || "Translation could not be generated." : "No English package yet. Generate a starting translation, then review it against the original."}</p>
-      <Button size="sm" variant="outline" disabled={generate.isPending || work.blocked} onClick={() => generate.mutate()}>{generate.isPending ? "Generating…" : "Generate initial English translation"}</Button>
+      <Button size="sm" variant="outline" disabled={readOnly || generate.isPending || work.blocked} onClick={() => generate.mutate()}>{generate.isPending ? "Generating…" : "Generate initial English translation"}</Button>
     </div>}
     {["processing", "pending"].includes(status) && <div role="status" className="space-y-2"><p className="text-xs">Preparing English wording…</p><Skeleton className="h-24 w-full" /></div>}
     {status === "finalised" && <div className="flex flex-wrap items-center gap-3 text-xs"><Lock size={13} /><span>Approved {data?.approvedAt ? new Date(data.approvedAt).toLocaleString("en-GB") : ""}. The original PDF is unchanged.</span>
-      <Button size="sm" variant="outline" disabled={unlock.isPending || work.blocked} onClick={() => unlock.mutate()}>Reopen for review</Button></div>}
+      <span>To change context here, reopen for review first. Approve the updated package again before sharing.</span>
+      <Button size="sm" variant="outline" disabled={readOnly || unlock.isPending || work.blocked} onClick={() => unlock.mutate()}>Reopen for review</Button></div>}
     {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
     {header && <div className="border-l-2 border-[#94734c] bg-[#f8f5ef] p-3 text-sm whitespace-pre-wrap space-y-2">
       <p>{header.description}</p><p>{header.summary}</p>{explanations && <p className="text-xs">{header.descriptionExplanation}</p>}
@@ -94,7 +98,7 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems, reviewC
         <TranslationReviewNotes lineItemId={line.id} note={line.checkNotes}
           checks={reviewChecks.filter(check => check.devisId === devisId && check.lineItemId === line.id && check.origin === "line_item" && check.query.trim())} />
         {contexts.data && <DevisLineContextEditor devisId={devisId} lineItemId={line.id} lineNumber={line.lineNumber}
-          context={contexts.data.contexts.find(context => context.devisLineItemId === line.id) ?? null} readOnly />}
+          context={contexts.data.contexts.find(context => context.devisLineItemId === line.id) ?? null} readOnly={contextReadOnly} workScope="inline" />}
       </article>;
     })}
     <DevisCostAnalysisCard devisId={devisId} translationFinalised={status === "finalised"} />

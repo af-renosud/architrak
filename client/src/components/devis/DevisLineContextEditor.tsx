@@ -47,6 +47,7 @@ interface DevisLineContextEditorProps {
   context: DevisLineContext | null;
   /** Finalised translations are approval artifacts — show contexts read-only. */
   readOnly?: boolean;
+  workScope?: "inline" | "workspace";
 }
 
 /** Custom atom image node — references an owned uploaded asset by id only. */
@@ -163,21 +164,22 @@ export function normalizeEditorJson(json: EditorJsonNode): ContextDoc {
   return { type: "doc", content } as ContextDoc;
 }
 
-export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, context, readOnly = false }: DevisLineContextEditorProps) {
+export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, context, readOnly = false, workScope = "workspace" }: DevisLineContextEditorProps) {
   const { toast } = useToast();
   const { saveState, setSaveState, enqueue, revisionRef, hasPendingSave, adoptServerState, conflict, resolveConflict, retry, restoredDocument, rememberDraft } = useContextSaveQueue(
     devisId,
     lineItemId,
     context,
     !readOnly,
+    workScope,
   );
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const uploads = useRef(0);
   const [uploading, setUploading] = useState(false);
   const [failedUpload, setFailedUpload] = useState<File | null>(null);
-  const workKey = `context-debounce:${lineItemId}`;
-  const uploadKey = `context-upload:${lineItemId}`;
+  const workKey = `context-debounce:${workScope}:${lineItemId}`;
+  const uploadKey = `context-upload:${workScope}:${lineItemId}`;
   useEffect(() => {
     if (restoredDocument) setQuotationWork(devisId, workKey, false);
   }, [devisId, workKey, restoredDocument]);

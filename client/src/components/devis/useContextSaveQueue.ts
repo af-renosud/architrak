@@ -34,6 +34,7 @@ export function useContextSaveQueue(
   lineItemId: number,
   context: DevisLineContext | null,
   enabled = true,
+  workScope = "workspace",
 ) {
   const { toast } = useToast();
   const recovered = useRef(enabled ? readContextDraft(devisId, lineItemId) : null);
@@ -41,7 +42,7 @@ export function useContextSaveQueue(
   const [saveState, setSaveState] = useState<ContextSaveState>("idle");
   const [conflict, setConflict] = useState<{ revision: number; document: ContextDoc; mine: ContextDoc; base: ContextDoc | null } | null>(null);
   const pausedRef = useRef(false);
-  const workKey = `context:${lineItemId}`;
+  const workKey = `context:${workScope}:${lineItemId}`;
   const markWork = (blocked: boolean, message = "") => setQuotationWork(devisId, workKey, blocked, message);
 
   const pendingDocRef = useRef<ContextDoc | null>(recovered.current?.document ?? null);

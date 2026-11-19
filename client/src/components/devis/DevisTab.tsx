@@ -5897,6 +5897,7 @@ function DevisDetailTabs({
       <PreservedTabsContent activeTab={activeTab} value="translation" className="p-4 mt-0">
         <DevisTranslationSection
           devisId={devis.id}
+          readOnly={isArchived || ["void", "cancelled", "superseded"].includes(devis.status) || devis.accountingState === "superseded"}
           devisCode={devis.devisCode}
           lineItems={translationLineItems ?? []}
           reviewChecks={checksForLines}

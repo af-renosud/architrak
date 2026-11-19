@@ -25,6 +25,7 @@ vi.mock("@/lib/queryClient", () => ({
 }));
 
 import { useContextSaveQueue } from "../useContextSaveQueue";
+import { quotationWorkBlocked } from "../quotation-review-state";
 import type { DevisLineContext } from "@shared/schema";
 import type { ContextDoc } from "@shared/context-doc";
 
@@ -61,6 +62,22 @@ function putCalls() {
 }
 
 describe("useContextSaveQueue (Task 364)", () => {
+  it("a workspace save cannot clear an unresolved inline context save", async () => {
+    const initial = ctx(3, doc("old"));
+    const inline = renderHook(() => useContextSaveQueue(701, 100, initial, true, "inline"));
+    const workspace = renderHook(() => useContextSaveQueue(701, 100, initial, true, "workspace"));
+    fetchMock.mockResolvedValueOnce(jsonRes({ message: "Temporary failure" }, 503));
+    act(() => inline.result.current.enqueue(doc("inline draft")));
+    await waitFor(() => expect(inline.result.current.saveState).toBe("error"));
+    fetchMock.mockResolvedValueOnce(jsonRes(ctx(4, doc("workspace draft"))));
+    act(() => workspace.result.current.enqueue(doc("workspace draft")));
+    await waitFor(() => expect(workspace.result.current.saveState).toBe("saved"));
+    expect(quotationWorkBlocked(701)).toBe(true);
+    fetchMock.mockResolvedValueOnce(jsonRes(ctx(5, doc("inline draft"))));
+    act(() => inline.result.current.retry());
+    await waitFor(() => expect(inline.result.current.saveState).toBe("saved"));
+    expect(quotationWorkBlocked(701)).toBe(false);
+  });
   it("saves normally and records the new revision", async () => {
     const initial = ctx(3, doc("old"));
     fetchMock.mockResolvedValueOnce(jsonRes(ctx(4, doc("new"))));
