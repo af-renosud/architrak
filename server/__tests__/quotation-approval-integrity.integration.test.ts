@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq } from "drizzle-orm";
 import { db, pool } from "../db";
 import { storage } from "../storage";
-import { projects, contractors, devis, devisLineItems, devisTranslations } from "@shared/schema";
+import { projects, contractors, devis, devisLineItems, devisTranslations, quotationArchitectState } from "@shared/schema";
+import { draftFrom } from "../services/architect-quotation-correction";
 import { commitTranslationApproval } from "../services/translation-approval-commit";
 import { buildClientPortalPayload } from "../routes/public-client-checks";
 import { confirmDevisAndMirror } from "../services/benchmark-ingest.service";
@@ -28,6 +29,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   if (devisId) {
+    await db.delete(quotationArchitectState).where(eq(quotationArchitectState.devisId, devisId));
     await db.delete(devisTranslations).where(eq(devisTranslations.devisId, devisId));
     await db.delete(devisLineItems).where(eq(devisLineItems.devisId, devisId));
     await db.delete(devis).where(eq(devis.id, devisId));
@@ -94,5 +96,23 @@ describe("exact-version translation approval", () => {
       status: 409, code: "quotation_content_unverified",
     });
     expect((await storage.getDevis(devisId))?.status).toBe("draft");
+  });
+  it("approves an architect-corrected quotation without weakening the background-write guard", async () => {
+    await db.update(devisTranslations).set({ status: "edited", approvedAt: null })
+      .where(eq(devisTranslations.devisId, devisId));
+    const q = (await pool.query("SELECT * FROM devis WHERE id=$1", [devisId])).rows[0];
+    const rows = (await pool.query("SELECT * FROM devis_line_items WHERE devis_id=$1", [devisId])).rows;
+    const draft = draftFrom({ quotation: q, lines: rows, translation: null, state: null, baseline: null });
+    draft.lines.forEach(line => { line.vatRate = "20"; });
+    await db.insert(quotationArchitectState).values({ devisId, revision: 1, draft });
+    const before = await snapshot();
+    const approved = await commitTranslationApproval(devisId, before, 999999, "fixture@local.test");
+    expect(approved).toMatchObject({ status: "finalised", approvedBy: 999999,
+      headerTranslated: { humanReviewed: true, sourceReview: { kind: "explicit-review" } } });
+    expect(approved?.lineTranslations).toEqual(before.translation?.lineTranslations);
+    expect(await storage.getDevisLineItems(devisId)).toEqual(before.lines);
+    // The transaction-local permission must not leak to later background writes.
+    await expect(pool.query("UPDATE devis_translations SET header_translated='{}'::jsonb WHERE devis_id=$1", [devisId]))
+      .rejects.toThrow("Architect translations cannot be overwritten");
   });
 });

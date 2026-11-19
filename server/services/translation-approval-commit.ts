@@ -47,6 +47,10 @@ export async function commitTranslationApproval(
       if (correctedFinancialBlocker(working, row.ttc == null ? null : { ttc: String(row.ttc) },
         { ht: quotation.amountHt ?? "",ttc: quotation.amountTtc ?? "" })) return null;
     }
+    // Explicit, version-checked human approval may append its review receipt.
+    // Use the existing transaction-local architect permission only after all
+    // checks; background translation writes remain protected outside this tx.
+    await tx.execute(sql`SELECT set_config('renosud.architect_correction','on',true)`);
     const [updated] = await tx.update(devisTranslations).set({
       headerTranslated: { ...((translation.headerTranslated ?? {}) as object), humanReviewed: true,
         sourceReview: { version: fingerprint, sourceDigest: reviewState?.baseline?.source_digest ?? null,
