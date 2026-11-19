@@ -4,6 +4,8 @@ import { devis, devisLineItems, devisTranslations, type Devis, type DevisLineIte
 import { quotationWorkingVersion } from "./quotation-working-version";
 import { correctedFinancialBlocker, draftFrom } from "./architect-quotation-correction";
 import type { ArchitectCorrectionDraft } from "@shared/architect-quotation";
+import { readQuotationDecisionSnapshot } from "./quotation-decision-snapshot";
+import { evaluateQuotationDecision } from "./quotation-decision";
 
 /** Coverage is checked before this call. Commit only the exact checked version,
  * under the same source/line/translation locks used by extraction replacement. */
@@ -25,6 +27,8 @@ export async function commitTranslationApproval(
     const [translation] = await tx.select().from(devisTranslations).where(eq(devisTranslations.devisId, devisId));
     if (!translation || !["draft", "edited"].includes(translation.status)
       || quotationWorkingVersion(quotation, lines, translation) !== fingerprint) return null;
+    const decisionSnapshot = await readQuotationDecisionSnapshot(tx, devisId);
+    if (!decisionSnapshot || !(await evaluateQuotationDecision(decisionSnapshot, "approve")).allowed) return null;
     // Recheck a confirmed source even when no correction was ever saved.
     // Review is an explicit approval event, not a side effect of editing.
     const reviewed = await tx.execute(sql`SELECT row_to_json(d) AS quotation,

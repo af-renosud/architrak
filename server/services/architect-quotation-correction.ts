@@ -8,6 +8,7 @@ import { stableQuotationDigest } from "./quotation-working-version";
 import { hasSignedOrClosedEvidence } from "./quotation-source-guards";
 import { architectBaselineConfirmationSchema, architectCorrectionSaveSchema, correctionCents, financialProjection, previewCorrectionTotals } from "../../shared/architect-quotation";
 import type { ArchitectCorrectionDraft, ArchitectCorrectionLine, ArchitectCorrectionSnapshot } from "../../shared/architect-quotation";
+import { quotationFinancialIssues } from "../../shared/quotation-financial-decision";
 
 export class ArchitectCorrectionError extends Error {
   constructor(message: string, public status = 409, public code = "ARCHITECT_CORRECTION_CONFLICT") { super(message); }
@@ -223,14 +224,7 @@ export async function hasQuotationSourceBaseline(devisId: number) {
   return !!(await pool.query("SELECT 1 FROM quotation_source_baselines WHERE devis_id=$1", [devisId])).rows.length;
 }
 export function correctedFinancialBlocker(draft: ArchitectCorrectionDraft, baseline: { ttc: string } | null, workingTotals?: { ht: string; ttc: string }) {
-  if (!baseline) return "Confirm the source TTC directly from the original PDF before approving or sharing the corrected quotation.";
-  try {
-    const totals = previewCorrectionTotals(draft);
-    if (workingTotals && (correctionCents(totals.ht) !== correctionCents(workingTotals.ht) || correctionCents(totals.ttc) !== correctionCents(workingTotals.ttc)))
-      return "Working header totals differ from the corrected row/VAT/discount calculation. Reconcile the financial batch before approval or sharing.";
-    return correctionCents(totals.ttc) === correctionCents(baseline.ttc) ? null
-      : "Working TTC differs from the locked source TTC. Reconcile the complete financial batch before approval or sharing.";
-  } catch (e) { return `Complete the actual VAT/discount treatment before approval: ${e instanceof Error ? e.message : "Invalid figures."}`; }
+  return quotationFinancialIssues(draft, baseline, workingTotals).map(i => i.message).join("\n") || null;
 }
 export async function architectFinancialBoundary(devisId: number) {
   // Confirmation is independent of editing: an unchanged reviewed quotation

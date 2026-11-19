@@ -55,22 +55,23 @@ export function correctionProduct(q: string, p: string) {
 }
 /** Report every missing financial input, with a stable destination in the editor. */
 export function correctionFinancialIssues(draft: ArchitectCorrectionDraft) {
-  const issues: Array<{ key: string; message: string }> = [];
+  const issues: Array<{ key: string; message: string; code: string; field: string; rowId?: number }> = [];
   draft.lines.forEach((line, index) => {
     if (line.kind !== "priced" || !line.included) return;
     const label = `Item ${index + 1}`;
-    if (!line.vatRate.trim()) issues.push({ key: line.clientKey, message: `${label}: VAT rate is missing. Copy the rate printed in the original PDF.` });
+    const add = (code: string, field: string, message: string) => issues.push({ key: line.clientKey, code, field, ...(line.id ? { rowId: line.id } : {}), message });
+    if (!line.vatRate.trim()) add("VAT_MISSING", "vatRate", `${label}: VAT rate is missing. Copy the rate printed in the original PDF.`);
     else {
       try {
         const rate = decimal(line.vatRate);
         if (rate.n < ZERO || rate.n > HUNDRED * rate.d) throw new Error();
-      } catch { issues.push({ key: line.clientKey, message: `${label}: VAT rate must be a number from 0 to 100.` }); }
+      } catch { add("VAT_INVALID", "vatRate", `${label}: VAT rate must be a number from 0 to 100.`); }
     }
     try { correctionCents(line.totalHt); }
-    catch { issues.push({ key: line.clientKey, message: `${label}: line amount HT is missing or invalid.` }); }
+    catch { add("LINE_AMOUNT_INVALID", "totalHt", `${label}: line amount HT is missing or invalid.`); }
   });
   try { correctionCents(draft.discountHt); }
-  catch { issues.push({ key: "header", message: "Document discount HT is missing or invalid. Enter 0 if there is no discount." }); }
+  catch { issues.push({ key: "header", code: "DISCOUNT_INVALID", field: "discountHt", message: "Document discount HT is missing or invalid. Enter 0 if there is no discount." }); }
   return issues;
 }
 /** Exact cents, explicit VAT, net buckets, proportional HT discount with

@@ -6,9 +6,19 @@ import { architectFinancialBoundary, hasQuotationSourceBaseline } from "./archit
 import { createHash } from "node:crypto";
 import { getDocumentBuffer } from "../storage/object-storage";
 import { PRICED_EVIDENCE_PARSER, pricedRowsDigest } from "./quotation-priced-evidence";
+import { loadQuotationDecisionSnapshot } from "./quotation-decision-snapshot";
+import { evaluateQuotationDecision } from "./quotation-decision";
 
 /** Re-evaluate live descriptions, not only the historical parser verdict. */
 export async function quotationApprovalBlocker(devisId: number, options: { reviewing?: boolean } = {}): Promise<string | null> {
+  const snapshot = await loadQuotationDecisionSnapshot(devisId);
+  if (!snapshot) return "Quotation not found.";
+  const decision = await evaluateQuotationDecision(snapshot, options.reviewing ? "approve" : "advance");
+  return decision.issues.find(i => i.severity === "blocker")?.message ?? null;
+}
+
+/** Retained temporarily for migration comparison tests; no runtime callers. */
+export async function legacyQuotationApprovalBlocker(devisId: number, options: { reviewing?: boolean } = {}): Promise<string | null> {
   const devis = await storage.getDevis(devisId);
   if (!devis) return "Quotation not found.";
   const confirmedSource = await hasQuotationSourceBaseline(devisId);
