@@ -1,5 +1,6 @@
 import { BlockedAction, focusActionTarget, type ActionRequirement } from "@/components/ui/blocked-action";
 import { certificateSendRequirements } from "./certificate-action-requirements";
+import { CertificateLateInvoicesSection } from "./CertificateLateInvoicesSection";
 /**
  * Task #573 — shared CertificatDetailDialog with full payment capability.
  *
@@ -823,6 +824,7 @@ export function CertificatDetailDialog({ cert, contractor, onClose }: { cert: Ce
           )}
 
           {cert.status !== "draft" && <CertificatPaymentsSection cert={cert} />}
+          {cert.status !== "draft" && <CertificateLateInvoicesSection certificatId={cert.id} />}
 
           {cert.notes && (
             <div>

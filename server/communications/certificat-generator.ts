@@ -851,7 +851,7 @@ export async function generateCertificatPdf(
   // their parent devis, or a grouped certificat would visually claim every
   // invoice of the contractor. No invoice sources (manual, acompte, legacy)
   // ⇒ historical whole-contractor behavior.
-  const sourceRows = await storage.getCertificatSources(certificatId);
+  const sourceRows = (await storage.getCertificatSources(certificatId)).filter(s => !s.lateAssociation);
   const selectedInvoiceIds = new Set(
     sourceRows.map((s) => s.invoiceId).filter((id): id is number => id != null),
   );

@@ -3142,6 +3142,7 @@ export class DatabaseStorage implements IStorage {
               certificatId: created.id,
               invoiceId: s.invoiceId,
               situationId: s.situationId,
+              lateAssociation: s.lateAssociation,
             })),
           )
           .returning({ id: certificatSources.id });

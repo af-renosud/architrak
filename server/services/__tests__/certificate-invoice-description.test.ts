@@ -96,6 +96,12 @@ describe("certificate accounting description", () => {
     mocked.getCertificat.mockResolvedValue(undefined);
     expect(await getCertificateInvoiceDescription(1)).toBeNull();
   });
+  it("does not rewrite the issuance description using a later documentary association", async () => {
+    mocked.getCertificatSources.mockResolvedValue([]);
+    const before = await getCertificateInvoiceDescription(1);
+    mocked.getCertificatSources.mockResolvedValue([{ invoiceId: 4, lateAssociation: { reason: "Later evidence" } }] as any);
+    expect(await getCertificateInvoiceDescription(1)).toEqual(before);
+  });
   it("keeps a deposit identical before and after sealing despite unrelated rendered invoices", async () => {
     const base = await mocked.getCertificat(1);
     const deposit = { ...base, acompteDevisId: 8 };

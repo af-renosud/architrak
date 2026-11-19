@@ -45,6 +45,32 @@ import {
 } from "../services/invoice-certificate-source-guard.service";
 
 const router = Router();
+import { existingCertificateInvoiceLink, LateInvoiceLinkError } from "../services/certificate-late-invoice.service";
+const lateLinkSchema = z.object({
+  certificatId: z.number().int().positive(), expectedVersion: z.string().length(64),
+  reason: z.string().trim().min(10).max(2000), confirmed: z.literal(true),
+}).strict();
+router.get("/api/invoices/:id/existing-certificates", requireAuth, async (req, res, next) => {
+  try {
+    const id = z.coerce.number().int().positive().parse(req.params.id);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await existingCertificateInvoiceLink(id, String(req.session.userId)));
+  } catch (error) {
+    if (error instanceof z.ZodError) return res.status(400).json({ message: "Invalid invoice ID." });
+    if (error instanceof LateInvoiceLinkError) return res.status(409).json({ message: error.message });
+    next(error);
+  }
+});
+router.post("/api/invoices/:id/existing-certificates", requireAuth, async (req, res, next) => {
+  try {
+    const id = z.coerce.number().int().positive().parse(req.params.id);
+    res.json(await existingCertificateInvoiceLink(id, String(req.session.userId), lateLinkSchema.parse(req.body)));
+  } catch (error) {
+    if (error instanceof z.ZodError) return res.status(400).json({ message: "Select a certificate, provide context and confirm the match." });
+    if (error instanceof LateInvoiceLinkError) return res.status(409).json({ message: error.message });
+    next(error);
+  }
+});
 import { resolveInvoiceRequest, RequestResolutionError } from "../services/invoice-request-resolution.service";
 const resolutionSchema = z.object({
   expectedVersion: z.string().length(64), reason: z.string().trim().min(20).max(4000),

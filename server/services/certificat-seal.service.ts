@@ -136,7 +136,7 @@ export async function sealCertificat(certificatId: number): Promise<{
         issueDate: dateIssued,
         verifyProtectedRib: true,
       });
-      const existingSources = await storage.getCertificatSources(certificatId);
+      const existingSources = (await storage.getCertificatSources(certificatId)).filter(s => !s.lateAssociation);
       const sourceInvoiceIds = Array.from(
         new Set(
           existingSources
@@ -229,7 +229,7 @@ export async function sealCertificat(certificatId: number): Promise<{
         pvOverrideAt: null,
       };
     } else {
-      const existingSources = await storage.getCertificatSources(certificatId);
+      const existingSources = (await storage.getCertificatSources(certificatId)).filter(s => !s.lateAssociation);
       const exactInvoiceIds = Array.from(
         new Set(
           existingSources

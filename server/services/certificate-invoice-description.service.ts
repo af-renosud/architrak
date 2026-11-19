@@ -14,7 +14,7 @@ export async function getCertificateInvoiceDescription(certId: number) {
   } | null;
   const contractor = await storage.getContractor(cert.contractorId);
   const project = await storage.getProject(cert.projectId);
-  const sources = await storage.getCertificatSources(certId);
+  const sources = (await storage.getCertificatSources(certId)).filter(s => !s.lateAssociation);
   const invoiceIds = new Set<number>();
   const devisIds = new Set<number>();
   for (const source of sources) {

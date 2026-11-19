@@ -30,11 +30,11 @@ function seed(invoices: Invoice[]) {
   queryClient.setQueryData(projectScopedKey(12, "invoices"), invoices);
 }
 
-function renderTab(expanded: number | null = 41) {
+function renderTab(expanded: number | null = 41, isArchived = false) {
   return render(
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <FacturesTab projectId="12" contractors={[]} onGoToIntake={vi.fn()} initialExpandedInvoiceId={expanded} />
+        <FacturesTab projectId="12" contractors={[]} isArchived={isArchived} onGoToIntake={vi.fn()} initialExpandedInvoiceId={expanded} />
       </TooltipProvider>
     </QueryClientProvider>,
   );
@@ -64,6 +64,37 @@ beforeEach(() => {
 afterEach(() => { cleanup(); queryClient.clear(); vi.unstubAllGlobals(); });
 
 describe("invoice request safety", () => {
+  it("offers existing-certificate linking alongside creation only on approved unlinked invoices", () => {
+    seed([invoice(41, "approved", true), invoice(42, "pending", true), invoice(43, "approved", true)]);
+    queryClient.setQueryData(projectScopedKey(12, "certificat-invoice-links"), [{ invoiceId: 43, certificatId: 72, certificateRef: "CP-072", certStatus: "issued" }]);
+    renderTab(null);
+    expect(screen.getByTestId("button-create-certificat-facture-41")).toBeEnabled();
+    expect(screen.getByTestId("button-link-existing-certificate-41")).toBeEnabled();
+    expect(screen.queryByTestId("button-link-existing-certificate-42")).toBeNull();
+    expect(screen.queryByTestId("button-link-existing-certificate-43")).toBeNull();
+    expect(screen.getByTestId("badge-certified-facture-43")).toHaveTextContent("Certifié");
+  });
+
+  it("blocks existing-certificate linking for archived projects using the existing guard", () => {
+    seed([invoice(41, "approved", true)]);
+    renderTab(null, true);
+    const action = screen.getByTestId("button-link-existing-certificate-41");
+    expect(action).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(action);
+    expect(screen.queryByTestId("dialog-link-existing-certificate")).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("blocks existing-certificate linking when linked-certificate status is unavailable", () => {
+    seed([invoice(41, "approved", true)]);
+    queryClient.setQueryData(projectScopedKey(12, "certificat-invoice-links"), null);
+    renderTab(null);
+    const action = screen.getByTestId("button-link-existing-certificate-41");
+    expect(action).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(action);
+    expect(screen.queryByTestId("dialog-link-existing-certificate")).toBeNull();
+  });
+
   it("blocks draft confirmation on candidate amounts, not a general review acknowledgement", async () => {
     const draft = { ...invoice(41), manualIntakeReviewRequired: true };
     seed([draft]);

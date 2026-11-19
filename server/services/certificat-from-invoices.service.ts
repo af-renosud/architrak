@@ -765,7 +765,7 @@ export async function shouldPreserveAppliedInvoiceBalance(
 ): Promise<boolean> {
   const certificat = await storage.getCertificat(certificatId);
   if (!certificat || certificat.certificateTrack !== "contractor_works") return false;
-  const sources = await storage.getCertificatSources(certificatId);
+  const sources = (await storage.getCertificatSources(certificatId)).filter(s => !s.lateAssociation);
   const invoiceIds = Array.from(new Set(
     sources
       .map((source) => source.invoiceId)

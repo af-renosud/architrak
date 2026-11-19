@@ -46,6 +46,7 @@ import {
   devis as devisTable,
   invoices as invoicesTable,
   marches as marchesTable,
+  users,
 } from "@shared/schema";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import {
@@ -78,6 +79,21 @@ const router = Router();
 const idParams = z.object({ id: z.coerce.number().int().positive() });
 const projectIdParams = z.object({ projectId: z.coerce.number().int().positive() });
 const certIdParams = z.object({ certId: z.coerce.number().int().positive() });
+router.get("/api/certificats/:certId/late-invoices", requireAuth, validateRequest({ params: certIdParams }), async (req, res, next) => {
+  try {
+    const sources = await storage.getCertificatSources(Number(req.params.certId));
+    const associations = sources.filter(s => s.lateAssociation);
+    const actorIds = associations.map(s => Number(s.lateAssociation!.actor)).filter(Number.isSafeInteger);
+    const actors = actorIds.length ? await db.select({ id: users.id, firstName: users.firstName, lastName: users.lastName })
+      .from(users).where(inArray(users.id, actorIds)) : [];
+    res.json(associations.map(s => {
+      const association = s.lateAssociation!;
+      const actor = actors.find(a => String(a.id) === association.actor);
+      return { invoiceId: s.invoiceId, ...association,
+        actor: actor ? [actor.firstName, actor.lastName].filter(Boolean).join(" ") || `User ${actor.id}` : `User ${association.actor}` };
+    }));
+  } catch (error) { next(error); }
+});
 router.get("/api/certificats/:certId/invoice-description", requireAuth, validateRequest({ params: certIdParams }), async (req, res, next) => {
   try {
     const result = await getCertificateInvoiceDescription(Number(req.params.certId));

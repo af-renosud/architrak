@@ -27,3 +27,9 @@ An unscoped certificate must not be assigned to an invoice merely because contra
 **Why:** equal deposits can occur on unrelated quotations. Amount matching could attach the wrong invoice and remove an unrelated architect invoice from its outbound package.
 
 **How to apply:** scope payment, communication and attachment checks to proven relationships; refuse genuinely ambiguous legacy certificates. A quotation's TVA evidence alone is not proof of its complete invoice scope.
+
+Later invoices may be explicitly reconciled to an issued certificate as documentary associations, not retrospective issuance inputs.
+
+**Why:** invoices can arrive after the architect has issued the matching payment authorisation. Creating another certificate duplicates the claim; silently treating the late invoice as an original source rewrites historical provenance.
+
+**How to apply:** require human confirmation, documentary context, matching project/contractor and payable HT/TTC, with incompatible known quotation identity refused. Preserve the original PDF, issuance snapshot, financial values and payment status. Late associations participate in duplicate-claim protection but never change the original PDF's sources or accounting description.

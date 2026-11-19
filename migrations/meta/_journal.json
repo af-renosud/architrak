@@ -1065,6 +1065,13 @@
       "when": 1795089600000,
       "tag": "0151_contractor_external_deliveries",
       "breakpoints": true
+    },
+    {
+      "idx": 152,
+      "version": "7",
+      "when": 1795110000000,
+      "tag": "0152_certificate_late_invoice_links",
+      "breakpoints": true
     }
   ]
 }

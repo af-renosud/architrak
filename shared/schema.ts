@@ -1348,6 +1348,13 @@ export const certificatSources = pgTable("certificat_sources", {
   // and source identity facts at the database layer. Superseded-only references
   // remain historical and do not block invoice maintenance.
   invoiceId: integer("invoice_id").references(() => invoices.id, { onDelete: "cascade" }),
+  // A later documentary association claims the invoice, but was NOT an input
+  // to the issued PDF. Keep its immutable confirmation separate from that seal.
+  lateAssociation: jsonb("late_association").$type<{
+    reason: string; actor: string; linkedAt: string;
+    invoiceNumber: string; amountHt: string; amountTtc: string;
+    devisId: number; certificateRef: string;
+  }>(),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => [
   index("certificat_sources_certificat_id_idx").on(table.certificatId),

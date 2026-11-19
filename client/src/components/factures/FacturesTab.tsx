@@ -35,6 +35,7 @@ import { useInvoiceReviewAmounts } from "./invoice-review-amounts";
 import { InvoiceDepositContext, InvoiceAmountCalculationHint, InvoiceRequestConflictNotice } from "./InvoiceDepositContext";
 import { InvoiceRequestResolutionDialog } from "./InvoiceRequestResolutionDialog";
 import { InvoiceRequestResolutionHistory } from "./InvoiceRequestResolutionHistory";
+import { LinkExistingCertificateDialog } from "./LinkExistingCertificateDialog";
 
 // Task #413 — fetch a generated PDF (slow: rendered on demand) and open it in
 // a new tab, keeping a spinner on the button while it generates.
@@ -573,6 +574,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
   });
   const certLinkByInvoice = new Map((certLinks ?? []).map((l) => [l.invoiceId, l]));
   const [certDialogInvoice, setCertDialogInvoice] = useState<Invoice | null>(null);
+  const [linkInvoiceId, setLinkInvoiceId] = useState<number | null>(null);
   const [paymentInvoice, setPaymentInvoice] = useState<{ invoice: Invoice; certificatId: number } | null>(null);
   const { data: projectPayments, error: projectPaymentsError } = useQuery<PaymentWithEvidence[]>({
     queryKey: projectScopedKey(projectId, "certificat-payments"),
@@ -878,6 +880,7 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                           inv.datePaid != null
                         ) return null;
                         return (
+                          <div className="flex flex-wrap items-center gap-2">
                           <BlockedAction
                             actionLabel="Before creating a certificate"
                             requirements={[
@@ -896,6 +899,22 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
                             <Award size={13} />
                             <span className="text-[10px] font-bold uppercase tracking-widest">{isSupplier ? "Paiement direct fournisseur" : "Créer le certificat"}</span>
                           </BlockedAction>
+                          <BlockedAction
+                            actionLabel="Before linking to an existing certificate"
+                            requirements={[
+                              ...readOnlyRequirements,
+                              ...certificateStatusRequirements,
+                              ...(requestConflict ? [{ id: "conflict", message: "Resolve the invoice request conflict before linking a certificate.", onResolve: () => revealInvoice(inv.id, `button-resolve-invoice-request-${inv.id}`), linkLabel: "Go to request conflict" }] : []),
+                            ]}
+                            variant="outline"
+                            size="sm"
+                            className="h-8 text-[10px] border-[#0B2545]/20 text-[#0B2545]"
+                            onClick={(event) => { event.stopPropagation(); setLinkInvoiceId(inv.id); }}
+                            data-testid={`button-link-existing-certificate-${inv.id}`}
+                          >
+                            Lier à un certificat existant
+                          </BlockedAction>
+                          </div>
                         );
                       })()}
                       {inv.pdfPath && (
@@ -1009,6 +1028,13 @@ export function FacturesTab({ projectId, contractors, isArchived = false, onGoTo
       )}
 
       {paymentInvoice && <InvoicePaymentDialog certificatId={paymentInvoice.certificatId} invoiceId={paymentInvoice.invoice.id} invoiceNumber={paymentInvoice.invoice.invoiceNumber} onClose={() => setPaymentInvoice(null)} />}
+      {linkInvoiceId != null && <LinkExistingCertificateDialog
+        key={linkInvoiceId}
+        invoiceId={linkInvoiceId}
+        projectId={projectId}
+        unavailable={isArchived || certificateStatusRequirements.length > 0 || certLinkByInvoice.has(linkInvoiceId) || !(invoices ?? []).some((invoice) => invoice.id === linkInvoiceId && invoice.status === "approved" && invoice.datePaid == null && !invoiceRequestConflict(invoice))}
+        onClose={() => setLinkInvoiceId(null)}
+      />}
 
       {multiCertDialogOpen && (() => {
         const selectedInvoices = (invoices ?? []).filter((i) => selectedForCert.has(i.id));
