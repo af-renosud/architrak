@@ -34,6 +34,12 @@ Review-source actions must be visually separate from explanations and audit reco
 
 The dashboard prioritises urgent work and certificate dispatch over activity history; supporting sections are collapsible with visible summaries.
 
+Translation approval must remain directly discoverable on the translation page, not exclusively inside the working-quotation editor.
+
+**Why:** The user explicitly requested restoring the visible approval action to resume work, deferring a broader workflow redesign.
+
+**How to apply:** Keep the explicit version-bound review confirmation and pending-save safeguards, but let the user complete approval in place without inventing a wording change.
+
 **Why:** The user approved an action-first dashboard to reduce scanning and make the next step obvious.
 
 **How to apply:** Keep intake failures visible, distinguish architect actions from waiting, never equate missing accounting references with unpaid invoices, and preserve unfinished inputs when collapsing sections.

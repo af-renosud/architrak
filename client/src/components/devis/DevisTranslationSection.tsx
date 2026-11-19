@@ -10,6 +10,7 @@ import { DevisLineContextEditor } from "./DevisLineContextEditor";
 import { DevisCostAnalysisCard } from "./DevisCostAnalysisCard";
 import { TranslationReviewNotes, type TranslationReviewCheck } from "./TranslationReviewNotes";
 import { quotationWorkBlocked, useQuotationWork } from "./quotation-review-state";
+import { QuotationApprovalReview } from "./QuotationApprovalReview";
 
 interface DevisTranslationSectionProps {
   devisId: number; devisCode: string; lineItems: DevisLineItem[];
@@ -25,12 +26,16 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems, reviewC
   const client = useQueryClient();
   const work = useQuotationWork(devisId);
   const [explanations, setExplanations] = useState(false);
+  const [approvalOpen, setApprovalOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const translation = useQuery<DevisTranslation>({
     queryKey: ["/api/devis", devisId, "translation"],
+    refetchOnWindowFocus: false,
     refetchInterval: query => ["processing", "pending"].includes(query.state.data?.status ?? "") ? 3000 : false,
   });
-  const contexts = useQuery<{ contexts: DevisLineContext[] }>({ queryKey: ["/api/devis", devisId, "line-contexts"] });
+  const contexts = useQuery<{ contexts: DevisLineContext[] }>({
+    queryKey: ["/api/devis", devisId, "line-contexts"], refetchOnWindowFocus: false,
+  });
   const ordered = useMemo(() => [...lineItems].sort((a, b) => a.lineNumber - b.lineNumber), [lineItems]);
   const refresh = () => {
     void client.invalidateQueries({ queryKey: ["/api/devis", devisId, "translation"] });
@@ -54,14 +59,33 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems, reviewC
   const open = () => window.dispatchEvent(new CustomEvent("quotation-review-open", { detail: devisId }));
   const pdf = (variant: string) => window.open(`/api/devis/${devisId}/pdf?variant=${variant}${explanations ? "&explanations=true" : ""}`, "_blank", "noopener,noreferrer");
   if (translation.isLoading) return <div aria-label="Loading saved translation" className="p-4 space-y-3"><Skeleton className="h-12 w-full" /><Skeleton className="h-40 w-full" /></div>;
-  if (translation.isError) return <section role="alert" className="border rounded p-4 space-y-2"><p>Saved translation could not be loaded.</p><Button variant="outline" onClick={() => void translation.refetch()}>Retry translation</Button></section>;
+  if (translation.isError && !data) return <section role="alert" className="border rounded p-4 space-y-2"><p>Saved translation could not be loaded.</p><Button variant="outline" onClick={() => void translation.refetch()}>Retry translation</Button></section>;
   return <section className="space-y-4 rounded-md border bg-card p-4" data-testid={`section-translation-${devisId}`}>
     <header className="flex flex-wrap items-start justify-between gap-4">
       <div><h4 className="text-sm font-semibold inline-flex gap-2 items-center"><Languages size={16} />English client package · {devisCode}</h4>
-        <p className="text-xs text-muted-foreground mt-1">{status === "finalised" ? "Approved saved version" : "Saved wording"} · use Review/edit quotation for wording and approval.</p>
+        <p className="text-xs text-muted-foreground mt-1">{status === "finalised" ? "Approved saved version" : "Saved wording · approve the translation here when your review is complete."}</p>
         {!contextReadOnly && <p className="text-xs text-emerald-700 mt-1">Edit context text and images directly below each item. Changes save automatically; wait for Saved.</p>}</div>
-      <Button size="sm" onClick={open}>Review/edit quotation</Button>
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" variant="outline" onClick={open}>Review/edit quotation</Button>
+        {["draft", "edited"].includes(status) && <Button size="sm" disabled={readOnly}
+          aria-expanded={approvalOpen} aria-controls={`translation-approval-${devisId}`}
+          onClick={() => setApprovalOpen(value => !value)}>Approve translation</Button>}
+      </div>
     </header>
+    {translation.isError && data && <p role="alert" className="text-xs text-destructive">
+      Could not refresh the translation. Your displayed content has been kept.
+      <Button size="sm" variant="outline" onClick={() => void translation.refetch()}>Retry refresh</Button>
+    </p>}
+    {approvalOpen && <div id={`translation-approval-${devisId}`} className="rounded-md border bg-emerald-50/50 p-4">
+      <QuotationApprovalReview devisId={devisId} disabled={readOnly || translation.isError}
+        onLocate={key => {
+          const match = key.match(/^line-(\d+)$/);
+          const line = match && ordered.find(item => item.id === Number(match[1]));
+          const target = line && document.getElementById(`line-anchor-translation-${devisId}-${line.lineNumber}`);
+          if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
+          else open();
+        }} />
+    </div>}
     <div className="flex flex-wrap gap-2 items-center">
       <a className="inline-flex gap-2 items-center text-xs underline mr-2" href={`/api/devis/${devisId}/pdf?variant=original`} target="_blank" rel="noreferrer"><FileText size={13} />Original contractor PDF</a>
       <Button size="sm" variant="outline" onClick={() => pdf("combined")}><FileDown size={13} className="mr-2" />French + English PDF</Button>

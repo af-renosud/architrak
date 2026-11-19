@@ -7,24 +7,36 @@ import type { DevisLineItem } from "@shared/schema";
 import { DevisTranslationSection } from "../DevisTranslationSection";
 
 vi.mock("../DevisCostAnalysisCard", () => ({ DevisCostAnalysisCard: () => null }));
+vi.mock("../QuotationApprovalReview", () => ({ QuotationApprovalReview: () => <div>Approval checklist here</div> }));
 vi.mock("../DevisLineContextEditor", () => ({ DevisLineContextEditor: ({ readOnly }: { readOnly: boolean }) => <div>Context {readOnly ? "read-only" : "editable"}</div> }));
 function mount(architectControlled: boolean, status = "draft", readOnly = false) {
   const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
   client.setQueryData(["/api/devis", 42, "translation"], { status, architectControlled, headerTranslated: { summary: "Reviewed overview" },
     lineTranslations: [{ lineNumber: 1, translation: "Manual English", explanation: "Client explanation" }] });
   client.setQueryData(["/api/devis", 42, "line-contexts"], { contexts: [] });
-  return render(<QueryClientProvider client={client}><DevisTranslationSection devisId={42} devisCode="DEV-42" readOnly={readOnly}
+  const view = render(<QueryClientProvider client={client}><DevisTranslationSection devisId={42} devisCode="DEV-42" readOnly={readOnly}
     lineItems={[{ id: 100, devisId: 42, lineNumber: 1, description: "Texte français", checkNotes: "Private architect note" } as DevisLineItem]}
     reviewChecks={[{ id: 7, devisId: 42, lineItemId: 100, origin: "line_item", status: "open", query: "Confirm finish" }]} /></QueryClientProvider>);
+  return { ...view, client };
 }
 afterEach(cleanup);
 describe("saved package preview replaces unsafe competing autosave paths", () => {
+  it("keeps saved wording mounted after a failed background refresh", async () => {
+    const { client } = mount(false);
+    client.getQueryCache().find({ queryKey: ["/api/devis", 42, "translation"], exact: true })!
+      .setState({ status: "error", error: new Error("Temporary network error") });
+    expect(await screen.findByText(/Your displayed content has been kept/)).toBeInTheDocument();
+    expect(screen.getByText("Manual English")).toBeInTheDocument();
+    expect(screen.getByText("Context editable")).toBeInTheDocument();
+  });
   it.each([false, true])("routes ordinary/corrected (%s) quotation edits into the one workspace", async corrected => {
     mount(corrected);
     expect(screen.getByText("Manual English")).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(screen.getByText("Context editable")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Approve|Re-translate|Regenerate/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve translation" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Approve translation" }));
+    expect(screen.getByText("Approval checklist here")).toBeInTheDocument();
     const listener = vi.fn();
     window.addEventListener("quotation-review-open", listener);
     fireEvent.click(screen.getByRole("button", { name: "Review/edit quotation" }));
