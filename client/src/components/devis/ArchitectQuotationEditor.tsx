@@ -21,7 +21,7 @@ import { quotationWorkBlocked, setQuotationWork, useQuotationWork } from "./quot
 import { keepQuotationDraft, readQuotationDraft } from "./quotation-draft-backup";
 import "./architect-correction.css";
 
-interface Props { devisId: number; projectId: string; disabled?: boolean; compact?: boolean }
+interface Props { devisId: number; projectId: string; disabled?: boolean; compact?: boolean; hideTrigger?: boolean }
 const euro = (decimal: string) => `${decimal.replace(".", ",")} €`;
 
 function DraftField({ label, value, onChange, multiline = false, disabled = false, numeric = false }: {
@@ -38,7 +38,7 @@ function DraftField({ label, value, onChange, multiline = false, disabled = fals
   </div>;
 }
 
-export function ArchitectQuotationEditor({ devisId, projectId, disabled = false, compact = false }: Props) {
+export function ArchitectQuotationEditor({ devisId, projectId, disabled = false, compact = false, hideTrigger = false }: Props) {
   const [open, setOpen] = useState(false);
   const [recoveringVat, setRecoveringVat] = useState(false);
   const [vatRecoveryMessage, setVatRecoveryMessage] = useState<string | null>(null);
@@ -77,11 +77,11 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
   });
   useEffect(() => {
     const openWorkspace = (event: Event) => {
-      if ((event as CustomEvent<number>).detail === devisId) setOpen(true);
+      if (!disabled && (event as CustomEvent<number>).detail === devisId) setOpen(true);
     };
     window.addEventListener("quotation-review-open", openWorkspace);
     return () => window.removeEventListener("quotation-review-open", openWorkspace);
-  }, [devisId]);
+  }, [devisId, disabled]);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
     if (!open || !snapshot.data || snapshot.isFetching || initialized.current) return;
@@ -276,7 +276,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
   };
 
   return <>
-    <div className={compact ? "architect-correction review-source-editor-trigger" : "architect-correction px-3 py-3"} data-testid={`architect-correction-entry-${devisId}`}>
+    <div hidden={hideTrigger} className={compact ? "architect-correction review-source-editor-trigger" : "architect-correction px-3 py-3"} data-testid={`architect-correction-entry-${devisId}`}>
       {error && <p role="alert" className="mb-2 text-xs text-destructive">{stale ? "Stale working quotation · your draft is preserved. " : "Working quotation save failed · your draft is preserved. "}{error}</p>}
       {(dirty || pending) && <p data-workflow-attention className="mb-2 text-[11px] text-muted-foreground">{pending ? "Working quotation · save or update in progress. Keep this project open." : "Working quotation · unsaved correction draft."}</p>}
       <div className={compact ? "" : "correction-banner rounded-lg flex flex-wrap items-center justify-between gap-3 px-4 py-3"}>

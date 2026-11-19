@@ -6257,6 +6257,8 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
   return (
     <div className={`ml-4 mt-1 mb-3 border-l-2 border-[rgba(0,0,0,0.08)] pl-4 space-y-4 ${isVoid ? "opacity-50" : ""}`} data-testid={`detail-devis-${devis.id}`}>
       <DevisWorkflow devisId={devis.id} stage={devis.signOffStage} status={devis.status}>
+      {/* Keep one editor mounted independently of lazily visited workflow sections. */}
+      <ArchitectQuotationEditor key={`architect-editor-${devis.id}`} devisId={devis.id} projectId={projectId} disabled={isArchived} hideTrigger />
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground" aria-label="Quotation workflow status">
         <span>Quoted · <Amount value={parseFloat(devis.amountHt)} denomination="HT" /> · <Amount value={parseFloat(devis.amountTtc)} denomination="TTC" /></span>
         <span>{financial ? commitmentLabel(financial) : "Commitment evidence · see financial summary"}</span>
@@ -6379,7 +6381,11 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
               </Tooltip>
             )}
         </TooltipProvider>}
-        workingQuotationAction={<ArchitectQuotationEditor key={`architect-editor-${devis.id}`} devisId={devis.id} projectId={projectId} disabled={isArchived} compact />}
+        workingQuotationAction={<Button type="button" size="sm" variant="outline" disabled={isArchived}
+          className="review-source-editor-trigger"
+          onClick={() => window.dispatchEvent(new CustomEvent("quotation-review-open", { detail: devis.id }))}>
+          Edit working quotation
+        </Button>}
         extractionCorrectionAction={<ExtractionRowCorrection key={devis.id} devisId={devis.id} projectId={projectId} lines={lineItems ?? []} disabled={isArchived} compact />}
         correctionHistory={<DuplicateExtractionHistory key={devis.id} devisId={devis.id} />}
       />

@@ -32,9 +32,9 @@ const fixture = (): ArchitectCorrectionSnapshot => ({
 const response = (data: unknown, status = 200) => ({
   ok: status >= 200 && status < 300, status, json: async () => data, text: async () => JSON.stringify(data),
 });
-function mount(compact = false) {
+function mount(compact = false, hideTrigger = false, disabled = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><ArchitectQuotationEditor devisId={42} projectId="8" compact={compact} /></QueryClientProvider>);
+  return render(<QueryClientProvider client={client}><ArchitectQuotationEditor devisId={42} projectId="8" compact={compact} hideTrigger={hideTrigger} disabled={disabled} /></QueryClientProvider>);
 }
 async function open() {
   fireEvent.click(screen.getByRole("button", { name: "Edit working quotation" }));
@@ -103,6 +103,21 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
 
 describe("architect editor persistence and source authority", () => {
+  it("opens from translation even when the source-section trigger is not visible", async () => {
+    mount(false, true);
+    expect(screen.queryByRole("button", { name: "Edit working quotation" })).not.toBeInTheDocument();
+    fireEvent(window, new CustomEvent("quotation-review-open", { detail: 42 }));
+    expect(await screen.findByRole("textbox", { name: "English header" })).toHaveValue("Custom joinery");
+  });
+  it("does not open the wrong quotation or an archived editor through an external signal", () => {
+    const view = mount(false, true);
+    fireEvent(window, new CustomEvent("quotation-review-open", { detail: 99 }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    view.unmount();
+    mount(false, true, true);
+    fireEvent(window, new CustomEvent("quotation-review-open", { detail: 42 }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
   it("reuses the real editor and original PDF from the compact action-rail trigger", async () => {
     mount(true);
     expect(screen.queryByText("Architect’s working version")).not.toBeInTheDocument();
