@@ -34,7 +34,7 @@ async function load(client: Reader, devisId: number, lock = false): Promise<Stat
 }
 const version = (s: State) => stableQuotationDigest(s);
 const lineKey = (id: number) => `line-${id}`;
-function draftFrom(s: State): ArchitectCorrectionDraft {
+export function draftFrom(s: Pick<State, "quotation" | "lines" | "translation" | "baseline" | "state">): ArchitectCorrectionDraft {
   const metadata = s.state?.draft as ArchitectCorrectionDraft | undefined;
   const byId = new Map((metadata?.lines ?? []).map(l => [l.id, l]));
   const translations = new Map<number, any>((s.translation?.line_translations ?? []).map((l: any) => [l.lineNumber, l]));
@@ -54,8 +54,8 @@ function draftFrom(s: State): ArchitectCorrectionDraft {
       return { id: row.id, clientKey: saved?.clientKey ?? lineKey(row.id), kind: saved?.kind ?? "priced",
         descriptionFr: quotationParagraph(row.description), descriptionEn: quotationParagraph(t?.translation),
         explanationFr: saved?.explanationFr ?? t?.explanationFr ?? "", explanationEn: t?.explanation ?? "",
-        quantity: row.quantity ?? (saved?.kind === "context" ? "0" : ""), unit: row.unit ?? "",
-        unitPriceHt: row.unit_price_ht ?? "", totalHt: row.total_ht,
+        quantity: String(row.quantity ?? (saved?.kind === "context" ? "0" : "")), unit: row.unit ?? "",
+        unitPriceHt: String(row.unit_price_ht ?? ""), totalHt: String(row.total_ht),
         vatRate: saved?.vatRate ?? explicitRate, included: saved?.included ?? true };
     }),
   };
@@ -233,10 +233,16 @@ export function correctedFinancialBlocker(draft: ArchitectCorrectionDraft, basel
   } catch (e) { return `Complete the actual VAT/discount treatment before approval: ${e instanceof Error ? e.message : "Invalid figures."}`; }
 }
 export async function architectFinancialBoundary(devisId: number) {
-  if (!await hasArchitectCorrection(devisId)) return null;
+  // Confirmation is independent of editing: an unchanged reviewed quotation
+  // must receive the same financial/source checks as a corrected one.
+  if (!await hasQuotationSourceBaseline(devisId)) return null;
   const snapshot = await architectCorrectionService.get(devisId);
+  if (snapshot.blockedReason) return snapshot.blockedReason;
   if (snapshot.baseline) {
-    const receipt = (await pool.query("SELECT source_storage_key FROM quotation_source_baselines WHERE devis_id=$1", [devisId])).rows[0];
+    const receipt = (await pool.query(`SELECT b.source_storage_key,d.pdf_storage_key
+      FROM quotation_source_baselines b JOIN devis d ON d.id=b.devis_id WHERE b.devis_id=$1`, [devisId])).rows[0];
+    if (!receipt || receipt.source_storage_key !== receipt.pdf_storage_key)
+      return "Original PDF no longer matches the confirmed source. Review the current source before approval.";
     try {
       const digest = (await pdfReceipt(getDocumentBuffer, receipt.source_storage_key)).digest;
       if (digest !== snapshot.baseline.sourceDigest) return "Original PDF bytes no longer match the locked source receipt. Approval and sharing are blocked.";

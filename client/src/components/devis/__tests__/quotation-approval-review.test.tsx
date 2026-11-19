@@ -29,7 +29,7 @@ describe("latest reviewed approval token", () => {
     expect(screen.getByRole("button", { name: "Approve reviewed quotation" })).toBeDisabled();
     fireEvent.click(check);
     fireEvent.click(screen.getByRole("button", { name: "Approve reviewed quotation" }));
-    await waitFor(() => expect(api).toHaveBeenCalledWith("POST", "/api/devis/8828/translation/finalise", { expectedVersion: "snapshot-a" }));
+    await waitFor(() => expect(api).toHaveBeenCalledWith("POST", "/api/devis/8828/translation/finalise", { expectedVersion: "snapshot-a", confirmedReview: true }));
   });
   it("blocks approval for context debounce/save and image upload, then demands review of a fresh token", async () => {
     mount(); const check = await screen.findByRole("checkbox");
@@ -45,7 +45,7 @@ describe("latest reviewed approval token", () => {
     expect(check).not.toBeChecked();
     fireEvent.click(check);
     fireEvent.click(screen.getByRole("button", { name: "Approve reviewed quotation" }));
-    await waitFor(() => expect(api).toHaveBeenCalledWith("POST", expect.any(String), { expectedVersion: "snapshot-b" }));
+    await waitFor(() => expect(api).toHaveBeenCalledWith("POST", expect.any(String), { expectedVersion: "snapshot-b", confirmedReview: true }));
   });
   it("recovers a stale-version rejection in place and cannot reuse the old review", async () => {
     const fallback = api.getMockImplementation()!;
@@ -63,7 +63,7 @@ describe("latest reviewed approval token", () => {
     expect(check).not.toBeChecked();
     expect(screen.getByRole("button", { name: "Approve reviewed quotation" })).toBeDisabled();
     fireEvent.click(check); fireEvent.click(screen.getByRole("button", { name: "Approve reviewed quotation" }));
-    await waitFor(() => expect(api).toHaveBeenCalledWith("POST", expect.any(String), { expectedVersion: "snapshot-c" }));
+    await waitFor(() => expect(api).toHaveBeenCalledWith("POST", expect.any(String), { expectedVersion: "snapshot-c", confirmedReview: true }));
   });
   it("fails closed when actual VAT/amounts are missing", async () => {
     blockers = [{ key: "row-101", message: "VAT rate is missing on item 1" }, { key: "row-102", message: "Line amount HT is missing on item 2" }];

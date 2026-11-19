@@ -258,7 +258,7 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
       return;
     }
     uploads.current++;
-    const requestKey = `image-request:${lineItemId}:${crypto.randomUUID()}`;
+    const requestKey = `image-request:${workScope}:${lineItemId}:${crypto.randomUUID()}`;
     setQuotationWork(devisId, requestKey, true, "An owned context image is uploading.");
     setUploading(true); setFailedUpload(null);
     setQuotationWork(devisId, uploadKey, true, "Context image upload is pending.");

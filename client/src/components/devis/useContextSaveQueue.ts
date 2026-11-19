@@ -70,6 +70,16 @@ export function useContextSaveQueue(
   // must be kept so the next save 409s and surfaces the conflict.
   useEffect(() => {
     const rev = context?.revision ?? 0;
+    // Another editing surface may have saved this exact draft. Settle only
+    // this queue's matching content, never unrelated/newer local edits.
+    if (context && !inFlightRef.current && pendingDocRef.current &&
+      rev >= revisionRef.current && JSON.stringify(context.document) === JSON.stringify(pendingDocRef.current)) {
+      revisionRef.current = rev;
+      lastSavedStrRef.current = JSON.stringify(context.document);
+      pendingDocRef.current = null; pausedRef.current = false; rebasedRef.current = false;
+      setConflict(null); setSaveState("saved"); markWork(false);
+      settleBackup(context.document as ContextDoc, rev);
+    }
     if (
       rev > revisionRef.current &&
       !inFlightRef.current &&

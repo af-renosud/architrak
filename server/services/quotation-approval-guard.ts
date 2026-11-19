@@ -2,16 +2,24 @@ import { storage } from "../storage";
 import type { ParsedDocument } from "../gmail/document-parser";
 import { verifyQuotationManifest } from "./quotation-source-manifest";
 import type { DevisLineItem } from "@shared/schema";
-import { architectFinancialBoundary, hasArchitectCorrection } from "./architect-quotation-correction";
+import { architectFinancialBoundary, hasQuotationSourceBaseline } from "./architect-quotation-correction";
 import { createHash } from "node:crypto";
 import { getDocumentBuffer } from "../storage/object-storage";
 import { PRICED_EVIDENCE_PARSER, pricedRowsDigest } from "./quotation-priced-evidence";
 
 /** Re-evaluate live descriptions, not only the historical parser verdict. */
-export async function quotationApprovalBlocker(devisId: number): Promise<string | null> {
+export async function quotationApprovalBlocker(devisId: number, options: { reviewing?: boolean } = {}): Promise<string | null> {
   const devis = await storage.getDevis(devisId);
   if (!devis) return "Quotation not found.";
-  if (await hasArchitectCorrection(devisId)) return architectFinancialBoundary(devisId);
+  const confirmedSource = await hasQuotationSourceBaseline(devisId);
+  if (confirmedSource) {
+    const financial = await architectFinancialBoundary(devisId);
+    if (financial) return financial;
+    const translation = await storage.getDevisTranslation(devisId);
+    if (options.reviewing || translation?.status === "finalised" && translation.approvedAt
+      && (translation.headerTranslated as { humanReviewed?: boolean } | null)?.humanReviewed) return null;
+    return "Review and approve the saved quotation in Review/edit quotation. The original TTC is already confirmed; no correction or repeat entry is needed.";
+  }
   const parsed = devis.aiExtractedData as ParsedDocument | null;
   if (parsed?.pricedItemVerification) {
     const evidence = parsed.pricedItemVerification;

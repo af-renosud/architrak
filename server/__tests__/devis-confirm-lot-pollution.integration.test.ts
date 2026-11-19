@@ -4,7 +4,7 @@ vi.mock("../services/quotation-approval-guard", () => ({
   quotationApprovalBlocker: vi.fn(async () => null),
 }));
 vi.mock("../services/architect-quotation-correction", () => ({
-  hasArchitectCorrection: vi.fn(async () => false), architectFinancialBoundary: vi.fn(async () => null),
+  hasQuotationSourceBaseline: vi.fn(async () => false), hasArchitectCorrection: vi.fn(async () => false), architectFinancialBoundary: vi.fn(async () => null),
 }));
 import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
 import http from "http";

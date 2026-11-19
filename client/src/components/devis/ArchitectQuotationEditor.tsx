@@ -56,7 +56,8 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
   const [savedMessage, setSavedMessage] = useState(false);
   const [latest, setLatest] = useState<ArchitectCorrectionSnapshot | null>(null);
   const [mergeChoices, setMergeChoices] = useState<MergeChoices>({});
-  useQuotationWork(devisId);
+  const quotationWork = useQuotationWork(devisId);
+  const ownUploadPending = quotationWork.issues.some(issue => issue.key.startsWith("image-request:workspace:"));
   const workKey = `working-draft:${devisId}`;
   const initialized = useRef(false);
   const submitLock = useRef(false);
@@ -164,8 +165,8 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
     setSelected(line.clientKey); setSavedMessage(false); setSelection(null);
   };
   const dismiss = () => {
-    if (submitLock.current || pending) {
-      setError("An editor update is still running. Please wait for it to finish before closing.");
+    if (submitLock.current || pending || ownUploadPending) {
+      setError(ownUploadPending ? "An image is still uploading in this editor. Wait for it to finish before closing; your text is preserved." : "An editor update is still running. Please wait for it to finish before closing.");
       return;
     }
     if (dirty) setDiscardOpen(true);
@@ -183,7 +184,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
     }
   };
   const saveDraft = async () => {
-    if (!draft || !original || !editable || !dirty || validationMessage || submitLock.current || stale || quotationWorkBlocked(devisId, workKey)) return;
+    if (!draft || !original || !editable || !dirty || validationMessage || submitLock.current || stale) return;
     submitLock.current = true;
     setError(null);
     const submitted = structuredClone(draft);
@@ -321,7 +322,9 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                   const result = await snapshot.refetch();
                   if (result.isError) throw result.error;
                 }}
-                onLocate={key => { setSelected(key === "source" || key === "translation" ? "header" : key); }} />
+                onCloseEditor={dismiss}
+                onLocate={key => { const row = draft.lines.find(line => `line-${line.id}` === key);
+                  setSelected(key === "source" || key === "translation" ? "header" : row?.clientKey ?? key); }} />
               {vatRecoveryMessage && <p role="status" className="rounded-md border p-3 text-sm">{vatRecoveryMessage}</p>}
               {(financialIssues.length > 0 || vatRecoveryMessage) && <section className="rounded-lg border border-amber-300 p-4 space-y-3" aria-label="Financial checks">
                 <h3 className="font-semibold text-sm">{financialIssues.length ? `Financial checks — ${financialIssues.length} fields need attention` : "Recovered VAT — review before saving"}</h3>
@@ -367,7 +370,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                 <ul className="list-disc pl-4 mt-2 space-y-1 text-muted-foreground">{original.advisoryMessages.map((message, index) => <li key={index}>{message}</li>)}</ul>
               </details>}
               {error && <div role="alert" className="rounded-lg border border-rose-300 bg-rose-50 text-rose-900 p-3 text-xs space-y-2">
-                <p className="font-semibold">{stale ? "The quotation changed. Your draft has not been overwritten." : "Save failed. Your draft is still here."}</p>
+                <p className="font-semibold">{stale ? "The quotation changed. Your draft has not been overwritten." : error?.startsWith("Your unsaved working draft was restored") ? "Unsaved draft restored" : "Your draft is preserved"}</p>
                 <p>{error}</p>{stale && <p>Compare your draft with the latest saved changes below. Choose overlapping values, then rebase and save in this workspace.</p>}
                 <Button type="button" size="sm" variant="outline" onClick={() => {
                   const blob = new Blob([JSON.stringify(draft, null, 2)], { type: "application/json" });
@@ -519,8 +522,8 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                   <p className="text-[10px] text-muted-foreground mt-1">No automatic save. Original PDF, locked TTC and signed evidence are not rewritten.</p>
                 </div>
                 <div className="flex gap-2">
-                  <Button type="button" variant="outline" size="sm" disabled={pending} onClick={dismiss}>{dirty ? "Close editor…" : "Close"}</Button>
-                  <Button type="button" size="sm" onClick={() => void saveDraft()} disabled={!editable || !dirty || !!validationMessage || stale || quotationWorkBlocked(devisId, workKey)}
+                  <Button type="button" variant="outline" size="sm" onClick={dismiss}>{ownUploadPending ? "Uploading image…" : dirty ? "Close editor…" : "Close"}</Button>
+                  <Button type="button" size="sm" onClick={() => void saveDraft()} disabled={!editable || !dirty || !!validationMessage || stale}
                     className="gap-2 bg-[#0b2545] hover:bg-[#173657] text-[#f8f5ef]"><Save size={13} />{save.isPending ? "Saving batch…" : "Save correction"}</Button>
                 </div>
               </div>

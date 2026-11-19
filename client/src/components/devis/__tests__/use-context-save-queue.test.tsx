@@ -42,6 +42,18 @@ function ctx(revision: number, document: ContextDoc): DevisLineContext {
 function jsonRes(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
+it("settles a failed queue only when another surface saved the exact pending draft", async () => {
+  fetchMock.mockResolvedValueOnce(jsonRes({ message: "Offline" }, 500));
+  const { result, rerender } = renderHook(({ context }) => useContextSaveQueue(7, 100, context),
+    { initialProps: { context: ctx(1, doc("base")) } });
+  act(() => result.current.enqueue(doc("mine")));
+  await waitFor(() => expect(result.current.saveState).toBe("error"));
+  rerender({ context: ctx(2, doc("different")) });
+  expect(result.current.hasPendingSave()).toBe(true);
+  rerender({ context: ctx(3, doc("mine")) });
+  await waitFor(() => expect(result.current.saveState).toBe("saved"));
+  expect(result.current.hasPendingSave()).toBe(false);
+});
 
 beforeEach(() => {
   sessionStorage.clear();

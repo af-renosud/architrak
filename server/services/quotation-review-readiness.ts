@@ -1,5 +1,5 @@
 import { storage } from "../storage";
-import { architectCorrectionService, hasArchitectCorrection, architectFinancialBoundary } from "./architect-quotation-correction";
+import { architectCorrectionService, hasQuotationSourceBaseline, architectFinancialBoundary } from "./architect-quotation-correction";
 import { quotationApprovalBlocker } from "./quotation-approval-guard";
 import { quotationWorkingVersion } from "./quotation-working-version";
 import { correctionFinancialIssues } from "../../shared/architect-quotation";
@@ -13,7 +13,7 @@ export async function quotationReviewReadiness(devisId: number) {
   const blockers: Array<{ key: string; message: string }> = [];
   if (!translation || !["draft", "edited", "finalised"].includes(translation.status))
     blockers.push({ key: "translation", message: "Prepare and save the English translation before approval." });
-  if (await hasArchitectCorrection(devisId)) {
+  if (await hasQuotationSourceBaseline(devisId)) {
     const snapshot = await architectCorrectionService.get(devisId);
     if (snapshot.blockedReason) blockers.push({ key: "source", message: snapshot.blockedReason });
     if (!snapshot.baseline) blockers.push({ key: "source", message: "Confirm the final TTC and page from the original PDF." });
@@ -24,7 +24,7 @@ export async function quotationReviewReadiness(devisId: number) {
       && !(financial.startsWith("Confirm the source TTC") && !snapshot.baseline))
       blockers.push({ key: financial.includes("PDF") ? "source" : "header", message: financial });
   } else {
-    const source = await quotationApprovalBlocker(devisId);
+    const source = await quotationApprovalBlocker(devisId, { reviewing: true });
     if (source) blockers.push({ key: "source", message: source });
   }
   return { version: quotationWorkingVersion(quotation, lines, translation), status: translation?.status ?? "missing", blockers };

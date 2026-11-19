@@ -5,8 +5,8 @@ import { apiRequest } from "@/lib/queryClient";
 import { quotationWorkBlocked, useQuotationWork } from "./quotation-review-state";
 
 export interface TranslationReadiness { version: string; status: string; blockers: Array<{ key: string; message: string }> }
-export function QuotationApprovalReview({ devisId, onLocate, disabled = false, onRefreshWorking }: {
-  devisId: number; onLocate: (key: string) => void; disabled?: boolean; onRefreshWorking?: () => Promise<unknown>;
+export function QuotationApprovalReview({ devisId, onLocate, disabled = false, onRefreshWorking, onCloseEditor }: {
+  devisId: number; onLocate: (key: string) => void; disabled?: boolean; onRefreshWorking?: () => Promise<unknown>; onCloseEditor?: () => void;
 }) {
   const client = useQueryClient();
   const work = useQuotationWork(devisId);
@@ -45,7 +45,7 @@ export function QuotationApprovalReview({ devisId, onLocate, disabled = false, o
         reviewedVersion !== readiness.data?.version || readiness.data.blockers.length) throw new Error("Save all changes and review the latest checklist first.");
       lock.current = true;
       try {
-        return await (await apiRequest("POST", `/api/devis/${devisId}/translation/finalise`, { expectedVersion: reviewedVersion })).json();
+        return await (await apiRequest("POST", `/api/devis/${devisId}/translation/finalise`, { expectedVersion: reviewedVersion, confirmedReview: true })).json();
       } finally { lock.current = false; }
     },
     onSuccess: () => {
@@ -63,14 +63,16 @@ export function QuotationApprovalReview({ devisId, onLocate, disabled = false, o
   const blocked = disabled || syncing || !!syncError || work.blocked || readiness.isFetching || readiness.isError || !readiness.data || !!readiness.data.blockers.length;
   return <section className="review-checklist space-y-3" aria-label="Review and approve">
     <div><h3 className="text-sm font-semibold">Review and approve</h3>
-      <p className="text-xs mt-1">1. Review/edit against the original PDF. 2. Save wording, figures and context. 3. Review this latest checklist and approve.</p></div>
+      <p className="text-xs mt-1">Compare with the original PDF. Save only if you made changes, then confirm your review and approve. No correction is required when the quotation is already correct.</p></div>
     <p role="status" data-workflow-attention={work.blocked || undefined} className="text-xs">{work.blocked ? "Unsaved work · approval is blocked until all saves and image uploads settle." :
       readiness.isFetching || syncing ? "Checking the latest saved quotation…" : approved ? "Approved · this saved version is ready to share." : "Saved version · original PDF remains the legal reference."}</p>
     {work.issues.map(issue => {
-      const match = issue.key.match(/^context(?:-[a-z]+)?:(?:(?:inline|workspace):)?(\d+)/);
+      const match = issue.key.match(/^(?:context(?:-[a-z]+)?|image-request):(?:(?:inline|workspace):)?(\d+)/);
       return <div key={issue.key} className="text-xs">
         <span>{issue.message}</span>
-        {match && <Button type="button" variant="ghost" className="underline" size="sm" onClick={() => onLocate(`line-${match[1]}`)}>Go to context</Button>}
+        {match && <Button type="button" variant="ghost" className="underline" size="sm"
+          onClick={() => issue.key.includes(":inline:") && onCloseEditor ? onCloseEditor() : onLocate(`line-${match[1]}`)}>
+          {issue.key.includes(":inline:") && onCloseEditor ? "Close editor to resolve inline context" : "Go to context"}</Button>}
       </div>;
     })}
     {work.blocked && <p className="text-xs">You can close this editor without discarding context. Resolve any failed save or conflicting edit in the affected context box; approval stays protected until it is saved.</p>}

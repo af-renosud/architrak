@@ -237,7 +237,8 @@ describe("architect editor persistence and source authority", () => {
     fireEvent.change(screen.getByTestId("input-context-file-42-4"), { target: { files: [new File(["owned image"], "finish.jpg", { type: "image/jpeg" })] } });
     await screen.findByText("Uploading image · keep this workspace open.");
     expect(screen.getByRole("button", { name: "Approve reviewed quotation" })).toBeDisabled();
-    expect(screen.getAllByRole("button", { name: /^Close$/ })[0]).not.toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Uploading image…" }));
+    expect(screen.getByRole("textbox", { name: "Full French description" })).toBeInTheDocument();
     finishUpload(response({ id: 887 }));
     await waitFor(() => expect(finishContext).toBeDefined());
     expect(screen.getByRole("button", { name: "Approve reviewed quotation" })).toBeDisabled();

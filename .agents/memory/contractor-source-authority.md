@@ -4,6 +4,12 @@ description: Architect controls working content and figures; original PDF and in
 ---
 ## Current policy — explicitly revised 2026-10-05
 
+Human review must be possible without changing an already-correct quotation. Saving a wording correction is not evidence of human approval and must not by itself select a different financial policy.
+
+**Why:** On 2026-11-19 the user requested a coherent repair after repeatedly being sent back to a source-total confirmation already completed. Do not introduce dummy-edit requirements or infer review from the existence of a correction.
+
+**How to apply:** Keep source confirmation, wording/context saves and explicit version-bound approval distinct. Keep financial reconciliation and source integrity safeguards at approval, and never auto-approve existing records as a migration.
+
 The architect may rearrange, replace and create working descriptions, translations and contextual explanations, add contextual or priced lines, and correct actual working figures. The user explicitly requests control of figures, not just text-only or zero-value additions. The completed working quotation must match the independently recorded, locked TTC of the original contractor PDF.
 
 **Why:** Repeated extraction attempts still left legitimate equal-price items with shifted/incomplete descriptions. The user wants prompt architect corrections rather than machine-verification vetoes. The user identifies the original PDF as the contractual document attached to the client link and ultimately signed.

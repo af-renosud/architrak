@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("../../storage", () => ({ storage: { getDevis: mocks.get, getDevisLineItems: mocks.lines, getDevisTranslation: mocks.translation } }));
 vi.mock("../architect-quotation-correction", () => ({
-  hasArchitectCorrection: mocks.corrected, architectCorrectionService: { get: mocks.snapshot }, architectFinancialBoundary: mocks.financial,
+  hasQuotationSourceBaseline: mocks.corrected, hasArchitectCorrection: vi.fn(async () => false), architectCorrectionService: { get: mocks.snapshot }, architectFinancialBoundary: mocks.financial,
 }));
 vi.mock("../quotation-approval-guard", () => ({ quotationApprovalBlocker: mocks.source }));
 import { quotationReviewReadiness } from "../quotation-review-readiness";

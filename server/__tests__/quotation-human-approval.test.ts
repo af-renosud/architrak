@@ -2,9 +2,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ get: vi.fn(), lines: vi.fn(), translation: vi.fn(), corrected: vi.fn(), financial: vi.fn(), query: vi.fn() }));
 vi.mock("../storage", () => ({ storage: { getDevis: mocks.get,getDevisLineItems: mocks.lines,getDevisTranslation: mocks.translation } }));
 vi.mock("../db", () => ({ pool: { query: mocks.query } }));
-vi.mock("../services/architect-quotation-correction", () => ({ hasArchitectCorrection: mocks.corrected,architectFinancialBoundary: mocks.financial }));
+vi.mock("../services/architect-quotation-correction", () => ({ hasQuotationSourceBaseline: mocks.corrected, hasArchitectCorrection: vi.fn(async () => false),architectFinancialBoundary: mocks.financial }));
 import { quotationApprovalBlocker } from "../services/quotation-approval-guard";
 import { translationCoverageBlocker } from "../services/quotation-translation-coverage";
+it("allows explicit review without a correction but not stage advancement before approval", async () => {
+  mocks.corrected.mockResolvedValue(true); // independently confirmed source, no correction record
+  mocks.translation.mockResolvedValue({ status: "draft", headerTranslated: {} });
+  expect(await quotationApprovalBlocker(42, { reviewing: true })).toBeNull();
+  expect(await quotationApprovalBlocker(42)).toContain("no correction or repeat entry");
+  mocks.translation.mockResolvedValue({ status: "finalised", approvedAt: new Date(), headerTranslated: { humanReviewed: true } });
+  expect(await quotationApprovalBlocker(42)).toBeNull();
+});
 beforeEach(() => {
   vi.clearAllMocks(); mocks.corrected.mockResolvedValue(false); mocks.financial.mockResolvedValue(null);
   mocks.get.mockResolvedValue({ aiExtractedData: { quotationVerification: { verified: false }, illustratedRecovery: { status: "unverified" } } });
@@ -18,7 +26,7 @@ describe("human approval authority, separate from automatic quality diagnostics"
   });
   it("routes corrected human content only through its exact financial/source boundary, never historical coverage", async () => {
     mocks.corrected.mockResolvedValue(true);
-    expect(await quotationApprovalBlocker(42)).toBeNull();
+    expect(await quotationApprovalBlocker(42, { reviewing: true })).toBeNull();
     expect(mocks.financial).toHaveBeenCalledWith(42);
     mocks.financial.mockResolvedValue("Working TTC differs from locked source TTC.");
     expect(await quotationApprovalBlocker(42)).toContain("TTC differs");

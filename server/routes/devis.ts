@@ -78,7 +78,7 @@ import {
   LineContextError,
 } from "../services/devis-line-context";
 import { CONTEXT_ASSET_MAX_BYTES } from "@shared/context-doc";
-import { architectFinancialBoundary, hasArchitectCorrection } from "../services/architect-quotation-correction";
+import { architectFinancialBoundary, hasArchitectCorrection, hasQuotationSourceBaseline } from "../services/architect-quotation-correction";
 import { getReplacementHistory, getReplacementOptions, replaceQuotation, replaceQuotationSchema, ReplacementError } from "../services/quotation-replacement.service";
 import { getCarryForwardPreview, recoverCarryForward } from "../services/quotation-carry-forward";
 import { carryForwardSchema } from "@shared/quotation-carry-forward";
@@ -647,6 +647,8 @@ router.post(
     const [quotation, lines, existing] = await Promise.all([
       storage.getDevis(devisId), storage.getDevisLineItems(devisId), storage.getDevisTranslation(devisId),
     ]);
+    if (await hasQuotationSourceBaseline(devisId) && (req.body?.confirmedReview !== true || typeof req.body?.expectedVersion !== "string"))
+      return res.status(409).json({ message: "Confirm your review of the latest saved quotation before approving.", code: "EXPLICIT_REVIEW_REQUIRED" });
     if (req.body?.expectedVersion !== undefined && (
       typeof req.body.expectedVersion !== "string"
       || req.body.expectedVersion !== quotationWorkingVersion(quotation, lines, existing)
@@ -655,7 +657,7 @@ router.post(
     // acceptance. OCR/semantic observations must not veto the architect.
     const financialBlocker = await architectFinancialBoundary(devisId);
     if (financialBlocker) return res.status(409).json({ message: financialBlocker, code: "SOURCE_TTC_RECONCILIATION_REQUIRED" });
-    const sourceBlocker = await quotationApprovalBlocker(devisId);
+    const sourceBlocker = await quotationApprovalBlocker(devisId, { reviewing: true });
     if (sourceBlocker) return res.status(409).json({ message: sourceBlocker, code: "quotation_source_review_required" });
     if (!existing) return res.status(404).json({ message: "No translation to finalise" });
     if (existing.status !== "draft" && existing.status !== "edited") {
