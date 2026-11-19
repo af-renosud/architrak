@@ -7,7 +7,24 @@ vi.mock("../ContractorCopySend", () => ({ ContractorCopySend: () => <div>Existin
 import { ContractorCopyCardStatus, contractorCardState } from "../ContractorCopyCardStatus";
 afterEach(cleanup);
 const delivery = { id: 1, status: "sent", currentDocument: true, recipientEmail: "test@example.test", sentAt: "2026-11-18" };
+const externalDelivery = { id: 9, sentOn: "2026-11-18", method: "hand", recipient: "Mireille Laurent", note: "At site", recordedAt: "2026-11-18T12:00:00Z", currentDocument: true };
 describe("contractor copy card", () => {
+  it("accepts current manual evidence despite an email failure, but not previous-document evidence", () => {
+    expect(contractorCardState([{ ...delivery, status: "failed" }], [externalDelivery])).toEqual({
+      label: "Sent to contractor — recorded manually", tone: "green",
+    });
+    expect(contractorCardState([], [{ ...externalDelivery, currentDocument: false }]).tone).toBe("amber");
+  });
+  it.each(["queued", "sending", "pending_pdf", "pending", "processing", "reconciling"])("keeps %s email visible ahead of manual delivery", status => {
+    expect(contractorCardState([{ ...delivery, status }], [externalDelivery]).tone).toBe("amber");
+  });
+  it("renders server manual evidence as an operator record, not receipt", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async () => ({ deliveries: [], externalDeliveries: [externalDelivery] }) } } });
+    render(<QueryClientProvider client={client}><ContractorCopyCardStatus devisId={42} projectId={1} isSigned isArchived={false} /></QueryClientProvider>);
+    fireEvent.click(await screen.findByText("Sent to contractor — recorded manually"));
+    expect(screen.getByText(/recorded by an operator, not verified receipt/)).toBeVisible();
+    client.clear();
+  });
   it("only shows green for successful current-document evidence", () => {
     expect(contractorCardState([delivery]).tone).toBe("green");
     expect(contractorCardState([{ ...delivery, currentDocument: false }]).label).toBe("Send signed copy to contractor");

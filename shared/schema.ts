@@ -2658,6 +2658,23 @@ export const signedDevisCopyNotices = pgTable("signed_devis_copy_notices", {
   index("signed_devis_copy_notices_due_idx").on(table.status, table.nextAttemptAt),
 ]);
 
+// Operator-attested external delivery, deliberately separate from email outbox.
+export const contractorExternalDeliveries = pgTable("contractor_external_deliveries", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").notNull().references(() => devis.id),
+  documentVersion: text("document_version").notNull(),
+  requestId: text("request_id").notNull(),
+  recordedBy: integer("recorded_by").notNull().references(() => users.id),
+  sentOn: text("sent_on").notNull(),
+  method: text("method").notNull(),
+  recipient: text("recipient").notNull(),
+  note: text("note").notNull().default(""),
+  recordedAt: timestamp("recorded_at", { withTimezone: true }).defaultNow().notNull(),
+}, table => [
+  uniqueIndex("contractor_external_deliveries_request_uidx").on(table.requestId),
+  index("contractor_external_deliveries_devis_idx").on(table.devisId),
+]);
+
 export const templateAssets = pgTable("template_assets", {
   id: serial("id").primaryKey(),
   assetType: text("asset_type").notNull().unique(),

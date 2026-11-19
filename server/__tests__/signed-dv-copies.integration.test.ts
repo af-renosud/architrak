@@ -57,6 +57,7 @@ import { storage } from "../storage";
 import {
   appSettings,
   contractors,
+  contractorExternalDeliveries,
   devis,
   projectCommunications,
   projects,
@@ -321,6 +322,8 @@ beforeEach(() => {
 afterAll(async () => {
   if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
   if (projectIds.length) {
+    const rows = await db.select({ id: devis.id }).from(devis).where(inArray(devis.projectId, projectIds));
+    if (rows.length) await db.delete(contractorExternalDeliveries).where(inArray(contractorExternalDeliveries.devisId, rows.map(row => row.id)));
     await db.delete(projects).where(inArray(projects.id, projectIds));
   }
   if (contractorIds.length) {
@@ -331,6 +334,70 @@ afterAll(async () => {
   } else {
     await storage.setAppSetting(SIGNED_COPY_SETTING_KEY, previousSetting);
   }
+});
+
+describe("operator attestation of external contractor delivery", () => {
+  async function details(id: number) {
+    return (await fetch(`${baseUrl}/api/devis/${id}/contractor-copy`)).json();
+  }
+  async function record(id: number, body: unknown) {
+    return fetch(`${baseUrl}/api/devis/${id}/contractor-copy/external`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+  }
+  function confirmation(version: string) {
+    return { requestId: randomUUID(), expectedVersion: version, sentOn: "2026-01-01",
+      method: "hand", recipient: "Contractor representative", note: "Signed copy handed over", confirmed: true };
+  }
+  it("records an external delivery even without verified PDF/email, without dispatching, and survives rereads", async () => {
+    const { row } = await fixture({ email: null });
+    const before = await details(row.id);
+    expect(before.canSend).toBe(false);
+    expect(before.canRecordExternal).toBe(true);
+    const body = confirmation(before.externalRecordVersion);
+    const sendsBefore = gmail.send.mock.calls.length;
+    const result = await record(row.id, body);
+    expect(result.status).toBe(200);
+    const saved = await result.json();
+    expect(saved.externalDeliveries).toEqual([expect.objectContaining({
+      method: "hand", recipient: body.recipient, note: body.note, recordedBy: 1, currentDocument: true,
+    })]);
+    expect(gmail.send.mock.calls.length).toBe(sendsBefore);
+    expect(saved.deliveries).toEqual([]);
+    expect((await details(row.id)).externalDeliveries).toEqual(saved.externalDeliveries);
+    const card = await (await fetch(`${baseUrl}/api/devis/${row.id}/contractor-copy-status`)).json();
+    expect(card.externalDeliveries[0].currentDocument).toBe(true);
+    // Same intent is idempotent, including concurrent retries.
+    const retries = await Promise.all([record(row.id, body), record(row.id, body)]);
+    expect(retries.map(response => response.status)).toEqual([200, 200]);
+    expect((await details(row.id)).externalDeliveries).toHaveLength(1);
+    expect((await record(row.id, { ...body, recipient: "Someone different" })).status).toBe(409);
+  });
+  it("rejects stale signature identity and retains old delivery as historical", async () => {
+    const { row } = await fixture();
+    const before = await details(row.id);
+    expect((await record(row.id, confirmation(before.externalRecordVersion))).status).toBe(200);
+    await db.update(devis).set({ archisignEnvelopeId: `new-${randomUUID()}` }).where(eq(devis.id, row.id));
+    expect((await record(row.id, confirmation(before.externalRecordVersion))).status).toBe(409);
+    expect((await details(row.id)).externalDeliveries[0].currentDocument).toBe(false);
+  });
+  it("rejects missing confirmation, impossible/future dates and blank recipient", async () => {
+    const { row } = await fixture();
+    const body = confirmation((await details(row.id)).externalRecordVersion);
+    for (const patch of [{ confirmed: false }, { sentOn: "2026-02-30" }, { sentOn: "2999-01-01" }, { recipient: " " }]) {
+      expect((await record(row.id, { ...body, ...patch })).status).toBe(400);
+    }
+  });
+  it("rejects archived and unsigned quotations server-side", async () => {
+    const archived = await fixture({ archived: true });
+    const a = await details(archived.row.id);
+    expect(a.canRecordExternal).toBe(false);
+    expect((await record(archived.row.id, confirmation(a.externalRecordVersion))).status).toBe(409);
+    const { row } = await fixture();
+    const before = await details(row.id);
+    await db.update(devis).set({ signOffStage: "received" }).where(eq(devis.id, row.id));
+    expect((await record(row.id, confirmation(before.externalRecordVersion))).status).toBe(409);
+  });
 });
 
 describe("automatic signed devis contractor copies (real DB)", () => {

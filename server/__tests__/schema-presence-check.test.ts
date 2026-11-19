@@ -583,6 +583,19 @@ describe.skipIf(skipModule !== null)("schema-presence check (Task #136)", () => 
     expect(new Set(covered).size).toBe(covered.length);
   });
 
+  it("external delivery migration repairs identity protections without dropping the table", async (t) => {
+    if (ctx.skipReason || !ctx.replayPool) { t.skip(); return; }
+    await ctx.replayPool.query("DROP INDEX IF EXISTS contractor_external_deliveries_request_uidx");
+    await ctx.replayPool.query("ALTER TABLE contractor_external_deliveries DROP CONSTRAINT IF EXISTS contractor_external_deliveries_recorded_by_fkey");
+    const migration = fs.readFileSync(path.join(migrationsFolder, "0151_contractor_external_deliveries.sql"), "utf8");
+    await ctx.replayPool.query(migration);
+    await ctx.replayPool.query(migration);
+    const index = await ctx.replayPool.query("SELECT 1 FROM pg_indexes WHERE indexname='contractor_external_deliveries_request_uidx'");
+    const constraint = await ctx.replayPool.query("SELECT 1 FROM pg_constraint WHERE conrelid='contractor_external_deliveries'::regclass AND conname='contractor_external_deliveries_recorded_by_fkey'");
+    expect(index.rowCount).toBe(1);
+    expect(constraint.rowCount).toBe(1);
+  });
+
   it("0126 recovery probes every durable manual-review provenance artifact", () => {
     const entry = MIGRATION_ARTIFACTS.find((migration) => migration.tag === "0126_intake_manual_promotion");
     expect(entry?.artifact.kind).toBe("all");

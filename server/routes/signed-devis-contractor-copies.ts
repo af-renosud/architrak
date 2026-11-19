@@ -11,6 +11,7 @@ import {
   listSignedCopyDeliveriesForDevis,
 } from "../services/signed-devis-contractor-copy.service";
 import { matchesCurrentSignedCopy } from "../services/contractor-copy-card-status";
+import { externalDeliveryBody, listExternalDeliveries, recordExternalDelivery } from "../services/contractor-external-delivery";
 import {
   createManualSignedCopyDelivery,
   getSignedCopyContractorCopyPayload,
@@ -44,7 +45,18 @@ router.get("/api/devis/:id/contractor-copy-status", requireAuth,
         sentAt: notice.sentAt ?? comm?.sentAt ?? null,
       };
     }));
-    res.json({ deliveries });
+    res.json({ deliveries, externalDeliveries: await listExternalDeliveries(d) });
+  });
+
+router.post("/api/devis/:id/contractor-copy/external", requireAuth,
+  validateRequest({ params: idParams, body: externalDeliveryBody }), async (req, res) => {
+    const devisId = Number(req.params.id);
+    try {
+      await recordExternalDelivery(devisId, req.session.userId!, req.body);
+      res.json(await getSignedCopyContractorCopyPayload(devisId));
+    } catch (error) {
+      res.status(409).json({ message: error instanceof Error ? error.message : "Could not record external delivery." });
+    }
   });
 
 router.get("/api/settings/signed-dv-copies", requireAuth, async (_req, res) => {

@@ -5,6 +5,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient, projectScopedKey } from "@/lib/queryClient";
+import { ContractorCopyExternalRecord, type ExternalDelivery } from "./ContractorCopyExternalRecord";
 
 type ContractorCopyDelivery = {
   id: number;
@@ -20,6 +21,9 @@ type ContractorCopyDelivery = {
 };
 
 type ContractorCopyResponse = {
+  canRecordExternal?: boolean;
+  externalRecordVersion?: string | null;
+  externalDeliveries?: ExternalDelivery[];
   signatureSource?: "archisign" | "manual_upload" | null;
   canSend: boolean;
   reason: string | null;
@@ -288,6 +292,7 @@ export function ContractorCopySend({
   const previousAcceptedDelivery = dialogDeliveries.some(
     (delivery) => delivery.status.toLowerCase().replace(/[\s-]+/g, "_") === "sent",
   );
+  const previousExternalDelivery = (dialogData ?? response)?.externalDeliveries?.some(delivery => delivery.currentDocument);
   const dialogCanSend =
     !dialogRefreshing &&
     !staleToken &&
@@ -302,7 +307,7 @@ export function ContractorCopySend({
         <div className="min-w-0">
           <p className="text-sm font-semibold">Contractor copy</p>
           <p className="text-xs text-muted-foreground">
-            Send the stored signed quotation without changing signature settings.
+            Send the stored signed quotation or record delivery by other means.
           </p>
         </div>
         <Button
@@ -336,6 +341,18 @@ export function ContractorCopySend({
           {unavailableReason}
         </p>
       )}
+      <ContractorCopyExternalRecord
+        devisId={devisId}
+        contractorName={response?.contractorName ?? null}
+        canRecord={Boolean(response?.canRecordExternal) && !isArchived && isSigned && !contractorCopyQuery.error}
+        version={response?.externalRecordVersion ?? null}
+        deliveries={response?.externalDeliveries ?? []}
+        onFailed={invalidateContractorCopyData}
+        onSaved={(data) => {
+          queryClient.setQueryData(contractorCopyQueryKey, data);
+          invalidateContractorCopyData();
+        }}
+      />
 
       {deliveries.length > 0 && (
         <div className="mt-3 space-y-2" data-testid={`contractor-copy-history-${devisId}`}>
@@ -462,15 +479,16 @@ export function ContractorCopySend({
               {dialogData.canSend && <a className="text-xs underline" href={`/api/devis/${devisId}/signed-pdf`} target="_blank" rel="noopener noreferrer">
                 Open the signed PDF to be attached
               </a>}
-              {previousAcceptedDelivery && (
+              {(previousAcceptedDelivery || previousExternalDelivery) && (
                 <div
                   className="flex items-start gap-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"
                   data-testid={`warning-contractor-copy-previously-sent-${devisId}`}
                 >
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                   <span>
-                    A previous copy was accepted by the email provider. Confirming sends another
-                    copy; it does not confirm inbox delivery.
+                    {previousExternalDelivery
+                      ? "Delivery by other means has already been recorded. Confirming sends another email copy."
+                      : "A previous copy was accepted by the email provider. Confirming sends another copy; it does not confirm inbox delivery."}
                   </span>
                 </div>
               )}

@@ -4,6 +4,7 @@ import { db } from "../db";
 import { storage } from "../storage";
 import { getDocumentBuffer } from "../storage/object-storage";
 import { matchesCurrentSignedCopy } from "./contractor-copy-card-status";
+import { externalDeliveryEligible, externalDeliveryVersion, listExternalDeliveries } from "./contractor-external-delivery";
 import {
   projectCommunications,
   signedDevisCopyNotices,
@@ -247,6 +248,9 @@ function currentMatchesSnapshot(
 }
 
 export interface SignedCopyContractorCopyPayload {
+  canRecordExternal: boolean;
+  externalRecordVersion: string | null;
+  externalDeliveries: Awaited<ReturnType<typeof listExternalDeliveries>>;
   signatureSource: "archisign" | "manual_upload" | null;
   canSend: boolean;
   reason: string | null;
@@ -333,6 +337,9 @@ export async function getSignedCopyContractorCopyPayload(
   }
   return {
     signatureSource: state?.devis.signedOffVia === "manual_upload" ? "manual_upload" : state && hasVerifiedArchisignSignOff(state.devis) ? "archisign" : null,
+    canRecordExternal: Boolean(state?.project && externalDeliveryEligible(state.devis, !!state.project.archivedAt)),
+    externalRecordVersion: state ? externalDeliveryVersion(state.devis) : null,
+    externalDeliveries: state ? await listExternalDeliveries(state.devis) : [],
     canSend,
     reason,
     contractorName,

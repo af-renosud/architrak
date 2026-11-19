@@ -70,6 +70,14 @@ export interface MigrationArtifact {
  * migration. Set the flag on every new data-only DML backfill.
  */
 export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
+  { tag: "0151_contractor_external_deliveries", artifact: { kind: "all", artifacts: [
+    { kind: "table", table: "contractor_external_deliveries" },
+    { kind: "constraint", table: "contractor_external_deliveries", constraint: "contractor_external_deliveries_pkey" },
+    { kind: "constraint", table: "contractor_external_deliveries", constraint: "contractor_external_deliveries_devis_id_fkey" },
+    { kind: "constraint", table: "contractor_external_deliveries", constraint: "contractor_external_deliveries_recorded_by_fkey" },
+    { kind: "index", index: "contractor_external_deliveries_request_uidx" },
+    { kind: "index", index: "contractor_external_deliveries_devis_idx" },
+  ] } },
   { tag: "0150_fee_visibility_events", artifact: { kind: "all", artifacts: [
     { kind: "table", table: "fee_visibility_events" },
     { kind: "constraint", table: "fee_visibility_events", constraint: "fee_visibility_events_pkey" },
