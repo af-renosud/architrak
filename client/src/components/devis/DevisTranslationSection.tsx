@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { quotationParagraph } from "@shared/quotation-paragraph";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FileDown, FileText, Languages, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -91,8 +92,8 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems, reviewC
         onClickCapture={() => onWorkingLineChange?.(line.lineNumber, line.id)}>
         <h5 className="text-xs font-semibold">Item {line.lineNumber} · saved wording</h5>
         <div className="grid gap-4 md:grid-cols-2">
-          <div><p className="text-[10px] uppercase tracking-wide text-muted-foreground">French</p><p className="text-xs whitespace-pre-wrap mt-1">{line.description}</p></div>
-          <div><p className="text-[10px] uppercase tracking-wide text-muted-foreground">English</p><p className="text-xs whitespace-pre-wrap mt-1">{english?.translation || "English wording needs review."}</p></div>
+          <div><p className="text-[10px] uppercase tracking-wide text-muted-foreground">French</p><p className="text-xs mt-1">{quotationParagraph(line.description)}</p></div>
+          <div><p className="text-[10px] uppercase tracking-wide text-muted-foreground">English</p><p className="text-xs mt-1">{quotationParagraph(english?.translation) || "English wording needs review."}</p></div>
         </div>
         {explanations && english?.explanation && <p className="text-xs whitespace-pre-wrap">{english.explanation}</p>}
         <TranslationReviewNotes lineItemId={line.id} note={line.checkNotes}

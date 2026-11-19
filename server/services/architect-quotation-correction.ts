@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { quotationParagraph } from "../../shared/quotation-paragraph";
 import { PDFDocument } from "pdf-lib";
 import type pg from "pg";
 import { pool } from "../db";
@@ -44,14 +45,14 @@ function draftFrom(s: State): ArchitectCorrectionDraft {
   const explicitRate = evidence?.autoLiquidation === true ? "0"
     : typeof evidence?.tvaRate === "number" && evidence.tvaRate >= 0 && evidence.tvaRate <= 100 ? String(evidence.tvaRate) : "";
   return {
-    headerFr: s.quotation.description_fr ?? "", headerEn: header.description ?? "",
+    headerFr: quotationParagraph(s.quotation.description_fr), headerEn: quotationParagraph(header.description),
     explanationFr: metadata?.explanationFr ?? header.descriptionExplanationFr ?? "",
     explanationEn: header.descriptionExplanation ?? "", summaryEn: header.summary ?? "",
     discountHt: metadata?.discountHt ?? "0.00", vatRounding: metadata?.vatRounding ?? "bucket",
     lines: s.lines.map(row => {
       const saved = byId.get(row.id), t = translations.get(row.line_number);
       return { id: row.id, clientKey: saved?.clientKey ?? lineKey(row.id), kind: saved?.kind ?? "priced",
-        descriptionFr: row.description, descriptionEn: t?.translation ?? "",
+        descriptionFr: quotationParagraph(row.description), descriptionEn: quotationParagraph(t?.translation),
         explanationFr: saved?.explanationFr ?? t?.explanationFr ?? "", explanationEn: t?.explanation ?? "",
         quantity: row.quantity ?? (saved?.kind === "context" ? "0" : ""), unit: row.unit ?? "",
         unitPriceHt: row.unit_price_ht ?? "", totalHt: row.total_ht,

@@ -1,4 +1,5 @@
 import { PDFDocument } from "pdf-lib";
+import { quotationParagraph } from "../../shared/quotation-paragraph";
 import { assertOriginalReceiptBytes } from "../services/architect-quotation-correction";
 import { db } from "../db";
 import { sql } from "drizzle-orm";
@@ -156,8 +157,8 @@ function buildHtml(input: BuildHtmlInput): string {
       const t = byLineNumber.get(li.lineNumber);
       const classification = t?.kind === "context" ? "Context only · no charge" : t?.included === false ? "Unaccepted option · excluded from total"
         : t?.vatRate ? `VAT ${t.vatRate}%` : "";
-      const fr = escapeHtml(li.description) + (classification ? `<div class="expl">${escapeHtml(classification)}</div>` : "");
-      const en = escapeHtml(t?.translation || "");
+      const fr = escapeHtml(quotationParagraph(li.description)) + (classification ? `<div class="expl">${escapeHtml(classification)}</div>` : "");
+      const en = escapeHtml(quotationParagraph(t?.translation));
       const expl = [t?.explanationFr, t?.explanation].filter(Boolean).map(v => escapeHtml(v)).join("<br />");
       const explCell = includeExplanations ? `<td class="expl">${expl}</td>` : "";
       const mainRow = `<tr>

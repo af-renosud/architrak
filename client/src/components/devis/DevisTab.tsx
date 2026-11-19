@@ -3346,7 +3346,7 @@ function LineItemWithCheck({
                   enterDescEdit();
                 }
               }}
-              className={`whitespace-pre-wrap rounded px-1 -mx-1 outline-hidden ${disabled ? "" : "cursor-pointer hover:bg-[#c1a27b]/10 focus:ring-2 focus:ring-[#c1a27b]/40"}`}
+              className={`whitespace-normal rounded px-1 -mx-1 outline-hidden ${disabled ? "" : "cursor-pointer hover:bg-[#c1a27b]/10 focus:ring-2 focus:ring-[#c1a27b]/40"}`}
               title={disabled ? undefined : "Review/edit in working quotation"}
               data-testid={`cell-line-description-${li.id}`}
             >

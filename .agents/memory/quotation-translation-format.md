@@ -7,3 +7,9 @@ The user wants lists within translated quotation descriptions returned as comma-
 **Why:** Complex illustrated quotations were requiring manual copy/paste into an external tool solely to reformat translations.
 
 **How to apply:** Apply to newly generated translations, preserving every specification and condition, not by merging separate quotation records or overwriting existing human corrections.
+
+PDF-derived hard line breaks in French and English quotation wording should flow as paragraphs in views, editors and generated PDFs.
+
+**Why:** The user finds narrow PDF-column wrapping misleading and slow to read in the working editor.
+
+**How to apply:** Normalize whitespace without deleting words, punctuation or technical values. Preserve original source evidence, issued documents and separately authored rich context formatting.

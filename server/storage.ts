@@ -1,5 +1,6 @@
 import { PaymentInputError, validatePaymentAllocation, type PaymentEvidence } from "./services/payment-allocation";
 import { invoiceRequestConflict } from "../shared/invoice-request-guard";
+import { quotationParagraph } from "../shared/quotation-paragraph";
 import { db } from "./db";
 import { evaluateFinancialPdf, discardIrrelevantFinancialDecision, emailHasFinancialAdmission } from "@shared/email-financial-gate";
 import { unverifiedPdfCleanupReason } from "@shared/email-admission-retention";
@@ -2010,7 +2011,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createDevisLineItem(data: InsertDevisLineItem): Promise<DevisLineItem> {
-    const [item] = await db.insert(devisLineItems).values(data).returning();
+    const [item] = await db.insert(devisLineItems).values({ ...data, description: quotationParagraph(data.description) }).returning();
     return item;
   }
 

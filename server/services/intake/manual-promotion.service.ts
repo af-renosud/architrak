@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { quotationParagraph } from "../../../shared/quotation-paragraph";
 import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import {
   acompteNoInvoicePayments,
@@ -357,7 +358,7 @@ export async function promoteParkedFinancialDocument(
         await tx.insert(devisLineItems).values(parsed.lineItems.map((line, index) => ({
           devisId: created.id,
           lineNumber: index + 1,
-          description: toSentenceCase(line.description || `Line ${index + 1}`) as string,
+          description: quotationParagraph(toSentenceCase(line.description || `Line ${index + 1}`)),
           quantity: String(Number.isFinite(Number(line.quantity)) ? Math.round(Number(line.quantity) * 1000) / 1000 : 1),
           unit: "u",
           unitPriceHt: String(roundCurrency(line.unitPrice ?? 0)),
