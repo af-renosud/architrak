@@ -66,7 +66,14 @@ export function QuotationApprovalReview({ devisId, onLocate, disabled = false, o
       <p className="text-xs mt-1">1. Review/edit against the original PDF. 2. Save wording, figures and context. 3. Review this latest checklist and approve.</p></div>
     <p role="status" data-workflow-attention={work.blocked || undefined} className="text-xs">{work.blocked ? "Unsaved work · approval is blocked until all saves and image uploads settle." :
       readiness.isFetching || syncing ? "Checking the latest saved quotation…" : approved ? "Approved · this saved version is ready to share." : "Saved version · original PDF remains the legal reference."}</p>
-    {work.messages.map((message, i) => <p key={i} className="text-xs">{message}</p>)}
+    {work.issues.map(issue => {
+      const match = issue.key.match(/^context(?:-[a-z]+)?:(?:(?:inline|workspace):)?(\d+)/);
+      return <div key={issue.key} className="text-xs">
+        <span>{issue.message}</span>
+        {match && <Button type="button" variant="ghost" className="underline" size="sm" onClick={() => onLocate(`line-${match[1]}`)}>Go to context</Button>}
+      </div>;
+    })}
+    {work.blocked && <p className="text-xs">You can close this editor without discarding context. Resolve any failed save or conflicting edit in the affected context box; approval stays protected until it is saved.</p>}
     {readiness.isError && <div role="alert" className="text-xs">Checklist could not be loaded. Approval is unavailable. <Button size="sm" variant="outline" onClick={() => void readiness.refetch()}>Retry checklist</Button></div>}
     {syncError && <div role="alert" className="text-xs">{syncError} <Button type="button" size="sm" variant="outline" onClick={() => setSyncEpoch(value => value + 1)}>Retry working quotation</Button></div>}
     {!work.blocked && readiness.data?.blockers.map((blocker, index) => <button type="button" key={`${blocker.key}-${index}`}

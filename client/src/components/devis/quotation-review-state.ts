@@ -21,5 +21,6 @@ export function useQuotationWork(id: number) {
     () => versions.get(id) ?? 0,
   );
   return { epoch, blocked: quotationWorkBlocked(id),
+    issues: Array.from(work.get(id)?.entries() ?? []).filter(([, entry]) => entry.blocked).map(([key, entry]) => ({ key, message: entry.message })),
     messages: Array.from(work.get(id)?.values() ?? []).filter(entry => entry.blocked).map(entry => entry.message) };
 }

@@ -164,7 +164,10 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
     setSelected(line.clientKey); setSavedMessage(false); setSelection(null);
   };
   const dismiss = () => {
-    if (submitLock.current || pending || quotationWorkBlocked(devisId, workKey)) return;
+    if (submitLock.current || pending) {
+      setError("An editor update is still running. Please wait for it to finish before closing.");
+      return;
+    }
     if (dirty) setDiscardOpen(true);
     else { setOpen(false); initialized.current = false; }
   };
@@ -516,7 +519,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                   <p className="text-[10px] text-muted-foreground mt-1">No automatic save. Original PDF, locked TTC and signed evidence are not rewritten.</p>
                 </div>
                 <div className="flex gap-2">
-                  <Button type="button" variant="outline" size="sm" disabled={pending || quotationWorkBlocked(devisId, workKey)} onClick={dismiss}>{dirty ? "Close editor…" : "Close"}</Button>
+                  <Button type="button" variant="outline" size="sm" disabled={pending} onClick={dismiss}>{dirty ? "Close editor…" : "Close"}</Button>
                   <Button type="button" size="sm" onClick={() => void saveDraft()} disabled={!editable || !dirty || !!validationMessage || stale || quotationWorkBlocked(devisId, workKey)}
                     className="gap-2 bg-[#0b2545] hover:bg-[#173657] text-[#f8f5ef]"><Save size={13} />{save.isPending ? "Saving batch…" : "Save correction"}</Button>
                 </div>
@@ -528,8 +531,12 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
     <AlertDialog open={discardOpen} onOpenChange={setDiscardOpen}>
       <AlertDialogContent>
         <AlertDialogHeader><AlertDialogTitle>Keep your unsaved correction?</AlertDialogTitle>
-          <AlertDialogDescription>Closing without saving discards this local draft. The saved quotation and contractor PDF will not change.</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogDescription>Keep your draft in this browser tab to resume later, or discard only the editor changes. Context saves and the saved quotation are not discarded.</AlertDialogDescription></AlertDialogHeader>
         <AlertDialogFooter><AlertDialogCancel>Keep editing</AlertDialogCancel>
+          <AlertDialogAction onClick={() => {
+            if (original && draft) keepQuotationDraft(devisId, { original, draft });
+            setOpen(false); setDiscardOpen(false); initialized.current = false;
+          }}>Keep draft and close</AlertDialogAction>
           <AlertDialogAction onClick={() => { setOpen(false); setDiscardOpen(false); initialized.current = false; setDraft(null); setOriginal(null); setLatest(null); setStale(false); setError(null); keepQuotationDraft(devisId, null); setQuotationWork(devisId, workKey, false); }}>Discard draft</AlertDialogAction></AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

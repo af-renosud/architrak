@@ -5,6 +5,7 @@ import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ArchitectQuotationEditor } from "../ArchitectQuotationEditor";
 import { createCorrectionLine } from "../architect-correction-model";
+import { setQuotationWork, quotationWorkBlocked } from "../quotation-review-state";
 import type { ArchitectCorrectionSave, ArchitectCorrectionSnapshot } from "../architect-correction-model";
 
 vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: vi.fn() }) }));
@@ -45,6 +46,27 @@ async function row(index: number) {
   fireEvent.click(screen.getByRole("button", { name }));
   await screen.findByRole("textbox", { name: "Full French description" });
 }
+it("allows leaving during unrelated context work without clearing its safeguard", async () => {
+  mount(); await open();
+  setQuotationWork(42, "context:inline:500", true, "Context save failed.");
+  try {
+    fireEvent.click(screen.getAllByRole("button", { name: /^Close$/ })[0]);
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "French header" })).toBeNull());
+    expect(quotationWorkBlocked(42)).toBe(true);
+  } finally {
+    setQuotationWork(42, "context:inline:500", false);
+  }
+});
+it("keeps an unsaved wording draft when closing and restores it on reopening", async () => {
+  mount(); await open();
+  fireEvent.change(screen.getByRole("textbox", { name: "French header" }), { target: { value: "My retained draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "Close editor…" }));
+  fireEvent.click(screen.getByRole("button", { name: "Keep draft and close" }));
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: "French header" })).toBeNull());
+  await open();
+  expect(screen.getByRole("textbox", { name: "French header" })).toHaveValue("My retained draft");
+  expect(saves).toHaveLength(0);
+});
 it("shows missing VAT together and lets the user repair it without losing wording", async () => {
   persisted = fixture();
   persisted.draft.lines[0].vatRate = "";
@@ -215,7 +237,7 @@ describe("architect editor persistence and source authority", () => {
     fireEvent.change(screen.getByTestId("input-context-file-42-4"), { target: { files: [new File(["owned image"], "finish.jpg", { type: "image/jpeg" })] } });
     await screen.findByText("Uploading image · keep this workspace open.");
     expect(screen.getByRole("button", { name: "Approve reviewed quotation" })).toBeDisabled();
-    expect(screen.getAllByRole("button", { name: /^Close$/ })[0]).toBeDisabled();
+    expect(screen.getAllByRole("button", { name: /^Close$/ })[0]).not.toBeDisabled();
     finishUpload(response({ id: 887 }));
     await waitFor(() => expect(finishContext).toBeDefined());
     expect(screen.getByRole("button", { name: "Approve reviewed quotation" })).toBeDisabled();

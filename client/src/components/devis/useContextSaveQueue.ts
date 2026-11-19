@@ -217,7 +217,7 @@ export function useContextSaveQueue(
     }
     pendingDocRef.current = doc;
     rememberDraft(doc);
-    markWork(true, "Unsaved line context.");
+    markWork(true, pausedRef.current ? "Context save needs attention. Open this context to retry or resolve the conflict." : "Unsaved line context.");
     void pumpSaves();
   };
 
