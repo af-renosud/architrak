@@ -65,11 +65,13 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems, reviewC
   if (translation.isLoading) return <div aria-label="Loading saved translation" className="p-4 space-y-3"><Skeleton className="h-12 w-full" /><Skeleton className="h-40 w-full" /></div>;
   if (translation.isError && !data) return <section role="alert" className="border rounded p-4 space-y-2"><p>Saved translation could not be loaded.</p><Button variant="outline" onClick={() => void translation.refetch()}>Retry translation</Button></section>;
   return <section className="space-y-4 rounded-md border bg-card p-4" data-testid={`section-translation-${devisId}`}>
-    <header className="flex flex-wrap items-start justify-between gap-4">
+    <header className="flex flex-col items-start gap-3">
       <div><h4 className="text-sm font-semibold inline-flex gap-2 items-center"><Languages size={16} />English client package · {devisCode}</h4>
         <p className="text-xs text-muted-foreground mt-1">{status === "finalised" ? "Approved saved version" : "Saved wording · approve the translation here when your review is complete."}</p>
         {!contextReadOnly && <p className="text-xs text-emerald-700 mt-1">Edit context text and images directly below each item. Changes save automatically; wait for Saved.</p>}</div>
-      <div className="flex flex-wrap gap-2">
+      {/* Keep critical actions on the content's leading edge, away from the
+          fixed Jobs and scroll-control rail on the trailing edge. */}
+      <div className="flex flex-col items-start gap-2 sm:flex-row sm:flex-wrap">
         <Button size="sm" variant="outline" onClick={() => open()}>Review/edit quotation</Button>
         {["draft", "edited"].includes(status) && <Button size="sm" disabled={readOnly}
           aria-expanded={approvalOpen} aria-controls={`translation-approval-${devisId}`}
