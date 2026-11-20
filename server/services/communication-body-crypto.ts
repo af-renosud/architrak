@@ -5,7 +5,7 @@ import { db } from "../db";
 import { env } from "../env";
 
 const KEY_CONTEXT = "architrak:quotation-email-body:v1";
-const CLIENT_LINK_RE = /https?:\/\/[^\s]+\/p\/client\/[A-Za-z0-9_-]+/;
+const CLIENT_LINK_RE = /https?:\/\/[^\s]+\/p\/client\/(?:project\/)?[A-Za-z0-9_-]+/;
 export const PROTECTED_CLIENT_LINK_LABEL = "[Lien sécurisé protégé]";
 
 function deriveKey(): Buffer {

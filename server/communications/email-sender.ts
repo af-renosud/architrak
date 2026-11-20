@@ -640,8 +640,9 @@ async function findAcceptedTrackedMessage(
     const searchableBody = communication.encryptedBody
       ? decryptCommunicationBody(communication.encryptedBody)
       : (communication as ProjectCommunication).body;
-    const marker = searchableBody?.match(
-      /(?:\/p\/client\/([A-Za-z0-9_-]+)|Référence de remise\s*:\s*(AT-DV-[a-f0-9]+))/,
+    const marker = searchableBody?.match(/Delivery reference:\s*(AT-PL-[a-f0-9-]+)/)
+      ?? searchableBody?.match(
+      /(?:\/p\/client\/(?!project\/)([A-Za-z0-9_-]+)|Référence de remise\s*:\s*(AT-DV-[a-f0-9]+))/,
     );
     const immutableReference = marker?.[1] ?? marker?.[2];
     if (immutableReference) {
@@ -724,6 +725,18 @@ export async function sendCommunication(
   communicationId: number,
   opts?: { threadId?: string | null; inReplyToMessageId?: string | null; sentByUserId?: number | null },
 ): Promise<void> {
+  const candidate = await storage.getProjectCommunication(communicationId);
+  if (candidate?.dedupeKey?.startsWith("project-client-link:")) {
+    const tokenId = Number(candidate.dedupeKey.split(":")[2]);
+    const [project, token] = await Promise.all([
+      storage.getProject(candidate.projectId),
+      storage.getActiveProjectShareToken(candidate.projectId),
+    ]);
+    if (!project || project.archivedAt || !token || token.id !== tokenId
+      || token.revokedAt || (token.expiresAt && token.expiresAt.getTime() <= Date.now())) {
+      throw new Error("The project client link is no longer active.");
+    }
+  }
   // Task #543 — atomic dispatch claim BEFORE any Gmail work. The conditional
   // queued/failed/draft → 'sending' compare-and-set in storage guarantees
   // exactly one caller dispatches a given row: concurrent send requests

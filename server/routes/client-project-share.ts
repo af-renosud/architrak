@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { emailProjectLink, projectLinkEmailPrefix } from "../services/project-link-email";
 import { z } from "zod";
 import { storage } from "../storage";
 import { validateRequest } from "../middleware/validate";
@@ -22,6 +23,32 @@ import {
 const router = Router();
 
 const projectIdParams = z.object({ projectId: z.coerce.number().int().positive() });
+
+router.get("/api/projects/:projectId/client-share/emails",
+  validateRequest({params: projectIdParams}), async (req, res) => {
+    const rows = await storage.getProjectCommunications(Number(req.params.projectId));
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json(rows.filter(r => r.dedupeKey?.startsWith(projectLinkEmailPrefix(Number(req.params.projectId))))
+      .sort((a,b) => b.id-a.id).slice(0,20).map(r => ({
+        id:r.id, status:r.status, recipient:r.recipientEmail, createdAt:r.createdAt, sentAt:r.sentAt,
+        body:r.body, tokenId:Number(r.dedupeKey?.split(":")[2]),
+      })));
+  });
+router.post("/api/projects/:projectId/client-share/email",
+  validateRequest({params: projectIdParams, body: z.object({
+    tokenId:z.number().int().positive(), requestId:z.string().uuid(),
+    message:z.string().trim().min(10).max(5000),
+  }).strict()}), async (req, res) => {
+    if (!req.session?.userId) return res.status(401).json({message:"Sign in before sending."});
+    try {
+      const result = await emailProjectLink(Number(req.params.projectId), Number(req.session.userId), req.body);
+      res.json(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      const safe = /^(Project unavailable|The client link|This link cannot)/.test(message);
+      res.status(safe ? 409 : 500).json({message: safe ? message : "Unable to prepare the email. Please try again."});
+    }
+  });
 
 // Task #410 — how far back an ArchiDoc lookup miss still warrants a warning.
 const ARCHIDOC_MISS_WARNING_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;

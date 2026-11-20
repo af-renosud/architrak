@@ -38,6 +38,8 @@ const { state, storageSpy, gmailSpy, sharedReceiptSpy } = vi.hoisted(() => {
     })),
   };
   const storageSpy = {
+    getProject: vi.fn(async () => ({id:9,archivedAt:null})),
+    getActiveProjectShareToken: vi.fn(async () => ({id:71,revokedAt:null,expiresAt:null})),
     claimProjectCommunicationForSending: vi.fn(async () => {
       const comm = state.communication;
       if (!comm || !["queued", "failed", "draft"].includes(comm.status)) return undefined;
@@ -122,6 +124,19 @@ beforeEach(() => {
 });
 
 describe("client-link Gmail reconciliation", () => {
+  it("reconciles a project email by its delivery marker rather than its reusable link", async () => {
+    state.communication!.dedupeKey = "project-client-link:9:71:abc";
+    state.communication!.encryptedBody = encryptCommunicationBody(
+      "https://architrak.test/p/client/project/reusable-token\nDelivery reference: AT-PL-aabb-1234",
+    );
+    await expect(sendCommunication(501,{sentByUserId:7})).rejects.toThrow("database timeout");
+    gmailSpy.list.mockResolvedValueOnce({data:{messages:[]}}).mockResolvedValueOnce({
+      data:{messages:[{id:"gmail-501",threadId:"thread-501"}]},
+    });
+    await sendCommunication(501,{sentByUserId:7});
+    expect(gmailSpy.send).toHaveBeenCalledTimes(1);
+    expect(gmailSpy.list).toHaveBeenNthCalledWith(2,expect.objectContaining({q:'in:sent "AT-PL-aabb-1234"'}));
+  });
   it("reconciles a provider-accepted send after a failed success write without sending twice", async () => {
     await expect(sendCommunication(501, { sentByUserId: 7 }))
       .rejects.toThrow("database timeout after Gmail accepted");

@@ -12,3 +12,9 @@ Live verification showed that Gmail's raw-message send API can replace a caller-
 **How to apply:** Persist the selected mailbox before provider dispatch, distinguish pre-provider failures from post-provider uncertainty, and reconcile before permitting another send. For readable user mailboxes, keep `rfc822msgid` as a first lookup plus a unique body-indexed fallback. For the shared connector, record its returned message/thread IDs and acceptance time before the database success write, then consult that receipt first on retry.
 
 For signed-document copies without a portal token, use a nonsecret immutable delivery reference in the body. Exhausted reconciliation is not permission to resend: operator retry must recheck the original result, not reset the communication to queued. The UI must distinguish this action from a normal send retry.
+
+Project client links can be emailed repeatedly without rotating the link. Use a distinct persisted delivery marker per intentional email, not the shared project token, for Gmail reconciliation.
+
+**Why:** Searching Sent by the reusable project link could match an earlier email and falsely confirm a later delivery.
+
+**How to apply:** Reuse the same marker on retries, keep the existing encrypted-body and atomic dispatch protections, and revalidate the active project link before dispatch.

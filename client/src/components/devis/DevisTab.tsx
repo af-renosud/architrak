@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import "./quotation-list-layout.css";
+import { ProjectLinkEmail } from "./ProjectLinkEmail";
 import type { QuotationReplacementHistory as ReplacementHistoryEntry } from "@shared/quotation-replacement";
 import { ReplaceQuotationDialog } from "./ReplaceQuotationDialog";
 import { ClientBudgetAuditDetail, ClientBudgetControls } from "./ClientBudgetControls";
@@ -4571,6 +4572,9 @@ export function ProjectClientSharePanel({
         <Button type="button" variant="ghost" size="sm" className="h-6 text-[10px]" aria-expanded={managementOpen} aria-controls={`project-share-management-${projectId}`} onClick={() => setManagementOpen(open => !open)}>
           {managementOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />} Manage client link
         </Button>
+        {!isArchived && (
+          <ProjectLinkEmail projectId={projectId} token={token} enabled={hasActiveLink && !!data?.canCopyLink} />
+        )}
         {!isArchived && (
           <div hidden={!managementOpen} className={managementOpen ? "flex items-center gap-1.5 flex-wrap" : "hidden"}>
             <Button
