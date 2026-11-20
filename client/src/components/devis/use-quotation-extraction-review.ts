@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest, projectScopedKey } from "@/lib/queryClient";
+import type { QuotationExceptionReview } from "@shared/quotation-exceptions";
 
 export const reviewOutcomes = {
   confirmed_inaccurate: "Confirmed inaccurate",
@@ -31,6 +32,7 @@ export interface ExtractionReviewEvent {
   effort_minutes: number | null;
 }
 export interface ExtractionReviewResponse {
+  exceptionReview?: QuotationExceptionReview;
   humanWorkingVersion?: boolean;
   running?: boolean;
   events: ExtractionReviewEvent[];

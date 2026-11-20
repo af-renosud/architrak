@@ -62,6 +62,7 @@ const { archisignMock, insuranceMock, tokenMock, emailMock } = vi.hoisted(() => 
 // stubs all persistence and uses a deliberately non-connectable database URL.
 vi.mock("../../services/quotation-signature-lock", () => ({
   withQuotationSignatureLock: (handler: express.RequestHandler) => handler,
+  withQuotationDispatchLock: (_id: number, callback: () => Promise<unknown>) => callback(),
 }));
 vi.mock("../../storage", async () => {
   const { createStorageMock } = await import("./helpers/mock-storage");

@@ -95,7 +95,15 @@ An outdated signature envelope is recoverable through Retry: read its authoritat
 
 Action distinctions remain deliberate: Mode A may send a machine-supported draft translation; Mode B requires finalisation. The card retains its pre-existing additional lot/English-description completeness checks. Recipient checks, live insurance, explicit question authorisation, immutable signed evidence and package construction remain owned by their existing delivery orchestration. A source decision alone is not permission to send.
 
-The following specification explains the vocabulary; the historical audit and its findings above document the starting point, not the current implementation. Extraction-exception presentation and the consolidated review interface remain the separately queued work.
+The following specification explains the vocabulary; the historical audit and its findings above document the starting point, not the current implementation. The consolidated review interface remains separately queued work.
+
+### Extraction recovery — 2026-11-20
+
+Extraction review now exposes current structured findings grouped by source, figures and completeness. Original parser/source identities and historical warnings remain separate. An approved human-controlled version resolves its applicable historical findings without rewriting the original extraction verdict. Unknown source positions are not invented; known stable row IDs and original PDF page numbers drive navigation.
+
+Re-extraction now always prepares a candidate first. Even a clean native-table extraction does not automatically delete or replace working rows. Applying requires explicit review, independent source evidence, the original source digest and the preparation-time working fingerprint; the existing transaction then rechecks all protection and freshness guards. Matching totals alone cannot authorise unsupported rows or cancelling fee/credit pairs. Distinct equal-priced source rows remain distinct.
+
+Final signature dispatch holds quotation, line and translation row locks across the last source-byte verification and the external send, serialising ordinary context/content saves. The broader signing advisory lock still handles replacement and simultaneous signature requests.
 
 One read-only evaluator of a coherent versioned snapshot, with action-specific decisions:
 

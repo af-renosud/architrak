@@ -57,6 +57,35 @@ it("allows leaving during unrelated context work without clearing its safeguard"
     setQuotationWork(42, "context:inline:500", false);
   }
 });
+it("retains an exact requested stable row through asynchronous snapshot initialization", async () => {
+  const fallback = fetchMock.getMockImplementation()!;
+  let release: (() => void) | undefined;
+  fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+    if (url === path && (!options?.method || options.method === "GET")) await new Promise<void>(resolve => { release = resolve; });
+    return fallback(url, options);
+  });
+  mount(false, true);
+  fireEvent(window, new CustomEvent("quotation-review-open", { detail: { devisId: 42, rowId: 102, field: "totalHt" } }));
+  await waitFor(() => expect(release).toBeDefined());
+  expect(screen.getByLabelText("Loading quotation editor")).toBeVisible();
+  release!();
+  expect(await screen.findByRole("region", { name: "Edit row 2" })).toBeVisible();
+  expect(screen.getByLabelText("Full French description")).toHaveValue("Porte B");
+  expect(saves).toHaveLength(0);
+  fireEvent(window, new CustomEvent("quotation-review-open", { detail: { devisId: 42, field: "sourceTtc" } }));
+  expect(await screen.findByLabelText("French header")).toHaveValue("Menuiseries sur mesure");
+  expect(screen.getByText(/Finding target · Original PDF total including VAT/)).toHaveAttribute("role", "status");
+  expect(screen.queryByText(/Finding target · sourceTtc/)).toBeNull();
+});
+it("locates a second requested row without overwriting an already open unsaved draft", async () => {
+  mount(); await open(); await row(1);
+  fireEvent.change(screen.getByLabelText("Full French description"), { target: { value: "Retained correction" } });
+  fireEvent(window, new CustomEvent("quotation-review-open", { detail: { devisId: 42, rowId: 103 } }));
+  expect(await screen.findByRole("region", { name: "Edit row 3" })).toBeVisible();
+  await row(1);
+  expect(screen.getByLabelText("Full French description")).toHaveValue("Retained correction");
+  expect(saves).toHaveLength(0);
+});
 it("keeps an unsaved wording draft when closing and restores it on reopening", async () => {
   mount(); await open();
   fireEvent.change(screen.getByRole("textbox", { name: "French header" }), { target: { value: "My retained draft" } });

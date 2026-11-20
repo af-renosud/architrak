@@ -19,6 +19,8 @@ import { QuotationConflictReview } from "./QuotationConflictReview";
 import { mergeQuotationDraft, type MergeChoices } from "./quotation-three-way";
 import { quotationWorkBlocked, setQuotationWork, useQuotationWork } from "./quotation-review-state";
 import { keepQuotationDraft, readQuotationDraft } from "./quotation-draft-backup";
+import type { QuotationReviewTarget } from "./QuotationExceptions";
+import { quotationFieldLabel } from "./quotation-review-labels";
 import "./architect-correction.css";
 
 interface Props { devisId: number; projectId: string; disabled?: boolean; compact?: boolean; hideTrigger?: boolean }
@@ -60,6 +62,9 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
   const ownUploadPending = quotationWork.issues.some(issue => issue.key.startsWith("image-request:workspace:"));
   const workKey = `working-draft:${devisId}`;
   const initialized = useRef(false);
+  const requestedTarget = useRef<QuotationReviewTarget | null>(null);
+  const [locateRequest, setLocateRequest] = useState(0);
+  const [requestedField, setRequestedField] = useState<string | null>(null);
   const submitLock = useRef(false);
   const mounted = useRef(true);
   const frenchInput = useRef<HTMLTextAreaElement>(null);
@@ -78,7 +83,12 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
   });
   useEffect(() => {
     const openWorkspace = (event: Event) => {
-      if (!disabled && (event as CustomEvent<number>).detail === devisId) setOpen(true);
+      const detail = (event as CustomEvent<number | QuotationReviewTarget>).detail;
+      const target = typeof detail === "number" ? { devisId: detail } : detail;
+      if (disabled || !target || target.devisId !== devisId) return;
+      requestedTarget.current = target;
+      setLocateRequest(value => value + 1);
+      setOpen(true);
     };
     window.addEventListener("quotation-review-open", openWorkspace);
     return () => window.removeEventListener("quotation-review-open", openWorkspace);
@@ -90,12 +100,28 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
     const backup = readQuotationDraft(devisId);
     const recovered = backup ? mergeQuotationDraft(backup.original.draft, backup.draft, snapshot.data.draft) : null;
     setOriginal(structuredClone(backup && recovered?.conflicts.length ? backup.original : snapshot.data));
-    setDraft(structuredClone(backup && recovered?.conflicts.length ? backup.draft : recovered?.draft ?? snapshot.data.draft));
-    setSelected("header");
+    const loadedDraft = structuredClone(backup && recovered?.conflicts.length ? backup.draft : recovered?.draft ?? snapshot.data.draft);
+    setDraft(loadedDraft);
+    const requested = requestedTarget.current;
+    const requestedRow = requested?.rowId == null ? undefined : loadedDraft.lines.find(line => line.id === requested.rowId);
+    setSelected(requestedRow?.clientKey ?? "header");
+    setRequestedField(requested?.field ?? null);
+    requestedTarget.current = null;
     setError(backup ? "Your unsaved working draft was restored in this tab. Review it before saving." : null);
     setStale(!!recovered?.conflicts.length); setSavedMessage(false); setVatRecoveryMessage(null);
     setLatest(recovered?.conflicts.length ? snapshot.data : null); setMergeChoices({});
+    if (requested?.rowId != null && !requestedRow) setError("The requested working row is no longer present. Review the current working quotation; no rows have been changed.");
   }, [open, snapshot.data, snapshot.isFetching, devisId]);
+  useEffect(() => {
+    if (!open || !draft || !initialized.current || !requestedTarget.current) return;
+    const target = requestedTarget.current;
+    requestedTarget.current = null;
+    const row = target.rowId == null ? undefined : draft.lines.find(line => line.id === target.rowId);
+    setSelected(row?.clientKey ?? "header");
+    setRequestedField(target.field ?? null);
+    setSelection(null); setTarget("");
+    if (target.rowId != null && !row) setError("The requested working row is no longer present. Review the current working quotation; no rows have been changed.");
+  }, [open, draft, locateRequest]);
   const financialIssues = useMemo(() => draft ? correctionFinancialIssues(draft) : [], [draft]);
   const totals = useMemo(() => {
     if (!draft) return { value: null, error: null };
@@ -398,7 +424,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                     <span className="flex justify-between gap-2"><span className="font-semibold">{String(index + 1).padStart(2, "0")} · {line.kind === "context" ? "Context" : "Priced item"}</span>
                       {!line.included && line.kind === "priced" && <span className="text-[9px]">OPTION</span>}</span>
                     <span className="block truncate text-[11px] opacity-75 mt-1">{line.descriptionFr || "New content — not yet described"}</span>
-                    <span className="block text-[9px] opacity-60 mt-1">{line.id !== null ? `Stable ID ${line.id}` : "New · unsaved"}</span>
+                    {line.id === null && <span className="block text-[9px] opacity-60 mt-1">New · unsaved</span>}
                   </button>)}
                 </div>
                 <div className="grid gap-2 mt-4">
@@ -410,6 +436,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                 {!draft.lines.length && <p className="text-[11px] text-muted-foreground px-2 mt-3">No working rows yet. Add content or a priced item to construct the interpretation.</p>}
               </nav>
               <main className="p-5 md:p-7 min-w-0">
+                {requestedField && <p role="status" className="mb-3 text-xs text-muted-foreground">Finding target · {quotationFieldLabel(requestedField)}. Review against the original PDF before editing.</p>}
                 {selected === "header" ? <div className="space-y-5">
                   <h3 className="text-sm font-semibold">Header & contextual overview</h3>
                   <div className="grid gap-4 md:grid-cols-2">
@@ -432,7 +459,8 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                 </div> : current ? <section className="space-y-5" aria-label={`Edit row ${currentIndex + 1}`}>
                   <div className="flex justify-between flex-wrap items-start gap-3">
                     <div><h3 className="text-sm font-semibold">{current.kind === "context" ? "Context-only line" : "Priced item"} {currentIndex + 1}</h3>
-                      <p className="text-[10px] text-muted-foreground mt-1">{current.id !== null ? `Stable ID ${current.id} · questions and evidence remain attached to this row` : "New line · an identity will be assigned on save"}</p></div>
+                      <p className="text-[10px] text-muted-foreground mt-1">{current.id !== null ? "Questions and evidence remain attached to this row." : "New line · an identity will be assigned on save"}</p>
+                      {current.id !== null && <details className="mt-2 text-[10px] text-muted-foreground"><summary className="cursor-pointer">Technical details</summary><p>Stable row ID: {current.id}</p></details>}</div>
                     <div className="flex gap-1">
                       <Button type="button" size="icon" variant="outline" aria-label="Move row up" disabled={!editable || currentIndex === 0} onClick={() => updateDraft({ lines: reorderCorrectionLine(draft.lines, currentIndex, currentIndex - 1) })}><ArrowUp size={13} /></Button>
                       <Button type="button" size="icon" variant="outline" aria-label="Move row down" disabled={!editable || currentIndex === draft.lines.length - 1} onClick={() => updateDraft({ lines: reorderCorrectionLine(draft.lines, currentIndex, currentIndex + 1) })}><ArrowDown size={13} /></Button>

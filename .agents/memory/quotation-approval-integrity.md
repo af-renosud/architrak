@@ -37,6 +37,12 @@ Stale signature-package guards need a recovery path, not just a rejection. Recon
 
 **Why:** Persisting an envelope before checking for content changes otherwise traps every retry on the same stale receipt. A failed send response is not proof that the provider never sent it.
 
+Model-based extraction and totals recovery belong exclusively to candidate preparation, never candidate application.
+
+**Why:** A second model response can alter rows or totals after the user reviewed the preview, even when the source and working-version fingerprints still match.
+
+**How to apply:** Revalidate stored evidence deterministically during apply. Any new recovery result is a new proposal requiring fresh approval.
+
 Line review colours and contractor questions have independent lifecycles. Reflagging or editing a line must never replace authored question wording, and unflagging alone must never withdraw it. Withdrawal is explicit and reversible; sent wording is immutable and amendments belong in the conversation.
 
 **Why:** Operators could not readily reopen saved questions, and colour/progress/note updates could silently overwrite or hide them. A saved draft is valuable authored content even when no conversation messages exist.

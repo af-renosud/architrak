@@ -6,6 +6,8 @@ import { storage } from "../storage";
 import { rescrapeDevis } from "../services/devis-rescrape.service";
 import { isQuotationRescrapeRunning } from "../services/quotation-rescrape-jobs";
 import { hasArchitectCorrection } from "../services/architect-quotation-correction";
+import { loadQuotationDecisionSnapshot } from "../services/quotation-decision-snapshot";
+import { quotationExceptionReview } from "../services/quotation-exceptions";
 
 const router = Router();
 const review = z.object({
@@ -22,12 +24,14 @@ router.get("/api/devis/:id/extraction-review", requireAuth, async (req, res, nex
     const { rows } = await pool.query(`SELECT id,created_at,kind,outcome,category,reason,effort_minutes
       FROM quotation_extraction_events WHERE devis_id=$1 ORDER BY id DESC LIMIT 200`, [id]);
     const { rows: candidates } = await pool.query(`SELECT id,snapshot FROM quotation_extraction_events
-      WHERE devis_id=$1 AND kind='attempt' AND outcome='failed' AND snapshot ? 'extraction'
+      WHERE devis_id=$1 AND kind='attempt' AND outcome IN ('failed','prepared') AND snapshot ? 'extraction'
       AND NOT EXISTS(SELECT 1 FROM quotation_extraction_events applied WHERE applied.devis_id=$1
         AND applied.kind='replacement' AND (applied.id>quotation_extraction_events.id
           OR applied.snapshot->'humanReview'->>'attemptId'=quotation_extraction_events.id::text))
       ORDER BY id DESC LIMIT 1`, [id]);
-    res.json({ events: rows, running: isQuotationRescrapeRunning(id), candidateAttemptId: candidates[0]?.id ?? null,
+    const snapshot = await loadQuotationDecisionSnapshot(id);
+    res.json({ exceptionReview: snapshot ? await quotationExceptionReview(snapshot) : null,
+      events: rows, running: isQuotationRescrapeRunning(id), candidateAttemptId: candidates[0]?.id ?? null,
       humanWorkingVersion: await hasArchitectCorrection(id),
       evidence: candidates[0]?.snapshot?.extraction ?? quotation.aiExtractedData,
       sourcePdfUrl: `/api/devis/${id}/pdf?variant=original` });

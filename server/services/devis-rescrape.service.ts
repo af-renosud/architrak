@@ -1,6 +1,7 @@
 import { db, pool } from "../db";
 import { createHash } from "node:crypto";
 import { verifyQuotationManifest } from "./quotation-source-manifest";
+import { collectPricedEvidence } from "./quotation-priced-evidence";
 import type { ParsedDocument } from "../gmail/document-parser";
 import { recordExtractionEvent } from "./quotation-extraction-events";
 import { hasSignedOrClosedEvidence } from "./quotation-source-guards";
@@ -134,7 +135,7 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
   let parsed: ParsedDocument;
   if (approval) {
     const { rows } = await pool.query(`SELECT snapshot FROM quotation_extraction_events
-      WHERE id=$1 AND devis_id=$2 AND kind='attempt' AND outcome='failed'`,
+      WHERE id=$1 AND devis_id=$2 AND kind='attempt' AND outcome IN ('failed','prepared')`,
     [approval.attemptId, devisId]);
     const candidate = rows[0]?.snapshot?.extraction as ParsedDocument | undefined;
     const preparedFingerprint = rows[0]?.snapshot?.preparedFingerprint;
@@ -143,11 +144,12 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
     }
     beforeFingerprint = preparedFingerprint;
     const evidence = candidate?.quotationVerification;
-    if (!candidate || !evidence?.manifest || !evidence.proposedLineItems
-      || evidence.sourceDigest !== createHash("sha256").update(buffer).digest("hex")
-      || !approval.reason.trim()) {
+    const sourceDigest = createHash("sha256").update(buffer).digest("hex");
+    if (!candidate || !approval.reason.trim() ||
+      (evidence?.sourceDigest ?? candidate.nativeTableRecovery?.sourceDigest) !== sourceDigest) {
       return { success: false, status: 409, data: { message: "Candidate evidence is unavailable or belongs to a different source PDF." } };
     }
+    if (evidence?.manifest && evidence.proposedLineItems) {
     candidate.lineItems = evidence.proposedLineItems;
     const sourceRows = evidence.manifest.sections.map(s => ({ page: s.priceRegion.page,
       reference: s.reference, quantity: s.quantity, unitPrice: s.unitPrice, total: s.total }));
@@ -159,6 +161,16 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
     // It cannot waive an uncertain source region or change source prices.
     evidence.verified = true;
     evidence.failures = [];
+    } else {
+      const receipt = collectPricedEvidence(candidate, buffer);
+      const native = candidate.nativeTableRecovery;
+      if (candidate.documentType !== "quotation" || !native || receipt.issues.length || Number(candidate.amountHt) !== native.amountHt ||
+        Number(candidate.amountTtc) !== native.amountTtc ||
+        Math.round((candidate.lineItems ?? []).reduce((sum, l) => sum + Number(l.total ?? 0), 0) * 100) !== Math.round(native.amountHt * 100))
+        return { success: false, status: 409, data: { code: "SOURCE_REVIEW_REQUIRED",
+          message: "This prepared extraction still lacks independent source support. Use the original PDF and audited working correction; a matching total alone cannot approve it." } };
+      candidate.pricedItemVerification = receipt;
+    }
     parsed = candidate;
   } else {
     parsed = await parseDocument(buffer, fileName);
@@ -189,12 +201,14 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
   }
 
   let validation = validateExtraction(parsed);
-  ({ parsed, validation } = await recoverPlanningTotalsBoxLines({
-    pdfBuffer: buffer,
-    fileName,
-    parsed,
-    validation,
-  }));
+  if (!approval) {
+    ({ parsed, validation } = await recoverPlanningTotalsBoxLines({
+      pdfBuffer: buffer,
+      fileName,
+      parsed,
+      validation,
+    }));
+  }
 
   // Task #350 — completeness hard gate, mirrored from the upload path: never
   // overwrite existing line items with a demonstrably partial extraction.
@@ -218,6 +232,18 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
   const lotWarnings = await checkLotReferencesAgainstCatalog(parsed);
   const corrected = { ...parsed, ...validation.correctedValues };
   const allWarnings = [...validation.warnings, ...lotWarnings];
+
+  // A successful scrape is a proposal, not permission to erase existing rows.
+  // Applying it is a separate explicit, version-bound review action.
+  if (!approval) {
+    await recordExtractionEvent(devisId, "attempt", "prepared", {
+      extraction: parsed, warnings: allWarnings, preparedFingerprint: beforeFingerprint,
+      sourceDigest: createHash("sha256").update(buffer).digest("hex"),
+    });
+    return { success: true, status: 202, data: { prepared: true,
+      message: "Re-extraction prepared for review. Existing wording, figures and evidence have not changed.",
+      extraction: parsed, validation: { warnings: allWarnings } } };
+  }
 
   // ----- Phase 2: serialised mutation in a transaction. -----
   type TxResult =

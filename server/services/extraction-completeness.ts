@@ -220,6 +220,7 @@ export function checkExtractionCompleteness(input: CompletenessInput): Validatio
         field: "pageLineItems",
         expected: 0,
         actual: suspectPages.length,
+        pages: suspectPages,
         message: `Page${suspectPages.length > 1 ? "s" : ""} ${suspectPages.join(", ")} of the PDF text layer contain${suspectPages.length > 1 ? "" : "s"} item-row evidence but no extracted line item points there — line items may be missing from the extraction.${blocking ? " Re-run the extraction before confirming." : ""}`,
         severity: blocking ? "error" : "warning",
       });

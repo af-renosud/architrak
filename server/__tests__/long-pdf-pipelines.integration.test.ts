@@ -572,6 +572,42 @@ describe("devis re-scrape — long-PDF parse flows coverage into the updated dev
     expect(txSpies.insertValues).not.toHaveBeenCalled();
   });
 
+  it("applies equal-priced distinct native source rows only after explicit preview approval", async () => {
+    // If called at apply time, this recovery would propose content the user
+    // never saw. The approved candidate must bypass every model recovery.
+    recoverPlanningSummaryMock.mockResolvedValue({ lines: [{
+      description: "Unreviewed replacement", totalHt: 9999,
+      includedInTotal: true, amountBasis: "HT", evidenceText: "Different response",
+    }], excludedGroups: [] });
+    const lineItems = ["Roof repair", "Gutter repair"].map(description =>
+      ({ description, quantity: 1, unitPrice: 100, total: 100, pageHint: 1 }));
+    const candidate: ParsedDocument = { documentType: "quotation", amountHt: 200, amountTtc: 240,
+      tvaAmount: 40, lineItems,
+      nativeTableRecovery: { parser: "poste-table-v1", sourceDigest: createHash("sha256").update(FIXTURE_PDF).digest("hex"),
+        initialLineItems: lineItems, amountHt: 200, amountTtc: 240,
+        evidence: lineItems.map(line => ({ pages: [1], sourceText: line.description,
+          priceText: `${line.description}  1  100,00  100,00  0,00  0,00` })) } };
+    poolQuery.mockResolvedValueOnce({ rows: [{ snapshot: { extraction: candidate,
+      preparedFingerprint: quotationWorkingVersion(DEVIS_ROW, [], undefined) } }] });
+    const result = await rescrapeDevis(42, { attemptId: 1, actorId: 1, reason: "Both distinct source rows checked on page one." });
+    expect(result.success).toBe(true);
+    expect(txSpies.insertValues.mock.calls[0][0]).toHaveLength(2);
+    expect(parseDocumentMock).not.toHaveBeenCalled();
+    expect(recoverPlanningSummaryMock).not.toHaveBeenCalled();
+    expect(txSpies.insertValues.mock.calls[0][0].map((row: { description: string }) => row.description))
+      .toEqual(["Roof repair", "Gutter repair"]);
+    expect(txSpies.updateSet.mock.calls[0][0]).toMatchObject({ amountHt: "200", amountTtc: "240" });
+  });
+
+  it("refuses an unsupported prepared candidate even when its totals match", async () => {
+    poolQuery.mockResolvedValueOnce({ rows: [{ snapshot: { extraction: { ...realParsed,
+      nativeTableRecovery: { parser: "poste-table-v1", sourceDigest: createHash("sha256").update(FIXTURE_PDF).digest("hex"),
+        amountHt: 7000, amountTtc: 8400, evidence: [] } },
+      preparedFingerprint: quotationWorkingVersion(DEVIS_ROW, [], undefined) } }] });
+    expect((await rescrapeDevis(42, { attemptId: 1, actorId: 1, reason: "Matching figures are not source proof." })).status).toBe(409);
+    expect(txSpies.insertValues).not.toHaveBeenCalled();
+  });
+
   it.each(["quotation", "translation", "lines"])("refuses a preview prepared before newer %s work", async field => {
     poolQuery.mockResolvedValueOnce({ rows: [{ snapshot: { extraction: reviewCandidate(false),
       preparedFingerprint: quotationWorkingVersion(DEVIS_ROW, [], undefined) } }] });
@@ -587,7 +623,9 @@ describe("devis re-scrape — long-PDF parse flows coverage into the updated dev
   it.each(["devis_checks", "client_checks"])("preserves %s links even when the line is still unchecked", async table => {
     parseDocumentMock.mockResolvedValue(realParsed);
     txSpies.protectedLink = table;
-    expect((await rescrapeDevis(42)).status).toBe(409);
+    poolQuery.mockResolvedValueOnce({ rows: [{ snapshot: { extraction: reviewCandidate(false),
+      preparedFingerprint: quotationWorkingVersion(DEVIS_ROW, [], undefined) } }] });
+    expect((await rescrapeDevis(42, { attemptId: 1, actorId: 1, reason: "Reviewed the proposed extraction against the source." })).status).toBe(409);
     expect(txSpies.updateSet).not.toHaveBeenCalled();
     expect(txSpies.insertValues).not.toHaveBeenCalled();
     expect(txSpies.execute.mock.calls.some(([q]) => JSON.stringify(q).includes("DELETE FROM devis_line_items"))).toBe(false);
@@ -602,51 +640,36 @@ describe("devis re-scrape — long-PDF parse flows coverage into the updated dev
   it("refuses a concurrent working-version change before replacing rows", async () => {
     parseDocumentMock.mockResolvedValue(realParsed);
     txSpies.lockedRow = { ...DEVIS_ROW, dateSent: "2026-10-04" };
-    expect((await rescrapeDevis(42)).status).toBe(409);
+    poolQuery.mockResolvedValueOnce({ rows: [{ snapshot: { extraction: reviewCandidate(false),
+      preparedFingerprint: quotationWorkingVersion(DEVIS_ROW, [], undefined) } }] });
+    expect((await rescrapeDevis(42, { attemptId: 1, actorId: 1, reason: "Reviewed the proposed extraction against the source." })).status).toBe(409);
     expect(txSpies.updateSet).not.toHaveBeenCalled();
     expect(txSpies.insertValues).not.toHaveBeenCalled();
   });
 
-  it("full coverage + numbering advisory persist on the devis; line items replaced with rebased hints", async () => {
+  it("full coverage and rebased hints are previewed without replacing any working content", async () => {
     parseDocumentMock.mockResolvedValue(realParsed);
 
     const result = await rescrapeDevis(42);
 
     expect(result.success).toBe(true);
-    expect(result.status).toBe(200);
+    expect(result.status).toBe(202);
     expect(parseDocumentMock).toHaveBeenCalledTimes(1);
-    expect(dbSpy.transaction).toHaveBeenCalledTimes(1);
-    expect(txSpies.updateSet).toHaveBeenCalledTimes(1);
-
-    // Coverage metadata + advisories persisted on the devis update.
-    const update = txSpies.updateSet.mock.calls[0][0] as {
-      aiExtractedData: ParsedDocument;
-      validationWarnings: WarningShape[];
-      amountHt: string;
-      amountTtc: string;
-      invoicingMode: string;
-    };
-    expectFullCoverage(update.aiExtractedData.extractionCoverage as CoverageShape);
-    expectAdvisoriesWithoutBlocking(update.validationWarnings);
-    expect(update.amountHt).toBe("7000");
-    expect(update.amountTtc).toBe("8400");
-    // Lines appeared on the re-scrape ⇒ mode_a flips to mode_b.
-    expect(update.invoicingMode).toBe("mode_b");
-
-    // All 7 line items re-created with rebased page hints (page 6 covered).
-    expect(txSpies.insertValues).toHaveBeenCalledTimes(1);
-    const rows = txSpies.insertValues.mock.calls[0][0] as Array<{
-      pdfPageHint: number | null;
-      lineNumber: number;
-    }>;
+    expect(dbSpy.transaction).not.toHaveBeenCalled();
+    expect(txSpies.updateSet).not.toHaveBeenCalled();
+    expect(txSpies.insertValues).not.toHaveBeenCalled();
+    const extraction = result.data.extraction as ParsedDocument;
+    expectFullCoverage(extraction.extractionCoverage as CoverageShape);
+    expect(extraction.amountHt).toBe(7000);
+    expect(extraction.amountTtc).toBe(8400);
+    const rows = extraction.lineItems!;
     expect(rows).toHaveLength(7);
-    expect(rows.map((r) => r.pdfPageHint)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(rows.map((r) => r.pageHint)).toEqual([1, 2, 3, 4, 5, 6, 7]);
 
     // Advisories surface in the API response payload too.
     const validation = (result.data as { validation: { warnings: WarningShape[] } }).validation;
     expectAdvisoriesWithoutBlocking(validation.warnings);
-    const extraction = (result.data as { extraction: { lineItemsCreated: number } }).extraction;
-    expect(extraction.lineItemsCreated).toBe(7);
+    expect(result.data.prepared).toBe(true);
   });
 
   it("control: the SAME parse with pages missing from coverage is hard-gated — existing data untouched", async () => {
@@ -711,23 +734,20 @@ describe("devis re-scrape — long-PDF parse flows coverage into the updated dev
         difference: -40,
       }),
     );
-    const update = txSpies.updateSet.mock.calls[0][0] as {
-      aiExtractedData: ParsedDocument;
-      validationWarnings: WarningShape[];
-    };
-    expect(update.aiExtractedData.lineItems).toEqual([
+    const extraction = result.data.extraction as ParsedDocument;
+    expect(extraction.lineItems).toEqual([
       expect.objectContaining({ description: "Retained base", total: 100 }),
     ]);
-    expect(update.aiExtractedData.planningSummaryRecovery).toMatchObject({
+    expect(extraction.planningSummaryRecovery).toMatchObject({
       status: "reconciled",
       excludedCount: 1,
       excludedTotal: 40,
     });
-    expect(update.validationWarnings).not.toEqual(
+    expect((result.data.validation as { warnings: WarningShape[] }).warnings).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ field: "lineItems" })]),
     );
-    const rows = txSpies.insertValues.mock.calls[0][0] as Array<{ description: string }>;
-    expect(rows).toHaveLength(1);
-    expect(rows[0].description).toBe("Retained base");
+    expect(txSpies.insertValues).not.toHaveBeenCalled();
+    expect(txSpies.updateSet).not.toHaveBeenCalled();
+    expect(result.data.prepared).toBe(true);
   });
 });

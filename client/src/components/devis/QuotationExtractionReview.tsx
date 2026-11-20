@@ -5,6 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { QuotationExceptions } from "./QuotationExceptions";
+import { quotationFieldLabel } from "./quotation-review-labels";
 import "./review-source.css";
 import {
   reviewCategories, reviewOutcomes, useQuotationExtractionReview,
@@ -27,7 +29,7 @@ function EvidenceValue({ value }: { value: unknown }) {
   if (Array.isArray(value)) return <ul className="space-y-2">{value.map((item, index) =>
     <li key={index} className="border-l border-border pl-2"><EvidenceValue value={item} /></li>)}</ul>;
   if (typeof value === "object") return <dl className="space-y-1">{Object.entries(object(value)).map(([key, item]) =>
-    <div key={key}><dt className="text-muted-foreground">{key.replace(/_/g, " ")}</dt>
+    <div key={key}><dt className="text-muted-foreground">{quotationFieldLabel(key)}</dt>
       <dd className="whitespace-pre-wrap break-words"><EvidenceValue value={item} /></dd></div>)}</dl>;
   return <span className="whitespace-pre-wrap break-words">{String(value)}</span>;
 }
@@ -42,14 +44,27 @@ function Retry({ error, onRetry }: { error: Error; onRetry: () => void }) {
     <Button type="button" size="sm" variant="outline" onClick={onRetry}>Retry</Button>
   </div>;
 }
+function NativeSourcePassage({ entry, sourceUrl }: { entry: Record<string, unknown>; sourceUrl?: string }) {
+  const pages = entries(entry.pages).filter((page): page is number =>
+    typeof page === "number" && Number.isSafeInteger(page) && page > 0);
+  return <div className="space-y-2">
+    <div><h5 className="font-semibold">Original PDF text</h5><EvidenceValue value={entry.sourceText} /></div>
+    {entry.priceText != null && <div><h5 className="font-semibold">Original PDF price</h5><EvidenceValue value={entry.priceText} /></div>}
+    {!pages.length && <p className="text-muted-foreground">Original page not supplied. Compare with the full original PDF.</p>}
+    {pages.map(page => <span key={page} className="inline-block mr-3">
+      {sourceUrl ? <a className="underline" href={`${sourceUrl.split("#")[0]}#page=${page}`} target="_blank" rel="noopener noreferrer">Original page {page}</a> : `Original page ${page}`}
+    </span>)}
+  </div>;
+}
 
-function CandidateApproval({ attemptId, disabled, archived, pending, error, onApply }: {
+function CandidateApproval({ attemptId, disabled, archived, pending, error, onApply, hasInitialComparisons }: {
   attemptId: number;
   disabled: boolean;
   archived: boolean;
   pending: boolean;
   error: Error | null;
   onApply: (request: ExtractionCandidateApplyRequest) => Promise<void>;
+  hasInitialComparisons: boolean;
 }) {
   const id = useId();
   const [reason, setReason] = useState("");
@@ -71,17 +86,19 @@ function CandidateApproval({ attemptId, disabled, archived, pending, error, onAp
       <label className="flex items-start gap-2">
         <input type="checkbox" checked={reviewedOriginal} className="mt-0.5"
           onChange={(event) => setReviewedOriginal(event.target.checked)} />
-        <span>I have reviewed the original source PDF and compared the source segments, initial OCR passages and proposed rows.</span>
+        <span>I have reviewed the original source PDF and compared the supplied source evidence and every proposed row.</span>
       </label>
       <label className="flex items-start gap-2">
         <input type="checkbox" checked={ocrErrors} className="mt-0.5"
           onChange={(event) => setOcrErrors(event.target.checked)} />
-        <span>The differing initial OCR passages are extraction errors, not changes to the contractor’s original quotation.</span>
+        <span>{hasInitialComparisons
+          ? "The differing initial OCR passages are extraction errors, not changes to the contractor’s original quotation."
+          : "I confirm the proposed re-extraction faithfully transcribes the original PDF. Any differences from the initial extraction are extraction errors, not changes to the contractor’s original quotation."}</span>
       </label>
       <div className="space-y-1">
         <label htmlFor={`${id}-apply-reason`} className="font-semibold">Candidate approval reason (at least 12 characters)</label>
         <Textarea id={`${id}-apply-reason`} required minLength={12} value={reason} rows={3}
-          onChange={(event) => setReason(event.target.value)} placeholder="Explain why the differing initial passages are OCR errors, citing the source PDF." />
+          onChange={(event) => setReason(event.target.value)} placeholder="Explain why the proposed re-extraction matches the original PDF, citing the source pages." />
         <p className="text-muted-foreground">Both declarations and a reason of at least 12 non-padding characters are required.</p>
       </div>
       <Button type="submit" size="sm" disabled={disabled || pending || !valid}>
@@ -137,7 +154,7 @@ export function QuotationExtractionReview({
   const issues = entries(object(verification.coverage).issues);
   const sourceFindings = verification.sourceFindings;
   const comparisons = entries(verification.initialComparison);
-  const proposedRows = entries(verification.proposedLineItems);
+  const proposedRows = entries(verification.proposedLineItems ?? object(review.data?.evidence).lineItems);
   const candidateAttemptId = review.data?.candidateAttemptId;
   const candidatePending = typeof candidateAttemptId === "number" && Number.isSafeInteger(candidateAttemptId)
     && candidateAttemptId > 0 && candidateAttemptId !== appliedAttemptId;
@@ -191,14 +208,14 @@ export function QuotationExtractionReview({
       <p className="text-muted-foreground my-2">Descriptions and charges recovered from the original text table. This is not architect approval; review the original layout before signing.</p>
       <ol className="space-y-2">{nativeEvidence.map((entry, index) => <li key={index}>
         <details><summary className="cursor-pointer">Item {index + 1} · PDF pages {entries(entry.pages).join(", ")}</summary>
-          <p className="whitespace-pre-wrap">{String(entry.sourceText ?? "")}</p>
-          <p className="font-mono text-xs">{String(entry.priceText ?? "")}</p>
-          {sourceUrl && entries(entry.pages).filter(page => typeof page === "number" && page > 0).map(page =>
-            <a key={String(page)} className="underline mr-3" href={`${sourceUrl}#page=${page}`} target="_blank" rel="noopener noreferrer">Original page {String(page)}</a>)}
+          <NativeSourcePassage entry={entry} sourceUrl={hasPdf ? sourceUrl : undefined} />
         </details>
       </li>)}</ol>
     </details>}
-    {pricedIssues.length > 0 && <details className="review-source-notice" open={!review.data?.humanWorkingVersion}>
+    {review.data?.exceptionReview && !review.isError && <QuotationExceptions
+      review={review.data.exceptionReview} devisId={devisId} sourceUrl={hasPdf ? sourceUrl : undefined}
+      disabled={disabled || record.isPending || apply.isPending} historicalIssues={pricedIssues} />}
+    {!review.data?.exceptionReview && pricedIssues.length > 0 && <details className="review-source-notice" open={!review.data?.humanWorkingVersion}>
       <summary className="font-semibold cursor-pointer">{review.data?.humanWorkingVersion ? "Historical extraction findings" : "Original-source review required"} · {pricedIssues.length} items</summary>
       <p>{review.data?.humanWorkingVersion
         ? "An audited architect working version exists. These are historical machine findings, not a verdict on your corrections. The working version still needs to reconcile with the confirmed original total before approval."
@@ -229,13 +246,13 @@ export function QuotationExtractionReview({
       <div className="review-source-descriptions">
         <h3>Review &amp; corrections</h3>
         <div className="review-source-description"><Pencil size={15} /><div><h4>Architect’s working version</h4>
-          <p>Correct descriptions, translations and figures without changing the contractor’s original PDF.</p></div></div>
+          <p>Review/edit the working quotation to record audited human corrections to descriptions, translations and figures. The original PDF is unchanged.</p></div></div>
         <div className="review-source-description"><ClipboardCheck size={15} /><div><h4>Extraction accuracy</h4>
-          <p>Restore a missing row or repair a misread row using the source. “Corrected” is a review outcome only, not a row correction.</p></div></div>
+          <p>Use the existing source transcription control to restore missing or misread source text. “Corrected” records an outcome only. Prepare re-extraction creates a separate candidate for review; it does not apply changes automatically.</p></div></div>
         {review.data && <div className="review-source-statusline">
           <span>{candidatePending ? `Candidate pending · attempt ${candidateAttemptId}` :
             appliedAttemptId !== null ? `Candidate applied · attempt ${appliedAttemptId}` : "No prepared candidate"}</span>
-          <span>{segments.length ? `${segments.length} source segments` : "No independent source segments supplied"}</span>
+          <span>{segments.length ? `${segments.length} source segments` : nativeEvidence.length ? `${nativeEvidence.length} native source passages` : "No independent source segments supplied"}</span>
         </div>}
         {(failures.length > 0 || issues.length > 0) && <p className="mt-3 text-[11px] text-[#7b6547]">
           {failures.length} source / extraction findings · {issues.length} coverage findings. Source failures cannot be waived by candidate approval. Open evidence below.
@@ -253,8 +270,8 @@ export function QuotationExtractionReview({
           </summary>
           <div className="mt-3 space-y-3">
             <p className="text-muted-foreground">
-              Approval is not freehand editing and only waives differences from the initial OCR extraction.
-              It does not permit you to waive source failures. The server revalidates the independent source inventory
+              Apply only after comparing every proposed row with the original PDF. This accepts a re-extraction, not changes to the contractor’s quotation.
+              It does not permit you to waive source failures. The server revalidates the source evidence
               and refuses uncertain source evidence or locked evidence. On rejection, the original PDF and current rows remain unchanged.
             </p>
             {!!comparisons.length && <section aria-label="Initial OCR differences" className="space-y-2">
@@ -277,8 +294,15 @@ export function QuotationExtractionReview({
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <section aria-label="Candidate original source segments" className="rounded-md border border-border p-3 space-y-2 min-w-0">
                 <h4 className="font-semibold">Original source segments</h4>
-                {!segments.length && <p className="text-muted-foreground">No independent source segments supplied.</p>}
+                {!segments.length && !nativeEvidence.length && <p className="text-muted-foreground">No independent source segments supplied.</p>}
                 {segments.map((segment, index) => <article key={index} className="border-b border-border pb-2"><EvidenceValue value={segment} /></article>)}
+                {nativeEvidence.length > 0 && <div className="space-y-3">
+                  <h5 className="font-semibold">Native text recovered from the original PDF</h5>
+                  <p className="text-muted-foreground">Compare these passages, their prices and page layout with every proposed row. Source text is evidence for review, not approval.</p>
+                  {nativeEvidence.map((entry, index) => <article key={index} className="border-b border-border pb-2">
+                    <NativeSourcePassage entry={entry} sourceUrl={hasPdf ? sourceUrl : undefined} />
+                  </article>)}
+                </div>}
               </section>
               <section aria-label="Prepared candidate rows" className="rounded-md border border-border p-3 space-y-2 min-w-0">
                 <h4 className="font-semibold">Proposed rows · full descriptions & amounts</h4>
@@ -298,6 +322,7 @@ export function QuotationExtractionReview({
             {!!issues.length && <div><h4 className="font-semibold">Coverage findings</h4><EvidenceValue value={issues} /></div>}
             {sourceFindings != null && <div><h4 className="font-semibold">Independent source findings</h4><EvidenceValue value={sourceFindings} /></div>}
             {candidatePending && <CandidateApproval key={candidateAttemptId} attemptId={candidateAttemptId}
+              hasInitialComparisons={comparisons.length > 0}
               archived={disabled}
               disabled={disabled || !hasPdf || !proposedRows.length || !sourceUrl || review.isError || record.isPending}
               pending={apply.isPending} error={apply.error} onApply={async (request) => {

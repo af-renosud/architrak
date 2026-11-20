@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { QuotationExtractionReview } from "../QuotationExtractionReview";
 import { DevisWorkflow, WorkflowSection } from "../DevisWorkflow";
 import { compareInitialQuotation } from "../../../../../server/services/quotation-source-manifest";
+import type { QuotationExceptionReview } from "@shared/quotation-exceptions";
 
 const fetchMock = vi.fn();
 const reviewPath = "/api/devis/42/extraction-review";
@@ -106,6 +107,67 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("quotation extraction review", () => {
+  const exceptions: QuotationExceptionReview = {
+    version: "exceptions-v1", historicalWarningCount: 7, resolvedByHumanReview: false,
+    sourceIdentity: { parser: "native", sourceDigest: "source-digest" },
+    groups: [{ id: "figures", label: "Figures to check", issues: [{
+      code: "ROW_TOTAL_MISMATCH", key: "line-102", severity: "blocker",
+      message: "The row total needs comparison with the source.",
+      target: { section: "financial", rowId: 102, field: "totalHt", page: 5 }, resolution: "edit_figures",
+    }] }],
+  };
+  function structured(value = exceptions) {
+    fetchMock.mockImplementation((url: string) => Promise.resolve(response(url.includes("summary") ? summary :
+      { ...data, sourcePdfUrl: "/api/devis/42/pdf#old", exceptionReview: value,
+        evidence: { ...evidence, pricedItemVerification: { issues: [{ line: 14, page: 5, reason: "Old machine warning" }] } } })));
+  }
+  it("groups current findings by stable codes and links the exact source page and working row without mutation", async () => {
+    structured();
+    const listener = vi.fn();
+    window.addEventListener("quotation-review-open", listener);
+    try {
+      mount(); await ready();
+      const group = within(screen.getByRole("region", { name: "Figures to check" }));
+      const code = group.getByText("ROW_TOTAL_MISMATCH");
+      const technical = code.closest("details")!;
+      expect(technical).not.toHaveAttribute("open");
+      expect(code).not.toBeVisible();
+      expect(group.getByText("totalHt")).not.toBeVisible();
+      expect(group.getByText("Total excluding VAT")).toBeVisible();
+      fireEvent.click(within(technical).getByText("Technical details"));
+      expect(code).toBeVisible();
+      expect(within(technical).getByText("102")).toBeVisible();
+      fireEvent.click(within(technical).getByText("Technical details"));
+      expect(group.getByText("blocker")).toBeVisible();
+      expect(group.getByRole("link", { name: "Original PDF · page 5" }))
+        .toHaveAttribute("href", "/api/devis/42/pdf?variant=original#page=5");
+      fireEvent.click(group.getByRole("button", { name: "Review/edit working row" }));
+      expect(listener.mock.calls[0][0].detail).toEqual({ devisId: 42, rowId: 102, field: "totalHt" });
+      const historical = screen.getByText("Historical extraction warnings · 7").closest("details")!;
+      expect(historical).not.toHaveAttribute("open");
+      expect(within(historical).queryByRole("button", { hidden: true })).toBeNull();
+      expect(within(historical).queryByRole("link", { hidden: true })).toBeNull();
+      expect(screen.queryByText("Original-source review required")).toBeNull();
+      expect(fetchMock.mock.calls.every(([, options]) => options.method !== "POST")).toBe(true);
+    } finally { window.removeEventListener("quotation-review-open", listener); }
+  });
+  it("shows explicit human resolution without actionable historical findings or an approval claim", async () => {
+    structured({ ...exceptions, resolvedByHumanReview: true });
+    mount(); await ready();
+    const panel = within(screen.getByRole("region", { name: "Structured extraction exceptions" }));
+    expect(panel.getByText("Resolved by human review")).toBeVisible();
+    expect(panel.getByText(/This is not quotation approval/)).toBeVisible();
+    expect(panel.queryByRole("button")).toBeNull();
+    expect(panel.queryByRole("link")).toBeNull();
+  });
+  it("does not claim accuracy when no structured findings are supplied, and keeps archived actions disabled", async () => {
+    structured({ ...exceptions, groups: [] });
+    const view = mount(); await ready();
+    expect(screen.getByText(/No current findings supplied. This does not establish/)).toBeVisible();
+    view.client.clear(); cleanup();
+    structured(); mount(true); await ready();
+    expect(screen.getByRole("button", { name: "Review/edit working row" })).toBeDisabled();
+  });
   it("separates document actions from correction actions and puts actions before descriptions in document order", async () => {
     mount(false, {
       documentLabel: "D-42",
@@ -324,6 +386,64 @@ describe("quotation extraction review", () => {
     for (const queryKey of [[reviewPath], ["/api/devis", 42], ["/api/devis/42"], ["/api/projects", "7"], ["/api/extraction-review/summary"]]) {
       expect(invalidate).toHaveBeenCalledWith({ queryKey });
     }
+  });
+  const nativeCandidateData = {
+    ...data, candidateAttemptId: 93,
+    evidence: {
+      lineItems: [{ descriptionFr: "Porte acoustique complète", quantity: 2, totalHt: 274.5, sourcePage: 4 }],
+      nativeTableRecovery: { evidence: [{ sourceText: "<script>source text is not executable</script>",
+        priceText: "2 × 137,25 € = 274,50 €", pages: [4, -1, 1.5, "javascript:alert(1)"] }] },
+    },
+  };
+  it("previews native-only line items and source pages, requiring explicit declarations before applying", async () => {
+    fetchMock.mockImplementation((url: string, options: RequestInit) => Promise.resolve(
+      options.method === "POST" ? new Response(null, { status: 204 }) :
+        response(url.includes("summary") ? summary : nativeCandidateData)));
+    mount(); await ready();
+    const preview = within(screen.getByRole("region", { name: "Prepared candidate rows" }));
+    expect(preview.getByText("Porte acoustique complète")).toBeVisible();
+    expect(preview.getByText("French description")).toBeVisible();
+    expect(preview.queryByText("descriptionFr")).toBeNull();
+    const source = within(screen.getByRole("region", { name: "Candidate original source segments" }));
+    expect(source.getByText("<script>source text is not executable</script>")).toBeVisible();
+    expect(source.getByText("2 × 137,25 € = 274,50 €")).toBeVisible();
+    expect(source.getByRole("link", { name: "Original page 4" }))
+      .toHaveAttribute("href", "/api/devis/42/pdf?variant=original#page=4");
+    expect(source.getAllByRole("link")).toHaveLength(1);
+    expect(source.queryByText("No independent source segments supplied.")).toBeNull();
+    expect(document.querySelector("script")).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: /The differing initial OCR passages/ })).toBeNull();
+    const apply = screen.getByRole("button", { name: "Approve and apply prepared candidate" });
+    edit("Candidate approval reason (at least 12 characters)", "Every proposed row matches original page four.");
+    expect(apply).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: /I have reviewed the original source PDF/ }));
+    expect(apply).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: /I confirm the proposed re-extraction faithfully transcribes/ }));
+    expect(apply).toBeEnabled();
+    expect(fetchMock.mock.calls.filter(([, options]) => options.method === "POST")).toHaveLength(0);
+    fireEvent.click(apply);
+    await screen.findByText("Prepared candidate attempt 93 applied. The original source PDF is unchanged.");
+    const posts = fetchMock.mock.calls.filter(([, options]) => options.method === "POST");
+    expect(posts).toHaveLength(1);
+    expect(JSON.parse(posts[0][1].body)).toEqual({ attemptId: 93,
+      reason: "Every proposed row matches original page four.", reviewedOriginal: true, initialDifferencesAreOcrErrors: true });
+  });
+  it("preserves native-only declarations on server refusal without claiming application", async () => {
+    fetchMock.mockImplementation((url: string, options: RequestInit) => Promise.resolve(response(
+      options.method === "POST" ? { message: "Candidate source is unverified" } :
+        url.includes("summary") ? summary : nativeCandidateData, options.method === "POST" ? 409 : 200)));
+    mount(); await ready();
+    edit("Candidate approval reason (at least 12 characters)", "Compared all rows with original page four.");
+    fireEvent.click(screen.getByRole("checkbox", { name: /I have reviewed the original source PDF/ }));
+    const declaration = screen.getByRole("checkbox", { name: /I confirm the proposed re-extraction faithfully transcribes/ });
+    fireEvent.click(declaration);
+    fireEvent.click(screen.getByRole("button", { name: "Approve and apply prepared candidate" }));
+    await screen.findByRole("alert");
+    expect(screen.getByRole("alert")).toHaveTextContent("Candidate source is unverified");
+    expect(screen.getByRole("alert")).toHaveTextContent("current rows are unchanged");
+    expect(declaration).toBeChecked();
+    expect(screen.getByLabelText("Candidate approval reason (at least 12 characters)")).toHaveValue("Compared all rows with original page four.");
+    expect(screen.queryByText(/Prepared candidate attempt 93 applied/)).toBeNull();
   });
 
   it("preserves candidate reason and declarations when independent source revalidation rejects apply", async () => {

@@ -6,6 +6,21 @@
   padding: 24px 28px 0;
   font-size: 12px;
 }
+.review-exceptions { margin-bottom: 22px; border: 1px solid #d8cbb9; border-radius: 6px; overflow: hidden; }
+.review-exceptions-heading { padding: 15px 17px; background: #f4efe5; border-bottom: 1px solid #d8cbb9; }
+.review-exceptions h3, .review-exceptions h4 { font-weight: 600; }
+.review-exceptions-heading p { margin-top: 5px; color: #626b74; line-height: 1.6; }
+.review-exceptions-group { padding: 14px 17px 0; }
+.review-exceptions-item { padding: 12px 0; border-bottom: 1px solid #e4dfd5; }
+.review-exceptions-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 5px; color: #6b645a; font-size: 10px; }
+.review-exceptions-meta code { overflow-wrap: anywhere; }
+.review-exceptions-severity { font-weight: 650; text-transform: capitalize; }
+.review-exceptions-severity[data-severity="blocker"] { color: #963f37; }
+.review-exceptions-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 9px; }
+.review-exceptions-actions a { text-decoration: underline; text-underline-offset: 3px; }
+.review-exceptions-history { padding: 14px 17px; background: #f8f6f1; }
+.review-exceptions-history summary { cursor: pointer; font-weight: 550; }
+.review-exceptions-history p, .review-exceptions-history ul { margin-top: 8px; color: #626b74; line-height: 1.7; }
 .review-source button:focus-visible, .review-source summary:focus-visible, .review-source a:focus-visible {
   outline: 2px solid #94734c;
   outline-offset: 4px;

@@ -2,6 +2,25 @@ import type { RequestHandler } from "express";
 import { pool } from "../db";
 import { REPLACEMENT_LOCK_NAMESPACE } from "./quotation-replacement.service";
 
+/** Ordinary content writers use row locks, not the signing advisory lock.
+ * Keep their commits outside the final source-read/dispatch interval. */
+export async function withQuotationDispatchLock<T>(devisId: number, dispatch: () => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT id FROM devis WHERE id=$1 FOR SHARE", [devisId]);
+    await client.query("SELECT p.id FROM projects p JOIN devis d ON d.project_id=p.id WHERE d.id=$1 FOR SHARE OF p", [devisId]);
+    await client.query("SELECT id FROM devis_line_items WHERE devis_id=$1 FOR SHARE", [devisId]);
+    await client.query("SELECT devis_id FROM devis_translations WHERE devis_id=$1 FOR SHARE", [devisId]);
+    const result = await dispatch();
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally { client.release(); }
+}
+
 /** Keep the replacement decision outside the entire external signature send,
  * including the interval before an envelope ID has been persisted. */
 export function withQuotationSignatureLock(handler: RequestHandler): RequestHandler {

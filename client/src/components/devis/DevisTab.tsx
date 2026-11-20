@@ -6033,14 +6033,15 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
       const res = await apiRequest("POST", `/api/devis/${devis.id}/rescrape`, {});
       return res.json();
     },
-    onSuccess: (data: { pending?: boolean; extraction?: { lineItemsExtracted?: number; lineItemsCreated?: number } }) => {
+    onSuccess: (data: { pending?: boolean; prepared?: boolean; extraction?: { lineItemsExtracted?: number; lineItemsCreated?: number } }) => {
       setRescrapeConfirmOpen(false);
       const created = data?.extraction?.lineItemsCreated ?? 0;
       const extracted = data?.extraction?.lineItemsExtracted ?? 0;
       toast({
-        title: data.pending ? "Source extraction started" : "Devis re-scraped",
+        title: data.pending ? "Source extraction started" : data.prepared ? "Re-extraction ready to review" : "Devis re-scraped",
         description:
           data.pending ? "The original quotation is preserved while source sections are checked. Follow progress in Extraction review."
+          : data.prepared ? "Existing content has not changed. Open the prepared candidate in Review source to compare and explicitly apply it."
           : extracted > 0
             ? `Refreshed ${created} of ${extracted} line item${extracted === 1 ? "" : "s"} from the PDF.`
             : "Re-scraped, but the AI did not return any line items.",
@@ -6415,11 +6416,10 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
             <AlertDialogTitle>Re-scrape this devis?</AlertDialogTitle>
             <AlertDialogDescription>
               The AI will read <span className="font-semibold">{devis.devisCode}</span> again and
-              replace its current line items and totals with whatever it
-              extracts. Your manual edits to the devis code, contractor, lot
-              and status will be kept. This usually takes a few seconds.
-              {" "}Previous duplicate-extraction corrections will not be automatically reapplied.
-              Review the new extraction against the original PDF before confirming it.
+              prepare a candidate for comparison. Current line items, totals, wording,
+              images and questions will not change. Review the proposed extraction
+              against the original PDF before explicitly applying it.
+              Existing human corrections and linked financial evidence remain protected.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -1,5 +1,5 @@
 import { quotationActionDecision } from "../services/quotation-approval-guard";
-import { withQuotationSignatureLock } from "../services/quotation-signature-lock";
+import { withQuotationSignatureLock, withQuotationDispatchLock } from "../services/quotation-signature-lock";
 import { hasArchitectCorrection } from "../services/architect-quotation-correction";
 /**
  * Archisign envelope orchestration endpoints (AT4, contract §1.2 / §3.5).
@@ -586,6 +586,7 @@ router.post(
       message: "Contractor questions changed while preparing the envelope. No signature invitation was sent.",
     });
 
+    const dispatchResponse = await withQuotationDispatchLock(devisId, async () => {
     const currentQuotationDecision = await quotationActionDecision(devisId, "sign");
     const preparedReceipt = await storage.getSignatureQuestionReceipt(devisId, envelopeId);
     if (!currentQuotationDecision.allowed || currentQuotationDecision.contentVersion !== quotationDecision.contentVersion ||
@@ -633,6 +634,9 @@ router.post(
         detail,
       });
     }
+
+    });
+    if (dispatchResponse) return dispatchResponse;
 
     // Advance signOffStage. If this DB write fails, the next architect
     // click will reach this same point: envelopeId set, stage still

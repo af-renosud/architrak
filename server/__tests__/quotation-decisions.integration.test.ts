@@ -6,6 +6,7 @@ import { loadQuotationDecisionSnapshot, loadProjectQuotationDecisionSnapshots, q
 import { commitQuotationApprovalStage } from "../services/quotation-stage-commit";
 import { publishReviewedQuotation } from "../services/client-project-share";
 import { storage } from "../storage";
+import { withQuotationDispatchLock } from "../services/quotation-signature-lock";
 const suffix = `decision-parity-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 let projectId: number, contractorId: number, devisId: number, tokenId: number;
 beforeAll(async () => {
@@ -56,4 +57,38 @@ it("retiring an envelope requires a provider-confirmed draft and preserves its a
   expect(current.archisignPinnedPdfStorageKey).toBeNull();
   const audit = await db.select().from(clientProjectShareAudit).where(eq(clientProjectShareAudit.projectId, projectId));
   expect(audit.some(a => a.action === "signature_envelope_retired" && a.detail?.includes("obsolete-fixture"))).toBe(true);
+});
+it("serialises context saves after final source verification and dispatch", async () => {
+  let releaseSource!: () => void, sourceStarted!: () => void;
+  const sourcePause = new Promise<void>(resolve => { releaseSource = resolve; });
+  const sourceReadStarted = new Promise<void>(resolve => { sourceStarted = resolve; });
+  let dispatched = false;
+  const dispatch = withQuotationDispatchLock(devisId, async () => {
+    const snapshot = (await loadQuotationDecisionSnapshot(devisId))!;
+    // Simulate the awaited original-PDF read in final source verification.
+    sourceStarted();
+    await sourcePause;
+    expect(quotationDecisionVersion((await loadQuotationDecisionSnapshot(devisId))!)).toBe(quotationDecisionVersion(snapshot));
+    dispatched = true;
+  });
+  await sourceReadStarted;
+  const writer = await pool.connect();
+  let saved = false;
+  const writing = writer.query("UPDATE devis_translations SET contexts_version=contexts_version+1 WHERE devis_id=$1", [devisId])
+    .then(() => { saved = true; expect(dispatched).toBe(true); });
+  try {
+    let blocked = false;
+    for (let i = 0; i < 50; i++) {
+      const result = await pool.query("SELECT cardinality(pg_blocking_pids($1)) > 0 AS blocked", [(writer as any).processID]);
+      if (result.rows[0].blocked) { blocked = true; break; }
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    expect(blocked).toBe(true);
+    expect(saved).toBe(false);
+  } finally {
+    releaseSource();
+    await dispatch;
+    await writing;
+    writer.release();
+  }
 });

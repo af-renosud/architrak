@@ -6,6 +6,7 @@ import { pricedEvidenceIssues, workingCoverageIssues } from "./quotation-source-
 import type { ParsedDocument } from "../gmail/document-parser";
 import { quotationDecisionVersion, quotationPackageVersion, type QuotationDecisionSnapshot } from "./quotation-decision-snapshot";
 import { quotationSigningIssues } from "@shared/quotation-signing-decision";
+import { checkExtractionCompleteness } from "./extraction-completeness";
 import { translationSnapshotIssues } from "./quotation-translation-coverage";
 
 /** Authoritative source/review rules, independent of transport and UI.
@@ -42,6 +43,17 @@ export async function evaluateQuotationDecision(s: QuotationDecisionSnapshot, ac
       add("REVIEW_REQUIRED", "Review and approve the saved quotation in Review/edit quotation. The original TTC is already confirmed; no correction or repeat entry is needed.", "translation");
   } else {
     const parsed = d.aiExtractedData as ParsedDocument | null;
+    if (parsed && !humanReviewed) {
+      for (const warning of checkExtractionCompleteness({ coverage: parsed.extractionCoverage,
+        lineItems: s.lines.map(l => ({ description: l.description, pageHint: l.pdfPageHint })) }).filter(w => w.severity === "error")) {
+        for (const page of warning.pages?.length ? warning.pages : [undefined]) {
+          const issue = quotationIssue(warning.field === "pageCoverage" ? "PAGES_NOT_EXTRACTED" : "PAGE_ITEMS_MISSING",
+            warning.message, "source", page ? `${warning.field}-page-${page}` : warning.field);
+          if (page) issue.target.page = page;
+          issues.push(issue);
+        }
+      }
+    }
     if (parsed?.pricedItemVerification) {
       issues.push(...pricedEvidenceIssues(parsed, s.lines));
       if (parsed.nativeTableRecovery && (Math.round(Number(d.amountHt) * 100) !== Math.round(parsed.nativeTableRecovery.amountHt * 100)

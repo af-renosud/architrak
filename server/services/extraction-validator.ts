@@ -14,6 +14,7 @@ export interface ValidationWarning {
    *  suspected fragment lines). Lets the review UI flag the exact rows
    *  without parsing the human-readable message. */
   lines?: number[];
+  pages?: number[];
 }
 
 export interface ValidationResult {
